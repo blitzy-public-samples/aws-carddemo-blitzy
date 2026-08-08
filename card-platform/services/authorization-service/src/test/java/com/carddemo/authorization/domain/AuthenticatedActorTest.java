@@ -1,6 +1,8 @@
 package com.carddemo.authorization.domain;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.carddemo.authorization.entity.AuthorizationDecisionEntity;
 import java.security.Principal;
@@ -29,16 +31,47 @@ class AuthenticatedActorTest {
                 "the audit row records the identity that asked for the decision");
     }
 
+    /**
+     * Asserts a name the column holds is recorded whole, however long it is.
+     *
+     * <p>Shortening is what this class used to do, and it is the defect: two identities agreeing in
+     * their leading characters shared one recorded actor, and the shipped nine-character monitoring
+     * identity reached an eight-character column as {@code monitor0}. An audit row that cannot name one
+     * identity does not audit.
+     */
     @Test
-    @DisplayName("a name wider than the column is shortened rather than refused")
-    void aWideNameIsShortenedRatherThanRefused() {
+    @DisplayName("a long name is recorded whole rather than shortened into another identity")
+    void aLongNameIsRecordedWhole() {
         String recorded = AuthenticatedActor.actorOf(named("a-very-long-principal-name"));
 
-        assertEquals("a-very-l", recorded,
-                "SEC-USR-ID PIC X(8) at app/cpy/CSUSR01Y.cpy:L18 bounds the column, and a decision "
-                        + "must not fail because a deployment configured a wide user name");
-        assertEquals(AuthorizationDecisionEntity.ACTOR_MAX_LENGTH, recorded.length(),
-                "the shortened name is exactly the column width");
+        assertEquals("a-very-long-principal-name", recorded,
+                "a shortened name would attribute this decision to every identity sharing its "
+                        + "leading characters");
+        assertEquals("monitor01", AuthenticatedActor.actorOf(named("monitor01")),
+                "the shipped monitoring identity is nine characters and was recorded as monitor0 "
+                        + "while the column held eight");
+    }
+
+    /**
+     * Asserts a name the column cannot hold stops the call rather than being shortened to fit.
+     *
+     * <p>{@code config/SecurityConfig} refuses such an identity at start-up, so this is a guard on a
+     * state no deployment reaches. It answers {@link IllegalStateException} and not
+     * {@link IllegalArgumentException}, because the request is well formed and the configuration is
+     * not: {@code api/GlobalExceptionHandler} then answers 500 rather than 422.
+     */
+    @Test
+    @DisplayName("a name wider than the column stops the call and names the bound")
+    void aNameWiderThanTheColumnStopsTheCall() {
+        String tooWide = "x".repeat(AuthorizationDecisionEntity.ACTOR_MAX_LENGTH + 1);
+
+        IllegalStateException refused = assertThrows(IllegalStateException.class,
+                () -> AuthenticatedActor.actorOf(named(tooWide)),
+                "a name the audit column cannot hold must not be shortened to fit");
+
+        assertTrue(refused.getMessage()
+                        .contains(String.valueOf(AuthorizationDecisionEntity.ACTOR_MAX_LENGTH)),
+                "the message names the bound so an operator can correct the configuration");
     }
 
     @Test
@@ -55,8 +88,10 @@ class AuthenticatedActorTest {
     @Test
     @DisplayName("a name exactly the column width passes through unchanged")
     void aNameExactlyTheColumnWidthPassesThrough() {
-        assertEquals("abcdefgh", AuthenticatedActor.actorOf(named("abcdefgh")),
-                "eight characters already fit, so nothing is removed");
+        String exact = "a".repeat(AuthorizationDecisionEntity.ACTOR_MAX_LENGTH);
+
+        assertEquals(exact, AuthenticatedActor.actorOf(named(exact)),
+                "a name at the bound already fits, so nothing is removed");
     }
 
     /**

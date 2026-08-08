@@ -1,5 +1,7 @@
 package com.carddemo.card.messaging;
 
+import java.util.concurrent.CompletionStage;
+
 /**
  * The card service publishes every event through this interface.
  *
@@ -13,7 +15,9 @@ package com.carddemo.card.messaging;
  * <p>A caller publishes after the local transaction that recorded the change has committed, so
  * request handling publishes nothing.
  *
- * <p>A failed publish throws an unchecked exception.
+ * <p>A call that cannot be attempted at all throws before any send is started. A send that was
+ * started reports on the stage it returned, so a caller that has to know the outcome waits on
+ * that stage and owns the bound it waits under.
  *
  * <p>A different event bus needs one new implementation of this interface and no other change.
  */
@@ -53,9 +57,11 @@ public interface EventPublisherPort {
      *                    all eleven characters, leading zeros included.
      * @param payload     the event body, already serialized as JavaScript Object Notation (JSON)
      *                    and taken from the {@code payload} column of {@code outbox_event}
+     * @return the stage the broker acknowledgement completes, which fails when the broker refuses
+     *         the send or does not answer inside the bound the implementation applies
      * @throws IllegalArgumentException when an argument is absent, when {@code aggregateId} misses
      *         {@link #AGGREGATE_ID_PATTERN}, when the payload declares an event type that does not
      *         belong on {@code topic}, or when the payload fails the document that type names
      */
-    void publish(String topic, String aggregateId, String payload);
+    CompletionStage<Void> publish(String topic, String aggregateId, String payload);
 }

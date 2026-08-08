@@ -18,8 +18,10 @@ import org.springframework.stereotype.Component;
  *
  * <h2>The problem this solves</h2>
  *
- * <p>This module registers three listeners, and each is decided by two configured names: the topic
- * it reads and the consumer group it reads under. Both arrive with an in-image default, for example
+ * <p>This module registers four listeners, and each is decided by two configured names: the topic
+ * it reads and the consumer group it reads under. All eight names are reported here, beside
+ * the shared dead-letter topic and the per-source suffix. Both arrive with an in-image default,
+ * for example
  * {@code ${TOPIC_TRANSACTION_POSTED:transaction.posted}} and
  * {@code ${GROUP_NOTIFICATION_POSTED:notification-posted}}. That is deliberate: a service has to
  * start on a developer machine with nothing set. It also means a dropped, renamed or mistyped key in
@@ -81,6 +83,14 @@ public class StreamNameReport implements ApplicationListener<ApplicationReadyEve
         NotificationProperties.Kafka.Groups groups = properties.kafka().groups();
         return List.of(
                 new ReportedName(
+                        "topic this service consumes an authorized transaction from",
+                        "TOPIC_TRANSACTION_AUTHORIZED",
+                        topics.transactionAuthorized()),
+                new ReportedName(
+                        "consumer group the authorized-transaction listener reads under",
+                        "GROUP_NOTIFICATION_AUTHORIZED",
+                        groups.transactionAuthorized()),
+                new ReportedName(
                         "topic this service consumes a posted transaction from",
                         "TOPIC_TRANSACTION_POSTED",
                         topics.transactionPosted()),
@@ -107,7 +117,11 @@ public class StreamNameReport implements ApplicationListener<ApplicationReadyEve
                 new ReportedName(
                         "topic an unprocessable record is routed to",
                         "TOPIC_DEAD_LETTER",
-                        topics.deadLetter()));
+                        topics.deadLetter()),
+                new ReportedName(
+                        "suffix composed with a consumed topic to name its dead-letter stream",
+                        "TOPIC_DEAD_LETTER_SUFFIX",
+                        topics.deadLetterSuffix()));
     }
 
     @Override

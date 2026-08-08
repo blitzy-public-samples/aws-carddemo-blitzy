@@ -61,10 +61,10 @@ import org.junit.jupiter.api.function.Executable;
  * and writes each to a dataset. Neither that program nor {@code app/cpy/COSTM01.CPY} nor {@code
  * app/jcl/CREASTMT.JCL} declares an attempt record.
  *
- * <p>Six columns carry one attempt, and the tests below pin all six as a closed set. A seventh
- * field fails them, as does a change to any declared width. The {@code notification_log} block of
- * {@code src/main/resources/db/migration/V1__schema.sql} fixes every name, type and width below,
- * and that file carries the Data Definition Language (DDL) of the notification schema.
+ * <p>Seven columns carry one rendered alert, and the tests below pin all seven as a closed set. An
+ * eighth field fails them, as does a change to any declared width. The {@code notification_log}
+ * block of {@code src/main/resources/db/migration/V1__schema.sql} fixes every name, type and width
+ * below, and {@code V5__rendered_not_delivered.sql} renames one column and adds the seventh.
  *
  * <p>{@code account_id} scopes the attempt to one account. {@code masked_card_number} holds the
  * display form: twelve mask characters then the last four digits. No full Primary Account Number
@@ -72,7 +72,7 @@ import org.junit.jupiter.api.function.Executable;
  * accessor names a card verification value, the three-digit field
  * {@code app/cpy/CVACT02Y.cpy:L7} declares and the card service owns.</p>
  *
- * <p>{@code attempted_at} maps a {@code java.time.Instant}. The two timestamp columns of
+ * <p>{@code rendered_at} maps a {@code java.time.Instant}. The two timestamp columns of
  * {@code statement_transaction} hold 26 characters of text taken from
  * {@code app/cpy/COSTM01.CPY:L34} and {@code :L35}, and the tests below pin the timestamp type of
  * {@code notification_log} alone.</p>
@@ -90,8 +90,15 @@ final class NotificationLogEntityTest {
     /** The table one attempt maps, from {@code src/main/resources/db/migration/V1__schema.sql}. */
     private static final String TABLE_NAME = "notification_log";
 
-    /** Instance fields the class maps, statics dropped. */
-    private static final int FIELD_COUNT = 6;
+    /**
+     * Instance fields the class maps, statics dropped.
+     *
+     * <p>Seven since {@code src/main/resources/db/migration/V5__rendered_not_delivered.sql} added
+     * {@code outcome}. A security review found this table described as a delivery attempt while
+     * nothing on this platform sends anything, so the row now carries that fact in a column a
+     * {@code CHECK} constrains rather than in prose a reader has to believe.</p>
+     */
+    private static final int FIELD_COUNT = 7;
 
     /** Class-level annotations the class carries. */
     private static final int CLASS_ANNOTATION_COUNT = 2;
@@ -111,8 +118,11 @@ final class NotificationLogEntityTest {
     /** The field naming which rendered format the attempt carried. */
     private static final String CHANNEL_FIELD = "channel";
 
-    /** The field holding the moment the attempt ran. */
-    private static final String ATTEMPTED_AT_FIELD = "attemptedAt";
+    /** The field holding the moment rendering finished. */
+    private static final String RENDERED_AT_FIELD = "renderedAt";
+
+    /** The field holding what became of the alert, which is always rendered and not sent. */
+    private static final String OUTCOME_FIELD = "outcome";
 
     /** Column of {@link #ID_FIELD}, declared {@code UUID NOT NULL}. */
     private static final String ID_COLUMN = "id";
@@ -130,10 +140,13 @@ final class NotificationLogEntityTest {
     private static final String CHANNEL_COLUMN = "channel";
 
     /**
-     * Column of {@link #ATTEMPTED_AT_FIELD}, declared
+     * Column of {@link #RENDERED_AT_FIELD}, declared
      * {@code TIMESTAMP(6) WITH TIME ZONE NOT NULL}.
      */
-    private static final String ATTEMPTED_AT_COLUMN = "attempted_at";
+    private static final String RENDERED_AT_COLUMN = "rendered_at";
+
+    /** Column of {@link #OUTCOME_FIELD}, declared {@code VARCHAR(20) NOT NULL}. */
+    private static final String OUTCOME_COLUMN = "outcome";
 
     /** Characters {@link #CARD_TOKEN_COLUMN} holds, from the migration. */
     private static final int CARD_TOKEN_WIDTH = 64;
@@ -159,8 +172,17 @@ final class NotificationLogEntityTest {
     /** Constant the class publishes for the width of {@link #CHANNEL_COLUMN}. */
     private static final String CHANNEL_WIDTH_CONSTANT = "CHANNEL_MAX_LENGTH";
 
-    /** Parameter counts of the constructors the class declares, in ascending order. */
-    private static final List<Integer> EXPECTED_CONSTRUCTOR_ARITIES = List.of(0, FIELD_COUNT);
+    /**
+     * Parameter counts of the constructors the class declares, in ascending order.
+     *
+     * <p>Six rather than seven, deliberately. {@code outcome} is the seventh mapped field and the
+     * constructor does not take it: the class writes
+     * {@link NotificationLogEntity#RENDERED_NOT_SENT} itself, so no caller can record a delivery
+     * this platform does not perform. That is the whole point of the column, and the assertion
+     * below is what holds it.</p>
+     */
+    private static final List<Integer> EXPECTED_CONSTRUCTOR_ARITIES =
+            List.of(0, FIELD_COUNT - 1);
 
     /**
      * The only class-level annotations the entity carries. A declared annotation outside this set
@@ -540,33 +562,60 @@ final class NotificationLogEntityTest {
         }
 
         @Test
-        @DisplayName("two constructors: the no-argument one and one taking all six values")
-        void declaresTwoConstructorsAndTheSecondTakesEveryMappedValue() {
+        @DisplayName("two constructors: the no-argument one and one taking every caller-set value")
+        void declaresTwoConstructorsAndTheSecondTakesEveryCallerSetValue() {
             assertThat(constructorArities()).as("parameter counts of the declared constructors")
                     .containsExactlyElementsOf(EXPECTED_CONSTRUCTOR_ARITIES);
+        }
+
+        /**
+         * Holds that the outcome is written by the class and not supplied by a caller.
+         *
+         * <p>This is the mechanical form of the finding's resolution. The review found rows
+         * described as delivery attempts while nothing on this platform sends anything. A caller
+         * that could pass an outcome could pass {@code SENT}, and then the column would be as
+         * unreliable as the prose was. The constructor takes six values and assigns the seventh,
+         * and {@code ck_notification_log_outcome} refuses any other value written any other
+         * way.</p>
+         */
+        @Test
+        @DisplayName("the outcome is assigned by the class, not taken from a caller")
+        void theOutcomeIsAssignedByTheClass() {
+            NotificationLogEntity row = new NotificationLogEntity(java.util.UUID.randomUUID(),
+                    "a".repeat(CARD_TOKEN_WIDTH), "*".repeat(12) + "1234",
+                    "0".repeat(TRANSACTION_ID_WIDTH), "PLAIN_TEXT", java.time.Instant.EPOCH);
+
+            assertAll("the outcome a constructed row carries",
+                    () -> assertEquals(NotificationLogEntity.RENDERED_NOT_SENT, row.getOutcome(),
+                            "a constructed row must report that its alert was rendered and not "
+                                    + "sent"),
+                    () -> assertEquals(FIELD_COUNT - 1,
+                            NotificationLogEntity.class.getConstructors()[0].getParameterCount(),
+                            "the public constructor must take every mapped value except the "
+                                    + "outcome, which this class writes itself"));
         }
     }
 
     /** The closed set of mapped fields, their types, their columns and their widths. */
     @Nested
-    @DisplayName("The closed set of six mapped fields")
+    @DisplayName("The closed set of seven mapped fields")
     class MappedFieldSet {
 
         @Test
-        @DisplayName("six instance fields, no more and no fewer: a seventh field fails here")
-        void declaresExactlySixInstanceFieldsAndRefusesASeventh() {
+        @DisplayName("seven instance fields, no more and no fewer: an eighth field fails here")
+        void declaresExactlySevenInstanceFieldsAndRefusesAnEighth() {
             assertThat(instanceFieldNames())
                     .as("instance fields NotificationLogEntity declares, statics dropped")
                     .hasSize(FIELD_COUNT);
         }
 
         @Test
-        @DisplayName("the field names are id, cardToken, cardNumber, transactionId, channel and "
-                + "attemptedAt")
+        @DisplayName("the field names are id, cardToken, cardNumber, transactionId, channel, "
+                + "renderedAt and outcome")
         void theFieldNamesAreTheClosedSet() {
             assertThat(instanceFieldNames()).as("instance field names")
                     .containsExactlyInAnyOrder(ID_FIELD, CARD_TOKEN_FIELD, CARD_NUMBER_FIELD,
-                            TRANSACTION_ID_FIELD, CHANNEL_FIELD, ATTEMPTED_AT_FIELD);
+                            TRANSACTION_ID_FIELD, CHANNEL_FIELD, RENDERED_AT_FIELD, OUTCOME_FIELD);
         }
 
         @Test
@@ -589,9 +638,9 @@ final class NotificationLogEntityTest {
                     () -> assertSame(String.class, instanceField(CHANNEL_FIELD).getType(),
                             CHANNEL_FIELD + " must be a java.lang.String, matching "
                                     + CHANNEL_COLUMN + " VARCHAR(" + CHANNEL_WIDTH + ")"),
-                    () -> assertSame(Instant.class, instanceField(ATTEMPTED_AT_FIELD).getType(),
-                            ATTEMPTED_AT_FIELD + " must be a java.time.Instant, matching "
-                                    + ATTEMPTED_AT_COLUMN
+                    () -> assertSame(Instant.class, instanceField(RENDERED_AT_FIELD).getType(),
+                            RENDERED_AT_FIELD + " must be a java.time.Instant, matching "
+                                    + RENDERED_AT_COLUMN
                                     + " TIMESTAMP(6) WITH TIME ZONE"));
         }
 
@@ -615,11 +664,12 @@ final class NotificationLogEntityTest {
 
         @Test
         @DisplayName("the column names are id, card_token, card_number, transaction_id, channel, "
-                + "attempted_at")
+                + "rendered_at and outcome")
         void theColumnNamesAreTheClosedSet() {
             assertThat(columnNames()).as("column names the instance fields map")
                     .containsExactlyInAnyOrder(ID_COLUMN, CARD_TOKEN_COLUMN, CARD_NUMBER_COLUMN,
-                            TRANSACTION_ID_COLUMN, CHANNEL_COLUMN, ATTEMPTED_AT_COLUMN);
+                            TRANSACTION_ID_COLUMN, CHANNEL_COLUMN, RENDERED_AT_COLUMN,
+                            OUTCOME_COLUMN);
         }
 
         @Test
@@ -782,52 +832,52 @@ final class NotificationLogEntityTest {
 
     /** The moment of the attempt, held as an instant and not as text. */
     @Nested
-    @DisplayName("attemptedAt is a genuine timestamp")
+    @DisplayName("renderedAt is a genuine timestamp")
     class AttemptedAtIsATimestamp {
 
         @Test
-        @DisplayName("attemptedAt is a java.time.Instant mapping attempted_at")
-        void attemptedAtIsAnInstantMappingTheTimestampColumn() {
-            Field attemptedAt = instanceField(ATTEMPTED_AT_FIELD);
+        @DisplayName("renderedAt is a java.time.Instant mapping rendered_at")
+        void renderedAtIsAnInstantMappingTheTimestampColumn() {
+            Field renderedAt = instanceField(RENDERED_AT_FIELD);
 
             assertAll("the timestamp field",
-                    () -> assertSame(Instant.class, attemptedAt.getType(),
-                            ATTEMPTED_AT_FIELD + " must be a java.time.Instant, matching "
-                                    + ATTEMPTED_AT_COLUMN + " TIMESTAMP(6) WITH TIME ZONE"),
-                    () -> assertEquals(ATTEMPTED_AT_COLUMN, columnOf(attemptedAt).name(),
+                    () -> assertSame(Instant.class, renderedAt.getType(),
+                            RENDERED_AT_FIELD + " must be a java.time.Instant, matching "
+                                    + RENDERED_AT_COLUMN + " TIMESTAMP(6) WITH TIME ZONE"),
+                    () -> assertEquals(RENDERED_AT_COLUMN, columnOf(renderedAt).name(),
                             "column the timestamp field maps"));
         }
 
         @Test
-        @DisplayName("attemptedAt is neither text nor a legacy date type")
-        void attemptedAtIsNeitherTextNorALegacyDateType() {
-            Class<?> declared = instanceField(ATTEMPTED_AT_FIELD).getType();
+        @DisplayName("renderedAt is neither text nor a legacy date type")
+        void renderedAtIsNeitherTextNorALegacyDateType() {
+            Class<?> declared = instanceField(RENDERED_AT_FIELD).getType();
 
-            assertAll("types " + ATTEMPTED_AT_FIELD + " must not take",
+            assertAll("types " + RENDERED_AT_FIELD + " must not take",
                     () -> assertNotSame(String.class, declared,
-                            ATTEMPTED_AT_FIELD + " must not be text. The 26-character text "
+                            RENDERED_AT_FIELD + " must not be text. The 26-character text "
                                     + "timestamps of statement_transaction come from "
                                     + "TRNX-ORIG-TS at app/cpy/COSTM01.CPY:L34 and TRNX-PROC-TS "
                                     + "at :L35, and " + TABLE_NAME + " carries no source field"),
                     () -> assertNotSame(LocalDateTime.class, declared,
-                            ATTEMPTED_AT_FIELD + " must not be a java.time.LocalDateTime, which "
-                                    + "drops the offset " + ATTEMPTED_AT_COLUMN + " stores"),
+                            RENDERED_AT_FIELD + " must not be a java.time.LocalDateTime, which "
+                                    + "drops the offset " + RENDERED_AT_COLUMN + " stores"),
                     () -> assertNotSame(Timestamp.class, declared,
-                            ATTEMPTED_AT_FIELD + " must not be a java.sql.Timestamp"),
+                            RENDERED_AT_FIELD + " must not be a java.sql.Timestamp"),
                     () -> assertNotSame(Date.class, declared,
-                            ATTEMPTED_AT_FIELD + " must not be a java.util.Date"));
+                            RENDERED_AT_FIELD + " must not be a java.util.Date"));
         }
 
         @Test
-        @DisplayName("attemptedAt carries no @Temporal")
+        @DisplayName("renderedAt carries no @Temporal")
         @SuppressWarnings("deprecation")
-        void attemptedAtCarriesNoTemporalAnnotation() {
-            Field attemptedAt = instanceField(ATTEMPTED_AT_FIELD);
+        void renderedAtCarriesNoTemporalAnnotation() {
+            Field renderedAt = instanceField(RENDERED_AT_FIELD);
 
-            assertNull(attemptedAt.getAnnotation(Temporal.class),
-                    ATTEMPTED_AT_FIELD + " must carry no @Temporal. A java.time.Instant needs "
+            assertNull(renderedAt.getAnnotation(Temporal.class),
+                    RENDERED_AT_FIELD + " must carry no @Temporal. A java.time.Instant needs "
                             + "none, and it carries " + annotationNames(
-                                    attemptedAt.getDeclaredAnnotations()));
+                                    renderedAt.getDeclaredAnnotations()));
         }
     }
 
@@ -894,7 +944,7 @@ final class NotificationLogEntityTest {
                                 + "and holds no reference to one"));
                 checks.add(() -> assertFalse(Collection.class.isAssignableFrom(type),
                         field.getName() + " must hold no collection: " + TABLE_NAME
-                                + " declares six scalar columns"));
+                                + " declares seven scalar columns"));
                 checks.add(() -> assertFalse(Map.class.isAssignableFrom(type),
                         field.getName() + " must hold no map"));
             }

@@ -131,10 +131,10 @@ public interface NotificationRenderer {
      * {@code app/cbl/CBSTM03A.CBL:L458-L504} had no such ceiling, because it wrote each record to a
      * sequential file and held one at a time.
      *
-     * <p>This number equals {@code carddemo.history.maximum-page-size} in
-     * {@code src/main/resources/application.yml}, which caps the {@code limit} parameter of
-     * {@code GET /notifications/{cardToken}}. A caller reads at most one page and a renderer accepts
-     * at most one page, so the two layers cannot disagree about how much is too much.
+     * <p>This number bounds one rendered alert alone.
+     * {@code GET /notifications/{cardNumber}} returns every row of one card and reads no ceiling from
+     * here, matching {@code app/cbl/CBSTM03A.CBL:L429}, which totals every row of one card between
+     * two key breaks.
      */
     int MAXIMUM_STATEMENT_ROWS = 200;
 
@@ -501,11 +501,6 @@ public interface NotificationRenderer {
     }
 
     /**
-     * Returns the trailing sign position for a held value.
-     *
-     * <p>The position reflects the value the field holds, so an amount whose magnitude
-     * truncates to zero renders a space.</p>
-     *
      * @param heldValue the output of {@link #heldValue(BigDecimal)}
      * @return {@code '-'} for a negative value, a space for zero and for a positive value
      */
@@ -514,12 +509,6 @@ public interface NotificationRenderer {
     }
 
     /**
-     * Returns the characters of a component before its first space, reproducing
-     * {@code DELIMITED BY ' '}.
-     *
-     * <p>A component with no space contributes every character. A {@code null} component and a
-     * component starting with a space both contribute none.</p>
-     *
      * @param component one sending field of a COBOL {@code STRING} statement, or {@code null}
      * @return the characters before the first space, never {@code null}
      */
@@ -602,7 +591,7 @@ public interface NotificationRenderer {
                              String editedCurrentBalance,
                              String ficoScore) {
 
-        /** Normalises all five components to the widths their source fields declare. */
+        /** Normalises all seven components to the widths their source fields declare. */
         public CardholderContext {
             assembledName = pic(assembledName, ST_NAME_WIDTH);
             addressLine1 = pic(addressLine1, ST_ADD1_WIDTH);

@@ -77,19 +77,25 @@ import tools.jackson.databind.ObjectMapper;
 @DisplayName("the account read and update surface")
 class AccountControllerTest {
 
-    /** Row one of {@code app/data/ASCII/acctdata.txt}, its account identifier. */
+    /** An account identifier filling {@code ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT01Y.cpy:L5}. */
     private static final String ACCOUNT_ID = "00000000050";
 
-    /** Row one of {@code app/data/ASCII/custdata.txt}, its customer identifier. */
+    /** A customer identifier filling {@code CUST-ID PIC 9(09)} at {@code app/cpy/CVCUS01Y.cpy:L5}. */
     private static final String CUSTOMER_ID = "000000050";
 
-    /** The postal code row one of {@code app/data/ASCII/acctdata.txt} carries. */
+    /** A postal code filling {@code ACCT-ADDR-ZIP PIC X(10)} at {@code app/cpy/CVACT01Y.cpy:L15}. */
     private static final String STORED_ADDRESS_ZIP = "72112";
 
-    /** The Social Security Number row one of {@code app/data/ASCII/custdata.txt} carries. */
+    /**
+     * A value of the width {@code CUST-SSN PIC 9(09)} at {@code app/cpy/CVCUS01Y.cpy:L17} declares.
+     * No response of this platform carries the column, and the assertions below hold that.
+     */
     private static final String STORED_SOCIAL_SECURITY_NUMBER = "429541163";
 
-    /** The government-issued identifier that same row carries. */
+    /**
+     * A value of the width {@code CUST-GOVT-ISSUED-ID PIC X(20)} at
+     * {@code app/cpy/CVCUS01Y.cpy:L18} declares, withheld from every response on the same terms.
+     */
     private static final String STORED_GOVERNMENT_ISSUED_ID = "AR8829114";
 
     /**
@@ -157,7 +163,6 @@ class AccountControllerTest {
             "com.carddemo.account.outbox", "com.carddemo.account.messaging",
             "com.carddemo.account.config", "com.carddemo.events");
 
-    /** Reads each answer back off the wire. */
     private static final ObjectMapper JSON = new ObjectMapper();
 
     private AccountRepository accounts;
@@ -165,7 +170,6 @@ class AccountControllerTest {
     private AccountUpdateService accountUpdates;
     private MockMvc mockMvc;
 
-    /** Builds the dispatcher over stubbed collaborators and the real error handler. */
     @BeforeEach
     void buildSlice() {
         accounts = mock(AccountRepository.class);
@@ -202,7 +206,7 @@ class AccountControllerTest {
     class TheElevenAccountViewProperties {
 
         /**
-         * Asserts a read answers exactly eleven properties and no twelfth.
+         * A read answers exactly eleven properties and no twelfth.
          *
          * <p>{@code 1200-SETUP-SCREEN-VARS} at {@code app/cbl/COACTVWC.cbl:L460} moves eleven
          * values, at {@code :L468} and {@code :L473-L490}.
@@ -222,7 +226,7 @@ class AccountControllerTest {
         }
 
         /**
-         * Asserts the eleven properties arrive in the order the source paragraph moves them.
+         * The eleven properties arrive in the order the source paragraph moves them.
          *
          * <p>The order runs from {@code app/cbl/COACTVWC.cbl:L468} to {@code :L490}. Each name is
          * located in the raw answer, and the positions strictly increase.
@@ -243,7 +247,7 @@ class AccountControllerTest {
         }
 
         /**
-         * Asserts the view declares no postal code property.
+         * The view declares no postal code property.
          *
          * <p>{@code ACCT-ADDR-ZIP} at {@code app/cpy/CVACT01Y.cpy:L15} has zero references across
          * the whole of {@code app/cbl/COACTVWC.cbl}, so the display program never reads it. The
@@ -265,7 +269,7 @@ class AccountControllerTest {
         }
 
         /**
-         * Asserts the view declares no customer identifier property.
+         * The view declares no customer identifier property.
          *
          * <p>{@code ACCOUNT-RECORD} at {@code app/cpy/CVACT01Y.cpy:L4-L17} declares twelve fields
          * at {@code :L5-L16}, and none is a customer identifier. The source resolves one through
@@ -289,7 +293,7 @@ class AccountControllerTest {
         }
 
         /**
-         * Asserts each monetary property arrives as text at the scale its source field declares.
+         * Each monetary property arrives as text at the scale its source field declares.
          *
          * <p>The five {@code PIC S9(10)V99} fields sit at {@code app/cpy/CVACT01Y.cpy:L7},
          * {@code :L8}, {@code :L9}, {@code :L13} and {@code :L14}. Each scale is read from
@@ -312,7 +316,7 @@ class AccountControllerTest {
         }
 
         /**
-         * Asserts each date property arrives as text at the width its source field declares.
+         * Each date property arrives as text at the width its source field declares.
          *
          * <p>The three {@code PIC X(10)} fields sit at {@code app/cpy/CVACT01Y.cpy:L10},
          * {@code :L11} and {@code :L12}. {@code app/cbl/CBTRN02C.cbl:L414-L420} compares the
@@ -334,7 +338,7 @@ class AccountControllerTest {
         }
 
         /**
-         * Asserts the expiry property carries the corrected spelling.
+         * The expiry property carries the corrected spelling.
          *
          * <p>The source field is {@code ACCT-EXPIRAION-DATE} at {@code app/cpy/CVACT01Y.cpy:L11},
          * and the display program moves it at {@code app/cbl/COACTVWC.cbl:L488}.
@@ -357,7 +361,7 @@ class AccountControllerTest {
     class TheSingleMessageSlot {
 
         /**
-         * Asserts an accepted update answers exactly two properties.
+         * An accepted update answers exactly two properties.
          *
          * <p>{@link AccountUpdateResponse} models one text and the resulting account.
          * {@code WS-RETURN-MSG PIC X(75)} at {@code app/cbl/COACTUPC.cbl:L479} is that one text,
@@ -382,7 +386,7 @@ class AccountControllerTest {
         }
 
         /**
-         * Asserts an accepted update nests the resulting account under one property.
+         * An accepted update nests the resulting account under one property.
          *
          * <p>The eleven values are the same eleven {@code app/cbl/COACTVWC.cbl:L468-L490} moves,
          * so a caller reads the row as it now stands without a second call.
@@ -408,7 +412,7 @@ class AccountControllerTest {
         }
 
         /**
-         * Asserts a refused field answers one text in one slot.
+         * A refused field answers one text in one slot.
          *
          * <p>The text arrives character for character. {@code app/cbl/COACTUPC.cbl:L2209} supplies
          * {@code ' is not valid'} with no trailing period, and no answer of this class adds one.
@@ -434,7 +438,7 @@ class AccountControllerTest {
         }
 
         /**
-         * Asserts a failing answer carries no list of field texts and no stack trace.
+         * A failing answer carries no list of field texts and no stack trace.
          *
          * <p>The guard at {@code app/cbl/COACTUPC.cbl:L480} lets one text stand per validation
          * pass, and {@code :L876} reopens the slot once per pass.
@@ -459,7 +463,7 @@ class AccountControllerTest {
         }
 
         /**
-         * Asserts a lost race answers the concurrency text in that same slot.
+         * A lost race answers the concurrency text in that same slot.
          *
          * <p>{@link ConcurrentChangeDetector#RECORD_CHANGED_MESSAGE} is the verdict of
          * {@code app/cbl/COACTUPC.cbl:L3950-L3952}, whose literal sits at {@code :L521-L522}. A
@@ -483,7 +487,7 @@ class AccountControllerTest {
         }
 
         /**
-         * Asserts a passing verdict that carries its own text answers that text.
+         * A passing verdict that carries its own text answers that text.
          *
          * <p>{@code app/cbl/COACTUPC.cbl:L1463-L1467} returns when it finds nothing changed, and
          * that outcome wrote no row.
@@ -509,7 +513,7 @@ class AccountControllerTest {
     class PublicationBehaviour {
 
         /**
-         * Asserts a read touches no collaborator that mutates.
+         * A read touches no collaborator that mutates.
          *
          * <p>An account read is a supporting query. {@code 9300-GETACCTDATA-BYACCT} at
          * {@code app/cbl/COACTVWC.cbl:L774-L784} performs one keyed read and writes nothing.
@@ -527,7 +531,7 @@ class AccountControllerTest {
         }
 
         /**
-         * Asserts an update delegates exactly once to the collaborator that owns the write.
+         * An update delegates exactly once to the collaborator that owns the write.
          *
          * <p>{@code app/cbl/COACTUPC.cbl} rewrites two files in one unit of work,
          * {@code REWRITE FILE(LIT-ACCTFILENAME)} at {@code :L4066} and
@@ -548,7 +552,7 @@ class AccountControllerTest {
         }
 
         /**
-         * Asserts no declared field of the controller could publish an event.
+         * No declared field of the controller could publish an event.
          *
          * <p>Request handling reaches no publisher, no outbox writer and no event type, so a read
          * cannot publish whatever it does.
@@ -571,7 +575,7 @@ class AccountControllerTest {
         }
 
         /**
-         * Asserts an update writes through no store of its own.
+         * An update writes through no store of its own.
          *
          * <p>The two rewrites of {@code app/cbl/COACTUPC.cbl:L4066} and {@code :L4086} belong to
          * one collaborator here, and this route reaches neither store to write.
@@ -596,7 +600,7 @@ class AccountControllerTest {
     class TheResolutionPath {
 
         /**
-         * Asserts a read resolves by account identifier alone.
+         * A read resolves by account identifier alone.
          *
          * <p>{@code 9000-READ-ACCT} at {@code app/cbl/COACTVWC.cbl:L687-L720} performs three hops:
          * the cross-reference read at {@code :L723}, the account read at {@code :L774}, and the
@@ -621,7 +625,7 @@ class AccountControllerTest {
         }
 
         /**
-         * Asserts a read that missed answers the source text and no customer data.
+         * A read that missed answers the source text and no customer data.
          *
          * <p>{@code 9300-GETACCTDATA-BYACCT} concatenates four literals around the identifier at
          * {@code app/cbl/COACTVWC.cbl:L796-L806}. The spacing of each survives unaltered.
@@ -663,7 +667,7 @@ class AccountControllerTest {
         }
 
         /**
-         * Asserts an update naming a customer this service does not hold answers the miss outcome.
+         * An update naming a customer this service does not hold answers the miss outcome.
          *
          * <p>The customer read of {@code 9400-GETCUSTDATA-BYCUST} at
          * {@code app/cbl/COACTVWC.cbl:L825} is keyed strictly on the customer identifier, and this
@@ -688,7 +692,7 @@ class AccountControllerTest {
         }
 
         /**
-         * Asserts a path carrying anything but eleven digits is refused before any store is read.
+         * A path carrying anything but eleven digits is refused before any store is read.
          *
          * <p>{@code ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT01Y.cpy:L5} fixes the width, and
          * {@code MOVE WS-CARD-RID-ACCT-ID-X TO WS-CARD-RID-ACCT-ID} at
@@ -711,7 +715,7 @@ class AccountControllerTest {
     class TheUpdateRequestContract {
 
         /**
-         * Asserts the request declares two blocks, of ten and twenty components.
+         * The request declares two blocks, of ten and twenty components.
          *
          * <p>{@code ACUP-NEW-DETAILS} at {@code app/cbl/COACTUPC.cbl:L757} groups the submitted
          * screen fields, and the customer block opens with {@code ACUP-NEW-CUST-ID-X} at
@@ -735,7 +739,7 @@ class AccountControllerTest {
         }
 
         /**
-         * Asserts the path identifier is the only identifier the update route reads.
+         * The path identifier is the only identifier the update route reads.
          *
          * <p>{@code ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT01Y.cpy:L5} is the key, and
          * {@code MOVE WS-CARD-RID-ACCT-ID-X TO WS-CARD-RID-ACCT-ID} at
@@ -764,7 +768,7 @@ class AccountControllerTest {
         }
 
         /**
-         * Asserts both stored rows are read by their text identifiers.
+         * Both stored rows are read by their text identifiers.
          *
          * <p>Each store keys on the identifier as text, so a value keeps the leading zeros its
          * Picture clause declares. {@code ACCT-ID PIC 9(11)} sits at
@@ -789,7 +793,7 @@ class AccountControllerTest {
         }
 
         /**
-         * Asserts a body naming no customer is refused with one text.
+         * A body naming no customer is refused with one text.
          *
          * <p>{@code ACCOUNT-RECORD} at {@code app/cpy/CVACT01Y.cpy:L4-L17} declares no customer
          * identifier, so a caller names the customer it means to write.
@@ -809,7 +813,7 @@ class AccountControllerTest {
         }
 
         /**
-         * Asserts neither identity document reaches a read answer or an update answer.
+         * Neither identity document reaches a read answer or an update answer.
          *
          * <p>{@code CUST-SSN} at {@code app/cpy/CVCUS01Y.cpy:L17} and
          * {@code CUST-GOVT-ISSUED-ID} at {@code :L18} are both stored, and the source moves them
@@ -856,8 +860,6 @@ class AccountControllerTest {
     private record DateProperty(String property, int width) {}
 
     /**
-     * Names the record components of one type, in declaration order.
-     *
      * @param type the record type
      * @return the component names, in the order the record declares them
      */
@@ -911,8 +913,6 @@ class AccountControllerTest {
     }
 
     /**
-     * Builds the smallest body the update route accepts, which names the customer and nothing else.
-     *
      * @return the body
      */
     private static String bodyNamingTheCustomer() {

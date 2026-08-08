@@ -17,10 +17,9 @@ import org.junit.jupiter.api.Test;
 /**
  * Asserts that this service's dead-letter metadata reaches a topic only as the one shared contract.
  *
- * <p>Five services declared a record named {@code DeadLetterMetadata}, each with its own component
- * list and none with a schema. That is five wire formats on a topic a single operator has to read,
- * and it meant nothing validated what reached a dead-letter topic: the one place a rejected message
- * is kept longest was the one place its contents were least controlled.
+ * <p>Six service modules declare a record named {@code DeadLetterMetadata} as their in-process
+ * carrier for the four diagnostic values. One shared wire contract carries all six, so a
+ * dead-letter topic holds one validated shape rather than one per producer.
  *
  * <p>{@link DeadLetterEnvelope} is that contract now. These tests assert three things about the
  * bridge: the envelope it produces validates against {@code schemas/dead-letter-v1.json} through

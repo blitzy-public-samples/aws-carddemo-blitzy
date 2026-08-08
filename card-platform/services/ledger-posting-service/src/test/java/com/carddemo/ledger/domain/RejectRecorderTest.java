@@ -16,31 +16,28 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
-import com.carddemo.cobol.PanMasker;
 import com.carddemo.cobol.PicClause;
 import com.carddemo.events.DeclineReason;
-import com.carddemo.events.EventEnvelope;
 import com.carddemo.events.TransactionDeclined;
-import com.carddemo.ledger.domain.RejectRecorder.FeedTransaction;
-import com.carddemo.ledger.config.ObservabilityConfig;
+import com.carddemo.ledger.TestIdentityPasswords;
 import com.carddemo.ledger.config.ObservabilityConfig.LedgerMeters;
+import com.carddemo.ledger.config.ObservabilityConfig;
+import com.carddemo.ledger.domain.RejectRecorder.FeedTransaction;
 import com.carddemo.ledger.entity.RejectedTransactionEntity;
 import com.carddemo.ledger.outbox.OutboxRelay;
 import com.carddemo.ledger.outbox.OutboxWriter;
 import com.carddemo.ledger.repository.OutboxEventRepository;
 import com.carddemo.ledger.repository.RejectedTransactionRepository;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
-import io.micrometer.core.instrument.MeterRegistry;
-import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.math.BigDecimal;
-import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
-import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -52,7 +49,6 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.ApplicationContext;
-import org.springframework.dao.DataAccessException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
@@ -65,7 +61,6 @@ import org.springframework.transaction.support.TransactionTemplate;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
-import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
@@ -93,6 +88,12 @@ import tools.jackson.databind.json.JsonMapper;
  *
  * <p>Three behaviours have no Common Business Oriented Language (COBOL) ancestor: the masked card
  * number, the currency constant, and the plain-digit encoding of the amount.
+ *
+ * <p>The recorder writes the row and publishes nothing. The declined event that names the same
+ * refusal is the authorization service's, which AAP 0.1.1 makes the sole writer of the decision, and
+ * {@code messaging/TransactionDeclinedConsumer} is what turns that event into a call on this class.
+ * Assertions about the arriving event therefore live in {@code TransactionDeclinedConsumerTest}, and
+ * everything below is about the row and the 430 bytes it accounts for.
  *
  * <p>Values come from record 1 of {@code app/data/ASCII/dailytran.txt}, joined through row 21 of
  * {@code app/data/ASCII/cardxref.txt} to account {@code 00000000007} of
@@ -151,7 +152,6 @@ class RejectRecorderTest {
 
     /** The store the {@code WRITE} at {@code :L451} became, the writer beside it, the subject. */
     private RejectedTransactionRepository rejectedTransactions;
-    private OutboxWriter outbox;
 
     /** Registry the reject counter registers with, read by the counting assertion. */
     private MeterRegistry registry;
@@ -164,10 +164,9 @@ class RejectRecorderTest {
     @BeforeEach
     void buildRecorder() {
         rejectedTransactions = mock(RejectedTransactionRepository.class);
-        outbox = mock(OutboxWriter.class);
         registry = new SimpleMeterRegistry();
         meters = new ObservabilityConfig().ledgerMeters(registry);
-        subject = new RejectRecorder(rejectedTransactions, outbox, meters);
+        subject = new RejectRecorder(rejectedTransactions, meters);
     }
 
     /** Builds a refusal from fixture record 1 carrying {@code amount}. */
@@ -219,20 +218,6 @@ class RejectRecorderTest {
         return captor.getValue();
     }
 
-    /** Captures the one declined event the subject enqueued. */
-    private TransactionDeclined enqueuedEvent() {
-        ArgumentCaptor<Object> captor = ArgumentCaptor.forClass(Object.class);
-        verify(outbox).write(captor.capture());
-        assertTrue(captor.getValue() instanceof TransactionDeclined,
-                "the value enqueued at :L448 is the declined event");
-        return (TransactionDeclined) captor.getValue();
-    }
-
-    /** Writes one event to JSON and reads it back as a tree. */
-    private static JsonNode wireForm(TransactionDeclined event) {
-        return MAPPER.readTree(MAPPER.writeValueAsString(event));
-    }
-
     /**
      * Builds a card-shaped value under the {@code 9999} prefix.
      *
@@ -247,18 +232,73 @@ class RejectRecorderTest {
         return "9999" + String.format("%012d", serial);
     }
 
+    /** Zero-based start of {@code DALYTRAN-TYPE-CD} in {@code app/cpy/CVTRA06Y.cpy:L5-L18}. */
+    private static final int TYPE_CD_START = PicClause.DALYTRAN_ID_WIDTH;
+
+    /** Zero-based start of {@code DALYTRAN-CAT-CD}. */
+    private static final int CAT_CD_START = TYPE_CD_START + PicClause.DALYTRAN_TYPE_CD_WIDTH;
+
+    /** Zero-based start of {@code DALYTRAN-SOURCE}. */
+    private static final int SOURCE_START = CAT_CD_START + PicClause.DALYTRAN_CAT_CD_WIDTH;
+
+    /** Zero-based start of {@code DALYTRAN-DESC}. */
+    private static final int DESC_START = SOURCE_START + PicClause.DALYTRAN_SOURCE_WIDTH;
+
+    /** Zero-based start of {@code DALYTRAN-AMT}. */
+    private static final int AMT_START = DESC_START + PicClause.DALYTRAN_DESC_WIDTH;
+
+    /** Zero-based start of {@code DALYTRAN-MERCHANT-ID}. */
+    private static final int MERCHANT_ID_START = AMT_START + PicClause.DALYTRAN_AMT_WIDTH;
+
+    /** Zero-based start of {@code DALYTRAN-MERCHANT-NAME}. */
+    private static final int MERCHANT_NAME_START =
+            MERCHANT_ID_START + PicClause.DALYTRAN_MERCHANT_ID_WIDTH;
+
+    /** Zero-based start of {@code DALYTRAN-MERCHANT-CITY}. */
+    private static final int MERCHANT_CITY_START =
+            MERCHANT_NAME_START + PicClause.DALYTRAN_MERCHANT_NAME_WIDTH;
+
+    /** Zero-based start of {@code DALYTRAN-MERCHANT-ZIP}. */
+    private static final int MERCHANT_ZIP_START =
+            MERCHANT_CITY_START + PicClause.DALYTRAN_MERCHANT_CITY_WIDTH;
+
+    /** Zero-based start of {@code DALYTRAN-CARD-NUM}. */
+    private static final int CARD_NUM_START =
+            MERCHANT_ZIP_START + PicClause.DALYTRAN_MERCHANT_ZIP_WIDTH;
+
+    /** Zero-based start of {@code DALYTRAN-ORIG-TS}. */
+    private static final int ORIG_TS_START =
+            CARD_NUM_START + PicClause.DALYTRAN_CARD_NUM_WIDTH;
+
+    /** Zero-based start of {@code DALYTRAN-PROC-TS}. */
+    private static final int PROC_TS_START = ORIG_TS_START + PicClause.DALYTRAN_ORIG_TS_WIDTH;
+
+    /** Zero-based start of the trailing {@code FILLER}. */
+    private static final int FILLER_START = PROC_TS_START + PicClause.DALYTRAN_PROC_TS_WIDTH;
+
+    /**
+     * Reads one field out of the stored data half.
+     *
+     * @param block the 350 characters {@code REJECT-TRAN-DATA} holds
+     * @param start zero-based offset of the field
+     * @param width declared width of the field
+     * @return the field, trailing spaces included
+     */
+    private static String slice(String block, int start, int width) {
+        return block.substring(start, start + width);
+    }
+
     @Nested
     @DisplayName("The two writes at app/cbl/CBTRN02C.cbl:L447-L451")
     class TwoWrites {
 
         @Test
-        @DisplayName("stores the row once at :L451, then enqueues the declined event once at :L448")
-        void storesTheRowThenEnqueuesTheEvent() {
+        @DisplayName("stores the row once at :L451 and reaches nothing else")
+        void storesTheRowOnceAndReachesNothingElse() {
             subject.recordReject(refusal(AMOUNT), DeclineReason.OVER_CREDIT_LIMIT);
 
-            InOrder order = inOrder(rejectedTransactions, outbox);
+            InOrder order = inOrder(rejectedTransactions);
             order.verify(rejectedTransactions, times(1)).save(any(RejectedTransactionEntity.class));
-            order.verify(outbox, times(1)).write(any(TransactionDeclined.class));
             order.verifyNoMoreInteractions();
         }
 
@@ -280,13 +320,12 @@ class RejectRecorderTest {
                     () -> subject.recordReject(refusal(AMOUNT), null),
                     ":L448 has no trailer to copy");
 
-            verifyNoInteractions(rejectedTransactions, outbox);
+            verifyNoInteractions(rejectedTransactions);
         }
 
         @Test
-        @DisplayName("takes the store, the writer and the meters, and makes the write one required "
-                + "transaction")
-        void takesTheStoreTheWriterAndTheMeters() throws NoSuchMethodException {
+        @DisplayName("takes the store and the meters, and makes the write one required transaction")
+        void takesTheStoreAndTheMeters() throws NoSuchMethodException {
             Constructor<?>[] constructors = RejectRecorder.class.getDeclaredConstructors();
             Set<String> held = new LinkedHashSet<>();
             for (Field field : RejectRecorder.class.getDeclaredFields()) {
@@ -298,24 +337,19 @@ class RejectRecorderTest {
             }
 
             assertEquals(1, constructors.length, "one way to build it");
-            assertEquals(List.of(RejectedTransactionRepository.class, OutboxWriter.class,
-                            LedgerMeters.class),
+            assertEquals(List.of(RejectedTransactionRepository.class, LedgerMeters.class),
                     List.of(constructors[0].getParameterTypes()),
-                    "the store, the writer and the counter one reject raises");
-            assertEquals(Set.of("RejectedTransactionRepository", "OutboxWriter", "LedgerMeters",
-                            "Clock"), held,
-                    "ordinary traffic, so no log writer");
+                    "the store and the counter one reject raises, and no event writer");
+            assertEquals(Set.of("RejectedTransactionRepository", "LedgerMeters", "Clock"), held,
+                    "ordinary traffic, so no log writer; and no OutboxWriter, because the decline "
+                            + "this row accounts for was published by the authorization service");
             java.lang.reflect.Method recordReject = RejectRecorder.class.getMethod(
                     "recordReject", FeedTransaction.class, DeclineReason.class);
             assertEquals(void.class, recordReject.getReturnType(), ":L465 EXIT yields no value");
             assertEquals(Propagation.REQUIRED,
                     recordReject.getAnnotation(Transactional.class).propagation(),
-                    "the reject row and its event share one transaction");
-
-            Transactional writerBoundary = OutboxWriter.class.getMethod("write", Object.class)
-                    .getAnnotation(Transactional.class);
-            assertEquals(Propagation.MANDATORY, writerBoundary.propagation(),
-                    "the writer refuses to persist an event outside its caller's transaction");
+                    "the row joins the transaction the consumer's processed-event marker commits "
+                            + "in, so neither can exist without the other");
         }
     }
 
@@ -372,7 +406,6 @@ class RejectRecorderTest {
             assertDoesNotThrow(() -> subject.recordReject(wide, DeclineReason.OVER_CREDIT_LIMIT),
                     "a field filling its positions leaves :L177-L178 holding their widths");
             verify(rejectedTransactions).save(any(RejectedTransactionEntity.class));
-            verify(outbox).write(any(TransactionDeclined.class));
         }
     }
 
@@ -415,8 +448,8 @@ class RejectRecorderTest {
         @ParameterizedTest
         @EnumSource(value = DeclineReason.class, names = "INVALID_CARD_NUMBER",
                 mode = EnumSource.Mode.EXCLUDE)
-        @DisplayName("stores four zero-padded digits and hands the typed constant to the event")
-        void storesFourDigitsAndHandsTheConstantToTheEvent(DeclineReason reason) {
+        @DisplayName("stores four zero-padded digits and the text off the same constant")
+        void storesFourZeroPaddedDigitsAndItsSourceText(DeclineReason reason) {
             subject.recordReject(constructedRefusal(reason), reason);
 
             RejectedTransactionEntity row = storedRow();
@@ -434,16 +467,8 @@ class RejectRecorderTest {
             assertTrue(row.getTransactionId().startsWith(CONSTRUCTED_ID_PREFIX),
                     "codes 0101 and 0103 need a constructed input: each card of the feed resolves"
                             + " and each expiry clears its origin stamp");
-
-            TransactionDeclined event = enqueuedEvent();
-            assertSame(reason, event.declineReasonCode(),
-                    "it records the code its caller established");
-            assertEquals(reason.description(), event.declineReasonDescription(),
-                    "event text and row text share one constant");
-
-            JsonNode code = wireForm(event).get("declineReasonCode");
-            assertTrue(code.isString(), "four characters, not a number");
-            assertEquals(reason.code(), code.asString(), "the wire form keeps its zero");
+            assertSame(reason, DeclineReason.fromCode(row.getRejectReasonCode()),
+                    "the stored four characters read back as the constant the caller established");
         }
 
         /**
@@ -471,7 +496,6 @@ class RejectRecorderTest {
             assertFalse(refused.getMessage().contains(ACCOUNT_ID),
                     "the refusal echoed the account identifier: " + refused.getMessage());
             verifyNoInteractions(rejectedTransactions);
-            verifyNoInteractions(outbox);
         }
 
         @Test
@@ -520,31 +544,35 @@ class RejectRecorderTest {
         }
 
         /**
-         * Asserts the declined event names the account the refused transaction named.
+         * Asserts the row names the transaction the refused record named, whichever account it sits
+         * under.
+         *
+         * <p>The row keys on nothing and carries no account identifier: {@code app/jcl/POSTTRAN.jcl:L34}
+         * declares no {@code KEYS} for the DALYREJS Generation Data Group, and
+         * {@code app/cpy/CVTRA06Y.cpy:L5-L18} holds no account field. The transaction identifier is
+         * what ties the row back to the decline, and it is copied rather than derived.
          *
          * @param reason one reject reason that resolves an account identifier
          */
         @ParameterizedTest
         @EnumSource(value = DeclineReason.class, names = "INVALID_CARD_NUMBER",
                 mode = EnumSource.Mode.EXCLUDE)
-        @DisplayName(
-                "the declined event names the refused transaction's own account, and keys on it")
-        void theDeclinedEventNamesTheRefusedTransactionsAccount(DeclineReason reason) {
+        @DisplayName("the row names the refused transaction, copied and never derived")
+        void theRowNamesTheRefusedTransaction(DeclineReason reason) {
             FeedTransaction refused = feedRecord(OTHER_ACCOUNT_ID,
                     CONSTRUCTED_ID_PREFIX + reason.code(), AMOUNT, SOURCE, DESCRIPTION,
                     MERCHANT_NAME, MERCHANT_CITY, MERCHANT_ZIP);
 
             subject.recordReject(refused, reason);
 
-            TransactionDeclined event = enqueuedEvent();
-            assertEquals(OTHER_ACCOUNT_ID, event.accountId(),
-                    "the event named an account the refused transaction never carried");
-            assertEquals(refused.accountId(), event.accountId(),
-                    "the identity is copied from the input and not derived");
-            assertEquals(event.accountId(), event.envelope().aggregateId(),
-                    "the account identifier is the key the relay publishes under");
-            assertEquals(refused.transactionId(), event.transactionId(),
-                    "the event named a transaction the refused input never carried");
+            RejectedTransactionEntity row = storedRow();
+            assertEquals(refused.transactionId(), row.getTransactionId(),
+                    "the row named a transaction the refused input never carried");
+            assertEquals(refused.maskedCardNumber(),
+                    slice(row.getRejectedTransactionData(), CARD_NUM_START,
+                            PicClause.DALYTRAN_CARD_NUM_WIDTH),
+                    "the card representation is copied from the input, into the card-number"
+                            + " positions of REJECT-TRAN-DATA the row now holds whole");
         }
 
         @Test
@@ -567,13 +595,12 @@ class RejectRecorderTest {
         }
 
         @Test
-        @DisplayName("an unresolved card attempt is the authorization service's row, and no event")
-        void anUnresolvedCardAttemptProducesNoEvent() {
+        @DisplayName("an unresolved card attempt stores nothing at all")
+        void anUnresolvedCardAttemptStoresNothing() {
             assertThrows(IllegalArgumentException.class,
                     () -> subject.recordReject(refusal(AMOUNT), DeclineReason.INVALID_CARD_NUMBER));
 
             verifyNoInteractions(rejectedTransactions);
-            verifyNoInteractions(outbox);
         }
     }
 
@@ -596,116 +623,71 @@ class RejectRecorderTest {
         }
 
         @Test
-        @DisplayName("carries each field of CVTRA06Y.cpy at its width, leading zeros intact")
+        @DisplayName("holds REJECT-TRAN-DATA whole, at the width :L177 declares")
+        void holdsTheDataHalfWhole() {
+            subject.recordReject(refusal(AMOUNT), DeclineReason.OVER_CREDIT_LIMIT);
+
+            String block = storedRow().getRejectedTransactionData();
+            assertEquals(PicClause.REJECT_TRAN_DATA_WIDTH, block.length(),
+                    ":L177 REJECT-TRAN-DATA holds 350 characters");
+            assertEquals(" ".repeat(PicClause.DALYTRAN_PROC_TS_WIDTH),
+                    slice(block, PROC_TS_START, PicClause.DALYTRAN_PROC_TS_WIDTH),
+                    "CVTRA06Y.cpy:L17 DALYTRAN-PROC-TS stands blank until :L438 stamps it");
+            assertEquals(" ".repeat(PicClause.DALYTRAN_RECORD_FILLER_WIDTH),
+                    slice(block, FILLER_START, PicClause.DALYTRAN_RECORD_FILLER_WIDTH),
+                    "CVTRA06Y.cpy:L18 FILLER closes the record with spaces");
+        }
+
+        @Test
+        @DisplayName("carries each field of CVTRA06Y.cpy at its offset, leading zeros intact")
         void carriesEachFieldAtItsDeclaredWidth() {
             subject.recordReject(refusal(AMOUNT), DeclineReason.OVER_CREDIT_LIMIT);
 
-            RejectedTransactionEntity row = storedRow();
-            assertEquals(PicClause.DALYTRAN_TYPE_CD_WIDTH, row.getTransactionTypeCode().length(),
-                    "CVTRA06Y.cpy:L6 PIC X(02)");
-            assertEquals(CATEGORY_CODE, row.getTransactionCategoryCode(),
+            String block = storedRow().getRejectedTransactionData();
+            String typeCode = slice(block, TYPE_CD_START, PicClause.DALYTRAN_TYPE_CD_WIDTH);
+            String categoryCode = slice(block, CAT_CD_START, PicClause.DALYTRAN_CAT_CD_WIDTH);
+            String merchantId =
+                    slice(block, MERCHANT_ID_START, PicClause.DALYTRAN_MERCHANT_ID_WIDTH);
+            String originTimestamp = slice(block, ORIG_TS_START, PicClause.DALYTRAN_ORIG_TS_WIDTH);
+            String cardNumber = slice(block, CARD_NUM_START, PicClause.DALYTRAN_CARD_NUM_WIDTH);
+
+            assertEquals(TYPE_CODE, typeCode, "CVTRA06Y.cpy:L6 PIC X(02)");
+            assertEquals(CATEGORY_CODE, categoryCode,
                     ":L7 PIC 9(04) holds category 1 over three zeros");
-            assertTrue(FOUR_DIGITS.matcher(row.getTransactionCategoryCode()).matches(),
+            assertTrue(FOUR_DIGITS.matcher(categoryCode).matches(),
                     "four decimal digits and nothing else");
-            assertEquals(MERCHANT_ID, row.getMerchantId(),
+            assertEquals(MERCHANT_ID, merchantId,
                     ":L11 PIC 9(09) holds nine digits right-justified");
-            assertEquals(AUTHORIZED_AT, row.getOriginTimestamp(),
+            assertEquals(AUTHORIZED_AT, originTimestamp,
                     ":L16 PIC X(26), shaped YYYY-MM-DD HH:MM:SS.ffffff");
-            assertEquals(PicClause.DALYTRAN_ORIG_TS_WIDTH, row.getOriginTimestamp().length(),
-                    "twenty-six characters, as :L16 declares");
-            assertEquals(MASKED_CARD_NUMBER, row.getMaskedCardNumber(),
+            assertEquals(MASKED_CARD_NUMBER, cardNumber,
                     "the masked form measures the PIC X(16) of :L15");
-            assertTrue(MASKED_FORM.matcher(row.getMaskedCardNumber()).matches(),
+            assertTrue(MASKED_FORM.matcher(cardNumber).matches(),
                     "twelve mask characters then four digits");
-            assertFalse(row.getMaskedCardNumber().contains(FULL_CARD_NUMBER.substring(0, 12)),
+            assertFalse(block.contains(FULL_CARD_NUMBER.substring(0, 12)),
                     "no leading Primary Account Number (PAN) digit reaches the row");
         }
 
         @Test
-        @DisplayName("stores the amount at the scale S9(09)V99 declares, refund sign intact")
+        @DisplayName("stores the amount as S9(09)V99 declares it, refund sign intact")
         void storesTheAmountAtTheDeclaredScale() {
             subject.recordReject(refusal(AMOUNT), DeclineReason.OVER_CREDIT_LIMIT);
-            RejectedTransactionEntity purchase = storedRow();
+            String purchase = storedRow().getRejectedTransactionData();
 
             buildRecorder();
             subject.recordReject(refusal(REFUND_AMOUNT), DeclineReason.OVER_CREDIT_LIMIT);
-            RejectedTransactionEntity refund = storedRow();
+            String refund = storedRow().getRejectedTransactionData();
 
-            assertEquals(PicClause.DALYTRAN_AMT_SCALE, purchase.getTransactionAmount().scale(),
-                    "CVTRA06Y.cpy:L10 declares two fractional digits");
-            assertEquals(AMOUNT, purchase.getTransactionAmount(),
+            assertEquals(PicClause.DALYTRAN_AMT_WIDTH,
+                    slice(purchase, AMT_START, PicClause.DALYTRAN_AMT_WIDTH).length(),
+                    "CVTRA06Y.cpy:L10 declares eleven positions");
+            assertEquals("0000005047G", slice(purchase, AMT_START, PicClause.DALYTRAN_AMT_WIDTH),
                     "the zoned bytes 0000005047G read as 504.77");
-            assertEquals(REFUND_AMOUNT, refund.getTransactionAmount(),
-                    "the sign lives here; :L177 holds digits alone");
-            assertEquals(-1, refund.getTransactionAmount().signum(),
-                    "50 of the 300 records carry a refund");
-        }
-    }
-
-    @Nested
-    @DisplayName("The declined event of app/cbl/CBTRN02C.cbl:L448")
-    class DeclinedEvent {
-
-        @Test
-        @DisplayName("renders as one flat object of the eleven properties its document requires")
-        void rendersAsOneFlatObject() {
-            subject.recordReject(refusal(AMOUNT), DeclineReason.OVER_CREDIT_LIMIT);
-
-            JsonNode wire = wireForm(enqueuedEvent());
-            List<String> stamps = new ArrayList<>();
-            for (String property : wire.propertyNames()) {
-                if (property.endsWith("At")) {
-                    stamps.add(property);
-                }
-                assertFalse(wire.get(property).isObject() || wire.get(property).isArray(),
-                        "property " + property + " opens a second level");
-                assertTrue(wire.get(property).asString().length()
-                                < PicClause.VALIDATION_TRAILER_WIDTH,
-                        "property " + property + " carries a record half");
-            }
-
-            assertEquals(Set.of("eventId", "eventType", "schemaVersion", "occurredAt",
-                    "aggregateId", "transactionId", "accountId", "declineReasonCode",
-                    "declineReasonDescription", "amount", "maskedCardNumber"),
-                    new LinkedHashSet<>(wire.propertyNames()),
-                    "transaction-declined-v1.json names eleven required properties, all at one"
-                            + " level");
-            assertEquals(List.of("occurredAt"), stamps,
-                    "the one stamp is the envelope producer stamp");
-            assertEquals(ACCOUNT_ID, wire.get("aggregateId").asString(),
-                    "the key is the account, leading zeros intact");
-            assertTrue(wire.get("aggregateId").asString()
-                            .matches(EventEnvelope.AGGREGATE_ID_PATTERN),
-                    "CVACT03Y.cpy:L7 XREF-ACCT-ID PIC 9(11) gives eleven digits");
-            assertEquals(EventEnvelope.SCHEMA_VERSION, wire.get("schemaVersion").intValue(),
-                    "a resolved account travels under version 1");
-        }
-
-        @Test
-        @DisplayName("carries the amount as a decimal string, and no card number at all")
-        void carriesTheAmountAsADecimalStringAndNoCardNumber() {
-            subject.recordReject(refusal(REFUND_AMOUNT), DeclineReason.OVER_CREDIT_LIMIT);
-
-            TransactionDeclined event = enqueuedEvent();
-            JsonNode amount = wireForm(event).get("amount");
-            assertTrue(amount.isString(), "text, never a JSON number");
-            assertTrue(amount.asString().matches(TransactionDeclined.AMOUNT_PATTERN),
-                    "CVTRA06Y.cpy:L10 S9(09)V99 allows nine digits then two");
-            assertEquals(REFUND_AMOUNT.toPlainString(), amount.asString(),
-                    "the minus sign survives");
-
-            String rendered = MAPPER.writeValueAsString(event);
-            assertFalse(rendered.contains(FULL_CARD_NUMBER.substring(0, 12)),
-                    "twelve leading card digits reached the wire");
-
-            // The event identifier is a generated Universally Unique Identifier whose text holds
-            // twelve digits in one run often enough to matter, and it names no card and no account.
-            String beyondTheEventId = rendered.replace(event.eventId().toString(), "");
-            Matcher runs = LONG_DIGIT_RUN.matcher(beyondTheEventId);
-            while (runs.find()) {
-                assertEquals(TRANSACTION_ID, runs.group(),
-                        "the one long run is DALYTRAN-ID PIC X(16), naming no card and no account");
-            }
+            assertEquals("0000009983L", slice(refund, AMT_START, PicClause.DALYTRAN_AMT_WIDTH),
+                    "the trailing L carries the sign and the last digit together");
+            assertNotEquals(slice(purchase, AMT_START, PicClause.DALYTRAN_AMT_WIDTH),
+                    slice(refund, AMT_START, PicClause.DALYTRAN_AMT_WIDTH),
+                    "50 of the 300 records carry a refund, and the sign survives the copy");
         }
     }
 
@@ -714,7 +696,7 @@ class RejectRecorderTest {
     class FailurePath {
 
         @Test
-        @DisplayName("hands a store failure to the caller and enqueues nothing")
+        @DisplayName("hands a store failure to the caller and counts no reject")
         void handsAStoreFailureToTheCaller() {
             when(rejectedTransactions.save(any(RejectedTransactionEntity.class)))
                     .thenThrow(new DataIntegrityViolationException("rejected_transaction refused"));
@@ -722,19 +704,10 @@ class RejectRecorderTest {
             assertThrows(DataIntegrityViolationException.class,
                     () -> subject.recordReject(refusal(AMOUNT), DeclineReason.OVER_CREDIT_LIMIT),
                     ":L452-L464 becomes a failure the caller sees");
-            verifyNoInteractions(outbox);
-        }
-
-        @Test
-        @DisplayName("hands an enqueue failure to the caller after the row is stored")
-        void handsAnEnqueueFailureToTheCaller() {
-            when(outbox.write(any(TransactionDeclined.class)))
-                    .thenThrow(new DataIntegrityViolationException("outbox_event refused"));
-
-            assertThrows(DataIntegrityViolationException.class,
-                    () -> subject.recordReject(refusal(AMOUNT), DeclineReason.OVER_CREDIT_LIMIT),
-                    "a failed :L448 enqueue reaches the caller holding the :L451 row");
-            verify(rejectedTransactions).save(any(RejectedTransactionEntity.class));
+            assertEquals(0.0D,
+                    registry.counter("carddemo.ledger.transactions.processed",
+                            "outcome", "rejected").count(),
+                    "a refused write raised the counter for a row that does not exist");
         }
     }
 
@@ -742,10 +715,11 @@ class RejectRecorderTest {
      * The transaction boundary {@link RejectRecorder} opens or joins.
      *
      * <p>The recorder starts a required transaction when none exists and joins a caller's required
-     * transaction when one does. The row of {@code app/cbl/CBTRN02C.cbl:L451} and the outbox row
-     * beside it therefore commit together or vanish together. The source runs its three updates at
-     * {@code app/cbl/CBTRN02C.cbl:L440-L442} with no rollback, and each file definition in
-     * {@code app/csd/CARDDEMO.CSD} carries {@code RECOVERY(NONE)}, so atomicity is ADDITIVE.
+     * transaction when one does. The row of {@code app/cbl/CBTRN02C.cbl:L451} therefore commits with
+     * the processed-event marker {@code messaging/TransactionDeclinedConsumer} writes beside it, or
+     * neither exists. The source runs its three updates at {@code app/cbl/CBTRN02C.cbl:L440-L442}
+     * with no rollback, and each file definition in {@code app/csd/CARDDEMO.CSD} carries
+     * {@code RECOVERY(NONE)}, so atomicity is ADDITIVE.
      *
      * <p>Flyway owns the schema and Hibernate validates its mapping against it at start-up. No
      * broker is reached: a stand-in replaces the producer template.
@@ -756,13 +730,14 @@ class RejectRecorderTest {
         // The listener of messaging/TransactionAuthorizedConsumer must not retry an absent broker.
         "spring.kafka.listener.auto-startup=false",
         "TOPIC_DEAD_LETTER_SUFFIX=.DLT",
-        // The four credentials application.yml leaves without a default. Each value below is a
-        // generated fake this repository states nowhere else, and config/SecurityConfig refuses a
-        // blank, published or unprefixed one at start-up.
+        // One of the four credentials application.yml leaves without a default. The value below is
+        // a generated fake this repository states nowhere else, and config/SecurityConfig refuses a
+        // blank or published one at start-up. The three identity hashes arrive from
+        // card-platform/pom.xml, because a password that is not adaptively encoded is refused.
         "KAFKA_SASL_PASSWORD=a-generated-broker-value-for-the-boundary-test",
-        "ADMIN_PASSWORD_HASH={noop}a-generated-admin-value-for-the-boundary-test",
-        "USER_PASSWORD_HASH={noop}a-generated-user-value-for-the-boundary-test",
-        "MONITORING_PASSWORD_HASH={noop}a-generated-monitoring-value-for-the-boundary-test",
+        "ADMIN_PASSWORD_HASH=" + TestIdentityPasswords.ADMIN_PASSWORD_HASH,
+        "USER_PASSWORD_HASH=" + TestIdentityPasswords.USER_PASSWORD_HASH,
+        "MONITORING_PASSWORD_HASH=" + TestIdentityPasswords.MONITORING_PASSWORD_HASH,
     })
     @DisplayName("The shared transaction over app/cbl/CBTRN02C.cbl:L447-L451")
     class TransactionBoundary {
@@ -815,7 +790,7 @@ class RejectRecorderTest {
         }
 
         @Test
-        @DisplayName("leaves neither row when the caller's transaction rolls back")
+        @DisplayName("leaves no row when the caller's transaction rolls back")
         void leavesNeitherRowOnRollback() {
             long rowsBefore = rows.count();
             long eventsBefore = events.count();
@@ -827,61 +802,21 @@ class RejectRecorderTest {
 
             assertEquals(rowsBefore, rows.count(), "the :L451 row belongs to the caller");
             assertEquals(eventsBefore, events.count(),
-                    "no outbox row outlives a rolled-back caller");
+                    "the reject path writes no outbox row in either direction");
         }
 
         @Test
-        @DisplayName("rolls back the reject row when the outbox insert fails")
-        void rollsBackTheRejectRowWhenTheOutboxInsertFails() {
-            long rowsBefore = rows.count();
-            long eventsBefore = events.count();
-
-            database.execute("""
-                    CREATE OR REPLACE FUNCTION ledger_service.fail_test_outbox_insert()
-                    RETURNS trigger
-                    LANGUAGE plpgsql
-                    AS $$
-                    BEGIN
-                        RAISE EXCEPTION 'forced outbox failure';
-                    END
-                    $$
-                    """);
-            database.execute("""
-                    CREATE TRIGGER fail_test_outbox_insert
-                    BEFORE INSERT ON ledger_service.outbox_event
-                    FOR EACH ROW
-                    EXECUTE FUNCTION ledger_service.fail_test_outbox_insert()
-                    """);
-
-            try {
-                assertThrows(DataAccessException.class,
-                        () -> recorder.recordReject(
-                                refusal(AMOUNT), DeclineReason.OVER_CREDIT_LIMIT));
-                assertEquals(rowsBefore, rows.count(),
-                        "the reject row rolls back with the refused outbox insert");
-                assertEquals(eventsBefore, events.count(),
-                        "the failed outbox insert leaves no event row");
-            } finally {
-                database.execute("""
-                        DROP TRIGGER IF EXISTS fail_test_outbox_insert
-                        ON ledger_service.outbox_event
-                        """);
-                database.execute("""
-                        DROP FUNCTION IF EXISTS ledger_service.fail_test_outbox_insert()
-                        """);
-            }
-        }
-
-        @Test
-        @DisplayName("opens a transaction and leaves one row in each table on commit")
-        void leavesOneRowInEachTableOnCommit() {
+        @DisplayName("opens a transaction, stores one reject row and writes no outbox row")
+        void leavesOneRejectRowAndNoOutboxRowOnCommit() {
             long rowsBefore = rows.count();
             long eventsBefore = events.count();
 
             recorder.recordReject(refusal(AMOUNT), DeclineReason.OVER_CREDIT_LIMIT);
 
             assertEquals(rowsBefore + 1, rows.count(), "the :L451 write stores one reject row");
-            assertEquals(eventsBefore + 1, events.count(), "the :L448 trailer enqueues one event");
+            assertEquals(eventsBefore, events.count(),
+                    "a second TransactionDeclined for one decision reached the topic this service "
+                            + "reads");
         }
     }
 }

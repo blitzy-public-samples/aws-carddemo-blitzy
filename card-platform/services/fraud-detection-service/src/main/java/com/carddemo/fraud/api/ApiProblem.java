@@ -52,6 +52,17 @@ public record ApiProblem(String type, String title, int status, String detail) {
     public static final String ASSESSMENT_NOT_READ = "The assessment could not be read.";
 
     /**
+     * Detail of a call the protocol refused before a route ran.
+     *
+     * <p>A method no route serves, a media type this service does not read, a media type it cannot
+     * write and a path that matches no route all carry this text. The status separates them, and a
+     * {@code 405} also carries {@code Allow}. The text names neither the method nor the path
+     * submitted.
+     */
+    public static final String UNSUPPORTED_REQUEST =
+            "This route does not serve the method, path or media type the request named.";
+
+    /**
      * Checks that every member holds a value.
      *
      * @throws NullPointerException when any text member is {@code null}

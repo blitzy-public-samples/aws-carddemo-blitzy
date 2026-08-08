@@ -6,13 +6,20 @@ import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.dao.QueryTimeoutException;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpStatusCode;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.ResponseEntity.BodyBuilder;
 import org.springframework.transaction.CannotCreateTransactionException;
+import org.springframework.web.ErrorResponse;
+import org.springframework.web.HttpMediaTypeException;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.HandlerMethodValidationException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.servlet.NoHandlerFoundException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 /**
  * Turns a failure of the balance query into a problem document.
@@ -25,10 +32,11 @@ import org.springframework.web.method.annotation.MethodArgumentTypeMismatchExcep
  * {@code {"timestamp":...,"status":500,"error":"Internal Server Error","path":"/balances/..."}},
  * which tells an operator nothing about which dependency stopped and invites no retry.
  *
- * <p>Three outcomes now. A path value that misses the eleven-digit shape answers {@code 400}. A
+ * <p>Four outcomes now. A path value that misses the eleven-digit shape answers {@code 400}. A
  * datastore this service cannot reach answers {@code 503}, the status the platform answers whenever a
- * dependency rather than a request is at fault, and the detail invites a retry. Anything else answers
- * {@code 500}.
+ * dependency rather than a request is at fault, and the detail invites a retry. A call the protocol
+ * refused keeps the status the framework named, {@code 404}, {@code 405}, {@code 406} or
+ * {@code 415}, and keeps that status's headers. Anything else answers {@code 500}.
  *
  * <p>The {@code 503} arm names three types and no wider. A connection this service cannot open, a
  * transaction it cannot begin and a statement that ran out of time are all the datastore being away.
@@ -59,6 +67,8 @@ public class LedgerApiExceptionHandler {
 
     /** Records one line per refusal, naming no account identifier. */
     private static final Logger log = LoggerFactory.getLogger(LedgerApiExceptionHandler.class);
+    /** Causes rendered into one failure line before the chain is cut. */
+    private static final int FAILURE_TYPE_DEPTH = 3;
 
     /**
      * Answers a path value that missed the shape declared for it.
@@ -93,9 +103,41 @@ public class LedgerApiExceptionHandler {
     @ExceptionHandler({DataAccessResourceFailureException.class,
             CannotCreateTransactionException.class, QueryTimeoutException.class})
     public ResponseEntity<ApiProblem> onDatastoreUnreachable(Exception failure) {
-        log.error("A balance query could not reach the projection table", failure);
+        log.error("A balance query could not reach the projection table. The failure was {}. Its message is not recorded, because a message quotes the statement or the data source.", failureType(failure));
         return problem(HttpStatus.SERVICE_UNAVAILABLE, ApiProblem.SERVICE_UNAVAILABLE,
                 ApiProblem.BALANCE_DEPENDENCY_UNAVAILABLE);
+    }
+
+    /**
+     * Answers a call the protocol refused, at the status and with the headers the framework named.
+     *
+     * <p>Four failures reach here, each raised before this route ran: a method the route does not
+     * serve, a media type this endpoint does not read, a media type it cannot write, and a path that
+     * matches no route. Every one of them carries its own status and its own headers, and
+     * {@code Allow} on a {@code 405} is how a caller learns which methods the route does serve.
+     * Answering {@code 500} instead would record a caller's mistake as a fault of this service and
+     * invite a retry that cannot succeed.
+     *
+     * <p>A {@code 406} carries no body: a caller that accepts no type this endpoint writes cannot be
+     * sent a problem document either.
+     *
+     * @param failure the protocol refusal, read for its status and its headers
+     * @return the status the framework named, carrying that status's headers
+     */
+    @ExceptionHandler({HttpRequestMethodNotSupportedException.class, HttpMediaTypeException.class,
+            NoResourceFoundException.class, NoHandlerFoundException.class})
+    public ResponseEntity<ApiProblem> onUnsupportedRequest(ErrorResponse failure) {
+        HttpStatusCode status = failure.getStatusCode();
+        HttpStatus resolved = HttpStatus.valueOf(status.value());
+
+        log.info("Refusing a balance query on the protocol, answering {}", status.value());
+        BodyBuilder response = ResponseEntity.status(status).headers(failure.getHeaders());
+        if (resolved == HttpStatus.NOT_ACCEPTABLE) {
+            return response.build();
+        }
+        return response.contentType(MediaType.APPLICATION_PROBLEM_JSON)
+                .body(ApiProblem.of(resolved.getReasonPhrase(), status.value(),
+                        ApiProblem.UNSUPPORTED_REQUEST));
     }
 
     /**
@@ -106,7 +148,7 @@ public class LedgerApiExceptionHandler {
      */
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiProblem> onFault(Exception failure) {
-        log.error("A balance query failed inside this service", failure);
+        log.error("A balance query failed inside this service. The failure was {}. Its message is not recorded, because a message quotes the value that caused it.", failureType(failure));
         return problem(HttpStatus.INTERNAL_SERVER_ERROR, ApiProblem.INTERNAL_SERVER_ERROR,
                 ApiProblem.BALANCE_NOT_READ);
     }
@@ -124,5 +166,34 @@ public class LedgerApiExceptionHandler {
         return ResponseEntity.status(status)
                 .contentType(MediaType.APPLICATION_PROBLEM_JSON)
                 .body(ApiProblem.of(title, status.value(), detail));
+    }
+
+    /**
+     * Renders one failure as its type and the types of its causes, and never as its message.
+     *
+     * <p>A type is code and safe to record. An exception message is not: a constraint violation
+     * quotes the value that violated it, a query timeout quotes the statement, and a connection
+     * failure quotes the data-source URL. Passing the throwable to the logger emits both, so this
+     * method emits the half that is code and drops the half that is data.
+     *
+     * <p>The chain is bounded because a wrapped failure can nest deeply and one log line is not the
+     * place to render all of it. Three levels reach the framework wrapper, the driver exception and
+     * the cause underneath it, which is what a reader needs to tell a timeout from a constraint from
+     * a broken connection.
+     *
+     * @param failure the failure that reached this handler
+     * @return the type chain as text, never null and never a message
+     */
+    private static String failureType(Throwable failure) {
+        StringBuilder types = new StringBuilder();
+        Throwable current = failure;
+        for (int depth = 0; current != null && depth < FAILURE_TYPE_DEPTH; depth++) {
+            if (depth > 0) {
+                types.append(" caused by ");
+            }
+            types.append(current.getClass().getName());
+            current = current.getCause() == current ? null : current.getCause();
+        }
+        return types.toString();
     }
 }

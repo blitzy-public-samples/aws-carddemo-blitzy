@@ -53,6 +53,11 @@ paths:
         assessment time descending and no parameter changes it.
 
 
+        One handler serves this route, and the three query parameters below are the whole of what it
+        reads. A sort parameter answers 400 from that same handler, so no request reaches a mapping
+        this document does not describe.
+
+
         This route answers a demonstration and a support query. It sits on no authorization path and
         on no posting path, and it performs no scoring.
       parameters:
@@ -71,24 +76,40 @@ paths:
         - name: page
           in: query
           required: false
-          description: The page to return, counting from zero. Naming no page returns the first one.
+          description: >-
+            The page to return, counting from zero. Omitting the parameter returns the first page.
+            The value travels as text and is read as a number from 0 through 1000000, so a parameter
+            that arrives carrying no characters answers 400 rather than taking the default: a caller
+            sending page= asked for something, and a 200 would state nothing about what it received.
+            A page past the rows the account holds answers 200 with an empty array.
           schema:
-            type: integer
-            minimum: 0
-            default: 0
-            examples: [0]
+            type: string
+            pattern: '^[0-9]{1,7}$'
+            examples: ['0']
         - name: size
           in: query
           required: false
           description: >-
-            The rows one page carries. A value outside the bounds below answers 400, so the page a
-            caller receives is the page it asked for.
+            The rows one page carries. Omitting the parameter returns 20 rows. The value travels as
+            text for the reason page does, and it is read as a number from 1 through 200. A value
+            outside those bounds answers 400, so the page a caller receives is the page it asked for.
           schema:
-            type: integer
-            minimum: 1
-            maximum: 200
-            default: 20
-            examples: [20]
+            type: string
+            pattern: '^[0-9]{1,3}$'
+            examples: ['20']
+        - name: sort
+          in: query
+          required: false
+          description: >-
+            An order to apply, which this route does not accept. Present at any value, the parameter
+            answers 400 naming itself and the order this route does apply. The order is fixed at
+            assessment time descending, which
+            FraudAssessmentRepository.findByAccountIdOrderByAssessedAtDesc states in its own name, so
+            an order a caller supplied could only be ignored while the response claimed success. The
+            one handler of this route reads the parameter and refuses it.
+          schema:
+            type: string
+            examples: ['assessedAt,asc']
       responses:
         '200':
           description: >-
@@ -132,8 +153,14 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '406':
+          $ref: '#/components/responses/NotAcceptable'
         '500':
           $ref: '#/components/responses/InternalFailure'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
 
   /fraud-assessments/{transactionId}:
     get:
@@ -159,6 +186,7 @@ paths:
             type: string
             minLength: 16
             maxLength: 16
+            pattern: '^[\s\S]*\S[\s\S]*$'
             examples: ['0000000000683580']
       responses:
         '200':
@@ -209,11 +237,17 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '406':
+          $ref: '#/components/responses/NotAcceptable'
         '404':
           description: >-
             No assessment exists for that transaction. The status travels alone and carries no body.
         '500':
           $ref: '#/components/responses/InternalFailure'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
 
 components:
 
@@ -230,13 +264,44 @@ components:
 
   responses:
 
+    TooManyRequests:
+      description: >-
+        A rate ceiling refused this request. config/RequestRateCeilingFilter runs ahead of the
+        security chain and bounds requests from one source, requests presenting one identity,
+        state-changing requests from one source, failed authentications from one source, and
+        requests in flight. Retry-After names whole seconds until the window rolls.
+
+
+        ADDITIVE: a CICS transaction arrived from a terminal an operator was sitting at and the
+        nightly feed of app/jcl/POSTTRAN.jcl arrived once a day as a dataset, so the source had no
+        request rate to bound and holds no matching condition. The detail is fixed and names no
+        address, no identity and no route.
+      headers:
+        Retry-After:
+          description: Whole seconds until the window rolls, one or more.
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          example:
+            type: 'about:blank'
+            title: 'Too many requests'
+            status: 429
+            detail: >-
+              This request exceeded a rate this service accepts. Retry after the interval the
+              response names.
+
     BadRequest:
       description: >-
         A path or query value missed the constraint declared for it: an identifier of the wrong width
-        or shape, a page below zero, a page size outside one through 200, a page or page size that is
-        not a whole number, or the required account parameter not arriving at all. A sort parameter on
-        the collection route answers this status too, and that route applies assessment-time
-        descending order only.
+        or shape, a page outside zero through 1000000, a page size outside one through 200, a page or
+        page size that is not a whole number, a page or page size that arrived carrying no characters,
+        or the required account parameter not arriving at all. A sort parameter on the collection route
+        answers this status too, and that route applies assessment-time descending order only.
 
 
         Every one of those is a client error and none of them is a fault of this service, so none
@@ -263,6 +328,18 @@ components:
                 detail: >-
                   The sort parameter is not supported. Assessments answer in assessment-time
                   descending order only.
+            pagingValueArrivedEmpty:
+              summary: >-
+                The collection route was called with page= carrying no characters. The parameter
+                arrived, so it is read as a value the caller sent and refused, and not as an omitted
+                parameter taking its default.
+              value:
+                type: 'about:blank'
+                title: Bad Request
+                status: 400
+                detail: >-
+                  The page parameter arrived carrying no value. Omit it to take the default, or send
+                  a number from 0 through 1000000.
 
     Unauthorized:
       description: The request carried no usable credential.
@@ -289,6 +366,8 @@ components:
       description: >-
         The authenticated identity does not hold the ADMIN role the two routes above require. The
         text names neither the route nor the identifier that was asked for.
+        A method this route does not serve is refused here too, since config/SecurityConfig declares
+        one rule per method and path and admits no request a rule does not name.
       content:
         application/problem+json:
           schema:
@@ -301,6 +380,41 @@ components:
                 title: Forbidden
                 status: 403
                 detail: This identity may not use this operation.
+
+    MethodNotAllowed:
+      description: >-
+        The route was called with a method it does not serve. Both routes serve GET alone, and the
+        Allow header names it. api/FraudApiExceptionHandler keeps the status and the headers the
+        framework named, so a caller's mistake is not recorded as a fault of this service.
+        config/SecurityConfig declares one rule per method and path, and a request whose method
+        carries no rule is refused with 403 before the dispatcher runs, so this answer is the one a
+        request the chain admits receives.
+      headers:
+        Allow:
+          description: The methods this route serves.
+          required: true
+          schema:
+            type: string
+            examples: ['GET']
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          examples:
+            methodRefused:
+              summary: A write method was sent to a read-only route.
+              value:
+                type: 'about:blank'
+                title: Method Not Allowed
+                status: 405
+                detail: >-
+                  This route does not serve the method, path or media type the request named.
+
+    NotAcceptable:
+      description: >-
+        The Accept header of the request names no media type this route writes. The response carries
+        no body, because a caller that accepts nothing this route writes cannot be sent a problem
+        document either.
 
     InternalFailure:
       description: >-
@@ -341,11 +455,13 @@ components:
           type: string
           minLength: 16
           maxLength: 16
+          pattern: '^[\s\S]*\S[\s\S]*$'
           description: >-
             The assessed transaction, sixteen characters of text. Width from DALYTRAN-ID PIC X(16) at
             app/cpy/CVTRA06Y.cpy:L5 and TRAN-ID PIC X(16) at app/cpy/CVTRA05Y.cpy:L5. Both source
-            fields hold text, so the value carries no numeric pattern. Column transaction_id holds
-            it.
+            fields hold text, so the value carries no numeric pattern beyond the one character that
+            has to be something other than whitespace, which is the constraint the read route applies
+            to the same value. Column transaction_id holds it.
           examples: ['0000000000683580']
         accountId:
           type: string

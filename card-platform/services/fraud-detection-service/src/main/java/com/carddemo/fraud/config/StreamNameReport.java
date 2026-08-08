@@ -76,7 +76,11 @@ public class StreamNameReport implements ApplicationListener<ApplicationReadyEve
                 new ReportedName(
                         "topic an unprocessable record is routed to",
                         "TOPIC_DEAD_LETTER",
-                        topics.deadLetter()));
+                        topics.deadLetter()),
+                new ReportedName(
+                        "suffix composed with a consumed topic to name its dead-letter stream",
+                        "TOPIC_DEAD_LETTER_SUFFIX",
+                        topics.deadLetterSuffix()));
     }
 
     @Override

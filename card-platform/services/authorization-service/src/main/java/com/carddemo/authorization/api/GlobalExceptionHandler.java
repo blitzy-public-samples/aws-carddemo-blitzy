@@ -1,13 +1,13 @@
 package com.carddemo.authorization.api;
 
 import com.carddemo.authorization.domain.AuthorizationService;
+import com.carddemo.authorization.domain.CallerNotEntitledException;
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.ConstraintViolationException;
 import java.time.Instant;
-import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
-import java.util.TreeSet;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.MessageSourceResolvable;
@@ -19,11 +19,15 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.transaction.CannotCreateTransactionException;
 import org.springframework.validation.ObjectError;
+import org.springframework.web.ErrorResponse;
 import org.springframework.web.HttpMediaTypeException;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.HandlerMethodValidationException;
+import org.springframework.web.servlet.NoHandlerFoundException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 /**
  * Advice that answers a failed authorization call with one status code and one sanitized body.
@@ -49,21 +53,10 @@ import org.springframework.web.method.annotation.HandlerMethodValidationExceptio
  * caller. No value read from the request reaches one either, so a card number sent in the wrong
  * position is never reflected back.
  *
- * <p>The advice deliberately names no base package, and {@code config/ReadinessHealthConfig} is why it
- * does not have to. A poll of {@code /actuator/health} reached this class only because a health
- * indicator let a failure escape, which left the actuator with no document to render and sent the
- * request out through the error path. Every indicator that reaches a dependency now catches its own
- * failure and reports that dependency down, so the endpoint renders its own document with {@code 503}
- * and no failure of the management port arrives here at all.
- *
- * <p>Naming a base package was measured and rejected. Spring selects an advice by the type of the
- * handler it resolved, and a request that matches no mapping resolves none: a {@code consumes}
- * condition that the request content type misses is the common case. A scoped advice is therefore
- * skipped for exactly the failures raised before a handler is chosen, and the documented answers to an
- * unsupported media type, an unacceptable media type and an unsupported method would each become the
- * framework body this class exists to replace. Scoping is also neither necessary nor sufficient on its
- * own: {@code fraud-detection-service} was scoped throughout and still answered a paused datastore
- * with the framework body, because its indicator threw.
+ * <p>The advice names no base package, so it also sees the failures raised before a handler is
+ * chosen. Every health indicator of {@code config/ReadinessHealthConfig} reports its own dependency
+ * down rather than throwing, so a management-port poll renders its own document and never arrives
+ * here.
  *
  * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
@@ -89,23 +82,39 @@ public class GlobalExceptionHandler {
     static final String INTERNAL_FAILURE_MESSAGE = "Unable to authorize this transaction...";
 
     /**
+     * The text a call the protocol refused reports.
+     *
+     * <p>A method this route does not serve and a path that matches no route both carry it. The
+     * status separates the two, and a {@code 405} also carries {@code Allow}. The text names neither
+     * the method nor the path submitted.
+     */
+    static final String UNSUPPORTED_REQUEST_MESSAGE =
+            "This route does not serve the method or path this request named...";
+
+    /**
      * Answers {@code 422} for a request body whose fields failed Bean Validation.
      *
-     * <p>Each text is the one {@code app/cbl/COTRN02C.cbl} moves into {@code WS-MESSAGE} for that
-     * field, carried through unaltered. The eleven emptiness tests at
-     * {@code app/cbl/COTRN02C.cbl:L251-L320} and the class tests that follow them are the source
-     * conditions, and {@link AuthorizationRequest} declares every text.
+     * <p>The body carries one text, and that text is the one
+     * {@code app/cbl/COTRN02C.cbl} moves into {@code WS-MESSAGE} for the failing field, carried
+     * through unaltered. The eleven emptiness tests at {@code app/cbl/COTRN02C.cbl:L251-L320} and the
+     * class tests that follow them are the source conditions, and {@link AuthorizationRequest}
+     * declares every text.
+     *
+     * <p>A validator reports every failing component of one body at once, and the source reports one:
+     * each edit performs {@code SEND-TRNADD-SCREEN} and returns to the terminal.
+     * {@link #firstBySourceOrder(List)} therefore reduces the reported set to the text the source
+     * would have emitted first.
      *
      * @param failure the binding failure the framework raised
-     * @return {@code 422} carrying one text per failing field
+     * @return {@code 422} carrying one text
      */
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ResponseEntity<ApiErrorResponse> onInvalidBody(MethodArgumentNotValidException failure) {
-        List<String> texts = distinctTextsOf(failure.getBindingResult().getAllErrors().stream()
+        List<String> texts = firstBySourceOrder(failure.getBindingResult().getAllErrors().stream()
                 .map(ObjectError::getDefaultMessage)
                 .toList());
 
-        log.info("Rejecting an authorization request on {} field validations", texts.size());
+        log.info("Rejecting an authorization request on a field validation");
         return unprocessable(ApiErrorResponse.VALIDATION_FAILED, texts);
     }
 
@@ -113,42 +122,44 @@ public class GlobalExceptionHandler {
      * Answers {@code 422} for a validation failure the framework raised on a handler argument.
      *
      * <p>The framework reports this shape where a constraint sits on a method parameter and not on a
-     * component of the request body. The texts are the same verbatim
-     * {@code app/cbl/COTRN02C.cbl} texts, carried through unaltered.
+     * component of the request body. The text is the same verbatim
+     * {@code app/cbl/COTRN02C.cbl} text, carried through unaltered and reduced to one by
+     * {@link #firstBySourceOrder(List)}.
      *
      * @param failure the argument validation failure the framework raised
-     * @return {@code 422} carrying one text per failing constraint
+     * @return {@code 422} carrying one text
      */
     @ExceptionHandler(HandlerMethodValidationException.class)
     public ResponseEntity<ApiErrorResponse> onInvalidArgument(
             HandlerMethodValidationException failure) {
 
-        List<String> texts = distinctTextsOf(failure.getAllErrors().stream()
+        List<String> texts = firstBySourceOrder(failure.getAllErrors().stream()
                 .map(MessageSourceResolvable::getDefaultMessage)
                 .toList());
 
-        log.info("Rejecting an authorization request on {} argument validations", texts.size());
+        log.info("Rejecting an authorization request on an argument validation");
         return unprocessable(ApiErrorResponse.VALIDATION_FAILED, texts);
     }
 
     /**
      * Answers {@code 422} for a constraint failure raised outside request-body binding.
      *
-     * <p>A validator invoked directly reports this shape. The texts are the same verbatim
-     * {@code app/cbl/COTRN02C.cbl} texts, carried through unaltered.
+     * <p>A validator invoked directly reports this shape. The text is the same verbatim
+     * {@code app/cbl/COTRN02C.cbl} text, carried through unaltered and reduced to one by
+     * {@link #firstBySourceOrder(List)}.
      *
      * @param failure the constraint failure
-     * @return {@code 422} carrying one text per failing constraint
+     * @return {@code 422} carrying one text
      */
     @ExceptionHandler(ConstraintViolationException.class)
     public ResponseEntity<ApiErrorResponse> onConstraintViolation(
             ConstraintViolationException failure) {
 
-        List<String> texts = distinctTextsOf(failure.getConstraintViolations().stream()
+        List<String> texts = firstBySourceOrder(failure.getConstraintViolations().stream()
                 .map(ConstraintViolation::getMessage)
                 .toList());
 
-        log.info("Rejecting an authorization request on {} constraints", texts.size());
+        log.info("Rejecting an authorization request on a constraint");
         return unprocessable(ApiErrorResponse.VALIDATION_FAILED, texts);
     }
 
@@ -174,18 +185,43 @@ public class GlobalExceptionHandler {
     }
 
     /**
+     * Answers {@code 422} for an account identifier that resolves no cross-reference row.
+     *
+     * <p>The account branch of {@code VALIDATE-INPUT-KEY-FIELDS} reads the cross-reference by the
+     * account identifier the caller supplied, at {@code app/cbl/COTRN02C.cbl:L200-L209}. The
+     * {@code NOTFND} limb of that read moves
+     * {@link AuthorizationRequest#ACCOUNT_ID_NOT_FOUND_MESSAGE} into {@code WS-MESSAGE} at
+     * {@code app/cbl/COTRN02C.cbl:L591-L592} and re-sends the screen, so no transaction is captured.
+     * The body carries that text verbatim.
+     *
+     * <p>The text is a fixed constant of {@link AuthorizationRequest} and holds no value read from
+     * the request, so the refused identifier reaches no caller and no log line. This arm precedes
+     * {@link #onRefusedRequest(IllegalArgumentException)}, whose fixed text would otherwise replace
+     * a source text with a sanitized one.
+     *
+     * @param failure the refusal the decision path raised for an account with no cross-reference row
+     * @return {@code 422} carrying the one source text
+     */
+    @ExceptionHandler(AuthorizationService.AccountNotFoundInCrossReferenceException.class)
+    public ResponseEntity<ApiErrorResponse> onAccountNotFoundInCrossReference(
+            AuthorizationService.AccountNotFoundInCrossReferenceException failure) {
+
+        log.info("Refusing an authorization request whose account holds no cross-reference row");
+        return unprocessable(ApiErrorResponse.UNPROCESSABLE,
+                List.of(AuthorizationRequest.ACCOUNT_ID_NOT_FOUND_MESSAGE));
+    }
+
+    /**
      * Answers {@code 422} for a request this service refused after binding and before deciding.
      *
-     * <p>Four refusals reach here. Each needs a stored row to detect, so no constraint on
-     * {@link AuthorizationRequest} expresses it. A request naming neither identifier reproduces
-     * the {@code WHEN OTHER} branch at {@code app/cbl/COTRN02C.cbl:L224-L229}. An account
-     * identifier resolving no card reproduces the {@code NOTFND} limb at
-     * {@code app/cbl/COTRN02C.cbl:L591-L592}. A supplied account identifier disagreeing with the
-     * one the card resolved, and a capture moment outside the window
-     * {@code com.carddemo.authorization.domain.OriginTimestampWindow} holds, are both additive.
+     * <p>One refusal reaches here. A request naming neither identifier reproduces the
+     * {@code WHEN OTHER} branch at {@code app/cbl/COTRN02C.cbl:L224-L229}, and it needs no stored row
+     * to detect. The account identifier that resolves no cross-reference row is answered by
+     * {@link #onAccountNotFoundInCrossReference} above, which carries the source text.
      *
-     * <p>The body carries {@link #REFUSED_REQUEST_MESSAGE}. A refusal message can quote the value
-     * it refused, so no handler here puts one in a response or in a log line.
+     * <p>The body carries {@link #REFUSED_REQUEST_MESSAGE}. A refusal raised inside a library can
+     * quote the value it refused, so this arm puts no message from the failure in a response or in a
+     * log line.
      *
      * @param failure the refusal the decision path raised
      * @return {@code 422} carrying one fixed text
@@ -197,21 +233,63 @@ public class GlobalExceptionHandler {
     }
 
     /**
+     * Answers {@code 403} when the caller may not authorize against the subject its request resolved
+     * to.
+     *
+     * <p>ADDITIVE. {@code app/cbl/CBTRN02C.cbl} authorizes a record the nightly feed supplied and has
+     * no caller to entitle, and {@code app/cbl/COTRN02C.cbl} captures whatever card number the operator
+     * keyed, so neither compares the identity that asked against the account or the card it named.
+     *
+     * <p>Not {@code 422}, and not a fifth reject reason. The four reject reasons at
+     * {@code app/cbl/CBTRN02C.cbl:L385-L420} are outcomes of the transaction and each is published as a
+     * {@code TransactionDeclined} event that consumers act on. This is an outcome of the caller: no
+     * decision was taken, no row was written and no event exists.
+     * {@code com.carddemo.authorization.domain.CallerNotEntitledException} carries the whole reasoning.
+     *
+     * <p>The body carries
+     * {@value com.carddemo.authorization.domain.CallerNotEntitledException#DETAIL}, which is the same
+     * text {@code config/SecurityConfig} writes for a denial the route itself refused. Naming the
+     * account, the card or which comparison failed would confirm to an unentitled caller that the
+     * subject exists, and that is how one credential enumerates the identifiers it does not hold. The
+     * log line names no identifier either.
+     *
+     * @param denied the refusal the decision path raised
+     * @return {@code 403} carrying one fixed text
+     */
+    @ExceptionHandler(CallerNotEntitledException.class)
+    public ResponseEntity<ApiErrorResponse> onCallerNotEntitled(CallerNotEntitledException denied) {
+        log.info("Refusing an authorization call: the identity does not hold the resolved subject");
+        return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                .body(ApiErrorResponse.of(HttpStatus.FORBIDDEN.value(), ApiErrorResponse.FORBIDDEN,
+                        CallerNotEntitledException.DETAIL));
+    }
+
+    /**
      * Answers the status the framework named for a call whose media type this endpoint refuses.
      *
      * <p>ADDITIVE: a 3270 map field carries no media type, so the source has no matching condition.
-     * A request declaring a content type this endpoint does not read answers {@code 415}. A request
-     * accepting no type this endpoint writes answers {@code 406}, and that status travels alone:
-     * such a caller cannot be sent a body either.
+     * A request declaring a content type this endpoint does not read answers {@code 415} carrying
+     * {@link #MEDIA_TYPE_MESSAGE}, because that caller did declare a type it accepts and a body can
+     * reach it.
+     *
+     * <p>A request accepting no type this endpoint writes answers {@code 406} and the status travels
+     * alone. The reason is the refusal itself: the framework raised this because it could not select
+     * a media type for the response, so attaching a body asks it to select one a second time for the
+     * same request. There is no type it can pick, and the attempt turns a legible 406 into a second
+     * failure. A bodyless 406 is also what {@code src/main/resources/openapi.yaml} documents, and a
+     * status a caller cannot read the body of is better than a status it cannot read at all.
      *
      * @param failure the media type refusal the framework raised, carrying its own status
-     * @return {@code 415} or {@code 406} carrying one fixed text
+     * @return {@code 415} carrying one fixed text, or a bodyless {@code 406}
      */
     @ExceptionHandler(HttpMediaTypeException.class)
     public ResponseEntity<ApiErrorResponse> onUnsupportedMediaType(HttpMediaTypeException failure) {
         HttpStatusCode status = failure.getStatusCode();
 
         log.info("Refusing an authorization call on its media type, answering {}", status.value());
+        if (status.value() == HttpStatus.NOT_ACCEPTABLE.value()) {
+            return ResponseEntity.status(status).build();
+        }
         return ResponseEntity.status(status)
                 .body(ApiErrorResponse.of(status.value(), ApiErrorResponse.UNPROCESSABLE,
                         MEDIA_TYPE_MESSAGE));
@@ -245,6 +323,31 @@ public class GlobalExceptionHandler {
     }
 
     /**
+     * Answers a call the protocol refused, at the status and with the headers the framework named.
+     *
+     * <p>Two failures reach here, both raised before the handler ran: a method this route does not
+     * serve, and a path that matches no route. A {@code 405} carries {@code Allow}, which is how a
+     * caller learns that this route serves {@code POST} alone. Answering {@code 500} instead would
+     * record a caller's mistake as a fault of this service and invite an unsafe retry of a call that
+     * cannot succeed. {@link #onUnsupportedMediaType(HttpMediaTypeException)} answers the two
+     * media-type refusals.
+     *
+     * @param failure the protocol refusal, read for its status and its headers
+     * @return the status the framework named, carrying that status's headers and one fixed text
+     */
+    @ExceptionHandler({HttpRequestMethodNotSupportedException.class,
+            NoResourceFoundException.class, NoHandlerFoundException.class})
+    public ResponseEntity<ApiErrorResponse> onUnsupportedRequest(ErrorResponse failure) {
+        HttpStatusCode status = failure.getStatusCode();
+
+        log.info("Refusing an authorization call on the protocol, answering {}", status.value());
+        return ResponseEntity.status(status)
+                .headers(failure.getHeaders())
+                .body(ApiErrorResponse.of(status.value(), ApiErrorResponse.UNPROCESSABLE,
+                        UNSUPPORTED_REQUEST_MESSAGE));
+    }
+
+    /**
      * Answers {@code 500} for any fault no handler above claimed. Last resort.
      *
      * <p>The log line names the type and the body carries {@link #INTERNAL_FAILURE_MESSAGE}: a
@@ -264,7 +367,7 @@ public class GlobalExceptionHandler {
     /**
      * Builds a {@code 422} response carrying one phrase and one or more texts.
      *
-     * @param phrase one of the three phrases {@link ApiErrorResponse} declares
+     * @param phrase one of the four phrases {@link ApiErrorResponse} declares
      * @param texts  one text per failing field, never empty
      * @return the response
      */
@@ -276,21 +379,46 @@ public class GlobalExceptionHandler {
     }
 
     /**
-     * Sorts and deduplicates the texts one failure reported, dropping any that is absent or blank.
+     * Picks the one text a refused request reports, the earliest of those reported in source order.
      *
-     * <p>Sorting fixes the order, so one request reads the same body twice. A failure reporting no
+     * <p>{@code app/cbl/COTRN02C.cbl} emits one text per rejected screen. Each edit moves its text
+     * into {@code WS-MESSAGE} and performs {@code SEND-TRNADD-SCREEN}, which returns control to the
+     * terminal, so the edits after it never run. A Bean Validation failure instead carries every
+     * failing component of one body at once, and
+     * {@link AuthorizationRequest#REJECTION_TEXTS_IN_SOURCE_ORDER} names the order the source would
+     * have reached them in.
+     *
+     * <p>A text the list does not name follows every text it does, and ties among such texts break
+     * on the text itself. One request therefore reads the same body twice. A failure reporting no
      * usable text falls back to {@link ApiErrorResponse#VALIDATION_FAILED}, which holds the body to
      * the one text its schema requires.
      *
      * @param reported the texts the failure reported, any of which may be absent or blank
-     * @return the texts to publish, sorted, deduplicated and never empty
+     * @return one text, never empty
      */
-    private static List<String> distinctTextsOf(List<String> reported) {
-        List<String> texts = new ArrayList<>(new TreeSet<>(reported.stream()
+    private static List<String> firstBySourceOrder(List<String> reported) {
+        List<String> texts = reported.stream()
                 .filter(text -> text != null && !text.isBlank())
-                .toList()));
+                .sorted(Comparator
+                        .comparingInt(GlobalExceptionHandler::sourcePositionOf)
+                        .thenComparing(Comparator.naturalOrder()))
+                .toList();
 
-        return texts.isEmpty() ? List.of(ApiErrorResponse.VALIDATION_FAILED) : texts;
+        return texts.isEmpty() ? List.of(ApiErrorResponse.VALIDATION_FAILED)
+                : List.of(texts.getFirst());
+    }
+
+    /**
+     * Reports where {@code app/cbl/COTRN02C.cbl} reaches the condition that emits one text.
+     *
+     * @param text a text one validation failure reported
+     * @return the index of the text in {@link AuthorizationRequest#REJECTION_TEXTS_IN_SOURCE_ORDER},
+     *         or a position after every entry of that list when it names no such text
+     */
+    private static int sourcePositionOf(String text) {
+        int position = AuthorizationRequest.REJECTION_TEXTS_IN_SOURCE_ORDER.indexOf(text);
+
+        return position < 0 ? AuthorizationRequest.REJECTION_TEXTS_IN_SOURCE_ORDER.size() : position;
     }
 
     /**
@@ -324,6 +452,15 @@ public class GlobalExceptionHandler {
         public static final String INTERNAL_FAILURE = "Internal failure";
 
         /**
+         * The {@link #error()} phrase of a caller refused the subject it named.
+         *
+         * <p>The word matches the reason phrase of the status, and the phrase carries no detail beyond
+         * it. A phrase naming the comparison that failed would tell an unentitled caller which
+         * identifier it is missing.
+         */
+        public static final String FORBIDDEN = "Forbidden";
+
+        /**
          * Copies the message list and refuses an incomplete body.
          *
          * @throws NullPointerException     when any component is {@code null}
@@ -341,10 +478,8 @@ public class GlobalExceptionHandler {
         }
 
         /**
-         * Builds an error body carrying one or more field texts.
-         *
          * @param status   the status code of the response
-         * @param error    one of the three phrases this record declares
+         * @param error    one of the four phrases this record declares
          * @param messages one text per failing field
          * @return the error body, stamped with the current moment
          */
@@ -353,10 +488,8 @@ public class GlobalExceptionHandler {
         }
 
         /**
-         * Builds an error body carrying one text.
-         *
          * @param status  the status code of the response
-         * @param error   one of the three phrases this record declares
+         * @param error   one of the four phrases this record declares
          * @param message the one text
          * @return the error body, stamped with the current moment
          */

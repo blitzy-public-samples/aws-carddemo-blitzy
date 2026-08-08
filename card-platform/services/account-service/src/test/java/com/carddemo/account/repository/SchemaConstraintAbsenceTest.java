@@ -1,7 +1,7 @@
 package com.carddemo.account.repository;
 
 import com.carddemo.account.entity.AccountEntity;
-import com.carddemo.account.entity.CardCrossReferenceEntity;
+import com.carddemo.account.entity.AccountCustomerLinkEntity;
 import com.carddemo.account.entity.CustomerEntity;
 import com.carddemo.account.entity.DisclosureGroupEntity;
 import com.carddemo.account.entity.OutboxEventEntity;
@@ -121,7 +121,7 @@ class SchemaConstraintAbsenceTest extends AbstractAccountPostgresTest {
             "us_state_zip_prefix",
             "outbox_event",
             "processed_event",
-            "card_xref");
+            "account_customer_link");
 
     /** The three tables whose source record ends in a trailing filler field. */
     private static final List<String> RECORD_TABLES =
@@ -146,12 +146,12 @@ class SchemaConstraintAbsenceTest extends AbstractAccountPostgresTest {
     /** The six JPA entity classes of this module. */
     private static final List<Class<?>> ENTITY_CLASSES = List.of(
             AccountEntity.class,
-            CardCrossReferenceEntity.class,
+            AccountCustomerLinkEntity.class,
             CustomerEntity.class,
             DisclosureGroupEntity.class,
             OutboxEventEntity.class,
             ProcessedEventEntity.class,
-            CardCrossReferenceEntity.class);
+            AccountCustomerLinkEntity.class);
 
     /** The two repository interfaces the account update path reads and writes through. */
     private static final List<Class<?>> REPOSITORY_INTERFACES =

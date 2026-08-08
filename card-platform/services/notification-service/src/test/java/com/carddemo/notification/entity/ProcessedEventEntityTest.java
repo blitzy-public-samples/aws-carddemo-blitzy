@@ -65,9 +65,10 @@ import org.junit.jupiter.api.function.Executable;
  * <p>Three columns carry one marker, and the tests pin all three as a closed set. A fourth field
  * fails them, as does a change to either mapped type.
  *
- * <p>Three consumer groups share one table. The notification service reads
- * {@code transaction.posted}, {@code fraud.assessed}, and {@code customer.context-changed} under
- * separate groups, while each marker names the event and its consumed topic.</p>
+ * <p>Four consumer groups share one table. The notification service reads
+ * {@code transaction.posted}, {@code fraud.assessed}, {@code customer.context-changed} and
+ * {@code transaction.authorized} under separate groups, and each marker names the event and its
+ * consumed topic.</p>
  *
  * <p>Boundary: the mapped shape is under test here. Catalogue reads, repository queries and
  * listener transactions belong to their own test packages.</p>
@@ -89,7 +90,10 @@ final class ProcessedEventEntityTest {
     /** The field naming the topic the first delivery arrived on. */
     private static final String TOPIC_FIELD = "consumedTopic";
 
-    /** Column of {@link #EVENT_ID_FIELD}, and the whole primary key. */
+    /**
+     * Column of {@link #EVENT_ID_FIELD}, and the first half of the primary key
+     * {@code (event_id, consumed_topic)} that {@code V3__processed_event_topic_key.sql} declares.
+     */
     private static final String EVENT_ID_COLUMN = "event_id";
 
     /** Column of {@link #PROCESSED_AT_FIELD}. */
@@ -145,14 +149,6 @@ final class ProcessedEventEntityTest {
             JoinColumn.class, JoinTable.class, Index.class);
 
     /**
-     * Returns the fields that map a column, with synthetic and static members dropped.
-     *
-     * <p>The key of this entity is an {@code @EmbeddedId}, so one declared field stands for two
-     * columns. That field is expanded in place and the key class's own fields take its position,
-     * which keeps the subject of every assertion below what it has always been: the columns this
-     * entity maps, whichever class declares them. The entity's own key field is not itself a mapped
-     * column and does not appear.</p>
-     *
      * @return the mapped fields, in declaration order with the key expanded
      */
     private static List<Field> instanceFields() {
@@ -171,8 +167,6 @@ final class ProcessedEventEntityTest {
     }
 
     /**
-     * Returns the fields the embedded key declares, with synthetic and static members dropped.
-     *
      * @return the key's mapped fields, in declaration order
      */
     private static List<Field> keyFields() {
@@ -187,8 +181,6 @@ final class ProcessedEventEntityTest {
     }
 
     /**
-     * Returns the names of the fields the embedded key declares.
-     *
      * @return the key's field names, in declaration order
      */
     private static List<String> keyFieldNames() {
@@ -200,8 +192,6 @@ final class ProcessedEventEntityTest {
     }
 
     /**
-     * Returns the one field of the entity that carries the key.
-     *
      * @return the declared field carrying {@code @EmbeddedId}
      */
     private static Field keyField() {
@@ -215,8 +205,6 @@ final class ProcessedEventEntityTest {
     }
 
     /**
-     * Returns the names of the instance fields.
-     *
      * @return the field names, in declaration order
      */
     private static List<String> instanceFieldNames() {
@@ -260,8 +248,6 @@ final class ProcessedEventEntityTest {
     }
 
     /**
-     * Returns the column names the instance fields map.
-     *
      * @return the column names, in field declaration order
      */
     private static List<String> columnNames() {
@@ -307,8 +293,6 @@ final class ProcessedEventEntityTest {
     }
 
     /**
-     * Returns the no-argument constructor the persistence provider calls.
-     *
      * @return the declared constructor that takes no argument
      */
     private static Constructor<?> noArgumentConstructor() {
@@ -321,8 +305,6 @@ final class ProcessedEventEntityTest {
     }
 
     /**
-     * Returns the parameter count of every declared constructor.
-     *
      * @return one count per constructor
      */
     private static List<Integer> constructorArities() {
@@ -334,8 +316,6 @@ final class ProcessedEventEntityTest {
     }
 
     /**
-     * Returns the names of the methods the class declares, with synthetic members dropped.
-     *
      * @return one name per declared method
      */
     private static List<String> declaredMethodNames() {

@@ -543,6 +543,12 @@ public class CardQueryService {
      * the filter, and the class test runs after the width is settled. A value narrower than the
      * stored key is padded first, so the digits a caller sent are what the test reads.
      *
+     * <p>The route reaches this method with a filter or with nothing. {@code GET /cards} requires the
+     * account and refuses eleven zero digits at the boundary, through
+     * {@code api/CardController#ACCOUNT_ID_PRESENT_PATTERN}, so no request over the Hypertext
+     * Transfer Protocol names an account and reads a page of every account's cards. The blank and
+     * all-zero branch below answers a direct call that names no filter.
+     *
      * @param accountId the account identifier a caller named, or {@code null}
      * @return the eleven-digit filter, or {@code null} to match every account
      * @throws CardFilterRejectedException if the value exceeds

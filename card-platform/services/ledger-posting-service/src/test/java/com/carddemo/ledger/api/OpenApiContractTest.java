@@ -38,6 +38,22 @@ final class OpenApiContractTest {
     /** The one path this service serves. */
     private static final String BALANCE_PATH = "/balances/{accountId}";
 
+    /** The three monetary properties the success schema publishes, each as a decimal string. */
+    private static final List<String> AMOUNT_PROPERTIES =
+            List.of("currentBalance", "cycleCredit", "cycleDebit");
+
+    /** The form every published amount takes: an optional sign, then two fractional digits. */
+    private static final String TWO_PLACE_DECIMAL = "^-?\\d{1,10}\\.\\d{2}$";
+
+    /** Java component types paired with the JSON type a property describing one must declare. */
+    private static final Map<Class<?>, String> JSON_TYPES =
+            Map.of(String.class, "string", int.class, "integer");
+
+    /** Each published schema paired with the record whose components it describes. */
+    private static final Map<String, Class<?>> PUBLISHED_RECORDS = Map.of(
+            "ApiProblem", ApiProblem.class,
+            "AccountBalance", BalanceQueryController.AccountBalance.class);
+
     /** The document, read once. */
     private static Map<String, Object> document;
 
@@ -113,9 +129,34 @@ final class OpenApiContractTest {
 
         String documented = String.valueOf(schema.get("pattern"));
         assertEquals("^[0-9]{11}$", documented, "eleven digits, from ACCT-ID PIC 9(11)");
+        assertEquals(controllerPattern(), documented,
+                "the documented pattern is the one the handler constrains its path variable with,"
+                        + " so a change in the controller cannot leave this document behind");
         assertTrue("00000000001".matches(documented), "a seeded identifier passes");
         assertFalse("1".matches(documented), "a short value does not");
         assertFalse("abcdefghijk".matches(documented), "eleven letters do not");
+    }
+
+    /**
+     * Reads the pattern the controller constrains its path variable with.
+     *
+     * <p>The constant is private, which keeps it off the surface of the service. Reading it
+     * reflectively holds the document to the code without widening that surface for a test, and a
+     * removal or rename fails here with a message that says which constant went missing rather than
+     * with a compile error in a place a reader would not look for one.
+     *
+     * @return the pattern the handler applies
+     */
+    private static String controllerPattern() {
+        try {
+            java.lang.reflect.Field declared =
+                    BalanceQueryController.class.getDeclaredField("ACCOUNT_ID_PATTERN");
+            declared.setAccessible(true);
+            return String.valueOf(declared.get(null));
+        } catch (ReflectiveOperationException unreadable) {
+            throw new AssertionError("api/BalanceQueryController no longer declares"
+                    + " ACCOUNT_ID_PATTERN, so this document cannot be held to it", unreadable);
+        }
     }
 
     /**
@@ -124,23 +165,30 @@ final class OpenApiContractTest {
      * <p>This is the assertion the ledger did not have. The document published {@code 200},
      * {@code 400} and {@code 404} while the service also answered {@code 401}, {@code 403} and, for a
      * paused datastore, {@code 500} where {@code 503} is what a caller can act on.
+     *
+     * <p>{@code 405} and {@code 406} are the two protocol refusals
+     * {@link LedgerApiExceptionHandler#onUnsupportedRequest} carries the framework status of. A wrong
+     * method answered {@code 500} before that arm existed, so publishing the status is what tells a
+     * caller the two answers are different things.
      */
     @Test
     @DisplayName("every published status is one the code answers, and every one it answers is published")
     void thePublishedStatusesAreTheStatusesTheCodeAnswers() {
-        assertEquals(Set.of("200", "400", "401", "403", "404", "500", "503"),
+        assertEquals(
+                Set.of("200", "400", "401", "403", "404", "405", "406", "429", "500", "503"),
                 responseKeys(BALANCE_PATH),
-                "the seven statuses this route answers");
+                "the ten statuses this route answers");
 
-        Set<Integer> handlerStatuses = Set.of(400, 503, 500);
+        Set<Integer> handlerStatuses = Set.of(400, 405, 406, 503, 500);
         for (int status : handlerStatuses) {
             assertTrue(responseKeys(BALANCE_PATH).contains(String.valueOf(status)),
                     "api/LedgerApiExceptionHandler answers " + status
                             + ", so the document publishes it");
         }
-        assertEquals(handlerStatuses.size(), declaredHandlerArms(),
-                "the handler declares one arm per documented failure status: three arms, "
-                        + "three statuses");
+        assertEquals(handlerStatuses.size() - 1, declaredHandlerArms(),
+                "the handler declares one arm per documented failure status, and the protocol arm "
+                        + "carries whichever status the framework named, so four arms answer five "
+                        + "statuses");
     }
 
     /**
@@ -153,7 +201,7 @@ final class OpenApiContractTest {
     void everyFailingStatusCarriesTheProblemDocument() {
         Map<String, Object> responses = asMap(operations().get(0).get("responses"));
 
-        for (String status : List.of("400", "401", "403", "500", "503")) {
+        for (String status : List.of("400", "401", "403", "429", "500", "503")) {
             Map<String, Object> content = asMap(asMap(responses.get(status)).get("content"));
             assertEquals(Set.of("application/problem+json"), content.keySet(),
                     status + " answers one media type, the one RFC 9457 names");
@@ -200,6 +248,91 @@ final class OpenApiContractTest {
         assertTrue(String.valueOf(asMap(properties.get("status")).get("enum")).contains("503"),
                 "the status enumeration carries 503: "
                         + asMap(properties.get("status")).get("enum"));
+    }
+
+    /**
+     * Asserts the published success shape matches the record the handler returns, and that every
+     * amount is published as a decimal string rather than as a number.
+     *
+     * <p>The error schema above was already held to its record. This one was not, so a property the
+     * record does not carry, a renamed one, or a missing one could be published and read as correct.
+     *
+     * <p>The string form is the point rather than a preference. {@code ACCT-CURR-BAL PIC S9(10)V99}
+     * at {@code app/cpy/CVACT01Y.cpy:L7} carries ten integer digits and two fractional digits, which
+     * is more precision than a double holds exactly. Most parsers read a JSON number into a double,
+     * so publishing these as numbers would put binary floating point back into the values this
+     * platform's equivalence argument rests on being fixed point.
+     */
+    @Test
+    @DisplayName("the balance schema matches the record, and every amount is a decimal string")
+    void theBalanceSchemaMatchesTheRecord() {
+        Map<String, Object> schema = schema("AccountBalance");
+        List<java.lang.reflect.RecordComponent> components =
+                List.of(BalanceQueryController.AccountBalance.class.getRecordComponents());
+        List<String> names = components.stream()
+                .map(java.lang.reflect.RecordComponent::getName).toList();
+        Map<String, Object> properties = asMap(schema.get("properties"));
+
+        assertEquals(Boolean.FALSE, schema.get("additionalProperties"), "no fifth member");
+        assertEquals(names, schema.get("required"),
+                "every member of the record is required, in the order the record declares them");
+        assertEquals(new LinkedHashSet<>(names), properties.keySet(),
+                "the properties are the components of the returned record and no others");
+        assertEquals(List.of(), components.stream()
+                        .filter(component -> component.getType() != String.class).toList(),
+                "every component is declared as text, so no amount can be widened to a number");
+        assertEquals(controllerPattern(), asMap(properties.get("accountId")).get("pattern"),
+                "the echoed identifier carries the pattern the handler constrains");
+
+        for (String amount : AMOUNT_PROPERTIES) {
+            assertTrue(properties.containsKey(amount),
+                    () -> "the schema publishes " + amount + ", found " + properties.keySet());
+            Map<String, Object> published = asMap(properties.get(amount));
+            assertEquals("string", published.get("type"),
+                    amount + " is published as a decimal string, never as a number");
+            assertEquals(TWO_PLACE_DECIMAL, published.get("pattern"),
+                    amount + " carries the two fractional digits PIC S9(10)V99 declares");
+        }
+    }
+
+    /**
+     * Asserts every property of both published schemas declares the JSON type its record component
+     * holds.
+     *
+     * <p>The two tests above hold each schema to the <em>names</em> its record declares. Neither held
+     * it to the types, so a property could describe a number where the record carries text, or the
+     * reverse. A generated client reads the declared type rather than the description, so that drift
+     * reaches callers as a deserialization failure or, worse, as a silently rounded amount.
+     *
+     * <p>The claim is made over every property of both schemas rather than over the one that drifted,
+     * so a property added later is covered without this test being revisited.
+     */
+    @Test
+    @DisplayName("every published property declares the JSON type its record component holds")
+    void everyPublishedPropertyDeclaresItsComponentType() {
+        List<String> mismatches = new java.util.ArrayList<>();
+        for (Map.Entry<String, Class<?>> published : PUBLISHED_RECORDS.entrySet()) {
+            Map<String, Object> properties = asMap(schema(published.getKey()).get("properties"));
+            for (java.lang.reflect.RecordComponent component
+                    : published.getValue().getRecordComponents()) {
+                String expected = JSON_TYPES.get(component.getType());
+                assertNotNull(expected, () -> "this test carries no JSON type for "
+                        + component.getType() + ", newly held by " + published.getKey() + "."
+                        + component.getName());
+                if (!properties.containsKey(component.getName())) {
+                    mismatches.add(published.getKey() + " publishes no " + component.getName());
+                    continue;
+                }
+                Object declared = asMap(properties.get(component.getName())).get("type");
+                if (!expected.equals(declared)) {
+                    mismatches.add(published.getKey() + "." + component.getName() + " declares "
+                            + declared + " for a " + component.getType().getSimpleName());
+                }
+            }
+        }
+
+        assertEquals(List.of(), mismatches,
+                "properties whose declared type is not the type their component holds");
     }
 
     /**

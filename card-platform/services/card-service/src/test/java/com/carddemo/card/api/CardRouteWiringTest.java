@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -84,12 +85,11 @@ class CardRouteWiringTest {
 
     /** A complete update body, which the update route accepts whole. */
     private static final String UPDATE_BODY = """
-            {"cardNumber":"4111111111111150","embossedName":"ALEXANDER J MORGAN",\
+            {"embossedName":"ALEXANDER J MORGAN",\
             "expiryYear":"2029","expiryMonth":"12","expiryDay":"31","activeStatus":"N"}""";
 
-    /** A complete read body. */
-    private static final String DETAIL_BODY = """
-            {"accountId":"00000000050","cardNumber":"4111111111111150"}""";
+    /** The path of the two routes that name one card. */
+    private static final String CARD_PATH = "/cards/" + CARD_NUMBER;
 
     private CardQueryService cardQueries;
     private CardUpdateService cardUpdates;
@@ -104,11 +104,10 @@ class CardRouteWiringTest {
         when(cardQueries.listForward(any(), any(), any(), any())).thenReturn(page());
         when(cardQueries.listBackward(any(), any(), any(), any())).thenReturn(page());
         when(cardQueries.findByCardNumber(any())).thenReturn(Optional.of(storedCard()));
-        when(cardUpdates.updateCard(any())).thenReturn(CardUpdateResponse.updated());
+        when(cardUpdates.updateCard(any(), any())).thenReturn(CardUpdateResponse.updated());
 
         mockMvc = MockMvcBuilders
-                .standaloneSetup(validating(new CardController(cardQueries, cardUpdates,
-                        masked -> true)))
+                .standaloneSetup(validating(new CardController(cardQueries, cardUpdates)))
                 .setControllerAdvice(new CardApiExceptionHandler())
                 .build();
     }
@@ -180,8 +179,7 @@ class CardRouteWiringTest {
         /** Asserts the read route is mapped and reaches the read side. */
         @Test
         void theReadRouteIsMapped() throws Exception {
-            MvcResult result = mockMvc.perform(post("/cards/detail")
-                    .contentType(MediaType.APPLICATION_JSON).content(DETAIL_BODY)).andReturn();
+            MvcResult result = mockMvc.perform(get(CARD_PATH)).andReturn();
 
             assertEquals(200, result.getResponse().getStatus(), "the route exists");
             assertTrue(result.getResponse().getContentAsString().contains("************1150"),
@@ -197,26 +195,33 @@ class CardRouteWiringTest {
          */
         @Test
         void theUpdateRouteIsMapped() throws Exception {
-            MvcResult result = mockMvc.perform(put("/cards")
+            MvcResult result = mockMvc.perform(put(CARD_PATH)
                     .contentType(MediaType.APPLICATION_JSON).content(UPDATE_BODY)).andReturn();
 
             assertEquals(200, result.getResponse().getStatus(), "the route exists");
             assertTrue(result.getResponse().getContentAsString().contains("UPDATED"),
                     "the handler ran and the outcome reached the response");
-            verify(cardUpdates).updateCard(any());
+            verify(cardUpdates).updateCard(eq(CARD_NUMBER), any());
         }
 
-        /** Asserts no route of this service carries a card number in its path. */
+        /**
+         * Asserts every mapping holds a variable name and no resolved identifier.
+         *
+         * <p>Two routes carry the card number as a path variable, reproducing transaction
+         * {@code CCDL} at {@code app/csd/CARDDEMO.CSD:L347-L348} and transaction {@code CCUP} at
+         * {@code app/csd/CARDDEMO.CSD:L367-L369}. A mapping is a template, so it holds the variable
+         * name and never a value a caller sent.
+         */
         @Test
-        void noRouteCarriesACardNumberInItsPath() {
+        void everyMappingHoldsAVariableNameAndNoResolvedIdentifier() {
             for (String mapping : declaredMappings()) {
-                assertFalse(mapping.matches(".*\\{\\w*[Cc]ard\\w*\\}.*"),
-                        "a path variable naming a card would put one in every access log: "
-                                + mapping);
                 assertFalse(mapping.matches(".*\\d{5,}.*"),
                         "a mapping holding a run of five digits would be a resolved key: "
                                 + mapping);
             }
+            assertTrue(declaredMappings().contains("/cards/{cardNumber}"),
+                    "the two card-numbered routes carry the variable the source keys on at "
+                            + "app/cbl/COCRDSLC.cbl:L740: " + declaredMappings());
         }
     }
 
@@ -273,9 +278,9 @@ class CardRouteWiringTest {
         /** Asserts an unreadable body answers 400 and discloses nothing of the body. */
         @Test
         void anUnreadableBodyAnswersBadRequest() throws Exception {
-            MvcResult result = mockMvc.perform(put("/cards")
+            MvcResult result = mockMvc.perform(put(CARD_PATH)
                     .contentType(MediaType.APPLICATION_JSON)
-                    .content("{\"cardNumber\":\"" + CARD_NUMBER)).andReturn();
+                    .content("{\"embossedName\":\"" + CARD_NUMBER)).andReturn();
 
             assertEquals(400, result.getResponse().getStatus(), "the body could not be read");
             assertFalse(result.getResponse().getContentAsString().contains(CARD_NUMBER),
@@ -283,16 +288,17 @@ class CardRouteWiringTest {
                             + result.getResponse().getContentAsString());
         }
 
-        /** Asserts a read body that fails an edit answers 422 through the handler chain. */
+        /** Asserts a card number of another shape in the path answers 400 through the chain. */
         @Test
-        void aReadBodyThatFailsAnEditAnswersUnprocessable() throws Exception {
-            MvcResult result = mockMvc.perform(post("/cards/detail")
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .content("{\"accountId\":\"\",\"cardNumber\":\"\"}")).andReturn();
+        void aPathValueOfAnotherShapeAnswersBadRequest() throws Exception {
+            MvcResult result = mockMvc.perform(get("/cards/411111111111115X")).andReturn();
 
-            assertEquals(422, result.getResponse().getStatus(), "an edit refused the request");
-            assertTrue(result.getResponse().getContentAsString().contains("No input received"),
-                    "the cross-field text reaches the caller");
+            assertEquals(400, result.getResponse().getStatus(),
+                    "the constraint on the path variable refused the request");
+            assertTrue(result.getResponse().getContentAsString()
+                            .contains("CARD ID FILTER,IF SUPPLIED MUST BE A 16 DIGIT NUMBER"),
+                    "the text app/cbl/COCRDUPC.cbl:L789 declares reaches the caller: "
+                            + result.getResponse().getContentAsString());
         }
     }
 
@@ -348,7 +354,7 @@ class CardRouteWiringTest {
         /** Asserts the two mapped paths are the exact set, so neither side carries a third. */
         @Test
         void theTwoMappedPathsAreTheExactSet() {
-            assertEquals(new TreeSet<>(List.of("/cards", "/cards/detail")),
+            assertEquals(new TreeSet<>(List.of("/cards", "/cards/{cardNumber}")),
                     new TreeSet<>(declaredMappings()),
                     "three Customer Information Control System transactions over two paths");
         }

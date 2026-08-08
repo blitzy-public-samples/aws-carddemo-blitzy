@@ -236,8 +236,16 @@ class TransactionPostedConsumerTest {
         verifyNoInteractions(processedEvents, postedTransactionService);
         verify(acknowledgment, never()).acknowledge();
         assertThat(counter("carddemo.account.events.consumed"))
-                .as("a refused record counted as one this service read")
-                .isZero();
+                .as("the delivery reached this service, so it is counted as read")
+                .isEqualTo(1.0d);
+        assertThat(counter("carddemo.account.transaction.failures",
+                ObservabilityConfig.POSTING_OPERATION))
+                .as("a refusal is a failure of this listener, and it travels to the dead-letter "
+                        + "topic; counting it nowhere left that record invisible")
+                .isEqualTo(1.0d);
+        assertThat(timerCount("carddemo.account.posting.latency"))
+                .as("the refusal is timed like every other delivery")
+                .isEqualTo(1L);
     }
 
     @Test
@@ -251,6 +259,12 @@ class TransactionPostedConsumerTest {
 
         verifyNoInteractions(processedEvents, postedTransactionService);
         verify(acknowledgment, never()).acknowledge();
+        assertThat(counter("carddemo.account.events.consumed"))
+                .as("an unkeyed delivery is still a delivery this service read")
+                .isEqualTo(1.0d);
+        assertThat(counter("carddemo.account.transaction.failures",
+                ObservabilityConfig.POSTING_OPERATION))
+                .isEqualTo(1.0d);
     }
 
     @Test

@@ -81,12 +81,35 @@ public interface ProcessedEventRepository
      * <p>The delete matches on {@code processed_at} rather than on either key column, so it removes
      * a whole row whichever topic keyed it.
      *
+     * <p>{@code limit} bounds one statement. An unbounded delete holds every row it removes under
+     * one lock for the whole statement, so a schema idle long enough to accumulate a week of
+     * markers takes one long statement that blocks every listener writing this table.
+     * {@code domain/RetentionSweep} repeats this call until it removes fewer rows than the limit,
+     * which drains the same backlog in short transactions that each release their locks.
+     *
+     * <p>{@code ORDER BY processed_at} makes the batches deterministic and lets
+     * {@code ix_processed_event_processed_at} serve both the subquery and the ordering, so the
+     * oldest markers leave first and no batch overlaps another.
+     *
+     * <p>The subquery names both key columns, because {@code V6__processed_event_topic_key.sql}
+     * made the key the event identifier and the topic together, and a delete matching on one of
+     * them would remove a marker another topic's delivery still needs.
+     *
      * @param horizon the instant before which a marker is removed
+     * @param limit   the largest number of markers one statement removes
      * @return the number of markers removed
      */
     @Modifying
-    @Query("DELETE FROM ProcessedEventEntity marker WHERE marker.processedAt < :horizon")
-    int deleteMarkersProcessedBefore(@Param("horizon") Instant horizon);
+    @Query(value = """
+            DELETE FROM processed_event
+            WHERE (event_id, consumed_topic) IN (SELECT event_id, consumed_topic
+                                                 FROM processed_event
+                                                 WHERE processed_at < :horizon
+                                                 ORDER BY processed_at
+                                                 LIMIT :limit)
+            """, nativeQuery = true)
+    int deleteMarkersProcessedBefore(@Param("horizon") Instant horizon,
+            @Param("limit") int limit);
 
     /**
      * Claims one event identifier for processing, and reports whether this caller is the first to

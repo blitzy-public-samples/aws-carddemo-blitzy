@@ -20,37 +20,17 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Reads the seeded {@code disclosure_group} rows through {@link DisclosureGroupRepository} and
  * checks the composite key and the stored rate.
  *
- * <p>{@link AbstractAccountPostgresTest} owns the one PostgreSQL container, and this class declares
- * none. Every method here reads. None inserts, updates or deletes a row.</p>
+ * <p>The composite key spans the three fields of {@code 05 DIS-GROUP-KEY.} at
+ * {@code app/cpy/CVTRA02Y.cpy:L5-L8}, sixteen characters in total, which is the
+ * {@code KEYS(16 0)} of {@code app/jcl/DISCGRP.jcl:L40}. The one field after it is
+ * {@code DIS-INT-RATE PIC S9(04)V99} at {@code app/cpy/CVTRA02Y.cpy:L9}. The rows come from
+ * {@code src/main/resources/db/migration/V2__seed.sql}, which loads the 51 records of
+ * {@code app/data/ASCII/discgrp.txt} and reproduces the {@code REPRO} step at
+ * {@code app/jcl/DISCGRP.jcl:L61}. A trailing brace in a rate field carries a positive overpunch
+ * sign. Every expected value below is read from the database.</p>
  *
- * <p><b>The sixteen-character key.</b> {@code 05 DIS-GROUP-KEY.} at
- * {@code app/cpy/CVTRA02Y.cpy:L5} spans three fields. Their widths total sixteen, the key width
- * {@code app/jcl/DISCGRP.jcl:L40} declares as {@code KEYS(16 0)}.</p>
- *
- * | Key part | Source field | Locator | Width |
- * |---|---|---|---|
- * | account group identifier | {@code DIS-ACCT-GROUP-ID PIC X(10)} | {@code app/cpy/CVTRA02Y.cpy:L6} | 10 |
- * | transaction type code | {@code DIS-TRAN-TYPE-CD PIC X(02)} | {@code app/cpy/CVTRA02Y.cpy:L7} | 2 |
- * | transaction category code | {@code DIS-TRAN-CAT-CD PIC 9(04)} | {@code app/cpy/CVTRA02Y.cpy:L8} | 4 |
- *
- * <p><b>The one field after the key.</b> {@code DIS-INT-RATE PIC S9(04)V99} at
- * {@code app/cpy/CVTRA02Y.cpy:L9} holds six digits, two of them after the decimal point. Those 22
- * mapped characters and the 28-character {@code FILLER} at {@code app/cpy/CVTRA02Y.cpy:L10} total
- * the {@code RECORDSIZE(50 50)} of {@code app/jcl/DISCGRP.jcl:L41}.</p>
- *
- * <p><b>Where the rows come from.</b> {@code src/main/resources/db/migration/V2__seed.sql} loads
- * the 51 records of {@code app/data/ASCII/discgrp.txt}, reproducing the {@code REPRO} step at
- * {@code app/jcl/DISCGRP.jcl:L61}. Record 1 reads <code>A00000000001000100150{</code> and then 28
- * filler characters. Its six-character field <code>00150{</code> carries a positive sign in the
- * trailing brace, an encoding that decodes to 15.00. Every expected value below is read from the
- * database.</p>
- *
- * <p><b>The shape of the interface.</b> {@code app/cbl/CBSTM03B.CBL:L100} declares one parameter
- * area for every dataset, and {@code app/cbl/CBSTM03B.CBL:L102} holds a one-character operation
- * code with six values at {@code app/cbl/CBSTM03B.CBL:L103-L108}. The {@code EVALUATE} at
- * {@code app/cbl/CBSTM03B.CBL:L118-L127} routes one call to one of four datasets. The keyed read
- * code maps to {@code findById}. The open and close codes map to nothing here, and the framework
- * owns the connection lifecycle.</p>
+ * <p>{@link AbstractAccountPostgresTest} owns the one PostgreSQL container. Every method here
+ * reads; none inserts, updates or deletes.</p>
  */
 @DisplayName("DisclosureGroupRepository over the 51 seeded disclosure group rows")
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
@@ -92,11 +72,12 @@ class DisclosureGroupRepositoryTest extends AbstractAccountPostgresTest {
     private DisclosureGroupRepository repository;
 
     @Test
-    @DisplayName("the repository exposes findById and findAll, and no write operation")
-    void repositoryExposesTwoReadMethods() {
+    @DisplayName("the interface declares no method and inherits both reads it needs")
+    void repositoryDeclaresNoMethodOfItsOwn() {
+        assertThat(DisclosureGroupRepository.class.getDeclaredMethods()).isEmpty();
         assertThat(DisclosureGroupRepository.class.getMethods())
                 .extracting(Method::getName)
-                .containsExactlyInAnyOrder(KEYED_READ_METHOD, FULL_READ_METHOD);
+                .contains(KEYED_READ_METHOD, FULL_READ_METHOD);
     }
 
     @Test
@@ -182,12 +163,6 @@ class DisclosureGroupRepositoryTest extends AbstractAccountPostgresTest {
     }
 
     /**
-     * Builds the key of record 1 in the form the three columns store.
-     *
-     * <p>{@code account_group_id} is {@code VARCHAR(10)} and holds the ten characters supplied.
-     * {@code transaction_type_code} is {@code CHAR(2)} and {@code transaction_category_code} is
-     * {@code CHAR(4)}, and both values here fill their column.</p>
-     *
      * @return a key for group {@code A000000000}, type {@code 01} and category {@code 0001}
      */
     private DisclosureGroupId firstSeededKey() {

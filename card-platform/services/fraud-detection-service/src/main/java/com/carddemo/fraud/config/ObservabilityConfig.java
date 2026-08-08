@@ -16,18 +16,21 @@ import org.springframework.context.annotation.Configuration;
  * <p>No COBOL ancestor. Searching {@code app/cbl/} for {@code fraud},
  * {@code velocit}, {@code risk} and {@code scoring} matches zero of its 28 programs.
  *
- * <p>{@link FraudMeters} holds nine meters under five names, covering the three families a
+ * <p>{@link FraudMeters} holds eleven series under seven names, covering the three families a
  * demonstration shows: events consumed, processing latency, and failure count. Spring Boot supplies
- * the {@link MeterRegistry}, and all nine register at start-up, so a scrape taken before the first
+ * the {@link MeterRegistry}, and all ten register at start-up, so a scrape taken before the first
  * message lists them at zero.
  *
- * <p>Two of those names measure failure, and they count different things on purpose.
+ * <p>Three of those names measure failure, and they count different things on purpose.
  * {@code carddemo.fraud.failures} counts one delivery or publish ATTEMPT, tagged by the stage that
  * failed, which is what makes a retry storm visible. {@code carddemo.fraud.dead.letters} counts one
  * RECORD whose attempts are spent, tagged by what became of its diagnostic. Without the second name a
  * retried record and a permanently lost one are the same reading, which is the distinction an
- * operator needs first. Nothing is counted twice: the two names have different denominators, and the
- * Javadoc of each recording method names its own.
+ * operator needs first. {@code carddemo.fraud.outbox.abandoned} counts one ROW the relay gave up on,
+ * and reading it beside the second name says whether every abandonment was actually named: the two
+ * agree while each is, and the abandoned reading runs ahead while a diagnostic is still owed.
+ * Nothing is counted twice: the three names have different denominators, and the Javadoc of each
+ * recording method names its own.
  *
  * <p>The two counter names follow {@code WS-TRANSACTION-COUNT} and {@code WS-REJECT-COUNT} at
  * {@code app/cbl/CBTRN02C.cbl:L185-L186}, printed to the job log at
@@ -109,9 +112,11 @@ public class ObservabilityConfig {
         private final Timer processingLatency;
         private final Counter deserializeFailures;
         private final Counter processFailures;
+        private final Counter eventsPublished;
         private final Counter publishFailures;
         private final Counter deadLettersPublished;
         private final Counter deadLettersFailed;
+        private final Counter outboxAbandoned;
 
         /** Tag value of a diagnostic the broker acknowledged on the dead-letter topic. */
         public static final String DEAD_LETTER_PUBLISHED = "published";
@@ -119,7 +124,7 @@ public class ObservabilityConfig {
         /** Tag value of a diagnostic the broker refused. */
         public static final String DEAD_LETTER_FAILED = "failed";
 
-        /** Registers all nine meters against {@code registry}. */
+        /** Registers all eleven series against {@code registry}. */
         FraudMeters(MeterRegistry registry) {
             Objects.requireNonNull(registry, "registry");
             this.eventsConsumed = Counter.builder("carddemo.fraud.events.consumed")
@@ -144,6 +149,10 @@ public class ObservabilityConfig {
                     .tag("stage", "process")
                     .description("Processing faults, tagged by the stage that failed")
                     .register(registry);
+            this.eventsPublished = Counter.builder("carddemo.fraud.events.published")
+                    .description("Assessment events the broker acknowledged, counted after the tick"
+                            + " that sent them committed")
+                    .register(registry);
             this.publishFailures = Counter.builder("carddemo.fraud.failures")
                     .tag("stage", "publish")
                     .description("Processing faults, tagged by the stage that failed")
@@ -157,6 +166,10 @@ public class ObservabilityConfig {
                     .tag("outcome", DEAD_LETTER_FAILED)
                     .description("Records whose attempts are spent, by what became of the"
                             + " diagnostic naming them")
+                    .register(registry);
+            this.outboxAbandoned = Counter.builder("carddemo.fraud.outbox.abandoned")
+                    .description("Outbox rows this service gave up on after"
+                            + " MAX_DELIVERY_ATTEMPTS attempts")
                     .register(registry);
         }
 
@@ -173,6 +186,25 @@ public class ObservabilityConfig {
         /** Counts one assessment that cleared a transaction. */
         public void recordAssessmentCleared() {
             assessmentsCleared.increment();
+        }
+
+        /**
+         * Counts the outbox rows one committed tick published.
+         *
+         * <p>{@code carddemo.fraud.assessments.produced} counts a row WRITTEN to the outbox and this
+         * series counts a publication the broker ACKNOWLEDGED. Both readings are needed: a relay that
+         * cannot reach the broker leaves the first rising and this one flat, which is what separates a
+         * stalled relay from a service with nothing to say.
+         *
+         * <p>Counted after the tick's transaction commits, so a row whose {@code published} mark
+         * rolled back is not counted here.
+         *
+         * @param rows publications the broker acknowledged in one committed tick
+         */
+        public void recordEventsPublished(long rows) {
+            if (rows > 0L) {
+                eventsPublished.increment(rows);
+            }
         }
 
         /**
@@ -240,6 +272,20 @@ public class ObservabilityConfig {
          */
         public void recordDeadLetterFailure() {
             deadLettersFailed.increment();
+        }
+
+        /**
+         * Counts one outbox row this relay gave up on after spending its attempts.
+         *
+         * <p>One increment per ROW, and separate from {@link #recordPublishFailure()} because that
+         * series counts attempts: ten refused attempts on one row read as ten there and as one
+         * here. Reading this beside {@code carddemo.fraud.dead.letters} answers the only question
+         * that matters once a row is spent, which is whether the assessment nobody will receive is
+         * at least named somewhere. The two readings agree while every abandonment is named, and
+         * this one runs ahead while diagnostics are owed.
+         */
+        public void recordOutboxAbandoned() {
+            outboxAbandoned.increment();
         }
     }
 }

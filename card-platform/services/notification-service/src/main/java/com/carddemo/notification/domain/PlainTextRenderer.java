@@ -305,8 +305,8 @@ public final class PlainTextRenderer implements NotificationRenderer {
     private static final String TOTAL_LABEL = "Total EXP:";
 
     /**
-     * Label the fraud alert gives the flagged transaction. with no COBOL ancestor.
-     * Holds {@value #LABEL_WIDTH} characters, matching the labels of {@code ST-LINE7} through
+     * Label the fraud alert gives the flagged transaction. No COBOL ancestor. Holds
+     * {@value #LABEL_WIDTH} characters, matching the labels of {@code ST-LINE7} through
      * {@code ST-LINE9}.
      */
     private static final String TRANSACTION_ID_LABEL = "Transaction ID     :";
@@ -318,8 +318,8 @@ public final class PlainTextRenderer implements NotificationRenderer {
     private static final String RISK_SCORE_LABEL = "Risk Score         :";
 
     /**
-     * Label the fraud alert gives the rule identifier list. with no COBOL ancestor.
-     * Holds {@value #LABEL_WIDTH} characters.
+     * Label the fraud alert gives the rule identifier list. No COBOL ancestor. Holds
+     * {@value #LABEL_WIDTH} characters.
      */
     private static final String TRIGGERED_RULES_LABEL = "Triggered Rules    :";
 
@@ -517,10 +517,7 @@ public final class PlainTextRenderer implements NotificationRenderer {
     /**
      * Builds {@code ST-LINE0} from {@code app/cbl/CBSTM03A.CBL:L86-L89}.
      *
-     * <p>Composition: asterisks {@value #OPENING_BANNER_FILL_WIDTH}, text
-     * {@value #OPENING_BANNER_TEXT_WIDTH}, asterisks
-     * {@value #OPENING_BANNER_FILL_WIDTH}, totalling {@value #RECORD_WIDTH}. The text field
-     * carries {@link #OPENING_BANNER_TEXT} once.</p>
+     * <p>The text field carries {@link #OPENING_BANNER_TEXT} once.</p>
      *
      * @return the opening banner record
      */
@@ -533,9 +530,7 @@ public final class PlainTextRenderer implements NotificationRenderer {
     /**
      * Builds {@code ST-LINE1} from {@code app/cbl/CBSTM03A.CBL:L90-L92}.
      *
-     * <p>Composition: name {@value #ST_NAME_WIDTH}, filler {@value #NAME_FILLER_WIDTH},
-     * totalling {@value #RECORD_WIDTH}. The name is the output of
-     * {@code STRING} at {@code app/cbl/CBSTM03A.CBL:L462-L469}.</p>
+     * <p>The name is the output of {@code STRING} at {@code app/cbl/CBSTM03A.CBL:L462-L469}.</p>
      *
      * @param context the cardholder fields
      * @return the name record
@@ -548,9 +543,7 @@ public final class PlainTextRenderer implements NotificationRenderer {
     /**
      * Builds {@code ST-LINE2} from {@code app/cbl/CBSTM03A.CBL:L93-L95}.
      *
-     * <p>Composition: address {@value #ST_ADD1_WIDTH}, filler
-     * {@value #ADDRESS_FILLER_WIDTH}, totalling {@value #RECORD_WIDTH}. The
-     * {@code MOVE CUST-ADDR-LINE-1 TO ST-ADD1} at {@code app/cbl/CBSTM03A.CBL:L470} fills
+     * <p>The {@code MOVE CUST-ADDR-LINE-1 TO ST-ADD1} at {@code app/cbl/CBSTM03A.CBL:L470} fills
      * it.</p>
      *
      * @param context the cardholder fields
@@ -564,9 +557,7 @@ public final class PlainTextRenderer implements NotificationRenderer {
     /**
      * Builds {@code ST-LINE3} from {@code app/cbl/CBSTM03A.CBL:L96-L98}.
      *
-     * <p>Composition: address {@value #ST_ADD2_WIDTH}, filler
-     * {@value #ADDRESS_FILLER_WIDTH}, totalling {@value #RECORD_WIDTH}. The
-     * {@code MOVE CUST-ADDR-LINE-2 TO ST-ADD2} at {@code app/cbl/CBSTM03A.CBL:L471} fills
+     * <p>The {@code MOVE CUST-ADDR-LINE-2 TO ST-ADD2} at {@code app/cbl/CBSTM03A.CBL:L471} fills
      * it.</p>
      *
      * @param context the cardholder fields
@@ -579,10 +570,6 @@ public final class PlainTextRenderer implements NotificationRenderer {
 
     /**
      * Builds {@code ST-LINE4} from {@code app/cbl/CBSTM03A.CBL:L99-L100}.
-     *
-     * <p>Composition: one field of {@value #ST_ADD3_WIDTH} and no filler. The group declares
-     * {@code ST-ADD3 PIC X(80)} alone, unlike {@code ST-LINE2} and {@code ST-LINE3}. The value
-     * is the output of {@code STRING} at {@code app/cbl/CBSTM03A.CBL:L472-L481}.</p>
      *
      * @param context the cardholder fields
      * @return the third address record
@@ -609,10 +596,7 @@ public final class PlainTextRenderer implements NotificationRenderer {
     /**
      * Builds {@code ST-LINE6} from {@code app/cbl/CBSTM03A.CBL:L103-L106}.
      *
-     * <p>Composition: filler {@value #BASIC_DETAILS_FILLER_WIDTH}, heading
-     * {@value #BASIC_DETAILS_HEADING_WIDTH}, filler
-     * {@value #BASIC_DETAILS_FILLER_WIDTH}, totalling {@value #RECORD_WIDTH}. The heading
-     * literal is 13 characters, so the heading field ends with one space.</p>
+     * <p>The heading literal is 13 characters, so the heading field ends with one space.</p>
      *
      * @return the {@code Basic Details} heading record
      */
@@ -625,10 +609,8 @@ public final class PlainTextRenderer implements NotificationRenderer {
     /**
      * Builds {@code ST-LINE7} from {@code app/cbl/CBSTM03A.CBL:L107-L110}.
      *
-     * <p>Composition: label {@value #LABEL_WIDTH}, account identifier
-     * {@value #ST_ACCT_ID_WIDTH}, filler {@value #LABEL_TRAILING_FILLER_WIDTH}, totalling
-     * {@value #RECORD_WIDTH}. The {@code MOVE ACCT-ID TO ST-ACCT-ID} at
-     * {@code app/cbl/CBSTM03A.CBL:L483} fills the value field.</p>
+     * <p>The {@code MOVE ACCT-ID TO ST-ACCT-ID} at {@code app/cbl/CBSTM03A.CBL:L483} fills the
+     * value field.</p>
      *
      * @param context the cardholder fields
      * @return the account identifier record
@@ -640,10 +622,7 @@ public final class PlainTextRenderer implements NotificationRenderer {
     /**
      * Builds {@code ST-LINE8} from {@code app/cbl/CBSTM03A.CBL:L111-L115}.
      *
-     * <p>Composition: label {@value #LABEL_WIDTH}, edited balance
-     * {@value #EDITED_AMOUNT_WIDTH}, filler {@value #BALANCE_FIRST_FILLER_WIDTH}, filler
-     * {@value #LABEL_TRAILING_FILLER_WIDTH}, totalling {@value #RECORD_WIDTH}. The group
-     * declares two consecutive fillers rather than one.</p>
+     * <p>The group declares two consecutive fillers rather than one.</p>
      *
      * <p>The balance arrives edited. {@code ST-CURR-BAL} is {@code PIC 9(9).99-} at
      * {@code app/cbl/CBSTM03A.CBL:L113}, so every digit position renders a digit, and
@@ -662,9 +641,7 @@ public final class PlainTextRenderer implements NotificationRenderer {
     /**
      * Builds {@code ST-LINE9} from {@code app/cbl/CBSTM03A.CBL:L116-L119}.
      *
-     * <p>Composition: label {@value #LABEL_WIDTH}, score {@value #ST_FICO_SCORE_WIDTH}, filler
-     * {@value #LABEL_TRAILING_FILLER_WIDTH}, totalling {@value #RECORD_WIDTH}. The
-     * {@code MOVE CUST-FICO-CREDIT-SCORE TO ST-FICO-SCORE} at
+     * <p>The {@code MOVE CUST-FICO-CREDIT-SCORE TO ST-FICO-SCORE} at
      * {@code app/cbl/CBSTM03A.CBL:L485} fills the value field.</p>
      *
      * @param context the cardholder fields
@@ -677,10 +654,7 @@ public final class PlainTextRenderer implements NotificationRenderer {
     /**
      * Builds {@code ST-LINE11} from {@code app/cbl/CBSTM03A.CBL:L122-L125}.
      *
-     * <p>Composition: filler {@value #SUMMARY_FILLER_WIDTH}, heading
-     * {@value #SUMMARY_HEADING_WIDTH}, filler {@value #SUMMARY_FILLER_WIDTH}, totalling
-     * {@value #RECORD_WIDTH}. The heading literal carries its own trailing space and fills its
-     * field exactly.</p>
+     * <p>The heading literal carries its own trailing space and fills its field exactly.</p>
      *
      * @return the {@code TRANSACTION SUMMARY} heading record
      */
@@ -693,11 +667,8 @@ public final class PlainTextRenderer implements NotificationRenderer {
     /**
      * Builds {@code ST-LINE13} from {@code app/cbl/CBSTM03A.CBL:L128-L131}.
      *
-     * <p>Composition: first heading {@value #TRAN_ID_COLUMN_WIDTH}, second heading
-     * {@value #TRAN_DETAILS_COLUMN_WIDTH}, third heading
-     * {@value #TRAN_AMOUNT_COLUMN_WIDTH}, totalling {@value #RECORD_WIDTH}. The second literal
-     * is 16 characters in a field of {@value #TRAN_DETAILS_COLUMN_WIDTH}, so 35 spaces follow
-     * it. The third literal carries two leading spaces.</p>
+     * <p>The second literal is 16 characters in a field of {@value #TRAN_DETAILS_COLUMN_WIDTH}, so
+     * 35 spaces follow it. The third literal carries two leading spaces.</p>
      *
      * @return the column heading record
      */
@@ -709,11 +680,6 @@ public final class PlainTextRenderer implements NotificationRenderer {
 
     /**
      * Builds {@code ST-LINE14} from {@code app/cbl/CBSTM03A.CBL:L132-L137}.
-     *
-     * <p>Composition: transaction identifier {@value #ST_TRANID_WIDTH}, separator
-     * {@value #DETAIL_SEPARATOR_WIDTH}, description {@value #ST_TRANDT_WIDTH}, currency sign
-     * {@value #CURRENCY_SIGN_WIDTH}, edited amount {@value #EDITED_AMOUNT_WIDTH}, totalling
-     * {@value #RECORD_WIDTH}.</p>
      *
      * <p>The description contributes {@value #ST_TRANDT_WIDTH} characters. {@code TRNX-DESC} is
      * {@code PIC X(100)} at {@code app/cpy/COSTM01.CPY:L28} and {@code ST-TRANDT} is
@@ -739,10 +705,6 @@ public final class PlainTextRenderer implements NotificationRenderer {
     /**
      * Builds {@code ST-LINE14A} from {@code app/cbl/CBSTM03A.CBL:L138-L142}.
      *
-     * <p>Composition: label {@value #TOTAL_LABEL_WIDTH}, filler
-     * {@value #TOTAL_FILLER_WIDTH}, currency sign {@value #CURRENCY_SIGN_WIDTH}, edited total
-     * {@value #EDITED_AMOUNT_WIDTH}, totalling {@value #RECORD_WIDTH}.</p>
-     *
      * <p>This record carries the only amount the renderer edits, because the total is computed
      * once per rendering. {@code ST-TOTAL-TRAMT} is {@code PIC Z(9).99-} at
      * {@code app/cbl/CBSTM03A.CBL:L142}, so
@@ -766,11 +728,8 @@ public final class PlainTextRenderer implements NotificationRenderer {
     /**
      * Builds {@code ST-LINE15} from {@code app/cbl/CBSTM03A.CBL:L143-L146}.
      *
-     * <p>Composition: asterisks {@value #CLOSING_BANNER_FILL_WIDTH}, text
-     * {@value #CLOSING_BANNER_TEXT_WIDTH}, asterisks
-     * {@value #CLOSING_BANNER_FILL_WIDTH}, totalling {@value #RECORD_WIDTH}. The opening banner
-     * divides its {@value #RECORD_WIDTH} characters differently, so the two records differ. The
-     * text field carries {@link #CLOSING_BANNER_TEXT} once.</p>
+     * <p>The opening banner divides its {@value #RECORD_WIDTH} characters differently, so the two
+     * records differ. The text field carries {@link #CLOSING_BANNER_TEXT} once.</p>
      *
      * @return the closing banner record
      */
@@ -784,10 +743,8 @@ public final class PlainTextRenderer implements NotificationRenderer {
      * Builds a record in the shape of {@code ST-LINE7} at
      * {@code app/cbl/CBSTM03A.CBL:L107-L110}.
      *
-     * <p>Composition: label {@value #LABEL_WIDTH}, value {@value #ST_ACCT_ID_WIDTH}, filler
-     * {@value #LABEL_TRAILING_FILLER_WIDTH}, totalling {@value #RECORD_WIDTH}.
-     * {@code ST-LINE9} at {@code app/cbl/CBSTM03A.CBL:L116-L119} declares the same three
-     * widths, so both statement records and the fraud alert share this shape.</p>
+     * <p>{@code ST-LINE9} at {@code app/cbl/CBSTM03A.CBL:L116-L119} declares the same three widths,
+     * so both statement records and the fraud alert share this shape.</p>
      *
      * @param label the label, {@value #LABEL_WIDTH} characters in every caller
      * @param value the value the label introduces
@@ -800,12 +757,10 @@ public final class PlainTextRenderer implements NotificationRenderer {
     }
 
     /**
-     * Builds the rule identifier record of the fraud alert. with no COBOL ancestor.
+     * Builds the rule identifier record of the fraud alert. No COBOL ancestor.
      *
-     * <p>Composition: label {@value #LABEL_WIDTH}, joined identifiers
-     * {@value #FRAUD_RULE_LIST_WIDTH}, totalling {@value #RECORD_WIDTH}. The value field spans
-     * the value field and the trailing filler of {@code ST-LINE7}, because a rule identifier list
-     * outgrows {@value #ST_ACCT_ID_WIDTH} characters.</p>
+     * <p>The value field spans the value field and the trailing filler of {@code ST-LINE7}, because
+     * a rule identifier list outgrows {@value #ST_ACCT_ID_WIDTH} characters.</p>
      *
      * <p>An empty list renders as spaces. A list longer than the field loses its tail, which is
      * what a COBOL {@code MOVE} into a shorter alphanumeric field does.</p>
@@ -850,11 +805,6 @@ public final class PlainTextRenderer implements NotificationRenderer {
     }
 
     /**
-     * Builds a {@code FILLER VALUE SPACES} field of the given width.
-     *
-     * <p>Delegates to {@link NotificationRenderer#pic(String, int)}, so a filler and a value
-     * field are padded by the same helper.</p>
-     *
      * @param width the field width, taken from a Picture clause
      * @return a string of exactly {@code width} spaces
      */

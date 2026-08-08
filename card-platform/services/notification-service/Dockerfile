@@ -1,4 +1,4 @@
-# Container image for the CardDemo notification service. It consumes one topic and publishes none.
+# Container image for the CardDemo notification service. It consumes four topics and publishes none.
 # The build context is this module directory, so every COPY path below resolves inside
 # card-platform/services/notification-service/. The archive under target/ arrives from `mvn -f
 # card-platform/pom.xml package`, which runs ahead of this image build. Rendering and totalling:
@@ -39,7 +39,7 @@ RUN set -eu; \
 FROM ${RUNTIME_IMAGE} AS runtime
 
 LABEL org.opencontainers.image.title="carddemo-notification-service" \
-      org.opencontainers.image.description="Consumes transaction.posted under one consumer group of its own, maintains a card-keyed read model, and renders cardholder alerts." \
+      org.opencontainers.image.description="Consumes transaction.authorized, transaction.posted, fraud.assessed and customer.context-changed, each under a consumer group of its own, maintains a card-keyed read model, and renders cardholder alerts." \
       org.opencontainers.image.vendor="CardDemo Card Platform" \
       org.opencontainers.image.licenses="Apache-2.0" \
       org.opencontainers.image.source="https://github.com/blitzy-public-samples/aws-carddemo-blitzy" \

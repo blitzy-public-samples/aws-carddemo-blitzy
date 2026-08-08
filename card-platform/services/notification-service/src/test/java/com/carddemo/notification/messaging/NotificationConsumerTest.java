@@ -15,7 +15,6 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import com.carddemo.cobol.PanMasker;
-import com.carddemo.events.EventEnvelope;
 import com.carddemo.events.FraudCleared;
 import com.carddemo.events.FraudFlagged;
 import com.carddemo.events.TransactionAuthorized;
@@ -28,7 +27,6 @@ import com.carddemo.notification.repository.CardholderContextRepository;
 import com.carddemo.notification.repository.ProcessedEventRepository;
 import com.carddemo.notification.repository.StatementTransactionRepository;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
-import java.lang.reflect.Method;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.Optional;
@@ -205,7 +203,7 @@ class NotificationConsumerTest {
         void theClaimRunsBeforeTheAlert() {
             when(processedEvents.claimEvent(any(), any(), anyString())).thenReturn(CLAIM_TAKEN);
 
-            consumer.onFraudAssessed(flagged(), acknowledgment, "fraud.assessed");
+            consumer.onFraudAssessed(flagged(), ACCOUNT_ID, acknowledgment, "fraud.assessed");
 
             InOrder order = inOrder(processedEvents, notificationService, acknowledgment);
             order.verify(processedEvents).claimEvent(any(), any(), eq("fraud.assessed"));
@@ -219,7 +217,7 @@ class NotificationConsumerTest {
         void aRedeliveryRendersNothing() {
             when(processedEvents.claimEvent(any(), any(), anyString())).thenReturn(ALREADY_CLAIMED);
 
-            consumer.onFraudAssessed(flagged(), acknowledgment, "fraud.assessed");
+            consumer.onFraudAssessed(flagged(), ACCOUNT_ID, acknowledgment, "fraud.assessed");
 
             verifyNoInteractions(notificationService);
             verify(acknowledgment).acknowledge();
@@ -230,7 +228,7 @@ class NotificationConsumerTest {
         void aClearedAssessmentRendersNoAlert() {
             when(processedEvents.claimEvent(any(), any(), anyString())).thenReturn(CLAIM_TAKEN);
 
-            consumer.onFraudAssessed(cleared(), acknowledgment, "fraud.assessed");
+            consumer.onFraudAssessed(cleared(), ACCOUNT_ID, acknowledgment, "fraud.assessed");
 
             verify(processedEvents).claimEvent(any(), any(), eq("fraud.assessed"));
             verifyNoInteractions(notificationService);
@@ -241,7 +239,8 @@ class NotificationConsumerTest {
         @DisplayName("a payload that is neither outcome is refused and leaves the offset")
         void aPayloadThatIsNeitherOutcomeIsRefused() {
             assertThrows(IllegalArgumentException.class, () ->
-                    consumer.onFraudAssessed(new NotAnAssessment("not an assessment"), acknowledgment,
+                    consumer.onFraudAssessed(new NotAnAssessment("not an assessment"), ACCOUNT_ID,
+                            acknowledgment,
                             "fraud.assessed"));
 
             verifyNoInteractions(processedEvents);
@@ -255,7 +254,8 @@ class NotificationConsumerTest {
                     .thenThrow(new DataAccessResourceFailureException("marker table unreachable"));
 
             assertThrows(DataAccessResourceFailureException.class, () ->
-                    consumer.onFraudAssessed(flagged(), acknowledgment, "fraud.assessed"));
+                    consumer.onFraudAssessed(flagged(), ACCOUNT_ID,
+                            acknowledgment, "fraud.assessed"));
 
             verify(acknowledgment, never()).acknowledge();
         }
@@ -264,7 +264,8 @@ class NotificationConsumerTest {
         @DisplayName("the listener holds a group of its own, so its progress is independent")
         void theListenerHoldsAGroupOfItsOwn() throws NoSuchMethodException {
             KafkaListener subscription = FraudFlaggedConsumer.class
-                    .getMethod("onFraudAssessed", Record.class, Acknowledgment.class, String.class)
+                    .getMethod("onFraudAssessed", Record.class, String.class,
+                            Acknowledgment.class, String.class)
                     .getAnnotation(KafkaListener.class);
 
             assertThat(subscription).isNotNull();
@@ -294,7 +295,7 @@ class NotificationConsumerTest {
             when(cardholderContexts.applyContextChange(anyString(), any(), any(), any(), any(),
                     any(), any(), any(), any(), any(), any(), any(), any())).thenReturn(1);
 
-            consumer.onCustomerContextChanged(contextChanged(), acknowledgment,
+            consumer.onCustomerContextChanged(contextChanged(), ACCOUNT_ID, acknowledgment,
                     "customer.context-changed");
 
             InOrder order = inOrder(processedEvents, cardholderContexts, acknowledgment);
@@ -309,7 +310,7 @@ class NotificationConsumerTest {
         void aRedeliveryWritesNothing() {
             when(processedEvents.claimEvent(any(), any(), anyString())).thenReturn(ALREADY_CLAIMED);
 
-            consumer.onCustomerContextChanged(contextChanged(), acknowledgment,
+            consumer.onCustomerContextChanged(contextChanged(), ACCOUNT_ID, acknowledgment,
                     "customer.context-changed");
 
             verify(cardholderContexts, never()).applyContextChange(anyString(), any(), any(), any(),
@@ -324,7 +325,7 @@ class NotificationConsumerTest {
             when(cardholderContexts.applyContextChange(anyString(), any(), any(), any(), any(),
                     any(), any(), any(), any(), any(), any(), any(), any())).thenReturn(0);
 
-            consumer.onCustomerContextChanged(contextChanged(), acknowledgment,
+            consumer.onCustomerContextChanged(contextChanged(), ACCOUNT_ID, acknowledgment,
                     "customer.context-changed");
 
             verify(acknowledgment)
@@ -340,7 +341,7 @@ class NotificationConsumerTest {
                     .thenThrow(new DataAccessResourceFailureException("projection unreachable"));
 
             assertThrows(DataAccessResourceFailureException.class, () ->
-                    consumer.onCustomerContextChanged(contextChanged(), acknowledgment,
+                    consumer.onCustomerContextChanged(contextChanged(), ACCOUNT_ID, acknowledgment,
                             "customer.context-changed"));
 
             verify(acknowledgment, never()).acknowledge();
@@ -350,8 +351,8 @@ class NotificationConsumerTest {
         @DisplayName("the listener holds a third group, so three readers advance independently")
         void theListenerHoldsAThirdGroup() throws NoSuchMethodException {
             KafkaListener subscription = CustomerContextChangedConsumer.class
-                    .getMethod("onCustomerContextChanged", JsonNode.class, Acknowledgment.class,
-                            String.class)
+                    .getMethod("onCustomerContextChanged", JsonNode.class, String.class,
+                            Acknowledgment.class, String.class)
                     .getAnnotation(KafkaListener.class);
 
             assertThat(subscription).isNotNull();
@@ -444,5 +445,121 @@ class NotificationConsumerTest {
         return new CardholderContextEntity(accountId, "Immanuel", "Madeline", "Kessler",
                 "618 Deshaun Route", "Apt. 802", "Altenwerthshire", "NC", "USA", "12546", "274",
                 java.time.Instant.EPOCH, java.time.Instant.EPOCH);
+    }
+
+    @Nested
+    @DisplayName("The message key has to name the account each payload names")
+    class MessageKeyGuard {
+
+        private NotificationService notificationService;
+        private FraudFlaggedConsumer fraudConsumer;
+        private CustomerContextChangedConsumer contextConsumer;
+
+        @BeforeEach
+        void buildConsumers() {
+            notificationService = mock(NotificationService.class);
+            fraudConsumer = new FraudFlaggedConsumer(new CardholderContextReader(
+                    cardholderContexts), processedEvents, notificationService, transactionTemplate,
+                    new ObservabilityConfig().notificationMetrics(new SimpleMeterRegistry()));
+            contextConsumer = new CustomerContextChangedConsumer(cardholderContexts,
+                    processedEvents, transactionTemplate,
+                    new ObservabilityConfig().notificationMetrics(new SimpleMeterRegistry()));
+        }
+
+        /**
+         * An assessment applied under another account's key would address one cardholder's fraud
+         * alert with another cardholder's stored name and address, because the account this payload
+         * names is the account the alert is addressed from.
+         */
+        @Test
+        @DisplayName("a flagged assessment keyed on another account renders nothing")
+        void aFlaggedAssessmentKeyedOnAnotherAccountRendersNothing() {
+            assertThrows(IllegalArgumentException.class,
+                    () -> fraudConsumer.onFraudAssessed(flagged(), "00000000099", acknowledgment,
+                            "fraud.assessed"));
+
+            verifyNoInteractions(notificationService);
+            verifyNoInteractions(processedEvents);
+            verifyNoInteractions(acknowledgment);
+        }
+
+        /** A cleared assessment renders nothing but still claims, so it is checked as well. */
+        @Test
+        @DisplayName("a cleared assessment keyed on another account claims nothing")
+        void aClearedAssessmentKeyedOnAnotherAccountClaimsNothing() {
+            assertThrows(IllegalArgumentException.class,
+                    () -> fraudConsumer.onFraudAssessed(cleared(), "00000000099", acknowledgment,
+                            "fraud.assessed"));
+
+            verifyNoInteractions(processedEvents);
+            verifyNoInteractions(acknowledgment);
+        }
+
+        /**
+         * The context row supplies the name and address every rendered alert carries, so a change
+         * applied under another account's key would rewrite the wrong cardholder's details.
+         */
+        @Test
+        @DisplayName("a context change keyed on another account writes nothing")
+        void aContextChangeKeyedOnAnotherAccountWritesNothing() {
+            assertThrows(IllegalArgumentException.class,
+                    () -> contextConsumer.onCustomerContextChanged(contextChanged(), "00000000099",
+                            acknowledgment, "customer.context-changed"));
+
+            verifyNoInteractions(cardholderContexts);
+            verifyNoInteractions(processedEvents);
+            verifyNoInteractions(acknowledgment);
+        }
+
+        /** A record with no key at all was partitioned at random. */
+        @Test
+        @DisplayName("a record carrying no key is refused on both streams")
+        void aRecordCarryingNoKeyIsRefusedOnBothStreams() {
+            assertThrows(IllegalArgumentException.class,
+                    () -> fraudConsumer.onFraudAssessed(flagged(), null, acknowledgment,
+                            "fraud.assessed"));
+            assertThrows(IllegalArgumentException.class,
+                    () -> contextConsumer.onCustomerContextChanged(contextChanged(), null,
+                            acknowledgment, "customer.context-changed"));
+
+            verifyNoInteractions(notificationService);
+            verifyNoInteractions(cardholderContexts);
+            verifyNoInteractions(acknowledgment);
+        }
+
+        /** A blank key names nothing, so it is refused for the same reason as an absent one. */
+        @Test
+        @DisplayName("a blank key is refused on both streams")
+        void aBlankKeyIsRefusedOnBothStreams() {
+            assertThrows(IllegalArgumentException.class,
+                    () -> fraudConsumer.onFraudAssessed(flagged(), " ", acknowledgment,
+                            "fraud.assessed"));
+            assertThrows(IllegalArgumentException.class,
+                    () -> contextConsumer.onCustomerContextChanged(contextChanged(), " ",
+                            acknowledgment, "customer.context-changed"));
+
+            verifyNoInteractions(notificationService);
+            verifyNoInteractions(cardholderContexts);
+        }
+
+        /**
+         * The correctly keyed deliveries still apply, so the guard refuses nothing it should
+         * not.
+         */
+        @Test
+        @DisplayName("the key each fixture carries still applies its delivery")
+        void theMatchingKeyStillApplies() {
+            when(processedEvents.claimEvent(any(), any(), anyString())).thenReturn(CLAIM_TAKEN);
+            when(cardholderContexts.findById(ACCOUNT_ID))
+                    .thenReturn(Optional.of(seededContext(ACCOUNT_ID)));
+            when(cardholderContexts.applyContextChange(anyString(), any(), any(), any(), any(),
+                    any(), any(), any(), any(), any(), any(), any(), any())).thenReturn(1);
+
+            fraudConsumer.onFraudAssessed(flagged(), ACCOUNT_ID, acknowledgment, "fraud.assessed");
+            contextConsumer.onCustomerContextChanged(contextChanged(), ACCOUNT_ID, acknowledgment,
+                    "customer.context-changed");
+
+            verify(acknowledgment, org.mockito.Mockito.times(2)).acknowledge();
+        }
     }
 }

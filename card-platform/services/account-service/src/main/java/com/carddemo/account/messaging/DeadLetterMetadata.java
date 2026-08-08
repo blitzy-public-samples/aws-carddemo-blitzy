@@ -5,8 +5,9 @@ import com.carddemo.events.EventEnvelope;
 import java.util.List;
 
 /**
- * Diagnostic detail intended to travel alongside one message on the dead-letter topic. No handler
- * routes a message there yet.
+ * Diagnostic detail that travels alongside one message on the dead-letter topic.
+ * {@code config/KafkaConsumerConfig} routes a record it cannot apply there, and
+ * {@code outbox/OutboxRelay} routes the diagnostic of a row it abandoned.
  *
  * <p>Transformed field by field from the group {@code 01 ABEND-DATA.} at
  * app/cpy/CSMSG02Y.cpy:L21, whose four alphanumeric fields occupy 134 bytes.</p>
@@ -15,8 +16,9 @@ import java.util.List;
  * and {@code app/cbl/COACTUPC.cbl:L4205-L4206} sets {@code ABEND-MSG} to
  * {@code UNEXPECTED ABEND OCCURRED.} when the field holds low values.</p>
  *
- * <p>Nothing in this record throws, nothing is padded, and no component is ever the source of a
- * second failure. A {@code null} component becomes the empty string, matching the
+ * <p>No component of this record throws, nothing is padded, and no component is ever the source of
+ * a second failure. {@link #toEnvelope(String, String, int, long, String, String, int)} does throw,
+ * on an aggregate identifier that is not eleven decimal digits. A {@code null} component becomes the empty string, matching the
  * {@code VALUE SPACES} clause each source field carries. Each code point outside printable
  * American Standard Code for Information Interchange (ASCII) becomes one
  * {@link #SUBSTITUTE_CHARACTER}, so no control character and no line break reaches the
@@ -30,12 +32,12 @@ import java.util.List;
  * {@code Throwable}. {@link #fromFailure(String, Throwable, String, String)} reads the failure type
  * and nothing else.
  *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
+ *
  * @param abendCode the four-character failure code
  * @param culprit   the failing component
  * @param reason    the failure classification
  * @param message   the failure detail
- *
- * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 public record DeadLetterMetadata(String abendCode, String culprit, String reason,
         String message) {
@@ -93,11 +95,6 @@ public record DeadLetterMetadata(String abendCode, String culprit, String reason
     }
 
     /**
-     * Builds a record from the four text components.
-     *
-     * <p>Every component may be {@code null}, may be longer than its maximum, and may hold any
-     * character. The constructor sanitises each one.</p>
-     *
      * @param abendCode the failure code; may be {@code null}
      * @param culprit   the failing component; may be {@code null}
      * @param reason    the failure classification; may be {@code null}
@@ -110,12 +107,6 @@ public record DeadLetterMetadata(String abendCode, String culprit, String reason
     }
 
     /**
-     * Builds a record whose {@code culprit} names the type of a failure.
-     *
-     * <p>This method reads the failure's simple class name and nothing else. Neither
-     * {@code Throwable.getMessage()} nor any stack frame reaches the record. No card number, no
-     * account identifier and no fragment of the rejected payload can travel in it.</p>
-     *
      * @param abendCode the failure code; may be {@code null}
      * @param failure   the failure whose type names the culprit; may be {@code null}
      * @param reason    the failure classification, assembled by the caller; may be {@code null}
@@ -161,13 +152,10 @@ public record DeadLetterMetadata(String abendCode, String culprit, String reason
     /**
      * Renders this metadata as the one dead-letter contract the platform publishes.
      *
-     * <p>Five services declared a record of this name, each with its own component list and none
-     * with a schema. That is five wire formats on a topic a single operator has to read, and a
-     * consumer written against one of them cannot read the other four. It also meant nothing
-     * validated what reached a dead-letter topic, so the one place a rejected message is kept
-     * longest was the one place its contents were least controlled.
+     * <p>Six service modules declare a record of this name as their in-process carrier for the four
+     * diagnostic values, and every one of them reaches a topic only through this method.
      *
-     * <p>{@link DeadLetterEnvelope} in {@code libs/event-contracts} is that contract now. It
+     * <p>{@link DeadLetterEnvelope} in {@code libs/event-contracts} is the one wire contract. It
      * carries a version, it validates against {@code schemas/dead-letter-v1.json} through the same
      * serializer and deserializer every other event passes, and it holds no field of the failing
      * payload at all. This record stays as the in-process carrier for the four diagnostic values,
@@ -178,8 +166,8 @@ public record DeadLetterMetadata(String abendCode, String culprit, String reason
      * diagnostics. The list of shortened components is left empty here, and that is exact rather
      * than lazy. This record bounds each diagnostic to the same width {@link DeadLetterEnvelope}
      * bounds it to, so every value handed over already fits and the envelope has nothing left to
-     * shorten. A producer that bounds its diagnostics more narrowly
-     * than this record does should build the envelope directly, so its own shortening is named.
+     * shorten. A producer bounding its diagnostics more narrowly than this record does should build
+     * the envelope directly, so its own shortening is named.
      *
      * @param aggregateId     the eleven-digit account identifier of the failing record, and the
      *                        Kafka message key of the envelope

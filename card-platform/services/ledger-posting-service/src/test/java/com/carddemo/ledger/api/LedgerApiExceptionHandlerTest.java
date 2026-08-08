@@ -6,8 +6,16 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.LoggerContext;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.carddemo.ledger.repository.AccountBalanceProjectionRepository;
 import java.util.List;
 import java.util.Map;
@@ -16,6 +24,8 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.dao.QueryTimeoutException;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
@@ -189,6 +199,34 @@ final class LedgerApiExceptionHandlerTest {
     }
 
     /**
+     * Asserts a method this route does not serve answers 405 with an Allow header, not 500.
+     *
+     * <p>The catch-all arm claimed every checked Spring exception before the protocol arm existed, so
+     * a caller sending {@code POST} to a read-only route read {@code 500} and a detail saying the
+     * balance could not be read. A client cannot tell that answer from a database outage, and a
+     * retry of it can only repeat the mistake. {@code Allow} is the header that says which method to
+     * send instead, and a {@code 405} without it tells a caller nothing.
+     *
+     * @throws Exception when a request cannot be performed
+     */
+    @Test
+    @DisplayName("A write method on the read-only route answers 405 with Allow, not 500")
+    void aWriteMethodAnswersMethodNotAllowedWithAllow() throws Exception {
+        for (RequestBuilder wrongMethod : List.of(post(ROUTE, ACCOUNT), put(ROUTE, ACCOUNT),
+                patch(ROUTE, ACCOUNT), delete(ROUTE, ACCOUNT))) {
+
+            MvcResult result = perform(wrongMethod);
+
+            assertEquals(405, result.getResponse().getStatus(),
+                    "a method this route does not serve answers 405");
+            assertEquals("GET", result.getResponse().getHeader(HttpHeaders.ALLOW),
+                    "the answer names the method this route does serve");
+            assertProblem(result, 405, HttpStatus.METHOD_NOT_ALLOWED.getReasonPhrase(),
+                    ApiProblem.UNSUPPORTED_REQUEST);
+        }
+    }
+
+    /**
      * Performs one request and returns its result.
      *
      * @param request the request to perform
@@ -233,5 +271,57 @@ final class LedgerApiExceptionHandlerTest {
         assertFalse(body.containsKey("path"), "no member echoes the resolved request path");
         assertFalse(body.containsKey("timestamp"), "the framework body carried a timestamp");
         return body;
+    }
+
+    /**
+     * Both recorded paths name the failure type and never the failure's message.
+     *
+     * <p>The unreachable-datastore path is the one that matters most here: the exceptions it handles
+     * are raised by the driver, and a driver message carries the data-source URL with the user it
+     * connected as.
+     */
+    @Test
+    @DisplayName("Both recorded paths log the failure type, and neither logs its message")
+    void bothRecordedPathsLogTheTypeAndNotTheMessage() {
+        String sentinel = "jdbc:postgresql://db:5432/carddemo?user=ledger_service";
+        Exception failure = new QueryTimeoutException("canceling statement on " + sentinel,
+                new IllegalArgumentException("inner " + sentinel));
+
+        for (Runnable path : List.<Runnable>of(
+                () -> new LedgerApiExceptionHandler().onDatastoreUnreachable(failure),
+                () -> new LedgerApiExceptionHandler().onFault(failure))) {
+
+            java.util.List<ILoggingEvent> lines = recordedLines(path);
+
+            assertEquals(1, lines.size(), "one failure writes one line");
+            ILoggingEvent line = lines.getFirst();
+            assertTrue(line.getFormattedMessage().contains(QueryTimeoutException.class.getName()),
+                    "the line names the failure type: " + line.getFormattedMessage());
+            assertFalse(line.getFormattedMessage().contains(sentinel),
+                    "the data source reached the log: " + line.getFormattedMessage());
+            assertTrue(line.getThrowableProxy() == null,
+                    "no throwable is attached, so the appender renders no message");
+        }
+    }
+
+    /**
+     * Runs one call with a recorder attached to the package every service logs under.
+     *
+     * @param call the call whose log lines are wanted
+     * @return every line written during it, in order
+     */
+    private static java.util.List<ILoggingEvent> recordedLines(Runnable call) {
+        ListAppender<ILoggingEvent> recorder = new ListAppender<>();
+        recorder.setContext((LoggerContext) org.slf4j.LoggerFactory.getILoggerFactory());
+        recorder.start();
+        Logger serviceLogger = (Logger) org.slf4j.LoggerFactory.getLogger("com.carddemo");
+        serviceLogger.addAppender(recorder);
+        try {
+            call.run();
+        } finally {
+            serviceLogger.detachAppender(recorder);
+            recorder.stop();
+        }
+        return java.util.List.copyOf(recorder.list);
     }
 }

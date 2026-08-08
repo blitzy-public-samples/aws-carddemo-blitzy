@@ -142,6 +142,73 @@ class AccountApiExceptionHandlerTest {
         }
 
         /**
+         * Asserts a method a route does not serve answers 405 with an Allow header.
+         *
+         * <p>Before the protocol arm existed the container's own error dispatch answered this, in a
+         * second body shape whose {@code path} member copies the resolved request path. {@code Allow}
+         * is the header a caller reads to learn which methods the route does serve, and it is
+         * mandatory on a {@code 405}.
+         */
+        @Test
+        void aMethodTheRouteDoesNotServeAnswersMethodNotAllowedWithAllow() {
+            ResponseEntity<ApiProblem> response = handler.onUnsupportedRequest(
+                    new org.springframework.web.HttpRequestMethodNotSupportedException("DELETE",
+                            List.of("GET", "PUT")));
+
+            assertEquals(HttpStatus.METHOD_NOT_ALLOWED, response.getStatusCode(),
+                    "a method the route does not serve answers 405");
+            assertEquals(List.of("GET", "PUT"), response.getHeaders().getAllow().stream()
+                    .map(org.springframework.http.HttpMethod::name).toList(),
+                    "the answer names the methods the route does serve");
+            assertEquals(ApiProblem.UNSUPPORTED_REQUEST_DETAIL, response.getBody().detail(),
+                    "one fixed text answers");
+            assertNull(response.getBody().messages(), "no field text belongs to a protocol refusal");
+        }
+
+        /**
+         * Asserts a body typed as something no route reads answers 415 with a problem document.
+         *
+         * <p>Only {@code PUT /accounts/{accountId}} reads a body, and it reads
+         * {@code application/json} alone. The title is the reason phrase of the status rather than a
+         * constant of {@link ApiProblem}, because the framework named the status and the handler keeps
+         * it.
+         */
+        @Test
+        void aMediaTypeNoRouteReadsAnswersUnsupportedMediaType() {
+            ResponseEntity<ApiProblem> response = handler.onUnsupportedRequest(
+                    new org.springframework.web.HttpMediaTypeNotSupportedException(
+                            MediaType.TEXT_PLAIN, List.of(MediaType.APPLICATION_JSON)));
+
+            assertEquals(HttpStatus.UNSUPPORTED_MEDIA_TYPE, response.getStatusCode(),
+                    "a body this service cannot read answers 415");
+            assertEquals(MediaType.APPLICATION_PROBLEM_JSON,
+                    response.getHeaders().getContentType(), "one shape of error");
+            assertEquals(HttpStatus.UNSUPPORTED_MEDIA_TYPE.getReasonPhrase(),
+                    response.getBody().title(),
+                    "the title is the reason phrase the framework supplied");
+            assertEquals(ApiProblem.UNSUPPORTED_REQUEST_DETAIL, response.getBody().detail(),
+                    "one fixed text answers");
+        }
+
+        /**
+         * Asserts a caller that accepts nothing this service writes answers 406 with no body.
+         *
+         * <p>A problem document is written as {@code application/problem+json}, which a caller that
+         * accepts no type this service writes does not accept either. The status travels alone.
+         */
+        @Test
+        void anAcceptHeaderThisServiceCannotSatisfyAnswersNotAcceptableWithNoBody() {
+            ResponseEntity<ApiProblem> response = handler.onUnsupportedRequest(
+                    new org.springframework.web.HttpMediaTypeNotAcceptableException(
+                            List.of(MediaType.APPLICATION_JSON)));
+
+            assertEquals(HttpStatus.NOT_ACCEPTABLE, response.getStatusCode(),
+                    "a caller that accepts nothing this service writes answers 406");
+            assertNull(response.getBody(), "and reads no body, because it accepts none");
+            assertNull(response.getHeaders().getContentType(), "so no media type is named");
+        }
+
+        /**
          * Asserts every body is typed as a problem document.
          *
          * <p>{@code config/SecurityConfig} already writes {@code application/problem+json} for 401 and
@@ -156,6 +223,9 @@ class AccountApiExceptionHandlerTest {
                     handler.onConstraintViolation(
                             new ConstraintViolationException("none", Set.of())),
                     handler.onRejectedValue(new IllegalArgumentException("a component")),
+                    handler.onUnsupportedRequest(
+                            new org.springframework.web.HttpRequestMethodNotSupportedException(
+                                    "DELETE", List.of("GET"))),
                     handler.onInternalFailure(new IllegalStateException("a fault")));
 
             for (ResponseEntity<ApiProblem> answer : answers) {

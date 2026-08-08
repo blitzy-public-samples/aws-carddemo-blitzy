@@ -11,11 +11,22 @@ import com.carddemo.equivalence.CopybookRecordParser.CardCrossReferenceRecord;
 import com.carddemo.equivalence.CopybookRecordParser.DailyTransactionRecord;
 import com.carddemo.equivalence.CopybookRecordParser.DisclosureGroupRecord;
 import com.carddemo.equivalence.CopybookRecordParser.TransactionCategoryBalanceRecord;
+import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -132,6 +143,78 @@ class DecimalTruncationEquivalenceTest {
     /** The four worked divides, in the order the assertions below read them. */
     private static final List<InterestDivide> WORKED_DIVIDES = List.of(
             FIRST_CHAINED_ROW, SECOND_CHAINED_ROW, HALF_CENT_BOUNDARY_ROW, SYNTHETIC_NEGATIVE_ROW);
+
+    /** The checked-in truncation expectations this class is the declared consumer of. */
+    private static final String EXPECTED_TRUNCATION_FILE = "dailytran-decimal-truncation-model-b.csv";
+
+    /** Every row of {@link #EXPECTED_TRUNCATION_FILE}, parsed once for the whole class. */
+    private static final ExpectedOutcomes EXPECTED_TRUNCATION =
+            ExpectedOutcomes.load(EXPECTED_TRUNCATION_FILE);
+
+    /** The sibling file whose closing balances this one must agree with. */
+    private static final String CATEGORY_BALANCE_FILE = "dailytran-category-balances-model-b.csv";
+
+    /** The field the sibling file carries the closing balance under. */
+    private static final String SIBLING_BALANCE_FIELD = "tran_cat_bal_final";
+
+    /** The synthetic-case file this one defers the down-versus-floor separation to. */
+    private static final String SYNTHETIC_CASE_FILE = "synthetic-boundary-cases.csv";
+
+    /** The sequence label of the arithmetic-site inventory. */
+    private static final String SITE_INVENTORY_SEQUENCE = "SITE-SUMMARY";
+
+    /** The prefix every arithmetic-site sequence label carries. */
+    private static final String SITE_SEQUENCE_PREFIX = "SITE-";
+
+    /** How {@link #EXPECTED_TRUNCATION_FILE} writes a separation, in its own casing. */
+    private static final String SEPARATION_MARKER = "YES";
+
+    /** How {@link #EXPECTED_TRUNCATION_FILE} writes an exactly zero quotient. */
+    private static final String EXACT_ZERO = "0";
+
+    /** The separator {@link #EXPECTED_TRUNCATION_FILE} writes between the three key parts. */
+    private static final String REPORT_KEY_SEPARATOR = "|";
+
+    /** The separator {@link #CATEGORY_BALANCE_FILE} writes between the three key parts. */
+    private static final String SIBLING_KEY_SEPARATOR = "||";
+
+    /** The transaction type code every posting in the fixture carries. */
+    private static final String POSTING_TYPE_CODE = "01";
+
+    /** The transaction type code the fixture reaches but the default group rates at zero. */
+    private static final String UNEXERCISED_TYPE_CODE = "03";
+
+    /** The single transaction category code the fixture exercises. */
+    private static final String POSTING_CATEGORY_CODE = "0001";
+
+    /** The posting program, which declares the narrowed working balance. */
+    private static final String POSTING_PROGRAM = "app/cbl/CBTRN02C.cbl";
+
+    /** The interest program, which declares the accrual working field. */
+    private static final String INTEREST_PROGRAM = "app/cbl/CBACT04C.cbl";
+
+    /** The copybook that declares the category balance. */
+    private static final String CATEGORY_BALANCE_COPYBOOK = "app/cpy/CVTRA01Y.cpy";
+
+    /** The copybook that declares the account balance and both cycle accumulators. */
+    private static final String ACCOUNT_COPYBOOK = "app/cpy/CVACT01Y.cpy";
+
+    /** Where the read-only COBOL programs live below the repository root. */
+    private static final String COBOL_PROGRAM_DIRECTORY = "app/cbl";
+
+    /** The phrase whose complete absence from {@code app/cbl/} pins truncation everywhere. */
+    private static final String ROUNDED_PHRASE = "ROUNDED";
+
+    /** The shared arithmetic helper, which must declare no binary floating-point type. */
+    private static final String SHARED_ARITHMETIC_SOURCE =
+            "card-platform/libs/cobol-compat/src/main/java/com/carddemo/cobol/CobolDecimal.java";
+
+    /** Matches a declaration of either binary floating-point type. */
+    private static final Pattern FLOATING_POINT_DECLARATION =
+            Pattern.compile("\\b(?:double|float)\\b");
+
+    /** Extracts the account identifier a field name embeds. */
+    private static final Pattern ACCOUNT_IN_FIELD_NAME = Pattern.compile("(\\d{11})");
 
     @Nested
     @DisplayName("Add and subtract statements, which discard nothing at scale two")
@@ -565,6 +648,178 @@ class DecimalTruncationEquivalenceTest {
             long halfUpByRemainder, long floorRows, long floorByRemainder, long negativeRows,
             long negativeRowsAtZeroRate, long unresolvedRates) { }
 
+    @Nested
+    @DisplayName(EXPECTED_TRUNCATION_FILE + " bound row by row")
+    class CheckedInTruncationExpectations {
+
+        @Test
+        @DisplayName("every row matches the run, the source or the shared arithmetic helper")
+        void everyRowOfTheTruncationExpectationsMatches() {
+            for (ExpectedOutcomes.Row row : EXPECTED_TRUNCATION.rows()) {
+                String expected = EXPECTED_TRUNCATION.value(row.recordSequence(), row.entityKey(),
+                        row.expectedField());
+
+                assertEquals(expected, actualTruncationValue(row),
+                        EXPECTED_TRUNCATION_FILE + " row " + row.key() + ", derived from "
+                                + row.sourceLocator() + ", Picture clause " + row.picClause());
+            }
+
+            assertTrue(EXPECTED_TRUNCATION.unconsumedRows().isEmpty(),
+                    EXPECTED_TRUNCATION.unconsumedDescription());
+        }
+    }
+
+    /**
+     * Resolves what the posting run, the source or the shared helper holds for one expected row.
+     *
+     * <p>The file carries seven rows for each of the ninety-nine category-balance keys the run
+     * posts to, then eight arithmetic-site groups, a site inventory, two summaries, the cross-file
+     * invariants and the rounding prohibitions. No branch reads {@code expected_value}.</p>
+     *
+     * @param row the expectation to resolve
+     * @return the value the row must equal
+     * @throws IllegalStateException when the row names a field this method does not resolve
+     */
+    private static String actualTruncationValue(ExpectedOutcomes.Row row) {
+        String sequence = row.recordSequence();
+        if (SITE_INVENTORY_SEQUENCE.equals(sequence)) {
+            return siteInventoryValue(row.expectedField());
+        }
+        if (sequence.startsWith(SITE_SEQUENCE_PREFIX)) {
+            return arithmeticSiteValue(sequence, row);
+        }
+        return switch (sequence) {
+            case "SUMMARY" -> truncationSummaryValue(row.entityKey(), row.expectedField());
+            case "INVARIANT" -> crossFileInvariantValue(row.expectedField());
+            case "PROHIBITION" -> roundingProhibitionValue(row.expectedField());
+            default -> chainedKeyValue(row);
+        };
+    }
+
+    /** Resolves one of the seven expectations of one chained category-balance key. */
+    private static String chainedKeyValue(ExpectedOutcomes.Row row) {
+        int ordinal = Integer.parseInt(row.recordSequence());
+        List<CategoryKey> keys = chainedKeysInReportOrder();
+        CategoryKey key = keys.get(ordinal - 1);
+        BigDecimal balance = postingRun().categoryBalances().get(key);
+        BigDecimal rate = defaultGroupRates()
+                .get(new RateCode(key.typeCode(), key.categoryCode()));
+
+        assertEquals(row.entityKey(), reportKey(key), EXPECTED_TRUNCATION_FILE + " row "
+                + row.key() + " names a key the run does not reach at that sequence");
+
+        return switch (row.expectedField()) {
+            case "tran_cat_bal_at_cycle_close" -> balance.toPlainString();
+            case "dis_int_rate_applied" -> CobolDecimal
+                    .truncateToScale(rate, PicClause.DIS_INT_RATE_SCALE).toPlainString();
+            case "ws_monthly_int_raw_quotient" -> rawQuotient(balance, rate);
+            case "ws_monthly_int_rounding_down" ->
+                    quotientUnder(balance, rate, RoundingMode.DOWN).toPlainString();
+            case "ws_monthly_int_rounding_half_up" ->
+                    quotientUnder(balance, rate, RoundingMode.HALF_UP).toPlainString();
+            case "ws_monthly_int_rounding_floor" ->
+                    quotientUnder(balance, rate, RoundingMode.FLOOR).toPlainString();
+            case "distinguishes_down_from_half_up" -> separates(balance, rate, RoundingMode.HALF_UP)
+                    ? SEPARATION_MARKER
+                    : ExpectedOutcomes.NO;
+            default -> throw new IllegalStateException(EXPECTED_TRUNCATION_FILE
+                    + " names unresolved chained field " + row.expectedField());
+        };
+    }
+
+    /** Resolves one of the three or four expectations of one money-moving arithmetic site. */
+    private static String arithmeticSiteValue(String sequence, ExpectedOutcomes.Row row) {
+        ArithmeticSite site = arithmeticSites().get(sequence);
+        if (site == null) {
+            throw new IllegalStateException(
+                    EXPECTED_TRUNCATION_FILE + " names unknown site " + sequence);
+        }
+
+        assertEquals(row.entityKey(), site.owner(), EXPECTED_TRUNCATION_FILE + " row " + row.key()
+                + " names an owner the site inventory does not carry");
+
+        return switch (row.expectedField()) {
+            case "arithmetic_operation" -> site.operation();
+            case "result_field_pic_clause" ->
+                    CobolSourceEvidence.pictureOf(site.declaringFile(), site.resultField());
+            case "rounding_mode_observable_at_site" -> yesOrNo(site.divides());
+            case "high_order_narrowing_is_not_a_rounding_mode_effect" ->
+                    yesOrNo(narrowingIsNotARoundingEffect());
+            default -> throw new IllegalStateException(
+                    EXPECTED_TRUNCATION_FILE + " names unresolved site field "
+                            + row.expectedField());
+        };
+    }
+
+    /** Resolves one {@code SITE-SUMMARY} expectation. */
+    private static String siteInventoryValue(String field) {
+        return switch (field) {
+            case "money_moving_site_count" -> Integer.toString(arithmeticSites().size());
+            case "sites_where_rounding_mode_is_observable" -> Long.toString(arithmeticSites()
+                    .values().stream().filter(ArithmeticSite::divides).count());
+            case "scale_2_addition_is_exact_at_scale_2" ->
+                    yesOrNo(postingRun().modeSensitiveStores() == 0L);
+            default -> throw new IllegalStateException(
+                    EXPECTED_TRUNCATION_FILE + " names unresolved inventory field " + field);
+        };
+    }
+
+    /** Resolves one expectation of either summary block. */
+    private static String truncationSummaryValue(String entityKey, String field) {
+        return switch (field) {
+            case "category_balance_keys_evaluated" -> Long.toString(divideTally().rows());
+            case "rows_distinguishing_down_from_half_up" -> Long.toString(divideTally().halfUpRows());
+            case "rows_distinguishing_down_from_floor" -> Long.toString(divideTally().floorRows());
+            case "distinct_rates_applied" -> Integer.toString(distinctRatesApplied());
+            case "default_group_fallback_fires_on_key_count" -> Long.toString(divideTally().rows());
+            case "rounded_phrase_occurrences_in_app_cbl" -> Long.toString(roundedPhraseOccurrences());
+            case "postings_producing_these_balances" -> Long.toString(postingRun().postedRecords());
+            case "declines_excluded_from_these_balances" ->
+                    Long.toString(postingRun().gatedRecords());
+            case "negative_balance_key_count" -> Long.toString(divideTally().negativeRows());
+            case "negative_balance_keys_with_nonzero_rate" -> Long.toString(
+                    divideTally().negativeRows() - divideTally().negativeRowsAtZeroRate());
+            case "default_type_03_cat_0001_rate" -> unexercisedNegativeRate().toPlainString();
+            case "down_versus_floor_requires_synthetic_case" ->
+                    yesOrNo(divideTally().floorRows() == 0L);
+            case "synthetic_case_file" -> syntheticCaseFileOnTheClasspath();
+            default -> throw new IllegalStateException(EXPECTED_TRUNCATION_FILE
+                    + " names unresolved summary field " + field + " under " + entityKey);
+        };
+    }
+
+    /** Resolves one {@code INVARIANT} expectation, each of which is an agreement claim. */
+    private static String crossFileInvariantValue(String field) {
+        return switch (field) {
+            case "balances_match_category_balances_model_b" ->
+                    yesOrNo(balancesAgreeWithTheCategoryBalanceFile());
+            case "rates_match_discgrp_interest_rates_default_block" ->
+                    yesOrNo(ratesAgreeWithTheDisclosureGroupFixture());
+            case "type_01_keys" -> Long.toString(keysOfType(POSTING_TYPE_CODE));
+            case "type_03_keys" -> Long.toString(keysOfType(UNEXERCISED_TYPE_CODE));
+            case "account_00000000037_has_no_type_01_key" ->
+                    yesOrNo(theOnlyAccountWithoutAPostingTypeKeyIs(field));
+            default -> throw new IllegalStateException(
+                    EXPECTED_TRUNCATION_FILE + " names unresolved invariant field " + field);
+        };
+    }
+
+    /** Resolves one {@code PROHIBITION} expectation about the rounding discipline. */
+    private static String roundingProhibitionValue(String field) {
+        return switch (field) {
+            case "half_up_is_never_the_expected_value" ->
+                    yesOrNo(theHelperNeverAgreesWith(RoundingMode.HALF_UP));
+            case "half_even_is_never_the_expected_value" ->
+                    yesOrNo(theHelperNeverAgreesWith(RoundingMode.HALF_EVEN));
+            case "expected_values_use_rounding_mode_down_only" ->
+                    yesOrNo(theHelperAlwaysTruncates());
+            case "no_binary_floating_point_intermediate" ->
+                    yesOrNo(theSharedHelperDeclaresNoFloatingPointType());
+            default -> throw new IllegalStateException(
+                    EXPECTED_TRUNCATION_FILE + " names unresolved prohibition field " + field);
+        };
+    }
+
     /** Reproduces the accumulator choice at {@code app/cbl/CBTRN02C.cbl:L548}. */
     private static CycleAccumulator accumulatorFor(BigDecimal amount) {
         return amount.signum() >= 0 ? CycleAccumulator.CREDIT : CycleAccumulator.DEBIT;
@@ -872,5 +1127,298 @@ class DecimalTruncationEquivalenceTest {
         }
         throw new IllegalStateException("app/data/ASCII/dailytran.txt holds no DALYTRAN-AMT that "
                 + "app/cbl/CBTRN02C.cbl:L548 routes to " + accumulator);
+    }
+
+    /**
+     * One money-moving arithmetic site of the source, as the inventory enumerates it.
+     *
+     * @param owner         the paragraph or program the site sits in
+     * @param operation     what the statement does, in the words the inventory uses
+     * @param declaringFile the file below the repository root that declares the result field
+     * @param resultField   the field the statement stores into
+     * @param divides       whether the statement divides, which is the only way a rounding mode
+     *                      becomes observable when every operand already carries scale two
+     */
+    private record ArithmeticSite(String owner, String operation, String declaringFile,
+            String resultField, boolean divides) { }
+
+    /**
+     * Enumerates the money-moving arithmetic of the source, keyed by the sequence label.
+     *
+     * <p>Eight statements move money across the whole of {@code app/cbl/}. Seven add or subtract
+     * two values that already carry scale two, so no digit is discarded and no rounding mode can
+     * change the answer. The eighth divides, which is the one place a rounding mode is
+     * observable. Every entry's Picture clause is read back out of the declaring file rather than
+     * written here, so a widened field fails this binding.</p>
+     *
+     * @return the sites, keyed by {@code record_seq}
+     */
+    private static Map<String, ArithmeticSite> arithmeticSites() {
+        Map<String, ArithmeticSite> sites = new LinkedHashMap<>();
+        sites.put("SITE-01", new ArithmeticSite("1500-B-LOOKUP-ACCT",
+                "cyc-credit minus cyc-debit plus amount into working balance",
+                POSTING_PROGRAM, "WS-TEMP-BAL", false));
+        sites.put("SITE-02", new ArithmeticSite("2700-A-CREATE-TCATBAL-REC",
+                "add amount to category balance, create branch",
+                CATEGORY_BALANCE_COPYBOOK, "TRAN-CAT-BAL", false));
+        sites.put("SITE-03", new ArithmeticSite("2700-B-UPDATE-TCATBAL-REC",
+                "add amount to category balance, update branch",
+                CATEGORY_BALANCE_COPYBOOK, "TRAN-CAT-BAL", false));
+        sites.put("SITE-04", new ArithmeticSite("2800-UPDATE-ACCOUNT-REC",
+                "add amount to current balance",
+                ACCOUNT_COPYBOOK, "ACCT-CURR-BAL", false));
+        sites.put("SITE-05", new ArithmeticSite("2800-UPDATE-ACCOUNT-REC",
+                "add amount to cycle credit accumulator",
+                ACCOUNT_COPYBOOK, "ACCT-CURR-CYC-CREDIT", false));
+        sites.put("SITE-06", new ArithmeticSite("2800-UPDATE-ACCOUNT-REC",
+                "add amount to cycle debit accumulator",
+                ACCOUNT_COPYBOOK, "ACCT-CURR-CYC-DEBIT", false));
+        sites.put("SITE-07", new ArithmeticSite("COBIL00C",
+                "subtract payment amount from current balance",
+                ACCOUNT_COPYBOOK, "ACCT-CURR-BAL", false));
+        sites.put("SITE-08", new ArithmeticSite("1300-COMPUTE-INTEREST",
+                "category balance times rate, divided by 1200",
+                INTEREST_PROGRAM, "WS-MONTHLY-INT", true));
+        return Map.copyOf(sites);
+    }
+
+    /** The chained keys ordered by ascending account, then type, then category. */
+    private static List<CategoryKey> chainedKeysInReportOrder() {
+        return postingRun().categoryBalances().keySet().stream()
+                .sorted(Comparator.comparing(CategoryKey::accountId)
+                        .thenComparing(CategoryKey::typeCode)
+                        .thenComparing(CategoryKey::categoryCode))
+                .toList();
+    }
+
+    /** Renders one key the way {@link #EXPECTED_TRUNCATION_FILE} renders it. */
+    private static String reportKey(CategoryKey key) {
+        return key.accountId() + REPORT_KEY_SEPARATOR + key.typeCode() + REPORT_KEY_SEPARATOR
+                + key.categoryCode();
+    }
+
+    /**
+     * Renders the exact, unrounded quotient of one balance and rate.
+     *
+     * <p>Every fixture pairing divides exactly, so no rounding is applied here at all. A pairing
+     * that did not would raise rather than silently rounding, which is the behaviour this
+     * expectation depends on.</p>
+     *
+     * @param balance the closing category balance
+     * @param rate    the resolved rate
+     * @return the quotient with its trailing zeroes removed, or {@code 0} when it is zero
+     */
+    private static String rawQuotient(BigDecimal balance, BigDecimal rate) {
+        BigDecimal quotient = balance.multiply(rate).divide(CobolDecimal.INTEREST_DIVISOR);
+        return quotient.signum() == 0 ? EXACT_ZERO : quotient.stripTrailingZeros().toPlainString();
+    }
+
+    /** Answers the quotient at the working scale under one rounding mode. */
+    private static BigDecimal quotientUnder(BigDecimal balance, BigDecimal rate,
+            RoundingMode mode) {
+        return balance.multiply(rate).divide(CobolDecimal.INTEREST_DIVISOR,
+                PicClause.WS_MONTHLY_INT_SCALE, mode);
+    }
+
+    /** Reports whether one rounding mode moves the quotient away from the truncated value. */
+    private static boolean separates(BigDecimal balance, BigDecimal rate, RoundingMode mode) {
+        return quotientUnder(balance, rate, RoundingMode.DOWN)
+                .compareTo(quotientUnder(balance, rate, mode)) != 0;
+    }
+
+    /** Counts the distinct rates the chained keys resolve to. */
+    private static int distinctRatesApplied() {
+        Set<BigDecimal> applied = new LinkedHashSet<>();
+        Map<RateCode, BigDecimal> rates = defaultGroupRates();
+        for (CategoryKey key : postingRun().categoryBalances().keySet()) {
+            applied.add(rates.get(new RateCode(key.typeCode(), key.categoryCode())));
+        }
+        return applied.size();
+    }
+
+    /** Counts how often the rounding phrase appears anywhere below {@code app/cbl/}. */
+    private static long roundedPhraseOccurrences() {
+        Path programs = repositoryRoot().resolve(COBOL_PROGRAM_DIRECTORY);
+        try (Stream<Path> files = Files.list(programs)) {
+            return files.filter(Files::isRegularFile)
+                    .mapToLong(DecimalTruncationEquivalenceTest::roundedPhrasesIn)
+                    .sum();
+        } catch (IOException unreadable) {
+            throw new UncheckedIOException("cannot list " + programs, unreadable);
+        }
+    }
+
+    /** Counts the rounding phrases one program carries, outside its comment lines. */
+    private static long roundedPhrasesIn(Path program) {
+        try {
+            return Files.readAllLines(program, StandardCharsets.UTF_8).stream()
+                    .map(line -> line.replaceAll("\\s+", " ").strip())
+                    .filter(line -> !line.startsWith("*"))
+                    .filter(line -> line.contains(ROUNDED_PHRASE))
+                    .count();
+        } catch (IOException unreadable) {
+            throw new UncheckedIOException("cannot read " + program, unreadable);
+        }
+    }
+
+    /** Answers the rate the unexercised reference code resolves to under the default group. */
+    private static BigDecimal unexercisedNegativeRate() {
+        BigDecimal rate = defaultGroupRates()
+                .get(new RateCode(UNEXERCISED_TYPE_CODE, POSTING_CATEGORY_CODE));
+        if (rate == null) {
+            throw new IllegalStateException(DEFAULT_GROUP_NAME + " carries no rate for type "
+                    + UNEXERCISED_TYPE_CODE + " category " + POSTING_CATEGORY_CODE);
+        }
+        return CobolDecimal.truncateToScale(rate, PicClause.DIS_INT_RATE_SCALE);
+    }
+
+    /** Answers the synthetic-case resource name, having confirmed it is really on the classpath. */
+    private static String syntheticCaseFileOnTheClasspath() {
+        if (DecimalTruncationEquivalenceTest.class
+                .getResource(ExpectedOutcomes.RESOURCE_DIRECTORY + SYNTHETIC_CASE_FILE) == null) {
+            throw new IllegalStateException(SYNTHETIC_CASE_FILE + " is not on the test classpath");
+        }
+        return SYNTHETIC_CASE_FILE;
+    }
+
+    /** Reports whether the run's closing balances agree with the sibling expectations file. */
+    private static boolean balancesAgreeWithTheCategoryBalanceFile() {
+        ExpectedOutcomes sibling = ExpectedOutcomes.load(CATEGORY_BALANCE_FILE);
+        Map<CategoryKey, BigDecimal> balances = postingRun().categoryBalances();
+        for (CategoryKey key : balances.keySet()) {
+            String siblingKey = reportKey(key).replace(REPORT_KEY_SEPARATOR,
+                    SIBLING_KEY_SEPARATOR);
+            if (!sibling.entityKeys().contains(siblingKey)) {
+                return false;
+            }
+            if (balances.get(key).compareTo(sibling.money(siblingKey, SIBLING_BALANCE_FIELD)) != 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** Reports whether the rates this class resolves agree with the disclosure-group fixture. */
+    private static boolean ratesAgreeWithTheDisclosureGroupFixture() {
+        Map<RateCode, BigDecimal> resolved = defaultGroupRates();
+        long matched = 0L;
+        for (DisclosureGroupRecord row : CardDemoFixtureLoader.loadDisclosureGroups()) {
+            if (!DEFAULT_GROUP_ID.equals(row.accountGroupId())) {
+                continue;
+            }
+            BigDecimal here = resolved.get(
+                    new RateCode(row.transactionTypeCode(), row.transactionCategoryCode()));
+            if (here == null || here.compareTo(row.interestRate()) != 0) {
+                return false;
+            }
+            matched++;
+        }
+        return matched == resolved.size();
+    }
+
+    /** Counts the chained keys carrying one transaction type code. */
+    private static long keysOfType(String typeCode) {
+        return postingRun().categoryBalances().keySet().stream()
+                .filter(key -> typeCode.equals(key.typeCode()))
+                .count();
+    }
+
+    /**
+     * Reports whether exactly one account lacks a posting-type key, and it is the one named.
+     *
+     * <p>The account identifier is taken out of the field name rather than written down, so the
+     * assertion stays bound to the account {@link #EXPECTED_TRUNCATION_FILE} names.</p>
+     *
+     * @param field the field name, whose digits name the account
+     * @return {@code true} when one account lacks the key and its identifier matches
+     */
+    private static boolean theOnlyAccountWithoutAPostingTypeKeyIs(String field) {
+        Set<String> withPostingType = new LinkedHashSet<>();
+        Set<String> allAccounts = new LinkedHashSet<>();
+        for (CategoryKey key : postingRun().categoryBalances().keySet()) {
+            allAccounts.add(key.accountId());
+            if (POSTING_TYPE_CODE.equals(key.typeCode())) {
+                withPostingType.add(key.accountId());
+            }
+        }
+        allAccounts.removeAll(withPostingType);
+        Matcher named = ACCOUNT_IN_FIELD_NAME.matcher(field);
+        if (!named.find()) {
+            throw new IllegalStateException(field + " names no account identifier");
+        }
+        return allAccounts.size() == 1 && allAccounts.contains(named.group(1));
+    }
+
+    /** Reports whether the shared helper disagrees with one rounding mode on at least one key. */
+    private static boolean theHelperNeverAgreesWith(RoundingMode mode) {
+        Map<RateCode, BigDecimal> rates = defaultGroupRates();
+        boolean separated = false;
+        for (Map.Entry<CategoryKey, BigDecimal> row : postingRun().categoryBalances().entrySet()) {
+            BigDecimal rate = rates.get(
+                    new RateCode(row.getKey().typeCode(), row.getKey().categoryCode()));
+            if (separates(row.getValue(), rate, mode)) {
+                separated = true;
+                if (monthlyInterest(row.getValue(), rate)
+                        .compareTo(quotientUnder(row.getValue(), rate, mode)) == 0) {
+                    return false;
+                }
+            }
+        }
+        return separated;
+    }
+
+    /** Reports whether the shared helper answers the truncated quotient on every chained key. */
+    private static boolean theHelperAlwaysTruncates() {
+        Map<RateCode, BigDecimal> rates = defaultGroupRates();
+        for (Map.Entry<CategoryKey, BigDecimal> row : postingRun().categoryBalances().entrySet()) {
+            BigDecimal rate = rates.get(
+                    new RateCode(row.getKey().typeCode(), row.getKey().categoryCode()));
+            if (monthlyInterest(row.getValue(), rate)
+                    .compareTo(quotientUnder(row.getValue(), rate, RoundingMode.DOWN)) != 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** Reports whether the shared arithmetic helper declares no binary floating-point type. */
+    private static boolean theSharedHelperDeclaresNoFloatingPointType() {
+        Path helper = repositoryRoot().resolve(SHARED_ARITHMETIC_SOURCE);
+        try {
+            String source = Files.readString(helper, StandardCharsets.UTF_8);
+            return !FLOATING_POINT_DECLARATION.matcher(source).find();
+        } catch (IOException unreadable) {
+            throw new UncheckedIOException("cannot read " + helper, unreadable);
+        }
+    }
+
+    /**
+     * Reports whether the high-order narrowing is a store-width effect rather than a rounding one.
+     *
+     * <p>The working field of {@code app/cbl/CBTRN02C.cbl:L187} is one integer digit narrower than
+     * its operands. Feeding it a value that already carries scale two shows the two effects apart:
+     * the stored answer differs from the value, so a narrowing happened, while every rounding mode
+     * agrees on the value, so no rounding was involved.</p>
+     *
+     * @return {@code true} when the narrowing changes the value and no rounding mode does
+     */
+    private static boolean narrowingIsNotARoundingEffect() {
+        BigDecimal wide = new BigDecimal("2000000456.78");
+        BigDecimal stored = CobolDecimal.truncateToPictureField(wide,
+                PicClause.WS_TEMP_BAL_PRECISION, PicClause.WS_TEMP_BAL_SCALE);
+        return stored.compareTo(wide) != 0
+                && wide.setScale(PicClause.WS_TEMP_BAL_SCALE, RoundingMode.DOWN)
+                        .compareTo(wide.setScale(PicClause.WS_TEMP_BAL_SCALE,
+                                RoundingMode.HALF_UP)) == 0;
+    }
+
+    /** Writes a boolean the way {@link #EXPECTED_TRUNCATION_FILE} writes one. */
+    private static String yesOrNo(boolean value) {
+        return value ? ExpectedOutcomes.YES : ExpectedOutcomes.NO;
+    }
+
+    /** Resolves the repository root from the fixture directory the loader reports. */
+    private static Path repositoryRoot() {
+        return CardDemoFixtureLoader.fixtureDirectory().getParent().getParent().getParent();
     }
 }

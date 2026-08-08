@@ -117,6 +117,8 @@ public final class EventSchemas {
                     "schemas/transaction-declined-v1.json"),
             Map.entry(new SchemaKey("TransactionDeclined", 2),
                     "schemas/transaction-declined-v2.json"),
+            Map.entry(new SchemaKey("TransactionDeclined", 3),
+                    "schemas/transaction-declined-v3.json"),
             Map.entry(new SchemaKey("TransactionPosted", 1),
                     "schemas/transaction-posted-v1.json"),
             Map.entry(new SchemaKey("TransactionPosted", 2),

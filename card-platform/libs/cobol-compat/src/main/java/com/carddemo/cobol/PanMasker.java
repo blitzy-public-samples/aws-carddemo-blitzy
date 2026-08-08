@@ -31,8 +31,10 @@ import javax.crypto.spec.SecretKeySpec;
  *
  * <p>A masked card number identifies nothing. Twelve of its sixteen characters are the mask, so
  * two cards ending in the same four digits produce one masked value. {@link #cardToken(String)}
- * supplies the identity instead: one card, one token, and no two cards share one. A route key, a
- * storage key and an ownership authority take the token, and the masked form stays display data.
+ * supplies the identity instead: one card yields one token, and the derivation is
+ * collision-resistant rather than collision-free, since a fixed-length code over a larger input
+ * space cannot rule a collision out. A route key, a storage key and an ownership authority take
+ * the token, and the masked form stays display data.
  *
  * <p>A card token is a <strong>keyed</strong> value. The card-number space is finite and its
  * shape is public, so an unkeyed digest of a card number can be recomputed for every candidate
@@ -113,11 +115,43 @@ public final class PanMasker {
     public static final String DEFAULT_CARD_TOKEN_VERSION = "1";
 
     /**
+     * The card-token key this repository publishes for its demonstration stack.
+     *
+     * <p>It is written down in {@code card-platform/.env.example} and in
+     * {@code card-platform/deploy/k8s/31-secret.example.yaml}, and the fifty {@code card_token}
+     * literals the card service seeds and the {@code SCOPE_CARD} authority the demonstration
+     * grants were all derived under it. That is why it is a working value rather than a
+     * {@code REPLACE} placeholder: a placeholder here would leave every seeded row keyed to
+     * nothing and every card request answering 403.
+     *
+     * <p>A published key is a key every reader of this repository holds, so a token taken under it
+     * is recomputable for any candidate card number, which is the one property the key exists to
+     * supply. {@link #requireCardTokenSecretFitForUse()} is what stops a deployment carrying this
+     * value by accident.
+     */
+    public static final String PUBLISHED_DEMO_CARD_TOKEN_SECRET =
+            "carddemo-demo-card-token-key-not-for-production";
+
+    /**
+     * System property by which a deployment states that it is the demonstration and means to run
+     * under {@link #PUBLISHED_DEMO_CARD_TOKEN_SECRET}.
+     *
+     * <p>Read the same way the key and the version are read, rather than through a framework, so
+     * one class owns the resolution of all three.
+     */
+    public static final String CARD_TOKEN_ALLOW_PUBLISHED_KEY_PROPERTY =
+            "carddemo.card-token.allow-published-key";
+
+    /** Environment variable that carries the same statement where the property is unset. */
+    public static final String CARD_TOKEN_ALLOW_PUBLISHED_KEY_VARIABLE =
+            "CARD_TOKEN_ALLOW_PUBLISHED_KEY";
+
+    /**
      * Characters a configured key must hold at least.
      *
-     * <p>Thirty-two characters is the block size of the underlying hash. A shorter key is padded
-     * to that width by the algorithm, which spends key material rather than adding it, so a key
-     * under this width is refused at the point of use instead of silently weakening every token.
+     * <p>Thirty-two bytes is the digest length of the underlying hash, whose block is 64 bytes. A
+     * key shorter than the digest length adds less key material than the code it produces carries,
+     * so it is refused at the point of use instead of silently weakening every token.
      */
     public static final int CARD_TOKEN_SECRET_MIN_LENGTH = 32;
 
@@ -163,7 +197,6 @@ public final class PanMasker {
     public static final String FULLY_MASKED_CARD_NUMBER =
             String.valueOf(MASK_CHARACTER).repeat(CARD_NUMBER_LENGTH);
 
-    /** Renders a digest as lower-case hexadecimal characters. */
     private static final HexFormat HEX = HexFormat.of();
 
     private PanMasker() {
@@ -240,6 +273,57 @@ public final class PanMasker {
     }
 
     /**
+     * Refuses the published demonstration key unless the deployment says it means to use it.
+     *
+     * <p>Call this once while a service starts. Every derivation site already refuses an absent or
+     * too-short key; what it cannot see is that a configured key is one this repository states in
+     * plain text. Without this check a deployment that copied the value out of
+     * {@code .env.example} keeps working and says nothing, and its tokens are recomputable by
+     * anyone holding the repository.
+     *
+     * <p>No shipped path carries the published key. {@code .env.example} and
+     * {@code deploy/k8s/31-secret.example.yaml} both carry a placeholder,
+     * {@code card-platform/scripts/generate-env.sh} fills it with a key generated for the install,
+     * and {@code com.carddemo.card.domain.CardTokenReconciler} re-derives the seeded literals under
+     * whatever key arrives. {@value #CARD_TOKEN_ALLOW_PUBLISHED_KEY_VARIABLE} therefore appears in
+     * exactly one place, {@code card-platform/pom.xml}, which sets the property for the test run
+     * because the build supplies a key of its own. A deployment that deliberately means to run on
+     * the published key sets the variable itself; anything else rotates the key, and
+     * {@code card-platform/docs/suggested-next-tasks.md} carries that procedure with the three
+     * artifacts a rotation re-derives.
+     *
+     * <p>An absent key is not refused here. A service that never derives a token needs none, and
+     * the one that does refuses it at the derivation.
+     *
+     * @return {@code true} where the published key is configured and the deployment stated it
+     *         deliberately, so a caller may report that it is running on a published key;
+     *         {@code false} where the configured key is the deployment's own or none is configured
+     * @throws IllegalStateException where the published key is configured and no statement
+     *                               accompanies it
+     */
+    public static boolean requireCardTokenSecretFitForUse() {
+        String configured = configured(CARD_TOKEN_SECRET_PROPERTY, CARD_TOKEN_SECRET_VARIABLE);
+        if (!PUBLISHED_DEMO_CARD_TOKEN_SECRET.equals(configured)) {
+            return false;
+        }
+        String stated = configured(CARD_TOKEN_ALLOW_PUBLISHED_KEY_PROPERTY,
+                CARD_TOKEN_ALLOW_PUBLISHED_KEY_VARIABLE);
+        if (!Boolean.parseBoolean(stated)) {
+            throw new IllegalStateException("the configured card-token key is the one this"
+                    + " repository publishes for its demonstration stack, so every token it"
+                    + " derives is recomputable by anyone holding this repository. Set "
+                    + CARD_TOKEN_SECRET_PROPERTY + " or "
+                    + CARD_TOKEN_SECRET_VARIABLE + " to a key of your own, at least "
+                    + CARD_TOKEN_SECRET_MIN_LENGTH + " characters, and re-derive the three"
+                    + " artifacts card-platform/docs/suggested-next-tasks.md lists. To run the"
+                    + " demonstration on the published key deliberately, set "
+                    + CARD_TOKEN_ALLOW_PUBLISHED_KEY_PROPERTY + " or "
+                    + CARD_TOKEN_ALLOW_PUBLISHED_KEY_VARIABLE + " to true.");
+        }
+        return true;
+    }
+
+    /**
      * Derives the card token of one card number.
      *
      * <p>The token is the {@value #CARD_TOKEN_ALGORITHM} code, taken under the configured key,
@@ -249,8 +333,8 @@ public final class PanMasker {
      *
      * <p>Four properties are what callers rely on. Under one key and one version the same card
      * number always yields the same token, so a service that never meets the card number twice
-     * still keys its rows on one value. Two different card numbers yield different tokens, which
-     * is the identity a masked card number cannot supply. No character of the card number
+     * still keys its rows on one value. Two different card numbers are overwhelmingly likely to
+     * yield different tokens, which is the identity a masked card number cannot supply. No character of the card number
      * survives into the token, so a token is safe in a route, an access log, a trace and a stored
      * key. And a holder of the token cannot recompute it for a candidate card number, because
      * recomputing it needs the key.
@@ -320,8 +404,6 @@ public final class PanMasker {
     }
 
     /**
-     * Returns the key and version in force, building the key only when either has changed.
-     *
      * @return the key material and the version tokens are derived under
      * @throws IllegalStateException if no key is configured or the configured key is too short
      */
@@ -362,8 +444,8 @@ public final class PanMasker {
         if (configured.length() < CARD_TOKEN_SECRET_MIN_LENGTH) {
             throw new IllegalStateException("the configured card-token key holds "
                     + configured.length() + " characters and at least "
-                    + CARD_TOKEN_SECRET_MIN_LENGTH + " are required, because a shorter key is"
-                    + " padded to the hash block size rather than filling it.");
+                    + CARD_TOKEN_SECRET_MIN_LENGTH + " are required, because a shorter key adds"
+                    + " less key material than the code it produces carries.");
         }
         return configured;
     }
@@ -433,7 +515,6 @@ public final class PanMasker {
             }
         }
 
-        /** Renders this entry without its key material. */
         @Override
         public String toString() {
             return "TokenKey[version=" + version + ", secret=" + REDACTED_KEY + "]";

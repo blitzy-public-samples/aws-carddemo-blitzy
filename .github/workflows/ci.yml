@@ -1,9 +1,34 @@
 # Continuous integration for the CardDemo card platform.
 #
-# Six stages run in order: compile the reactor, run the unit and contract tests,
-# run the service integration suites, run the equivalence suite, check event
-# schema compatibility, then build the six service images. A stage starts only
-# after the stage it depends on has succeeded.
+# Nine stages run, and the `needs:` keys below are what orders them. Compiling the
+# reactor comes first and nothing else depends on anything but it: the seven stages
+# after it - the secret scan, the source analysis, the unit and contract tests, the
+# service integration suites, the equivalence suite, event schema compatibility and
+# the dependency review - each name the compile stage alone, so the runner starts all
+# seven together as soon as it succeeds. Building the six service images names every
+# one of them, so it starts only after all seven have passed. The stage numbers in the
+# comments below are reading order, not execution order.
+#
+#   compile --+--> secret-scan ----------+--> container-builds
+#             +--> static-analysis ------+
+#             +--> unit-tests -----------+
+#             +--> integration-tests ----+
+#             +--> equivalence-tests ----+
+#             +--> schema-compatibility -+
+#             +--> supply-chain ---------+
+#
+# EVERY STAGE FAILS THE RUN. No step is permitted to continue past an error, to
+# discard a status, or to succeed regardless: a finding stops the pipeline, and
+# ContinuousIntegrationWorkflowContractTest asserts that no step here carries either
+# of the two shapes that would let one through. Two stages state a severity threshold
+# rather than failing on every result, and each says so where it runs, because a gate
+# that can never pass is a gate somebody switches off.
+#
+# Every job runs on ubuntu-24.04, and every action is pinned to a full commit SHA with
+# the release that commit carries named beside it, because a tag can be moved over
+# different code. A release archive is pinned to its version and verified against a
+# digest published by the project that built it, which is the shape the toolchain
+# action uses. Both are read back by ContinuousIntegrationWorkflowContractTest.
 #
 # Reactor modules, declared by card-platform/pom.xml and listed in build order:
 #   card-platform/libs/event-contracts
@@ -62,38 +87,35 @@ jobs:
   # class file to confirm the release. Tests run in the stages that follow.
   compile:
     name: Compile all modules
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Install Java
-        uses: actions/setup-java@v4
+      - name: Set up the build toolchain
+        uses: ./.github/actions/setup-build-toolchain
         with:
-          distribution: temurin
           java-version: ${{ env.JAVA_VERSION }}
-          cache: maven
-          cache-dependency-path: card-platform/**/pom.xml
-
-      - name: Install the pinned Maven release
-        run: |
-          archive="apache-maven-${MAVEN_VERSION}-bin.tar.gz"
-          base="https://archive.apache.org/dist/maven/maven-3/${MAVEN_VERSION}/binaries"
-          curl --fail --location --silent --show-error "${base}/${archive}" --output "/tmp/${archive}"
-          curl --fail --location --silent --show-error "${base}/${archive}.sha512" --output "/tmp/${archive}.sha512"
-          # Apache publishes the digest on its own, with no file name and no closing
-          # newline. GNU coreutils reads a checksum line as digest, two spaces, name,
-          # so the line is assembled here and --strict refuses any other shape.
-          printf '%s  %s\n' "$(awk '{print $1}' "/tmp/${archive}.sha512")" "${archive}" > "/tmp/${archive}.sha512sum"
-          (cd /tmp && sha512sum --check --strict "${archive}.sha512sum")
-          sudo tar --extract --gzip --file "/tmp/${archive}" --directory /opt
-          echo "/opt/apache-maven-${MAVEN_VERSION}/bin" >> "${GITHUB_PATH}"
+          maven-version: ${{ env.MAVEN_VERSION }}
 
       - name: Report the toolchain versions
         run: |
           mvn -v
           java -version
+
+      - name: Parse the committed shell procedures
+        run: |
+          # scripts/start-demo.sh is the advertised path from a clean clone, and
+          # deploy/k8s/load-images.sh is what a cluster needs before its first apply.
+          # Neither is run by a stage here, so bash -n is what stops a syntax error in one
+          # of them reaching a reader who is following the documentation.
+          for script in scripts/start-demo.sh scripts/generate-env.sh \
+                        deploy/k8s/load-images.sh; do
+            test -x "${script}"
+            bash -n "${script}"
+            echo "${script} parses and is executable"
+          done
 
       - name: Compile at Java release 25
         run: mvn -B -ntp -DskipTests compile
@@ -117,38 +139,154 @@ jobs:
           # may produce. A second value here means a module compiled at another release.
           test "${releases}" = "69"
 
-  # Stage 2. Runs the Surefire tests of every module. The equivalence-tests
-  # module holds its *EquivalenceTest classes back for Failsafe in stage 4.
+  # Stage 2. Reads the working tree and the branch history for committed secrets.
+  # A finding fails the run. The rule pack is the scanner's own default set, and
+  # /.gitleaks.toml names the known-safe values this repository ships on purpose,
+  # each with the reason it is safe. That file is the allowlist: a value not
+  # matching one of its shapes fails this stage wherever it appears.
+  secret-scan:
+    name: Scan for committed secrets
+    needs: compile
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The history scan below reads commits, so the default shallow fetch
+          # would leave most of them unread.
+          fetch-depth: 0
+
+      - name: Install the pinned gitleaks release
+        working-directory: .
+        run: |
+          version="8.30.1"
+          archive="gitleaks_${version}_linux_x64.tar.gz"
+          # Published by the gitleaks project in gitleaks_${version}_checksums.txt.
+          digest="551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+          curl --fail --location --silent --show-error \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${version}/${archive}" \
+            --output "/tmp/${archive}"
+          printf '%s  %s\n' "${digest}" "${archive}" > "/tmp/${archive}.sha256sum"
+          (cd /tmp && sha256sum --check --strict "${archive}.sha256sum")
+          tar --extract --gzip --file "/tmp/${archive}" --directory /tmp gitleaks
+          sudo install -m 0755 /tmp/gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+
+      - name: Read the working tree
+        working-directory: .
+        run: |
+          mkdir -p card-platform/target/security-reports
+          gitleaks dir . --config .gitleaks.toml --no-banner --redact \
+            --report-format sarif \
+            --report-path card-platform/target/security-reports/gitleaks-working-tree.sarif \
+            --exit-code 1
+
+      - name: Read the branch history
+        working-directory: .
+        run: |
+          mkdir -p card-platform/target/security-reports
+          gitleaks git . --config .gitleaks.toml --no-banner --redact \
+            --report-format sarif \
+            --report-path card-platform/target/security-reports/gitleaks-history.sarif \
+            --exit-code 1
+
+      - name: Keep the secret-scan reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: secret-scan-reports
+          path: card-platform/target/security-reports/gitleaks-*.sarif
+          retention-days: ${{ env.REPORT_RETENTION_DAYS }}
+          if-no-files-found: error
+
+  # Stage 3. Static analysis of every Java source in the reactor, through CodeQL.
+  # The database is built from a real compile rather than inferred, which is what
+  # `build-mode: manual` means. Results are not uploaded to the repository's code
+  # scanning view, because that needs a write permission this workflow does not
+  # take; the SARIF is read here instead and kept as an artifact.
+  #
+  # THE THRESHOLD. The run fails on a result whose security severity is 7.0 or
+  # higher, which is CodeQL's high and critical band, and reports every result
+  # below that without failing. Failing on all of them would make one style alert
+  # indistinguishable from an injection, and the report holds both either way.
+  static-analysis:
+    name: Analyse the sources
+    needs: compile
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up the build toolchain
+        uses: ./.github/actions/setup-build-toolchain
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          maven-version: ${{ env.MAVEN_VERSION }}
+
+      - name: Initialise the CodeQL database
+        uses: github/codeql-action/init@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
+        with:
+          languages: java-kotlin
+          build-mode: manual
+
+      - name: Compile the reactor for the database
+        run: mvn -B -ntp -DskipTests compile
+
+      - name: Analyse and write the result file
+        uses: github/codeql-action/analyze@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
+        with:
+          category: card-platform
+          upload: never
+          output: ${{ github.workspace }}/card-platform/target/security-reports/codeql
+
+      - name: Fail on a high or critical result
+        working-directory: .
+        run: |
+          shopt -s nullglob
+          results=(card-platform/target/security-reports/codeql/*.sarif)
+          test "${#results[@]}" -gt 0
+          reported=0
+          severe=0
+          for file in "${results[@]}"; do
+            counts="$(jq -r '
+              [.runs[]? as $run
+                | ($run.tool.driver.rules // []) as $rules
+                | $run.results[]?
+                | ($rules[(.ruleIndex // -1)]?.properties["security-severity"] // "0" | tonumber)
+              ] | [length, (map(select(. >= 7.0)) | length)] | @tsv' "${file}")"
+            reported=$((reported + $(echo "${counts}" | cut -f1)))
+            severe=$((severe + $(echo "${counts}" | cut -f2)))
+          done
+          echo "CodeQL reported ${reported} results, ${severe} of them at security severity 7.0 or higher"
+          test "${severe}" -eq 0
+
+      - name: Keep the static-analysis results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: static-analysis-results
+          path: card-platform/target/security-reports/codeql/**
+          retention-days: ${{ env.REPORT_RETENTION_DAYS }}
+          if-no-files-found: error
+
+  # Stage 4. Runs the Surefire tests of every module. The equivalence-tests
+  # module holds its *EquivalenceTest classes back for Failsafe in stage 6.
   unit-tests:
     name: Run unit and contract tests
     needs: compile
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Install Java
-        uses: actions/setup-java@v4
+      - name: Set up the build toolchain
+        uses: ./.github/actions/setup-build-toolchain
         with:
-          distribution: temurin
           java-version: ${{ env.JAVA_VERSION }}
-          cache: maven
-          cache-dependency-path: card-platform/**/pom.xml
-
-      - name: Install the pinned Maven release
-        run: |
-          archive="apache-maven-${MAVEN_VERSION}-bin.tar.gz"
-          base="https://archive.apache.org/dist/maven/maven-3/${MAVEN_VERSION}/binaries"
-          curl --fail --location --silent --show-error "${base}/${archive}" --output "/tmp/${archive}"
-          curl --fail --location --silent --show-error "${base}/${archive}.sha512" --output "/tmp/${archive}.sha512"
-          # Apache publishes the digest on its own, with no file name and no closing
-          # newline. GNU coreutils reads a checksum line as digest, two spaces, name,
-          # so the line is assembled here and --strict refuses any other shape.
-          printf '%s  %s\n' "$(awk '{print $1}' "/tmp/${archive}.sha512")" "${archive}" > "/tmp/${archive}.sha512sum"
-          (cd /tmp && sha512sum --check --strict "${archive}.sha512sum")
-          sudo tar --extract --gzip --file "/tmp/${archive}" --directory /opt
-          echo "/opt/apache-maven-${MAVEN_VERSION}/bin" >> "${GITHUB_PATH}"
+          maven-version: ${{ env.MAVEN_VERSION }}
 
       - name: Report the toolchain versions
         run: |
@@ -160,45 +298,29 @@ jobs:
 
       - name: Keep the unit test reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: unit-test-reports
           path: card-platform/**/target/surefire-reports/**
           retention-days: ${{ env.REPORT_RETENTION_DAYS }}
           if-no-files-found: error
 
-  # Stage 3. Runs the Failsafe suites of the six service modules against a
+  # Stage 5. Runs the Failsafe suites of the six service modules against a
   # PostgreSQL and Kafka pair started from the Compose file.
   integration-tests:
     name: Run service integration tests
     needs: compile
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Install Java
-        uses: actions/setup-java@v4
+      - name: Set up the build toolchain
+        uses: ./.github/actions/setup-build-toolchain
         with:
-          distribution: temurin
           java-version: ${{ env.JAVA_VERSION }}
-          cache: maven
-          cache-dependency-path: card-platform/**/pom.xml
-
-      - name: Install the pinned Maven release
-        run: |
-          archive="apache-maven-${MAVEN_VERSION}-bin.tar.gz"
-          base="https://archive.apache.org/dist/maven/maven-3/${MAVEN_VERSION}/binaries"
-          curl --fail --location --silent --show-error "${base}/${archive}" --output "/tmp/${archive}"
-          curl --fail --location --silent --show-error "${base}/${archive}.sha512" --output "/tmp/${archive}.sha512"
-          # Apache publishes the digest on its own, with no file name and no closing
-          # newline. GNU coreutils reads a checksum line as digest, two spaces, name,
-          # so the line is assembled here and --strict refuses any other shape.
-          printf '%s  %s\n' "$(awk '{print $1}' "/tmp/${archive}.sha512")" "${archive}" > "/tmp/${archive}.sha512sum"
-          (cd /tmp && sha512sum --check --strict "${archive}.sha512sum")
-          sudo tar --extract --gzip --file "/tmp/${archive}" --directory /opt
-          echo "/opt/apache-maven-${MAVEN_VERSION}/bin" >> "${GITHUB_PATH}"
+          maven-version: ${{ env.MAVEN_VERSION }}
 
       - name: Report the toolchain versions
         run: |
@@ -230,7 +352,7 @@ jobs:
 
       - name: Keep the integration test reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: integration-test-reports
           path: |
@@ -243,39 +365,23 @@ jobs:
         if: always()
         run: docker compose down --volumes
 
-  # Stage 4. Runs every *EquivalenceTest class in card-platform/equivalence-tests
+  # Stage 6. Runs every *EquivalenceTest class in card-platform/equivalence-tests
   # under Failsafe, comparing service results with the documented source rules
   # and the fixtures under app/data/ASCII.
   equivalence-tests:
     name: Run equivalence tests
     needs: compile
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Install Java
-        uses: actions/setup-java@v4
+      - name: Set up the build toolchain
+        uses: ./.github/actions/setup-build-toolchain
         with:
-          distribution: temurin
           java-version: ${{ env.JAVA_VERSION }}
-          cache: maven
-          cache-dependency-path: card-platform/**/pom.xml
-
-      - name: Install the pinned Maven release
-        run: |
-          archive="apache-maven-${MAVEN_VERSION}-bin.tar.gz"
-          base="https://archive.apache.org/dist/maven/maven-3/${MAVEN_VERSION}/binaries"
-          curl --fail --location --silent --show-error "${base}/${archive}" --output "/tmp/${archive}"
-          curl --fail --location --silent --show-error "${base}/${archive}.sha512" --output "/tmp/${archive}.sha512"
-          # Apache publishes the digest on its own, with no file name and no closing
-          # newline. GNU coreutils reads a checksum line as digest, two spaces, name,
-          # so the line is assembled here and --strict refuses any other shape.
-          printf '%s  %s\n' "$(awk '{print $1}' "/tmp/${archive}.sha512")" "${archive}" > "/tmp/${archive}.sha512sum"
-          (cd /tmp && sha512sum --check --strict "${archive}.sha512sum")
-          sudo tar --extract --gzip --file "/tmp/${archive}" --directory /opt
-          echo "/opt/apache-maven-${MAVEN_VERSION}/bin" >> "${GITHUB_PATH}"
+          maven-version: ${{ env.MAVEN_VERSION }}
 
       - name: Report the toolchain versions
         run: |
@@ -305,7 +411,7 @@ jobs:
 
       - name: Keep the equivalence reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: equivalence-test-reports
           path: card-platform/equivalence-tests/target/failsafe-reports/**
@@ -316,38 +422,22 @@ jobs:
         if: always()
         run: docker compose down --volumes
 
-  # Stage 5. Fails the build when an event schema change would stop a consumer
+  # Stage 7. Fails the build when an event schema change would stop a consumer
   # that reads an earlier version of that schema.
   schema-compatibility:
     name: Event schema compatibility
     needs: compile
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Install Java
-        uses: actions/setup-java@v4
+      - name: Set up the build toolchain
+        uses: ./.github/actions/setup-build-toolchain
         with:
-          distribution: temurin
           java-version: ${{ env.JAVA_VERSION }}
-          cache: maven
-          cache-dependency-path: card-platform/**/pom.xml
-
-      - name: Install the pinned Maven release
-        run: |
-          archive="apache-maven-${MAVEN_VERSION}-bin.tar.gz"
-          base="https://archive.apache.org/dist/maven/maven-3/${MAVEN_VERSION}/binaries"
-          curl --fail --location --silent --show-error "${base}/${archive}" --output "/tmp/${archive}"
-          curl --fail --location --silent --show-error "${base}/${archive}.sha512" --output "/tmp/${archive}.sha512"
-          # Apache publishes the digest on its own, with no file name and no closing
-          # newline. GNU coreutils reads a checksum line as digest, two spaces, name,
-          # so the line is assembled here and --strict refuses any other shape.
-          printf '%s  %s\n' "$(awk '{print $1}' "/tmp/${archive}.sha512")" "${archive}" > "/tmp/${archive}.sha512sum"
-          (cd /tmp && sha512sum --check --strict "${archive}.sha512sum")
-          sudo tar --extract --gzip --file "/tmp/${archive}" --directory /opt
-          echo "/opt/apache-maven-${MAVEN_VERSION}/bin" >> "${GITHUB_PATH}"
+          maven-version: ${{ env.MAVEN_VERSION }}
 
       - name: Report the toolchain versions
         run: |
@@ -363,14 +453,88 @@ jobs:
 
       - name: Keep the schema compatibility reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: schema-compatibility-reports
           path: card-platform/libs/event-contracts/target/surefire-reports/**
           retention-days: ${{ env.REPORT_RETENTION_DAYS }}
           if-no-files-found: error
 
-  # Stage 6. Packages each service, builds its image from the Dockerfile in
+  # Stage 8. Describes what this build resolves, then reads that description for
+  # known advisories. A finding fails the run.
+  #
+  # WHY IT READS A BILL OF MATERIALS RATHER THAN THE DESCRIPTORS. The finding this
+  # stage answers was com.fasterxml.jackson.core:jackson-databind arriving on seven
+  # test classpaths through spring-kafka-test, named by no descriptor in the
+  # repository. A tool reading pom.xml would not have seen it. The aggregate bill of
+  # materials is the resolved graph, test scope included, which is where it lives.
+  #
+  # The file has to be named bom.json: the scanner recognises a bill of materials by
+  # the file name its specification defines and refuses any other.
+  supply-chain:
+    name: Review the resolved dependency graph
+    needs: compile
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up the build toolchain
+        uses: ./.github/actions/setup-build-toolchain
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          maven-version: ${{ env.MAVEN_VERSION }}
+
+      - name: Write the aggregate bill of materials
+        run: |
+          mvn -B -ntp org.cyclonedx:cyclonedx-maven-plugin:2.9.3:makeAggregateBom \
+            -DoutputFormat=json -DincludeTestScope=true -DoutputName=bom
+          test -s target/bom.json
+          echo "components described: $(jq '.components | length' target/bom.json)"
+
+      - name: Install the pinned advisory scanner
+        working-directory: .
+        run: |
+          version="2.5.0"
+          # Published by the osv-scanner project in osv-scanner_SHA256SUMS.
+          digest="edcfc41d257db36148f065055655fe3fcfc434b0b423ea67468a84c207524e0c"
+          curl --fail --location --silent --show-error \
+            "https://github.com/google/osv-scanner/releases/download/v${version}/osv-scanner_linux_amd64" \
+            --output /tmp/osv-scanner
+          printf '%s  %s\n' "${digest}" "osv-scanner" > /tmp/osv-scanner.sha256sum
+          (cd /tmp && sha256sum --check --strict osv-scanner.sha256sum)
+          sudo install -m 0755 /tmp/osv-scanner /usr/local/bin/osv-scanner
+          osv-scanner --version
+
+      - name: Read the bill of materials for known advisories
+        run: |
+          osv-scanner scan source -L target/bom.json --format json \
+            --output target/advisories.json
+          osv-scanner scan source -L target/bom.json --format table
+
+      - name: Review the dependency change of this pull request
+        # A pull request is the only event that has a base to compare against, so
+        # this step names one. It adds a second opinion on a change rather than
+        # replacing the step above, which reads the whole graph on every event.
+        if: github.event_name == 'pull_request'
+        uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4.9.0
+        with:
+          fail-on-severity: low
+          comment-summary-in-pr: never
+
+      - name: Keep the bill of materials and the advisory report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: supply-chain-reports
+          path: |
+            card-platform/target/bom.json
+            card-platform/target/advisories.json
+          retention-days: ${{ env.REPORT_RETENTION_DAYS }}
+          if-no-files-found: error
+
+  # Stage 9. Packages each service, builds its image from the Dockerfile in
   # card-platform/services, then starts all six through card-platform/docker-compose.yml
   # and reads /actuator/health on each. The images stay on the runner: nothing is pushed,
   # and the tag they carry is the one Compose runs and deploy/k8s names, so the stage
@@ -378,37 +542,31 @@ jobs:
   container-builds:
     name: Build six service containers
     needs:
+      - secret-scan
+      - static-analysis
       - unit-tests
       - integration-tests
       - equivalence-tests
       - schema-compatibility
-    runs-on: ubuntu-latest
+      - supply-chain
+    runs-on: ubuntu-24.04
     timeout-minutes: 35
+    permissions:
+      # contents stays read. The two below are what an attestation needs: an OpenID
+      # Connect token to identify this run, and the write scope that records the
+      # statement against the repository. Nothing here pushes an image.
+      contents: read
+      id-token: write
+      attestations: write
     steps:
       - name: Check out the repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Install Java
-        uses: actions/setup-java@v4
+      - name: Set up the build toolchain
+        uses: ./.github/actions/setup-build-toolchain
         with:
-          distribution: temurin
           java-version: ${{ env.JAVA_VERSION }}
-          cache: maven
-          cache-dependency-path: card-platform/**/pom.xml
-
-      - name: Install the pinned Maven release
-        run: |
-          archive="apache-maven-${MAVEN_VERSION}-bin.tar.gz"
-          base="https://archive.apache.org/dist/maven/maven-3/${MAVEN_VERSION}/binaries"
-          curl --fail --location --silent --show-error "${base}/${archive}" --output "/tmp/${archive}"
-          curl --fail --location --silent --show-error "${base}/${archive}.sha512" --output "/tmp/${archive}.sha512"
-          # Apache publishes the digest on its own, with no file name and no closing
-          # newline. GNU coreutils reads a checksum line as digest, two spaces, name,
-          # so the line is assembled here and --strict refuses any other shape.
-          printf '%s  %s\n' "$(awk '{print $1}' "/tmp/${archive}.sha512")" "${archive}" > "/tmp/${archive}.sha512sum"
-          (cd /tmp && sha512sum --check --strict "${archive}.sha512sum")
-          sudo tar --extract --gzip --file "/tmp/${archive}" --directory /opt
-          echo "/opt/apache-maven-${MAVEN_VERSION}/bin" >> "${GITHUB_PATH}"
+          maven-version: ${{ env.MAVEN_VERSION }}
 
       - name: Report the toolchain versions
         run: |
@@ -441,6 +599,75 @@ jobs:
               "services/${service}"
           done
 
+      - name: Install the pinned image scanner
+        working-directory: .
+        run: |
+          version="0.73.0"
+          archive="trivy_${version}_Linux-64bit.tar.gz"
+          # Published by the trivy project in trivy_${version}_checksums.txt.
+          digest="2edd39da482bb4e9831962487b68f68e3928ec3137794757f54d00383d79547b"
+          curl --fail --location --silent --show-error \
+            "https://github.com/aquasecurity/trivy/releases/download/v${version}/${archive}" \
+            --output "/tmp/${archive}"
+          printf '%s  %s\n' "${digest}" "${archive}" > "/tmp/${archive}.sha256sum"
+          (cd /tmp && sha256sum --check --strict "${archive}.sha256sum")
+          tar --extract --gzip --file "/tmp/${archive}" --directory /tmp trivy
+          sudo install -m 0755 /tmp/trivy /usr/local/bin/trivy
+          trivy --version
+
+      - name: Scan the six images that were just built
+        # THE THRESHOLD. A high or critical vulnerability WITH A FIX AVAILABLE fails
+        # this stage. One without a fix is counted and reported and does not, because
+        # there is nothing a change to this repository could do about it: the runtime
+        # base image these six share carries 41 such findings today and none of them
+        # is fixable at any version. A gate that can never pass is a gate somebody
+        # switches off, and the full report is kept as an artifact either way.
+        run: |
+          services=(
+            authorization-service
+            ledger-posting-service
+            fraud-detection-service
+            notification-service
+            account-service
+            card-service
+          )
+          mkdir -p target/image-scans
+          fixable_total=0
+          unfixed_total=0
+          for service in "${services[@]}"; do
+            report="target/image-scans/${service}.json"
+            trivy image --scanners vuln --severity HIGH,CRITICAL --quiet \
+              --format json --output "${report}" "carddemo/${service}:${IMAGE_TAG}"
+            counts="$(jq -r '[.Results[]?.Vulnerabilities[]?]
+              | [(map(select(.FixedVersion != null and .FixedVersion != "")) | length),
+                 (map(select(.FixedVersion == null or .FixedVersion == "")) | length)]
+              | @tsv' "${report}")"
+            fixable="$(echo "${counts}" | cut -f1)"
+            unfixed="$(echo "${counts}" | cut -f2)"
+            echo "${service}: ${fixable} fixable, ${unfixed} with no fix available"
+            fixable_total=$((fixable_total + fixable))
+            unfixed_total=$((unfixed_total + unfixed))
+          done
+          echo "totals: ${fixable_total} fixable, ${unfixed_total} with no fix available"
+          test "${fixable_total}" -eq 0
+
+      - name: Record what produced the six archives
+        # A push has a commit to attest. A pull request from a fork has no token to
+        # sign with, so the statement is recorded on the push that follows the merge.
+        if: github.event_name == 'push'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: card-platform/services/*/target/*.jar
+
+      - name: Keep the image-scan reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: image-scan-reports
+          path: card-platform/target/image-scans/**
+          retention-days: ${{ env.REPORT_RETENTION_DAYS }}
+          if-no-files-found: error
+
       - name: Generate the stack credentials
         run: |
           for variable in POSTGRES_PASSWORD \
@@ -452,19 +679,36 @@ jobs:
                           ACCOUNT_KAFKA_PASSWORD CARD_KAFKA_PASSWORD; do
             sed -i "s|^${variable}=.*|${variable}=$(openssl rand -base64 24 | tr -d '/+=')|" .env
           done
-          # The three identity passwords are stored already encoded, and every service
-          # refuses to start on a value carrying no encoding prefix. The recipe is the one
-          # card-platform/docs/onboarding.md documents, and the jars it reads are in the
-          # local repository because the packaging step above resolved them. No password
-          # below is echoed, and each exists only for this run.
+          # The card-token key, generated on its own because it has a length floor the two
+          # deriving services enforce: PanMasker refuses a key under 32 characters, and both
+          # services refuse to start on one. Forty-eight base64 bytes leave well over 32
+          # characters after the three URL-unsafe ones are stripped. Both services also refuse
+          # the two card-token keys this repository publishes, so nothing here can fall back
+          # to one.
+          sed -i "s|^CARD_TOKEN_SECRET=.*|CARD_TOKEN_SECRET='$(openssl rand -base64 48 | tr -d '/+=')'|" .env
+          # The four identity passwords are stored already encoded, and every service refuses
+          # to start on a value whose encoding it does not approve. The recipe is the one
+          # card-platform/docs/onboarding.md documents, and it encodes with bcrypt, which is
+          # one of the two encodings the allowlist in each config/SecurityConfig accepts. The
+          # jars it reads are in the local repository because the packaging step above
+          # resolved them. No password below is echoed, and each exists only for this run.
           crypto_classpath="$(find ~/.m2/repository/org/springframework/security/spring-security-crypto -name 'spring-security-crypto-*.jar' | sort | tail -1)"
           crypto_classpath="${crypto_classpath}:$(find ~/.m2/repository/commons-logging/commons-logging -name 'commons-logging-*.jar' | sort | tail -1)"
           crypto_classpath="${crypto_classpath}:$(find ~/.m2/repository/org/springframework/spring-core -name 'spring-core-*.jar' | sort | tail -1)"
-          for variable in ADMIN_PASSWORD_HASH USER_PASSWORD_HASH MONITORING_PASSWORD_HASH; do
+          for variable in ADMIN_PASSWORD_HASH ACQUIRER_PASSWORD_HASH USER_PASSWORD_HASH \
+                          MONITORING_PASSWORD_HASH; do
             export SMOKE_PASSWORD="$(openssl rand -base64 24 | tr -d '/+=')"
             hash="$(printf 'System.out.println(org.springframework.security.crypto.factory.PasswordEncoderFactories.createDelegatingPasswordEncoder().encode(System.getenv("SMOKE_PASSWORD")));\n/exit\n' | jshell --class-path "${crypto_classpath}" 2>/dev/null | sed -n 's/^jshell> //p' | grep '^{bcrypt}' | head -1)"
-            unset SMOKE_PASSWORD
             test -n "${hash}"
+            # The business smoke further down authenticates as the administrator, so that one
+            # plaintext is carried forward rather than discarded. It is masked before it is
+            # written, so a later step cannot print it even by accident, and it exists only
+            # for this run. The other two are discarded as before.
+            if [ "${variable}" = "ADMIN_PASSWORD_HASH" ]; then
+              echo "::add-mask::${SMOKE_PASSWORD}"
+              echo "SMOKE_ADMIN_PASSWORD=${SMOKE_PASSWORD}" >> "${GITHUB_ENV}"
+            fi
+            unset SMOKE_PASSWORD
             sed -i "s|^${variable}=.*|${variable}='${hash}'|" .env
           done
           test "$(grep -c 'REPLACE-WITH\|REPLACE-THIS' .env)" -eq 0
@@ -483,6 +727,99 @@ jobs:
               *) echo "::error::the service on port ${port} did not report UP"; exit 1 ;;
             esac
           done
+
+      # The health checks above establish that six containers started. They say nothing about
+      # whether the platform still does the one thing it exists to do, so this step reads the
+      # headline acceptance path end to end: one authenticated authorization produces one
+      # event, and all three consumers record that same event identifier. Without it the
+      # authorization path could stop publishing, or a consumer could stop subscribing, while
+      # this job stayed green.
+      - name: Follow one authenticated authorization through all three consumers
+        run: |
+          set -euo pipefail
+          # The generated values are read from the file rather than echoed. The superuser
+          # password is masked as well, because the queries below carry it into the container.
+          set -a
+          . ./.env
+          set +a
+          echo "::add-mask::${POSTGRES_PASSWORD}"
+
+          # Card 0500024453765740 and account 00000000050 are record one of
+          # app/data/ASCII/cardxref.txt, seeded by every service that needs them. The request
+          # carries no transaction identifier, because the service assigns one from a sequence,
+          # and both timestamps sit inside the freshness window the request contract fixes.
+          smoke_card_number="0500024453765740"
+          origin="$(date -u -d '-2 minutes' '+%Y-%m-%d %H:%M:%S.000000')"
+          processing="$(date -u -d '-2 minutes' '+%Y-%m-%d-%H.%M.%S.000000')"
+          request="$(printf '{"transactionTypeCode":"01","transactionCategoryCode":"0001","source":"POS TERM","description":"Continuous integration business smoke","amount":"12.34","merchantId":"800000000","merchantName":"CardDemo Smoke","merchantCity":"Dallas","merchantZip":"75201","cardNumber":"%s","originTimestamp":"%s","processingTimestamp":"%s"}' "${smoke_card_number}" "${origin}" "${processing}")"
+
+          answer="$(curl --fail --silent --show-error \
+            --user "${ADMIN_USERNAME:-admin001}:${SMOKE_ADMIN_PASSWORD}" \
+            --header 'Content-Type: application/json' \
+            --data "${request}" \
+            "http://127.0.0.1:${AUTHORIZATION_PORT:-8081}/authorizations")"
+          echo "the authorization service answered: ${answer}"
+          case "${answer}" in
+            *'"approved":true'*) ;;
+            *) echo "::error::the synthetic authorization was not approved"; exit 1 ;;
+          esac
+          transaction_id="$(printf '%s' "${answer}" | sed -n 's/.*"transactionId":"\([^"]*\)".*/\1/p')"
+          test -n "${transaction_id}"
+
+          # Each service owns its own database, so every reading below is that service's own
+          # committed state rather than a shared table.
+          query() {
+            docker compose exec -T --env "PGPASSWORD=${POSTGRES_PASSWORD}" postgres \
+              psql --username "${POSTGRES_USER:-carddemo}" --dbname "$1" --tuples-only \
+                   --no-align --command "$2" < /dev/null
+          }
+
+          # The identifier the authorization service minted for the one event it published.
+          event_id=""
+          for attempt in $(seq 1 30); do
+            event_id="$(query "${AUTHORIZATION_DB_NAME:-carddemo_authorization}" \
+              "SELECT event_id FROM ${AUTHORIZATION_DB_SCHEMA:-authorization_service}.outbox_event \
+               WHERE event_type = 'TransactionAuthorized' AND payload LIKE '%${transaction_id}%'" \
+              | tr -d '[:space:]')"
+            if [ -n "${event_id}" ]; then break; fi
+            sleep 2
+          done
+          if [ -z "${event_id}" ]; then
+            echo "::error::transaction ${transaction_id} produced no TransactionAuthorized event"
+            if ! docker compose logs --tail 50 authorization-service; then
+              echo "the authorization container log could not be read"
+            fi
+            exit 1
+          fi
+          echo "transaction ${transaction_id} produced event ${event_id}"
+
+          for consumer in \
+            "ledger-posting-service:${LEDGER_DB_NAME:-carddemo_ledger}:${LEDGER_DB_SCHEMA:-ledger_service}" \
+            "fraud-detection-service:${FRAUD_DB_NAME:-carddemo_fraud}:${FRAUD_DB_SCHEMA:-fraud_service}" \
+            "notification-service:${NOTIFICATION_DB_NAME:-carddemo_notification}:${NOTIFICATION_DB_SCHEMA:-notification_service}"; do
+            service="${consumer%%:*}"
+            remainder="${consumer#*:}"
+            database="${remainder%%:*}"
+            schema="${remainder##*:}"
+            observed="0"
+            for attempt in $(seq 1 30); do
+              observed="$(query "${database}" \
+                "SELECT count(*) FROM ${schema}.processed_event \
+                 WHERE event_id = '${event_id}' AND consumed_topic = 'transaction.authorized'" \
+                | tr -d '[:space:]')"
+              if [ "${observed}" = "1" ]; then break; fi
+              sleep 2
+            done
+            if [ "${observed}" != "1" ]; then
+              echo "::error::${service} did not record event ${event_id} from transaction.authorized"
+              if ! docker compose logs --tail 50 "${service}"; then
+                echo "the ${service} container log could not be read"
+              fi
+              exit 1
+            fi
+            echo "${service} consumed event ${event_id} independently"
+          done
+          echo "one authorization produced one event, and all three consumers recorded it"
 
       - name: Report the container states
         if: always()

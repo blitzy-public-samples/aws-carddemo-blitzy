@@ -8,6 +8,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -274,6 +275,7 @@ class SchemaValidationTest {
                         com.carddemo.notification.entity.ProcessedEventEntity.class)),
                 new Service("account-service", "account_service", List.of(
                         com.carddemo.account.entity.AccountEntity.class,
+                        com.carddemo.account.entity.AccountCustomerLinkEntity.class,
                         com.carddemo.account.entity.CustomerEntity.class,
                         com.carddemo.account.entity.DisclosureGroupEntity.class,
                         com.carddemo.account.entity.OutboxEventEntity.class,
@@ -541,19 +543,42 @@ class SchemaValidationTest {
     /**
      * Reads the concatenated migration text of one service, in version order.
      *
+     * <p>Version order, not filename order. A string comparison puts {@code V10} before {@code V2},
+     * so once a service passes its ninth migration a filename sort reverses the sequence the database
+     * applied, and a statement a later migration supersedes would read as the current one.
+     *
      * @param module directory name of the service
      * @return every migration of that service, joined
      */
     private static String migrationText(String module) {
         try (var files = Files.list(migrationDirectory(module))) {
             StringBuilder text = new StringBuilder();
-            for (Path file : files.sorted().toList()) {
+            for (Path file : files.sorted(BY_MIGRATION_VERSION).toList()) {
                 text.append(Files.readString(file)).append('\n');
             }
             return text.toString();
         } catch (IOException failure) {
             throw new IllegalStateException("could not read the migrations of " + module, failure);
         }
+    }
+
+    /** The Flyway version of a migration filename, the digits following the leading V. */
+    private static final Pattern MIGRATION_VERSION = Pattern.compile("^V(\\d+)__");
+
+    /** Orders migration files the way Flyway applies them, by version number. */
+    private static final Comparator<Path> BY_MIGRATION_VERSION =
+            Comparator.comparingInt(SchemaValidationTest::versionOf)
+                    .thenComparing(path -> path.getFileName().toString());
+
+    /**
+     * Reads the Flyway version out of one migration filename.
+     *
+     * @param file the migration file
+     * @return its version number, or {@link Integer#MAX_VALUE} when the name carries none
+     */
+    private static int versionOf(Path file) {
+        Matcher version = MIGRATION_VERSION.matcher(file.getFileName().toString());
+        return version.find() ? Integer.parseInt(version.group(1)) : Integer.MAX_VALUE;
     }
 
     /**

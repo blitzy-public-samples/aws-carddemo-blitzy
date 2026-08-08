@@ -70,8 +70,6 @@ class PanMaskerTest {
     }
 
     /**
-     * Builds the expected masked form of one argument from the rule, with no literal.
-     *
      * @param cardNumber the argument to mask
      * @return twelve mask characters then the last four characters of {@code cardNumber}
      */
@@ -139,30 +137,44 @@ class PanMaskerTest {
     /** The count of three-digit values a {@code PIC 9(03)} field can hold. */
     private static final int STORED_VERIFICATION_VALUE_COMBINATIONS = 1000;
 
-    /** The width of a card token, the hexadecimal rendering of a 256-bit keyed code. */
+    /** The width of a card token: the hexadecimal rendering of a 32-byte keyed code. */
     private static final int CARD_TOKEN_WIDTH = 64;
 
-    /** A second card number sharing the last four characters of {@link #FULL_CARD_NUMBER}. */
-    private static final String SIBLING_CARD_NUMBER = "4111999988887823";
+    /**
+     * A second card number sharing the last four characters of {@link #FULL_CARD_NUMBER}, derived
+     * from a serial that differs above those four digits so no literal is written down.
+     */
+    private static final String SIBLING_CARD_NUMBER = syntheticCardNumber(444455557823L);
 
     /**
-     * The three string fields of {@code PanMasker} that hold declared text rather than mask
-     * characters, each against the literal it is expected to hold.
+     * The string fields of {@code PanMasker} that hold declared text rather than mask characters,
+     * each against the literal it is expected to hold.
      *
      * <p>A field named here is proved to hold a compile-time literal and therefore no argument
      * value. A field not named here must hold mask characters alone.
+     *
+     * <p>{@code PUBLISHED_DEMO_CARD_TOKEN_SECRET} belongs here rather than being an exception to
+     * the rule: it is a key this repository states in plain text, so writing it down again in a
+     * test discloses nothing, and the field has to hold exactly that value for the start-up
+     * refusal to recognise it.
      */
-    private static final java.util.Map<String, String> DECLARED_TOKEN_TEXT = java.util.Map.of(
-            "CARD_TOKEN_PATTERN", "^[0-9a-f]{64}$",
-            "ABSENT_CARD_TOKEN", "0".repeat(CARD_TOKEN_WIDTH),
-            "CARD_TOKEN_LABEL_PREFIX", "CardDemo/card-token/v",
-            "CARD_TOKEN_ALGORITHM", "HmacSHA256",
-            "REDACTED_KEY", "[redacted]",
-            "CARD_TOKEN_SECRET_PROPERTY", "carddemo.card-token.secret",
-            "CARD_TOKEN_SECRET_VARIABLE", "CARD_TOKEN_SECRET",
-            "CARD_TOKEN_VERSION_PROPERTY", "carddemo.card-token.version",
-            "CARD_TOKEN_VERSION_VARIABLE", "CARD_TOKEN_VERSION",
-            "DEFAULT_CARD_TOKEN_VERSION", "1");
+    private static final java.util.Map<String, String> DECLARED_TOKEN_TEXT = java.util.Map.ofEntries(
+            java.util.Map.entry("PUBLISHED_DEMO_CARD_TOKEN_SECRET",
+                    "carddemo-demo-card-token-key-not-for-production"),
+            java.util.Map.entry("CARD_TOKEN_ALLOW_PUBLISHED_KEY_PROPERTY",
+                    "carddemo.card-token.allow-published-key"),
+            java.util.Map.entry("CARD_TOKEN_ALLOW_PUBLISHED_KEY_VARIABLE",
+                    "CARD_TOKEN_ALLOW_PUBLISHED_KEY"),
+            java.util.Map.entry("CARD_TOKEN_PATTERN", "^[0-9a-f]{64}$"),
+            java.util.Map.entry("ABSENT_CARD_TOKEN", "0".repeat(CARD_TOKEN_WIDTH)),
+            java.util.Map.entry("CARD_TOKEN_LABEL_PREFIX", "CardDemo/card-token/v"),
+            java.util.Map.entry("CARD_TOKEN_ALGORITHM", "HmacSHA256"),
+            java.util.Map.entry("REDACTED_KEY", "[redacted]"),
+            java.util.Map.entry("CARD_TOKEN_SECRET_PROPERTY", "carddemo.card-token.secret"),
+            java.util.Map.entry("CARD_TOKEN_SECRET_VARIABLE", "CARD_TOKEN_SECRET"),
+            java.util.Map.entry("CARD_TOKEN_VERSION_PROPERTY", "carddemo.card-token.version"),
+            java.util.Map.entry("CARD_TOKEN_VERSION_VARIABLE", "CARD_TOKEN_VERSION"),
+            java.util.Map.entry("DEFAULT_CARD_TOKEN_VERSION", "1"));
 
     @Test
     void maskCardNumberHidesAllButTheLastFourCharacters() {
@@ -184,7 +196,7 @@ class PanMaskerTest {
     }
 
     /**
-     * Asserts that every masked card number is sixteen characters wide, the width of
+     * Every masked card number is sixteen characters wide, the width of
      * {@code CARD-NUM PIC X(16)} at {@code app/cpy/CVACT02Y.cpy:L5}. The arguments run from
      * {@code null} through twice the stored width.
      */
@@ -197,7 +209,7 @@ class PanMaskerTest {
     }
 
     /**
-     * Asserts that an argument longer than the stored width normalizes to the stored width and
+     * An argument longer than the stored width normalizes to the stored width and
      * still reveals only its own last four characters.
      *
      * <p>The cases run one, three and sixteen characters past {@code CARD-NUM PIC X(16)}, and a
@@ -244,7 +256,7 @@ class PanMaskerTest {
     }
 
     /**
-     * Asserts that every value a {@code PIC 9(03)} field can hold redacts to exactly three mask
+     * Every value a {@code PIC 9(03)} field can hold redacts to exactly three mask
      * characters.
      *
      * <p>The loop covers all {@value #STORED_VERIFICATION_VALUE_COMBINATIONS} stored values, so
@@ -463,7 +475,7 @@ class PanMaskerTest {
     }
 
     /**
-     * Asserts the token separates the cards the mask conflates.
+     * The token separates the cards the mask conflates.
      *
      * <p>This is the property a persistent key needs and a masked card number does not have. Four
      * distinct card numbers sharing one visible tail collapse onto one masked value, so a
@@ -497,7 +509,7 @@ class PanMaskerTest {
     }
 
     /**
-     * Asserts one card number yields one token on every call, which is what makes the token usable
+     * One card number yields one token on every call, which is what makes the token usable
      * as a primary key, an index and a path segment.
      */
     @Test
@@ -519,7 +531,7 @@ class PanMaskerTest {
     }
 
     /**
-     * Asserts a card number and its whitespace-padded form yield one token, and that a stored
+     * A card number and its whitespace-padded form yield one token, and that a stored
      * fixed-width field and a trimmed request field therefore agree.
      *
      * <p>{@code CARD-NUM PIC X(16)} at {@code app/cpy/CVACT02Y.cpy:L5} is fixed-width storage, so a
@@ -540,7 +552,7 @@ class PanMaskerTest {
     }
 
     /**
-     * Asserts the token reveals no character of its argument and equals neither the argument
+     * The token reveals no character of its argument and equals neither the argument
      * nor its masked form, so nothing recovers a card number from a stored key.
      */
     @Test
@@ -586,7 +598,7 @@ class PanMaskerTest {
     }
 
     /**
-     * Proves the derivation is keyed: one card number under two keys yields two tokens.
+     * The derivation is keyed: one card number under two keys yields two tokens.
      *
      * <p>This is the property an unkeyed digest cannot supply. A holder of a token cannot recompute
      * it for a candidate card number without the key, so the finite sixteen-digit card-number space
@@ -611,7 +623,7 @@ class PanMaskerTest {
     }
 
     /**
-     * Proves the version rolls every token over under one key, which is what stages a rollover.
+     * The version rolls every token over under one key, which is what stages a rollover.
      */
     @Test
     void raisingTheVersionRollsEveryTokenOverUnderOneKey() throws Exception {
@@ -633,6 +645,63 @@ class PanMaskerTest {
     }
 
     /**
+     * Proves the published demonstration key is refused unless a deployment states that it means
+     * to use it, and that a key of the deployment's own needs no statement.
+     *
+     * <p>This is the check a derivation site cannot make. An absent or short key stops a
+     * derivation; the published key derives perfectly good tokens that anyone holding this
+     * repository can recompute for a candidate card number, so nothing downstream can tell that
+     * configuration apart from a rotated one.
+     */
+    @Test
+    void thePublishedDemonstrationKeyIsRefusedUnlessTheDeploymentStatesIt() throws Exception {
+        String held = System.getProperty(PanMasker.CARD_TOKEN_ALLOW_PUBLISHED_KEY_PROPERTY);
+        try {
+            System.clearProperty(PanMasker.CARD_TOKEN_ALLOW_PUBLISHED_KEY_PROPERTY);
+
+            IllegalStateException refused = assertThrows(IllegalStateException.class,
+                    () -> withConfiguration(PanMasker.PUBLISHED_DEMO_CARD_TOKEN_SECRET, null,
+                            PanMasker::requireCardTokenSecretFitForUse),
+                    "the published key was accepted with no statement accompanying it, so a"
+                            + " deployment can carry it by copying an example file");
+            assertTrue(refused.getMessage()
+                            .contains(PanMasker.CARD_TOKEN_ALLOW_PUBLISHED_KEY_PROPERTY),
+                    "the refusal must name the property that states the intent: "
+                            + refused.getMessage());
+            assertTrue(refused.getMessage().contains(PanMasker.CARD_TOKEN_SECRET_VARIABLE),
+                    "and the variable that carries a key of the deployment's own: "
+                            + refused.getMessage());
+
+            assertFalse(withConfiguration(A_KEY, null, PanMasker::requireCardTokenSecretFitForUse),
+                    "a key of the deployment's own needs no statement and is not a published key");
+            assertFalse(withConfiguration(null, null, PanMasker::requireCardTokenSecretFitForUse),
+                    "an absent key is refused at the derivation, which is where the caller that"
+                            + " needs one asks for it, so this check must let a service that"
+                            + " tokenizes nothing start");
+
+            System.setProperty(PanMasker.CARD_TOKEN_ALLOW_PUBLISHED_KEY_PROPERTY, "true");
+            assertTrue(withConfiguration(PanMasker.PUBLISHED_DEMO_CARD_TOKEN_SECRET, null,
+                            PanMasker::requireCardTokenSecretFitForUse),
+                    "a stated demonstration must start and report that its key is published");
+
+            System.setProperty(PanMasker.CARD_TOKEN_ALLOW_PUBLISHED_KEY_PROPERTY, "yes");
+            assertThrows(IllegalStateException.class,
+                    () -> withConfiguration(PanMasker.PUBLISHED_DEMO_CARD_TOKEN_SECRET, null,
+                            PanMasker::requireCardTokenSecretFitForUse),
+                    "only true states the intent: any other value has to read as unstated rather"
+                            + " than as approval");
+        } finally {
+            restore(PanMasker.CARD_TOKEN_ALLOW_PUBLISHED_KEY_PROPERTY, held);
+        }
+
+        assertFalse(PanMasker.requireCardTokenSecretFitForUse(),
+                "this build runs on the build-scope key card-platform/pom.xml declares, which is"
+                        + " not the key this repository publishes, so the guard has to accept the"
+                        + " configuration every other test derives under and report that the key is"
+                        + " not published");
+    }
+
+    /**
      * Proves an unconfigured key derives no token at all, rather than falling back to a value every
      * reader of this repository can recompute.
      */
@@ -648,7 +717,7 @@ class PanMaskerTest {
         IllegalStateException short_ = assertThrows(IllegalStateException.class,
                 () -> withConfiguration(tooShort, null,
                         () -> PanMasker.cardToken(FULL_CARD_NUMBER)),
-                "a key under the block size was accepted rather than refused");
+                "a key under the required length was accepted rather than refused");
         assertFalse(short_.getMessage().contains(tooShort),
                 "the refusal quoted the key material");
 
@@ -663,7 +732,6 @@ class PanMaskerTest {
                 "an absent card number needs no key, because it derives no code");
     }
 
-    /** Proves no rendering of the resolved key holder carries key material. */
     @Test
     void theResolvedKeyRendersWithoutItsKeyMaterial() throws Exception {
         PanMasker.cardToken(FULL_CARD_NUMBER);
@@ -685,7 +753,6 @@ class PanMaskerTest {
     /** A second key of the minimum width, differing from {@link #A_KEY}. */
     private static final String ANOTHER_KEY = "panmasker-test-key-two-9876543210";
 
-    /** Returns the key this build configured, which every other test derives under. */
     private static String configuredKey() {
         String property = System.getProperty(PanMasker.CARD_TOKEN_SECRET_PROPERTY);
         return property == null || property.isBlank()
@@ -732,7 +799,6 @@ class PanMaskerTest {
         }
     }
 
-    /** Sets one system property, or clears it when the value is absent. */
     private static void restore(String property, String value) {
         if (value == null) {
             System.clearProperty(property);
@@ -829,11 +895,12 @@ class PanMaskerTest {
         assertEquals(MASK_PREFIX.length(), HIDDEN_CHARACTER_COUNT);
 
         // Every method that takes a card-shaped value takes exactly that one value, so none can
-        // combine two of them into one result. The three exceptions each take no card-shaped value
-        // at all: cardTokenVersion reports the configured version, resolvedKey builds the key, and
-        // configured reads one setting from a property name and a variable name.
+        // combine two of them into one result. The exceptions each take no card-shaped value at
+        // all: cardTokenVersion reports the configured version, resolvedKey builds the key,
+        // configured reads one setting from a property name and a variable name, and
+        // requireCardTokenSecretFitForUse reads the configured key and the statement beside it.
         Set<String> argumentFreeOfCardValues = Set.of("cardTokenVersion", "resolvedKey",
-                "configuredSecret", "configured");
+                "configuredSecret", "configured", "requireCardTokenSecretFitForUse");
         for (Method method : PanMasker.class.getDeclaredMethods()) {
             if (method.isSynthetic() || argumentFreeOfCardValues.contains(method.getName())) {
                 continue;
@@ -849,16 +916,13 @@ class PanMaskerTest {
             }
         }
         assertEquals(Set.of("maskCardNumber", "redactCardVerificationValue", "cardToken",
-                        "tokenOf", "cardTokenVersion"),
+                        "tokenOf", "cardTokenVersion", "requireCardTokenSecretFitForUse"),
                 publicSurface,
                 "the public surface changed, and every addition needs its own disclosure"
                         + " guarantee stated in this class");
     }
 
     /**
-     * Supplies the argument set the width and rule assertions share, from {@code null} through
-     * twice the stored card-number width.
-     *
      * @return the arguments, holding one {@code null} entry
      */
     private static String[] maskingArguments() {
@@ -881,8 +945,6 @@ class PanMaskerTest {
     }
 
     /**
-     * Collects the declared static methods that take one {@link String} and return one.
-     *
      * @return the methods, in declaration order
      */
     private static List<Method> declaredStringMethods() {

@@ -8,25 +8,33 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.carddemo.authorization.TestIdentityPasswords;
 import com.carddemo.authorization.entity.AuthorizationDecisionEntity;
 import com.carddemo.authorization.entity.CardCrossReferenceEntity;
 import com.carddemo.authorization.entity.OutboxEventEntity;
-import com.carddemo.authorization.entity.ProcessedEventEntity;
 import com.carddemo.authorization.entity.ProcessedEventEntity.ProcessedEventId;
+import com.carddemo.authorization.entity.ProcessedEventEntity;
 import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.data.domain.Limit;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.dao.PessimisticLockingFailureException;
+import org.springframework.data.domain.Limit;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -62,9 +70,10 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
         webEnvironment = SpringBootTest.WebEnvironment.NONE,
         properties = {
                 "KAFKA_SASL_PASSWORD=not-a-real-broker-password",
-                "ADMIN_PASSWORD_HASH={noop}not-a-real-admin-password",
-                "USER_PASSWORD_HASH={noop}not-a-real-user-password",
-                "MONITORING_PASSWORD_HASH={noop}not-a-real-monitoring-password",
+                "ADMIN_PASSWORD_HASH=" + TestIdentityPasswords.ADMIN_PASSWORD_HASH,
+                "ACQUIRER_PASSWORD_HASH=" + TestIdentityPasswords.ACQUIRER_PASSWORD_HASH,
+                "USER_PASSWORD_HASH=" + TestIdentityPasswords.USER_PASSWORD_HASH,
+                "MONITORING_PASSWORD_HASH=" + TestIdentityPasswords.MONITORING_PASSWORD_HASH,
                 "carddemo.outbox.relay.fixed-delay-ms=3600000"
         })
 @DisplayName("The native statements of the authorization service, against the migrated schema")
@@ -87,6 +96,17 @@ class NativeStatementIT {
 
     /** Batch bound one purge statement is given, larger than any fixture the class stores. */
     private static final int PURGE_BATCH = 1000;
+
+    /** Seconds a lock assertion waits for the thread holding a row, generous for a container. */
+    private static final long LOCK_WAIT_SECONDS = 10L;
+
+    /**
+     * The lock-wait bound the contended decision applies, short enough to keep the assertion quick.
+     *
+     * <p>The shipped value is three seconds and lives in {@code carddemo.decision.lock-wait-ms}. This
+     * assertion measures that the bound is applied at all, not what a deployment configures.
+     */
+    private static final String SHORT_LOCK_BOUND = "250ms";
 
     /** Topic the claimed markers of this class record. */
     private static final String CONSUMED_TOPIC = "account.state-changed";
@@ -111,7 +131,26 @@ class NativeStatementIT {
      * {@code SEC-USR-ID PIC X(08)} at {@code app/cpy/CSUSR01Y.cpy:L18} declares.
      */
     private static final String ACTOR = "OPERATR1";
+
+    /**
+     * The processing moment a caller declared, at the width {@code TRAN-PROC-TS PIC X(26)} holds. The
+     * value is the one record one of {@code app/data/ASCII/dailytran.txt} carries.
+     */
+    private static final String DECLARED_PROCESSING_TIMESTAMP = "2022-06-10-19.27.53.410000";
     private static final String SEEDED_ACCOUNT = "00000000050";
+
+    /**
+     * A second account identifier, for the claim assertions that need two aggregates.
+     *
+     * <p>{@code claimDueRows} returns the due head row of each aggregate, so a batch of more than one
+     * row needs more than one account. Neither of these two identifiers is referenced by any other
+     * table: {@code outbox_event.aggregate_id} carries no foreign key, because the row outlives the
+     * account state it reports.
+     */
+    private static final String SECOND_ACCOUNT = "00000000051";
+
+    /** A third account identifier, for the assertion that the row limit bounds a batch. */
+    private static final String THIRD_ACCOUNT = "00000000052";
 
     /**
      * The suffix pattern {@code CardUpdated.visibleDigitsSuffix()} builds from the four digits
@@ -190,7 +229,8 @@ class NativeStatementIT {
                 + "source_occurred_at = NULL, observed_at = ?",
                 java.sql.Timestamp.from(BASE_MOMENT));
         jdbcTemplate.update("UPDATE account_credit_snapshot SET source_event_id = NULL, "
-                + "source_occurred_at = NULL, observed_at = ?",
+                + "source_occurred_at = NULL, observed_at = ?, pending_cycle_credit = 0, "
+                + "pending_cycle_debit = 0, pending_expires_at = NULL",
                 java.sql.Timestamp.from(BASE_MOMENT));
     }
 
@@ -418,15 +458,255 @@ class NativeStatementIT {
         }
     }
 
+    /**
+     * The reservation an approval writes, and the release the authoritative refresh performs.
+     *
+     * <p>Neither statement is checked by the persistence layer. The release arms are three-branch
+     * {@code CASE} expressions inside an {@code ON CONFLICT DO UPDATE} clause, comparing the stored row
+     * against {@code EXCLUDED}, and an arm that computed the wrong sign would leave a reservation
+     * standing or clear one that is still outstanding. Either shows up as a decision, not as an error,
+     * which is why every arm is read back here against a real database.
+     *
+     * <p>The behaviour under test is the target-side stand-in for the source's own timing. Paragraph
+     * {@code 2700-UPDATE-ACCOUNT} at {@code app/cbl/CBTRN02C.cbl:L545-L560} rewrites the account record
+     * in the same sequential loop that validates the next record, so
+     * {@code app/cbl/CBTRN02C.cbl:L403-L405} always reads accumulators carrying every earlier approval
+     * of the run.
+     */
+    @Nested
+    @DisplayName("reserveCycleExposure, and the release applyStateChange performs")
+    class CycleExposureReservationStatements {
+
+        /** A reservation expiry far enough ahead that no test here reaches it. */
+        private final Instant farAhead = BASE_MOMENT.plus(Duration.ofHours(1));
+
+        @Test
+        @DisplayName("a reservation is written on the locked row and read back whole")
+        void aReservationIsWrittenAndReadBack() {
+            int written = transactionTemplate.execute(status -> snapshots.reserveCycleExposure(
+                    SEEDED_ACCOUNT, new BigDecimal("60.00"), new BigDecimal("0.00"), farAhead));
+
+            assertAll(
+                    () -> assertEquals(1, written, "the locked row takes the reservation"),
+                    () -> assertEquals(new BigDecimal("60.00"), reservedCredit(SEEDED_ACCOUNT),
+                            "the credit-limit rule adds this to current_cycle_credit"),
+                    () -> assertEquals(new BigDecimal("0.00"), reservedDebit(SEEDED_ACCOUNT),
+                            "an amount of zero or more reserves nothing against the debit arm"),
+                    () -> assertNotNull(jdbcTemplate.queryForObject(
+                            "SELECT pending_expires_at FROM account_credit_snapshot "
+                                    + "WHERE account_id = ?", Instant.class, SEEDED_ACCOUNT),
+                            "a reservation without an expiry would hold its exposure for ever"));
+        }
+
+        @Test
+        @DisplayName("an account carrying no row reserves nothing and says so")
+        void anAccountCarryingNoRowReservesNothing() {
+            int written = transactionTemplate.execute(status -> snapshots.reserveCycleExposure(
+                    UNSEEN_ACCOUNT, new BigDecimal("1.00"), new BigDecimal("0.00"), farAhead));
+
+            assertEquals(AccountCreditSnapshotRepository.NO_ROW_WRITTEN, written,
+                    "the statement writes and never inserts, because a decision reserves only "
+                            + "against a row it has already read under lock");
+        }
+
+        @Test
+        @DisplayName("the reported posting releases exactly what it accounts for")
+        void theReportedPostingReleasesWhatItAccountsFor() {
+            reserve(new BigDecimal("150.00"), new BigDecimal("0.00"));
+            Instant occurredAt = BASE_MOMENT.plus(Duration.ofHours(2));
+
+            transactionTemplate.execute(status -> snapshots.applyStateChange(SEEDED_ACCOUNT,
+                    new BigDecimal("5000.00"), "2099-12-31", new BigDecimal("100.00"),
+                    new BigDecimal("0.00"), UUID.randomUUID(), occurredAt, occurredAt));
+
+            assertEquals(new BigDecimal("50.00"), reservedCredit(SEEDED_ACCOUNT),
+                    "an event raising the accumulator by 100.00 accounts for 100.00 of the 150.00 "
+                            + "reserved, and the approval still in flight keeps the rest");
+        }
+
+        @Test
+        @DisplayName("a posting larger than the reservation releases everything and goes no further")
+        void aLargerPostingClampsAtZero() {
+            reserve(new BigDecimal("40.00"), new BigDecimal("0.00"));
+            Instant occurredAt = BASE_MOMENT.plus(Duration.ofHours(2));
+
+            transactionTemplate.execute(status -> snapshots.applyStateChange(SEEDED_ACCOUNT,
+                    new BigDecimal("5000.00"), "2099-12-31", new BigDecimal("900.00"),
+                    new BigDecimal("0.00"), UUID.randomUUID(), occurredAt, occurredAt));
+
+            assertEquals(new BigDecimal("0.00"), reservedCredit(SEEDED_ACCOUNT),
+                    "the reservation clamps at zero rather than turning negative, which its check "
+                            + "constraint refuses");
+        }
+
+        @Test
+        @DisplayName("a cycle close clears the reservation instead of inflating it")
+        void aCycleCloseClearsTheReservation() {
+            Instant firstReport = BASE_MOMENT.plus(Duration.ofHours(2));
+            transactionTemplate.execute(status -> snapshots.applyStateChange(SEEDED_ACCOUNT,
+                    new BigDecimal("5000.00"), "2099-12-31", new BigDecimal("500.00"),
+                    new BigDecimal("-300.00"), UUID.randomUUID(), firstReport, firstReport));
+            reserve(new BigDecimal("70.00"), new BigDecimal("-20.00"));
+
+            Instant closed = BASE_MOMENT.plus(Duration.ofHours(3));
+            transactionTemplate.execute(status -> snapshots.applyStateChange(SEEDED_ACCOUNT,
+                    new BigDecimal("5000.00"), "2099-12-31", new BigDecimal("0.00"),
+                    new BigDecimal("0.00"), UUID.randomUUID(), closed, closed));
+
+            assertAll(
+                    () -> assertEquals(new BigDecimal("0.00"), reservedCredit(SEEDED_ACCOUNT),
+                            "app/cbl/CBACT04C.cbl:L353-L354 zeroes both accumulators, and exposure "
+                                    + "from the closed cycle must not be carried into the new one"),
+                    () -> assertEquals(new BigDecimal("0.00"), reservedDebit(SEEDED_ACCOUNT),
+                            "the debit arm is cleared on the same condition"));
+        }
+
+        @Test
+        @DisplayName("a refund reservation is released as the debit accumulator moves further"
+                + " negative")
+        void aRefundReservationIsReleasedAsTheDebitMoves() {
+            reserve(new BigDecimal("0.00"), new BigDecimal("-90.00"));
+            Instant occurredAt = BASE_MOMENT.plus(Duration.ofHours(2));
+
+            transactionTemplate.execute(status -> snapshots.applyStateChange(SEEDED_ACCOUNT,
+                    new BigDecimal("5000.00"), "2099-12-31", new BigDecimal("0.00"),
+                    new BigDecimal("-30.00"), UUID.randomUUID(), occurredAt, occurredAt));
+
+            assertEquals(new BigDecimal("-60.00"), reservedDebit(SEEDED_ACCOUNT),
+                    "app/cbl/CBTRN02C.cbl:L551 adds a negative amount, so the accumulator moves "
+                            + "further negative as a refund posts and the reservation moves toward "
+                            + "zero by the same amount");
+        }
+
+        @Test
+        @DisplayName("the check constraints hold the sign convention of both reserved figures")
+        void theCheckConstraintsHoldTheSignConvention() {
+            assertAll(
+                    () -> assertThrows(DataIntegrityViolationException.class,
+                            () -> jdbcTemplate.update("UPDATE account_credit_snapshot "
+                                            + "SET pending_cycle_credit = -1.00 "
+                                            + "WHERE account_id = ?", SEEDED_ACCOUNT),
+                            "app/cbl/CBTRN02C.cbl:L549 adds an amount of zero or more, so the "
+                                    + "reserved credit is never negative"),
+                    () -> assertThrows(DataIntegrityViolationException.class,
+                            () -> jdbcTemplate.update("UPDATE account_credit_snapshot "
+                                            + "SET pending_cycle_debit = 1.00 "
+                                            + "WHERE account_id = ?", SEEDED_ACCOUNT),
+                            "app/cbl/CBTRN02C.cbl:L551 adds a negative amount, so the reserved "
+                                    + "debit is never positive"));
+        }
+
+        /**
+         * Asserts one account is decided one decision at a time, and that the wait is bounded.
+         *
+         * <p>This is the whole of the concurrency guarantee. Two calls for one account that both read
+         * the accumulators before either reserved would both approve against the same exposure, which
+         * is what {@code app/cbl/CBTRN02C.cbl} never does because one batch program reads and rewrites
+         * one record in one loop. The lock makes the second call wait, and the bound makes it give up
+         * rather than hold its request open for as long as the first call takes.
+         *
+         * @throws Exception when the holding thread cannot be joined
+         */
+        @Test
+        @DisplayName("one account is decided one decision at a time, under a bounded wait")
+        void oneAccountIsDecidedOneDecisionAtATime() throws Exception {
+            CountDownLatch held = new CountDownLatch(1);
+            CountDownLatch releaseHolder = new CountDownLatch(1);
+            ExecutorService holder = Executors.newSingleThreadExecutor();
+            try {
+                Future<?> holding = holder.submit(() -> transactionTemplate.execute(status -> {
+                    snapshots.findForUpdateByAccountId(SEEDED_ACCOUNT);
+                    held.countDown();
+                    awaitQuietly(releaseHolder);
+                    return null;
+                }));
+
+                assertTrue(held.await(LOCK_WAIT_SECONDS, TimeUnit.SECONDS),
+                        "the first decision took its row lock");
+                assertThrows(PessimisticLockingFailureException.class,
+                        () -> transactionTemplate.execute(status -> {
+                            snapshots.applyLockWaitBound(SHORT_LOCK_BOUND);
+                            return snapshots.findForUpdateByAccountId(SEEDED_ACCOUNT);
+                        }),
+                        "a second decision for the same account waits, and the transaction-local "
+                                + "lock_timeout is what stops it waiting without limit");
+
+                releaseHolder.countDown();
+                holding.get(LOCK_WAIT_SECONDS, TimeUnit.SECONDS);
+            } finally {
+                releaseHolder.countDown();
+                holder.shutdownNow();
+            }
+
+            assertTrue(Boolean.TRUE.equals(transactionTemplate.execute(status ->
+                            snapshots.findForUpdateByAccountId(SEEDED_ACCOUNT).isPresent())),
+                    "the lock is released with the transaction that took it");
+        }
+
+        /**
+         * Writes one reservation on the seeded row.
+         *
+         * @param credit the reserved cycle credit, zero or more
+         * @param debit  the reserved cycle debit, zero or less
+         */
+        private void reserve(BigDecimal credit, BigDecimal debit) {
+            transactionTemplate.execute(status -> snapshots.reserveCycleExposure(SEEDED_ACCOUNT,
+                    credit, debit, farAhead));
+        }
+
+        /**
+         * Reads the reserved cycle credit of one account.
+         *
+         * @param accountId the eleven-digit key
+         * @return the stored figure
+         */
+        private BigDecimal reservedCredit(String accountId) {
+            return jdbcTemplate.queryForObject("SELECT pending_cycle_credit FROM "
+                    + "account_credit_snapshot WHERE account_id = ?", BigDecimal.class, accountId);
+        }
+
+        /**
+         * Reads the reserved cycle debit of one account.
+         *
+         * @param accountId the eleven-digit key
+         * @return the stored figure
+         */
+        private BigDecimal reservedDebit(String accountId) {
+            return jdbcTemplate.queryForObject("SELECT pending_cycle_debit FROM "
+                    + "account_credit_snapshot WHERE account_id = ?", BigDecimal.class, accountId);
+        }
+    }
+
+    /**
+     * Waits on one latch, treating an interruption as a reason to stop waiting.
+     *
+     * @param latch the latch to wait on
+     */
+    private static void awaitQuietly(CountDownLatch latch) {
+        try {
+            latch.await(LOCK_WAIT_SECONDS, TimeUnit.SECONDS);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
     @Nested
     @DisplayName("claimDueRows, the relay claim, and the key forms the column holds")
     class RelayClaim {
 
+        /**
+         * Asserts a due row is claimed and an undue row is left alone.
+         *
+         * <p>The two rows belong to different accounts on purpose. The claim returns the head row of
+         * each account, and the head is decided before dueness is considered, so an undue row would
+         * withhold a later row of its own account rather than stand beside it. That case is asserted
+         * separately below; this one measures dueness alone.
+         */
         @Test
         @DisplayName("a due row is claimed and an undue row is left alone")
         void aDueRowIsClaimedAndAnUndueRowIsLeft() {
             UUID due = storeRow(SEEDED_ACCOUNT, BASE_MOMENT);
-            storeRow(SEEDED_ACCOUNT, BASE_MOMENT.plus(Duration.ofHours(4)));
+            storeRow(SECOND_ACCOUNT, BASE_MOMENT.plus(Duration.ofHours(4)));
 
             List<OutboxEventEntity> claimed = transactionTemplate.execute(status ->
                     outbox.claimDueRows(BASE_MOMENT.plusSeconds(1), Limit.of(100)));
@@ -436,17 +716,75 @@ class NativeStatementIT {
             assertEquals(due, claimed.get(0).getEventId(), "the due row is the one returned");
         }
 
+        /**
+         * Asserts a row waiting out its backoff withholds the later rows of its own account.
+         *
+         * <p>This is the ordering guarantee stated as a fact about the query. The earlier row is
+         * unpublished and merely waiting, so publishing the later row now would put that account's
+         * events on its partition in the wrong order, and the account identifier is the message key.
+         * The account waits; no other account does.
+         */
+        @Test
+        @DisplayName("an undue earlier row withholds the later rows of its own account")
+        void anUndueEarlierRowWithholdsTheLaterRowsOfItsAccount() {
+            storeRow(SEEDED_ACCOUNT, BASE_MOMENT.plus(Duration.ofHours(4)), BASE_MOMENT);
+            storeRow(SEEDED_ACCOUNT, BASE_MOMENT, BASE_MOMENT.plusSeconds(1));
+            UUID otherAccount = storeRow(SECOND_ACCOUNT, BASE_MOMENT);
+
+            List<OutboxEventEntity> claimed = transactionTemplate.execute(status ->
+                    outbox.claimDueRows(BASE_MOMENT.plusSeconds(30), Limit.of(100)));
+
+            assertNotNull(claimed, "the statement returns a list");
+            assertEquals(1, claimed.size(),
+                    "the waiting head withholds its own account and withholds no other");
+            assertEquals(otherAccount, claimed.get(0).getEventId(),
+                    "and the row claimed belongs to the account that was not waiting");
+        }
+
         @Test
         @DisplayName("the claim honours its row limit")
         void theClaimHonoursItsLimit() {
             storeRow(SEEDED_ACCOUNT, BASE_MOMENT);
-            storeRow(SEEDED_ACCOUNT, BASE_MOMENT.plusSeconds(1));
-            storeRow(SEEDED_ACCOUNT, BASE_MOMENT.plusSeconds(2));
+            storeRow(SECOND_ACCOUNT, BASE_MOMENT.plusSeconds(1));
+            storeRow(THIRD_ACCOUNT, BASE_MOMENT.plusSeconds(2));
 
             List<OutboxEventEntity> claimed = transactionTemplate.execute(status ->
                     outbox.claimDueRows(BASE_MOMENT.plusSeconds(30), Limit.of(2)));
 
             assertEquals(2, claimed.size(), "the limit bounds one sweep");
+        }
+
+        /**
+         * Asserts the claim returns one row per account, however many of that account are due.
+         *
+         * <p>This is the property {@code outbox/OutboxRelay} depends on, and it lives in a
+         * {@code @Query} the mapping model cannot check. The relay writes each row's outcome in a
+         * transaction of its own, so two rows of one account in one batch would let an older row fail
+         * while a newer one succeeded, and the retry of the older row would then reach the topic
+         * behind it. The account identifier is the Kafka message key, so that reordering would be
+         * visible to every consumer of the account.
+         *
+         * <p>The three rows share one {@code created_at}, so the tie is broken by {@code event_id} and
+         * exactly one of them is the head. Which one is not asserted; that there is one is.
+         */
+        @Test
+        @DisplayName("the claim returns one row per account, however many of that account are due")
+        void theClaimReturnsOneRowPerAccount() {
+            storeRow(SEEDED_ACCOUNT, BASE_MOMENT);
+            storeRow(SEEDED_ACCOUNT, BASE_MOMENT.plusSeconds(1));
+            storeRow(SEEDED_ACCOUNT, BASE_MOMENT.plusSeconds(2));
+            storeRow(SECOND_ACCOUNT, BASE_MOMENT);
+
+            List<OutboxEventEntity> claimed = transactionTemplate.execute(status ->
+                    outbox.claimDueRows(BASE_MOMENT.plusSeconds(30), Limit.of(100)));
+
+            assertNotNull(claimed, "the statement returns a list");
+            assertEquals(2, claimed.size(),
+                    "four due rows across two accounts claim one head row each");
+            assertEquals(Set.of(SEEDED_ACCOUNT, SECOND_ACCOUNT),
+                    claimed.stream().map(OutboxEventEntity::getAggregateId)
+                            .collect(java.util.stream.Collectors.toSet()),
+                    "and one of the two heads belongs to each account");
         }
 
         @Test
@@ -478,13 +816,35 @@ class NativeStatementIT {
                     "a ten-digit key matches neither form and the database refuses it");
         }
 
+        /**
+         * Stores one unpublished row created at {@link #BASE_MOMENT}.
+         *
+         * @param aggregateId the message key, either permitted form
+         * @param dueAt       when the row becomes claimable
+         * @return the identifier of the stored row
+         */
         private UUID storeRow(String aggregateId, Instant dueAt) {
+            return storeRow(aggregateId, dueAt, BASE_MOMENT);
+        }
+
+        /**
+         * Stores one unpublished row with an explicit creation moment.
+         *
+         * <p>The creation moment decides which row of an account is its head, so an assertion about
+         * head selection has to set it rather than share one value.
+         *
+         * @param aggregateId the message key, either permitted form
+         * @param dueAt       when the row becomes claimable
+         * @param createdAt   when the row was written, which orders it within its account
+         * @return the identifier of the stored row
+         */
+        private UUID storeRow(String aggregateId, Instant dueAt, Instant createdAt) {
             UUID eventId = UUID.randomUUID();
             jdbcTemplate.update(
                     "INSERT INTO outbox_event (event_id, event_type, aggregate_id, payload, "
                             + "created_at, next_attempt_at) VALUES (?, ?, ?, ?, ?, ?)",
                     eventId, "TransactionDeclined", aggregateId, "{}",
-                    java.sql.Timestamp.from(BASE_MOMENT), java.sql.Timestamp.from(dueAt));
+                    java.sql.Timestamp.from(createdAt), java.sql.Timestamp.from(dueAt));
             return eventId;
         }
     }
@@ -499,7 +859,7 @@ class NativeStatementIT {
             AuthorizationDecisionEntity approved = AuthorizationDecisionEntity.approved(
                     "TRAN000000000001", ACTOR, SEEDED_ACCOUNT, "************5740",
                     "72e0699beda9afd3f6677b683462371d1648c559acbb5e14a6022d76293dbf5b", new BigDecimal("12.34"),
-                    BASE_MOMENT, UUID.randomUUID());
+                    BASE_MOMENT, UUID.randomUUID(), DECLARED_PROCESSING_TIMESTAMP);
 
             transactionTemplate.execute(status -> decisions.save(approved));
 
@@ -517,7 +877,8 @@ class NativeStatementIT {
             AuthorizationDecisionEntity declined = AuthorizationDecisionEntity.declined(
                     "TRAN000000000002", ACTOR, SEEDED_ACCOUNT, "************5740",
                     "72e0699beda9afd3f6677b683462371d1648c559acbb5e14a6022d76293dbf5b", new BigDecimal("99.99"),
-                    "0102", "OVERLIMIT TRANSACTION", BASE_MOMENT, UUID.randomUUID());
+                    "0102", "OVERLIMIT TRANSACTION", BASE_MOMENT, UUID.randomUUID(),
+                    DECLARED_PROCESSING_TIMESTAMP);
 
             transactionTemplate.execute(status -> decisions.save(declined));
 
@@ -536,7 +897,8 @@ class NativeStatementIT {
             AuthorizationDecisionEntity unresolved = AuthorizationDecisionEntity.declined(
                     "TRAN000000000003", ACTOR, null, "****************",
                     "72e0699beda9afd3f6677b683462371d1648c559acbb5e14a6022d76293dbf5b", new BigDecimal("5.00"),
-                    "0100", "INVALID CARD NUMBER FOUND", BASE_MOMENT, UUID.randomUUID());
+                    "0100", "INVALID CARD NUMBER FOUND", BASE_MOMENT, UUID.randomUUID(),
+                    DECLARED_PROCESSING_TIMESTAMP);
 
             transactionTemplate.execute(status -> decisions.save(unresolved));
 
@@ -554,13 +916,13 @@ class NativeStatementIT {
             AuthorizationDecisionEntity first = AuthorizationDecisionEntity.approved(
                     "TRAN000000000004", ACTOR, SEEDED_ACCOUNT, "************5740",
                     "72e0699beda9afd3f6677b683462371d1648c559acbb5e14a6022d76293dbf5b", new BigDecimal("1.00"),
-                    BASE_MOMENT, UUID.randomUUID());
+                    BASE_MOMENT, UUID.randomUUID(), DECLARED_PROCESSING_TIMESTAMP);
             transactionTemplate.execute(status -> decisions.save(first));
 
             AuthorizationDecisionEntity second = AuthorizationDecisionEntity.approved(
                     "TRAN000000000004", ACTOR, SEEDED_ACCOUNT, "************5740",
                     "72e0699beda9afd3f6677b683462371d1648c559acbb5e14a6022d76293dbf5b", new BigDecimal("2.00"),
-                    BASE_MOMENT.plusSeconds(1), UUID.randomUUID());
+                    BASE_MOMENT.plusSeconds(1), UUID.randomUUID(), DECLARED_PROCESSING_TIMESTAMP);
 
             assertThrows(DataIntegrityViolationException.class,
                     () -> transactionTemplate.execute(status -> decisions.save(second)),
@@ -683,7 +1045,8 @@ class NativeStatementIT {
             transactionTemplate.execute(status -> decisions.save(
                     AuthorizationDecisionEntity.approved(transactionId, ACTOR, SEEDED_ACCOUNT,
                             "************5740", "72e0699beda9afd3f6677b683462371d1648c559acbb5e14a6022d76293dbf5b",
-                            new BigDecimal("1.00"), decidedAt, UUID.randomUUID())));
+                            new BigDecimal("1.00"), decidedAt, UUID.randomUUID(),
+                            DECLARED_PROCESSING_TIMESTAMP)));
         }
     }
 }

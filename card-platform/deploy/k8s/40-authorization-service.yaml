@@ -3,7 +3,10 @@
 # service writes it.
 #
 # AuthorizationController serves POST /authorizations and OutboxRelay publishes
-# resolved decision events. The service registers no listener.
+# resolved decision events. Two listeners keep the replicas every decline rule reads
+# current: CardUpdatedConsumer on card.updated under authorization-card-updated, and
+# AccountStateChangedConsumer on account.state-changed under
+# authorization-account-state. Neither is in the request path.
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -75,6 +78,12 @@ spec:
           # `Never` makes the local-demo trust boundary explicit: the kubelet either runs
           # that preloaded image or refuses the Pod. It never falls back to a same-named
           # image from a default registry.
+          # THE TAG IS MUTABLE, AND THAT IS THE RESIDUAL RISK. Bytes tagged
+          # carddemo/authorization-service:1.0.0-SNAPSHOT on one node are whatever an operator
+          # loaded there, and no manifest in this folder would notice a different build under the
+          # same name. The six references therefore live in one place, deploy/k8s/kustomization.yaml,
+          # so pinning them by digest is one edit rather than six. deploy/k8s/README.md gives the
+          # procedure and states plainly what a node verifies about each kind of image.
           image: carddemo/authorization-service:1.0.0-SNAPSHOT
           imagePullPolicy: Never
           securityContext:
@@ -116,6 +125,11 @@ spec:
             # platform-wide identity store is the faithful shape; a database login is not.
             - secretRef:
                 name: carddemo-identity-secret
+            # The card-token key, pulled by this Deployment and 45-card-service.yaml alone.
+            # Both derive a card token; the other four services read one that arrives in an
+            # event or a request and derive none, so the key reaches two Pods and not six.
+            - secretRef:
+                name: carddemo-card-token-secret
           env:
             # The schema and the login this service owns. 30-configmap.yaml holds both
             # values under distinct per-service keys. envFrom above pulls the whole

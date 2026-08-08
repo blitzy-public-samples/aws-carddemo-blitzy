@@ -1,11 +1,16 @@
 package com.carddemo.account.config;
 
+import com.carddemo.cobol.PanMasker;
 import jakarta.servlet.DispatcherType;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 import org.springframework.beans.factory.config.BeanFactoryPostProcessor;
 import org.springframework.beans.factory.config.ConfigurableListableBeanFactory;
@@ -33,8 +38,10 @@ import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.userdetails.User;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.core.userdetails.UserDetailsService;
-import org.springframework.security.crypto.factory.PasswordEncoderFactories;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+import org.springframework.security.crypto.password.DelegatingPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.crypto.password.Pbkdf2PasswordEncoder;
 import org.springframework.security.provisioning.InMemoryUserDetailsManager;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.access.AccessDeniedHandler;
@@ -63,11 +70,12 @@ import org.springframework.security.web.access.intercept.RequestAuthorizationCon
  *
  * <p>DEVIATION, deliberate: the source comparison at {@code app/cbl/COSGN00C.cbl:L223} is a
  * plaintext comparison of two eight-character fields. This class does not reproduce it. Each
- * configured identity carries an already-encoded password, {@link PasswordEncoderFactories}
- * supplies the delegating encoder that reads its {@code {bcrypt}} prefix, and no plaintext password
- * is stored, compared or logged anywhere on this platform.
+ * configured identity carries an already-encoded password, {@link #approvedPasswordEncoder()}
+ * verifies it against an allowlist of adaptive encodings, and no plaintext password is stored,
+ * compared or logged anywhere on this platform. {@code {noop}} names the plaintext encoding, and it
+ * is refused at start-up, so the source comparison cannot return through configuration either.
  *
- * <h2>The four properties this class holds</h2>
+ * <h2>The five properties this class holds</h2>
  *
  * <ol>
  * <li><b>Default deny.</b> The last rule of the API chain is {@code denyAll()}, not
@@ -82,17 +90,24 @@ import org.springframework.security.web.access.intercept.RequestAuthorizationCon
  * the request path against the authorities the identity carries, so a caller reaches its own rows
  * and receives 403 for anyone else's. The check runs in the filter chain, ahead of every handler,
  * so no handler can forget it.</li>
- * <li><b>No session and no cross-site request forgery token.</b> The session policy is
- * {@code STATELESS} and the surface is a JavaScript Object Notation (JSON) API reached by a
- * program, so no cookie carries authentication and the forgery a token defends against cannot
- * occur. Disabling the token while keeping a cookie session would be the mistake; both are absent
- * here.</li>
+ * <li><b>No session, no forgery token, and a compensating cross-site check.</b> The session policy
+ * is {@code STATELESS}, so no cookie carries authentication and a forgery token has no session to
+ * live in. The token protection is therefore off, and that on its own is not a defence: a browser
+ * attaches a cached HTTP Basic credential to a request a foreign page caused, without asking the
+ * person reading that page. {@link CrossSiteRequestFilter} is the control that closes it. Every
+ * state-changing request has to declare a first-party {@code Sec-Fetch-Site}, name this origin if
+ * it names an origin at all, and carry a non-simple request header no HTML form can set.</li>
  * <li><b>No caching of a response.</b> Spring Security writes
  * {@code Cache-Control: no-cache, no-store, max-age=0, must-revalidate} together with
  * {@code Pragma: no-cache} and {@code Expires: 0} on every response, and
  * {@link #apiSecurity(HttpSecurity)} names that writer rather than relying on the default, so a
  * reader can see it. Financial and personal data therefore reach no shared cache and no browser
  * store.</li>
+ * <li><b>A bounded request rate.</b> {@link RequestRateCeilingFilter} runs ahead of this chain and
+ * bounds requests from one source, requests presenting one identity, state-changing requests from
+ * one source, failed authentications from one source, and requests in flight. It runs ahead rather
+ * than behind because the expensive part of a refused credential is the bcrypt verification, so a
+ * caller nobody bounded would otherwise spend this service's processor on guesses.</li>
  * </ol>
  *
  * <h2>The management port</h2>
@@ -153,18 +168,86 @@ public class SecurityConfig {
     private static final String REALM = "carddemo";
 
     /**
+     * Encoding identifier of the adaptive hash this platform encodes with, and the identifier a
+     * configured password carries in braces ahead of the hash itself.
+     */
+    static final String BCRYPT_ENCODING_ID = "bcrypt";
+
+    /**
+     * Encoding identifier of the second accepted adaptive hash.
+     *
+     * <p>The suffix is part of the identifier. {@code pbkdf2} alone names the weaker parameter set
+     * Spring Security shipped before 5.8, and a password carrying that identifier is refused here.
+     */
+    static final String PBKDF2_ENCODING_ID = "pbkdf2@SpringSecurity_v5_8";
+
+    /**
+     * Lowest bcrypt cost a configured password may carry, and the cost this class encodes with.
+     *
+     * <p>Cost is logarithmic, so ten means 2^10 key-derivation rounds. Ten is also what the
+     * generation recipes in {@code card-platform/.env.example} and
+     * {@code .github/workflows/ci.yml} produce, so a hash either recipe generates is accepted and a
+     * hash carrying a smaller cost is not.
+     */
+    static final int BCRYPT_MINIMUM_COST = 10;
+
+    /**
+     * Every encoding a configured password may declare, in the order the encoder tries them.
+     *
+     * <p>This is an allowlist rather than a preference, and the encodings it leaves out are the
+     * point of it. Spring Security's stock delegating encoder also maps {@code noop},
+     * {@code MD4}, {@code MD5}, {@code SHA-1}, {@code SHA-256}, {@code sha256} and {@code ldap}.
+     * Those mappings exist so that a deployment holding legacy hashes can migrate off them. This
+     * platform holds none, so mapping them would only mean that a plaintext or unsalted-digest
+     * password verifies successfully.
+     *
+     * <p>{@code argon2} and {@code scrypt} are left out for a different reason. Both
+     * implementations call Bouncy Castle, which is not a dependency of this platform, so a password
+     * carrying either identifier would fail at the first authentication rather than at start-up.
+     * Refusing them here reports the gap while an operator is still reading the message.
+     */
+    static final List<String> APPROVED_PASSWORD_ENCODINGS =
+            List.of(BCRYPT_ENCODING_ID, PBKDF2_ENCODING_ID);
+
+    /**
+     * Matches a bcrypt hash and captures its two cost digits.
+     *
+     * <p>The three version markers are the ones bcrypt implementations write: {@code $2a$} is the
+     * original, {@code $2b$} the corrected form, and {@code $2y$} a variant of it. Fifty-three
+     * characters follow the cost: twenty-two of salt and thirty-one of hash, in the radix-64
+     * alphabet bcrypt uses.
+     */
+    private static final Pattern BCRYPT_HASH =
+            Pattern.compile("^\\$2[aby]\\$([0-9]{2})\\$[./A-Za-z0-9]{53}$");
+
+    /**
      * Supplies the encoder that reads the prefix of a configured password.
      *
-     * <p>{@link PasswordEncoderFactories#createDelegatingPasswordEncoder()} encodes with bcrypt
-     * and verifies against any prefix it knows, so an identity configured today keeps working when
-     * a deployment re-encodes it under a newer algorithm. Nothing here encodes a plaintext password
-     * at run time: a configured value is already encoded.
+     * <p>Nothing here encodes a plaintext password at run time: a configured value arrives already
+     * encoded. The encode side exists so that a hash generated with this class carries the
+     * parameters the verify side accepts.
      *
      * @return the delegating encoder every identity below is verified against
      */
     @Bean
     public PasswordEncoder passwordEncoder() {
-        return PasswordEncoderFactories.createDelegatingPasswordEncoder();
+        return approvedPasswordEncoder();
+    }
+
+    /**
+     * Builds the delegating encoder over {@link #APPROVED_PASSWORD_ENCODINGS} and nothing else.
+     *
+     * <p>An identifier the map does not carry reaches the unmapped-identifier encoder Spring
+     * Security installs by default, which throws rather than answering false. A refused encoding
+     * therefore cannot authenticate anybody, and it cannot be mistaken for a wrong password either.
+     *
+     * @return an encoder that verifies an approved encoding and refuses every other
+     */
+    static DelegatingPasswordEncoder approvedPasswordEncoder() {
+        Map<String, PasswordEncoder> approved = new LinkedHashMap<>();
+        approved.put(BCRYPT_ENCODING_ID, new BCryptPasswordEncoder(BCRYPT_MINIMUM_COST));
+        approved.put(PBKDF2_ENCODING_ID, Pbkdf2PasswordEncoder.defaultsForSpringSecurity_v5_8());
+        return new DelegatingPasswordEncoder(BCRYPT_ENCODING_ID, approved);
     }
 
     /**
@@ -279,6 +362,10 @@ public class SecurityConfig {
                         .accessDeniedHandler(forbidden()))
                 .sessionManagement(session -> session
                         .sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+                // Forgery-token protection needs a session to hold the token, and this chain
+                // admits none. The exposure list of src/main/resources/application.yml names
+                // health, metrics and the Prometheus scrape, and all three are reads, so this
+                // chain answers no state-changing request for a token to protect.
                 .csrf(csrf -> csrf.disable())
                 .headers(headers -> headers.cacheControl(Customizer.withDefaults()))
                 .build();
@@ -304,6 +391,27 @@ public class SecurityConfig {
      * {@code app/cbl/COACTVWC.cbl:L828-L829}, so a customer identifier is the natural scope.</li>
      * </ul>
      *
+     * <h2>Cross-site request forgery</h2>
+     *
+     * <p>Token-based protection is off, and that is a decision rather than an omission: this chain
+     * creates no session, so there is nowhere to keep a token, and every caller on this platform is
+     * a machine that would have no way to obtain one. What replaces it is the requirement that a
+     * state-changing request cannot be one a browser sends cross-origin without asking first.
+     *
+     * <p>A browser will send GET, HEAD and POST cross-origin with no preflight, carrying whatever
+     * credential it has cached for the target origin, and HTTP Basic is exactly such a credential
+     * once a browser has it. The only content types available to that request are
+     * {@code application/x-www-form-urlencoded}, {@code multipart/form-data} and
+     * {@code text/plain}. Every state-changing route here requires {@code application/json}, which
+     * is not among them, so a forged call must preflight and this service answers no preflight.
+     *
+     * <p>{@link #BROWSER_SIMPLE_CONTENT_TYPES} is refused below on any state-changing method, ahead
+     * of every route rule. That refusal is the part a reviewer can see in one place, and it holds
+     * for a route added later that forgets to name its media type. A caller that sends no
+     * {@code Content-Type} at all is not matched and reaches the route, which answers 415 — a
+     * missing header is a mistake and a form-encoded one is the shape of an attack, so the two get
+     * different answers.
+     *
      * @param http the builder Spring Security supplies
      * @return the chain covering every request that is not an actuator endpoint
      * @throws Exception when the builder rejects the configuration
@@ -322,6 +430,12 @@ public class SecurityConfig {
                         // server.error.include-* key at a value that reveals no detail.
                         .dispatcherTypeMatchers(DispatcherType.ERROR, DispatcherType.ASYNC)
                             .permitAll()
+                        // Ahead of every route rule, because a request refused here must be
+                        // refused whatever route it names. A state-changing request carrying a
+                        // content type a browser can send cross-origin with no preflight is the
+                        // shape of a forged call, and no machine caller of a JSON API sends one.
+                        .requestMatchers(SecurityConfig::isBrowserSimpleStateChange)
+                            .denyAll()
                         .requestMatchers(HttpMethod.POST, "/accounts/{accountId}/cycle-close")
                             .hasRole(ROLE_ADMIN)
                         .requestMatchers(HttpMethod.PUT, "/accounts/{accountId}")
@@ -338,9 +452,73 @@ public class SecurityConfig {
                         .accessDeniedHandler(forbidden()))
                 .sessionManagement(session -> session
                         .sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+                // Forgery-token protection needs a session to hold the token, and this chain
+                // admits none. config/CrossSiteRequestFilter is the compensating control: it
+                // refuses a state-changing request that declares a foreign site or origin, or that
+                // carries no non-simple request header, so a cached credential a browser replays
+                // from a foreign page reaches no handler.
                 .csrf(csrf -> csrf.disable())
                 .headers(headers -> headers.cacheControl(Customizer.withDefaults()))
                 .build();
+    }
+
+    /**
+     * The three content types a browser sends cross-origin without asking permission first.
+     *
+     * <p>Taken from the Fetch standard's definition of a CORS-safelisted request header: a request
+     * whose {@code Content-Type} is one of these three, whose method is GET, HEAD or POST, and which
+     * sets no other author header, is sent with no preflight and with the credentials the browser
+     * holds for the target origin. Any other content type makes the request non-simple, and the
+     * browser asks first.
+     *
+     * <p>Compared case-insensitively and ignoring parameters, so
+     * {@code Application/X-WWW-Form-Urlencoded; charset=UTF-8} is recognised.
+     */
+    static final List<String> BROWSER_SIMPLE_CONTENT_TYPES = List.of(
+            MediaType.APPLICATION_FORM_URLENCODED_VALUE,
+            MediaType.MULTIPART_FORM_DATA_VALUE,
+            MediaType.TEXT_PLAIN_VALUE);
+
+    /**
+     * The methods that change state and are therefore worth forging.
+     *
+     * <p>POST is the one a browser can send cross-origin with no preflight, so it is the one this
+     * check exists for. PUT, PATCH and DELETE are listed because they are state-changing and cost
+     * nothing to include: a browser cannot send them cross-origin without a preflight, so naming
+     * them adds no refusal a legitimate caller would notice.
+     */
+    private static final List<String> STATE_CHANGING_METHODS =
+            List.of(HttpMethod.POST.name(), HttpMethod.PUT.name(), HttpMethod.PATCH.name(),
+                    HttpMethod.DELETE.name());
+
+    /**
+     * Reports whether one request is a state change carrying a browser-simple content type.
+     *
+     * <p>This is the cross-site request forgery control of this service, stated once rather than per
+     * route. A request it matches is denied before any route rule is consulted, so a route added
+     * later without a {@code consumes} declaration is covered by default rather than by review.
+     *
+     * <p>A request with no {@code Content-Type} does not match. That is deliberate: a caller who
+     * omitted the header made a mistake and should read 415 from the route, whereas a caller who
+     * sent a form encoding to a JSON API is either a browser being driven from another origin or a
+     * client that will not work anyway.
+     *
+     * <p>Package-private so a unit test can drive it with a request rather than having to stand up a
+     * servlet container to observe one refusal.
+     *
+     * @param request the request under authorization
+     * @return true when the request is a state change a browser could have forged
+     */
+    static boolean isBrowserSimpleStateChange(HttpServletRequest request) {
+        if (!STATE_CHANGING_METHODS.contains(request.getMethod())) {
+            return false;
+        }
+        String declared = request.getContentType();
+        if (declared == null || declared.isBlank()) {
+            return false;
+        }
+        String bare = declared.split(";", 2)[0].trim();
+        return BROWSER_SIMPLE_CONTENT_TYPES.stream().anyMatch(bare::equalsIgnoreCase);
     }
 
     /**
@@ -516,10 +694,11 @@ public class SecurityConfig {
     // misconfigured rather than insecure. A start-up failure naming the variable says what is
     // wrong once.
     //
-    // Four credentials reach this service, and all four are checked here: the password for its own
+    // Five secrets reach this service, and all five are checked here: the password for its own
     // database login, the broker login entry that carries its Simple Authentication and Security
-    // Layer password, the identity password hashes checked as each identity is mapped, and the
-    // keystore password, checked only when a port is actually encrypted.
+    // Layer password, the identity password hashes checked as each identity is mapped, the
+    // card-token key every derivation is taken under, and the keystore password, checked only when
+    // a port is actually encrypted.
     // ------------------------------------------------------------------------------------
 
     /** Marks a value this repository publishes as an example rather than as a credential. */
@@ -576,14 +755,14 @@ public class SecurityConfig {
     }
 
     /**
-     * Checks the three credentials this service reads from configuration, and the keystore
-     * password when a port is encrypted.
+     * Checks the two credentials and the card-token key this service reads from configuration, and
+     * the keystore password when a port is encrypted.
      *
      * <p>Identity password hashes are not checked here. Each one is checked as its identity is
      * mapped, which is where the property name is known.
      *
      * @param environment the resolved environment, which already carries substituted variables
-     * @throws IllegalStateException when a checked credential is absent, unusable or published
+     * @throws IllegalStateException when a checked secret is absent, unusable or published
      */
     static void requireUsableCredentials(Environment environment) {
         String datasourcePassword = environment.getProperty(DATASOURCE_PASSWORD_PROPERTY);
@@ -595,6 +774,12 @@ public class SecurityConfig {
         }
         requireUsableSecret(environment.getProperty(BROKER_JAAS_PROPERTY), BROKER_JAAS_PROPERTY);
         requireKeystoreMaterialWhenEncrypted(environment);
+        // The card-token key is the fifth value this repository publishes, and it is the one a
+        // derivation site cannot refuse: an absent or too-short key stops a derivation, while the
+        // published key derives tokens that anyone holding this repository can recompute for a
+        // candidate card number. PanMasker owns the check because it owns how the key is read, and
+        // the demonstration paths state their intent in their own configuration.
+        PanMasker.requireCardTokenSecretFitForUse();
     }
 
     /**
@@ -625,10 +810,10 @@ public class SecurityConfig {
 
     /**
      * Refuses a secret that is absent, blank, a published placeholder, or an identity password
-     * with no encoding prefix.
+     * that is not the output of an adaptive one-way encoder.
      *
-     * <p>No message carries the value. Each one names the property and states which of the three
-     * conditions failed, which is everything an operator needs and nothing an attacker does.
+     * <p>No message carries the value. Each one names the property and states which condition
+     * failed, which is everything an operator needs and nothing an attacker does.
      *
      * @param value    the configured secret
      * @param property the property name the message reports
@@ -644,10 +829,67 @@ public class SecurityConfig {
                     + " repository publishes. Generate a real value; card-platform/.env.example"
                     + " carries the command.");
         }
-        if (IDENTITY_PASSWORD_PROPERTY.equals(property) && !value.startsWith("{")) {
+        if (IDENTITY_PASSWORD_PROPERTY.equals(property)) {
+            requireApprovedPasswordEncoding(value, property);
+        }
+    }
+
+    /**
+     * Refuses an identity password that declares no encoding, declares one this platform does not
+     * accept, or declares bcrypt below {@link #BCRYPT_MINIMUM_COST}.
+     *
+     * <p>The check runs at start-up rather than at the first authentication. Left to run time, a
+     * refused encoding shows up as a 401 for an identity an operator believes is configured, which
+     * reads as a wrong password rather than as a wrong algorithm.
+     *
+     * <p>No message carries the value. Each one names the property, the identifier that was
+     * declared and the identifiers that are accepted, which is what an operator needs.
+     *
+     * @param value    the configured password, which arrives already encoded
+     * @param property the property name the message reports
+     * @throws IllegalStateException when the encoding is absent, is not approved, or is bcrypt
+     *                               below the cost floor
+     */
+    static void requireApprovedPasswordEncoding(String value, String property) {
+        int close = value.startsWith("{") ? value.indexOf('}') : -1;
+        if (close < 0) {
             throw new IllegalStateException(property + " carries no encoding prefix such as"
                     + " {bcrypt}. A value without one authenticates nobody and would let this"
                     + " service start looking misconfigured rather than refusing to start.");
+        }
+        String encoding = value.substring(1, close);
+        if (!APPROVED_PASSWORD_ENCODINGS.contains(encoding)) {
+            throw new IllegalStateException(property + " declares the encoding {" + encoding
+                    + "}, which this platform does not accept. Re-encode the password under one of "
+                    + APPROVED_PASSWORD_ENCODINGS + "; card-platform/.env.example carries the"
+                    + " command. A plaintext or unsalted-digest password is refused here rather"
+                    + " than verified successfully at run time.");
+        }
+        if (BCRYPT_ENCODING_ID.equals(encoding)) {
+            requireBcryptCost(value.substring(close + 1), property);
+        }
+    }
+
+    /**
+     * Refuses a bcrypt hash that is malformed or carries a cost below the floor.
+     *
+     * @param hash     the hash following the {@code {bcrypt}} identifier
+     * @param property the property name the message reports
+     * @throws IllegalStateException when the value is not a bcrypt hash, or its cost is below
+     *                               {@link #BCRYPT_MINIMUM_COST}
+     */
+    private static void requireBcryptCost(String hash, String property) {
+        Matcher shape = BCRYPT_HASH.matcher(hash);
+        if (!shape.matches()) {
+            throw new IllegalStateException(property + " declares {bcrypt} and carries no bcrypt"
+                    + " hash behind it. A bcrypt hash reads $2a$, $2b$ or $2y$, then two cost"
+                    + " digits, then fifty-three characters of salt and hash.");
+        }
+        int cost = Integer.parseInt(shape.group(1));
+        if (cost < BCRYPT_MINIMUM_COST) {
+            throw new IllegalStateException(property + " declares a bcrypt cost of " + cost
+                    + " and at least " + BCRYPT_MINIMUM_COST + " is required. Cost is logarithmic,"
+                    + " so every step below the floor halves what an offline guess costs.");
         }
     }
 

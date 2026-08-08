@@ -1,32 +1,27 @@
 # Container image for the CardDemo card service. It publishes on a mutation and consumes nothing.
 #
-# The build context is this module directory, so every COPY path below resolves
-# inside card-platform/services/card-service/. The archive under target/ arrives from
+# The build context is this module directory, and the archive under target/ arrives from
 # `mvn -f card-platform/pom.xml package`, which runs ahead of this image build.
 #
 # Paged browse: app/cbl/COCRDLIC.cbl. Detail: app/cbl/COCRDSLC.cbl. Update
 # validation: app/cbl/COCRDUPC.cbl.
 
-# The one runtime image every service in this mono-repo shares. A Java Runtime
-# Environment (JRE) 25.0.4 runs the archive. The digest pins the layer, and the
-# image installs no package, so no package pin can go stale.
+# The one runtime image every service of this mono-repo shares. The digest pins the
+# layer, and the image installs no package.
 ARG RUNTIME_IMAGE=bellsoft/liberica-openjre-debian:25.0.4-9@sha256:1671b2ce27ad4ab213800a07c4631aa35528418636be5bce32d027f1926b8b0d
 
-# Stage 1. Receives the archive the host build left under target/ and fixes its
-# name. No build tool, no compiler and no source tree enter this build.
+# Stage 1. Receives the archive the host build left under target/ and fixes its name.
 FROM ${RUNTIME_IMAGE} AS archive
 
 WORKDIR /staging
 
-# The archive the host build left under target/. The Spring Boot plugin leaves a
-# second file ending in .jar.original, and this pattern does not match it. The
-# pattern is copied into the directory rather than onto a name, because a name
-# would take whichever match sorted last and ship it in silence: a stale archive
-# from an earlier version, or a sources archive, would then become the image.
+# The pattern is copied into a directory rather than onto a name, because a name would
+# take whichever match sorted last and ship a stale archive in silence. The Spring Boot
+# plugin's .jar.original does not match it.
 COPY target/*.jar ./
 
-# Exactly one archive, or no image. The check below is the only thing standing
-# between an un-cleaned target/ and an image running the wrong code.
+# Exactly one archive, or no image. This is what stands between an un-cleaned target/
+# and an image running the wrong code.
 RUN set -eu; \
     set -- /staging/*.jar; \
     if [ "$#" -ne 1 ]; then \
@@ -36,8 +31,7 @@ RUN set -eu; \
     fi; \
     mv "$1" /staging/app.jar
 
-# Stage 2. The shipped image. It carries the archive and a Java Runtime
-# Environment, and nothing else.
+# Stage 2. The shipped image: the archive and a Java Runtime Environment, nothing else.
 FROM ${RUNTIME_IMAGE} AS runtime
 
 LABEL org.opencontainers.image.title="carddemo-card-service" \
@@ -47,8 +41,8 @@ LABEL org.opencontainers.image.title="carddemo-card-service" \
       org.opencontainers.image.source="https://github.com/blitzy-public-samples/aws-carddemo-blitzy" \
       com.carddemo.module="card-platform/services/card-service"
 
-# One group and one account, both at the fixed numeric identifier 10001, so a
-# Kubernetes runAsUser of 10001 matches this image. /app belongs to that account.
+# One group and one account at the fixed identifier 10001, so a Kubernetes runAsUser of
+# 10001 matches this image. /app belongs to that account.
 RUN groupadd --gid 10001 carddemo \
  && useradd --uid 10001 --gid 10001 --home-dir /app --no-create-home \
       --no-log-init --shell /usr/sbin/nologin carddemo \
@@ -59,7 +53,6 @@ WORKDIR /app
 # The one archive this image runs, owned by the account that runs it.
 COPY --from=archive --chown=10001:10001 /staging/app.jar /app/app.jar
 
-# Every instruction that writes to the image has already run.
 USER 10001:10001
 
 # This image runs with a read-only root filesystem. Nothing under / is written
@@ -71,28 +64,25 @@ USER 10001:10001
 # embedded servlet container write their work directories there and nowhere else.
 ENV TMPDIR=/tmp
 
-# The container clock reads Coordinated Universal Time. The heap ceiling follows
-# the container memory limit. docker-compose.yml replaces either value, and every
-# other setting arrives from the environment at run time.
+# The clock reads Coordinated Universal Time and the heap ceiling follows the container
+# memory limit. Every other setting arrives from the environment at run time.
 ENV TZ=UTC
 ENV JAVA_TOOL_OPTIONS="-XX:MaxRAMPercentage=75.0 -Djava.io.tmpdir=/tmp"
 
-# The Representational State Transfer (REST) surface. docker-compose.yml maps a
-# host port onto it, and /actuator answers on neither this port nor any other
-# port a client of the service reaches.
+# The Representational State Transfer (REST) surface. /actuator answers on no port a
+# client of this surface reaches.
 EXPOSE 8080
 
-# /actuator answers here alone, so a caller of the service port reaches no
-# runtime, database or broker internals. docker-compose.yml and
-# deploy/k8s/30-configmap.yaml both carry the same value, and both publish this
-# port on the loopback address only.
+# /actuator answers here alone, so a caller of the service port reaches no runtime,
+# database or broker internals. Both deployments publish it on the loopback address only.
 ENV MANAGEMENT_PORT=9080
 EXPOSE 9080
 
-# The base image carries curl. The shell form substitutes MANAGEMENT_PORT, which
-# the exec form would not. Spring Boot answers 200 on /actuator/health once
-# Flyway has migrated the schema, and 503 while a health indicator reports down.
-# The start period covers a cold start, that migration and a consumer group join.
+# The shell form substitutes MANAGEMENT_PORT, which the exec form would not. Spring
+# Boot answers 200 on /actuator/health once Flyway has migrated the schema, and 503
+# while a health indicator reports down. The start period covers a cold start and
+# that migration. This service registers no listener, so no consumer group join
+# takes part.
 HEALTHCHECK --interval=15s --timeout=10s --start-period=60s --retries=12 \
     CMD curl -fsS -o /dev/null "http://127.0.0.1:${MANAGEMENT_PORT}/actuator/health"
 

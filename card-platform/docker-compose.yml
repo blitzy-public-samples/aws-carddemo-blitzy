@@ -1,16 +1,25 @@
 # card-platform — the local demo environment.
 # Starts one Kafka broker, one PostgreSQL instance and the six services.
 #
-# From this directory, and from a clean clone:
+# From a clean clone, one command in this directory starts everything:
+#
+#     scripts/start-demo.sh
+#
+# `docker compose up -d --build` on its own does not, and the reasons are structural.
+# Every services/*/Dockerfile copies the archive its own module left under target/, and a
+# fresh checkout carries none. This file reads nineteen credentials that nothing in the
+# repository supplies. And .env, where they live, does not exist until it is copied. The
+# script performs those steps in order: package, then create and fill .env, then start.
+#
+# By hand, in this directory:
 #
 #     cp .env.example .env
+#     mvn -f pom.xml clean package
+#     scripts/generate-env.sh      # or the per-variable commands in .env.example
 #     docker compose up -d --build
 #
-# The host builds the archives first, so run `mvn -f pom.xml clean package`
-# from this directory before `docker compose up -d --build`. Every
-# services/*/Dockerfile then copies the archive its own module left under
-# target/. Each build context below is therefore the module directory rather
-# than this one. No compiler, no build tool and no source tree enter an image.
+# Each build context below is therefore the module directory rather than this one. No
+# compiler, no build tool and no source tree enter an image.
 #
 # Rationale for the choices in this file: card-platform/docs/decision-log.md
 #
@@ -101,18 +110,12 @@ x-service-environment: &service-environment
   # shared block makes the service route and the broker-created topic agree when
   # a deployment changes the default.
   TOPIC_DEAD_LETTER_SUFFIX: ${TOPIC_DEAD_LETTER_SUFFIX:-.DLT}
-  # The keyed card token every service derives. It is shared because a token has to be
-  # one value across the stack: the card service seeds it, the authorization service
-  # stores it on a decision, the notification service keys its read model on it, and a
-  # SCOPE_CARD authority names it. Two services deriving under different keys would key
-  # the same card two ways and split every read model that joins on it.
-  #
-  # com.carddemo.cobol.PanMasker supplies no default key, so an unset value stops a
-  # tokenizing call rather than falling back to a digest anyone can recompute over the
-  # sixteen-digit card-number space. .env.example documents the demo value, the rollover
-  # procedure and the three artifacts a change re-derives.
-  CARD_TOKEN_SECRET: ${CARD_TOKEN_SECRET:-carddemo-demo-card-token-key-not-for-production}
-  CARD_TOKEN_VERSION: ${CARD_TOKEN_VERSION:-1}
+  # CARD_TOKEN_SECRET and CARD_TOKEN_VERSION are ABSENT from this shared block. Only two
+  # services derive a card token, and each of the two names the key in its own block below:
+  # the card service derives one for every row it writes, and the authorization service
+  # derives one for the decision it records. The other four read a token that arrives in an
+  # event or in a request and derive none, so handing them the key would widen what a
+  # compromise of any one of them reaches for no gain.
   # Transport Layer Security for the two ports each service serves, off here and on in
   # deploy/k8s/30-configmap.yaml. This stack runs every service on one Docker bridge on
   # one machine and publishes each port on the loopback address alone. A cluster pod
@@ -133,16 +136,44 @@ x-service-environment: &service-environment
   MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: ${MANAGEMENT_ENDPOINTS:-health,metrics,prometheus}
   # Keeps the readiness and liveness health groups available on the management port.
   MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED: ${MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED:-true}
+  # The broker log retention every service is told to assume, so each can refuse a
+  # processed-event marker horizon that would not outlast a replay of the record it
+  # suppresses. One value reaches the broker above and all six services here, so the
+  # two cannot drift apart.
+  KAFKA_LOG_RETENTION_HOURS: ${KAFKA_LOG_RETENTION_HOURS:-168}
+  # Request-surface controls, shared because the policy is the same in all six services.
+  #
+  # API_CROSS_SITE_HEADER names the header a state-changing request has to carry.
+  # config/CrossSiteRequestFilter also refuses a foreign Sec-Fetch-Site or Origin, so a
+  # browser replaying a cached HTTP Basic credential from a page a cardholder was reading
+  # reaches no handler. Every curl example in the README files sets this header.
+  #
+  # The five ceilings below are counted over one fixed window by
+  # config/RequestRateCeilingFilter, which runs ahead of the security chain so a refusal
+  # costs less than the bcrypt verification it refuses. The request ceiling is applied per
+  # source address and per identity, the write ceiling covers POST, PUT, PATCH and DELETE,
+  # and the failure ceiling refuses a source that keeps presenting a credential 401 answers.
+  API_CROSS_SITE_HEADER: ${API_CROSS_SITE_HEADER:-X-CardDemo-Request}
+  API_RATE_WINDOW_SECONDS: ${API_RATE_WINDOW_SECONDS:-60}
+  API_RATE_REQUESTS_PER_WINDOW: ${API_RATE_REQUESTS_PER_WINDOW:-600}
+  API_RATE_WRITE_REQUESTS_PER_WINDOW: ${API_RATE_WRITE_REQUESTS_PER_WINDOW:-120}
+  API_RATE_AUTHENTICATION_FAILURES_PER_WINDOW: ${API_RATE_AUTHENTICATION_FAILURES_PER_WINDOW:-20}
+  API_RATE_CONCURRENT_REQUESTS: ${API_RATE_CONCURRENT_REQUESTS:-64}
   # Request identities. Every service refuses an unauthenticated request, and each
-  # one maps the three entries below onto three Spring Security users. A username
-  # is not a credential and carries a fallback; a password hash carries none, so an
-  # unset variable stops the stack rather than admitting a password this repository
-  # publishes. .env.example documents all seven and how to generate a hash.
+  # one maps the entries below onto Spring Security users. A username is not a
+  # credential and carries a fallback; a password hash carries none, so an unset
+  # variable stops the stack rather than admitting a password this repository
+  # publishes. .env.example documents each one and how to generate a hash.
+  #
+  # ACQUIRER is read by the authorization service alone: it is the one role besides
+  # ADMIN that reaches POST /authorizations, and no cardholder identity holds it.
   ADMIN_USERNAME: ${ADMIN_USERNAME:-admin001}
+  ACQUIRER_USERNAME: ${ACQUIRER_USERNAME:-acquirer1}
   USER_USERNAME: ${USER_USERNAME:-user0001}
   MONITORING_USERNAME: ${MONITORING_USERNAME:-monitor01}
   USER_SCOPES: ${USER_SCOPES:-}
   ADMIN_PASSWORD_HASH: ${ADMIN_PASSWORD_HASH:?ADMIN_PASSWORD_HASH must be set; copy .env.example to .env and generate a hash}
+  ACQUIRER_PASSWORD_HASH: ${ACQUIRER_PASSWORD_HASH:?ACQUIRER_PASSWORD_HASH must be set; copy .env.example to .env and generate a hash}
   USER_PASSWORD_HASH: ${USER_PASSWORD_HASH:?USER_PASSWORD_HASH must be set; copy .env.example to .env and generate a hash}
   MONITORING_PASSWORD_HASH: ${MONITORING_PASSWORD_HASH:?MONITORING_PASSWORD_HASH must be set; copy .env.example to .env and generate a hash}
 
@@ -358,7 +389,13 @@ services:
       NOTIFICATION_KAFKA_USER: ${NOTIFICATION_KAFKA_USER:-carddemo-notification}
       ACCOUNT_KAFKA_USER: ${ACCOUNT_KAFKA_USER:-carddemo-account}
       CARD_KAFKA_USER: ${CARD_KAFKA_USER:-carddemo-card}
-      # Consumer groups the entries name, one per listener. A group is not a credential.
+      # Consumer groups the entries name, one for each of the eleven listeners, plus
+      # GROUP_AUTHORIZATION, which is only the framework-level default group id of the
+      # authorization service and names no entry, because both of its listeners set their
+      # own group. A group is not a credential.
+      # Every name below appears in a grant_consumer call further down: a name here that no
+      # call uses would install no entry, and a call naming a group that is not here would
+      # install an entry for an empty name.
       GROUP_AUTHORIZATION: ${GROUP_AUTHORIZATION:-authorization}
       GROUP_LEDGER_POSTING: ${GROUP_LEDGER_POSTING:-ledger-posting}
       GROUP_FRAUD_DETECTION: ${GROUP_FRAUD_DETECTION:-fraud-detection}
@@ -369,6 +406,7 @@ services:
       GROUP_AUTHORIZATION_ACCOUNT: ${GROUP_AUTHORIZATION_ACCOUNT:-authorization-account-state}
       GROUP_AUTHORIZATION_CARD: ${GROUP_AUTHORIZATION_CARD:-authorization-card-updated}
       GROUP_LEDGER_ACCOUNT: ${GROUP_LEDGER_ACCOUNT:-ledger-account-state}
+      GROUP_LEDGER_REJECT: ${GROUP_LEDGER_REJECT:-ledger-reject}
       GROUP_ACCOUNT_POSTED: ${GROUP_ACCOUNT_POSTED:-account-posted}
       # One node holds one copy of every partition.
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: ${KAFKA_TOPIC_REPLICATION_FACTOR:-1}
@@ -381,7 +419,7 @@ services:
       # demo. A production deployment may choose a different legal and operational
       # policy through the matching environment variable.
       KAFKA_LOG_RETENTION_HOURS: ${KAFKA_LOG_RETENTION_HOURS:-168}
-      # The broker creates no topic on demand. The command below creates the eleven
+      # The broker creates no topic on demand. The command below creates the fourteen
       # topics this platform uses. A mistyped name then fails loudly instead of
       # quietly opening a new stream on an unauthenticated broker.
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
@@ -406,8 +444,11 @@ services:
     # the shared fallback used only when a recovery record has no source topic.
     # Source-specific topics preserve one wire shape per stream.
     #
-    # These eleven names are the platform's topic inventory. The same eleven appear
-    # in deploy/k8s/10-kafka.yaml, and .env.example documents every one.
+    # These fourteen names are the platform's topic inventory: seven event topics, one
+    # dead-letter topic for each of the six consumed sources that routes to its own, and
+    # the shared fallback. card.updated needs none, because its only consumer routes a
+    # spent record to the shared fallback as a governed envelope instead. The same
+    # fourteen appear in deploy/k8s/10-kafka.yaml, and .env.example documents every one.
     #
     # The last act of the program is to write /tmp/kafka-topics-ready, and the
     # healthcheck below reads that file. A refused name and a refused create both
@@ -491,6 +532,7 @@ services:
                        "$${TOPIC_CUSTOMER_CONTEXT_CHANGED}" \
                        "$${TOPIC_CARD_UPDATED}" \
                        "$${TOPIC_TRANSACTION_AUTHORIZED}$${TOPIC_DEAD_LETTER_SUFFIX}" \
+                       "$${TOPIC_TRANSACTION_DECLINED}$${TOPIC_DEAD_LETTER_SUFFIX}" \
                        "$${TOPIC_ACCOUNT_STATE_CHANGED}$${TOPIC_DEAD_LETTER_SUFFIX}" \
                        "$${TOPIC_TRANSACTION_POSTED}$${TOPIC_DEAD_LETTER_SUFFIX}" \
                        "$${TOPIC_FRAUD_ASSESSED}$${TOPIC_DEAD_LETTER_SUFFIX}" \
@@ -547,20 +589,26 @@ services:
             "$${GROUP_AUTHORIZATION_CARD}" || return 1
           grant_producer "$${AUTHORIZATION_KAFKA_USER}" "$${TOPIC_DEAD_LETTER}" || return 1
 
-          # Ledger posting: consumes the authorization event, consumes the account
-          # state-change stream that keeps account_balance_projection current, publishes the
-          # posted or rejected outcome, and routes a record it cannot process to that source
-          # topic's dead-letter topic. Without the second consumer entry an account opened
-          # after deployment never gets a projection row and every transaction on it is
-          # dead-lettered, and a closed billing cycle never zeroes the two accumulators here.
+          # Ledger posting: consumes the authorization event, consumes the decline the same
+          # service published so the 430-byte reject row of app/cbl/CBTRN02C.cbl:L446-L465 is
+          # written in production, consumes the account state-change stream that keeps
+          # account_balance_projection current, publishes the posted outcome, and routes a
+          # record it cannot process to that source topic's dead-letter topic. Without the
+          # third consumer entry an account opened after deployment never gets a projection
+          # row and every transaction on it is dead-lettered, and a closed billing cycle never
+          # zeroes the two accumulators here. This service holds NO producer entry on the
+          # declined topic: the authorization service is the sole writer of the decision.
           grant_consumer "$${LEDGER_KAFKA_USER}" "$${TOPIC_TRANSACTION_AUTHORIZED}" \
             "$${GROUP_LEDGER_POSTING}" || return 1
+          grant_consumer "$${LEDGER_KAFKA_USER}" "$${TOPIC_TRANSACTION_DECLINED}" \
+            "$${GROUP_LEDGER_REJECT}" || return 1
           grant_consumer "$${LEDGER_KAFKA_USER}" "$${TOPIC_ACCOUNT_STATE_CHANGED}" \
             "$${GROUP_LEDGER_ACCOUNT}" || return 1
           grant_producer "$${LEDGER_KAFKA_USER}" \
             "$${TOPIC_ACCOUNT_STATE_CHANGED}$${TOPIC_DEAD_LETTER_SUFFIX}" || return 1
           grant_producer "$${LEDGER_KAFKA_USER}" "$${TOPIC_TRANSACTION_POSTED}" || return 1
-          grant_producer "$${LEDGER_KAFKA_USER}" "$${TOPIC_TRANSACTION_DECLINED}" || return 1
+          grant_producer "$${LEDGER_KAFKA_USER}" \
+            "$${TOPIC_TRANSACTION_DECLINED}$${TOPIC_DEAD_LETTER_SUFFIX}" || return 1
           grant_producer "$${LEDGER_KAFKA_USER}" \
             "$${TOPIC_TRANSACTION_AUTHORIZED}$${TOPIC_DEAD_LETTER_SUFFIX}" || return 1
           # The configured fallback remains available for a record whose source is absent.
@@ -702,6 +750,16 @@ services:
       # against and verify-full would refuse it. deploy/k8s/30-configmap.yaml uses
       # verify-full, because a cluster has a certificate authority and a network path
       # worth protecting; here the whole path is one Docker bridge on one machine.
+      # The card-token key, delivered to this service and to card-service alone. A card
+      # token is an HmacSHA256 code over the card number under this key, and the key is
+      # what stops a holder of one token recomputing tokens across the sixteen-digit
+      # card-number space. There is no default and no fallback: com.carddemo.cobol.PanMasker
+      # refuses to derive without a key, and this service refuses to start without one.
+      # Generate a value into .env before the first run; .env.example carries the command.
+      CARD_TOKEN_SECRET: ${CARD_TOKEN_SECRET:?CARD_TOKEN_SECRET must be set; copy .env.example to .env and generate a card-token key of at least 32 characters}
+      # Not key material. The version is part of the message the code covers, so raising it
+      # rolls every token over under the same key.
+      CARD_TOKEN_VERSION: ${CARD_TOKEN_VERSION:-1}
       AUTHORIZATION_DB_NAME: ${AUTHORIZATION_DB_NAME:-carddemo_authorization}
       SPRING_DATASOURCE_URL: jdbc:postgresql://${POSTGRES_HOST:-postgres}:5432/${AUTHORIZATION_DB_NAME:-carddemo_authorization}?currentSchema=${AUTHORIZATION_DB_SCHEMA:-authorization_service}&sslmode=require
       # This service's own login. It owns carddemo_authorization and can connect to no other database:
@@ -736,8 +794,12 @@ services:
       OUTBOX_RELAY_INTERVAL_MS: ${OUTBOX_RELAY_INTERVAL_MS:-500}
       OUTBOX_RELAY_BATCH_SIZE: ${OUTBOX_RELAY_BATCH_SIZE:-100}
       OUTBOX_RELAY_CLAIM_TIMEOUT: ${OUTBOX_RELAY_CLAIM_TIMEOUT:-PT2M}
+      # Milliseconds one relay pass may spend waiting for broker acknowledgements. Read once
+      # per pass as a monotonic deadline, so a slow broker costs one pass and not an unbounded
+      # one. It stays above the producer window of one send, MAX_BLOCK_MS + DELIVERY_TIMEOUT_MS.
+      OUTBOX_RELAY_MAX_DURATION_MS: ${OUTBOX_RELAY_MAX_DURATION_MS:-5000}
       OUTBOX_PUBLISHED_RETENTION_HOURS: ${OUTBOX_PUBLISHED_RETENTION_HOURS:-168}
-      PROCESSED_EVENT_RETENTION_HOURS: ${PROCESSED_EVENT_RETENTION_HOURS:-168}
+      PROCESSED_EVENT_RETENTION_HOURS: ${PROCESSED_EVENT_RETENTION_HOURS:-720}
       RETENTION_SWEEP_INTERVAL_MS: ${RETENTION_SWEEP_INTERVAL_MS:-3600000}
       # This service calls no other service. It resolves a card and reads the credit limit,
       # both cycle counters and the expiry date from card_xref and account_credit_snapshot
@@ -747,6 +809,19 @@ services:
       # How old a card_xref or account_credit_snapshot row may be and still be authorized
       # against. A whole day, so a demo that fires no account or card mutation still authorizes.
       REPLICA_MAX_STALENESS: ${REPLICA_MAX_STALENESS:-P1D}
+      # An approval reserves its own amount on its account_credit_snapshot row in the same
+      # transaction as the decision, because the account service reports the authoritative
+      # accumulators back only after the posting path has run. The batch program had no such
+      # gap: app/cbl/CBTRN02C.cbl rewrites the account at :L545-L560 before it reads the next
+      # record. Only this service reads these two values.
+      #
+      # Milliseconds a decision waits for the account row another decision holds before the
+      # lock is refused and the call answers 503.
+      DECISION_LOCK_WAIT_MS: ${DECISION_LOCK_WAIT_MS:-3000}
+      # How long a reservation holds its exposure before the next decision treats it as
+      # drained. The authoritative state-change event releases it sooner; this covers the
+      # approval whose event is dead-lettered and never arrives.
+      DECISION_RESERVATION_TTL: ${DECISION_RESERVATION_TTL:-PT15M}
       # The consumer groups the two replica listeners run under, one per stream.
       GROUP_AUTHORIZATION_ACCOUNT: ${GROUP_AUTHORIZATION_ACCOUNT:-authorization-account-state}
       GROUP_AUTHORIZATION_CARD: ${GROUP_AUTHORIZATION_CARD:-authorization-card-updated}
@@ -824,11 +899,15 @@ services:
       # Second listener, second group. account_balance_projection is a copy of three fields of
       # the account record the account service owns, and the posting path adds to it.
       GROUP_LEDGER_ACCOUNT: ${GROUP_LEDGER_ACCOUNT:-ledger-account-state}
+      # Third listener, third group. It reads the decline the authorization service published
+      # and writes the 430-byte reject row of app/cbl/CBTRN02C.cbl:L446-L465. Without this
+      # group the reject path has no production ingress and the row is never written.
+      GROUP_LEDGER_REJECT: ${GROUP_LEDGER_REJECT:-ledger-reject}
       TOPIC_ACCOUNT_STATE_CHANGED: ${TOPIC_ACCOUNT_STATE_CHANGED:-account.state-changed}
       TOPIC_TRANSACTION_AUTHORIZED: ${TOPIC_TRANSACTION_AUTHORIZED:-transaction.authorized}
       TOPIC_TRANSACTION_POSTED: ${TOPIC_TRANSACTION_POSTED:-transaction.posted}
-      # The reject path of app/cbl/CBTRN02C.cbl:L446-L465 publishes the declined
-      # event, so this service reads that topic name as well.
+      # Consumed, not published. The authorization service is the sole writer of the decision,
+      # and its decline is what drives the reject row of app/cbl/CBTRN02C.cbl:L446-L465 here.
       TOPIC_TRANSACTION_DECLINED: ${TOPIC_TRANSACTION_DECLINED:-transaction.declined}
       TOPIC_DEAD_LETTER: ${TOPIC_DEAD_LETTER:-carddemo.dead-letter}
       CONSUMER_MAX_RETRY_ATTEMPTS: ${CONSUMER_MAX_RETRY_ATTEMPTS:-3}
@@ -836,9 +915,17 @@ services:
       OUTBOX_RELAY_INTERVAL_MS: ${OUTBOX_RELAY_INTERVAL_MS:-500}
       OUTBOX_RELAY_BATCH_SIZE: ${OUTBOX_RELAY_BATCH_SIZE:-100}
       OUTBOX_RELAY_CLAIM_TIMEOUT: ${OUTBOX_RELAY_CLAIM_TIMEOUT:-PT2M}
+      # Milliseconds one relay sweep may spend waiting for broker acknowledgements. Read
+      # once per sweep as a monotonic deadline, so a slow broker costs one sweep rather
+      # than the scheduled thread and the connection its transaction holds. It stays above
+      # the producer window of one send, MAX_BLOCK_MS + DELIVERY_TIMEOUT_MS.
+      OUTBOX_RELAY_MAX_DURATION_MS: ${OUTBOX_RELAY_MAX_DURATION_MS:-5000}
       OUTBOX_PUBLISHED_RETENTION_HOURS: ${OUTBOX_PUBLISHED_RETENTION_HOURS:-168}
-      PROCESSED_EVENT_RETENTION_HOURS: ${PROCESSED_EVENT_RETENTION_HOURS:-168}
+      PROCESSED_EVENT_RETENTION_HOURS: ${PROCESSED_EVENT_RETENTION_HOURS:-720}
       RETENTION_SWEEP_INTERVAL_MS: ${RETENTION_SWEEP_INTERVAL_MS:-3600000}
+      # rejected_transaction declared ninety days in its COMMENT ON TABLE before any code
+      # applied it. domain/RetentionSweep now reads this value.
+      LEDGER_REJECTED_RETENTION_DAYS: ${LEDGER_REJECTED_RETENTION_DAYS:-90}
     ports:
       # Both mappings bind the loopback address. The service port carries the
       # Representational State Transfer (REST) surface; the management port
@@ -910,9 +997,18 @@ services:
       OUTBOX_RELAY_INTERVAL_MS: ${OUTBOX_RELAY_INTERVAL_MS:-500}
       OUTBOX_RELAY_BATCH_SIZE: ${OUTBOX_RELAY_BATCH_SIZE:-100}
       OUTBOX_RELAY_CLAIM_TIMEOUT: ${OUTBOX_RELAY_CLAIM_TIMEOUT:-PT2M}
+      # Milliseconds one relay pass may spend waiting for broker acknowledgements. Read once
+      # per pass as a monotonic deadline, so a slow broker costs one pass and not an unbounded
+      # one. It stays above the producer window of one send, MAX_BLOCK_MS + DELIVERY_TIMEOUT_MS.
+      OUTBOX_RELAY_MAX_DURATION_MS: ${OUTBOX_RELAY_MAX_DURATION_MS:-5000}
       OUTBOX_PUBLISHED_RETENTION_HOURS: ${OUTBOX_PUBLISHED_RETENTION_HOURS:-168}
-      PROCESSED_EVENT_RETENTION_HOURS: ${PROCESSED_EVENT_RETENTION_HOURS:-168}
+      PROCESSED_EVENT_RETENTION_HOURS: ${PROCESSED_EVENT_RETENTION_HOURS:-720}
       RETENTION_SWEEP_INTERVAL_MS: ${RETENTION_SWEEP_INTERVAL_MS:-3600000}
+      # Both fraud_assessment and velocity_window declared a horizon in their COMMENT ON
+      # TABLE before any code applied it. domain/RetentionSweep now reads both values, and
+      # refuses to start when the velocity horizon does not outlast the velocity window.
+      FRAUD_ASSESSMENT_RETENTION_DAYS: ${FRAUD_ASSESSMENT_RETENTION_DAYS:-90}
+      FRAUD_VELOCITY_RETENTION_DAYS: ${FRAUD_VELOCITY_RETENTION_DAYS:-7}
     ports:
       # Both mappings bind the loopback address. The service port carries the
       # Representational State Transfer (REST) surface; the management port
@@ -992,12 +1088,10 @@ services:
       TOPIC_DEAD_LETTER: ${TOPIC_DEAD_LETTER:-carddemo.dead-letter}
       CONSUMER_MAX_RETRY_ATTEMPTS: ${CONSUMER_MAX_RETRY_ATTEMPTS:-3}
       CONSUMER_RETRY_BACKOFF_MS: ${CONSUMER_RETRY_BACKOFF_MS:-1000}
-      PROCESSED_EVENT_RETENTION_HOURS: ${PROCESSED_EVENT_RETENTION_HOURS:-168}
+      PROCESSED_EVENT_RETENTION_HOURS: ${PROCESSED_EVENT_RETENTION_HOURS:-720}
       RETENTION_SWEEP_INTERVAL_MS: ${RETENTION_SWEEP_INTERVAL_MS:-3600000}
       STATEMENT_RETENTION_DAYS: ${STATEMENT_RETENTION_DAYS:-400}
       NOTIFICATION_LOG_RETENTION_DAYS: ${NOTIFICATION_LOG_RETENTION_DAYS:-90}
-      NOTIFICATION_HISTORY_PAGE_SIZE: ${NOTIFICATION_HISTORY_PAGE_SIZE:-50}
-      NOTIFICATION_HISTORY_MAX_PAGE_SIZE: ${NOTIFICATION_HISTORY_MAX_PAGE_SIZE:-200}
     ports:
       # Both mappings bind the loopback address. The service port carries the
       # Representational State Transfer (REST) surface; the management port
@@ -1101,8 +1195,12 @@ services:
       OUTBOX_RELAY_INTERVAL_MS: ${OUTBOX_RELAY_INTERVAL_MS:-500}
       OUTBOX_RELAY_BATCH_SIZE: ${OUTBOX_RELAY_BATCH_SIZE:-100}
       OUTBOX_RELAY_CLAIM_TIMEOUT: ${OUTBOX_RELAY_CLAIM_TIMEOUT:-PT2M}
+      # Milliseconds one relay pass may spend waiting for broker acknowledgements. Read once
+      # per pass as a monotonic deadline, so a slow broker costs one pass and not an unbounded
+      # one. It stays above the producer window of one send, MAX_BLOCK_MS + DELIVERY_TIMEOUT_MS.
+      OUTBOX_RELAY_MAX_DURATION_MS: ${OUTBOX_RELAY_MAX_DURATION_MS:-5000}
       OUTBOX_PUBLISHED_RETENTION_HOURS: ${OUTBOX_PUBLISHED_RETENTION_HOURS:-168}
-      PROCESSED_EVENT_RETENTION_HOURS: ${PROCESSED_EVENT_RETENTION_HOURS:-168}
+      PROCESSED_EVENT_RETENTION_HOURS: ${PROCESSED_EVENT_RETENTION_HOURS:-720}
       RETENTION_SWEEP_INTERVAL_MS: ${RETENTION_SWEEP_INTERVAL_MS:-3600000}
       # Bound on how long a locked read of one update waits for a row another writer holds.
       WRITE_LOCK_WAIT_MS: ${WRITE_LOCK_WAIT_MS:-3000}
@@ -1129,9 +1227,9 @@ services:
     restart: unless-stopped
 
   # Card service container. Configured with the card database, its schema and
-  # the outbox relay settings. It subscribes to no topic. CardQueryService,
-  # CardUpdateService, OutboxWriter and OutboxRelay are present; the service
-  # carries no controller, so no route reaches them yet.
+  # the outbox relay settings. It subscribes to no topic. CardController serves the
+  # card list, the card detail and the card update over CardQueryService and
+  # CardUpdateService, and OutboxWriter and OutboxRelay carry card.updated.
   card-service:
     # The tag this image carries once built. One tag serves the three places that name
     # it: .github/workflows/ci.yml builds it, this file runs it, and deploy/k8s names it
@@ -1152,6 +1250,16 @@ services:
       # against and verify-full would refuse it. deploy/k8s/30-configmap.yaml uses
       # verify-full, because a cluster has a certificate authority and a network path
       # worth protecting; here the whole path is one Docker bridge on one machine.
+      # The card-token key, delivered to this service and to card-service alone. A card
+      # token is an HmacSHA256 code over the card number under this key, and the key is
+      # what stops a holder of one token recomputing tokens across the sixteen-digit
+      # card-number space. There is no default and no fallback: com.carddemo.cobol.PanMasker
+      # refuses to derive without a key, and this service refuses to start without one.
+      # Generate a value into .env before the first run; .env.example carries the command.
+      CARD_TOKEN_SECRET: ${CARD_TOKEN_SECRET:?CARD_TOKEN_SECRET must be set; copy .env.example to .env and generate a card-token key of at least 32 characters}
+      # Not key material. The version is part of the message the code covers, so raising it
+      # rolls every token over under the same key.
+      CARD_TOKEN_VERSION: ${CARD_TOKEN_VERSION:-1}
       CARD_DB_NAME: ${CARD_DB_NAME:-carddemo_card}
       SPRING_DATASOURCE_URL: jdbc:postgresql://${POSTGRES_HOST:-postgres}:5432/${CARD_DB_NAME:-carddemo_card}?currentSchema=${CARD_DB_SCHEMA:-card_service}&sslmode=require
       # This service's own login. It owns carddemo_card and can connect to no other database:
@@ -1198,8 +1306,12 @@ services:
       OUTBOX_RELAY_INTERVAL_MS: ${OUTBOX_RELAY_INTERVAL_MS:-500}
       OUTBOX_RELAY_BATCH_SIZE: ${OUTBOX_RELAY_BATCH_SIZE:-100}
       OUTBOX_RELAY_CLAIM_TIMEOUT: ${OUTBOX_RELAY_CLAIM_TIMEOUT:-PT2M}
+      # Milliseconds one relay sweep may spend waiting for broker acknowledgements. Read once
+      # per sweep as a monotonic deadline, so a slow broker costs one sweep and not an unbounded
+      # one. It stays above the producer window of one send, MAX_BLOCK_MS + DELIVERY_TIMEOUT_MS.
+      OUTBOX_RELAY_MAX_DURATION_MS: ${OUTBOX_RELAY_MAX_DURATION_MS:-5000}
       OUTBOX_PUBLISHED_RETENTION_HOURS: ${OUTBOX_PUBLISHED_RETENTION_HOURS:-168}
-      PROCESSED_EVENT_RETENTION_HOURS: ${PROCESSED_EVENT_RETENTION_HOURS:-168}
+      PROCESSED_EVENT_RETENTION_HOURS: ${PROCESSED_EVENT_RETENTION_HOURS:-720}
       RETENTION_SWEEP_INTERVAL_MS: ${RETENTION_SWEEP_INTERVAL_MS:-3600000}
       # Bound on how long a locked read of one update waits for a row another writer holds.
       WRITE_LOCK_WAIT_MS: ${WRITE_LOCK_WAIT_MS:-3000}

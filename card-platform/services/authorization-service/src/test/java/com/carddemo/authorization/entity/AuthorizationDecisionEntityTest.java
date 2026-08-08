@@ -52,6 +52,12 @@ final class AuthorizationDecisionEntityTest {
     /** The moment every row below records. */
     private static final Instant DECIDED_AT = Instant.parse("2026-01-01T00:00:00Z");
 
+    /**
+     * The processing moment the caller declared, at the width {@code TRAN-PROC-TS PIC X(26)} holds.
+     * The value is the one record one of {@code app/data/ASCII/dailytran.txt} carries.
+     */
+    private static final String DECLARED_PROCESSING_TIMESTAMP = "2022-06-10-19.27.53.410000";
+
     @Test
     @DisplayName("the entity maps the table, columns, and three operational indexes")
     void mapsTheTableAndItsColumns() {
@@ -104,7 +110,7 @@ final class AuthorizationDecisionEntityTest {
         assertThrows(NullPointerException.class,
                 () -> AuthorizationDecisionEntity.approved(TRANSACTION_ID, ACTOR, null,
                         PanMasker.maskCardNumber(CARD_NUMBER), PanMasker.tokenOf(CARD_NUMBER),
-                        AMOUNT, DECIDED_AT, UUID.randomUUID()),
+                        AMOUNT, DECIDED_AT, UUID.randomUUID(), DECLARED_PROCESSING_TIMESTAMP),
                 "the credit-limit and expiry rules both ran against a resolved account");
     }
 
@@ -134,7 +140,7 @@ final class AuthorizationDecisionEntityTest {
                         PanMasker.maskCardNumber(null), PanMasker.tokenOf(null), AMOUNT,
                         DeclineReason.INVALID_CARD_NUMBER.code(),
                         DeclineReason.INVALID_CARD_NUMBER.description(), DECIDED_AT,
-                        UUID.randomUUID()).getMaskedCardNumber(),
+                        UUID.randomUUID(), DECLARED_PROCESSING_TIMESTAMP).getMaskedCardNumber(),
                 "a request naming no card number stores the fully masked form");
     }
 
@@ -144,7 +150,8 @@ final class AuthorizationDecisionEntityTest {
         assertThrows(NullPointerException.class,
                 () -> AuthorizationDecisionEntity.declined(TRANSACTION_ID, ACTOR, ACCOUNT_ID,
                         PanMasker.maskCardNumber(CARD_NUMBER), PanMasker.tokenOf(CARD_NUMBER),
-                        AMOUNT, null, null, DECIDED_AT, UUID.randomUUID()),
+                        AMOUNT, null, null, DECIDED_AT, UUID.randomUUID(),
+                        DECLARED_PROCESSING_TIMESTAMP),
                 "a decline names one of the four reject codes");
     }
 
@@ -153,7 +160,8 @@ final class AuthorizationDecisionEntityTest {
     void anUnmaskedCardNumberIsRefused() {
         assertThrows(IllegalArgumentException.class,
                 () -> AuthorizationDecisionEntity.approved(TRANSACTION_ID, ACTOR, ACCOUNT_ID, CARD_NUMBER,
-                        PanMasker.tokenOf(CARD_NUMBER), AMOUNT, DECIDED_AT, UUID.randomUUID()),
+                        PanMasker.tokenOf(CARD_NUMBER), AMOUNT, DECIDED_AT, UUID.randomUUID(),
+                        DECLARED_PROCESSING_TIMESTAMP),
                 "the full Primary Account Number reaches no column of this table");
     }
 
@@ -163,7 +171,7 @@ final class AuthorizationDecisionEntityTest {
         assertThrows(IllegalArgumentException.class,
                 () -> AuthorizationDecisionEntity.approved(TRANSACTION_ID, ACTOR, "77",
                         PanMasker.maskCardNumber(CARD_NUMBER), PanMasker.tokenOf(CARD_NUMBER),
-                        AMOUNT, DECIDED_AT, UUID.randomUUID()),
+                        AMOUNT, DECIDED_AT, UUID.randomUUID(), DECLARED_PROCESSING_TIMESTAMP),
                 "the column holds eleven digits, from XREF-ACCT-ID PIC 9(11)");
     }
 
@@ -198,7 +206,7 @@ final class AuthorizationDecisionEntityTest {
     private static AuthorizationDecisionEntity approval() {
         return AuthorizationDecisionEntity.approved(TRANSACTION_ID, ACTOR, ACCOUNT_ID,
                 PanMasker.maskCardNumber(CARD_NUMBER), PanMasker.tokenOf(CARD_NUMBER), AMOUNT,
-                DECIDED_AT, UUID.randomUUID());
+                DECIDED_AT, UUID.randomUUID(), DECLARED_PROCESSING_TIMESTAMP);
     }
 
     /**
@@ -211,7 +219,8 @@ final class AuthorizationDecisionEntityTest {
     private static AuthorizationDecisionEntity decline(String accountId, DeclineReason reason) {
         return AuthorizationDecisionEntity.declined(TRANSACTION_ID, ACTOR, accountId,
                 PanMasker.maskCardNumber(CARD_NUMBER), PanMasker.tokenOf(CARD_NUMBER), AMOUNT,
-                reason.code(), reason.description(), DECIDED_AT, UUID.randomUUID());
+                reason.code(), reason.description(), DECIDED_AT, UUID.randomUUID(),
+                DECLARED_PROCESSING_TIMESTAMP);
     }
 
     /**

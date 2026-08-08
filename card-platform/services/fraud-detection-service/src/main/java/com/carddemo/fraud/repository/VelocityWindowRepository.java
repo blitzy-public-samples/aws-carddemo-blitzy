@@ -14,12 +14,10 @@ import org.springframework.stereotype.Repository;
  * Finds the per-account authorization windows the risk rules read and the consumer in the sibling
  * {@code messaging} package maintains.
  *
- * <p>No COBOL ancestor. The repository shape comes from the parameter
- * area {@code LK-M03B-AREA} at {@code app/cbl/CBSTM03B.CBL:L99-L114}, whose operation code routes
- * every read and write through one subroutine: shape only, no logic.</p>
- *
- * <p>The identifier is {@link VelocityWindowEntity.VelocityWindowId}, the nested composite key of
- * account identifier then window start, and {@code findById} over that key is inherited.</p>
+ * <p>No COBOL ancestor. The repository shape follows {@code LK-M03B-AREA} at
+ * {@code app/cbl/CBSTM03B.CBL:L99-L114}, shape only and no logic. The identifier is
+ * {@link VelocityWindowEntity.VelocityWindowId}, the composite key of account identifier then window
+ * start.</p>
  */
 @Repository
 public interface VelocityWindowRepository
@@ -29,13 +27,9 @@ public interface VelocityWindowRepository
      * Counts one authorization into the window the two key parts name, creating that window at this
      * amount when the table holds none, in one statement.
      *
-     * <p>A read that reports no row, followed by an insert, has a window: a second consumer instance
-     * reads nothing as well, and one of the two inserts fails on the primary key. A read that
-     * reports a row, followed by an update of the value it read, has the other window: two
-     * instances read the same count and each stores that count plus one, so one authorization
-     * disappears. {@code ON CONFLICT ... DO UPDATE} has neither, and the primary key decides the
-     * race inside the statement. The counter and the total are raised from the stored values in the
-     * same statement that reads them.</p>
+     * <p>{@code ON CONFLICT ... DO UPDATE} lets the primary key decide the race inside one
+     * statement, and the counter and the total are raised from the stored values in the same
+     * statement that reads them. A read-then-write pair would lose an authorization instead.</p>
      *
      * <p>Addition happens in the database at {@code NUMERIC(15,2)}, the precision and scale
      * {@code src/main/resources/db/migration/V3__velocity_total_headroom.sql} leaves
@@ -91,13 +85,16 @@ public interface VelocityWindowRepository
      * <p>ADDITIVE, as this whole service is. A window is read only while it is the current one, and
      * {@code domain/RiskScoringService} opens a new window as soon as the configured span elapses.
      * Every authorization therefore leaves a row behind that nothing reads again.
-     * {@code carddemo.retention.velocity-retention} in
+     * {@code carddemo.retention.velocity-retention-days} in
      * {@code src/main/resources/application.yml} supplies the horizon, and
      * {@code ix_velocity_window_start} serves both the subquery and the delete.
      *
-     * <p>{@code limit} bounds one statement, and {@code outbox/RetentionSweeper} repeats the call
-     * until it removes fewer rows than it asked for. The horizon must exceed the window span, or
-     * the delete removes the window a live authorization is counting into.
+     * <p>{@code limit} bounds one statement, and {@code domain/RetentionSweep} repeats the call on
+     * its schedule. The horizon must exceed the window span, or the delete removes the window a
+     * live authorization is counting into; {@code domain/RetentionSweep} refuses to start when
+     * {@code carddemo.retention.velocity-retention-days} does not exceed
+     * {@code carddemo.fraud.risk.velocity-window-minutes}, so that ordering is checked rather than
+     * remembered.
      *
      * @param horizon the instant before which a window is removed
      * @param limit   the most rows one statement removes, at least one

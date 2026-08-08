@@ -4,8 +4,6 @@ import com.carddemo.events.EventEnvelope;
 import com.carddemo.events.FraudFlagged;
 import com.carddemo.fraud.entity.FraudAssessmentEntity;
 import com.carddemo.fraud.repository.FraudAssessmentRepository;
-import jakarta.validation.constraints.Max;
-import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
@@ -23,7 +21,6 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
-import org.springframework.web.server.ResponseStatusException;
 
 /**
  * The one synchronous surface of the fraud detection service, a Representational State Transfer
@@ -51,9 +48,12 @@ import org.springframework.web.server.ResponseStatusException;
  *
  * <h2>The paging contract refuses rather than adjusts</h2>
  *
- * <p>{@link #assessmentsOfAccount(String, int, int)} declares {@code page} and {@code size} as
- * request parameters of its own, each with a stated bound, so a value outside those bounds answers
- * {@code 400}. A caller therefore learns which page it received.
+ * <p>{@link #assessmentsOfAccount(String, String, String, String)} declares {@code page},
+ * {@code size} and {@code sort} as request parameters of its own, each with a stated bound, so a value
+ * outside those bounds answers {@code 400}. Each arrives as text, which separates an omitted parameter
+ * from one that arrived carrying no characters: a parameter declared as a number with a default reads
+ * {@code ?page=} as an omitted {@code page} and answers {@code 200}. A caller therefore learns which
+ * page it received.
  *
  * <p>A framework {@code Pageable} argument would decide silently instead. It coerces an unparsable
  * size to the default, clamps a size above the configured maximum down to that maximum, and reads a
@@ -63,7 +63,9 @@ import org.springframework.web.server.ResponseStatusException;
  *
  * <p>{@code sort} is refused outright rather than accepted and dropped. The repository finder orders
  * by assessment time descending in its own name, so any order a caller asked for would be ignored
- * while the response still claimed success. Naming the parameter unsupported is the honest answer.
+ * while the response still claimed success. The refusal sits inside the one handler the collection
+ * route has, so {@code src/main/resources/openapi.yaml} describes the parameter and its answer on the
+ * operation a caller reads.
  *
  * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
@@ -113,6 +115,15 @@ public class FraudAssessmentController {
      */
     static final int MAXIMUM_PAGE_SIZE = 200;
 
+    /**
+     * Highest page number this route reads.
+     *
+     * <p>{@code PageRequest.of} multiplies the page number by the size to reach an offset, so a page
+     * number near the widest signed integer overflows that product. This ceiling holds the offset
+     * inside the range a query can express, and a higher page number answers {@code 400}.
+     */
+    static final int MAXIMUM_PAGE_NUMBER = 1_000_000;
+
     /** Reads the assessments this service records. */
     private final FraudAssessmentRepository assessments;
 
@@ -149,19 +160,21 @@ public class FraudAssessmentController {
      * Returns one account's assessments, newest first.
      *
      * <p>{@code page} counts from {@value #FIRST_PAGE} and {@code size} runs from
-     * {@value #MINIMUM_PAGE_SIZE} through {@value #MAXIMUM_PAGE_SIZE}. Naming neither returns page
+     * {@value #MINIMUM_PAGE_SIZE} through {@value #MAXIMUM_PAGE_SIZE}. Omitting both returns page
      * {@value #FIRST_PAGE} at {@value #DEFAULT_PAGE_SIZE} rows. A value outside those bounds answers
-     * {@code 400}, so the page a caller receives is always the page it asked for.
+     * {@code 400}, and so does a parameter that arrived carrying no characters, so the page a caller
+     * receives is always the page it asked for.
      *
      * <p>The order is fixed: assessment time descending, which
-     * {@code FraudAssessmentRepository.findByAccountIdOrderByAssessedAtDesc} states in its name.
-     * {@link #rejectUnsupportedSort(String)} refuses a {@code sort} parameter rather than dropping
-     * one.
+     * {@code FraudAssessmentRepository.findByAccountIdOrderByAssessedAtDesc} states in its name. A
+     * {@code sort} parameter is refused here with {@code 400} rather than accepted and dropped, and
+     * this method is the only handler the collection route has.
      *
      * @param accountId the eleven-digit account identifier
-     * @param page      the page to return, counting from {@value #FIRST_PAGE}
+     * @param page      the page to return, counting from {@value #FIRST_PAGE}, or {@code null}
      * @param size      the rows one page carries, from {@value #MINIMUM_PAGE_SIZE} through
-     *                  {@value #MAXIMUM_PAGE_SIZE}
+     *                  {@value #MAXIMUM_PAGE_SIZE}, or {@code null}
+     * @param sort      an order to apply, which this route does not accept, or {@code null}
      * @return {@code 200} carrying the assessments, empty when the account holds none or when the
      *         page lies past the rows the account has
      */
@@ -171,36 +184,72 @@ public class FraudAssessmentController {
             @NotBlank
             @Pattern(regexp = ACCOUNT_ID_PATTERN)
             String accountId,
-            @RequestParam(name = PAGE_PARAMETER, defaultValue = "" + FIRST_PAGE)
-            @Min(FIRST_PAGE)
-            int page,
-            @RequestParam(name = SIZE_PARAMETER, defaultValue = "" + DEFAULT_PAGE_SIZE)
-            @Min(MINIMUM_PAGE_SIZE)
-            @Max(MAXIMUM_PAGE_SIZE)
-            int size) {
-        PageRequest requested = PageRequest.of(page, size);
+            @RequestParam(name = PAGE_PARAMETER, required = false)
+            String page,
+            @RequestParam(name = SIZE_PARAMETER, required = false)
+            String size,
+            @RequestParam(name = SORT_PARAMETER, required = false)
+            String sort) {
+
+        if (sort != null) {
+            throw new UnsupportedSortException("The " + SORT_PARAMETER + " parameter is not supported."
+                    + " Assessments answer in assessment-time descending order only.");
+        }
+
+        PageRequest requested = PageRequest.of(
+                boundedNumberOf(page, PAGE_PARAMETER, FIRST_PAGE, FIRST_PAGE, MAXIMUM_PAGE_NUMBER),
+                boundedNumberOf(size, SIZE_PARAMETER, DEFAULT_PAGE_SIZE, MINIMUM_PAGE_SIZE,
+                        MAXIMUM_PAGE_SIZE));
         return assessments.findByAccountIdOrderByAssessedAtDesc(accountId, requested).stream()
                 .map(FraudAssessmentController::assessmentFrom)
                 .toList();
     }
 
     /**
-     * Refuses a {@code sort} parameter on the collection route.
+     * Reads one paging parameter, refusing every value that is not a number inside its bounds.
      *
-     * <p>The order is a property of the finder, not a choice a caller makes. Accepting the parameter
-     * and ignoring it would answer {@code 200} to a request this service did not honour, so the
-     * parameter is declared required here and answering it at all is a client error.
+     * <p>Three cases are separated. An omitted parameter takes {@code whenAbsent}. A parameter that
+     * arrived carrying no characters is a value the caller sent, so it is refused rather than read as
+     * absent. Any other value has to parse as a number inside the bounds.
      *
-     * <p>The mapping selects this method whenever the request carries {@code sort}, so the parameter
-     * needs no argument here and its value is never read. The refusal names the parameter and the
-     * order the route does apply, and it carries no value read from the request.
+     * <p>Refusing a present-empty value is the point of reading these as text. A parameter declared as
+     * a number with a default takes the default for {@code ?page=} as well as for an omitted
+     * {@code page}, so a caller sending an empty value receives page {@value #FIRST_PAGE} and a
+     * {@code 200} that states nothing about what it did.
      *
-     * @throws UnsupportedSortException always
+     * @param value      the parameter as it arrived, or {@code null} where it did not arrive
+     * @param name       the parameter name, which the refusal reports
+     * @param whenAbsent the value an omitted parameter takes
+     * @param lowest     the lowest value accepted
+     * @param highest    the highest value accepted
+     * @return the number to page by
+     * @throws UnreadablePagingValueException when the parameter arrived empty, does not parse as a
+     *                                        number, or lies outside its bounds
      */
-    @GetMapping(params = SORT_PARAMETER)
-    public void rejectUnsupportedSort() {
-        throw new UnsupportedSortException("The " + SORT_PARAMETER + " parameter is not supported."
-                + " Assessments answer in assessment-time descending order only.");
+    private static int boundedNumberOf(String value, String name, int whenAbsent, int lowest,
+            int highest) {
+
+        if (value == null) {
+            return whenAbsent;
+        }
+        if (value.isEmpty()) {
+            throw new UnreadablePagingValueException("The " + name + " parameter arrived carrying no"
+                    + " value. Omit it to take the default, or send a number from " + lowest
+                    + " through " + highest + ".");
+        }
+
+        int number;
+        try {
+            number = Integer.parseInt(value.strip());
+        } catch (NumberFormatException notANumber) {
+            throw new UnreadablePagingValueException("The " + name + " parameter reads as a number"
+                    + " from " + lowest + " through " + highest + ".");
+        }
+        if (number < lowest || number > highest) {
+            throw new UnreadablePagingValueException("The " + name + " parameter reads as a number"
+                    + " from " + lowest + " through " + highest + ".");
+        }
+        return number;
     }
 
     /**
@@ -221,6 +270,28 @@ public class FraudAssessmentController {
          * @param message the refusal, naming the parameter and the order this route applies
          */
         public UnsupportedSortException(String message) {
+            super(message);
+        }
+    }
+
+    /**
+     * Raised when a paging parameter arrived and this route could not read it as a page.
+     *
+     * <p>{@link ResponseStatus} maps it to {@code 400}. The text names the parameter and the bounds it
+     * accepts, and it carries no value read from the request.
+     */
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    public static class UnreadablePagingValueException extends RuntimeException {
+
+        /** Serialization identity of this exception. */
+        private static final long serialVersionUID = 1L;
+
+        /**
+         * Takes the text the response carries.
+         *
+         * @param message the refusal, naming the parameter and the bounds this route reads
+         */
+        public UnreadablePagingValueException(String message) {
             super(message);
         }
     }

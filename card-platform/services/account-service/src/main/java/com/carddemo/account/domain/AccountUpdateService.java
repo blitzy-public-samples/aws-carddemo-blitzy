@@ -18,13 +18,13 @@ import com.carddemo.account.domain.validation.UsStateCodeValidator;
 import com.carddemo.account.domain.validation.UsStateZipPrefixValidator;
 import com.carddemo.account.domain.validation.YesNoFlagValidator;
 import com.carddemo.account.entity.AccountEntity;
-import com.carddemo.account.entity.CardCrossReferenceEntity;
+import com.carddemo.account.entity.AccountCustomerLinkEntity;
 import com.carddemo.account.entity.CustomerEntity;
 import com.carddemo.account.messaging.AccountStateChanged;
 import com.carddemo.account.messaging.CustomerContextChanged;
 import com.carddemo.account.outbox.OutboxWriter;
 import com.carddemo.account.repository.AccountRepository;
-import com.carddemo.account.repository.CardCrossReferenceRepository;
+import com.carddemo.account.repository.AccountCustomerLinkRepository;
 import com.carddemo.account.repository.CustomerRepository;
 import com.carddemo.cobol.CobolDateValidator;
 import com.carddemo.cobol.CobolDecimal;
@@ -97,27 +97,6 @@ public class AccountUpdateService {
     public static final String COULD_NOT_LOCK_CUSTOMER = "Could not lock customer record for update";
 
     /**
-     * Reported when the cross-reference names no customer for the account, or names more than one.
-     *
-     * <p>{@code app/cbl/COACTUPC.cbl:L3668-L3685} reports the cross-reference miss on the account
-     * identifier and sets {@code FLG-ACCTFILTER-NOT-OK}. The source reports a response code beside
-     * the text; a relational read reports a row count instead, so the text carries neither.
-     */
-    public static final String CUSTOMER_NOT_IN_CROSS_REFERENCE =
-            "Account not found in Cross ref file";
-
-    /**
-     * Reported when the customer the caller submitted is not the customer the account resolves to.
-     *
-     * <p>{@code app/cbl/COACTUPC.cbl:L3617-L3618} reads the cross-reference on the account
-     * identifier and {@code app/cbl/COACTUPC.cbl:L3666} takes {@code XREF-CUST-ID} from the record
-     * it returns, so the stored association names the customer the update locks. The source screen
-     * carries no customer key a caller could contradict.
-     */
-    public static final String CUSTOMER_KEY_MISMATCH =
-            "Customer submitted is not the customer this account resolves to";
-
-    /**
      * The two messages that report a row this service could not lock.
      *
      * <p>A caller has to tell these apart from an edit that a submitted field failed, because the two
@@ -137,8 +116,8 @@ public class AccountUpdateService {
 
     /**
      * Fixed target-side refusal when the submitted account and customer do not name one
-     * relationship held by {@code card_xref}. The source derives the customer identifier from that
-     * cross-reference and never lets the caller choose it independently.
+     * relationship held by {@code account_customer_link}. The source derives the customer
+     * identifier from the cross-reference and never lets the caller choose it independently.
      */
     static final String ACCOUNT_CUSTOMER_RELATIONSHIP_NOT_FOUND =
             "Account and customer do not name one stored relationship";
@@ -335,7 +314,7 @@ public class AccountUpdateService {
     private final CustomerRepository customerRepository;
 
     /** Resolves the customer identifier the platform stores for one account. */
-    private final CardCrossReferenceRepository cardCrossReferenceRepository;
+    private final AccountCustomerLinkRepository accountCustomerLinkRepository;
 
     /** Reports whether the stored records changed under the caller. */
     private final ConcurrentChangeDetector concurrentChangeDetector;
@@ -363,7 +342,7 @@ public class AccountUpdateService {
      *
      * @param accountRepository        store of the account master row
      * @param customerRepository       store of the customer master row
-     * @param cardCrossReferenceRepository service-local account-to-customer relationship replica
+     * @param accountCustomerLinkRepository service-local account-to-customer relationship table
      * @param concurrentChangeDetector the check at {@code app/cbl/COACTUPC.cbl:L3947-L3948}
      * @param outboxWriter             writer of the one event row, joining this transaction
      * @param transactionTemplate      boundary around one update attempt
@@ -373,7 +352,7 @@ public class AccountUpdateService {
      */
     public AccountUpdateService(AccountRepository accountRepository,
             CustomerRepository customerRepository,
-            CardCrossReferenceRepository cardCrossReferenceRepository,
+            AccountCustomerLinkRepository accountCustomerLinkRepository,
             ConcurrentChangeDetector concurrentChangeDetector,
             OutboxWriter outboxWriter,
             TransactionTemplate transactionTemplate,
@@ -384,8 +363,8 @@ public class AccountUpdateService {
                 Objects.requireNonNull(accountRepository, "accountRepository must be present");
         this.customerRepository =
                 Objects.requireNonNull(customerRepository, "customerRepository must be present");
-        this.cardCrossReferenceRepository = Objects.requireNonNull(cardCrossReferenceRepository,
-                "cardCrossReferenceRepository must be present");
+        this.accountCustomerLinkRepository = Objects.requireNonNull(accountCustomerLinkRepository,
+                "accountCustomerLinkRepository must be present");
         this.concurrentChangeDetector = Objects.requireNonNull(concurrentChangeDetector,
                 "concurrentChangeDetector must be present");
         this.outboxWriter = Objects.requireNonNull(outboxWriter, "outboxWriter must be present");
@@ -458,11 +437,12 @@ public class AccountUpdateService {
     }
 
     /**
-     * Resolves the customer identifier from the account cross-reference and checks both copies the
+     * Resolves the customer identifier from the account-to-customer link and checks both copies the
      * caller submitted against it.
      *
      * <p>The source reads the cross-reference before the customer record. This check restores that
-     * authority boundary without a synchronous call to another service. A missing relationship and
+     * authority boundary without a synchronous call to another service, and it reads the pair alone:
+     * the table holds no card number, because no query here reads a card. A missing relationship and
      * a mismatched relationship produce one fixed message that reveals no identifier.
      */
     private Optional<String> authoritativeCustomerId(AccountEntity proposedAccount,
@@ -478,9 +458,9 @@ public class AccountUpdateService {
             return Optional.empty();
         }
 
-        return cardCrossReferenceRepository
-                .findFirstByAccountIdOrderByCardNumberAsc(proposedAccountId)
-                .map(CardCrossReferenceEntity::getCustomerId)
+        return accountCustomerLinkRepository
+                .findByAccountId(proposedAccountId)
+                .map(AccountCustomerLinkEntity::getCustomerId)
                 .filter(proposedCustomerId::equals)
                 .filter(fetchedCustomerId::equals);
     }
@@ -914,7 +894,8 @@ public class AccountUpdateService {
      * @param proposedCustomer the customer values the caller submits
      * @param fetchedAccount   the account values the caller was shown
      * @param fetchedCustomer  the customer values the caller was shown
-     * @param authoritativeCustomerId customer identifier derived from {@code card_xref}
+     * @param authoritativeCustomerId customer identifier derived from
+     *                                {@code account_customer_link}
      * @return a passing verdict once both rows and the event row are written, otherwise a failing
      *         verdict carrying one message
      */

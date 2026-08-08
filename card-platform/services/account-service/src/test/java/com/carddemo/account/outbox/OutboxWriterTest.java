@@ -307,7 +307,7 @@ class OutboxWriterTest {
     /**
      * Builds the argument matcher {@code save} is verified with, running assertions on the row.
      *
-     * @param assertions what the captured row must satisfy
+     * @param asserts what the captured row must satisfy
      * @return a matcher that always matches and asserts on the way through
      */
     private static OutboxEventEntity rowWith(java.util.function.Consumer<OutboxEventEntity> asserts) {
@@ -330,7 +330,7 @@ class OutboxWriterTest {
                 new AccountProperties.Outbox(
                         new AccountProperties.Outbox.Relay(500L, 1, "writer-test",
                                 Duration.ofSeconds(30L), 1_000L, Duration.ofSeconds(10L)), 168L),
-                new AccountProperties.ProcessedEvent(168L),
+                new AccountProperties.ProcessedEvent(720L, 168L),
                 new AccountProperties.Retention(3_600_000L),
                 new AccountProperties.Write(3_000L));
     }

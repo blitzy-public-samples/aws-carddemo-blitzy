@@ -1,5 +1,6 @@
 package com.carddemo.account.api;
 
+import com.carddemo.account.api.dto.CustomerDataRequest;
 import com.carddemo.account.api.dto.CustomerView;
 import com.carddemo.account.entity.CustomerEntity;
 import com.carddemo.account.repository.CustomerRepository;
@@ -74,12 +75,14 @@ public class CustomerController {
      * {@code WS-CARD-RID-CUST-ID-X PIC X(09)} at {@code app/cbl/COACTVWC.cbl:L76-L77}. The leading
      * zeros belong to the value, and the source keys the record as text, so customer one is
      * {@code 000000001} and not {@code 1}.
+     *
+     * <p>{@link CustomerDataRequest#CUSTOMER_ID_PATTERN} declares the value, so the path of this
+     * route and the body of {@code PUT /accounts/{accountId}} are held to one rule.
      */
-    static final String CUSTOMER_ID_PATTERN = "^[0-9]{9}$";
+    static final String CUSTOMER_ID_PATTERN = CustomerDataRequest.CUSTOMER_ID_PATTERN;
 
     /** The text a path carrying anything but nine digits is refused with. */
-    static final String CUSTOMER_ID_MESSAGE =
-            "Customer Id must be a 9 digit Number, zero padded on the left";
+    static final String CUSTOMER_ID_MESSAGE = CustomerDataRequest.CUSTOMER_ID_MESSAGE;
 
     /**
      * The first literal of the text a read that missed answers with, from

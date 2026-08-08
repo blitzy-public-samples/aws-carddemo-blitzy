@@ -254,8 +254,9 @@ class FraudFlaggedConsumerTest {
     }
 
     /**
-     * The claim and the alert roll back together, so a refused alert leaves the event unclaimed. An
-     * uncommitted offset has the delivery taken again, which the claim then keeps harmless. The
+     * A refused alert propagates, and the recorded sequence ends at a rollback with no offset commit.
+     * The transaction manager and the marker store are doubles that record calls, so what this proves
+     * is the order and the outcome the listener drives, not the atomicity a database provides. The
      * abend at {@code app/cbl/CBTRN02C.cbl:L707-L711} ended the run at the same point.
      */
     @Test
@@ -276,12 +277,15 @@ class FraudFlaggedConsumerTest {
     }
 
     /**
-     * A repeat delivery leaves the first alert standing alone, where the unguarded write at
-     * {@code app/cbl/CBTRN02C.cbl:L562-L579} met a duplicate key and ended the run. Two deliveries
-     * of one event cannot both find the marker absent, so the claim statement is the whole guard.
+     * A repeat delivery renders no second alert, where the unguarded write at
+     * {@code app/cbl/CBTRN02C.cbl:L562-L579} met a duplicate key and ended the run. The listener
+     * calls the claim once per delivery and acts only on the call that took the marker; the double
+     * here records those calls in order, and {@code outbox/OutboxAtomicityIT} is where a real
+     * PostgreSQL primary key settles two concurrent claims.
      */
     @Test
-    @DisplayName("A repeat delivery renders no alert, and the claim statement is the whole guard")
+    @DisplayName("A repeat delivery renders no alert, and the listener acts only on the claim "
+            + "that took the marker")
     void aRepeatDeliveryRendersNoAlert() {
         FraudFlagged event = flaggedEvent(UUID.randomUUID(), RISK_SCORE, RULES);
         deliver(event);
@@ -401,12 +405,15 @@ class FraudFlaggedConsumerTest {
     }
 
     /**
-     * Five collaborators, none a publisher and none a client of a sibling service. Neither outcome
-     * carries a card number or a monetary value, so the card-keyed read model of
-     * {@code app/cpy/COSTM01.CPY} has nothing to take from either path.
+     * Five collaborators, none a publisher and none a client of a sibling service. The listener does
+     * reach the marker store and the cardholder-context reader on the flagged path; what neither
+     * outcome writes is a {@code statement_transaction} row or a {@code notification_log} row,
+     * because neither event carries a card number or a monetary value for the card-keyed read model
+     * of {@code app/cpy/COSTM01.CPY} to take.
      */
     @Test
-    @DisplayName("The listener holds five collaborators, and neither path reaches a row store")
+    @DisplayName("The listener holds five collaborators, and writes neither read-model nor "
+            + "delivery-attempt row")
     void theListenerHoldsFiveCollaboratorsAndReachesNoRowStore() {
         deliver(flaggedEvent(UUID.randomUUID(), RISK_SCORE, RULES));
         deliver(clearedEvent(UUID.randomUUID()));
@@ -518,16 +525,14 @@ class FraudFlaggedConsumerTest {
 
     /** Hands one delivery to the listener on the topic the configuration resolves. */
     private void deliver(Record event) {
-        this.consumer.onFraudAssessed(event, this.acknowledgment, TOPIC);
+        this.consumer.onFraudAssessed(event, ACCOUNT_ID, this.acknowledgment, TOPIC);
     }
 
-    /** Builds one flagged assessment under the event identifier a test names. */
     private static FraudFlagged flaggedEvent(UUID eventId, int riskScore, List<String> rules) {
         return new FraudFlagged(eventId, FraudFlagged.EVENT_TYPE, EventEnvelope.SCHEMA_VERSION,
                 OCCURRED_AT, ACCOUNT_ID, TRANSACTION_ID, riskScore, rules, ASSESSED_AT, ACCOUNT_ID);
     }
 
-    /** Builds one cleared assessment carrying the transaction and account a flagged one carries. */
     private static FraudCleared clearedEvent(UUID eventId) {
         return new FraudCleared(new EventEnvelope(eventId, FraudCleared.EVENT_TYPE,
                 EventEnvelope.SCHEMA_VERSION, OCCURRED_AT, ACCOUNT_ID), TRANSACTION_ID, ACCOUNT_ID,
@@ -570,7 +575,6 @@ class FraudFlaggedConsumerTest {
         return bound.get(0);
     }
 
-    /** Returns the binding one method carries, and null where it carries none. */
     private static Annotation bindingOrNull(Method candidate) {
         for (Annotation annotation : candidate.getAnnotations()) {
             if (LISTENER_ANNOTATION.equals(annotation.annotationType().getSimpleName())) {
@@ -580,7 +584,6 @@ class FraudFlaggedConsumerTest {
         return null;
     }
 
-    /** Reads one attribute of one annotation. */
     private static Object attributeOf(Annotation binding, String name)
             throws ReflectiveOperationException {
         return binding.annotationType().getMethod(name).invoke(binding);
@@ -841,4 +844,3 @@ class FraudFlaggedConsumerTest {
         }
     }
 }
-

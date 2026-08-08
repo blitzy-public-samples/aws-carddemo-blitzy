@@ -1,13 +1,14 @@
-# Deployment and Service for the card service, which is to serve the card list,
-# the card detail and the card update. The service publishes card.updated on a
+# Deployment and Service for the card service. CardController serves the card list,
+# the card detail and the card update, and the service publishes card.updated on a
 # mutation only. No listener runs here, and no consumer group appears.
 #
 # Paged browse: app/cbl/COCRDLIC.cbl. Detail: app/cbl/COCRDSLC.cbl. Update
 # validation: app/cbl/COCRDUPC.cbl.
 #
-# CardQueryService, CardUpdateService, OutboxWriter and OutboxRelay are present.
-# The module registers no controller, so the container starts, migrates its schema,
-# publishes card.updated rows its relay finds and answers /actuator.
+# CardQueryService, CardUpdateService, OutboxWriter and OutboxRelay are present, and
+# CardController serves the card list, the card detail and the card update over them.
+# The container starts, migrates its schema, serves those routes, publishes
+# card.updated rows its relay finds and answers /actuator.
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -27,10 +28,8 @@ spec:
   template:
     metadata:
       labels:
-        # The network policies in 10-kafka.yaml and 20-postgres.yaml admit the
-        # name below. Both name the six services one by one, so a Pod that
-        # merely belongs to the platform reaches neither the broker nor the
-        # database.
+        # 10-kafka.yaml and 20-postgres.yaml admit the name below one service at a
+        # time, so a Pod that merely belongs to the platform reaches neither.
         app.kubernetes.io/name: card-service
         app.kubernetes.io/component: card
         app.kubernetes.io/part-of: card-platform
@@ -62,6 +61,12 @@ spec:
           #   docker build -f card-platform/services/card-service/Dockerfile \
           #     -t "carddemo/card-service:${version}" \
           #     card-platform/services/card-service
+          # THE TAG IS MUTABLE, AND THAT IS THE RESIDUAL RISK. Bytes tagged
+          # carddemo/card-service:1.0.0-SNAPSHOT on one node are whatever an operator
+          # loaded there, and no manifest in this folder would notice a different build under the
+          # same name. The six references therefore live in one place, deploy/k8s/kustomization.yaml,
+          # so pinning them by digest is one edit rather than six. deploy/k8s/README.md gives the
+          # procedure and states plainly what a node verifies about each kind of image.
           image: carddemo/card-service:1.0.0-SNAPSHOT
           imagePullPolicy: Never
           securityContext:
@@ -69,9 +74,8 @@ spec:
             capabilities:
               drop:
                 - ALL
-            # The image writes nothing under / after start. Its Dockerfile pins
-            # TMPDIR and java.io.tmpdir to /tmp, which the volume below
-            # supplies.
+            # The image writes nothing under / after start; its Dockerfile pins
+            # TMPDIR and java.io.tmpdir to the volume below.
             readOnlyRootFilesystem: true
           ports:
             # 8080 carries the Representational State Transfer (REST) surface
@@ -96,6 +100,11 @@ spec:
             # Request-identity password hashes, shared by all six services.
             - secretRef:
                 name: carddemo-identity-secret
+            # The card-token key, pulled by this Deployment and
+            # 40-authorization-service.yaml alone. Both derive a card token; the
+            # other four read one that arrives in an event or a request.
+            - secretRef:
+                name: carddemo-card-token-secret
           env:
             # The schema and the login this service owns. 30-configmap.yaml
             # holds both values, and envFrom above pulls every key of it, so
@@ -120,11 +129,8 @@ spec:
                 configMapKeyRef:
                   name: carddemo-config
                   key: CARD_DB_USER
-            # The datasource address this service owns, assembled here. The five
-            # values below sit in this list rather than arrive through envFrom,
-            # because $(VAR) expansion reads only this list. 30-configmap.yaml
-            # carries an option suffix and no database name, so each Deployment
-            # names the one database it owns.
+            # Assembled here rather than through envFrom, because $(VAR) expansion
+            # reads only this list. Each Deployment names the one database it owns.
             - name: POSTGRES_HOST
               valueFrom:
                 configMapKeyRef:
@@ -168,11 +174,9 @@ spec:
                 secretKeyRef:
                   name: carddemo-trust-secret
                   key: KAFKA_SSL_TRUSTSTORE_PASSWORD
-          # Both probes read /actuator/health on the management port over HTTPS,
-          # because 30-configmap.yaml encrypts that port too. Port 8080 answers
-          # no management request. Readiness allows time for the Flyway
-          # migration the service runs at startup, which seeds 50 cards and 50
-          # cross-references.
+          # Both probes read /actuator/health on the encrypted management port; port 8080
+          # answers no management request. Readiness allows time for the Flyway migration
+          # the service runs at startup.
           readinessProbe:
             httpGet:
               path: /actuator/health/readiness
@@ -182,9 +186,8 @@ spec:
             periodSeconds: 10
             timeoutSeconds: 5
             failureThreshold: 3
-          # The liveness health group reports process state and excludes every
-          # external dependency, so a database outage withdraws the Pod from its
-          # Service and restarts no working process.
+          # The liveness group excludes every external dependency, so a database outage
+          # withdraws the Pod from its Service and restarts no working process.
           livenessProbe:
             httpGet:
               path: /actuator/health/liveness
@@ -207,10 +210,7 @@ spec:
             # mebibytes of memory rather than a node's disk.
             - name: tmp
               mountPath: /tmp
-            # Keystore, truststore and certificate authority, read-only. The
-            # service presents the keystore on both ports, verifies the broker
-            # against the truststore, and verifies the database server against
-            # the authority.
+            # Keystore, truststore and certificate authority, read-only.
             - name: transport-security
               mountPath: /etc/carddemo/tls
               readOnly: true
@@ -236,10 +236,9 @@ spec:
                     - key: ca.crt
                       path: ca.crt
 ---
-# Pods reach the service at card-service:8080, a short name the Domain Name
-# System (DNS) resolves. No other service calls it: it publishes card.updated, and
-# the authorization service consumes that stream to keep the observation on its own
-# card_xref replica current.
+# Pods reach the service at card-service:8080. No other service calls it: it publishes
+# card.updated, which the authorization service consumes to refresh the observation on
+# its own card_xref replica.
 apiVersion: v1
 kind: Service
 metadata:
@@ -265,23 +264,14 @@ spec:
 # Network policy for the card pod. Ingress admits its business and management
 # surfaces. Egress admits only Domain Name System (DNS), PostgreSQL and Kafka.
 #
-# This service owns the record that carries the full card number and the card
-# verification value, and neither leaves it: card.updated carries a masked card number
-# and no verification value at all. Nothing calls this service from inside the platform,
-# and the policy below still exists because a cluster pod network is a path shared with
-# every other workload on the cluster.
+# This service owns the record carrying the full card number and the card verification
+# value, and neither leaves it: card.updated carries a masked card number and no
+# verification value. config/SecurityConfig closes the same two gaps at the application
+# layer. 40-authorization-service.yaml carries the same shape and the note on kubelet
+# probes, which originate from the node and match neither selector below.
 #
-# config/SecurityConfig authenticates every call to the card surface and checks
-# ownership before a handler runs. It leaves /actuator/health open for probes and
-# requires ROLE_MONITORING for metrics and the Prometheus scrape. An anonymous caller
-# receives 401; an identity holding a business role receives 403. This policy closes
-# the same two gaps at the network layer. 40-authorization-service.yaml carries the
-# same shape and the note on kubelet probes, which originate from the node and match
-# neither selector below.
-#
-# A cluster whose Container Network Interface plug-in does not implement
-# NetworkPolicy ignores this object. Confirm support before treating the service as
-# isolated.
+# A cluster whose Container Network Interface plug-in does not implement NetworkPolicy
+# ignores this object.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

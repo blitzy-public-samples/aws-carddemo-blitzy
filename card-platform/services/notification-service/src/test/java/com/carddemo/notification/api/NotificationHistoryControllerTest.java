@@ -25,9 +25,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import com.carddemo.cobol.CobolDecimal;
 import com.carddemo.cobol.PanMasker;
-import com.carddemo.notification.config.NotificationProperties;
-import com.carddemo.notification.domain.NotificationRenderer;
 import com.carddemo.notification.domain.NotificationService;
 import com.carddemo.notification.entity.StatementTransactionEntity;
 import com.carddemo.notification.entity.StatementTransactionEntity.StatementTransactionId;
@@ -36,6 +35,7 @@ import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.lang.reflect.Parameter;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -61,17 +61,22 @@ import org.springframework.context.support.GenericApplicationContext;
 import org.springframework.core.type.filter.AnnotationTypeFilter;
 import org.springframework.core.type.filter.AssignableTypeFilter;
 import org.springframework.data.domain.Limit;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.RequestBuilder;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.bind.annotation.ControllerAdvice;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.PatchMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestMethod;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.HandlerMethod;
 import org.springframework.web.servlet.mvc.method.RequestMappingInfo;
@@ -84,17 +89,17 @@ import tools.jackson.databind.json.JsonMapper;
  * Endpoint tests for {@link NotificationHistoryController}, the one synchronous surface of the
  * notification service.
  *
- * <p>Nine groups of assertions cover that surface at the Hypertext Transfer Protocol (HTTP)
+ * <p>Eight groups of assertions cover that surface at the Hypertext Transfer Protocol (HTTP)
  * boundary. The mapped surface carries one handler, and that handler reads. A conforming path value
- * answers 200 with five properties, and each transaction it carries holds thirteen. A path value
+ * answers 200 with four properties, and each transaction it carries holds twelve. A path value
  * outside the declared shape answers 400 and reaches no lookup. A card with no row answers 200 with
  * an empty array and never 404.
  *
- * <p>The remaining five groups cover what leaves the controller. The path value reaches the read
- * model character for character. The lookup names the ascending finder and the resolved page size.
- * The controller declares three collaborators, and no messaging, transport, metric, logging or
- * delivery type sits among them. A fault answers 500, and every failing body carries the route
- * template.
+ * <p>The remaining four groups cover what leaves the controller. The card number in the path reaches
+ * the read model as a derived token and never as itself. The lookup names the ascending finder and
+ * the whole history. The controller declares two collaborators, and no messaging, transport, metric,
+ * logging or delivery type sits among them. A fault answers 500, and every failing body carries the
+ * route template.
  *
  * <p>The read model is keyed on the card token, which stands in for
  * {@code TRNX-CARD-NUM PIC X(16)} at {@code app/cpy/COSTM01.CPY:L22}.
@@ -108,12 +113,10 @@ import tools.jackson.databind.json.JsonMapper;
  *
  * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  *
- * <p>A refusal of this route carries the text of the constraint that refused, so a caller reads which
- * of the two values was wrong: {@code NotificationHistoryController.CARD_TOKEN_MESSAGE} for the path
- * value, {@code PAGE_SIZE_MESSAGE} for a page size below its floor, and
- * {@code PAGE_SIZE_NOT_A_NUMBER_MESSAGE} for one that is no whole number. Each names its value by
- * name and never by the characters submitted, and {@code ApiErrorResponseTest} holds all of them to
- * letters and punctuation so none can carry a digit run.
+ * <p>A refusal of this route carries {@code NotificationHistoryController.CARD_NUMBER_MESSAGE},
+ * which names the shape the path variable requires and never the characters submitted.
+ * {@code ApiErrorResponseTest} holds every text of this service to letters and punctuation, so none
+ * can carry a digit run.
  */
 final class NotificationHistoryControllerTest {
 
@@ -121,55 +124,51 @@ final class NotificationHistoryControllerTest {
     private static final ObjectMapper MAPPER = JsonMapper.builder().build();
 
     /** The route template the description declares, and the one this endpoint answers on. */
-    private static final String ROUTE = "/notifications/{cardToken}";
+    private static final String ROUTE = "/notifications/{cardNumber}";
 
     /** The collection segment of that route. */
     private static final String COLLECTION = "/notifications";
 
     /**
-     * The card token every conforming request below carries: sixty-four lower-case hexadecimal
-     * characters, the shape {@link PanMasker#CARD_TOKEN_PATTERN} declares. Eight characters
-     * repeated eight times, so no digit run in the value reaches two characters.
-     */
-    private static final String CARD_TOKEN = "a1b2c3d4".repeat(8);
-
-    /** Shape of a card token, the constraint the path variable declares. */
-    private static final Pattern CARD_TOKEN_SHAPE = Pattern.compile(PanMasker.CARD_TOKEN_PATTERN);
-
-    /**
-     * A full card number, built at runtime so no sixteen-digit literal appears in this file. Source
-     * width: {@code TRNX-CARD-NUM PIC X(16)} at {@code app/cpy/COSTM01.CPY:L22}.
+     * The card number every conforming request below carries, built at runtime so no sixteen-digit
+     * literal appears in this file. Source width: {@code TRNX-CARD-NUM PIC X(16)} at
+     * {@code app/cpy/COSTM01.CPY:L22}.
      */
     private static final String FULL_CARD_NUMBER = "5".repeat(12) + "7065";
 
     /** The masked form of that card number: twelve mask characters then its last four digits. */
     private static final String MASKED_CARD_NUMBER = "*".repeat(12) + "7065";
 
+    /**
+     * The card token that card number derives to, and the key the read model holds.
+     * {@link PanMasker#cardToken(String)} derives it under the build card-token key, which
+     * {@code card-platform/pom.xml} supplies to this test.
+     */
+    private static final String CARD_TOKEN = PanMasker.cardToken(FULL_CARD_NUMBER);
+
+    /** Shape of a card token, the shape the derived key keeps. */
+    private static final Pattern CARD_TOKEN_SHAPE = Pattern.compile(PanMasker.CARD_TOKEN_PATTERN);
+
     /** A run of sixteen digits, the shape of a full card number. */
     private static final Pattern SIXTEEN_DIGIT_RUN = Pattern.compile("[0-9]{16}");
 
-    /** The five properties the response envelope carries for a card holding rows. */
+    /** The four properties the response envelope carries, whether or not the card holds a row. */
     private static final List<String> ENVELOPE_PROPERTIES =
-            List.of("cardToken", "cardNumber", "transactionCount", "totalAmount", "transactions");
-
-    /** The four properties the envelope carries for a card holding no row. */
-    private static final List<String> ENVELOPE_PROPERTIES_WITHOUT_A_CARD_NUMBER =
-            List.of("cardToken", "transactionCount", "totalAmount", "transactions");
+            List.of("cardNumber", "transactionCount", "totalAmount", "transactions");
 
     /**
-     * The four envelope properties that carry data. A failing body holds none of them, and the
-     * route template holds the name of the fifth.
+     * The four envelope properties that carry data. A failing body holds none of them, and it
+     * carries the route template instead.
      */
     private static final List<String> ENVELOPE_DATA_PROPERTIES =
             List.of("cardNumber", "transactionCount", "totalAmount", "transactions");
 
     /**
-     * The thirteen properties one transaction carries. Twelve map
-     * {@code app/cpy/COSTM01.CPY:L23} and {@code app/cpy/COSTM01.CPY:L25-L35}, and the masked card
-     * number is the thirteenth.
+     * The twelve properties one transaction carries, mapping {@code app/cpy/COSTM01.CPY:L23} and
+     * {@code app/cpy/COSTM01.CPY:L25-L35}. The card is named once, on the envelope.
      */
     private static final List<String> TRANSACTION_PROPERTIES = List.of("transactionId",
-            "maskedCardNumber", "typeCode", "categoryCode", "source", "description", "amount",
+            "typeCode", "categoryCode", "source", "description", "amount",
             "merchantId", "merchantName", "merchantCity", "merchantZip", "originTimestamp",
             "processingTimestamp");
 
@@ -222,17 +221,11 @@ final class NotificationHistoryControllerTest {
     private static final String ORDER_FRAGMENT = "OrderBy";
 
     /**
-     * The paging bounds this route answers under, the values
-     * {@code src/main/resources/application.yml} ships as
-     * {@code carddemo.history.default-page-size} and
-     * {@code carddemo.history.maximum-page-size}.
+     * The limit every request reaches the read model with. The response covers the whole history of
+     * one card, matching {@code app/cbl/CBSTM03A.CBL:L429}, which totals every row of one card
+     * between two key breaks.
      */
-    private static final NotificationProperties.History HISTORY =
-            new NotificationProperties.History(400, 90, 3_600_000L, 50,
-                    NotificationRenderer.MAXIMUM_STATEMENT_ROWS);
-
-    /** The limit a request naming no page size reaches the read model with. */
-    private static final Limit PAGE_LIMIT = Limit.of(HISTORY.defaultPageSize());
+    private static final Limit WHOLE_HISTORY = Limit.unlimited();
 
     /** The first transaction identifier, at the sixteen characters L23 declares. */
     private static final String FIRST_TRANSACTION_ID = "TRN0000000000001";
@@ -242,6 +235,13 @@ final class NotificationHistoryControllerTest {
 
     /** The third transaction identifier, at the same width. */
     private static final String THIRD_TRANSACTION_ID = "TRN0000000000003";
+
+    /**
+     * A fourth transaction identifier, at the same width, naming a row no test places behind the
+     * lookup. It builds the row set {@code TheTotalledList} totals to prove a total taken over the
+     * wrong list carries a different value.
+     */
+    private static final String UNRELATED_TRANSACTION_ID = "TRN0000000000009";
 
     /** The total of the three rows below, at the two fractional digits L29 declares. */
     private static final BigDecimal THREE_ROW_TOTAL = new BigDecimal("1160.03");
@@ -261,38 +261,15 @@ final class NotificationHistoryControllerTest {
     /** Drives the endpoint. */
     private MockMvc mockMvc;
 
-    /**
-     * Builds the endpoint over two mocks and the shipped paging bounds, with the advice this
-     * service ships registered.
-     */
+    /** Builds the endpoint over two mocks, with the advice this service ships registered. */
     @BeforeEach
     void buildEndpoint() {
         statementTransactions = mock(StatementTransactionRepository.class);
         notifications = mock(NotificationService.class);
-        controller = new NotificationHistoryController(statementTransactions, notifications,
-                properties());
+        controller = new NotificationHistoryController(statementTransactions, notifications);
         mockMvc = MockMvcBuilders.standaloneSetup(controller)
                 .setControllerAdvice(new NotificationApiExceptionHandler())
                 .build();
-    }
-
-    /**
-     * Builds the bound configuration this route reads, carrying the shipped paging bounds.
-     *
-     * @return the properties
-     */
-    private static NotificationProperties properties() {
-        return new NotificationProperties(
-                new NotificationProperties.Kafka(
-                        new NotificationProperties.Kafka.Groups("authorized", "posted", "fraud",
-                                "customer"),
-                        new NotificationProperties.Kafka.Topics("transaction.authorized",
-                                "transaction.posted", "fraud.assessed",
-                                "customer.context-changed", "carddemo.dead-letter", ".DLT")),
-                new NotificationProperties.Consumer(
-                        new NotificationProperties.Consumer.Retry(3, 1000L)),
-                new NotificationProperties.ProcessedEvent(168),
-                HISTORY);
     }
 
     /**
@@ -367,18 +344,33 @@ final class NotificationHistoryControllerTest {
             }
         }
 
-        /** Asserts a write to the same path answers no success and reaches no lookup. */
+        /**
+         * Asserts a write to the same path answers 405 with an Allow header and reaches no lookup.
+         *
+         * <p>Each of the four write methods used to answer {@code 500} carrying the fault text, since
+         * the catch-all arm of the advice claimed the checked exception the framework raises for an
+         * unsupported method. A client cannot tell that answer from a real fault, and a retry of it
+         * repeats the mistake. {@code Allow} is what tells a caller that this route serves
+         * {@code GET} alone.
+         */
         @Test
-        void aWriteToTheSamePathAnswersNoSuccessAndReachesNoLookup() throws Exception {
-            List<Integer> answered = List.of(
-                    mockMvc.perform(post(ROUTE, CARD_TOKEN)).andReturn().getResponse().getStatus(),
-                    mockMvc.perform(put(ROUTE, CARD_TOKEN)).andReturn().getResponse().getStatus(),
-                    mockMvc.perform(patch(ROUTE, CARD_TOKEN)).andReturn().getResponse().getStatus(),
-                    mockMvc.perform(delete(ROUTE, CARD_TOKEN)).andReturn().getResponse()
-                            .getStatus());
+        void aWriteToTheSamePathAnswersMethodNotAllowedAndReachesNoLookup() throws Exception {
+            for (RequestBuilder write : List.of(post(ROUTE, FULL_CARD_NUMBER), put(ROUTE, FULL_CARD_NUMBER),
+                    patch(ROUTE, FULL_CARD_NUMBER), delete(ROUTE, FULL_CARD_NUMBER))) {
 
-            for (int status : answered) {
-                assertFalse(status >= 200 && status < 300, "a write answered " + status);
+                MockHttpServletResponse answered = mockMvc.perform(write).andReturn().getResponse();
+
+                assertEquals(405, answered.getStatus(),
+                        "a method this route does not serve answers 405");
+                assertEquals("GET", answered.getHeader(HttpHeaders.ALLOW),
+                        "the answer names the method this route does serve");
+                assertTrue(answered.getContentAsString()
+                                .contains(NotificationApiExceptionHandler
+                                        .UNSUPPORTED_REQUEST_MESSAGE),
+                        "the body carries the documented refusal text: "
+                                + answered.getContentAsString());
+                assertFalse(answered.getContentAsString().contains(FULL_CARD_NUMBER),
+                        "no refusal repeats the value the caller sent");
             }
             verify(statementTransactions, never())
                     .findByIdCardTokenOrderByIdTransactionIdAsc(anyString(), any(Limit.class));
@@ -420,22 +412,28 @@ final class NotificationHistoryControllerTest {
     @Nested
     class HistoryOfACardWithRows {
 
-        /** Places three rows and their total behind the two mocks. */
+        /**
+         * The row set the lookup answers with, held so a test can compare it against the list the
+         * controller handed to the total.
+         */
+        private List<StatementTransactionEntity> rowsInTheReadModel;
+
+        /** Places three rows behind the read model and the derived total behind the service. */
         @BeforeEach
         void threeRowsInTheReadModel() {
+            rowsInTheReadModel = threeRows();
             when(statementTransactions
-                    .findByIdCardTokenOrderByIdTransactionIdAsc(CARD_TOKEN, PAGE_LIMIT))
+                    .findByIdCardTokenOrderByIdTransactionIdAsc(CARD_TOKEN, WHOLE_HISTORY))
                     .thenReturn(threeRows());
             when(notifications.totalOf(anyList())).thenReturn(THREE_ROW_TOTAL);
         }
 
-        /** Asserts a card token with rows answers 200 carrying its count, total and items. */
+        /** Asserts a card number with rows answers 200 carrying its count, total and items. */
         @Test
-        void aCardTokenWithRowsAnswersTwoHundredCarryingItsHistory() throws Exception {
-            mockMvc.perform(get(ROUTE, CARD_TOKEN))
+        void aCardNumberWithRowsAnswersTwoHundredCarryingItsHistory() throws Exception {
+            mockMvc.perform(get(ROUTE, FULL_CARD_NUMBER))
                     .andExpect(status().isOk())
                     .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
-                    .andExpect(jsonPath("$.cardToken").value(CARD_TOKEN))
                     .andExpect(jsonPath("$.cardNumber").value(MASKED_CARD_NUMBER))
                     .andExpect(jsonPath("$.transactionCount").value(3))
                     .andExpect(jsonPath("$.totalAmount").value(THREE_ROW_TOTAL.toPlainString()))
@@ -444,28 +442,28 @@ final class NotificationHistoryControllerTest {
 
         /** Asserts the envelope carries five properties, named and ordered as the record is. */
         @Test
-        void theEnvelopeCarriesFivePropertiesAndNoSixth() throws Exception {
+        void theEnvelopeCarriesFourPropertiesAndNoFifth() throws Exception {
             JsonNode body = MAPPER.readTree(historyBody());
 
             assertEquals(ENVELOPE_PROPERTIES, List.copyOf(body.propertyNames()),
                     "envelope property names, in that order");
-            assertEquals(5, body.size(), "envelope property count");
+            assertEquals(4, body.size(), "envelope property count");
+            assertFalse(body.has("cardToken"), "the storage key reaches no body");
         }
 
         /**
-         * Asserts each item carries thirteen properties. Twelve map
-         * {@code app/cpy/COSTM01.CPY:L23} and {@code app/cpy/COSTM01.CPY:L25-L35}, and the masked
-         * card number is the thirteenth.
+         * Asserts each item carries twelve properties, mapping {@code app/cpy/COSTM01.CPY:L23} and
+         * {@code app/cpy/COSTM01.CPY:L25-L35}. The card is named once, on the envelope.
          */
         @Test
-        void eachItemCarriesThirteenProperties() throws Exception {
+        void eachItemCarriesTwelveProperties() throws Exception {
             JsonNode transactions = MAPPER.readTree(historyBody()).get("transactions");
 
             assertEquals(3, transactions.size(), "item count");
             for (JsonNode item : transactions) {
                 assertEquals(TRANSACTION_PROPERTIES, List.copyOf(item.propertyNames()),
                         "item property names, in that order");
-                assertEquals(13, item.size(), "item property count");
+                assertEquals(12, item.size(), "item property count");
             }
         }
 
@@ -476,7 +474,7 @@ final class NotificationHistoryControllerTest {
          */
         @Test
         void theItemsFollowTheAscendingOrderTheRowsArrivedIn() throws Exception {
-            mockMvc.perform(get(ROUTE, CARD_TOKEN))
+            mockMvc.perform(get(ROUTE, FULL_CARD_NUMBER))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.transactions[0].transactionId")
                             .value(FIRST_TRANSACTION_ID))
@@ -551,7 +549,7 @@ final class NotificationHistoryControllerTest {
          * @throws Exception when the request cannot be performed
          */
         private String historyBody() throws Exception {
-            return mockMvc.perform(get(ROUTE, CARD_TOKEN))
+            return mockMvc.perform(get(ROUTE, FULL_CARD_NUMBER))
                     .andExpect(status().isOk())
                     .andReturn().getResponse().getContentAsString();
         }
@@ -560,39 +558,39 @@ final class NotificationHistoryControllerTest {
     /**
      * Path values outside the declared shape.
      *
-     * <p>The path variable is a {@code String} constrained by Jakarta Bean Validation to the shape
-     * {@link PanMasker#CARD_TOKEN_PATTERN} declares. Each value below answers 400, leaks no
-     * envelope property, echoes nothing the caller sent, and reaches neither collaborator.</p>
+     * <p>The path variable is a {@code String} constrained by Jakarta Bean Validation to sixteen
+     * digits, the width {@code TRNX-CARD-NUM PIC X(16)} at {@code app/cpy/COSTM01.CPY:L22} declares.
+     * Each value below answers 400, leaks no envelope property, echoes nothing the caller sent, and
+     * reaches neither collaborator.</p>
      */
     @Nested
     class RefusedPathValues {
 
-        /** Asserts a full card number is refused and reaches no lookup. */
+        /** Asserts a card token is refused and reaches no lookup. */
         @Test
-        void aFullCardNumberIsRefused() throws Exception {
-            assertRefused(FULL_CARD_NUMBER);
+        void aCardTokenIsRefused() throws Exception {
+            assertRefused(CARD_TOKEN);
         }
 
         /**
-         * Asserts a masked card number is refused and reaches no lookup. The declared pattern
-         * admits lower-case hexadecimal characters alone, and a masked value carries mask
-         * characters.
+         * Asserts a masked card number is refused and reaches no lookup. The declared shape admits
+         * digits alone, and a masked value carries mask characters.
          */
         @Test
         void aMaskedCardNumberIsRefused() throws Exception {
             assertRefused(MASKED_CARD_NUMBER);
         }
 
-        /** Asserts a token one character under its width is refused. */
+        /** Asserts a card number one digit under its width is refused. */
         @Test
-        void aTokenUnderItsWidthIsRefused() throws Exception {
-            assertRefused(CARD_TOKEN.substring(1));
+        void aCardNumberUnderItsWidthIsRefused() throws Exception {
+            assertRefused(FULL_CARD_NUMBER.substring(1));
         }
 
-        /** Asserts a token one character over its width is refused. */
+        /** Asserts a card number one digit over its width is refused. */
         @Test
-        void aTokenOverItsWidthIsRefused() throws Exception {
-            assertRefused(CARD_TOKEN + "f");
+        void aCardNumberOverItsWidthIsRefused() throws Exception {
+            assertRefused(FULL_CARD_NUMBER + "7");
         }
 
         /**
@@ -600,13 +598,13 @@ final class NotificationHistoryControllerTest {
          */
         @Test
         void aValueCarryingACharacterOutsideTheShapeIsRefused() throws Exception {
-            assertRefused("z" + CARD_TOKEN.substring(1));
+            assertRefused("z" + FULL_CARD_NUMBER.substring(1));
         }
 
-        /** Asserts an upper-case token is refused. The declared shape admits lower case alone. */
+        /** Asserts a value carrying a separator at the declared width is refused. */
         @Test
-        void anUpperCaseTokenIsRefused() throws Exception {
-            assertRefused(CARD_TOKEN.toUpperCase(Locale.ROOT));
+        void aValueCarryingASeparatorIsRefused() throws Exception {
+            assertRefused(FULL_CARD_NUMBER.substring(0, 15) + "-");
         }
 
         /** Asserts a sixteen-character alphabetic value is refused. */
@@ -687,16 +685,14 @@ final class NotificationHistoryControllerTest {
                     .andReturn().getResponse().getContentAsString();
 
             for (String property : ENVELOPE_DATA_PROPERTIES) {
-                assertFalse(body.contains(property), "a refusal carries " + property);
+                assertFalse(body.contains(quoted(property)), "a refusal carries " + property);
             }
             assertFalse(body.contains(pathValue), "a refusal echoes the value the caller sent");
             assertTrue(body.contains(ROUTE), "a refusal carries the route template");
-            assertTrue(body.contains(NotificationHistoryController.CARD_TOKEN_MESSAGE),
-                    "the path value was refused, so the card-token text answers: " + body);
-            assertFalse(body.contains(NotificationHistoryController.PAGE_SIZE_MESSAGE),
-                    "no page size was named, so its text has no place here");
+            assertTrue(body.contains(NotificationHistoryController.CARD_NUMBER_MESSAGE),
+                    "the path value was refused, so the card-number text answers: " + body);
             assertFalse(body.contains("Account identifier"),
-                    "this route carries a card token and no account identifier");
+                    "this route carries a card number and no account identifier");
             verifyNoInteractions(statementTransactions);
             verifyNoInteractions(notifications);
         }
@@ -711,21 +707,25 @@ final class NotificationHistoryControllerTest {
     @Nested
     class HistoryOfACardWithNoRow {
 
-        /** Places no row and a zero total behind the two mocks. */
+        /** The empty row set the lookup answers with, held for the comparison below. */
+        private List<StatementTransactionEntity> rowsInTheReadModel;
+
+        /** Places no row behind the read model and the derived total behind the service. */
         @BeforeEach
         void noRowInTheReadModel() {
+            rowsInTheReadModel = List.of();
             when(statementTransactions
-                    .findByIdCardTokenOrderByIdTransactionIdAsc(CARD_TOKEN, PAGE_LIMIT))
+                    .findByIdCardTokenOrderByIdTransactionIdAsc(CARD_TOKEN, WHOLE_HISTORY))
                     .thenReturn(List.of());
             when(notifications.totalOf(anyList())).thenReturn(NO_ROW_TOTAL);
         }
 
-        /** Asserts a card token with no row answers 200 carrying an empty history. */
+        /** Asserts a card number with no row answers 200 carrying an empty history. */
         @Test
-        void aCardTokenWithNoRowAnswersTwoHundred() throws Exception {
-            mockMvc.perform(get(ROUTE, CARD_TOKEN))
+        void aCardNumberWithNoRowAnswersTwoHundred() throws Exception {
+            mockMvc.perform(get(ROUTE, FULL_CARD_NUMBER))
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.cardToken").value(CARD_TOKEN))
+                    .andExpect(jsonPath("$.cardNumber").value(MASKED_CARD_NUMBER))
                     .andExpect(jsonPath("$.transactionCount").value(0))
                     .andExpect(jsonPath("$.totalAmount").value("0.00"));
         }
@@ -733,7 +733,7 @@ final class NotificationHistoryControllerTest {
         /** Asserts the empty history carries an array that is present and holds no item. */
         @Test
         void theEmptyHistoryCarriesAnArrayThatIsPresentAndHoldsNoItem() throws Exception {
-            JsonNode body = MAPPER.readTree(mockMvc.perform(get(ROUTE, CARD_TOKEN))
+            JsonNode body = MAPPER.readTree(mockMvc.perform(get(ROUTE, FULL_CARD_NUMBER))
                     .andExpect(status().isOk())
                     .andReturn().getResponse().getContentAsString());
 
@@ -743,23 +743,28 @@ final class NotificationHistoryControllerTest {
             assertEquals(0, body.get("transactions").size(), "item count");
         }
 
-        /** Asserts the empty history carries four properties and leaves out the display value. */
+        /**
+         * Asserts the empty history carries the same four properties and still names its card. The
+         * masked form comes from the path value, so a card with no row names its card too, as the
+         * statement header does at {@code app/cbl/CBSTM03A.CBL:L318-L325}.
+         */
         @Test
-        void theEmptyHistoryLeavesOutTheDisplayCardNumber() throws Exception {
-            JsonNode body = MAPPER.readTree(mockMvc.perform(get(ROUTE, CARD_TOKEN))
+        void theEmptyHistoryStillNamesItsCard() throws Exception {
+            JsonNode body = MAPPER.readTree(mockMvc.perform(get(ROUTE, FULL_CARD_NUMBER))
                     .andExpect(status().isOk())
                     .andReturn().getResponse().getContentAsString());
 
-            assertEquals(ENVELOPE_PROPERTIES_WITHOUT_A_CARD_NUMBER,
-                    List.copyOf(body.propertyNames()), "envelope property names, in that order");
+            assertEquals(ENVELOPE_PROPERTIES, List.copyOf(body.propertyNames()),
+                    "envelope property names, in that order");
             assertEquals(4, body.size(), "envelope property count");
-            assertFalse(body.has("cardNumber"), "the display value is absent");
+            assertEquals(MASKED_CARD_NUMBER, body.get("cardNumber").stringValue(),
+                    "the display value is present");
         }
 
         /** Asserts the empty history answers 200 and not 404. */
         @Test
         void theEmptyHistoryIsNotAMissingResource() throws Exception {
-            int status = mockMvc.perform(get(ROUTE, CARD_TOKEN))
+            int status = mockMvc.perform(get(ROUTE, FULL_CARD_NUMBER))
                     .andReturn().getResponse().getStatus();
 
             assertEquals(200, status, "status");
@@ -770,35 +775,47 @@ final class NotificationHistoryControllerTest {
     /**
      * The value that reaches the read model.
      *
-     * <p>The path value is the key column of {@code statement_transaction}, and the lookup takes it
-     * as the request carried it. AAP item I4 and AAP 0.6.4 hold the decision and the lookup to the
-     * full value, with masking applied to the published payload alone.</p>
+     * <p>The key column of {@code statement_transaction} is the card token, and the route derives it
+     * from the card number the path carried. The card number itself reaches the derivation and
+     * nothing else, so no card number is stored. AAP item I4 and AAP 0.6.4 hold the decision to the
+     * full value and masking to the published payload alone.</p>
      */
     @Nested
     class PathValueReachingTheLookup {
 
-        /** Asserts the path value reaches the lookup character for character. */
+        /** Asserts the lookup receives the derived token and never the card number. */
         @Test
-        void thePathValueReachesTheLookupUnchanged() throws Exception {
+        void theLookupReceivesTheDerivedTokenAndNeverTheCardNumber() throws Exception {
             when(statementTransactions
                     .findByIdCardTokenOrderByIdTransactionIdAsc(eq(CARD_TOKEN), any(Limit.class)))
                     .thenReturn(threeRows());
             when(notifications.totalOf(anyList())).thenReturn(THREE_ROW_TOTAL);
 
-            mockMvc.perform(get(ROUTE, CARD_TOKEN)).andExpect(status().isOk());
+            mockMvc.perform(get(ROUTE, FULL_CARD_NUMBER)).andExpect(status().isOk());
 
             ArgumentCaptor<String> reached = ArgumentCaptor.forClass(String.class);
             verify(statementTransactions).findByIdCardTokenOrderByIdTransactionIdAsc(
                     reached.capture(), any(Limit.class));
             assertEquals(CARD_TOKEN, reached.getValue(), "the value the lookup received");
             assertTrue(CARD_TOKEN_SHAPE.matcher(reached.getValue()).matches(),
-                    "the value keeps the shape the path variable declares");
+                    "the derived value keeps the shape the key column declares");
             assertEquals(-1, reached.getValue().indexOf(PanMasker.MASK_CHARACTER),
                     "the value carries a mask character");
             assertNotEquals(MASKED_CARD_NUMBER, reached.getValue(),
                     "the lookup received a masked card number");
             assertNotEquals(FULL_CARD_NUMBER, reached.getValue(),
                     "the lookup received a full card number");
+            assertFalse(SIXTEEN_DIGIT_RUN.matcher(reached.getValue()).find(),
+                    "the lookup received a sixteen-digit run");
+        }
+
+        /** Asserts the derivation is the one the read model was written under. */
+        @Test
+        void theDerivationMatchesTheOneTheReadModelWasWrittenUnder() {
+            assertEquals(PanMasker.cardToken(FULL_CARD_NUMBER), CARD_TOKEN,
+                    "one card number derives one token, on every call");
+            assertNotEquals(PanMasker.cardToken(FULL_CARD_NUMBER.substring(0, 15) + "6"),
+                    CARD_TOKEN, "two card numbers derive two tokens");
         }
     }
 
@@ -840,16 +857,16 @@ final class NotificationHistoryControllerTest {
         @Test
         void theEndpointReadsThroughTheAscendingFinderAlone() throws Exception {
             when(statementTransactions
-                    .findByIdCardTokenOrderByIdTransactionIdAsc(CARD_TOKEN, PAGE_LIMIT))
+                    .findByIdCardTokenOrderByIdTransactionIdAsc(CARD_TOKEN, WHOLE_HISTORY))
                     .thenReturn(threeRows());
             when(notifications.totalOf(anyList())).thenReturn(THREE_ROW_TOTAL);
 
-            mockMvc.perform(get(ROUTE, CARD_TOKEN))
+            mockMvc.perform(get(ROUTE, FULL_CARD_NUMBER))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.transactionCount").value(3));
 
             verify(statementTransactions)
-                    .findByIdCardTokenOrderByIdTransactionIdAsc(CARD_TOKEN, PAGE_LIMIT);
+                    .findByIdCardTokenOrderByIdTransactionIdAsc(CARD_TOKEN, WHOLE_HISTORY);
             verify(statementTransactions, never()).deleteProcessedBefore(anyString(), eq(1));
             verify(statementTransactions, never()).findAll();
             verifyNoMoreInteractions(statementTransactions);
@@ -859,26 +876,26 @@ final class NotificationHistoryControllerTest {
     /**
      * The collaborators the controller declares.
      *
-     * <p>Three collaborators answer this endpoint: the read model, the domain service that totals
-     * one card's rows, and the bound paging configuration. The messaging package consumes events
-     * and records metrics, and no type of either kind appears here.</p>
+     * <p>Two collaborators answer this endpoint: the read model and the domain service that totals
+     * one card's rows. The messaging package consumes events and records metrics, and no type of
+     * either kind appears here.</p>
      */
     @Nested
     class ControllerCollaborators {
 
-        /** Asserts the controller holds three collaborators and takes them through one constructor. */
+        /** Asserts the controller holds two collaborators and takes them through one constructor. */
         @Test
-        void theControllerHoldsThreeCollaboratorsAndOneConstructor() {
+        void theControllerHoldsTwoCollaboratorsAndOneConstructor() {
             List<String> collaborators =
                     Arrays.stream(NotificationHistoryController.class.getDeclaredFields())
                             .filter(field -> !Modifier.isStatic(field.getModifiers()))
                             .map(Field::getName)
                             .toList();
 
-            assertEquals(3, collaborators.size(), "collaborator count, holding " + collaborators);
+            assertEquals(2, collaborators.size(), "collaborator count, holding " + collaborators);
             assertEquals(1, NotificationHistoryController.class.getDeclaredConstructors().length,
                     "declared constructor count");
-            assertEquals(3, NotificationHistoryController.class.getDeclaredConstructors()[0]
+            assertEquals(2, NotificationHistoryController.class.getDeclaredConstructors()[0]
                     .getParameterCount(), "constructor parameter count");
         }
 
@@ -915,156 +932,85 @@ final class NotificationHistoryControllerTest {
     }
 
     /**
-     * The paging bounds one call answers under.
+     * The absence of paging.
      *
-     * <p>{@code carddemo.history.default-page-size} applies when a caller names none, and
-     * {@code carddemo.history.maximum-page-size} caps what a caller may ask for. Both reach the
-     * read model as a row count.</p>
+     * <p>{@code app/cbl/CBSTM03A.CBL} reads every row of one card between two key breaks and
+     * {@code app/cbl/CBSTM03A.CBL:L429} totals all of them, so a bounded page would report a count
+     * and a total over rows the source totalled in full. The route therefore declares no paging
+     * parameter and reads the whole history.</p>
      */
     @Nested
-    class PageSizeBounds {
+    class NoPaging {
 
-        /** Asserts a request naming no page size takes the configured default. */
+        /** Asserts the lookup names the whole history rather than a bounded page. */
         @Test
-        void aRequestNamingNoPageSizeTakesTheConfiguredDefault() throws Exception {
+        void theLookupNamesTheWholeHistory() throws Exception {
             when(statementTransactions
                     .findByIdCardTokenOrderByIdTransactionIdAsc(eq(CARD_TOKEN), any(Limit.class)))
-                    .thenReturn(List.of());
-            when(notifications.totalOf(anyList())).thenReturn(NO_ROW_TOTAL);
+                    .thenReturn(threeRows());
+            when(notifications.totalOf(anyList())).thenReturn(THREE_ROW_TOTAL);
 
-            mockMvc.perform(get(ROUTE, CARD_TOKEN)).andExpect(status().isOk());
+            mockMvc.perform(get(ROUTE, FULL_CARD_NUMBER)).andExpect(status().isOk());
 
-            assertEquals(HISTORY.defaultPageSize(), appliedLimit().max(), "the limit applied");
+            assertEquals(Limit.unlimited(), appliedLimit(), "the limit applied");
+            assertFalse(appliedLimit().isLimited(), "the limit applied names a row count");
         }
 
-        /** Asserts a page size above the configured maximum is capped before the lookup. */
+        /** Asserts the handler declares one parameter, and that it is the path variable. */
         @Test
-        void aPageSizeAboveTheConfiguredMaximumIsCapped() throws Exception {
-            when(statementTransactions
-                    .findByIdCardTokenOrderByIdTransactionIdAsc(eq(CARD_TOKEN), any(Limit.class)))
-                    .thenReturn(List.of());
-            when(notifications.totalOf(anyList())).thenReturn(NO_ROW_TOTAL);
+        void theHandlerDeclaresThePathVariableAlone() throws Exception {
+            Method handler = NotificationHistoryController.class.getDeclaredMethod("historyOfCard",
+                    String.class);
 
-            mockMvc.perform(get(ROUTE, CARD_TOKEN)
-                            .param(NotificationHistoryController.PAGE_SIZE_PARAMETER, "5000"))
-                    .andExpect(status().isOk());
-
-            assertEquals(HISTORY.maximumPageSize(), appliedLimit().max(), "the limit applied");
+            assertEquals(1, handler.getParameterCount(), "declared parameter count");
+            assertNotNull(handler.getParameters()[0].getAnnotation(PathVariable.class),
+                    "the one parameter is the path variable");
+            for (Method method : NotificationHistoryController.class.getDeclaredMethods()) {
+                for (Parameter parameter : method.getParameters()) {
+                    assertNull(parameter.getAnnotation(RequestParam.class),
+                            method.getName() + " reads a query parameter");
+                }
+            }
         }
 
-        /** Asserts a page size under one is refused and reaches no lookup. */
+        /** Asserts no declared member of the controller is named for paging. */
         @Test
-        void aPageSizeUnderOneIsRefusedAndReachesNoLookup() throws Exception {
-            mockMvc.perform(get(ROUTE, CARD_TOKEN)
-                            .param(NotificationHistoryController.PAGE_SIZE_PARAMETER, "0"))
-                    .andExpect(status().isBadRequest());
+        void noDeclaredMemberIsNamedForPaging() {
+            List<String> names = new ArrayList<>();
+            Arrays.stream(NotificationHistoryController.class.getDeclaredFields())
+                    .forEach(field -> names.add(field.getName().toLowerCase(Locale.ROOT)));
+            Arrays.stream(NotificationHistoryController.class.getDeclaredMethods())
+                    .forEach(method -> names.add(method.getName().toLowerCase(Locale.ROOT)));
 
-            verifyNoInteractions(statementTransactions);
+            for (String paging : List.of("page", "size", "limit", "offset", "cursor", "sort")) {
+                for (String name : names) {
+                    assertFalse(name.contains(paging), name + " is named for " + paging);
+                }
+            }
         }
 
         /**
-         * Asserts a page size below the floor answers the page-size text and not the token text.
+         * Asserts a stray paging value in the query string changes nothing.
          *
-         * <p>One text answered every refusal of this route before, and it named an account
-         * identifier of eleven digits, which this route does not carry. Each refusal now carries the
-         * text of the constraint that refused it, so a caller learns which of the two values to
-         * change.
+         * <p>The route declares no query parameter, so a value a caller invents is neither read nor
+         * refused, and the answer stays the whole history.
          *
-         * @param submitted the page size the caller sends, each below the floor
+         * @param parameter the name the caller invents
          * @throws Exception when the request cannot be performed
          */
         @ParameterizedTest
-        @ValueSource(strings = {"0", "-1", "-4096"})
-        void aPageSizeBelowTheFloorNamesThePageSizeAndNotTheCardToken(String submitted)
-                throws Exception {
-            String body = mockMvc.perform(get(ROUTE, CARD_TOKEN)
-                            .param(NotificationHistoryController.PAGE_SIZE_PARAMETER, submitted))
-                    .andExpect(status().isBadRequest())
-                    .andReturn().getResponse().getContentAsString();
-
-            assertTrue(body.contains(NotificationHistoryController.PAGE_SIZE_MESSAGE),
-                    "the page-size text, and this body reads: " + body);
-            assertFalse(body.contains(NotificationHistoryController.CARD_TOKEN_MESSAGE),
-                    "the card token was well formed, so its text has no place here");
-            assertFalse(body.contains("Account identifier"),
-                    "this route carries no account identifier");
-            assertTrue(body.contains(ROUTE), "a refusal carries the route template");
-            verifyNoInteractions(statementTransactions);
-            verifyNoInteractions(notifications);
-        }
-
-        /**
-         * Asserts a refusal leaves one INFO line and no ERROR line, and names no value.
-         *
-         * <p>A mistyped page size used to reach the catch-all, which answers {@code 500} and writes
-         * one {@code ERROR} line with a stack trace. That put a caller's typing mistake in the same
-         * record as a fault of this service, so a reader could not tell the two apart. The level is
-         * the difference: a refusal is traffic.
-         *
-         * @param output the captured console
-         * @throws Exception when the request cannot be performed
-         */
-        @Test
-        @ExtendWith(OutputCaptureExtension.class)
-        void aRefusedPageSizeLeavesAnInformationLineAndNoErrorLine(CapturedOutput output)
-                throws Exception {
-            mockMvc.perform(get(ROUTE, CARD_TOKEN)
-                            .param(NotificationHistoryController.PAGE_SIZE_PARAMETER, "abc"))
-                    .andExpect(status().isBadRequest());
-
-            String logged = output.getOut() + output.getErr();
-            assertTrue(logged.contains("A notification request carried a page size that is no"
-                    + " whole number"), "the refusal leaves its own line");
-            assertFalse(logged.contains("ERROR"), "a caller's mistake is no fault of this service");
-            assertFalse(logged.contains(CARD_TOKEN), "no line names the card token");
-        }
-
-        /**
-         * Asserts a page size that is no whole number answers 400 and its own text.
-         *
-         * <p>A query string is text and the page size is the one value of this route that is not, so
-         * it converts before any constraint runs and a conversion that fails reaches none. With no
-         * handler for that conversion failure it fell to the catch-all, and a caller who mistyped a
-         * page size read {@code 500} with the fault text and left an {@code ERROR} line on the
-         * server. Three shapes arrive the same way: text, a fractional value, and a value wider than
-         * the type it converts to.
-         *
-         * @param submitted the page size the caller sends, each no whole number
-         * @throws Exception when the request cannot be performed
-         */
-        @ParameterizedTest
-        @ValueSource(strings = {"abc", "7.5", "99999999999999", "1e3", "seven"})
-        void aPageSizeThatIsNoWholeNumberIsRefusedRatherThanFaulting(String submitted)
-                throws Exception {
-            String body = mockMvc.perform(get(ROUTE, CARD_TOKEN)
-                            .param(NotificationHistoryController.PAGE_SIZE_PARAMETER, submitted))
-                    .andExpect(status().isBadRequest())
-                    .andReturn().getResponse().getContentAsString();
-
-            assertTrue(body.contains(
-                            NotificationHistoryController.PAGE_SIZE_NOT_A_NUMBER_MESSAGE),
-                    "the not-a-number text, and this body reads: " + body);
-            assertFalse(body.contains(
-                            NotificationApiExceptionHandler.SERVICE_FAULT_MESSAGE),
-                    "a mistyped page size is no fault of this service");
-            assertTrue(body.contains(ROUTE), "a refusal carries the route template");
-            verifyNoInteractions(statementTransactions);
-            verifyNoInteractions(notifications);
-        }
-
-        /** Asserts no lookup names an unbounded read. */
-        @Test
-        void noLookupNamesAnUnboundedRead() throws Exception {
+        @ValueSource(strings = {"pageSize", "page", "size", "limit", "offset", "cursor", "sort"})
+        void aStrayPagingValueChangesNothing(String parameter) throws Exception {
             when(statementTransactions
                     .findByIdCardTokenOrderByIdTransactionIdAsc(eq(CARD_TOKEN), any(Limit.class)))
-                    .thenReturn(List.of());
-            when(notifications.totalOf(anyList())).thenReturn(NO_ROW_TOTAL);
+                    .thenReturn(threeRows());
+            when(notifications.totalOf(anyList())).thenReturn(THREE_ROW_TOTAL);
 
-            mockMvc.perform(get(ROUTE, CARD_TOKEN)).andExpect(status().isOk());
+            mockMvc.perform(get(ROUTE, FULL_CARD_NUMBER).param(parameter, "1"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.transactionCount").value(3));
 
-            assertNotEquals(Limit.unlimited(), appliedLimit(), "the limit applied");
-            verify(statementTransactions, never())
-                    .findByIdCardTokenOrderByIdTransactionIdAsc(CARD_TOKEN, Limit.unlimited());
+            assertEquals(Limit.unlimited(), appliedLimit(), "the limit applied");
         }
 
         /**
@@ -1074,8 +1020,8 @@ final class NotificationHistoryControllerTest {
          */
         private Limit appliedLimit() {
             ArgumentCaptor<Limit> applied = ArgumentCaptor.forClass(Limit.class);
-            verify(statementTransactions).findByIdCardTokenOrderByIdTransactionIdAsc(
-                    eq(CARD_TOKEN), applied.capture());
+            verify(statementTransactions, org.mockito.Mockito.atLeastOnce())
+                    .findByIdCardTokenOrderByIdTransactionIdAsc(eq(CARD_TOKEN), applied.capture());
             return applied.getValue();
         }
     }
@@ -1099,18 +1045,23 @@ final class NotificationHistoryControllerTest {
          * be diagnosed from, and while the handler wrote no line a repeatable {@code 500} was
          * invisible on the server: no record that the request had even been attempted.</p>
          *
-         * <p>The line names the route by its template, as the body does. The fault travels as a
-         * throwable rather than as text, so its stack trace reaches the line and no value of it is
-         * interpolated into the message.</p>
+         * <p>The line names the route by its template, as the body does, and it names the type of
+         * the fault. It does not carry the fault itself. A throwable attached to a log event is
+         * rendered with its message, and a message quotes what caused the failure: the value a
+         * constraint refused, the statement a timeout cancelled, or the data source a connection
+         * could not open. The type is the diagnosis and the message is the disclosure, so the type is
+         * recorded and the message is dropped. The failure below carries a sentinel in its message
+         * for that reason, and the assertions below require it absent.</p>
          */
         @Test
-        void aFaultLeavesOneErrorLineNamingTheRouteAndCarryingTheFault(CapturedOutput output)
+        void aFaultLeavesOneErrorLineNamingTheRouteAndTheFailureType(CapturedOutput output)
                 throws Exception {
+            String faultMessage = "connection refused to host 6 port 4";
             when(statementTransactions
-                    .findByIdCardTokenOrderByIdTransactionIdAsc(CARD_TOKEN, PAGE_LIMIT))
+                    .findByIdCardTokenOrderByIdTransactionIdAsc(CARD_TOKEN, WHOLE_HISTORY))
                     .thenThrow(new IllegalStateException("connection refused to host 6 port 4"));
 
-            mockMvc.perform(get(ROUTE, CARD_TOKEN))
+            mockMvc.perform(get(ROUTE, FULL_CARD_NUMBER))
                     .andExpect(status().isInternalServerError());
 
             String logged = output.getAll();
@@ -1121,7 +1072,10 @@ final class NotificationHistoryControllerTest {
                     "the line names the handler that answered");
             assertTrue(logged.contains(ROUTE), "the line names the route by its template");
             assertTrue(logged.contains(IllegalStateException.class.getName()),
-                    "the fault itself reaches the line, so the stack trace is diagnosable");
+                    "the failure type reaches the line, so the failure class is diagnosable");
+            assertFalse(logged.contains(faultMessage),
+                    "the failure message reached the output, which means a stack trace was "
+                            + "rendered: " + logged);
             assertFalse(logged.contains(CARD_TOKEN),
                     "and the line names no card token, which the response withholds too");
         }
@@ -1130,10 +1084,10 @@ final class NotificationHistoryControllerTest {
         @Test
         void aFaultInsideTheLookupAnswersFiveHundred() throws Exception {
             when(statementTransactions
-                    .findByIdCardTokenOrderByIdTransactionIdAsc(CARD_TOKEN, PAGE_LIMIT))
+                    .findByIdCardTokenOrderByIdTransactionIdAsc(CARD_TOKEN, WHOLE_HISTORY))
                     .thenThrow(new IllegalStateException("connection refused to host 6 port 4"));
 
-            String body = mockMvc.perform(get(ROUTE, CARD_TOKEN))
+            String body = mockMvc.perform(get(ROUTE, FULL_CARD_NUMBER))
                     .andExpect(status().isInternalServerError())
                     .andExpect(jsonPath("$.status").value(500))
                     .andExpect(jsonPath("$.route").value(ROUTE))
@@ -1142,22 +1096,138 @@ final class NotificationHistoryControllerTest {
             assertFalse(body.contains("connection refused"),
                     "the body carries a value read from the fault");
             for (String property : ENVELOPE_DATA_PROPERTIES) {
-                assertFalse(body.contains(property), "the body carries " + property);
+                assertFalse(body.contains(quoted(property)), "the body carries " + property);
             }
         }
 
         /** Asserts a failing body carries the route template and no resolved request path. */
         @Test
         void aFailingBodyCarriesTheRouteTemplateAndNoResolvedPath() throws Exception {
-            String body = mockMvc.perform(get(ROUTE, FULL_CARD_NUMBER))
+            String refusedValue = CARD_TOKEN;
+
+            String body = mockMvc.perform(get(ROUTE, refusedValue))
                     .andExpect(status().isBadRequest())
                     .andReturn().getResponse().getContentAsString();
 
-            assertTrue(body.contains("{cardToken}"), "the body carries the route template");
-            assertFalse(body.contains(FULL_CARD_NUMBER), "the body echoes what the caller sent");
+            assertTrue(body.contains("{cardNumber}"), "the body carries the route template");
+            assertFalse(body.contains(refusedValue), "the body echoes what the caller sent");
             assertFalse(body.contains("instance"), "the body carries a resolved request path");
             assertFalse(body.contains("\"path\""), "the body carries a resolved request path");
         }
+    }
+
+    /**
+     * The list the total is taken over.
+     *
+     * <p>The endpoint reads the rows of one card and then asks {@link NotificationService} for their
+     * total, reproducing {@code ADD TRNX-AMT TO WS-TOTAL-AMT} at
+     * {@code app/cbl/CBSTM03A.CBL:L429}. The response carries that total as a single value, so no
+     * assertion over the body can say which list produced it: a handler that returned the rows the
+     * lookup gave it while totalling an empty list, or a list belonging to another card, would
+     * satisfy every other group of this class.
+     *
+     * <p>Two things close that gap here. The stub computes its answer from the list it is handed
+     * rather than from a value fixed in advance, so a total taken over the wrong list carries the
+     * wrong value into the body. And the list itself is captured and compared against the rows the
+     * lookup returned, element by element and in order.
+     */
+    @Nested
+    class TheTotalledList {
+
+        /** The rows the lookup answers with, and the only rows the total may be taken over. */
+        private List<StatementTransactionEntity> rowsInTheReadModel;
+
+        /** Stubs the lookup and makes the total a function of the list it is handed. */
+        @BeforeEach
+        void totalTheListHandedOver() {
+            rowsInTheReadModel = threeRows();
+            when(statementTransactions
+                    .findByIdCardTokenOrderByIdTransactionIdAsc(CARD_TOKEN, WHOLE_HISTORY))
+                    .thenReturn(rowsInTheReadModel);
+            when(notifications.totalOf(anyList())).thenAnswer(invocation -> {
+                List<StatementTransactionEntity> handed = invocation.getArgument(0);
+                BigDecimal total = BigDecimal.ZERO.setScale(2);
+                for (StatementTransactionEntity handedRow : handed) {
+                    total = CobolDecimal.add(total, handedRow.getAmount(), 2);
+                }
+                return total;
+            });
+        }
+
+        /**
+         * Asserts the total in the body is the total of the rows the lookup returned.
+         *
+         * <p>The stub totals what it is handed, so the value in the body is evidence about the list
+         * rather than about the stub.
+         */
+        @Test
+        void theTotalIsTheTotalOfTheRowsTheLookupReturned() throws Exception {
+            mockMvc.perform(get(ROUTE, FULL_CARD_NUMBER))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.transactionCount").value(rowsInTheReadModel.size()))
+                    .andExpect(jsonPath("$.totalAmount").value(THREE_ROW_TOTAL.toPlainString()));
+        }
+
+        /**
+         * Asserts the captured list is the lookup's own rows, in the lookup's own order.
+         *
+         * <p>{@code totalOf(anyList())} accepts any list, so the argument is captured and compared
+         * rather than matched. Order is part of the comparison because the read model is ordered by
+         * transaction identifier and a total taken over a reordered copy would still be right,
+         * which is exactly the kind of agreement that hides a defect.
+         */
+        @Test
+        void theCapturedListIsTheLookupsOwnRowsInOrder() throws Exception {
+            mockMvc.perform(get(ROUTE, FULL_CARD_NUMBER)).andExpect(status().isOk());
+
+            @SuppressWarnings("unchecked")
+            ArgumentCaptor<List<StatementTransactionEntity>> totalled =
+                    ArgumentCaptor.forClass(List.class);
+            verify(notifications).totalOf(totalled.capture());
+
+            assertEquals(rowsInTheReadModel, totalled.getValue(),
+                    "the total was taken over the rows the lookup returned, in their order");
+        }
+
+        /**
+         * Asserts an empty read model still has its total taken over the empty list.
+         *
+         * <p>A handler writing a zero of its own would answer the same body while never asking, so
+         * the interaction is asserted rather than the value alone.
+         */
+        @Test
+        void anEmptyReadModelStillHasItsTotalTaken() throws Exception {
+            when(statementTransactions
+                    .findByIdCardTokenOrderByIdTransactionIdAsc(CARD_TOKEN, WHOLE_HISTORY))
+                    .thenReturn(List.of());
+
+            mockMvc.perform(get(ROUTE, FULL_CARD_NUMBER))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.totalAmount").value(NO_ROW_TOTAL.toPlainString()));
+
+            @SuppressWarnings("unchecked")
+            ArgumentCaptor<List<StatementTransactionEntity>> totalled =
+                    ArgumentCaptor.forClass(List.class);
+            verify(notifications).totalOf(totalled.capture());
+
+            assertEquals(List.of(), totalled.getValue(),
+                    "the endpoint asked for a total over the empty row set rather than writing a"
+                            + " zero of its own");
+        }
+    }
+
+    /**
+     * Renders one property name as a serialized body carries it, in quotation marks.
+     *
+     * <p>The route template of this service names a path variable, so the bare name of a property
+     * reads inside it. Comparing the quoted form separates a property of a body from the template a
+     * refusal carries.
+     *
+     * @param property the property name
+     * @return that name in quotation marks
+     */
+    private static String quoted(String property) {
+        return "\"" + property + "\"";
     }
 
     /**

@@ -201,8 +201,11 @@ class AccountRouteWiringTest {
          */
         @Test
         void theCycleCloseIsMappedAndReachesTheService() throws Exception {
-            MvcResult result =
-                    mockMvc.perform(post("/accounts/{id}/cycle-close", ACCOUNT_ID)).andReturn();
+            // The media type is required even though no body is sent: it is the cross-site request
+            // forgery control of this route, and a call omitting it reads 415.
+            MvcResult result = mockMvc.perform(post("/accounts/{id}/cycle-close", ACCOUNT_ID)
+                            .contentType(MediaType.APPLICATION_JSON))
+                    .andReturn();
 
             assertEquals(200, result.getResponse().getStatus(), "the route exists");
             assertTrue(result.getResponse().getContentAsString().contains(ACCOUNT_ID),
@@ -478,11 +481,35 @@ class AccountRouteWiringTest {
         }
         PutMapping update = method.getAnnotation(PutMapping.class);
         if (update != null) {
-            return Optional.of(update.value()[0]);
+            return firstOf(update.value(), update.path());
         }
         PostMapping create = method.getAnnotation(PostMapping.class);
         if (create != null) {
-            return Optional.of(create.value()[0]);
+            // value() and path() are aliases and only one of them is populated. A mapping written
+            // as @PostMapping("/x") fills value(); one written as @PostMapping(path = "/x",
+            // consumes = ...) fills path() and leaves value() empty, and reading value() alone
+            // failed with an index error rather than reporting the route.
+            return firstOf(create.value(), create.path());
+        }
+        return Optional.empty();
+    }
+
+    /**
+     * Returns the first path either alias carries.
+     *
+     * <p>{@code value} and {@code path} are aliases on every Spring mapping annotation, and reading
+     * one of them alone breaks on a mapping written with the other.
+     *
+     * @param value the {@code value} alias
+     * @param path  the {@code path} alias
+     * @return the first entry of whichever alias is populated, or empty when neither is
+     */
+    private static Optional<String> firstOf(String[] value, String[] path) {
+        if (value.length > 0) {
+            return Optional.of(value[0]);
+        }
+        if (path.length > 0) {
+            return Optional.of(path[0]);
         }
         return Optional.empty();
     }

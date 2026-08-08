@@ -157,11 +157,13 @@ public class OutboxWriter {
     }
 
     /**
-     * Builds the one mapper this writer holds.
+     * The one mapper this writer holds.
      *
-     * <p>The mapper writes an event record flat, so no {@code envelope} property reaches a row. The
-     * setting that fails on an unknown property is enabled, matching the
-     * {@code additionalProperties} of {@code false} both fraud schema documents set.
+     * <p>The mapper writes an event record flat, so no {@code envelope} property reaches a row.
+     * {@code FAIL_ON_UNKNOWN_PROPERTIES} governs reading rather than writing, so it is not what
+     * closes the written document: the {@code additionalProperties} of {@code false} in both fraud
+     * schema documents is, and {@code com.carddemo.events.serde.EventContracts} applies it when this
+     * writer validates the payload before saving.
      *
      * <p>No setting quotes an ordinary number, so {@code schemaVersion} and {@code riskScore} reach
      * a row as JSON integers. No setting writes a date as a number, so {@code occurredAt} and

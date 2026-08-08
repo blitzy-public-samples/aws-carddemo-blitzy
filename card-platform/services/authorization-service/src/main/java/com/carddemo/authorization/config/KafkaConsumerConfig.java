@@ -36,6 +36,7 @@ import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.kafka.core.DefaultKafkaProducerFactory;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.listener.ConsumerRecordRecoverer;
+import org.springframework.kafka.listener.ContainerProperties;
 import org.springframework.kafka.listener.DeadLetterPublishingRecoverer;
 import org.springframework.kafka.listener.DeadLetterPublishingRecoverer.HeaderNames.HeadersToAdd;
 import org.springframework.kafka.listener.DefaultErrorHandler;
@@ -66,6 +67,13 @@ import tools.jackson.databind.json.JsonMapper;
  * hand-built factory quietly stops honouring a setting the configuration file names. Each listener
  * overrides only the group identifier by placeholder, which is what lets two consumer groups run behind
  * one factory.
+ *
+ * <p>One of those settings is not merely honoured but required. The delivery guarantees this service
+ * documents hold under {@code MANUAL_IMMEDIATE} and under no other acknowledgement mode, so
+ * {@link #requireImmediateManualAcknowledgement(ContainerProperties.AckMode)} reads back the mode the
+ * configurer produced and stops the context when a deployment moved it. Refusing to start is the
+ * point: an overridden mode is otherwise accepted in silence and takes away both the
+ * commit-after-writes contract and the terminal dead-letter route.
  *
  * <p>The payload arrives as a schema-checked tree. {@code libs/event-contracts} holds the document for
  * each of the two events and names no class to build, because each record belongs to the service that
@@ -182,7 +190,13 @@ public class KafkaConsumerConfig {
         settings.put(ProducerConfig.ACKS_CONFIG, "all");
         settings.put(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, Boolean.TRUE);
 
-        return new KafkaTemplate<>(new DefaultKafkaProducerFactory<>(settings));
+        KafkaTemplate<String, byte[]> template =
+                new KafkaTemplate<>(new DefaultKafkaProducerFactory<>(settings));
+        // A failed send records its destination and failure type only.
+        // SafeProducerListener displaces LoggingProducerListener, which would write the
+        // key and the first hundred characters of the payload into the log line.
+        template.setProducerListener(new SafeProducerListener<>());
+        return template;
     }
 
     /**
@@ -200,6 +214,15 @@ public class KafkaConsumerConfig {
      * <p>{@link SanitizingRecoverer} is what reaches the topic, and the reason it exists rather than
      * the framework class it extends is stated on that class: the inherited behaviour republishes the
      * refused key and the refused bytes, and those bytes are the ones a control refused.
+     *
+     * <p>{@link DefaultErrorHandler#setCommitRecovered(boolean)} makes the route terminal. Both
+     * listeners of this service acknowledge by hand, so nothing acknowledges a record a listener
+     * never accepted, and left at its default this setting committed no offset for a record the route
+     * had already published. The next start-up or the next partition assignment then read that same
+     * record again and published a second diagnostic for one set of broker coordinates, so the
+     * dead-letter topic and the {@link ObservabilityConfig#REPLICA_STAGE} series grew with no new
+     * input. The framework applies the setting under {@code MANUAL_IMMEDIATE} alone, which is why
+     * {@link #kafkaListenerContainerFactory} refuses to start under any other mode.
      *
      * @param deadLetterKafkaTemplate the byte-serializing template
      * @param deadLetterTopic         the topic every unconsumable record reaches
@@ -233,6 +256,7 @@ public class KafkaConsumerConfig {
                         new FixedBackOff(backoffMs, maxAttempts - FIRST_DELIVERY));
         errorHandler.addNotRetryableExceptions(DeserializationException.class,
                 SerializationException.class);
+        errorHandler.setCommitRecovered(true);
 
         return errorHandler;
     }
@@ -240,10 +264,22 @@ public class KafkaConsumerConfig {
     /**
      * Builds the container factory both replica listeners run in.
      *
+     * <p>The acknowledgement mode still arrives from
+     * {@code spring.kafka.listener.ack-mode} through the configurer rather than being restated here,
+     * and the mode it produced is then checked. Only {@code MANUAL_IMMEDIATE} commits the offset at
+     * the acknowledgement a listener issues after its own writes commit, and only that mode applies
+     * {@link DefaultErrorHandler#setCommitRecovered(boolean)}. Under {@code MANUAL} the framework
+     * reports the recovered-offset setting as ignored and commits nothing, and under an automatic mode
+     * the container commits an offset for work a listener has not finished. A deployment that names
+     * either therefore takes away a guarantee this service claims, silently, which is why the check
+     * below stops the context instead.
+     *
      * @param consumerFactory              the auto-configured consumer factory
      * @param configurer                   the auto-configured container-factory configurer
      * @param replicaConsumerErrorHandler  the delivery-attempt policy and the dead-letter route
      * @return the container factory every listener of this service runs in
+     * @throws IllegalStateException when the effective acknowledgement mode is not
+     *                               {@code MANUAL_IMMEDIATE}
      */
     @Bean
     @Lazy
@@ -258,8 +294,31 @@ public class KafkaConsumerConfig {
         configurer.configure(factory, consumerFactory);
         factory.setCommonErrorHandler(replicaConsumerErrorHandler);
         factory.getContainerProperties().setDeliveryAttemptHeader(true);
+        requireImmediateManualAcknowledgement(factory.getContainerProperties().getAckMode());
 
         return factory;
+    }
+
+    /**
+     * Holds the effective acknowledgement mode at {@code MANUAL_IMMEDIATE}, naming the property that
+     * moved it when it is anything else.
+     *
+     * @param ackMode the mode the configurer left on the container properties
+     * @return the same mode, once it is the one this service supports
+     * @throws IllegalStateException when the mode is absent or names another mode
+     */
+    static ContainerProperties.AckMode requireImmediateManualAcknowledgement(
+            ContainerProperties.AckMode ackMode) {
+
+        if (ackMode != ContainerProperties.AckMode.MANUAL_IMMEDIATE) {
+            throw new IllegalStateException("The property spring.kafka.listener.ack-mode must name "
+                    + ContainerProperties.AckMode.MANUAL_IMMEDIATE
+                    + ", because that is the one mode which commits the offset at the"
+                    + " acknowledgement a listener issues after its own writes commit and the one"
+                    + " mode under which a dead-lettered record's offset is committed. The effective"
+                    + " mode is " + ackMode + ".");
+        }
+        return ackMode;
     }
 
     /**
@@ -526,13 +585,18 @@ public class KafkaConsumerConfig {
             DeadLetterMetadata diagnostics =
                     DeadLetterMetadata.fromFailure(ABEND_CODE, failure, UNAPPLIED_REASON, null);
 
-            deadLettered.increment();
             LOG.error("Routing one record to the dead-letter topic. topic={} partition={} offset={}"
                             + " code={} culprit={} reason={}", record.topic(), record.partition(),
                     record.offset(), diagnostics.abendCode(), diagnostics.culprit(),
                     diagnostics.reason());
 
+            // Counted after the publication, for the reason the ledger, fraud and notification
+            // recoverers count after theirs: an increment ahead of the call counts a diagnostic the
+            // broker may refuse, and the series then reports more records than the dead-letter
+            // topic holds. A refusal propagates from this call as before, and the ERROR line above
+            // is emitted either way.
             route.accept(record, failure);
+            deadLettered.increment();
         }
     }
 }

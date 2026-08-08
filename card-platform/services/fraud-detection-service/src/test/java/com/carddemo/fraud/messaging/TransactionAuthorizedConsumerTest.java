@@ -91,8 +91,7 @@ import org.springframework.transaction.annotation.Transactional;
  * marker store is stateful: its claim statement writes one row for an unseen event identifier and
  * reports zero for a repeat.
  *
- * <p>{@code card-platform/docs/decision-log.md} carries the decisions behind these shapes, and
- * every literal below is a measured feed value.
+ * <p>{@code card-platform/docs/decision-log.md} carries the decisions behind these shapes.
  */
 @DisplayName("Fraud consumer: one event in, one assessment event out")
 class TransactionAuthorizedConsumerTest {
@@ -269,9 +268,14 @@ class TransactionAuthorizedConsumerTest {
         }
     }
 
-    /** The order one delivery performs its work in, and what a failure leaves behind. */
+    /**
+     * The order one delivery performs its work in. {@link SelfProvider} hands the consumer back to
+     * itself rather than through a Spring proxy, so nothing here measures transaction interception:
+     * these assertions are the call order over doubles, and the presence of {@code @Transactional}
+     * on the business method is checked by reflection.
+     */
     @Nested
-    @DisplayName("Ordered work in one transaction")
+    @DisplayName("Ordered work over doubles")
     class OrderedWork {
 
         @Test
@@ -527,7 +531,7 @@ class TransactionAuthorizedConsumerTest {
     class MarkerAndAssessmentShape {
 
         /**
-         * Asserts the marker keys on a supplied event identifier and a supplied topic, and generates
+         * The marker keys on a supplied event identifier and a supplied topic, and generates
          * neither.
          *
          * <p>{@code src/main/resources/db/migration/V4__processed_event_topic_key.sql} made the
@@ -664,20 +668,17 @@ class TransactionAuthorizedConsumerTest {
         }
     }
 
-    /** Answers the listener method the consumer declares. */
     private static Method listenerMethod() throws NoSuchMethodException {
         return TransactionAuthorizedConsumer.class.getMethod(
                 "onTransactionAuthorized", ConsumerRecord.class, Acknowledgment.class);
     }
 
-    /** Answers the listener annotation the listener method carries. */
     private static KafkaListener listenerAnnotation() throws NoSuchMethodException {
         KafkaListener listener = listenerMethod().getAnnotation(KafkaListener.class);
         assertNotNull(listener, "listener annotation");
         return listener;
     }
 
-    /** Builds one consumer over the doubles this test holds, reachable through its provider. */
     private TransactionAuthorizedConsumer consumerScoringWith(RiskScoringService scoring) {
         SelfProvider self = new SelfProvider();
         TransactionAuthorizedConsumer consumer = new TransactionAuthorizedConsumer(
@@ -686,12 +687,10 @@ class TransactionAuthorizedConsumerTest {
         return consumer;
     }
 
-    /** Builds the delivered scoring service, which raises one window per event it assesses. */
     private RiskScoringService realScoring(RiskRule... rules) {
         return new RiskScoringService(List.of(rules), velocityWindows, deliveredSettings());
     }
 
-    /** Builds a scoring double answering one fixed assessment for one event. */
     private static RiskScoringService scoringReturning(TransactionAuthorized event,
             RiskAssessment assessment) {
         RiskScoringService scoring = mock(RiskScoringService.class);
@@ -699,29 +698,24 @@ class TransactionAuthorizedConsumerTest {
         return scoring;
     }
 
-    /** Builds one rule that triggers with a fixed score. */
     private static RiskRule triggeredRule(String ruleId, int points) {
         return new FixedRule(ruleId, RiskRule.Contribution.triggeredWith(points));
     }
 
-    /** Answers one flagged assessment naming the velocity rule. */
     private static RiskAssessment flaggedAssessment() {
         return flaggedAssessment(List.of(FraudFlagged.VELOCITY_RULE));
     }
 
-    /** Answers one flagged assessment naming the rules given, in the order given. */
     private static RiskAssessment flaggedAssessment(List<String> triggeredRules) {
         return new RiskAssessment(TRANSACTION_ID, ACCOUNT_ID, FLAGGING_POINTS, true,
                 triggeredRules, ASSESSED_AT);
     }
 
-    /** Answers one cleared assessment naming no rule. */
     private static RiskAssessment clearedAssessment() {
         return new RiskAssessment(TRANSACTION_ID, ACCOUNT_ID, CLEARING_POINTS, false, List.of(),
                 ASSESSED_AT);
     }
 
-    /** Answers every event handed to the outbox writer, in the order written. */
     private List<Object> writtenOutboxEvents() {
         ArgumentCaptor<Object> written = ArgumentCaptor.forClass(Object.class);
         verify(outboxWriter, atLeast(0)).write(written.capture());
@@ -734,7 +728,6 @@ class TransactionAuthorizedConsumerTest {
         return new ConsumerRecord<>(SOURCE_TOPIC, PARTITION, OFFSET, event.aggregateId(), event);
     }
 
-    /** Builds one authorized event from feed record 1 at the amount given. */
     private static TransactionAuthorized authorized(UUID eventId, String amount) {
         return new TransactionAuthorized(
                 eventId,
@@ -759,7 +752,6 @@ class TransactionAuthorizedConsumerTest {
                 TransactionAuthorized.CURRENCY);
     }
 
-    /** Builds the delivered settings, whose verdict threshold is {@link #FLAG_THRESHOLD}. */
     private static FraudProperties deliveredSettings() {
         return new FraudProperties(
                 new FraudProperties.Kafka(new FraudProperties.Kafka.Topics(
@@ -767,8 +759,8 @@ class TransactionAuthorizedConsumerTest {
                 new FraudProperties.Consumer(new FraudProperties.Consumer.Retry(3, 1_000L)),
                 new FraudProperties.Outbox(new FraudProperties.Outbox.Relay(
                         500L, 100, "fraud-relay", Duration.ofMinutes(2L), 20_000L), 168L),
-                new FraudProperties.ProcessedEvent(168L),
-                new FraudProperties.Retention(3_600_000L),
+                new FraudProperties.ProcessedEvent(720L, 168L),
+                new FraudProperties.Retention(3_600_000L, 90, 7),
                 new FraudProperties.Fraud(new FraudProperties.Fraud.Risk(
                         FLAG_THRESHOLD, 60, 5, new BigDecimal("500.00"))));
     }
@@ -785,21 +777,18 @@ class TransactionAuthorizedConsumerTest {
         return names;
     }
 
-    /** Answers the column mapping one named field carries. */
     private static Column columnOf(Class<?> entity, String fieldName) throws NoSuchFieldException {
         Column column = entity.getDeclaredField(fieldName).getAnnotation(Column.class);
         assertNotNull(column, "column mapping on " + fieldName);
         return column;
     }
 
-    /** Asserts one annotation value opens a placeholder and carries a default. */
     private static void assertPlaceholderWithDefault(String expression, String label) {
         assertTrue(expression.startsWith("${"), label + " opens a placeholder");
         assertTrue(expression.endsWith("}"), label + " closes a placeholder");
         assertTrue(expression.indexOf(':') > "${".length(), label + " carries a default");
     }
 
-    /** Asserts one declared type comes from neither publish-side package. */
     private static void assertNoPublishSideType(Class<?> type, String label) {
         for (String publishSidePackage : PUBLISH_SIDE_PACKAGES) {
             assertFalse(type.getName().startsWith(publishSidePackage),
@@ -807,7 +796,6 @@ class TransactionAuthorizedConsumerTest {
         }
     }
 
-    /** Asserts no declared annotation comes from an excluded package. */
     private static void assertNoExcludedAnnotation(Annotation[] annotations, String label) {
         for (Annotation annotation : annotations) {
             String name = annotation.annotationType().getName();
@@ -817,21 +805,23 @@ class TransactionAuthorizedConsumerTest {
         }
     }
 
-    /** Asserts one store signature type comes from no excluded package. */
     private static void assertNoExcludedStoreType(Class<?> type, String label) {
         for (String excluded : EXCLUDED_STORE_TYPES) {
             assertFalse(type.getName().startsWith(excluded), label + " names " + type.getName());
         }
     }
 
-    /** Hands the consumer back to itself, as the framework does through its own provider. */
+    /**
+     * Hands the consumer back to itself. The framework supplies a transactional proxy here, so a
+     * consumer built with this provider calls its own business method directly and no transaction is
+     * started.
+     */
     private static final class SelfProvider
             implements ObjectProvider<TransactionAuthorizedConsumer> {
 
         /** The consumer this provider answers. */
         private TransactionAuthorizedConsumer target;
 
-        /** Records the consumer this provider answers. */
         void publish(TransactionAuthorizedConsumer consumer) {
             this.target = consumer;
         }

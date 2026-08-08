@@ -38,23 +38,39 @@ public interface ProcessedEventRepository
         extends ListCrudRepository<ProcessedEventEntity, ProcessedEventId> {
 
     /**
-     * Deletes markers written before the given instant, and returns how many it removed.
+     * Deletes at most {@code limit} markers older than the horizon, oldest first, and returns how
+     * many it removed.
      *
-     * <p>A marker matters only while a redelivery of its event is still possible. Past that horizon
-     * it is dead weight on a table that otherwise grows for the life of the service.
-     * {@code carddemo.processed-event.marker-retention-hours} in
-     * {@code src/main/resources/application.yml} supplies the horizon, and
-     * {@code ix_processed_event_processed_at} serves this delete.
+     * <p>The bound is what keeps one retention pass from producing a single very large statement. An
+     * unbounded delete holds every row it removes under one lock for the whole statement, so a schema
+     * that has been idle long enough to accumulate a day of markers takes one long-running delete
+     * that blocks the three listeners writing this table. A caller repeats this call until it removes
+     * fewer rows than the limit, which drains the same backlog in short transactions that each
+     * release their locks.
      *
-     * <p>The delete matches on {@code processed_at} rather than on either key column, so it removes
-     * a whole row whichever topic keyed it.
+     * <p>{@code ORDER BY processed_at} makes the batches deterministic and lets
+     * {@code ix_processed_event_processed_at} serve both the subquery and the ordering, so the
+     * oldest markers leave first and no batch overlaps another.
+     *
+     * <p>The subquery names both key columns, because the key of this table is the event identifier
+     * and the topic together and a delete matching on one of them would remove a marker another
+     * topic's delivery still needs.
      *
      * @param horizon the instant before which a marker is removed
+     * @param limit   the largest number of markers one statement removes
      * @return the number of markers removed
      */
     @Modifying
-    @Query("DELETE FROM ProcessedEventEntity marker WHERE marker.processedAt < :horizon")
-    int deleteMarkersProcessedBefore(@Param("horizon") Instant horizon);
+    @Query(value = """
+            DELETE FROM processed_event
+            WHERE (event_id, consumed_topic) IN (SELECT event_id, consumed_topic
+                                                 FROM processed_event
+                                                 WHERE processed_at < :horizon
+                                                 ORDER BY processed_at
+                                                 LIMIT :limit)
+            """, nativeQuery = true)
+    int deleteMarkersProcessedBefore(@Param("horizon") Instant horizon,
+            @Param("limit") int limit);
 
     /**
      * Claims one event identifier for processing, and reports whether this caller is the first to

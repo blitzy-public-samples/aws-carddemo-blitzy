@@ -19,7 +19,7 @@ import org.junit.jupiter.api.Test;
 final class ApiErrorResponseTest {
 
     /** The route template this service's one endpoint reports. */
-    private static final String ROUTE = "/notifications/{cardToken}";
+    private static final String ROUTE = "/notifications/{cardNumber}";
 
     /**
      * A refusal text of this route, used where a method needs any message at all.
@@ -28,7 +28,7 @@ final class ApiErrorResponseTest {
      * the wording cannot leave this file naming a text no response carries.
      */
     private static final String SAMPLE_MESSAGE =
-            NotificationHistoryController.CARD_TOKEN_MESSAGE;
+            NotificationHistoryController.CARD_NUMBER_MESSAGE;
 
     @Test
     void theRecordCarriesTheThreeComponentsTheCardServiceCarries() {
@@ -83,21 +83,18 @@ final class ApiErrorResponseTest {
      * because a text naming a shape reads better with one, as in sixty-four lower-case hexadecimal
      * characters, and a hyphen carries no value.
      *
-     * <p>The three bad-request texts are the three refusals this route answers, one per cause:
-     * {@code NotificationHistoryController.CARD_TOKEN_MESSAGE} for a path value of the wrong shape,
-     * {@code PAGE_SIZE_MESSAGE} for a page size below its floor, and
-     * {@code PAGE_SIZE_NOT_A_NUMBER_MESSAGE} for one that is no whole number. Before the split, one
-     * text answered all of them and it named an account identifier of eleven digits, which is a
-     * value this route does not carry.
+     * <p>{@code NotificationHistoryController.CARD_NUMBER_MESSAGE} is the one bad-request text this
+     * route answers, and it names the shape the path variable requires. A text naming the value
+     * submitted would copy a card number into a response body and into every log line built from
+     * one.
      */
     @Test
     void everyTextAResponseCanCarryNamesNoValueReadFromARequest() {
         List<String> texts = List.of(
-                NotificationHistoryController.CARD_TOKEN_MESSAGE,
-                NotificationHistoryController.PAGE_SIZE_MESSAGE,
-                NotificationHistoryController.PAGE_SIZE_NOT_A_NUMBER_MESSAGE,
+                NotificationHistoryController.CARD_NUMBER_MESSAGE,
                 NotificationApiExceptionHandler.INVALID_REQUEST_MESSAGE,
-                NotificationApiExceptionHandler.SERVICE_FAULT_MESSAGE);
+                NotificationApiExceptionHandler.SERVICE_FAULT_MESSAGE,
+                NotificationApiExceptionHandler.UNSUPPORTED_REQUEST_MESSAGE);
 
         for (String text : texts) {
             assertTrue(text.matches("[A-Za-z ,.:-]+"),
@@ -105,8 +102,8 @@ final class ApiErrorResponseTest {
         }
         assertEquals(texts.size(), texts.stream().distinct().count(),
                 "each cause carries its own wording, so no two of these texts are the same");
-        assertTrue(NotificationHistoryController.CARD_TOKEN_MESSAGE.contains("Card token"),
-                "the path value of this route is a card token, so its refusal names one");
+        assertTrue(NotificationHistoryController.CARD_NUMBER_MESSAGE.contains("Card number"),
+                "the path value of this route is a card number, so its refusal names one");
         assertTrue(texts.stream().noneMatch(text -> text.contains("Account identifier")),
                 "no text of this route names an account identifier, which it does not carry");
     }

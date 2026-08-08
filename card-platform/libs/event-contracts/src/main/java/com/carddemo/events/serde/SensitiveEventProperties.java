@@ -1,9 +1,11 @@
 package com.carddemo.events.serde;
 
+import java.text.Normalizer;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import tools.jackson.databind.JsonNode;
@@ -52,6 +54,14 @@ import tools.jackson.databind.JsonNode;
  * eleven at {@code XREF-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT03Y.cpy:L7}, so a scan for a long
  * run of digits would refuse two properties every event carries.
  *
+ * <p>{@link #FREE_TEXT_PROPERTIES} is the exception, and its values are screened by shape as well as
+ * by name. Four shapes are refused there: an unbroken run of twelve or more digits, that same run
+ * once the space and the hyphen are removed, a card number grouped by a space, hyphen, point, slash
+ * or underscore, and a card verification value that a label such as {@code CVV} or
+ * {@code security code} introduces. The grouped shape is read rather than erased, so
+ * {@code 4111.1111.1111.1111} is refused while the decimal amount {@code 1234567890.12} is not: a
+ * card number is written in groups of at least three digits and an amount ends in a group of two.
+ *
  * <p>{@link #APPROVED_CARD_PROPERTIES} holds the one card-number property an event may name.
  * {@code maskedCardNumber} carries twelve mask characters and the last four digits of the card
  * number, and the two state-change documents declare it alongside the three transaction documents.
@@ -67,7 +77,8 @@ import tools.jackson.databind.JsonNode;
  * consumer. An instance is never created, and no method holds state, so any number of producer and
  * consumer threads may call in at once.
  *
- * <p>Versions: Java 25 and {@code jackson-databind 3.1.4}. A module descriptor that omits
+ * <p>Versions: Java 25 and {@code jackson-databind 3.1.5}, the version {@code card-platform/pom.xml}
+ * pins above the one the imported bill of materials resolves. A module descriptor that omits
  * {@code <java.version>25</java.version>} compiles at release 17 with no warning.
  */
 public final class SensitiveEventProperties {
@@ -179,26 +190,119 @@ public final class SensitiveEventProperties {
     private static final Pattern LONG_DIGIT_RUN = Pattern.compile("[0-9]{12,}");
 
     /**
-     * Characters a screened value is stripped of before the digit run is sought: the space and the
-     * hyphen.
+     * One chain of digit groups joined by punctuation, whatever that punctuation is.
      *
-     * <p>{@code 4111 1111 1111 1111} and {@code 4111-1111-1111-1111} are how a card number is
-     * written for a human reader, and both hold a sixteen-digit run once these characters go. The
-     * decimal point is deliberately kept, so a monetary amount inside a description stays two runs
-     * rather than becoming one.
+     * <p>A screened value is read chain by chain, and each chain's digits are counted with its
+     * punctuation removed, so a card number written for a human reader is found however it is
+     * punctuated: {@code 4111 1111 1111 1111}, {@code 4111-1111-1111-1111},
+     * {@code 4111.1111.1111.1111}, {@code 4111/1111/1111/1111}, {@code 4111(1111)1111(1111)},
+     * {@code 4111*1111*1111*1111} and any mixture of those all carry the same sixteen digits. A
+     * named separator set cannot do this: free text admits every printable character, so a chain
+     * joins on everything that is not a digit or a letter rather than on a list of the separators
+     * anybody thought of.
+     *
+     * <p>A letter ends a chain, which is what keeps two unrelated numbers apart:
+     * {@code REF 1234 SEQ 5678} is two chains of four digits, because the character before
+     * {@code SEQ} is a space but the character after it is a letter. Joining across letters would
+     * gather every digit in a sentence into one number and refuse ordinary text.
+     *
+     * <p>Counting the digits of a chain is not on its own enough to call it a card number, and
+     * {@link #carriesCollapsedCardNumber(String)} is where the group widths decide that. Erasing the
+     * punctuation and looking only for a long run would read the amount {@code 1234567890.12} as a
+     * twelve-digit card.
      */
-    private static final Pattern CARD_NUMBER_GROUPING = Pattern.compile("[ \\-]");
+    private static final Pattern PUNCTUATED_DIGIT_CHAIN =
+            Pattern.compile("(?<![0-9])[0-9]++(?:[^0-9A-Za-z]++[0-9]++)*+(?![0-9])");
+
+    /** Matches every character of a chain that is not a digit. */
+    private static final Pattern NON_DIGIT = Pattern.compile("[^0-9]++");
+
+    /**
+     * Longest run of digits a payment card number holds: nineteen.
+     *
+     * <p>ISO/IEC 7812 bounds a primary account number at nineteen digits, and
+     * {@link #SHORTEST_CARD_NUMBER_DIGITS} bounds it below at twelve. The pair is what makes
+     * {@link #SEPARATED_CARD_NUMBER} a card-number shape rather than a long-number shape.
+     */
+    private static final int LONGEST_CARD_NUMBER_DIGITS = 19;
+
+    /** Shortest run of digits a payment card number holds: twelve. */
+    private static final int SHORTEST_CARD_NUMBER_DIGITS = 12;
+
+    /**
+     * A card number written with a separator between digit groups, in any of the five separators a
+     * reader uses.
+     *
+     * <p>{@link #DIGIT_SEPARATOR_RUN} strips a separator that sits between two digits, and stripping more than
+     * those two would merge a monetary amount into one run: {@code 1234567890.12} holds twelve
+     * digits and is an amount, not a card. This pattern reads the grouping instead of erasing it, so
+     * a dotted or slashed card number is caught without a decimal amount becoming one.
+     *
+     * <p>Each separator occurrence has to sit BETWEEN two digits and only one may sit between any
+     * two, which is what keeps the two shapes apart. {@code 4111.1111.1111.1111} matches, and so do
+     * {@code 4111/1111/1111/1111} and the mixed {@code 4111-1111.1111 1111}.
+     * {@code 1234567890.12} does not, because a decimal amount reaching twelve digits still has to
+     * pass the group test below: its digit groups are ten and two, and no card number in circulation
+     * is written that way.
+     *
+     * <p>The three capturing-free groups are the leading digit, the eleven-to-eighteen
+     * digit-and-optional-separator repeats and the trailing digit. Lookarounds at both ends refuse a
+     * longer digit run, so a twenty-digit identifier is not read as a nineteen-digit card.
+     */
+    private static final Pattern SEPARATED_CARD_NUMBER = Pattern.compile(
+            "(?<![0-9])[0-9](?:[ \\-./_]?[0-9]){"
+                    + (SHORTEST_CARD_NUMBER_DIGITS - 1) + ","
+                    + (LONGEST_CARD_NUMBER_DIGITS - 1) + "}(?![0-9])");
+
+    /**
+     * Digit-group sizes a separated candidate may hold to be read as a card number.
+     *
+     * <p>A card number is written in groups of four, or four then six then five for the fifteen-digit
+     * schemes, or in one unbroken run. A decimal amount is written as one long group, a point, then
+     * two digits, and a date as four, two and two. Requiring every group to hold at least three
+     * digits separates the two: {@code 4111.1111.1111.1111} passes and {@code 1234567890.12} does
+     * not, because its trailing group holds two.
+     */
+    private static final int SMALLEST_CARD_NUMBER_GROUP = 3;
+
+    /**
+     * A label naming a card verification value, followed by three or four digits.
+     *
+     * <p>{@code CARD-CVV-CD PIC 9(03)} at {@code app/cpy/CVACT02Y.cpy:L7} holds three digits, and
+     * four-digit schemes exist, so both widths are sought. Three digits alone carry no meaning and
+     * are not screened: a merchant category code holds four digits and a category code holds four,
+     * so refusing every short run would refuse valid traffic. The label is what makes the run
+     * sensitive, which is why the two are sought together.
+     *
+     * <p>{@link #FORBIDDEN_NAME_FRAGMENTS} refuses a PROPERTY named for a verification value. This
+     * pattern refuses a verification value written inside free text, which no property name reveals:
+     * {@code CVV 123}, {@code cvc: 4321} and {@code security code = 999} all match.
+     */
+    private static final Pattern LABELLED_SECURITY_CODE = Pattern.compile(
+            "(?i)(?:cvv2?|cvc2?|cv2|cid|csc"
+                    + "|card[ \\-_]?verification(?:[ \\-_]?(?:value|code|number))?"
+                    + "|security[ \\-_]?code|card[ \\-_]?security[ \\-_]?code)"
+                    + "[ \\-_:=.#]{0,4}[0-9]{3,4}(?![0-9])");
 
     /**
      * Shape of a United States government identifier: three digits, two digits, then four, in
-     * groups separated by a space or a hyphen.
+     * groups separated by punctuation.
      *
      * <p>{@code CUST-SSN PIC 9(09)} at {@code app/cpy/CVCUS01Y.cpy:L20} holds the same nine digits
      * unseparated, and the unseparated form is not sought here: nine digits is a plausible merchant
-     * identifier and refusing it would refuse valid traffic. The separated form is not.
+     * identifier and refusing it would refuse valid traffic. The separated form is not, and the
+     * separator is not restricted to the space and the hyphen a human usually types:
+     * {@code 020.97.3888} and {@code 020/97/3888} name the same identifier as
+     * {@code 020-97-3888}.
+     *
+     * <p>The group widths are what keep this pattern off ordinary data. A ten-character date such
+     * as {@code 2022-06-10} cannot match, because the first group must be exactly three digits with
+     * no digit before it and a separator after it. A telephone number such as
+     * {@code 800-000-0000} cannot match either, because the middle group must be exactly two
+     * digits.
      */
-    private static final Pattern GOVERNMENT_IDENTIFIER =
-            Pattern.compile("(?<![0-9])[0-9]{3}[ \\-][0-9]{2}[ \\-][0-9]{4}(?![0-9])");
+    private static final Pattern GOVERNMENT_IDENTIFIER = Pattern.compile(
+            "(?<![0-9])[0-9]{3}[^0-9A-Za-z]{1,3}[0-9]{2}[^0-9A-Za-z]{1,3}[0-9]{4}(?![0-9])");
 
     /** No instance is created. */
     private SensitiveEventProperties() {
@@ -358,11 +462,29 @@ public final class SensitiveEventProperties {
     }
 
     /**
-     * Whether one node is textual and its text carries a card number or a separated government
-     * identifier. Only the node itself is read, and no child of it.
+     * Whether one node is textual and its text carries a card number, a separated government
+     * identifier or a labelled card verification value. Only the node itself is read, and no child
+     * of it.
+     *
+     * <p>Four screens run. An unbroken long digit run is sought as written, a separated government
+     * identifier and a labelled verification value are sought in the same pass, a card number
+     * punctuated by anything at all is sought through
+     * {@link #carriesCollapsedCardNumber(String)}, and a card number grouped by one of the five
+     * separators a reader types is sought through {@link #carriesSeparatedCardNumber(String)}. A
+     * value failing any one screen is refused.
+     *
+     * <p>The text is read as it arrived, which catches an unpunctuated run, and again normalized
+     * under {@link java.text.Normalizer.Form#NFKC}, which folds a full-width digit such as
+     * {@code ４} onto {@code 4} and a compatibility separator onto its plain form, so a value that
+     * looks like a card number to a reader is one to this screen as well.
+     *
+     * <p>Neither card-number screen erases punctuation and then looks for a long run. Both read the
+     * digit groups the punctuation makes, because an amount and a date are punctuated digits too:
+     * {@code 1234567890.12} carries twelve digits and is an amount, and
+     * {@code 2026-08-07 19:12:06} carries fourteen and is a moment.
      *
      * @param value the node to read
-     * @return {@code true} when the text carries either shape
+     * @return {@code true} when the text carries any of the shapes
      */
     private static boolean carriesSensitiveText(JsonNode value) {
         if (value == null || !value.isString()) {
@@ -373,11 +495,115 @@ public final class SensitiveEventProperties {
         if (text == null || text.isEmpty()) {
             return false;
         }
-        if (LONG_DIGIT_RUN.matcher(text).find()
-                || GOVERNMENT_IDENTIFIER.matcher(text).find()) {
+        if (carriesSensitiveShape(text)) {
             return true;
         }
-        return LONG_DIGIT_RUN.matcher(CARD_NUMBER_GROUPING.matcher(text).replaceAll("")).find();
+
+        String normalized = Normalizer.normalize(text, Normalizer.Form.NFKC);
+        if (carriesSensitiveShape(normalized)
+                || carriesCollapsedCardNumber(text)
+                || carriesCollapsedCardNumber(normalized)) {
+            return true;
+        }
+        return carriesSeparatedCardNumber(text) || carriesSeparatedCardNumber(normalized);
+    }
+
+    /**
+     * Whether one form of a value holds a long digit run, a separated government identifier or a
+     * labelled security code.
+     *
+     * @param text one form of the screened value
+     * @return {@code true} when that form holds any of those shapes
+     */
+    private static boolean carriesSensitiveShape(String text) {
+        return LONG_DIGIT_RUN.matcher(text).find()
+                || GOVERNMENT_IDENTIFIER.matcher(text).find()
+                || LABELLED_SECURITY_CODE.matcher(text).find();
+    }
+
+    /**
+     * Whether one text carries a card number punctuated by anything at all.
+     *
+     * <p>{@link #PUNCTUATED_DIGIT_CHAIN} finds each chain of digit groups joined by punctuation, and
+     * a chain is read as a card number when its digits number between
+     * {@link #SHORTEST_CARD_NUMBER_DIGITS} and {@link #LONGEST_CARD_NUMBER_DIGITS} and every one of
+     * its groups holds at least {@link #SMALLEST_CARD_NUMBER_GROUP} digits.
+     *
+     * <p>This is the general form of {@link #carriesSeparatedCardNumber(String)}, which reads the
+     * five separators a reader types. A chain joins on every character that is not a digit or a
+     * letter, so {@code 4111(1111)1111(1111)} and {@code 4111*1111*1111*1111} are caught as well.
+     * The group test is what keeps the generality safe: an amount ends in a two-digit group and a
+     * date carries two of them, so neither is read as a card however wide the chain is.
+     *
+     * @param text the text to read
+     * @return {@code true} when the text carries a punctuated card number
+     */
+    private static boolean carriesCollapsedCardNumber(String text) {
+        Matcher chain = PUNCTUATED_DIGIT_CHAIN.matcher(text);
+        while (chain.find()) {
+            String candidate = chain.group();
+            int digits = NON_DIGIT.matcher(candidate).replaceAll("").length();
+            if (digits >= SHORTEST_CARD_NUMBER_DIGITS
+                    && digits <= LONGEST_CARD_NUMBER_DIGITS
+                    && everyPunctuatedGroupIsWideEnough(candidate)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Whether every digit group of one punctuated chain holds at least
+     * {@link #SMALLEST_CARD_NUMBER_GROUP} digits.
+     *
+     * @param chain one chain of digit groups joined by punctuation
+     * @return {@code true} when no group is narrower than the smallest a card number is written in
+     */
+    private static boolean everyPunctuatedGroupIsWideEnough(String chain) {
+        for (String group : NON_DIGIT.split(chain)) {
+            if (!group.isEmpty() && group.length() < SMALLEST_CARD_NUMBER_GROUP) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Whether one text carries a card number written with separators between its digit groups.
+     *
+     * <p>{@link #SEPARATED_CARD_NUMBER} finds a candidate of twelve to nineteen digits whose
+     * separators each sit between two digits. A candidate is read as a card number only when every
+     * one of its digit groups holds at least {@link #SMALLEST_CARD_NUMBER_GROUP} digits, which is
+     * what keeps a decimal amount and a date out: an amount ends in a two-digit group and a date
+     * carries two two-digit groups.
+     *
+     * @param text the text to read
+     * @return {@code true} when the text carries a separated card number
+     */
+    private static boolean carriesSeparatedCardNumber(String text) {
+        Matcher candidate = SEPARATED_CARD_NUMBER.matcher(text);
+        while (candidate.find()) {
+            if (everyGroupIsWideEnough(candidate.group())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Whether every digit group of one candidate holds at least
+     * {@link #SMALLEST_CARD_NUMBER_GROUP} digits.
+     *
+     * @param candidate the matched candidate, which holds digits and separators only
+     * @return {@code true} when no group is narrower than the smallest a card number is written in
+     */
+    private static boolean everyGroupIsWideEnough(String candidate) {
+        for (String group : candidate.split("[ \\-./_]")) {
+            if (group.length() < SMALLEST_CARD_NUMBER_GROUP) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**

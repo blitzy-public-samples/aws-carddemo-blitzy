@@ -92,15 +92,14 @@ import org.springframework.web.bind.annotation.RestController;
 @Validated
 public class AccountController {
 
-    /** Writes the diagnostic lines this class emits, none carrying a submitted value. */
     private static final Logger LOG = LoggerFactory.getLogger(AccountController.class);
 
     /**
      * The width and the alphabet of an account identifier in a path.
      *
      * <p>{@code ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT01Y.cpy:L5}. The leading zeros belong to
-     * the value, and the source compares the identifier as text, so account fifty is
-     * {@code 00000000050} and not {@code 50}.
+     * the value and the source compares the identifier as text, so a bare form of the same number
+     * names no account.
      */
     static final String ACCOUNT_ID_PATTERN = "^[0-9]{11}$";
 
@@ -212,6 +211,19 @@ public class AccountController {
      * <p>The account identifier comes from the path. {@code AccountUpdateRequest} declares no
      * identifier component, so a body cannot name a second account.
      *
+     * <p>The customer identifier comes from the body and is checked here, before any row is read.
+     * {@code AccountUpdateRequest} declares no cascade marker, so the bean constraints of
+     * {@code CustomerDataRequest} do not run through this route and this method holds the rule
+     * instead. A value that is absent or blank answers {@value #CUSTOMER_ID_REQUIRED_MESSAGE}, and a
+     * value that is not the nine digits {@code CustomerDataRequest#CUSTOMER_ID_PATTERN} declares
+     * answers {@code CustomerDataRequest#CUSTOMER_ID_MESSAGE}. Both answer {@code 422}, and neither
+     * reaches the customer store, so a malformed identifier is not reported as a row this service
+     * does not hold. This mirrors the order the source uses: {@code 1200-EDIT-MAP-INPUTS} at
+     * {@code app/cbl/COACTUPC.cbl:L1429} performs the search-key edit {@code 1210-EDIT-ACCOUNT} at
+     * {@code app/cbl/COACTUPC.cbl:L1434-L1435} and then leaves at
+     * {@code app/cbl/COACTUPC.cbl:L1446}, so a key of the wrong shape is answered before any field
+     * edit runs.
+     *
      * <p>A submitted amount is read under the grammar {@code app/cbl/COACTUPC.cbl:L2201} gates on,
      * so a currency sign and thousands separators are accepted. A supplied value that will not
      * convert answers {@code 422} carrying the text of the edit that refused it.
@@ -232,6 +244,12 @@ public class AccountController {
             LOG.info("An account update named no customer");
             return problem(HttpStatus.UNPROCESSABLE_CONTENT, ApiProblem.VALIDATION_FAILED,
                     CUSTOMER_ID_REQUIRED_MESSAGE);
+        }
+
+        if (!customerData.customerId().matches(CustomerDataRequest.CUSTOMER_ID_PATTERN)) {
+            LOG.info("An account update named a customer of the wrong width");
+            return problem(HttpStatus.UNPROCESSABLE_CONTENT, ApiProblem.VALIDATION_FAILED,
+                    CustomerDataRequest.CUSTOMER_ID_MESSAGE);
         }
 
         AccountDataRequest accountData = request.accountData();
@@ -478,7 +496,7 @@ public class AccountController {
             proposed.setSocialSecurityNumber(converted.getSocialSecurityNumber());
         }
 
-        // The five components no mandatory edit reads keep their stored value when omitted.
+        // The six components no mandatory edit reads keep their stored value when omitted.
         if (AccountRecordMapper.isSupplied(submitted.middleName())) {
             proposed.setMiddleName(converted.getMiddleName());
         }

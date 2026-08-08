@@ -4,16 +4,20 @@ import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
+import com.carddemo.card.TestIdentityPasswords;
 import com.carddemo.card.api.dto.CardUpdateRequest;
-import com.carddemo.card.api.dto.CardUpdateResponse;
 import com.carddemo.card.api.dto.CardUpdateResponse.RefreshedCard;
 import com.carddemo.card.api.dto.CardUpdateResponse.UpdateOutcome;
+import com.carddemo.card.api.dto.CardUpdateResponse;
 import com.carddemo.card.api.dto.CardValidationMessages;
+import com.carddemo.card.config.ObservabilityConfig;
 import com.carddemo.card.entity.CardEntity;
 import com.carddemo.card.repository.CardRepository;
 import jakarta.persistence.Version;
@@ -24,6 +28,8 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -31,8 +37,11 @@ import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.dao.CannotAcquireLockException;
+import org.springframework.dao.QueryTimeoutException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.PessimisticLockingFailureException;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.orm.jpa.JpaSystemException;
 import org.springframework.test.context.DynamicPropertyRegistry;
@@ -122,9 +131,9 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
         webEnvironment = SpringBootTest.WebEnvironment.NONE,
         properties = {
                 "KAFKA_SASL_PASSWORD=not-a-real-broker-password",
-                "ADMIN_PASSWORD_HASH={noop}not-a-real-admin-password",
-                "USER_PASSWORD_HASH={noop}not-a-real-user-password",
-                "MONITORING_PASSWORD_HASH={noop}not-a-real-monitoring-password",
+                "ADMIN_PASSWORD_HASH=" + TestIdentityPasswords.ADMIN_PASSWORD_HASH,
+                "USER_PASSWORD_HASH=" + TestIdentityPasswords.USER_PASSWORD_HASH,
+                "MONITORING_PASSWORD_HASH=" + TestIdentityPasswords.MONITORING_PASSWORD_HASH,
                 "carddemo.outbox.relay.fixed-delay-ms=3600000"
         })
 @Testcontainers
@@ -206,6 +215,14 @@ class CardChangeDetectionTest {
     @Autowired
     private JdbcTemplate jdbc;
 
+    /** Holds the counters of this service, read to assert what a refusal did and did not count. */
+    @Autowired
+    private MeterRegistry meters;
+
+    /** Opens the transaction the telemetry group commits or discards on purpose. */
+    @Autowired
+    private PlatformTransactionManager transactionManager;
+
     /**
      * The real repository, wrapped so a method call can be verified and, in two methods, replaced.
      *
@@ -261,11 +278,10 @@ class CardChangeDetectionTest {
      */
     private static CardUpdateRequest requestFor(String cardNumber, String embossedName,
             LocalDate expiration, String activeStatus) {
-        return new CardUpdateRequest(cardNumber, embossedName,
-                String.format(Locale.ROOT, "%04d", expiration.getYear()),
-                String.format(Locale.ROOT, "%02d", expiration.getMonthValue()),
-                String.format(Locale.ROOT, "%02d", expiration.getDayOfMonth()),
-                activeStatus);
+        return new CardUpdateRequest(embossedName,
+                       String.format(Locale.ROOT, "%04d", expiration.getYear()),
+                       String.format(Locale.ROOT, "%02d", expiration.getMonthValue()),
+                       String.format(Locale.ROOT, "%02d", expiration.getDayOfMonth()), activeStatus);
     }
 
     /**
@@ -370,8 +386,7 @@ class CardChangeDetectionTest {
 
             anotherWriterChanges("embossed_name", "Marlene Kuhn", cardNumber);
 
-            CardUpdateResponse response = cardUpdateService.applyUpdate(
-                    requestFor(cardNumber, "Aniya Vaughn", seededExpiration, "Y"),
+            CardUpdateResponse response = cardUpdateService.applyUpdate(cardNumber, requestFor(cardNumber, "Aniya Vaughn", seededExpiration, "Y"),
                     staleSnapshot, seededExpiration);
 
             assertAll(
@@ -398,8 +413,7 @@ class CardChangeDetectionTest {
 
             anotherWriterChanges("expiration_date", LocalDate.of(2026, 7, 13), cardNumber);
 
-            CardUpdateResponse response = cardUpdateService.applyUpdate(
-                    requestFor(cardNumber, "Ward Jones", LocalDate.of(2027, 7, 13), "Y"),
+            CardUpdateResponse response = cardUpdateService.applyUpdate(cardNumber, requestFor(cardNumber, "Ward Jones", LocalDate.of(2027, 7, 13), "Y"),
                     staleSnapshot, LocalDate.of(2027, 7, 13));
 
             assertAll(
@@ -426,8 +440,7 @@ class CardChangeDetectionTest {
 
             anotherWriterChanges("expiration_date", LocalDate.of(2024, 9, 11), cardNumber);
 
-            CardUpdateResponse response = cardUpdateService.applyUpdate(
-                    requestFor(cardNumber, "Enrico Rosenbaum", LocalDate.of(2024, 10, 11), "Y"),
+            CardUpdateResponse response = cardUpdateService.applyUpdate(cardNumber, requestFor(cardNumber, "Enrico Rosenbaum", LocalDate.of(2024, 10, 11), "Y"),
                     staleSnapshot, LocalDate.of(2024, 10, 11));
 
             assertAll(
@@ -456,8 +469,7 @@ class CardChangeDetectionTest {
 
             anotherWriterChanges("expiration_date", LocalDate.of(2024, 3, 14), cardNumber);
 
-            CardUpdateResponse response = cardUpdateService.applyUpdate(
-                    requestFor(cardNumber, "Carter Vaughn", seededExpiration, "Y"),
+            CardUpdateResponse response = cardUpdateService.applyUpdate(cardNumber, requestFor(cardNumber, "Carter Vaughn", seededExpiration, "Y"),
                     staleSnapshot, seededExpiration);
 
             assertAll(
@@ -484,8 +496,7 @@ class CardChangeDetectionTest {
 
             anotherWriterChanges("active_status", "N", cardNumber);
 
-            CardUpdateResponse response = cardUpdateService.applyUpdate(
-                    requestFor(cardNumber, "Maci Robelle", seededExpiration, "Y"),
+            CardUpdateResponse response = cardUpdateService.applyUpdate(cardNumber, requestFor(cardNumber, "Maci Robelle", seededExpiration, "Y"),
                     staleSnapshot, seededExpiration);
 
             assertAll(
@@ -514,8 +525,7 @@ class CardChangeDetectionTest {
 
             anotherWriterChanges("card_verification_value", "641", cardNumber);
 
-            CardUpdateResponse response = cardUpdateService.applyUpdate(
-                    requestFor(cardNumber, "Irving Emmard", seededExpiration, "Y"),
+            CardUpdateResponse response = cardUpdateService.applyUpdate(cardNumber, requestFor(cardNumber, "Irving Emmard", seededExpiration, "Y"),
                     staleSnapshot, seededExpiration);
 
             assertAll(
@@ -543,8 +553,7 @@ class CardChangeDetectionTest {
 
             anotherWriterChanges("account_id", "00000000099", cardNumber);
 
-            CardUpdateResponse response = cardUpdateService.applyUpdate(
-                    requestFor(cardNumber, "Shany Walcker", seededExpiration, "Y"),
+            CardUpdateResponse response = cardUpdateService.applyUpdate(cardNumber, requestFor(cardNumber, "Shany Walcker", seededExpiration, "Y"),
                     staleSnapshot, seededExpiration);
 
             assertAll(
@@ -571,8 +580,7 @@ class CardChangeDetectionTest {
 
             anotherWriterChanges("embossed_name", "Nadia Fenwick", cardNumber);
 
-            CardUpdateResponse response = cardUpdateService.applyUpdate(
-                    requestFor(cardNumber, "Priscilla Reece", LocalDate.of(2026, 11, 23), "N"),
+            CardUpdateResponse response = cardUpdateService.applyUpdate(cardNumber, requestFor(cardNumber, "Priscilla Reece", LocalDate.of(2026, 11, 23), "N"),
                     staleSnapshot, LocalDate.of(2026, 11, 23));
 
             assertAll(
@@ -645,8 +653,7 @@ class CardChangeDetectionTest {
             anotherWriterChanges("expiration_date", LocalDate.of(2027, 4, 2), cardNumber);
             anotherWriterChanges("active_status", "N", cardNumber);
 
-            CardUpdateResponse response = cardUpdateService.applyUpdate(
-                    requestFor(cardNumber, "Aliyah Bergeron", seededExpiration, "Y"),
+            CardUpdateResponse response = cardUpdateService.applyUpdate(cardNumber, requestFor(cardNumber, "Aliyah Bergeron", seededExpiration, "Y"),
                     staleSnapshot, seededExpiration);
             RefreshedCard refreshed = response.refreshedCard();
 
@@ -696,8 +703,7 @@ class CardChangeDetectionTest {
 
             anotherWriterChanges("embossed_name", "STEFANIE DICKINSON", cardNumber);
 
-            CardUpdateResponse response = cardUpdateService.applyUpdate(
-                    requestFor(cardNumber, "Stefanie Dickenson", seededExpiration, "Y"),
+            CardUpdateResponse response = cardUpdateService.applyUpdate(cardNumber, requestFor(cardNumber, "Stefanie Dickenson", seededExpiration, "Y"),
                     staleSnapshot, seededExpiration);
 
             assertAll(
@@ -724,8 +730,7 @@ class CardChangeDetectionTest {
 
             anotherWriterChanges("embossed_name", "ignacio douglas", cardNumber);
 
-            CardUpdateResponse response = cardUpdateService.applyUpdate(
-                    requestFor(cardNumber, "Ignacio Doughlas", seededExpiration, "Y"),
+            CardUpdateResponse response = cardUpdateService.applyUpdate(cardNumber, requestFor(cardNumber, "Ignacio Doughlas", seededExpiration, "Y"),
                     staleSnapshot, seededExpiration);
 
             assertAll(
@@ -762,16 +767,14 @@ class CardChangeDetectionTest {
             LocalDate seededExpiration = LocalDate.of(2025, 12, 28);
             RefreshedCard seededSnapshot = snapshotOf("Allene Brown", seededExpiration, "Y");
 
-            CardUpdateResponse applied = cardUpdateService.applyUpdate(
-                    requestFor(cardNumber, "allene brown", seededExpiration, "Y"),
+            CardUpdateResponse applied = cardUpdateService.applyUpdate(cardNumber, requestFor(cardNumber, "allene brown", seededExpiration, "Y"),
                     seededSnapshot, seededExpiration);
             String storedAfterUpdate = storedText("embossed_name", cardNumber);
 
             RefreshedCard snapshotOfLowerCaseRow =
                     snapshotOf("allene brown", seededExpiration, "Y");
             anotherWriterChanges("active_status", "N", cardNumber);
-            CardUpdateResponse refused = cardUpdateService.applyUpdate(
-                    requestFor(cardNumber, "allene brown", seededExpiration, "Y"),
+            CardUpdateResponse refused = cardUpdateService.applyUpdate(cardNumber, requestFor(cardNumber, "allene brown", seededExpiration, "Y"),
                     snapshotOfLowerCaseRow, seededExpiration);
 
             assertAll(
@@ -879,8 +882,7 @@ class CardChangeDetectionTest {
             Mockito.doReturn(Optional.empty())
                     .when(cards).findForUpdateByCardNumber(cardNumber);
 
-            CardUpdateResponse response = cardUpdateService.applyUpdate(
-                    requestFor(cardNumber, "Delbert Parrish", seededExpiration, "Y"),
+            CardUpdateResponse response = cardUpdateService.applyUpdate(cardNumber, requestFor(cardNumber, "Delbert Parrish", seededExpiration, "Y"),
                     staleSnapshot, seededExpiration);
 
             verify(cards).findForUpdateByCardNumber(cardNumber);
@@ -902,15 +904,16 @@ class CardChangeDetectionTest {
          * with anything other than a normal response, and it draws no distinction between a row
          * that has gone and a row the dataset would not hand over. Both are a lock not taken.
          *
-         * <p>PostgreSQL raises rather than returning empty in three cases: a lock it will not grant
-         * inside the wait it was given, a deadlock it breaks, and a
-         * {@code SELECT ... FOR NO KEY UPDATE} it refuses outright, which is what a revoked
-         * {@code UPDATE} privilege produces. The first two arrive as
-         * {@link PessimisticLockingFailureException} and the third as {@link JpaSystemException}.
+         * <p>Two families say that here, and both are caught. A lock the database will not grant
+         * inside the wait it was given arrives as {@link CannotAcquireLockException}, and a
+         * deadlock it breaks as a sibling of it, both {@link PessimisticLockingFailureException}.
+         * A statement whose own timeout expires arrives as {@link QueryTimeoutException}.
+         * {@code repository/CardRepositoryIT} contends two real transactions and asserts the first
+         * of those types, so this mapping is measured rather than assumed.
          *
-         * <p>The two stubs below stand for those two families. Without the catch at the locking read
-         * each left {@link CardUpdateService#applyUpdate} unhandled, and a caller read the fault
-         * body of {@code api/CardApiExceptionHandler} in place of the outcome
+         * <p>Without the catch at the locking read each left
+         * {@link CardUpdateService#applyUpdate} unhandled, and a caller read the fault body of
+         * {@code api/CardApiExceptionHandler} in place of the outcome
          * {@code src/main/resources/openapi.yaml} documents for exactly this condition.
          */
         @Test
@@ -923,28 +926,79 @@ class CardChangeDetectionTest {
 
             Mockito.doThrow(new CannotAcquireLockException("canceling statement due to lock timeout"))
                     .when(cards).findForUpdateByCardNumber(cardNumber);
-            CardUpdateResponse afterTimeout = cardUpdateService.updateCard(submitted);
+            CardUpdateResponse afterLockTimeout =
+                    cardUpdateService.updateCard(cardNumber, submitted);
 
-            Mockito.doThrow(new JpaSystemException(
-                            new RuntimeException("ERROR: permission denied for table card")))
+            Mockito.doThrow(
+                            new QueryTimeoutException("canceling statement due to statement "
+                                    + "timeout"))
                     .when(cards).findForUpdateByCardNumber(cardNumber);
-            CardUpdateResponse afterRefusal = cardUpdateService.updateCard(submitted);
+            CardUpdateResponse afterStatementTimeout =
+                    cardUpdateService.updateCard(cardNumber, submitted);
 
             verify(cards, never()).save(any(CardEntity.class));
             assertAll(
-                    () -> assertEquals(UpdateOutcome.LOCK_NOT_ACQUIRED, afterTimeout.outcome(),
+                    () -> assertEquals(UpdateOutcome.LOCK_NOT_ACQUIRED,
+                            afterLockTimeout.outcome(),
                             "a lock the wait ran out on is a lock not taken"),
                     () -> assertEquals(CardValidationMessages.COULD_NOT_LOCK_FOR_UPDATE,
-                            afterTimeout.message(), "the text L209 sets"),
-                    () -> assertFalse(afterTimeout.hasRefreshedCard()),
-                    () -> assertEquals(UpdateOutcome.LOCK_NOT_ACQUIRED, afterRefusal.outcome(),
-                            "a statement the database refuses is a lock not taken"),
+                            afterLockTimeout.message(), "the text L209 sets"),
+                    () -> assertFalse(afterLockTimeout.hasRefreshedCard()),
+                    () -> assertEquals(UpdateOutcome.LOCK_NOT_ACQUIRED,
+                            afterStatementTimeout.outcome(),
+                            "a statement whose own timeout expired is a lock not taken"),
                     () -> assertEquals(CardValidationMessages.COULD_NOT_LOCK_FOR_UPDATE,
-                            afterRefusal.message(), "the text L209 sets"),
-                    () -> assertFalse(afterRefusal.hasRefreshedCard()),
+                            afterStatementTimeout.message(), "the text L209 sets"),
+                    () -> assertFalse(afterStatementTimeout.hasRefreshedCard()),
                     () -> assertEquals("Faustino Schmidt",
                             storedText("embossed_name", cardNumber),
                             "neither attempt wrote anything"));
+        }
+
+        /**
+         * A fault that is neither a lock nor a timeout is not answered as a conflict.
+         *
+         * <p>This is the distinction the outcome above used to lose. Every
+         * {@link JpaSystemException} was grouped with the lock families, and that type is where the
+         * persistence layer puts every Hibernate error it has no specific translation for: a
+         * revoked privilege, a driver fault, a mapping error. A caller reading
+         * {@code 409 Conflict} for one of those is told another writer holds the row and to try
+         * again, when the truth is that no attempt will ever succeed, and the conflict meter counts
+         * a broken database as a user conflict.
+         *
+         * <p>Such a fault now leaves {@link CardUpdateService#updateCard} unhandled and
+         * {@code api/CardApiExceptionHandler} answers {@code 500}. The assertion is on both halves:
+         * the fault escapes, and the conflict meter does not move.
+         */
+        @Test
+        @DisplayName("a permission fault is not reported as a conflict and moves no conflict count")
+        void aFaultThatIsNeitherALockNorATimeoutIsNotAConflict() {
+            String cardNumber = "4385271476627819";
+            LocalDate seededExpiration = LocalDate.of(2025, 10, 6);
+            CardUpdateRequest submitted =
+                    requestFor(cardNumber, "Faustino Schmidty", seededExpiration, "Y");
+            JpaSystemException permissionDenied = new JpaSystemException(
+                    new RuntimeException("ERROR: permission denied for table card"));
+            double conflictsBefore = updateConflictCount();
+
+            Mockito.doThrow(permissionDenied)
+                    .when(cards).findForUpdateByCardNumber(cardNumber);
+
+            JpaSystemException escaped = assertThrows(JpaSystemException.class,
+                    () -> cardUpdateService.updateCard(cardNumber, submitted),
+                    "a fault that is neither a lock nor a timeout stays a fault, so the caller "
+                            + "reads 500 rather than being told to retry a request that cannot "
+                            + "succeed");
+
+            verify(cards, never()).save(any(CardEntity.class));
+            assertAll(
+                    () -> assertSame(permissionDenied, escaped,
+                            "the fault reaches the handler unchanged"),
+                    () -> assertEquals(conflictsBefore, updateConflictCount(),
+                            "a broken dependency is not counted as a user conflict"),
+                    () -> assertEquals("Faustino Schmidt",
+                            storedText("embossed_name", cardNumber),
+                            "the attempt wrote nothing"));
         }
 
         /**
@@ -963,8 +1017,7 @@ class CardChangeDetectionTest {
 
             anotherWriterRemoves(cardNumber);
 
-            CardUpdateResponse response = cardUpdateService.applyUpdate(
-                    requestFor(cardNumber, "Larry Homenicke", seededExpiration, "Y"),
+            CardUpdateResponse response = cardUpdateService.applyUpdate(cardNumber, requestFor(cardNumber, "Larry Homenicke", seededExpiration, "Y"),
                     staleSnapshot, seededExpiration);
 
             verify(cards, never()).save(any(CardEntity.class));
@@ -996,8 +1049,7 @@ class CardChangeDetectionTest {
                             CardValidationMessages.DATA_WAS_CHANGED_BEFORE_UPDATE))
                     .when(cards).save(any(CardEntity.class));
 
-            CardUpdateResponse response = cardUpdateService.updateCard(
-                    requestFor(cardNumber, "Maybell Manning", LocalDate.of(2024, 1, 27), "Y"));
+            CardUpdateResponse response = cardUpdateService.updateCard(cardNumber, requestFor(cardNumber, "Maybell Manning", LocalDate.of(2024, 1, 27), "Y"));
 
             assertAll(
                     () -> assertEquals(UpdateOutcome.UPDATE_FAILED_AFTER_LOCK, response.outcome()),
@@ -1037,8 +1089,7 @@ class CardChangeDetectionTest {
             jdbc.execute("ALTER TABLE " + CARD_TABLE + " ADD CONSTRAINT card_name_not_refused"
                     + " CHECK (embossed_name NOT LIKE 'Refused%')");
             try {
-                CardUpdateResponse response = cardUpdateService.updateCard(
-                        requestFor(cardNumber, "Refused Writer", LocalDate.of(2024, 8, 4), "Y"));
+                CardUpdateResponse response = cardUpdateService.updateCard(cardNumber, requestFor(cardNumber, "Refused Writer", LocalDate.of(2024, 8, 4), "Y"));
 
                 assertAll(
                         () -> assertEquals(UpdateOutcome.UPDATE_FAILED_AFTER_LOCK,
@@ -1091,15 +1142,13 @@ class CardChangeDetectionTest {
             RefreshedCard snapshotOfInactiveRow =
                     snapshotOf("Lucinda Dach", seededExpiration, "N");
 
-            CardUpdateResponse applied = cardUpdateService.applyUpdate(
-                    requestFor(cardNumber, "Lucinda Dachs", seededExpiration, "N"),
+            CardUpdateResponse applied = cardUpdateService.applyUpdate(cardNumber, requestFor(cardNumber, "Lucinda Dachs", seededExpiration, "N"),
                     snapshotOfInactiveRow, seededExpiration);
 
             RefreshedCard snapshotAfterTheUpdate =
                     snapshotOf("Lucinda Dachs", seededExpiration, "N");
             anotherWriterChanges("embossed_name", "Roselyn Boyer", cardNumber);
-            CardUpdateResponse refused = cardUpdateService.applyUpdate(
-                    requestFor(cardNumber, "Lucinda Dachson", seededExpiration, "N"),
+            CardUpdateResponse refused = cardUpdateService.applyUpdate(cardNumber, requestFor(cardNumber, "Lucinda Dachson", seededExpiration, "N"),
                     snapshotAfterTheUpdate, seededExpiration);
 
             assertAll(
@@ -1113,4 +1162,107 @@ class CardChangeDetectionTest {
                     () -> assertEquals("N", refused.refreshedCard().activeStatus()));
         }
     }
+
+    @Nested
+    @DisplayName("when the success count and the success line are taken")
+    class SuccessTelemetry {
+
+        /**
+         * The applied count follows the commit rather than predicting it.
+         *
+         * <p>{@code applyUpdate} carries {@code @Transactional}, so the commit happens after it
+         * returns. The count and the log line used to be taken on the last lines of the method,
+         * which is before that commit: a deferred constraint, a lost connection or a rollback-only
+         * marker discarded the update while the counter had already moved and the log already said
+         * the update committed. {@code entityManager.flush()} does not close the gap, because it
+         * sends the statements and leaves the commit where it was.
+         *
+         * <p>This test opens the transaction itself and marks it rollback-only, so the inner call
+         * joins a transaction that is going to be discarded. The count must not move.
+         */
+        @Test
+        @DisplayName("a rolled-back update moves no applied count")
+        void aRolledBackUpdateMovesNoAppliedCount() {
+            String cardNumber = "4534784102713951";
+            LocalDate seededExpiration = storedExpiration(cardNumber);
+            String seededName = storedText("embossed_name", cardNumber).strip();
+            String seededStatus = storedText("active_status", cardNumber).strip();
+            RefreshedCard fetched = snapshotOf(seededName, seededExpiration, seededStatus);
+            double appliedBefore = updateAppliedCount();
+
+            CardUpdateResponse response = new TransactionTemplate(transactionManager)
+                    .execute(status -> {
+                        CardUpdateResponse inner = cardUpdateService.applyUpdate(
+                                cardNumber,
+                                requestFor(cardNumber, seededName + "x", seededExpiration,
+                                        seededStatus),
+                                fetched, seededExpiration);
+                        status.setRollbackOnly();
+                        return inner;
+                    });
+
+            assertAll(
+                    () -> assertEquals(UpdateOutcome.UPDATED, response.outcome(),
+                            "the update itself succeeded, so the only thing under test is when "
+                                    + "the count is taken"),
+                    () -> assertEquals(appliedBefore, updateAppliedCount(),
+                            "the applied count moved for an update the transaction discarded"),
+                    () -> assertEquals(seededName, storedText("embossed_name", cardNumber).strip(),
+                            "the rollback left the row as it was"));
+        }
+
+        /**
+         * A committed update does move the applied count.
+         *
+         * <p>The assertion above would also pass if the count had simply stopped being taken at
+         * all, so this one is what keeps it honest.
+         */
+        @Test
+        @DisplayName("a committed update moves the applied count by one")
+        void aCommittedUpdateMovesTheAppliedCount() {
+            String cardNumber = "5407099850479866";
+            LocalDate seededExpiration = storedExpiration(cardNumber);
+            String seededName = storedText("embossed_name", cardNumber).strip();
+            String seededStatus = storedText("active_status", cardNumber).strip();
+            RefreshedCard fetched = snapshotOf(seededName, seededExpiration, seededStatus);
+            double appliedBefore = updateAppliedCount();
+
+            CardUpdateResponse response = new TransactionTemplate(transactionManager)
+                    .execute(status -> cardUpdateService.applyUpdate(
+                            cardNumber,
+                            requestFor(cardNumber, seededName + "y", seededExpiration,
+                                    seededStatus),
+                            fetched, seededExpiration));
+
+            assertAll(
+                    () -> assertEquals(UpdateOutcome.UPDATED, response.outcome()),
+                    () -> assertEquals(appliedBefore + 1.0d, updateAppliedCount(),
+                            "one committed update counts once"));
+        }
+    }
+
+    /**
+     * Reads the running total of {@code carddemo.card.update.conflicts}.
+     *
+     * <p>Read rather than reset, because the registry is shared across the class and a reset would
+     * make one test depend on the order the others ran in. Each assertion compares a before and an
+     * after.
+     *
+     * @return the count so far, or zero when nothing has been counted yet
+     */
+    private double updateConflictCount() {
+        Counter counter = meters.find(ObservabilityConfig.METRIC_CARD_UPDATE_CONFLICTS).counter();
+        return counter == null ? 0.0d : counter.count();
+    }
+
+    /**
+     * Reads the running total of {@code carddemo.card.update.applied}.
+     *
+     * @return the count so far, or zero when nothing has been counted yet
+     */
+    private double updateAppliedCount() {
+        Counter counter = meters.find(ObservabilityConfig.METRIC_CARD_UPDATE_APPLIED).counter();
+        return counter == null ? 0.0d : counter.count();
+    }
+
 }

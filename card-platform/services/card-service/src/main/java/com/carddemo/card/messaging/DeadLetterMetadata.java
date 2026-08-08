@@ -11,13 +11,13 @@ import java.util.List;
  * {@code app/cpy/CSMSG02Y.cpy:L21}, in the copybook's own field order, and each constant below
  * carries its own source locator. The type is service-local.
  *
- * <p>Exactly one path reaches the dead-letter topic, and it is worth naming precisely because a
- * diagnostic contract that describes a path nobody takes is worse than none.
- * {@code outbox/OutboxRelay} builds these four components for each failed attempt, stores them
- * joined on the row it failed, and once that row's attempts are spent it turns them into one
- * {@link DeadLetterEnvelope} through {@link #toEnvelope} and publishes it on
- * {@code carddemo.kafka.topics.dead-letter}. The publish is awaited, so the abandonment and the
- * diagnostic commit together or not at all.
+ * <p>One path reaches the dead-letter topic. {@code outbox/OutboxRelay} builds these four
+ * components for each failed attempt, stores them joined on the row it failed, and once that row's
+ * attempts are spent turns them into one {@link DeadLetterEnvelope} through {@link #toEnvelope} and
+ * publishes it on {@code carddemo.kafka.topics.dead-letter}. The publish is awaited, but it is not
+ * atomic with the abandonment: a diagnostic the broker acknowledged before the abandoning
+ * transaction failed to commit has been published, and the row is attempted again. The obligation is
+ * durable, so an owed diagnostic is discharged on a later sweep rather than lost.
  *
  * <p>Two other kinds of failure never arrive here. A card validation refusal answers with a
  * Hypertext Transfer Protocol (HTTP) 400 or 409 response and writes no event at all, because this
@@ -29,8 +29,9 @@ import java.util.List;
  * past that width, so {@link #fromFailure(String, Throwable, String, String)} keeps its leading
  * eight characters.
  *
- * <p>Nothing in this record throws, nothing is padded, and no component is ever the source of a
- * second failure. A {@code null} component becomes the empty string, matching the
+ * <p>No component of this record throws, nothing is padded, and no component is ever the source of
+ * a second failure. {@link #toEnvelope(String, String, int, long, String, String, int)} does throw,
+ * on an aggregate identifier that is not eleven decimal digits. A {@code null} component becomes the empty string, matching the
  * {@code VALUE SPACES} clause each source field carries. Each code point outside printable
  * American Standard Code for Information Interchange (ASCII) becomes one
  * {@link #SUBSTITUTE_CHARACTER}, so no control character and no line break reaches the
@@ -44,12 +45,12 @@ import java.util.List;
  * {@code Throwable}. {@link #fromFailure(String, Throwable, String, String)} reads the failure type
  * and nothing else.
  *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
+ *
  * @param abendCode the four-character failure code
  * @param culprit   the failing component
  * @param reason    the failure classification
  * @param message   the failure detail
- *
- * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 public record DeadLetterMetadata(String abendCode, String culprit, String reason,
         String message) {
@@ -181,13 +182,10 @@ public record DeadLetterMetadata(String abendCode, String culprit, String reason
     /**
      * Renders this metadata as the one dead-letter contract the platform publishes.
      *
-     * <p>Five services declared a record of this name, each with its own component list and none
-     * with a schema. That is five wire formats on a topic a single operator has to read, and a
-     * consumer written against one of them cannot read the other four. It also meant nothing
-     * validated what reached a dead-letter topic, so the one place a rejected message is kept
-     * longest was the one place its contents were least controlled.
+     * <p>Six service modules declare a record of this name as their in-process carrier for the four
+     * diagnostic values, and every one of them reaches a topic only through this method.
      *
-     * <p>{@link DeadLetterEnvelope} in {@code libs/event-contracts} is that contract now. It
+     * <p>{@link DeadLetterEnvelope} in {@code libs/event-contracts} is the one wire contract. It
      * carries a version, it validates against {@code schemas/dead-letter-v1.json} through the same
      * serializer and deserializer every other event passes, and it holds no field of the failing
      * payload at all. This record stays as the in-process carrier for the four diagnostic values,
@@ -198,8 +196,8 @@ public record DeadLetterMetadata(String abendCode, String culprit, String reason
      * diagnostics. The list of shortened components is left empty here, and that is exact rather
      * than lazy. This record bounds each diagnostic to the same width {@link DeadLetterEnvelope}
      * bounds it to, so every value handed over already fits and the envelope has nothing left to
-     * shorten. A producer that bounds its diagnostics more narrowly
-     * than this record does should build the envelope directly, so its own shortening is named.
+     * shorten. A producer bounding its diagnostics more narrowly than this record does should build
+     * the envelope directly, so its own shortening is named.
      *
      * @param aggregateId     the eleven-digit account identifier of the failing record, and the
      *                        Kafka message key of the envelope

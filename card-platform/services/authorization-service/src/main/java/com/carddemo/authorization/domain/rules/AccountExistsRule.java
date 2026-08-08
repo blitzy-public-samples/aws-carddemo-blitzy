@@ -54,6 +54,18 @@ public class AccountExistsRule implements DeclineRule {
      *
      * <p>A resolved row reaches {@code context}, for the rules that follow.
      *
+     * <p>The read holds the row for the rest of the decision, which is why it is
+     * {@link AccountCreditSnapshotRepository#findForUpdateByAccountId(String)} and not the plain
+     * lookup. Two concurrent calls for one account would otherwise both read the cycle accumulators
+     * before either reserved anything, and both would approve against the same exposure. The lock has
+     * to be taken here rather than at the reservation write, because it must cover the figures
+     * {@link CreditLimitRule} computes from as well as the write itself. How long a call waits for it
+     * is bounded by {@code domain/AuthorizationService}, which applies a transaction-local
+     * {@code lock_timeout} before the chain runs.
+     *
+     * <p>A miss locks nothing and declines, exactly as the unlocked read did. Two calls naming one
+     * absent account therefore both decline, and neither has any exposure to reserve.
+     *
      * @param context values for one authorization call, carrying the resolved cross-reference row
      * @return {@link DeclineReason#ACCOUNT_NOT_FOUND} when no row carries the identifier, and an
      *         empty result when one does
@@ -67,7 +79,7 @@ public class AccountExistsRule implements DeclineRule {
                 "the account read follows the cross-reference read, and no cross-reference row "
                         + "reached this call");
         Optional<AccountCreditSnapshotEntity> resolved =
-                accountCreditSnapshots.findByAccountId(resolvedCard.getAccountId());
+                accountCreditSnapshots.findForUpdateByAccountId(resolvedCard.getAccountId());
         resolved.ifPresent(context::setAccountCreditSnapshot);
         if (resolved.isEmpty()) {
             return Optional.of(DeclineReason.ACCOUNT_NOT_FOUND);

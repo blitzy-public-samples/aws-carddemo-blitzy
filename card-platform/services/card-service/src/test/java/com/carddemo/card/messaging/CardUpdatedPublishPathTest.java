@@ -48,7 +48,7 @@ import static org.junit.jupiter.api.Assertions.fail;
  * so a call that returns bytes is a call whose payload satisfied that document.
  *
  * <p>Versions in use: Java 25, Apache Maven 3.9.16, junit-jupiter 6.0.3,
- * spring-boot-starter-test 4.1.0, json-schema-validator 3.0.6 and jackson-databind 3.1.4.
+ * spring-boot-starter-test 4.1.0, json-schema-validator 3.0.6 and jackson-databind 3.1.5.
  */
 @DisplayName("CardUpdated on the publish and consume paths")
 class CardUpdatedPublishPathTest {

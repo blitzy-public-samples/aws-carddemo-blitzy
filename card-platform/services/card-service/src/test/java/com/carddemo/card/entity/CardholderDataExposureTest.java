@@ -9,12 +9,19 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.carddemo.cobol.PicClause;
 import com.carddemo.events.EventEnvelope;
+import com.carddemo.events.serde.EventSchemas;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.UncheckedIOException;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -35,6 +42,12 @@ import tools.jackson.databind.json.JsonMapper;
  * field carries {@code @JsonIgnore}. {@link Object#toString()} lands in a log line the moment code
  * concatenates the entity into a message, so it withholds the value. A validation message can echo
  * a rejected argument, so the guards report a width and a position and never a character.
+ *
+ * <p>Two exits are contracts rather than code, and a security review asked for the storage itself to
+ * be removed. The plan sections above forbid that and rest the case on the value never being
+ * emitted, so the two published contracts are read here as well: no version of any event schema may
+ * declare a property for the value, and this service's own interface description may not declare a
+ * field for it either. Both were prose promises until this class read them.
  *
  * <p>Every test runs in memory. None opens a database connection, sends a request or reads a file.
  */
@@ -259,6 +272,115 @@ class CardholderDataExposureTest {
                             "the account identifier is a search key too"),
                     () -> assertEquals("N", card.getActiveStatus(),
                             "the active status is one of the three fields an update changes"));
+        }
+    }
+
+    @Nested
+    @DisplayName("No published contract declares the value")
+    class PublishedContracts {
+
+        /**
+         * Matches a property or field name naming the card verification value, however spelled.
+         *
+         * <p>The three spellings this platform could produce are the copybook name
+         * {@code CARD-CVV-CD}, the column name {@code card_verification_value} and the Java name
+         * {@code cardVerificationValue}, and a fourth is whatever a future author invents. Matching
+         * either fragment, case-insensitively, covers all four.
+         */
+        private static final Pattern VERIFICATION_NAME =
+                Pattern.compile("(?i)(cvv|verification)");
+
+        /** Matches one JSON member name, being a quoted string followed by a colon. */
+        private static final Pattern JSON_MEMBER_NAME = Pattern.compile("\"([^\"]+)\"\\s*:");
+
+        /** Matches one YAML mapping key, being an unquoted name at the start of a line. */
+        private static final Pattern YAML_KEY =
+                Pattern.compile("(?m)^\\s*-?\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*:");
+
+        /**
+         * No version of any governed event contract declares a member naming the value.
+         *
+         * <p>{@code EventSchemas.SCHEMA_DOCUMENTS} carries every version of every contract this
+         * platform publishes or consumes, not only the newest, because a consumer reading an
+         * earlier version reads that document. A member name is asserted rather than the whole
+         * text, so the two {@code $comment} entries recording the deliberate absence are read as
+         * what they are and a property would be caught wherever it sat in the tree.
+         */
+        @Test
+        @DisplayName("no version of any event contract declares a member naming the value")
+        void noEventContractDeclaresTheValue() {
+            List<String> declaring = new ArrayList<>();
+
+            for (String resource : EventSchemas.SCHEMA_DOCUMENTS.values()) {
+                Matcher member = JSON_MEMBER_NAME.matcher(readClasspath(resource));
+                while (member.find()) {
+                    if (VERIFICATION_NAME.matcher(member.group(1)).find()) {
+                        declaring.add(resource + " declares \"" + member.group(1) + "\"");
+                    }
+                }
+            }
+
+            assertEquals(List.of(), declaring,
+                    "the plan stores this value and emits it nowhere, so no event contract may "
+                            + "carry a member for it: " + declaring);
+        }
+
+        /**
+         * This service's interface description declares no field naming the value.
+         *
+         * <p>The description discusses the value in prose, and says it is never returned. A mapping
+         * key would contradict that, so keys are read and prose is left alone.
+         */
+        @Test
+        @DisplayName("the interface description declares no field naming the value")
+        void theInterfaceDescriptionDeclaresNoFieldNamingTheValue() {
+            List<String> declaring = new ArrayList<>();
+            Matcher key = YAML_KEY.matcher(readClasspath("openapi.yaml"));
+            while (key.find()) {
+                if (VERIFICATION_NAME.matcher(key.group(1)).find()) {
+                    declaring.add("openapi.yaml declares " + key.group(1));
+                }
+            }
+
+            assertEquals(List.of(), declaring,
+                    "openapi.yaml states that the value is never returned, and a declared field "
+                            + "would be the contradiction: " + declaring);
+        }
+
+        /**
+         * The reader finds a member a contract does declare, so a silent miss cannot pass.
+         *
+         * <p>Without this, a reader that returned nothing would satisfy both assertions above.
+         */
+        @Test
+        @DisplayName("the reader finds the members the card contract does declare")
+        void theReaderFindsTheMembersTheContractDeclares() {
+            List<String> members = new ArrayList<>();
+            Matcher member = JSON_MEMBER_NAME.matcher(
+                    readClasspath("schemas/card-updated-v2.json"));
+            while (member.find()) {
+                members.add(member.group(1));
+            }
+
+            assertAll(
+                    () -> assertTrue(members.contains("maskedCardNumber"),
+                            "maskedCardNumber is a declared member of the card contract, so a "
+                                    + "reader that missed it would prove nothing about an absent "
+                                    + "one"),
+                    () -> assertTrue(members.contains("properties"),
+                            "the reader walks the whole document rather than one subtree"));
+        }
+
+        /** Reads one classpath resource as text. */
+        private String readClasspath(String resource) {
+            try (InputStream stream =
+                    CardholderDataExposureTest.class.getClassLoader()
+                            .getResourceAsStream(resource)) {
+                assertNotNull(stream, resource + " must be on the classpath");
+                return new String(stream.readAllBytes(), StandardCharsets.UTF_8);
+            } catch (IOException unreadable) {
+                throw new UncheckedIOException("cannot read " + resource, unreadable);
+            }
         }
     }
 }

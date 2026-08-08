@@ -5,13 +5,13 @@ import com.carddemo.cobol.CobolDecimal;
 import com.carddemo.cobol.NumvalParser;
 import com.carddemo.cobol.PanMasker;
 import com.carddemo.cobol.PicClause;
-import com.carddemo.events.EventEnvelope;
 import jakarta.validation.constraints.AssertTrue;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Null;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 import java.math.BigDecimal;
+import java.util.List;
 
 /**
  * Request body of the synchronous authorization call.
@@ -50,11 +50,13 @@ import java.math.BigDecimal;
  * branch. A component filled with spaces counts as absent, matching the
  * {@code NOT = SPACES AND LOW-VALUES} test at {@code app/cbl/COTRN02C.cbl:L196}.
  *
- * <p>Where both arrive, the two are cross-checked rather than ranked. The source takes its account
- * branch first and overwrites the caller's card number with whichever card the alternate index
- * returned, which would authorize a card the caller did not name. This service resolves the card
- * first and then refuses the request unless the resolved account agrees with the caller's value, so
- * neither identifier can silently displace the other.
+ * <p>Where both arrive, the account branch runs. The {@code EVALUATE TRUE} at
+ * {@code app/cbl/COTRN02C.cbl:L195} tests the account field first, and
+ * {@code app/cbl/COTRN02C.cbl:L209} moves the card number of the row it read over the card field, so
+ * the resolved card is the card every later paragraph reads and the card the request named is not read
+ * again. An account holding no cross-reference row is refused with
+ * {@value #ACCOUNT_ID_NOT_FOUND_MESSAGE}, from the {@code NOTFND} limb at
+ * {@code app/cbl/COTRN02C.cbl:L591-L592}.
  *
  * <p>Every free-text component is bounded twice: by the width of its source field and by
  * {@value #PRINTABLE_TEXT_PATTERN}, which admits no control character. The description
@@ -124,12 +126,15 @@ import java.math.BigDecimal;
  *                                {@code DALYTRAN-PROC-TS PIC X(26)} at
  *                                {@code app/cpy/CVTRA06Y.cpy:L17}. Required, and shaped by
  *                                {@value #PROCESSING_TIMESTAMP_PATTERN}.
+ *                                {@link #recordProcessingTimestamp()} returns it at the record
+ *                                width, which is the form the decision row records, as
+ *                                {@code app/cbl/COTRN02C.cbl:L470} records it on the transaction
+ *                                record.
  * @param accountId               account identifier, from {@code XREF-ACCT-ID PIC 9(11)} at
  *                                {@code app/cpy/CVACT03Y.cpy:L7}. One to eleven digits. Required
- *                                unless {@code cardNumber} arrives instead. Supplied alone it names
- *                                the subject and the card is read from the cross-reference by it;
- *                                supplied beside a card number it is a cross-check and must equal
- *                                the account that card resolves.
+ *                                unless {@code cardNumber} arrives instead. A value here names the
+ *                                subject whether or not a card number also arrives, and the card is
+ *                                read from the cross-reference by it.
  *                                {@link #canonicalAccountId()} returns it at its stored width.
  *
  * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
@@ -277,8 +282,10 @@ public record AuthorizationRequest(
     /**
      * ADDITIVE rejection text for a source wider than {@code DALYTRAN-SOURCE PIC X(10)}.
      *
-     * <p>No source message corresponds, and none could. The field arrives from
-     * {@code app/bms/COTRN2A.bms} as a fixed-width map area, so a longer value cannot reach
+     * <p>No source message corresponds, and none could. The field arrives as the fixed-width map
+     * area {@code TRNSRC} at {@code app/bms/COTRN02.bms:L148}, which {@code :L151} fixes at the same
+     * ten characters, on map {@code COTRN2A} at {@code app/bms/COTRN02.bms:L26}, so a longer value
+     * cannot reach
      * {@code app/cbl/COTRN02C.cbl} at all: the terminal stops the operator at the field boundary and
      * the Basic Mapping Support copy truncates whatever a program moves in. A request body carries no
      * such boundary, so the width becomes a rule here.
@@ -428,6 +435,62 @@ public record AuthorizationRequest(
      */
     public static final String MERCHANT_ID_NOT_NUMERIC_MESSAGE = "Merchant ID must be Numeric...";
 
+    /**
+     * Every rejection text this record declares, in the order {@code app/cbl/COTRN02C.cbl} reaches
+     * the condition that emits it.
+     *
+     * <p>The source emits exactly one text per rejected screen. Each paragraph moves its text into
+     * {@code WS-MESSAGE} and performs {@code SEND-TRNADD-SCREEN}, which returns to the terminal, so
+     * the edits that would have followed never run. {@link GlobalExceptionHandler} reads this list to
+     * choose the one text a refused request reports, which reproduces that behaviour over a
+     * validator that reports every failing component at once.
+     *
+     * <p>The first twenty-three entries follow the source in paragraph order: the two class tests and
+     * the account lookup of {@code VALIDATE-INPUT-KEY-FIELDS} at
+     * {@code app/cbl/COTRN02C.cbl:L195-L229}, the eleven emptiness tests at
+     * {@code app/cbl/COTRN02C.cbl:L251-L320}, the two class tests at
+     * {@code app/cbl/COTRN02C.cbl:L322-L334}, the three positional tests at
+     * {@code app/cbl/COTRN02C.cbl:L336-L380}, the two tolerant date validations at
+     * {@code app/cbl/COTRN02C.cbl:L389-L423} and the merchant class test at
+     * {@code app/cbl/COTRN02C.cbl:L430-L436}.
+     *
+     * <p>The eight entries after them are the texts marked ADDITIVE. Each answers a condition a
+     * fixed-width map field cannot raise, so the source reaches none of them and holds no position
+     * for them. They follow the source-ordered entries, which keeps one order for every text.
+     */
+    public static final List<String> REJECTION_TEXTS_IN_SOURCE_ORDER = List.of(
+            ACCOUNT_ID_NOT_NUMERIC_MESSAGE,
+            ACCOUNT_ID_NOT_FOUND_MESSAGE,
+            CARD_NUMBER_NOT_NUMERIC_MESSAGE,
+            IDENTIFIER_REQUIRED_MESSAGE,
+            TYPE_CODE_EMPTY_MESSAGE,
+            CATEGORY_CODE_EMPTY_MESSAGE,
+            SOURCE_EMPTY_MESSAGE,
+            DESCRIPTION_EMPTY_MESSAGE,
+            AMOUNT_EMPTY_MESSAGE,
+            ORIGIN_DATE_EMPTY_MESSAGE,
+            PROCESSING_DATE_EMPTY_MESSAGE,
+            MERCHANT_ID_EMPTY_MESSAGE,
+            MERCHANT_NAME_EMPTY_MESSAGE,
+            MERCHANT_CITY_EMPTY_MESSAGE,
+            MERCHANT_ZIP_EMPTY_MESSAGE,
+            TYPE_CODE_NOT_NUMERIC_MESSAGE,
+            CATEGORY_CODE_NOT_NUMERIC_MESSAGE,
+            AMOUNT_FORMAT_MESSAGE,
+            ORIGIN_DATE_FORMAT_MESSAGE,
+            PROCESSING_DATE_FORMAT_MESSAGE,
+            ORIGIN_DATE_INVALID_MESSAGE,
+            PROCESSING_DATE_INVALID_MESSAGE,
+            MERCHANT_ID_NOT_NUMERIC_MESSAGE,
+            TRANSACTION_ID_NOT_ACCEPTED_MESSAGE,
+            TRANSACTION_ID_WIDTH_MESSAGE,
+            SOURCE_WIDTH_MESSAGE,
+            DESCRIPTION_WIDTH_MESSAGE,
+            MERCHANT_NAME_WIDTH_MESSAGE,
+            MERCHANT_CITY_WIDTH_MESSAGE,
+            MERCHANT_ZIP_WIDTH_MESSAGE,
+            CONTROL_CHARACTER_MESSAGE);
+
     // The eight accepted shapes. Each one is the COBOL class test or positional test of the field
     // it constrains, written as a regular expression.
 
@@ -446,24 +509,6 @@ public record AuthorizationRequest(
      * four-digit codes.
      */
     public static final String CATEGORY_CODE_PATTERN = "^[0-9]{1,4}$";
-
-    /**
-     * Shape of {@link #transactionId()}: exactly {@link PicClause#DALYTRAN_ID_WIDTH} printable
-     * characters carrying no space, or absent.
-     *
-     * <p>{@code DALYTRAN-ID PIC X(16)} at {@code app/cpy/CVTRA06Y.cpy:L5} is alphanumeric, so the
-     * class is the printable range and not the digits. An absent component is accepted here and
-     * {@code domain/TransactionIdentifierSource} then allocates one, which reproduces
-     * {@code app/cbl/COTRN02C.cbl:L444-L451}.
-     *
-     * <p>The pattern is {@link EventEnvelope#UNRESOLVED_AGGREGATE_KEY_PATTERN} itself rather than a
-     * copy of it. A decline whose card resolved no account is keyed on this identifier, from reject
-     * code {@code 0100} at {@code app/cbl/CBTRN02C.cbl:L385-L387}, and the envelope admits no space in
-     * a key. A value this boundary accepted and that envelope refused would fail after the decision
-     * had already been taken.
-     */
-    public static final String TRANSACTION_ID_PATTERN =
-            EventEnvelope.UNRESOLVED_AGGREGATE_KEY_PATTERN;
 
     /**
      * Shape of {@link #accountId()}: exactly {@link PicClause#XREF_ACCT_ID_WIDTH} digits.
@@ -504,8 +549,11 @@ public record AuthorizationRequest(
      * then two digits. {@code app/cbl/COTRN02C.cbl:L339-L351} tests position 1 for a sign, positions
      * 2 through 9 for digits, position 10 for the point, and positions 11 and 12 for digits.
      *
-     * <p>That test constrains a twelve-character screen field, which
-     * {@code app/bms/COTRN2A.bms} fixes at twelve characters. This request has no screen, so the
+     * <p>That test constrains a twelve-character screen field, the map area {@code TRNAMT} at
+     * {@code app/bms/COTRN02.bms:L174}, which {@code :L177} fixes at twelve characters. The map is
+     * {@code COTRN2A} at {@code app/bms/COTRN02.bms:L26}, declared inside mapset {@code COTRN02} at
+     * {@code app/bms/COTRN02.bms:L19}; no member named {@code COTRN2A.bms} exists, because
+     * {@code COTRN2A} names the map rather than the file. This request has no screen, so the
      * form is documented here and is not the only form accepted.
      * {@link #isAmountAcceptedAndInRange()} accepts every form the currency-tolerant grammar reads,
      * including {@code 504.77} and {@code $1,234.56}, because
@@ -523,22 +571,61 @@ public record AuthorizationRequest(
             PicClause.DALYTRAN_AMT_PRECISION - PicClause.DALYTRAN_AMT_SCALE;
 
     /**
-     * Shape of {@link #originTimestamp()}: a dated first ten characters, a space at position 11,
-     * colons at positions 14 and 17, a point at position 20, then six digits. Position 11 holds a
-     * space in all three hundred records of {@code app/data/ASCII/dailytran.txt}.
+     * Shape of {@link #originTimestamp()}: the ten-character date the synchronous screen field
+     * carries, on its own or followed by the time part the stored record carries.
+     *
+     * <p>{@code TORIGDTI OF COTRN2AI} is ten characters wide, the width
+     * {@code CSUTLDTC-DATE PIC X(10)} at {@code app/cbl/COTRN02C.cbl:L64} declares and the width the
+     * date validation reads. {@code app/cbl/COTRN02C.cbl:L469} moves that field into
+     * {@code TRAN-ORIG-TS PIC X(26)}, so the ten characters are what a caller of the synchronous
+     * path supplies and the twenty-six are what the record holds.
+     *
+     * <p>The optional tail is the record form: a space at position 11, colons at positions 14 and
+     * 17, a point at position 20, then six digits. Position 11 holds a space in all three hundred
+     * records of {@code app/data/ASCII/dailytran.txt}, so a caller replaying a fixture record sends
+     * that form and a caller of the capture path sends the date alone.
+     * {@link #recordOriginTimestamp()} renders either form at the record width.
      */
     public static final String ORIGIN_TIMESTAMP_PATTERN =
-            "^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d{6}$";
+            "^\\d{4}-\\d{2}-\\d{2}( \\d{2}:\\d{2}:\\d{2}\\.\\d{6})?$";
 
     /**
-     * Shape of {@link #processingTimestamp()}: a dated first ten characters, a third dash at
-     * position 11, points at positions 14, 17 and 20, two digits, then four zeros. The redefinition
-     * at {@code app/cbl/CBTRN02C.cbl:L160-L174} declares {@code DB2-STREEP-3} at position 11,
+     * Shape of {@link #processingTimestamp()}: the ten-character date the synchronous screen field
+     * carries, on its own or followed by the time part the stored record carries.
+     *
+     * <p>{@code TPROCDTI OF COTRN2AI} is the second ten-character date the capture screen validates,
+     * at {@code app/cbl/COTRN02C.cbl:L409-L423}, and {@code app/cbl/COTRN02C.cbl:L470} moves it into
+     * {@code TRAN-PROC-TS PIC X(26)}.
+     *
+     * <p>The optional tail is the record form: a third dash at position 11, points at positions 14,
+     * 17 and 20, two digits, then four zeros. The redefinition at
+     * {@code app/cbl/CBTRN02C.cbl:L160-L174} declares {@code DB2-STREEP-3} at position 11,
      * {@code DB2-MIL PIC 9(002)} for the two digits and {@code DB2-REST PIC X(04)} for the zeros,
      * which {@code app/cbl/CBTRN02C.cbl:L701} fills.
+     * {@link #recordProcessingTimestamp()} renders either form at the record width.
      */
     public static final String PROCESSING_TIMESTAMP_PATTERN =
-            "^\\d{4}-\\d{2}-\\d{2}-\\d{2}\\.\\d{2}\\.\\d{2}\\.\\d{2}0000$";
+            "^\\d{4}-\\d{2}-\\d{2}(-\\d{2}\\.\\d{2}\\.\\d{2}\\.\\d{2}0000)?$";
+
+    /**
+     * Time part appended to a ten-character origin date to reach the record width.
+     *
+     * <p>Reject reason {@code 0103} compares the first ten characters and nothing further, at
+     * {@code app/cbl/CBTRN02C.cbl:L414-L420}, so no decision reads these sixteen characters. The
+     * published event declares the record form for {@code authorizedAt}, which is why a rendered
+     * value carries them at all.
+     */
+    private static final String START_OF_DAY_ORIGIN_TIME = " 00:00:00.000000";
+
+    /**
+     * Time part appended to a ten-character processing date to reach the record width.
+     *
+     * <p>The two significant fractional digits and the four fixed zeros are the shape
+     * {@code app/cbl/CBTRN02C.cbl:L701} writes. The ledger stamps its own processing timestamp when
+     * it posts, at {@code app/cbl/CBTRN02C.cbl:L438}, so this value is the capture record of what the
+     * caller declared.
+     */
+    private static final String START_OF_DAY_PROCESSING_TIME = "-00.00.00.000000";
 
     /**
      * Shape of every free-text component: printable characters and nothing else, of any length the
@@ -740,6 +827,66 @@ public record AuthorizationRequest(
         }
         return CobolDecimal.truncateToScale(NumvalParser.numvalCurrency(text),
                 PicClause.DALYTRAN_AMT_SCALE);
+    }
+
+    /**
+     * Returns {@link #originTimestamp()} at the width the transaction record holds.
+     *
+     * <p>{@code app/cbl/COTRN02C.cbl:L469} moves the ten-character screen field into
+     * {@code TRAN-ORIG-TS PIC X(26)}. A caller that sent the record form already carries that width
+     * and is returned unchanged. A caller that sent the date alone has the start of that day
+     * appended, so the value reaches {@value PicClause#TRAN_ORIG_TS_WIDTH} characters and satisfies
+     * the {@code authorizedAt} shape the published event declares.
+     *
+     * <p>The first ten characters are identical either way, which is the whole of what reject reason
+     * {@code 0103} compares at {@code app/cbl/CBTRN02C.cbl:L414-L420}, so no decision changes.
+     *
+     * @return the capture moment at {@value PicClause#TRAN_ORIG_TS_WIDTH} characters, or
+     *         {@code null} when {@link #originTimestamp()} is absent or holds neither accepted form
+     */
+    public String recordOriginTimestamp() {
+        return atRecordWidth(originTimestamp, START_OF_DAY_ORIGIN_TIME,
+                PicClause.TRAN_ORIG_TS_WIDTH);
+    }
+
+    /**
+     * Returns {@link #processingTimestamp()} at the width the transaction record holds.
+     *
+     * <p>{@code app/cbl/COTRN02C.cbl:L470} moves the ten-character screen field into
+     * {@code TRAN-PROC-TS PIC X(26)}. The rendering rule is the one
+     * {@link #recordOriginTimestamp()} applies, with the separators
+     * {@code app/cbl/CBTRN02C.cbl:L160-L174} declares for this field.
+     *
+     * @return the declared processing moment at {@value PicClause#TRAN_PROC_TS_WIDTH} characters, or
+     *         {@code null} when {@link #processingTimestamp()} is absent or holds neither accepted
+     *         form
+     */
+    public String recordProcessingTimestamp() {
+        return atRecordWidth(processingTimestamp, START_OF_DAY_PROCESSING_TIME,
+                PicClause.TRAN_PROC_TS_WIDTH);
+    }
+
+    /**
+     * Renders one date component at the width its record field holds.
+     *
+     * @param value    the component to render; may be {@code null}
+     * @param startOfDay the time part a ten-character value takes
+     * @param width    the width the record field declares
+     * @return the value at {@code width} characters, or {@code null} when the component is absent or
+     *         holds neither the date nor the record form
+     */
+    private static String atRecordWidth(String value, String startOfDay, int width) {
+        if (!supplied(value)) {
+            return null;
+        }
+        String text = value.strip();
+        if (text.length() == width) {
+            return text;
+        }
+        if (text.length() != CobolDateValidator.TESTED_DATE_WIDTH) {
+            return null;
+        }
+        return text + startOfDay;
     }
 
     /**

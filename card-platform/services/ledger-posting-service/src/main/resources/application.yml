@@ -97,6 +97,17 @@ spring:
     # the registered event records and refuses every other value, including this text.
     # The schema gate runs at write time, inside OutboxWriter, where a rejected event
     # still rolls back its own transaction.
+    # The four timeouts below are one budget, and outbox/OutboxRelay is why. A relay pass
+    # bounds itself with carddemo.outbox.relay.max-duration-ms so a broker that accepts a
+    # connection and never answers cannot hold the scheduled thread or the database
+    # connection its transaction holds. A send the relay gave up on that the producer still
+    # holds is delivered later, and the relay's own retry then publishes the same event a
+    # second time, so one send has to resolve inside the pass that issued it. The producer
+    # takes at most max.block.ms + delivery.timeout.ms to resolve one send, and that sum must
+    # stay below max-duration-ms. 2000 + 2000 = 4000 against 5000. A test asserts the
+    # relationship, so raising one value without the other fails the build.
+    # delivery.timeout.ms must also be at least linger.ms + request.timeout.ms, which is why
+    # linger.ms is declared here rather than inherited.
     producer:
       acks: all
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
@@ -104,9 +115,10 @@ spring:
       properties:
         enable.idempotence: true
         max.in.flight.requests.per.connection: 5
-        delivery.timeout.ms: 120000
-        request.timeout.ms: 30000
-        max.block.ms: 5000
+        delivery.timeout.ms: 2000
+        request.timeout.ms: 2000
+        linger.ms: 0
+        max.block.ms: 2000
 
     # Manual acknowledgement, with automatic commit disabled, under a group of
     # this service's own. messaging/TransactionAuthorizedConsumer reads
@@ -129,6 +141,37 @@ spring:
 
 # Properties this module owns.
 carddemo:
+  # Request surface bounds. This service answers reads alone, so it declares no body
+  # ceiling; the two settings below bound who may reach a state-changing route and how fast
+  # any route may be reached.
+  api:
+    # Cross-site protection. config/CrossSiteRequestFilter refuses a state-changing request
+    # that declares a foreign Sec-Fetch-Site, names an Origin other than this service, or
+    # carries no value under the header below. An HTML form cannot set a header at all, and a
+    # cross-origin script call that set one would need a preflight no chain here grants, so the
+    # header is what separates a first-party client from a page replaying a cached credential.
+    # The name is not a secret. Change it only together with every client that sets it.
+    cross-site:
+      required-header: ${API_CROSS_SITE_HEADER:X-CardDemo-Request}
+    # Request-rate ceilings. config/RequestRateCeilingFilter runs ahead of the security chain
+    # and refuses with 429 plus Retry-After. Every ceiling is counted over one fixed window.
+    #
+    # requests-per-window applies twice, once keyed by source address and once by the identity
+    # the credential names, so one credential spread across many addresses is bounded too.
+    # write-requests-per-window is the stricter ceiling on POST, PUT, PATCH and DELETE.
+    # authentication-failures-per-window is the credential-guessing control: past it a source
+    # is refused for the rest of the window, and only a request that carried a credential and
+    # was answered 401 counts. concurrent-requests bounds requests in flight.
+    #
+    # The counters live in one process, so several replicas bound each replica rather than the
+    # service as a whole. card-platform/docs/suggested-next-tasks.md records the shared-store
+    # ceiling a deployment beyond a demo wants.
+    rate-limit:
+      window-seconds: ${API_RATE_WINDOW_SECONDS:60}
+      requests-per-window: ${API_RATE_REQUESTS_PER_WINDOW:600}
+      write-requests-per-window: ${API_RATE_WRITE_REQUESTS_PER_WINDOW:120}
+      authentication-failures-per-window: ${API_RATE_AUTHENTICATION_FAILURES_PER_WINDOW:20}
+      concurrent-requests: ${API_RATE_CONCURRENT_REQUESTS:64}
   kafka:
     topics:
       # Consumed. One authorized transaction per record, posted by messaging/TransactionAuthorizedConsumer.
@@ -139,18 +182,26 @@ carddemo:
       # deployment never gets a row, and the cycle close at app/cbl/CBACT04C.cbl:L353-L354 never
       # reaches the two accumulators here.
       account-state-changed: "${TOPIC_ACCOUNT_STATE_CHANGED:account.state-changed}"
-      # Published, one per posted transaction and one per refused feed record.
+      # Published, one per posted transaction.
       transaction-posted: "${TOPIC_TRANSACTION_POSTED:transaction.posted}"
+      # Consumed. One refused transaction per record, recorded as a 430-byte reject row by
+      # messaging/TransactionDeclinedConsumer. This service publishes nothing here: the
+      # authorization service is the sole writer of the decision under AAP 0.1.1, so the
+      # decline it published is the one that reaches this listener. Both halves of the
+      # 1500-VALIDATE-TRAN fork at app/cbl/CBTRN02C.cbl:L370-L378 therefore stay reachable
+      # in production, the approval through transaction.authorized and the refusal here.
       transaction-declined: "${TOPIC_TRANSACTION_DECLINED:transaction.declined}"
       # The shared name is a fallback. Normal failures route to <source-topic><suffix>, which keeps
       # event formats separate and lets each recovery consumer bind one schema.
       dead-letter: "${TOPIC_DEAD_LETTER:carddemo.dead-letter}"
       dead-letter-suffix: "${TOPIC_DEAD_LETTER_SUFFIX:.DLT}"
 
-    # One consumer group per listener, so the two streams lag, rebalance and reset independently of
-    # each other. The posting listener keeps the group name spring.kafka.consumer.group-id carries.
+    # One consumer group per listener, so the three streams lag, rebalance and reset independently
+    # of each other. The posting listener keeps the group name spring.kafka.consumer.group-id
+    # carries.
     groups:
       account-state-changed: "${GROUP_LEDGER_ACCOUNT:ledger-account-state}"
+      transaction-declined: "${GROUP_LEDGER_REJECT:ledger-reject}"
 
   # Delivery attempts a consumer makes, and the wait between two attempts.
   consumer:
@@ -165,6 +216,12 @@ carddemo:
       batch-size: "${OUTBOX_RELAY_BATCH_SIZE:100}"
       instance-id: "${OUTBOX_RELAY_INSTANCE_ID:${HOSTNAME:ledger-relay}}"
       claim-timeout: "${OUTBOX_RELAY_CLAIM_TIMEOUT:PT2M}"
+      # Wall-clock ceiling on one whole sweep, measured from a monotonic clock. Without it a
+      # broker that accepts a connection and never answers holds the scheduled thread and the
+      # database connection this sweep's transaction owns for as long as the producer waits.
+      # It must stay above max.block.ms + delivery.timeout.ms, so a send resolves inside the
+      # pass that issued it rather than landing after the relay gave up and retried.
+      max-duration-ms: "${OUTBOX_RELAY_MAX_DURATION_MS:5000}"
     # Retention. A published row has done its work and stays only for diagnosis, and a
     # processed-event marker matters only while a redelivery of its event is still
     # possible. domain/RetentionSweep calls the two repository purge methods on the
@@ -172,9 +229,32 @@ carddemo:
     # ix_processed_event_processed_at serve those deletes.
     published-retention-hours: "${OUTBOX_PUBLISHED_RETENTION_HOURS:168}"
   processed-event:
-    marker-retention-hours: "${PROCESSED_EVENT_RETENTION_HOURS:168}"
+    # A marker has to outlast every window the record itself can come back through,
+    # and broker log retention is the shortest of those and the only one this
+    # platform configures. The two were equal, which left no room for segment
+    # cleanup lag, a restored backup, or a manually replayed window: a record still
+    # readable after its marker was swept is applied a second time. config/*Properties
+    # refuses a marker horizon under twice the broker figure at start-up, so the
+    # relationship is checked rather than remembered.
+    marker-retention-hours: "${PROCESSED_EVENT_RETENTION_HOURS:720}"
+    # The broker retention this service is told to assume, which
+    # KAFKA_LOG_RETENTION_HOURS sets for the broker and for every service at once.
+    broker-retention-hours: "${KAFKA_LOG_RETENTION_HOURS:168}"
   retention:
     sweep-interval-ms: "${RETENTION_SWEEP_INTERVAL_MS:3600000}"
+    # The one business table of this service that expires. COMMENT ON TABLE
+    # rejected_transaction in db/migration/V1__schema.sql declares ninety days from
+    # rejected_at, and until a security review nothing applied it: domain/RetentionSweep
+    # deleted outbox rows and duplicate markers only, so the number described an intention
+    # while the table grew by one row per refused feed record. The row carries a transaction
+    # identifier that resolves to a named customer through this service's own transaction
+    # table, so this is a privacy horizon and not housekeeping.
+    #
+    # A bounded reject set is faithful, not additive: app/jcl/DALYREJS.jcl:L24-L28 defines
+    # the source's reject generation group with LIMIT(5) and SCRATCH, so a sixth write
+    # deletes the oldest generation. ix_rejected_transaction_rejected_at serves the delete.
+    # The balance and transaction tables carry no horizon: those are the ledger itself.
+    rejected-transaction-retention-days: "${LEDGER_REJECTED_RETENTION_DAYS:90}"
 
 # The container listens on 8080. docker-compose.yml publishes host port 8082.
 
@@ -277,4 +357,8 @@ logging:
       console: logstash
   level:
     root: "${LOGGING_LEVEL_ROOT:${LOG_LEVEL:INFO}}"
-    com.carddemo: "${LOGGING_LEVEL_COM_CARDDEMO:${LOG_LEVEL_CARDDEMO:DEBUG}}"
+    # INFO rather than DEBUG. A DEBUG default writes identifiers into every
+    # centralized log this deployment feeds, and a default is what an operator gets
+    # who starts this service directly rather than through compose or Kubernetes.
+    # Raise it for one run when tracing a message, and lower it again afterwards.
+    com.carddemo: "${LOGGING_LEVEL_COM_CARDDEMO:${LOG_LEVEL_CARDDEMO:INFO}}"

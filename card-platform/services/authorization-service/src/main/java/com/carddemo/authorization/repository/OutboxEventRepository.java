@@ -89,6 +89,19 @@ public interface OutboxEventRepository extends ListCrudRepository<OutboxEventEnt
      * Index {@code ix_outbox_event_claimable} covers both columns. Ordering by
      * {@code next_attempt_at} takes the longest-waiting row first.
      *
+     * <p>The {@code NOT EXISTS} clause narrows the result to the due <em>head</em> row of each
+     * aggregate, and it is what makes per-account ordering survive a partial failure. The relay
+     * publishes each claimed row and records each outcome separately, so without this clause two
+     * rows of one account could be in one batch, the older one could fail while the newer one
+     * succeeded, and the retry of the older one would then reach the topic behind the newer one.
+     * Kafka orders within a partition and the account identifier is the key, so that reordering
+     * would be visible to every consumer of that account.
+     *
+     * <p>Restricting the batch to account heads is also why one failing row cannot block the table:
+     * a refusal pauses that account for the pass while every other account stays eligible. Order
+     * inside the clause is {@code created_at} then {@code event_id}, so two rows written in the same
+     * instant still have one deterministic head.
+     *
      * <p>The caller runs this inside a transaction and calls
      * {@link OutboxEventEntity#claim(String, java.time.Instant)} on each row it takes, which
      * records which instance won. The lock lasts only as long as that transaction, and
@@ -99,8 +112,8 @@ public interface OutboxEventRepository extends ListCrudRepository<OutboxEventEnt
      *
      * @param now   the current time, against which {@code next_attempt_at} is compared
      * @param limit how many rows to claim, at least one
-     * @return the claimed rows, longest-waiting first, at most {@code limit} of them, and empty
-     *         when no row is due
+     * @return the claimed account heads, longest-waiting first, at most {@code limit} of them, and
+     *         empty when no row is due
      */
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @QueryHints(@QueryHint(name = "jakarta.persistence.lock.timeout", value = SKIP_LOCKED_TIMEOUT))
@@ -109,6 +122,18 @@ public interface OutboxEventRepository extends ListCrudRepository<OutboxEventEnt
             WHERE row.relayState =
                     com.carddemo.authorization.entity.OutboxEventEntity.RelayState.PENDING
               AND row.nextAttemptAt <= :now
+              AND NOT EXISTS (
+                    SELECT preceding.eventId FROM OutboxEventEntity preceding
+                    WHERE preceding.aggregateId = row.aggregateId
+                      AND preceding.relayState IN (
+                          com.carddemo.authorization.entity.OutboxEventEntity.RelayState.PENDING,
+                          com.carddemo.authorization.entity.OutboxEventEntity.RelayState.CLAIMED)
+                      AND (
+                          preceding.createdAt < row.createdAt
+                          OR (preceding.createdAt = row.createdAt
+                              AND preceding.eventId < row.eventId)
+                      )
+              )
             ORDER BY row.nextAttemptAt ASC, row.eventId ASC
             """)
     List<OutboxEventEntity> claimDueRows(@Param("now") Instant now, Limit limit);
@@ -130,4 +155,30 @@ public interface OutboxEventRepository extends ListCrudRepository<OutboxEventEnt
     @QueryHints(@QueryHint(name = "jakarta.persistence.lock.timeout", value = SKIP_LOCKED_TIMEOUT))
     List<OutboxEventEntity> findByRelayStateAndClaimedAtBeforeOrderByClaimedAtAsc(
             OutboxEventEntity.RelayState relayState, Instant claimedBefore, Limit limit);
+
+    /**
+     * Returns the abandoned rows that still owe the dead-letter topic a diagnostic, oldest attempt
+     * first.
+     *
+     * <p>This is the set {@code outbox/OutboxRelay} reads at the head of every pass. An owed diagnostic
+     * is the last remaining record of an event this service gave up on, so it is offered again for as
+     * long as it takes, and the ordering names the row that has gone unnamed longest first.
+     *
+     * <p>The set is empty while the relay is healthy, and the partial index
+     * {@code ix_outbox_event_dead_letter_required} of
+     * {@code src/main/resources/db/migration/V8__outbox_dead_letter_state.sql} covers exactly it, so the
+     * read costs nothing on a service with nothing to report.
+     *
+     * <p>No lock is taken here. Each row this returns is written in a short transaction of its own once
+     * the broker has acknowledged its diagnostic, and a second relay instance offering the same
+     * diagnostic publishes one duplicate on a dead-letter topic rather than losing one.
+     *
+     * @param deadLetterState always {@link OutboxEventEntity.DeadLetterState#REQUIRED}; naming it as a
+     *                        parameter keeps the derived query readable rather than hiding the state
+     *                        inside a method name
+     * @param limit           how many rows to return
+     * @return rows owing a diagnostic, oldest attempt first, and empty when none is owed
+     */
+    List<OutboxEventEntity> findByDeadLetterStateOrderByLastAttemptAtAsc(
+            OutboxEventEntity.DeadLetterState deadLetterState, Limit limit);
 }

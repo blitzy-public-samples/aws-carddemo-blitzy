@@ -24,6 +24,7 @@ graph TB
     end
 
     JOBS["JOBS transient data queue<br/>DDNAME INREADER"]
+    TRNRPT["TRNRPT00 job<br/>EXEC PROC=TRANREPT"]
 
     subgraph SHARED["Shared VSAM datasets"]
         ACCT[("ACCTDAT")]
@@ -73,7 +74,7 @@ graph TB
     REPORT -.- TRANS
 
     REPORT ==>|"WRITEQ TD"| JOBS
-    JOBS ==>|"submit through internal reader"| POST
+    JOBS ==>|"submit through internal reader"| TRNRPT
 
     ACCT -.- POST
     XREF -.- POST
@@ -82,6 +83,8 @@ graph TB
     XREF -.- INTEREST
     TRANS -.- STMT
     CUST -.- STMT
+    XREF -.- STMT
+    ACCT -.- STMT
 
     DAILY --> POST
     POST --> REJECTS
@@ -97,7 +100,8 @@ graph TB
 - A subgraph boundary encloses one runtime container: the CICS region, the eight shared datasets, or the scheduled batch chain.
 - A plain solid arrow is a synchronous handoff, either terminal input and output over a Basic Mapping Support (BMS) mapset or `EXEC CICS XCTL` passing the Communication Area at `app/cbl/COMEN01C.cbl:L152-L155`.
 - A dotted line is direct file access from inside a program. It carries no arrowhead because these programs both read and rewrite the dataset. Read the middle band as the centre of the diagram: several different programs reach every dataset in it.
-- A thick arrow is the only asynchronous path in the source. `app/cbl/CORPT00C.cbl:L517-L519` writes to a Transient Data Queue defined at `app/csd/CARDDEMO.CSD:L499-L502`, whose `DDNAME(INREADER)` submits a job.
+- A thick arrow is the only asynchronous path in the source. `app/cbl/CORPT00C.cbl:L517-L519` writes to a Transient Data Queue defined at `app/csd/CARDDEMO.CSD:L499-L502`, whose `DDNAME(INREADER)` submits a job. **The job it submits is the report job, not the posting job.** `app/cbl/CORPT00C.cbl:L84` builds the job card `//TRNRPT00 JOB 'TRAN REPORT'` and `:L94` builds the single step `//STEP10 EXEC PROC=TRANREPT`. Nothing in the source submits `POSTTRAN`; the nightly chain is scheduled rather than triggered.
+- **The statement job reaches four datasets, not two.** `app/jcl/CREASTMT.JCL:L79-L86` runs `CBSTM03A` with `TRNXFILE`, `XREFFILE`, `ACCTFILE` and `CUSTFILE` allocated, and `app/cbl/CBSTM03B.CBL:L31`, `:L37`, `:L43` and `:L49` declare one file for each. The statement program reaches all four through that one called subroutine. Its transaction input is the sorted copy the earlier steps build, not `TRANSACT` directly.
 - An arrow labelled "then" is a scheduling dependency between jobs, expressed in the nightly window rather than in code.
 - A cylinder is persistent data. `CARDAIX` and `CXACAIX` are alternate-index paths rather than base clusters, and `TCATBALF` and `DISCGRP` sit outside the shared band because no CICS definition covers them.
 - Every one of the eight file definitions carries `JOURNAL(NO)` and `RECOVERY(NONE)`. That attribute is why the target adds a transactional outbox.
@@ -300,8 +304,8 @@ Thirteen topics are created explicitly: seven business topics, five source-speci
 | `account.state-changed` | `AccountStateChanged` | account | `authorization-account-state`, `ledger-account-state` |
 | `customer.context-changed` | `CustomerContextChanged` | account | `notification-customer` |
 | `card.updated` | `CardUpdated` | card | `authorization-card-updated` |
-| `<source>.DLT`, five of them | Fixed-width abend diagnostic derived from `app/cpy/CSMSG02Y.cpy:L21` | Listener error handlers on ledger, fraud and notification | Operator inspection and replay |
-| `carddemo.dead-letter` | `DeadLetterEnvelope` | Authorization and account listener error handlers, and four relays on an abandoned row | Operator inspection and replay |
+| `<source>.DLT`, five of them | Fixed-width abend diagnostic derived from `app/cpy/CSMSG02Y.cpy:L21` | Listener error handlers on ledger, fraud and notification. Ledger has two listeners, fraud one and notification four | Operator inspection and replay |
+| `carddemo.dead-letter` | `DeadLetterEnvelope` | The authorization and account listener error handlers, and **all five** outbox relays on an abandoned row: authorization, ledger, fraud, account and card | Operator inspection and replay |
 
 Ten consumer groups run across five listening services. Authorization takes two for its replicas, and ledger takes one for the authorization stream and one for its balance replica. Fraud takes one, notification four for four independent inputs, and account one for the posted amount it applies. Card registers no listener. Delivery guarantees, acknowledgement, and the duplicate check belong to [event flow](event-flow.md) and are not repeated here.
 
@@ -317,10 +321,18 @@ Each service owns one database, one schema, and the tables below. Column types, 
 | ledger posting | `carddemo_ledger`, `ledger_service` | `transaction`, `transaction_category_balance`, `account_balance_projection`, `transaction_type`, `transaction_category`, `rejected_transaction`, `outbox_event`, `processed_event` |
 | fraud detection | `carddemo_fraud`, `fraud_service` | `fraud_assessment`, `velocity_window`, `outbox_event`, `processed_event` |
 | notification | `carddemo_notification`, `notification_service` | `statement_transaction`, `cardholder_context`, `notification_log`, `processed_event` |
-| account | `carddemo_account`, `account_service` | `account`, `customer`, `disclosure_group`, `card_xref` replica, `us_phone_area_code`, `us_state_code`, `us_state_zip_prefix`, `outbox_event`, `processed_event` |
+| account | `carddemo_account`, `account_service` | `account`, `customer`, `disclosure_group`, `account_customer_link`, `us_phone_area_code`, `us_state_code`, `us_state_zip_prefix`, `outbox_event`, `processed_event` |
 | card | `carddemo_card`, `card_service` | `card`, `card_xref`, `outbox_event`, `processed_event` |
 
-Three services hold a copy of the cross-reference, and each keeps its own current from events. That is the deliberate replacement for one `CCXREF` dataset shared by six programs in Figure 1.
+Three services hold a copy of the cross-reference relationship, which is the deliberate replacement for one `CCXREF` dataset shared by six programs in Figure 1. Two of the three are keyed on the card, because authorization and card both answer questions asked about a card. The account copy is keyed on the account and holds no card number, because its one query asks which customer an account belongs to; a card number replicated into a schema that reads no card would be a Primary Account Number with no reader. **The three copies do not share a lifecycle, and calling them all event-current would overstate two of them.**
+
+| Copy | How it is loaded | What keeps it current | Who reads it |
+| --- | --- | --- | --- |
+| authorization `card_xref` | `V1` schema, `V2` seed | `CardUpdatedConsumer` on `authorization-card-updated`, which refreshes the observation metadata only. It never remaps a card to a different account | The decline rules, on every authorization call |
+| account `account_customer_link` | `V7` migration, which seeds the pairs and drops the card-keyed `V4` replica | Nothing. No event refreshes it | `AccountUpdateService`, which reads one row under a lock to confirm the submitted account and customer are the stored pair |
+| card `card_xref` | `V1` schema, `V2` seed | Nothing. This service registers no listener | Nothing under `src/main/java`. The entity and repository exist and only tests call them |
+
+Two consequences are worth stating plainly. A card that moves to another account is not re-pointed in either card-keyed copy, and no service measures the divergence. [The decision log](decision-log.md) records that as a deliberate deferral.
 
 ## Component-by-component correspondence
 
@@ -336,7 +348,8 @@ Each row states one mapping between Figure 1 and Figure 2, and none argues for i
 | COBOL copybook record layout | Copybooks under `app/cpy/` | Jakarta Persistence entity, Flyway migration, and event field, or a recorded omission |
 | JCL job step naming a program | `app/jcl/POSTTRAN.jcl:L23` | Kafka listener method, triggered by an event rather than by a clock |
 | Sequential daily-transaction flat file | `app/jcl/POSTTRAN.jcl:L30-L31` | The `transaction.authorized` topic. The file becomes a stream |
-| Generation Data Group reject dataset | `app/jcl/POSTTRAN.jcl:L34-L38` | Rejected-transaction row, a declined event, and a dead-letter route |
+| Generation Data Group reject dataset | `app/jcl/POSTTRAN.jcl:L34-L38` | A `rejected_transaction` row holding the 350-character refused record whole, plus a `TransactionDeclined` event. Both are business outcomes, as the source reject is: `app/cbl/CBTRN02C.cbl:L230` answers a reject with return code 4, not an abend. The dead-letter topics are **not** this row's equivalent |
+
 | `WRITEQ TD` naming the `JOBS` queue | `app/cbl/CORPT00C.cbl:L517-L519`, queue defined at `app/csd/CARDDEMO.CSD:L499-L502` | Transactional outbox row, relayed to a Kafka publish |
 | Called input and output subroutine with an operation-code parameter area | `app/cbl/CBSTM03B.CBL:L99-L114` and `:L118-L127` | Repository interface per aggregate |
 | `CALL 'CSUTLDTC'` date validation | `app/cbl/COTRN02C.cbl:L389-L414` | Shared date validator that keeps the message-2513 tolerance |
@@ -348,13 +361,17 @@ One row deserves its detail, because it is the clearest ancestor in the source. 
 
 The operation codes then map cleanly onto a repository interface. Keyed read becomes find by identifier, sequential read becomes iteration, write becomes insert, and rewrite becomes update. Open and close are dropped, because connection lifecycle is the framework's concern.
 
+One target construct has no row above, because it has no legacy construct to sit beside. **The dead-letter topics are additive reliability, not the migration of anything.** The source's answer to a record it cannot process is the abend paragraph at `app/cbl/CBTRN02C.cbl:L707-L711`. It displays a message, moves 999 into an abend code, and ends the job. There is no cleanup, and no record of the individual message. The platform instead exhausts its retries, routes the one message aside with enough metadata to diagnose and replay it, and leaves the listener consuming. Reading a dead-letter topic as the successor to the reject dataset conflates two different things. A reject is a decision the business asked for. A dead-lettered message is a failure the platform survived.
+
 ## What changed structurally
 
 Four properties changed. Each names the feature in Figure 1 and Figure 2 that shows it.
 
 ### Shared datasets became private stores
 
-Figure 1 puts eight file definitions at its centre, each reached by several programs across the online region and the nightly chain. Figure 2 puts every database inside one service boundary, and no arrow crosses from one service to another service's store. Where two services need the same record, the second holds its own copy and an event keeps it current.
+Figure 1 puts eight file definitions at its centre, each reached by several programs across the online region and the nightly chain. Figure 2 puts every database inside one service boundary, and no arrow crosses from one service to another service's store. Where two services need the same record, the second holds its own copy.
+
+Two mechanisms keep those copies usable, and they are not interchangeable. An event refreshes a copy whose fields an event carries, which covers `account_credit_snapshot`, `account_balance_projection` and `cardholder_context`. A seed supplies a copy no event can carry, which is the case for all three cross-reference copies, because no event carries a full card number. The table under [private store ownership](#private-store-ownership) states which mechanism holds each copy.
 
 ### One asynchronous handoff became the general mechanism
 

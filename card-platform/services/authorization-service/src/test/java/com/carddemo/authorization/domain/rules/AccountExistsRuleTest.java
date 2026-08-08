@@ -216,14 +216,14 @@ final class AccountExistsRuleTest {
         @DisplayName("is the identifier the resolved cross-reference row carries")
         void comesFromTheResolvedRow() {
             AccountCreditSnapshotEntity row = snapshotFor(FIXTURE_ACCOUNT_ID);
-            when(accountCreditSnapshots.findByAccountId(FIXTURE_ACCOUNT_ID))
+            when(accountCreditSnapshots.findForUpdateByAccountId(FIXTURE_ACCOUNT_ID))
                     .thenReturn(Optional.of(row));
             DeclineRule.Context context = contextWith(resolvedCard(FIXTURE_ACCOUNT_ID));
 
             rule.evaluate(context);
 
             ArgumentCaptor<String> keyed = ArgumentCaptor.forClass(String.class);
-            verify(accountCreditSnapshots).findByAccountId(keyed.capture());
+            verify(accountCreditSnapshots).findForUpdateByAccountId(keyed.capture());
             assertAll(
                     () -> assertEquals(context.getResolvedAccountId(), keyed.getValue(),
                             "app/cbl/CBTRN02C.cbl:L394 moves XREF-ACCT-ID into the key field"),
@@ -237,14 +237,14 @@ final class AccountExistsRuleTest {
         @DisplayName("follows the row when the row names another account")
         void followsTheRowAndNotTheCardNumber() {
             AccountCreditSnapshotEntity row = snapshotFor(OTHER_ACCOUNT_ID);
-            when(accountCreditSnapshots.findByAccountId(OTHER_ACCOUNT_ID))
+            when(accountCreditSnapshots.findForUpdateByAccountId(OTHER_ACCOUNT_ID))
                     .thenReturn(Optional.of(row));
             DeclineRule.Context context = contextWith(resolvedCard(OTHER_ACCOUNT_ID));
 
             rule.evaluate(context);
 
             ArgumentCaptor<String> keyed = ArgumentCaptor.forClass(String.class);
-            verify(accountCreditSnapshots).findByAccountId(keyed.capture());
+            verify(accountCreditSnapshots).findForUpdateByAccountId(keyed.capture());
             assertAll(
                     () -> assertEquals(OTHER_ACCOUNT_ID, keyed.getValue(),
                             "the identifier the seated row carries, and no other"),
@@ -260,12 +260,12 @@ final class AccountExistsRuleTest {
         @ValueSource(strings = {FIXTURE_ACCOUNT_ID, OTHER_ACCOUNT_ID, UNRESOLVED_ACCOUNT_ID})
         @DisplayName("keeps every leading zero the row holds")
         void keepsEveryLeadingZero(String accountId) {
-            when(accountCreditSnapshots.findByAccountId(accountId)).thenReturn(Optional.empty());
+            when(accountCreditSnapshots.findForUpdateByAccountId(accountId)).thenReturn(Optional.empty());
 
             rule.evaluate(contextWith(resolvedCard(accountId)));
 
             ArgumentCaptor<String> keyed = ArgumentCaptor.forClass(String.class);
-            verify(accountCreditSnapshots).findByAccountId(keyed.capture());
+            verify(accountCreditSnapshots).findForUpdateByAccountId(keyed.capture());
             assertAll(
                     () -> assertEquals(accountId, keyed.getValue(),
                             "column account_id holds text, so the rule pads nothing, trims nothing"
@@ -283,7 +283,7 @@ final class AccountExistsRuleTest {
         @Test
         @DisplayName("answers with reject code 0101 and raises nothing")
         void answersWithRejectCode() {
-            when(accountCreditSnapshots.findByAccountId(UNRESOLVED_ACCOUNT_ID))
+            when(accountCreditSnapshots.findForUpdateByAccountId(UNRESOLVED_ACCOUNT_ID))
                     .thenReturn(Optional.empty());
             DeclineRule.Context context = contextWith(resolvedCard(UNRESOLVED_ACCOUNT_ID));
 
@@ -303,7 +303,7 @@ final class AccountExistsRuleTest {
         @Test
         @DisplayName("seats no snapshot on the context")
         void seatsNothing() {
-            when(accountCreditSnapshots.findByAccountId(UNRESOLVED_ACCOUNT_ID))
+            when(accountCreditSnapshots.findForUpdateByAccountId(UNRESOLVED_ACCOUNT_ID))
                     .thenReturn(Optional.empty());
             DeclineRule.Context context = contextWith(resolvedCard(UNRESOLVED_ACCOUNT_ID));
 
@@ -324,7 +324,7 @@ final class AccountExistsRuleTest {
         @DisplayName("declines nothing and seats the resolved row on the context")
         void seatsResolvedRow() {
             AccountCreditSnapshotEntity row = snapshotFor(FIXTURE_ACCOUNT_ID);
-            when(accountCreditSnapshots.findByAccountId(FIXTURE_ACCOUNT_ID))
+            when(accountCreditSnapshots.findForUpdateByAccountId(FIXTURE_ACCOUNT_ID))
                     .thenReturn(Optional.of(row));
             DeclineRule.Context context = contextWith(resolvedCard(FIXTURE_ACCOUNT_ID));
 
@@ -389,7 +389,7 @@ final class AccountExistsRuleTest {
          * @return the reject reason the rule assigned
          */
         private DeclineReason rejectReasonFromMiss() {
-            when(accountCreditSnapshots.findByAccountId(UNRESOLVED_ACCOUNT_ID))
+            when(accountCreditSnapshots.findForUpdateByAccountId(UNRESOLVED_ACCOUNT_ID))
                     .thenReturn(Optional.empty());
 
             DeclineReason answer = rule
@@ -468,12 +468,12 @@ final class AccountExistsRuleTest {
         @DisplayName("reads the account finder once, writes nothing and reaches no other method")
         void readsOneFinderOnceAndWritesNothing() {
             AccountCreditSnapshotEntity row = snapshotFor(FIXTURE_ACCOUNT_ID);
-            when(accountCreditSnapshots.findByAccountId(FIXTURE_ACCOUNT_ID))
+            when(accountCreditSnapshots.findForUpdateByAccountId(FIXTURE_ACCOUNT_ID))
                     .thenReturn(Optional.of(row));
 
             rule.evaluate(contextWith(resolvedCard(FIXTURE_ACCOUNT_ID)));
 
-            verify(accountCreditSnapshots, times(1)).findByAccountId(FIXTURE_ACCOUNT_ID);
+            verify(accountCreditSnapshots, times(1)).findForUpdateByAccountId(FIXTURE_ACCOUNT_ID);
             verify(accountCreditSnapshots, never()).save(any());
             verifyNoMoreInteractions(accountCreditSnapshots);
         }
@@ -481,12 +481,12 @@ final class AccountExistsRuleTest {
         @Test
         @DisplayName("reads the account finder once when nothing resolves either")
         void readsOneFinderOnceOnAMiss() {
-            when(accountCreditSnapshots.findByAccountId(UNRESOLVED_ACCOUNT_ID))
+            when(accountCreditSnapshots.findForUpdateByAccountId(UNRESOLVED_ACCOUNT_ID))
                     .thenReturn(Optional.empty());
 
             rule.evaluate(contextWith(resolvedCard(UNRESOLVED_ACCOUNT_ID)));
 
-            verify(accountCreditSnapshots, times(1)).findByAccountId(UNRESOLVED_ACCOUNT_ID);
+            verify(accountCreditSnapshots, times(1)).findForUpdateByAccountId(UNRESOLVED_ACCOUNT_ID);
             verify(accountCreditSnapshots, never()).save(any());
             verifyNoMoreInteractions(accountCreditSnapshots);
         }
@@ -550,7 +550,7 @@ final class AccountExistsRuleTest {
         @DisplayName("a closed account still authorizes")
         void authorizesAClosedAccount() {
             AccountCreditSnapshotEntity row = snapshotFor(FIXTURE_ACCOUNT_ID);
-            when(accountCreditSnapshots.findByAccountId(FIXTURE_ACCOUNT_ID))
+            when(accountCreditSnapshots.findForUpdateByAccountId(FIXTURE_ACCOUNT_ID))
                     .thenReturn(Optional.of(row));
             DeclineRule.Context context = contextWith(resolvedCard(FIXTURE_ACCOUNT_ID));
 
@@ -572,7 +572,7 @@ final class AccountExistsRuleTest {
         void readsNeitherTheLimitNorTheExpiry() {
             AccountCreditSnapshotEntity row = snapshotFor(FIXTURE_ACCOUNT_ID,
                     NARROW_CREDIT_LIMIT, LONG_PAST_EXPIRY_DATE);
-            when(accountCreditSnapshots.findByAccountId(FIXTURE_ACCOUNT_ID))
+            when(accountCreditSnapshots.findForUpdateByAccountId(FIXTURE_ACCOUNT_ID))
                     .thenReturn(Optional.of(row));
             DeclineRule.Context context = contextWith(resolvedCard(FIXTURE_ACCOUNT_ID));
 
@@ -590,7 +590,7 @@ final class AccountExistsRuleTest {
         @DisplayName("the customer identifier arrives on the resolved row and is not looked up")
         void carriesTheCustomerIdentifierOnTheRow() {
             AccountCreditSnapshotEntity row = snapshotFor(FIXTURE_ACCOUNT_ID);
-            when(accountCreditSnapshots.findByAccountId(FIXTURE_ACCOUNT_ID))
+            when(accountCreditSnapshots.findForUpdateByAccountId(FIXTURE_ACCOUNT_ID))
                     .thenReturn(Optional.of(row));
             DeclineRule.Context context = contextWith(resolvedCard(FIXTURE_ACCOUNT_ID));
 
@@ -598,7 +598,7 @@ final class AccountExistsRuleTest {
 
             assertEquals(FIXTURE_CUSTOMER_ID, context.getCardCrossReference().getCustomerId(),
                     "XREF-CUST-ID at app/cpy/CVACT03Y.cpy:L6 arrives on the row");
-            verify(accountCreditSnapshots).findByAccountId(FIXTURE_ACCOUNT_ID);
+            verify(accountCreditSnapshots).findForUpdateByAccountId(FIXTURE_ACCOUNT_ID);
             verifyNoMoreInteractions(accountCreditSnapshots);
         }
 

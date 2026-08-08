@@ -192,6 +192,11 @@ data:
   # stream under a group of its own, so the two services each see every change rather than
   # splitting the partitions between them.
   GROUP_LEDGER_ACCOUNT: "ledger-account-state"
+  # Consumer group of the ledger's reject listener. It reads transaction.declined, which the
+  # authorization service publishes, and writes the 430-byte reject row of
+  # app/cbl/CBTRN02C.cbl:L446-L465. Without this group the reject path has no production
+  # ingress and the row is never written.
+  GROUP_LEDGER_REJECT: "ledger-reject"
   GROUP_AUTHORIZATION_CARD: "authorization-card-updated"
   # Consumer group of the account service's posted-transaction listener. It adds each
   # posted amount to the account record, reproducing app/cbl/CBTRN02C.cbl:L545-L560, and the
@@ -217,9 +222,33 @@ data:
   # otherwise cost one event permanently: the row stays CLAIMED and the claim query
   # reads PENDING rows only. card-platform/.env.example carries the same value.
   OUTBOX_RELAY_CLAIM_TIMEOUT: "PT2M"
+  # Milliseconds one sweep may spend waiting for broker acknowledgements before it stops
+  # and leaves the rest of its batch to the next sweep. Read once per pass as a monotonic
+  # deadline, so a slow broker costs one pass rather than an unbounded one. It stays above
+  # the producer window of one send, MAX_BLOCK_MS + DELIVERY_TIMEOUT_MS, which the shipped
+  # settings hold at four seconds; a send therefore resolves inside the pass that issued it
+  # instead of being abandoned while the broker may still complete it.
+  # card-platform/.env.example carries the same value.
+  OUTBOX_RELAY_MAX_DURATION_MS: "5000"
   OUTBOX_PUBLISHED_RETENTION_HOURS: "168"
-  PROCESSED_EVENT_RETENTION_HOURS: "168"
+  PROCESSED_EVENT_RETENTION_HOURS: "720"
   RETENTION_SWEEP_INTERVAL_MS: "3600000"
+  # Business-table horizons. Each was declared in a COMMENT ON TABLE before any code
+  # applied it, so the catalogue described an intention while the table only grew. A
+  # security review found that, and each service's domain/RetentionSweep now reads the
+  # matching value below. Every one of these rows is pseudonymous rather than anonymous:
+  # its account or transaction identifier resolves to a named customer through the owning
+  # service, so these are privacy horizons and not housekeeping.
+  # card-platform/.env.example carries the same values.
+  FRAUD_ASSESSMENT_RETENTION_DAYS: "90"
+  # This one also has a floor. A velocity bucket is counted into for the length of
+  # carddemo.fraud.risk.velocity-window-minutes, so the fraud service refuses to start
+  # when this horizon does not outlast that window.
+  FRAUD_VELOCITY_RETENTION_DAYS: "7"
+  # Bounding the reject set is faithful rather than additive: app/jcl/DALYREJS.jcl:L24-L28
+  # defines the source's reject generation group with LIMIT(5) and SCRATCH, so a sixth
+  # write deletes the oldest generation.
+  LEDGER_REJECTED_RETENTION_DAYS: "90"
   # OUTBOX_RELAY_INSTANCE_ID is deliberately NOT a key here, and this is the one
   # exception to the parity invariant in the header worth explaining twice. It names
   # the relay instance that won a row, so its value has to differ per replica. The
@@ -240,6 +269,23 @@ data:
   # card-platform/.env.example carries the same value.
   REPLICA_MAX_STALENESS: "P1D"
 
+# Decision serialization and reserved exposure
+  # Only the authorization service reads these two, and the whole-ConfigMap pull carries
+  # them to the other five, which ignore them. An approval reserves its own amount on its
+  # account_credit_snapshot row inside the decision transaction, because the account
+  # service reports the authoritative accumulators back only after the posting path has
+  # run. app/cbl/CBTRN02C.cbl had no such gap: it rewrites the account at :L545-L560
+  # before it validates the next record, so :L403-L405 always reads every earlier approval.
+  #
+  # Milliseconds a decision waits for the account row another decision holds before the
+  # lock is refused and the call answers 503. Applied per decision transaction.
+  DECISION_LOCK_WAIT_MS: "3000"
+  # How long a reservation holds its exposure before the next decision treats it as
+  # drained. The authoritative account.state-changed event releases it sooner; this bound
+  # covers the approval whose event is dead-lettered and never arrives.
+  DECISION_RESERVATION_TTL: "PT15M"
+  # card-platform/.env.example carries both values.
+
   # Consumer resilience
   # Delivery attempts a consumer makes, then the milliseconds it waits between
   # two. A record that exhausts the attempts routes to the dead-letter topic.
@@ -248,12 +294,11 @@ data:
   CONSUMER_RETRY_BACKOFF_MS: "1000"
 
   # Notification history
-  # Retention horizons for statement rows and metadata-only delivery attempts.
+  # Retention horizons for statement rows and for the metadata-only record of each alert
+  # the notification service rendered. Nothing on this platform sends a cardholder alert,
+  # so NOTIFICATION_LOG_RETENTION_DAYS bounds a table of rendered-not-sent rows.
   STATEMENT_RETENTION_DAYS: "400"
   NOTIFICATION_LOG_RETENTION_DAYS: "90"
-  # Default and maximum rows returned by the notification-history endpoint.
-  NOTIFICATION_HISTORY_PAGE_SIZE: "50"
-  NOTIFICATION_HISTORY_MAX_PAGE_SIZE: "200"
 
   # Logging and observability
   # Root level, then the level for the com.carddemo packages where the event
@@ -282,51 +327,103 @@ data:
   # instead of restarting a Java virtual machine that is running correctly.
   MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED: "true"
 
+  # Request-surface controls
+  # One policy for all six services, so these keys sit here rather than in a per-service
+  # ConfigMap. card-platform/.env.example and the shared environment block of
+  # card-platform/docker-compose.yml carry the same six values.
+  #
+  # The header names what a state-changing request has to carry. A browser attaches a cached
+  # HTTP Basic credential to a request a foreign page caused, and an HTML form can set no
+  # header at all, so this is the line between a first-party client and a replayed credential.
+  # config/CrossSiteRequestFilter also refuses a foreign Sec-Fetch-Site or Origin.
+  #
+  # An Ingress terminating Transport Layer Security has to forward the client-facing host and
+  # scheme, and each service has to be told to read them, or the Origin comparison sees the
+  # address the Ingress dialled. Set SERVER_FORWARD_HEADERS_STRATEGY to framework for that.
+  API_CROSS_SITE_HEADER: "X-CardDemo-Request"
+  # The five rate ceilings, counted over one fixed window by config/RequestRateCeilingFilter,
+  # which runs ahead of the security chain so a refusal costs less than the bcrypt
+  # verification it refuses. The request ceiling applies per source address and per identity;
+  # the write ceiling covers POST, PUT, PATCH and DELETE; the failure ceiling refuses a source
+  # that keeps presenting a credential 401 answers.
+  #
+  # The counters live in one process, so a Deployment scaled past one replica bounds each
+  # replica rather than the service. card-platform/docs/suggested-next-tasks.md records the
+  # shared-store ceiling a deployment beyond a demo wants.
+  API_RATE_WINDOW_SECONDS: "60"
+  API_RATE_REQUESTS_PER_WINDOW: "600"
+  API_RATE_WRITE_REQUESTS_PER_WINDOW: "120"
+  API_RATE_AUTHENTICATION_FAILURES_PER_WINDOW: "20"
+  API_RATE_CONCURRENT_REQUESTS: "64"
+
   # Request identities
-  # Each service maps the three entries below onto one Spring Security user, and
-  # start-up fails when the list is empty. A username is not a credential and
-  # belongs here; the matching password hashes are keys of the Secret in
-  # 31-secret.example.yaml and appear nowhere in this file.
+  # Each service maps the entries below onto one Spring Security user, and start-up
+  # fails when the list is empty. A username is not a credential and belongs here;
+  # the matching password hashes are keys of the Secret in 31-secret.example.yaml
+  # and appear nowhere in this file.
   #
   # ADMIN and USER are the two outcomes of the SEC-USR-TYPE fork at
-  # app/cbl/COSGN00C.cbl:L232-L236. MONITORING is additive: it reaches the metrics
-  # and Prometheus endpoints above and no business route at all.
+  # app/cbl/COSGN00C.cbl:L232-L236. ACQUIRER and MONITORING are additive.
+  # MONITORING reaches the metrics and Prometheus endpoints above and no business
+  # route at all.
+  #
+  # ACQUIRER is the machine identity a point-of-sale network presents, and only the
+  # authorization service reads it: it is the one role besides ADMIN that reaches
+  # POST /authorizations. It is a separate identity rather than another scope on the
+  # cardholder entry because that route names its card in the request body, so no
+  # path variable carries an identifier an ownership scope could be compared against,
+  # and the route therefore reaches every card the platform holds.
   ADMIN_USERNAME: "admin001"
+  ACQUIRER_USERNAME: "acquirer1"
   USER_USERNAME: "user0001"
   MONITORING_USERNAME: "monitor01"
   # What the ordinary identity owns, comma separated, one authority per
   # entitlement: SCOPE_ACCOUNT_<eleven digits>, SCOPE_CUSTOMER_<nine digits> or
   # SCOPE_CARD_<card token>. An account and a customer identifier are written exactly
-  # as the column holds them, leading zeros included, and a card token is the 64
-  # lower-case hexadecimal characters PanMasker.cardToken produces for that card number
-  # under CARD_TOKEN_VERSION below and the CARD_TOKEN_SECRET in
-  # 31-secret.example.yaml. Empty grants nothing, so an ownership-scoped route answers
-  # 403 until a value appears here.
+  # as the column holds them, leading zeros included. Empty grants nothing, so an
+  # ownership-scoped route answers 403 until a value appears here.
   #
-  # The three values below are the same three card-platform/.env.example carries, and
+  # The two values below are the same two card-platform/.env.example carries, and
   # they are here so that a demo scripted on one path reproduces on the other: an
   # empty list on this path alone would answer 403 to every ownership-scoped route
   # that answered 200 under Docker Compose, and the divergence would look like a
   # broken cluster rather than a configuration difference. They name record 1 of
-  # app/data/ASCII/acctdata.txt, its customer in custdata.txt and the token of its
-  # card in carddata.txt — all three seeded by the V2__seed.sql
-  # migration of the service that owns them. They are entitlements, not credentials:
-  # the USER identity still has to authenticate with the hash in
-  # carddemo-identity-secret before any of them applies. Re-point them at the records
-  # a real deployment owns, or empty the value to grant nothing.
-  USER_SCOPES: "SCOPE_ACCOUNT_00000000001,SCOPE_CUSTOMER_000000001,SCOPE_CARD_98433fc178365d966539a9156365078b3b382bbb8d75143e37e49a18290d58c0"
+  # app/data/ASCII/acctdata.txt and its customer in custdata.txt, both seeded by the
+  # V2__seed.sql migration of the service that owns them. They are entitlements, not
+  # credentials: the USER identity still has to authenticate with the hash in
+  # carddemo-identity-secret before either applies. Re-point them at the records a real
+  # deployment owns, or empty the value to grant nothing.
+  #
+  # No SCOPE_CARD authority appears, because a card token is derived under the key in
+  # carddemo-card-token-secret and this cluster generates its own. An authority written
+  # here would name a card under a key no deployment uses. The administrator identity
+  # reaches every card route without one; for the ordinary identity, derive a token under
+  # the generated key and append SCOPE_CARD_<that value> here.
+  # card-platform/.env.example carries the command.
+  USER_SCOPES: "SCOPE_ACCOUNT_00000000001,SCOPE_CUSTOMER_000000001"
 
-  # The card-token version every service derives under. The key itself is
-  # CARD_TOKEN_SECRET in carddemo-identity-secret, because it is key material and this
-  # file is not a Secret; the version is not, and belongs here beside the authority that
-  # names a token.
+  # The card-token version the two deriving services derive under. The key itself is
+  # CARD_TOKEN_SECRET in carddemo-card-token-secret, because it is key material and this
+  # file is not a Secret. The version is not key material and belongs here.
   #
   # The version is part of the message the keyed code covers, so raising it rolls every
-  # token over under the same key. That is the staged rollover: raise it, re-derive the
-  # fifty card_token literals in the card service seed and the SCOPE_CARD authority
-  # above, then apply both together. card-platform/.env.example carries the procedure and
-  # the same two values, so a demo scripted on Compose reproduces here.
+  # token over under the same key. That is the staged rollover, and the card service
+  # applies it: CardTokenReconciler re-derives card_token for every row on start-up, so
+  # raising the version here and restarting is the whole procedure for the seeded rows.
+  # A token something already stored elsewhere - a statement_transaction row, a
+  # notification_log row, an authorization_decision row, a granted SCOPE_CARD authority -
+  # does not survive it. card-platform/.env.example carries the same value, so a demo
+  # scripted on Compose reproduces here.
   CARD_TOKEN_VERSION: "1"
+
+  # NO statement about a published key appears here, and that is deliberate.
+  # 31-secret.example.yaml carries a placeholder rather than a key, so a cluster applying
+  # these files runs under a key generated for itself. CARD_TOKEN_ALLOW_PUBLISHED_KEY exists
+  # for the one deployment that means to run under the key this repository publishes for its
+  # demonstration: PanMasker refuses that key unless the value is set to true. Setting it
+  # here while the Secret names no key would be a statement about a key nobody supplied,
+  # which survives a rotation as a lie. card-platform/docs/suggested-next-tasks.md carries
+  # the rotation and the three artifacts it re-derives.
 
   # Transport Layer Security for the two ports each service serves
   # On here and off in the compose stack, and the reason is the network rather than the

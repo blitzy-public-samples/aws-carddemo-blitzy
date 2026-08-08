@@ -33,12 +33,23 @@ import org.junit.jupiter.api.Test;
  * Proves that every projection and every replica is bootstrapped before the first event arrives, and
  * pins the freshness and ordering policy the shipped code expresses.
  *
- * <p>Four tables in three services hold a copy of state another service owns. The authorization
+ * <p>Six tables in five services hold a copy of state another service owns. The authorization
  * service reads {@code account_credit_snapshot} and {@code card_xref} to decide, the ledger service
- * adds to {@code account_balance_projection} when it posts, and the card service reads its own
- * {@code card} table and its own {@code card_xref} replica. None of the four is filled by the
- * service that owns the original: events keep them current once they are running, and a migration
- * has to put the opening state there.</p>
+ * adds to {@code account_balance_projection} when it posts, the card service reads its own
+ * {@code card} table and its own {@code card_xref} replica, the account service resolves a customer
+ * through {@code account_customer_link}, and the notification service renders from
+ * {@code cardholder_context}. None of the six is filled by the service that owns the original:
+ * events keep them current once they are running, and a migration has to put the opening state
+ * there.</p>
+ *
+ * <p>Two of those copies key on a card and one does not, and the difference is deliberate. The
+ * authorization and card replicas answer a question asked about a card, so they hold
+ * {@code XREF-CARD-NUM} as their key. The account service asks only which customer an account
+ * belongs to, so {@code account_customer_link} holds the pair and no card number at all: a Primary
+ * Account Number replicated into a schema that reads no card is a disclosure surface with no reader,
+ * which a security review recorded and {@code card-platform/docs/decision-log.md} answers. This
+ * class therefore compares the two card-keyed replicas against each other and the link table
+ * against the same fixture on its own key.</p>
  *
  * <p>A projection left empty is not a slow start, it is a wrong answer.
  * {@code app/cbl/CBTRN02C.cbl:L395-L399} reads the account record before it posts and assigns reject
@@ -96,6 +107,20 @@ class ProjectionBootstrapContractTest {
     private static final Pattern INSERT_STATEMENT = Pattern.compile(
             "INSERT\\s+INTO\\s+(\\w+)\\s*\\(([^)]*)\\)\\s*VALUES\\s*(.*?);",
             Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
+
+    /**
+     * Matches one {@code DROP TABLE} statement and captures the table it removes.
+     *
+     * <p>A migration is not edited once it has been applied, so a table a later migration drops is
+     * still created and still seeded by the migration that introduced it. Reading the seeds without
+     * reading the drops would report rows for a table a fresh database does not end up holding, and
+     * this class would then pin a shape the shipped schema no longer has. The account service is the
+     * live case: its {@code card_xref} replica is created and seeded by V4 and dropped by V7, which
+     * replaced it with {@code account_customer_link}.</p>
+     */
+    private static final Pattern DROP_TABLE_STATEMENT = Pattern.compile(
+            "DROP\\s+TABLE\\s+(?:IF\\s+EXISTS\\s+)?(\\w+)",
+            Pattern.CASE_INSENSITIVE);
 
     /** Prefix a date literal carries in a seed. */
     private static final String DATE_LITERAL_PREFIX = "DATE ";
@@ -210,9 +235,11 @@ class ProjectionBootstrapContractTest {
         tables.put("card-service.card_xref",
                 "Replica of the same cross-reference the authorization service holds, so the card "
                         + "path of app/cbl/COCRDLIC.cbl reads its own copy");
-        tables.put("account-service.card_xref",
-                "Replica used by the account update path to derive the customer identifier from "
-                        + "the account identifier instead of trusting a caller-supplied pairing");
+        tables.put("account-service.account_customer_link",
+                "Read by the account update path to derive the customer identifier from the "
+                        + "account identifier instead of trusting a caller-supplied pairing. Holds "
+                        + "the XREF-ACCT-ID and XREF-CUST-ID pair of app/cpy/CVACT03Y.cpy:L6-L7 and "
+                        + "no card number, because no query here reads a card");
         tables.put("notification-service.cardholder_context",
                 "Read by every rendered alert, filling the ten cardholder fields "
                         + "5000-CREATE-STATEMENT assembles at app/cbl/CBSTM03A.CBL:L462-L485. The "
@@ -233,9 +260,13 @@ class ProjectionBootstrapContractTest {
                     .resolve(MIGRATION_DIRECTORY);
             Map<String, List<SeededRow>> byTable = new LinkedHashMap<>();
             for (Path migration : migrationsIn(directory)) {
-                for (SeededRow row : parseInserts(readText(migration))) {
+                String text = readText(migration);
+                for (SeededRow row : parseInserts(text)) {
                     byTable.computeIfAbsent(row.table(), table -> new ArrayList<>()).add(row);
                 }
+                // Applied in version order, so a drop removes what earlier migrations seeded and a
+                // later migration may seed the same name again.
+                parseDrops(text).forEach(byTable::remove);
             }
             Map<String, List<SeededRow>> immutable = new LinkedHashMap<>();
             byTable.forEach((table, rows) -> immutable.put(table, List.copyOf(rows)));
@@ -286,6 +317,17 @@ class ProjectionBootstrapContractTest {
             }
         }
         return List.copyOf(rows);
+    }
+
+    /** Lists the tables one migration drops, in the order it drops them. */
+    private static List<String> parseDrops(String migration) {
+        String statements = SQL_LINE_COMMENT.matcher(migration).replaceAll("");
+        List<String> dropped = new ArrayList<>();
+        Matcher drop = DROP_TABLE_STATEMENT.matcher(statements);
+        while (drop.find()) {
+            dropped.add(drop.group(1));
+        }
+        return List.copyOf(dropped);
     }
 
     /** Splits the tuple list of a {@code VALUES} clause into the text inside each tuple. */
@@ -423,9 +465,13 @@ class ProjectionBootstrapContractTest {
             assertEquals(FIXTURE_ROW_COUNT, seededRows("card-service", "card_xref").size(),
                     "the card cross-reference replica holds one row per record of "
                             + "app/data/ASCII/cardxref.txt");
-            assertEquals(FIXTURE_ROW_COUNT, seededRows("account-service", "card_xref").size(),
-                    "the account cross-reference replica holds one row per record of "
+            assertEquals(FIXTURE_ROW_COUNT,
+                    seededRows("account-service", "account_customer_link").size(),
+                    "the account relationship table holds one row per account of "
                             + "app/data/ASCII/cardxref.txt");
+            assertEquals(List.of(), seededRows("account-service", "card_xref"),
+                    "the account service dropped its card-number-keyed replica in V7, so no "
+                            + "migration of that service may leave a card_xref seed behind");
             assertEquals(FIXTURE_ROW_COUNT, seededRows("card-service", "card").size(),
                     "the card table holds one row per record of app/data/ASCII/carddata.txt");
             assertEquals(FIXTURE_ROW_COUNT,
@@ -607,11 +653,12 @@ class ProjectionBootstrapContractTest {
         }
 
         /**
-         * The three cross-reference replicas hold the same rows as each other and as the fixture.
+         * Both card-keyed cross-reference replicas hold the same rows as each other and as the
+         * fixture.
          */
         @Test
-        @DisplayName("all three cross-reference replicas equal the fixture and each other")
-        void allCrossReferenceReplicasEqualTheFixtureAndEachOther() {
+        @DisplayName("both card-keyed cross-reference replicas equal the fixture and each other")
+        void bothCardKeyedReplicasEqualTheFixtureAndEachOther() {
             Map<String, String> fixture = new LinkedHashMap<>();
             for (CopybookRecordParser.CardCrossReferenceRecord crossReference
                     : CardDemoFixtureLoader.loadCardCrossReferences()) {
@@ -622,15 +669,12 @@ class ProjectionBootstrapContractTest {
             Map<String, String> authorization =
                     replicaRows("authorization-service", "card_xref");
             Map<String, String> card = replicaRows("card-service", "card_xref");
-            Map<String, String> account = replicaRows("account-service", "card_xref");
 
             assertEquals(fixture.keySet(), authorization.keySet(),
                     "the authorization replica holds the card numbers of "
                             + "app/data/ASCII/cardxref.txt and no others");
             assertEquals(fixture.keySet(), card.keySet(),
                     "the card replica holds the same card numbers");
-            assertEquals(fixture.keySet(), account.keySet(),
-                    "the account replica holds the same card numbers");
             List<String> divergent = new ArrayList<>();
             int ordinal = FIRST_ORDINAL;
             for (Map.Entry<String, String> expected : fixture.entrySet()) {
@@ -642,16 +686,71 @@ class ProjectionBootstrapContractTest {
                     divergent.add(at("card-service", "card_xref", "row", ordinal)
                             + " differs from the fixture");
                 }
-                if (!expected.getValue().equals(account.get(expected.getKey()))) {
-                    divergent.add(at("account-service", "card_xref", "row", ordinal)
-                            + " differs from the fixture");
-                }
                 ordinal++;
             }
 
             assertEquals(List.of(), divergent,
                     "these replica rows differ from app/data/ASCII/cardxref.txt, so the services "
                             + "would resolve one account differently: " + divergent);
+        }
+
+        /**
+         * The account relationship table pairs every fixture account with the customer the fixture
+         * names, and stores no card number while doing it.
+         *
+         * <p>The pairing is the whole content of the table, and it is the value
+         * {@code AccountUpdateService.authoritativeCustomerId} substitutes for a caller-supplied
+         * customer identifier, so a divergence here would let the update path of
+         * {@code app/cbl/COACTUPC.cbl} write against the wrong customer row. The absence of a card
+         * number is asserted beside the pairing rather than in a separate test, because the two
+         * together are the reason this table exists instead of the replica it replaced: the account
+         * service needs the relationship and never needs the card.</p>
+         */
+        @Test
+        @DisplayName("the account relationship table pairs every account with its customer and "
+                + "holds no card number")
+        void theAccountRelationshipTablePairsEveryAccountWithItsCustomer() {
+            Map<String, String> fixture = new LinkedHashMap<>();
+            for (CopybookRecordParser.CardCrossReferenceRecord crossReference
+                    : CardDemoFixtureLoader.loadCardCrossReferences()) {
+                // One customer per account in the fixture, so a second record of the same account
+                // may not disagree with the first.
+                String previous = fixture.putIfAbsent(crossReference.accountId(),
+                        crossReference.customerId());
+                assertTrue(previous == null || previous.equals(crossReference.customerId()),
+                        "app/data/ASCII/cardxref.txt pairs one account with two customers, so the "
+                                + "relationship cannot be held on the account alone");
+            }
+
+            List<SeededRow> seeded = seededRows("account-service", "account_customer_link");
+            Map<String, String> link = new LinkedHashMap<>();
+            List<String> divergent = new ArrayList<>();
+            for (int index = 0; index < seeded.size(); index++) {
+                SeededRow row = seeded.get(index);
+                int ordinal = index + FIRST_ORDINAL;
+                if (row.columns().contains("card_number")) {
+                    divergent.add(at("account-service", "account_customer_link", "card_number",
+                            ordinal) + " seeds a card number into a table that reads no card");
+                }
+                link.put(paddedAccountId(row.text("account_id")),
+                        padded(row.text("customer_id"), PicClause.XREF_CUST_ID_WIDTH));
+            }
+
+            assertEquals(fixture.keySet(), link.keySet(),
+                    "the account relationship table holds the accounts of "
+                            + "app/data/ASCII/cardxref.txt and no others");
+            int ordinal = FIRST_ORDINAL;
+            for (Map.Entry<String, String> expected : fixture.entrySet()) {
+                if (!expected.getValue().equals(link.get(expected.getKey()))) {
+                    divergent.add(at("account-service", "account_customer_link", "customer_id",
+                            ordinal) + " differs from XREF-CUST-ID");
+                }
+                ordinal++;
+            }
+
+            assertEquals(List.of(), divergent,
+                    "the account relationship table diverges from app/data/ASCII/cardxref.txt, so "
+                            + "the update path would resolve one customer differently: " + divergent);
         }
 
         /** The card table opens on every card of the fixture, keyed on the full card number. */
@@ -997,8 +1096,8 @@ class ProjectionBootstrapContractTest {
          * reads the rows back.</p>
          */
         @Test
-        @DisplayName("the platform declares exactly the ten listeners named here, and no other")
-        void thePlatformDeclaresExactlyTheTenNamedListeners() {
+        @DisplayName("the platform declares exactly the eleven listeners named here, and no other")
+        void thePlatformDeclaresExactlyTheElevenNamedListeners() {
             assertEquals(EXPECTED_LISTENERS, listenerSources().keySet(),
                     "a listener added or removed changes what consumes the one event an "
                             + "authorization call publishes, and the fan-out is the property this "
@@ -1023,7 +1122,7 @@ class ProjectionBootstrapContractTest {
          *
          * <p>The floor is a minimum and not an equality. A fourth independent consumer would satisfy
          * the requirement too, and the exact inventory is pinned by
-         * {@link #thePlatformDeclaresExactlyTheTenNamedListeners()} instead.
+         * {@link #thePlatformDeclaresExactlyTheElevenNamedListeners()} instead.
          */
         @Test
         @DisplayName("the authorization event has at least three independent direct consumers")
@@ -1395,6 +1494,15 @@ class ProjectionBootstrapContractTest {
          * after {@code app/cbl/CBACT04C.cbl:L353-L354}. It never takes an account-held reading of
          * the three value columns its own posting arithmetic derives. Neither reads the other's copy.
          *
+         * <p>The eleventh listener is the production ingress of the reject path.
+         * {@code ledger-posting-service TransactionDeclinedConsumer} reads
+         * {@code transaction.declined} and writes the 430-byte reject row of
+         * {@code app/cbl/CBTRN02C.cbl:L446-L465}. Both branches of the fork at
+         * {@code app/cbl/CBTRN02C.cbl:L370-L378} ran in one program; the target splits them across
+         * two services because the authorization service is the sole writer of the decision, so the
+         * refusal arrives here as an event rather than as a fall-through. Without this listener the
+         * reject row was reachable from a test and from nowhere else.
+         *
          * <p>The tenth listener closes the loop those two replicas depend on.
          * {@code account-service TransactionPostedConsumer} reads {@code transaction.posted} and adds
          * the posted amount to the account record itself, reproducing
@@ -1411,6 +1519,7 @@ class ProjectionBootstrapContractTest {
                 "authorization-service CardUpdatedConsumer.java",
                 "ledger-posting-service AccountStateChangedConsumer.java",
                 "ledger-posting-service TransactionAuthorizedConsumer.java",
+                "ledger-posting-service TransactionDeclinedConsumer.java",
                 "fraud-detection-service TransactionAuthorizedConsumer.java",
                 "notification-service CustomerContextChangedConsumer.java",
                 "notification-service FraudFlaggedConsumer.java",
@@ -1445,7 +1554,9 @@ class ProjectionBootstrapContractTest {
                 List.of("notification-service FraudFlaggedConsumer.java"),
                 "carddemo.kafka.topics.transaction-posted",
                 List.of("account-service TransactionPostedConsumer.java",
-                        "notification-service TransactionPostedConsumer.java"));
+                        "notification-service TransactionPostedConsumer.java"),
+                "carddemo.kafka.topics.transaction-declined",
+                List.of("ledger-posting-service TransactionDeclinedConsumer.java"));
 
         /**
          * Reads the configuration property one listener resolves its topic through.

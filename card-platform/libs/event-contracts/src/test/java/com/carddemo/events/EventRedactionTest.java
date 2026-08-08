@@ -107,7 +107,7 @@ class EventRedactionTest {
     /**
      * Builds the authorization fixture the posted fixture derives from.
      *
-     * <p>{@link TransactionPosted#from(TransactionAuthorized, java.math.BigDecimal, String)} copies
+     * <p>{@link TransactionPosted#forAuthorized(TransactionAuthorized, java.math.BigDecimal, String)} copies
      * eleven components from this record, so both fixtures carry the same marker values and one
      * rendering assertion covers both.
      *

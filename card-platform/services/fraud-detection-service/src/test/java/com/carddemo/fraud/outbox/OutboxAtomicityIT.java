@@ -7,10 +7,11 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-
 import com.carddemo.events.EventEnvelope;
 import com.carddemo.events.FraudFlagged;
 import com.carddemo.fraud.FraudApplication;
+import com.carddemo.fraud.ScheduledWorkShutdown;
+import com.carddemo.fraud.TestIdentityPasswords;
 import com.carddemo.fraud.entity.FraudAssessmentEntity;
 import com.carddemo.fraud.entity.OutboxEventEntity;
 import com.carddemo.fraud.repository.FraudAssessmentRepository;
@@ -24,11 +25,14 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import org.awaitility.Awaitility;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.context.ApplicationContext;
 import org.springframework.core.env.Environment;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.kafka.test.context.EmbeddedKafka;
@@ -42,8 +46,8 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 /**
  * Proves that one fraud assessment row and its {@code outbox_event} row commit together or not at
  * all. A scheduled relay marks the committed row published and leaves the row in place.
- * {@code outbox_event} carries the fourteen columns, four indexes and primary key the migration
- * declares.
+ * {@code outbox_event} carries the fourteen columns, the primary key and the three secondary
+ * indexes the migration declares.
  *
  * <p>The fraud detection service is net new; no COBOL ancestor exists, and no Common Business
  * Oriented Language program under {@code app/cbl/} scores risk. One PostgreSQL container carries
@@ -61,9 +65,9 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
                 "spring.kafka.bootstrap-servers=${spring.embedded.kafka.brokers}",
                 "spring.kafka.security.protocol=PLAINTEXT",
                 "KAFKA_SASL_PASSWORD=not-a-real-broker-password",
-                "ADMIN_PASSWORD_HASH={noop}not-a-real-admin-password",
-                "USER_PASSWORD_HASH={noop}not-a-real-user-password",
-                "MONITORING_PASSWORD_HASH={noop}not-a-real-monitoring-password"
+                "ADMIN_PASSWORD_HASH=" + TestIdentityPasswords.ADMIN_PASSWORD_HASH,
+                "USER_PASSWORD_HASH=" + TestIdentityPasswords.USER_PASSWORD_HASH,
+                "MONITORING_PASSWORD_HASH=" + TestIdentityPasswords.MONITORING_PASSWORD_HASH
         })
 @Testcontainers
 @EmbeddedKafka(
@@ -95,6 +99,10 @@ class OutboxAtomicityIT {
     private static final String IX_OUTBOX_EVENT_CLAIMABLE = "ix_outbox_event_claimable";
     private static final String IX_OUTBOX_EVENT_PUBLISHED_AT = "ix_outbox_event_published_at";
 
+    /** Partial index over the abandoned rows still owing a terminal diagnostic. */
+    private static final String IX_OUTBOX_EVENT_DEAD_LETTER_REQUIRED =
+            "ix_outbox_event_dead_letter_required";
+
     private static final String EVENT_ID = "event_id";
     private static final String EVENT_TYPE = "event_type";
     private static final String AGGREGATE_ID = "aggregate_id";
@@ -109,6 +117,15 @@ class OutboxAtomicityIT {
     private static final String CLAIMED_BY = "claimed_by";
     private static final String CLAIMED_AT = "claimed_at";
     private static final String PUBLISHED_AT = "published_at";
+
+    /** Column carrying whether an abandoned row still owes a terminal diagnostic. */
+    private static final String DEAD_LETTER_STATE = "dead_letter_state";
+
+    /** Column carrying when the broker acknowledged that diagnostic. */
+    private static final String DEAD_LETTER_PUBLISHED_AT = "dead_letter_published_at";
+
+    /** Default V5 gives every existing row, none of which was ever named on a topic. */
+    private static final String NOT_REQUIRED_DEFAULT = "'NOT_REQUIRED'::character varying";
     private static final String TRANSACTION_ID = "transaction_id";
 
     private static final String TYPE_UUID = "uuid";
@@ -150,7 +167,6 @@ class OutboxAtomicityIT {
     /** Rows one rolled-back transaction leaves behind under one key. */
     private static final long NO_ROW = 0L;
 
-    /** Names {@code outbox_event} does not carry, each named in its own failure message. */
     private static final List<String> ABSENT_COLUMNS = List.of("status", "retry_count",
             "error_message", "topic", "partition", "offset", "headers", "correlation_id",
             "schema_version", "aggregate_type");
@@ -226,6 +242,36 @@ class OutboxAtomicityIT {
     @Autowired
     private Environment environment;
 
+    /** The started context, so the scheduler can be stopped before the container is. */
+    @Autowired
+    private ApplicationContext context;
+
+    /**
+     * Stops the relay tick and the listeners while the container is still up.
+     *
+     * <p>An {@code @AfterAll} method runs before the extension callback that stops
+     * {@link #POSTGRES}, which is the only window in which this can be done. Without it the relay
+     * keeps ticking every half second into a database that has gone, and the build log carries a
+     * closed-connection stack trace under {@code Unexpected error occurred in scheduled task} on a
+     * run where every assertion passed.
+     *
+     * <p>The field is an instance field because Spring injects into instances, so the context is
+     * captured from the last test instance rather than read statically.
+     */
+    @AfterAll
+    static void stopBackgroundWork() {
+        ScheduledWorkShutdown.stopBefore(startedContext);
+    }
+
+    /** The context of the most recent test instance, for {@link #stopBackgroundWork()}. */
+    private static ApplicationContext startedContext;
+
+    /** Records the context so the static teardown above can reach it. */
+    @BeforeEach
+    void captureContext() {
+        startedContext = context;
+    }
+
     /**
      * Points the datasource at the container and overrides nothing else about it.
      *
@@ -239,8 +285,6 @@ class OutboxAtomicityIT {
     }
 
     /**
-     * Returns the container connection string with the migrated schema on its search path.
-     *
      * @return the Java Database Connectivity (JDBC) URL every bean of this context connects through
      */
     private static String jdbcUrlOnMigratedSchema() {
@@ -370,7 +414,7 @@ class OutboxAtomicityIT {
      * from the entity, which schema validation does not compare.
      */
     @Test
-    @DisplayName("outbox_event carries the fourteen columns, four indexes and primary key the "
+    @DisplayName("outbox_event carries the sixteen columns, five indexes and primary key the "
             + "migration declares")
     void physicalOutboxEventSchemaContract() {
         Map<String, ColumnFact> declared = declaredColumns();
@@ -387,8 +431,24 @@ class OutboxAtomicityIT {
 
         Map<String, String> indexes = indexDefinitions(OUTBOX_EVENT);
         assertEquals(Set.of(PK_OUTBOX_EVENT, IX_OUTBOX_EVENT_PENDING, IX_OUTBOX_EVENT_CLAIMABLE,
-                        IX_OUTBOX_EVENT_PUBLISHED_AT), indexes.keySet(),
-                OUTBOX_EVENT + " does not carry the four indexes the migration declares");
+                        IX_OUTBOX_EVENT_PUBLISHED_AT, IX_OUTBOX_EVENT_DEAD_LETTER_REQUIRED),
+                indexes.keySet(),
+                OUTBOX_EVENT + " does not carry the five indexes the migration declares");
+        String owing = indexes.get(IX_OUTBOX_EVENT_DEAD_LETTER_REQUIRED);
+        assertNotNull(owing,
+                MIGRATED_SCHEMA + " holds no " + IX_OUTBOX_EVENT_DEAD_LETTER_REQUIRED);
+        assertAll("the index the relay reads its owed diagnostics from",
+                () -> assertTrue(owing.contains(LAST_ATTEMPT_AT),
+                        IX_OUTBOX_EVENT_DEAD_LETTER_REQUIRED + " does not order on "
+                                + LAST_ATTEMPT_AT),
+                // Partial by design. A healthy relay owes nothing, so the index stays the size of the
+                // backlog rather than the size of the table.
+                () -> assertTrue(owing.contains("WHERE"),
+                        IX_OUTBOX_EVENT_DEAD_LETTER_REQUIRED + " covers the whole table rather than"
+                                + " the owed rows alone: " + owing),
+                () -> assertTrue(owing.contains("REQUIRED"),
+                        IX_OUTBOX_EVENT_DEAD_LETTER_REQUIRED + " does not restrict to the owed"
+                                + " state: " + owing));
         String pending = indexes.get(IX_OUTBOX_EVENT_PENDING);
         assertNotNull(pending, MIGRATED_SCHEMA + " holds no " + IX_OUTBOX_EVENT_PENDING);
         assertAll("the index the relay reads its batch from",
@@ -410,8 +470,6 @@ class OutboxAtomicityIT {
     }
 
     /**
-     * Builds one flagged assessment for the fixed account, score and rule list.
-     *
      * @param transactionId key of the row, sixteen characters
      * @return the assessment one test method saves
      */
@@ -421,9 +479,6 @@ class OutboxAtomicityIT {
     }
 
     /**
-     * Builds one event through the canonical record constructor, which takes the fixed
-     * identifier and the two fixed instants below.
-     *
      * @param eventId       identifier the outbox row takes as its primary key
      * @param transactionId transaction the rules assessed, sixteen characters
      * @return the event one test method hands to the writer
@@ -533,9 +588,6 @@ class OutboxAtomicityIT {
     }
 
     /**
-     * Returns the fourteen columns {@code V1__schema.sql} declares for {@code outbox_event}, in
-     * declaration order.
-     *
      * @return column name to the type, width, precision, nullability and default declared for it
      */
     private static Map<String, ColumnFact> declaredColumns() {
@@ -565,6 +617,11 @@ class OutboxAtomicityIT {
         declared.put(CLAIMED_AT, new ColumnFact(TYPE_TIMESTAMP_WITH_TIME_ZONE, null,
                 TIMESTAMP_PRECISION, NULLABLE, null));
         declared.put(PUBLISHED_AT, new ColumnFact(TYPE_TIMESTAMP_WITH_TIME_ZONE, null,
+                TIMESTAMP_PRECISION, NULLABLE, null));
+        declared.put(DEAD_LETTER_STATE, new ColumnFact(TYPE_CHARACTER_VARYING,
+                OutboxEventEntity.DEAD_LETTER_STATE_MAX_LENGTH, null, NOT_NULLABLE,
+                NOT_REQUIRED_DEFAULT));
+        declared.put(DEAD_LETTER_PUBLISHED_AT, new ColumnFact(TYPE_TIMESTAMP_WITH_TIME_ZONE, null,
                 TIMESTAMP_PRECISION, NULLABLE, null));
         return declared;
     }
@@ -644,5 +701,3 @@ class OutboxAtomicityIT {
         private static final long serialVersionUID = 1L;
     }
 }
-
-

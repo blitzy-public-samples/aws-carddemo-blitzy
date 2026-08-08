@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.carddemo.notification.TestIdentityPasswords;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.Socket;
@@ -78,9 +79,9 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
         webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
         properties = {
                 "KAFKA_SASL_PASSWORD=a-generated-broker-value-for-this-test",
-                "ADMIN_PASSWORD_HASH={noop}a-generated-admin-value-for-this-test",
-                "USER_PASSWORD_HASH={noop}a-generated-user-value-for-this-test",
-                "MONITORING_PASSWORD_HASH={noop}a-generated-monitoring-value-for-this-test",
+                "ADMIN_PASSWORD_HASH=" + TestIdentityPasswords.ADMIN_PASSWORD_HASH,
+                "USER_PASSWORD_HASH=" + TestIdentityPasswords.USER_PASSWORD_HASH,
+                "MONITORING_PASSWORD_HASH=" + TestIdentityPasswords.MONITORING_PASSWORD_HASH,
                 "management.server.port=${server.port}"
         })
 @Testcontainers

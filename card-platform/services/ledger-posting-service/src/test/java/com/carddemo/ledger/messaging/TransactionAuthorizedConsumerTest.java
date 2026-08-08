@@ -228,10 +228,6 @@ final class TransactionAuthorizedConsumerTest {
     /** The message key the subject last handed to the posting path. */
     private String postedKey;
 
-    /**
-     * Builds the subject over recording collaborators, a real transaction template and a real meter
-     * registry.
-     */
     @BeforeEach
     void buildSubject() {
         journal.clear();
@@ -251,8 +247,6 @@ final class TransactionAuthorizedConsumerTest {
     }
 
     /**
-     * Builds one event carrying the fixture values of record 1 of the daily feed.
-     *
      * @param eventId the identifier this delivery carries
      * @return the event a delivery hands to the listener
      */
@@ -266,15 +260,12 @@ final class TransactionAuthorizedConsumerTest {
     }
 
     /**
-     * Builds the event every test in this class delivers, under the pinned identifier.
-     *
      * @return the event a delivery hands to the listener
      */
     private static TransactionAuthorized anEvent() {
         return anEvent(EVENT_ID);
     }
 
-    /** Answers the guard with no marker, so this delivery is the first to hold the identifier. */
     private void markerAbsent() {
         when(processedEvents.existsById(any(ProcessedEventId.class))).thenAnswer(invocation -> {
             journal.add(EXISTS);
@@ -282,7 +273,6 @@ final class TransactionAuthorizedConsumerTest {
         });
     }
 
-    /** Answers the guard with a marker, so a delivery of this event has already been applied. */
     private void markerPresent() {
         when(processedEvents.existsById(any(ProcessedEventId.class))).thenAnswer(invocation -> {
             journal.add(EXISTS);
@@ -310,8 +300,6 @@ final class TransactionAuthorizedConsumerTest {
     }
 
     /**
-     * Makes the posting raise a failure, journalling the attempt before it does.
-     *
      * @param failure the failure the posting path raises
      */
     private void postingFails(RuntimeException failure) {
@@ -322,8 +310,6 @@ final class TransactionAuthorizedConsumerTest {
     }
 
     /**
-     * Builds the store fault the retry policy treats as retryable.
-     *
      * @return a fault of the family {@code config/KafkaConsumerConfig} leaves retryable
      */
     private static DataAccessException aStoreFault() {
@@ -372,7 +358,6 @@ final class TransactionAuthorizedConsumerTest {
         throw new AssertionError("onTransactionAuthorized must stay a method of the subject");
     }
 
-    /** Reads the {@link KafkaListener} the one listener method carries. */
     private static KafkaListener listenerAnnotation() {
         return listenerMethod().getAnnotation(KafkaListener.class);
     }
@@ -654,9 +639,10 @@ final class TransactionAuthorizedConsumerTest {
         }
 
         /**
-         * A duplicate is expected traffic. {@code app/cbl/CBTRN02C.cbl:L214} counts a reject and
-         * {@code :L229-L230} answers it with return code 4 and no abend, so no failure is counted
-         * here either.
+         * A duplicate delivery counts its own outcome and no failure. This has no source ancestor:
+         * a replayed feed drives the transaction write at {@code app/cbl/CBTRN02C.cbl:L562-L579}
+         * into a duplicate-key condition and straight to the abend routine. Deduplication is
+         * ADDITIVE, so the no-failure outcome is this platform's contract rather than parity.
          */
         @Test
         @DisplayName("a duplicate counts its own outcome and no failure")
@@ -1061,7 +1047,6 @@ final class TransactionAuthorizedConsumerTest {
         }
     }
 
-    /** Records every acknowledgement in the shared journal. */
     private static final class RecordingAcknowledgment implements Acknowledgment {
 
         /** The shared journal this fake appends to. */

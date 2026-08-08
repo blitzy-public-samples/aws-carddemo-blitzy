@@ -120,6 +120,35 @@ public interface OutboxEventRepository extends JpaRepository<OutboxEventEntity, 
             OutboxEventEntity.RelayState relayState, Instant claimedBefore, Limit limit);
 
     /**
+     * Returns the abandoned rows that still owe the dead-letter topic a diagnostic, oldest attempt
+     * first.
+     *
+     * <p>This is the set {@code outbox/OutboxRelay} reads at the head of every pass. An owed
+     * diagnostic is the last remaining record of an assessment this service gave up on, and this
+     * service has no ancestor to fall back on: nothing in {@code app/cbl/} computes a risk score, so
+     * there is no batch job to re-run and no reject dataset holding what was missed. The diagnostic
+     * is therefore offered again for as long as it takes, and the ordering names the row that has
+     * gone unnamed longest first.
+     *
+     * <p>The set is empty while the relay is healthy, and the partial index
+     * {@code ix_outbox_event_dead_letter_required} of
+     * {@code src/main/resources/db/migration/V5__outbox_dead_letter_state.sql} covers exactly it, so
+     * the read costs nothing on a service with nothing to report.
+     *
+     * <p>No lock is taken here. Each row this returns is written in a short transaction of its own
+     * once the broker has acknowledged its diagnostic, and a second relay instance offering the same
+     * diagnostic publishes one duplicate on a dead-letter topic rather than losing one.
+     *
+     * @param deadLetterState always {@link OutboxEventEntity.DeadLetterState#REQUIRED}; naming it as
+     *                        a parameter keeps the derived query readable rather than hiding the
+     *                        state inside a method name
+     * @param limit           how many rows to return
+     * @return rows owing a diagnostic, oldest attempt first, and empty when none is owed
+     */
+    List<OutboxEventEntity> findByDeadLetterStateOrderByLastAttemptAtAsc(
+            OutboxEventEntity.DeadLetterState deadLetterState, Limit limit);
+
+    /**
      * Lock timeout that asks the database to pass over a locked row instead of waiting for it.
      *
      * <p>Hibernate maps this value to {@code SKIP LOCKED}. A positive value would be a wait in

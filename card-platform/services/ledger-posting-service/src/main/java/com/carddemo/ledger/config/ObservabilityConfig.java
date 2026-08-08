@@ -124,6 +124,9 @@ public class ObservabilityConfig {
         /** Events whose posting or whose database write did not complete. */
         private final Counter processFailures;
 
+        /** Outbox rows the broker accepted, counted after the sweep that sent them committed. */
+        private final Counter eventsPublished;
+
         /** Outbox rows the broker did not accept. */
         private final Counter publishFailures;
 
@@ -168,6 +171,10 @@ public class ObservabilityConfig {
             this.processingLatency = Timer.builder("carddemo.ledger.processing.latency")
                     .description("Wall time of one event, from listener entry to commit")
                     .register(registry);
+            this.eventsPublished = Counter.builder("carddemo.ledger.events.published")
+                    .description("Outbox rows the broker acknowledged, counted after the sweep that"
+                            + " sent them committed")
+                    .register(registry);
             this.deserializeFailures = Counter.builder("carddemo.ledger.failures")
                     .tag("stage", "deserialize")
                     .description("Processing faults, tagged by the stage that failed")
@@ -198,6 +205,26 @@ public class ObservabilityConfig {
                 byOutcome.put(outcome, Map.copyOf(byKind));
             }
             this.deadLetters = Map.copyOf(byOutcome);
+        }
+
+        /**
+         * Counts the outbox rows one committed sweep published.
+         *
+         * <p>This is the produce-side counterpart of {@link #recordPublishFailure()}, and it counts a
+         * publication the broker acknowledged rather than a row written to the outbox. Those two are
+         * different events and the difference matters on a demonstration: a relay that cannot reach
+         * the broker leaves the write count rising and this count flat, which is the reading that
+         * tells a stalled relay from an idle one.
+         *
+         * <p>Counted after the sweep's transaction commits, so a row whose {@code published} mark
+         * rolled back is not counted as published.
+         *
+         * @param rows publications the broker acknowledged in one committed sweep
+         */
+        public void recordEventsPublished(long rows) {
+            if (rows > 0L) {
+                eventsPublished.increment(rows);
+            }
         }
 
         /** Counts one event read from either subscribed topic. */

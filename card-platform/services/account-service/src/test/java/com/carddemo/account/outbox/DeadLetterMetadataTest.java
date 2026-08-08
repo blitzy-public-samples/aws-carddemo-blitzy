@@ -35,6 +35,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.junit.jupiter.params.provider.Arguments.arguments;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
@@ -485,7 +486,7 @@ class DeadLetterMetadataTest {
         when(repository.findByRelayStateAndClaimedAtBeforeOrderByClaimedAtAsc(
                 eq(OutboxEventEntity.RelayState.CLAIMED), any(), any()))
                 .thenReturn(List.of());
-        when(repository.deletePublishedBefore(any())).thenReturn(0);
+        when(repository.deletePublishedBefore(any(), anyInt())).thenReturn(0);
         when(repository.claimDueRows(any(), eq(Limit.of(1)))).thenReturn(List.of(row));
 
         AccountProperties properties = propertiesWithOneRowPerClaim();
@@ -682,7 +683,7 @@ class DeadLetterMetadataTest {
                                 500L, 1, "account-relay", java.time.Duration.ofSeconds(30L),
                                 30_000L, java.time.Duration.ofSeconds(10L)),
                         168L),
-                new AccountProperties.ProcessedEvent(168L),
+                new AccountProperties.ProcessedEvent(720L, 168L),
                 new AccountProperties.Retention(3_600_000L),
                 new AccountProperties.Write(3_000L));
     }

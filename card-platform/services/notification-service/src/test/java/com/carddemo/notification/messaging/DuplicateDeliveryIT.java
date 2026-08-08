@@ -5,26 +5,23 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
-
 import com.carddemo.events.EventEnvelope;
 import com.carddemo.events.FraudCleared;
 import com.carddemo.events.FraudFlagged;
 import com.carddemo.events.TransactionPosted;
 import com.carddemo.events.serde.JsonSchemaValidatingSerializer;
+import com.carddemo.notification.TestIdentityPasswords;
 import com.carddemo.notification.config.ObservabilityConfig.NotificationMetrics;
 import com.carddemo.notification.entity.ProcessedEventEntity;
 import com.carddemo.notification.repository.ProcessedEventRepository;
-
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
-
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
@@ -44,7 +41,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.function.Predicate;
 import java.util.regex.Pattern;
-
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
@@ -58,17 +54,13 @@ import org.apache.kafka.common.serialization.ByteArrayDeserializer;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.serialization.StringSerializer;
-
 import org.awaitility.Awaitility;
-
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-
 import org.slf4j.LoggerFactory;
-
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.ApplicationContext;
 import org.springframework.core.env.Environment;
@@ -83,15 +75,15 @@ import org.springframework.kafka.support.SendResult;
 import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
-
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.kafka.KafkaContainer;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 
 /**
- * Proves that a second delivery of one event identifier changes no row, for both consumers of this
- * service. A delivery no consumer can apply reaches a dead-letter topic once its attempts run out.
+ * A second delivery of one event identifier changes no row. This service registers four
+ * listeners; the two exercised here read {@code transaction.posted} and {@code fraud.assessed}. A
+ * delivery no consumer can apply reaches a dead-letter topic once its attempts run out.
  *
  * <p>One PostgreSQL container and one Kafka Raft (KRaft) broker container carry the run, and the
  * Spring context is the production one. Every valid event travels through the production
@@ -111,9 +103,9 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 @Testcontainers
 @SpringBootTest(properties = {
         "KAFKA_SASL_PASSWORD=not-a-real-broker-password",
-        "ADMIN_PASSWORD_HASH={noop}not-a-real-admin-password",
-        "USER_PASSWORD_HASH={noop}not-a-real-user-password",
-        "MONITORING_PASSWORD_HASH={noop}not-a-real-monitoring-password",
+        "ADMIN_PASSWORD_HASH=" + TestIdentityPasswords.ADMIN_PASSWORD_HASH,
+        "USER_PASSWORD_HASH=" + TestIdentityPasswords.USER_PASSWORD_HASH,
+        "MONITORING_PASSWORD_HASH=" + TestIdentityPasswords.MONITORING_PASSWORD_HASH,
         "carddemo.history.statement-retention-days=200000",
         "carddemo.history.log-retention-days=200000",
         "carddemo.processed-event.marker-retention-hours=4800000"
@@ -344,7 +336,6 @@ class DuplicateDeliveryIT {
     private static final String EVERY_ROW_COUNT_SQL =
             "SELECT count(*) FROM " + SERVICE_SCHEMA + ".statement_transaction";
 
-    /** Names the columns of one table in the migrated catalogue. */
     private static final String COLUMN_NAMES_SQL = "SELECT column_name FROM"
             + " information_schema.columns WHERE table_schema = ? AND table_name = ?"
             + " ORDER BY ordinal_position";
@@ -371,8 +362,11 @@ class DuplicateDeliveryIT {
             "occurredAt":"%s","aggregateId":"%s","transactionId":"%s","accountId":"%s",\
             "newBalance":"%s","postedAt":"%s","amount":"%s","maskedCardNumber":"%s"}""";
 
-    /** The card number of that payload, the one value in this class that is not masked. */
-    private static final String UNMASKED_CARD_NUMBER = "4859452612877065";
+    /**
+     * A synthetic sixteen-digit card number, bound to no card any fixture carries. It is the one
+     * value in this class that is not masked, and it exists to be refused.
+     */
+    private static final String UNMASKED_CARD_NUMBER = "9999000011112222";
 
     @Container
     private static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer(POSTGRES_IMAGE)
@@ -424,7 +418,6 @@ class DuplicateDeliveryIT {
         registry.add("spring.kafka.security.protocol", () -> BROKER_SECURITY_PROTOCOL);
     }
 
-    /** Returns the container connection string with the service schema on its search path. */
     private static String jdbcUrlOnServiceSchema() {
         String url = POSTGRES.getJdbcUrl();
         return url + (url.contains("?") ? "&" : "?") + "currentSchema=" + SERVICE_SCHEMA;
@@ -451,7 +444,7 @@ class DuplicateDeliveryIT {
     }
 
     /**
-     * Asserts the bean named {@value #CONTAINER_FACTORY_BEAN} carries both listeners under distinct
+     * The bean named {@value #CONTAINER_FACTORY_BEAN} carries both listeners under distinct
      * groups, each acknowledging by hand and reporting a delivery attempt.
      */
     @Test
@@ -483,7 +476,7 @@ class DuplicateDeliveryIT {
     }
 
     /**
-     * Asserts a repeat posted-balance delivery leaves one row, one marker, one attempt row and the
+     * A repeat posted-balance delivery leaves one row, one marker, one attempt row and the
      * same per-card total. A duplicate is no failure, so no dead letter and no error line follow.
      */
     @Test
@@ -536,7 +529,7 @@ class DuplicateDeliveryIT {
     }
 
     /**
-     * Asserts a repeat flagged-assessment delivery leaves one marker on its own group and writes no
+     * A repeat flagged-assessment delivery leaves one marker on its own group and writes no
      * row of the read model, which carries no column an assessment could fill.
      */
     @Test
@@ -570,7 +563,7 @@ class DuplicateDeliveryIT {
     }
 
     /**
-     * Asserts a marker written outside either listener suppresses that topic's delivery.
+     * A marker written outside either listener suppresses that topic's delivery.
      *
      * <p>One table serves all four listener groups, and a marker seeded for a topic is read by the
      * listener of that topic. Each seeded marker below names the topic its delivery will arrive on,
@@ -604,7 +597,7 @@ class DuplicateDeliveryIT {
     }
 
     /**
-     * Asserts a marker held for one topic does not suppress a different event on another topic.
+     * A marker held for one topic does not suppress a different event on another topic.
      *
      * <p>Three producing services assign event identifiers independently, so a fraud assessment and
      * a posted transaction may carry the same identifier without either producer being at fault.
@@ -640,7 +633,7 @@ class DuplicateDeliveryIT {
     }
 
     /**
-     * Asserts {@code processed_event} declares the three columns its migrations create, and no
+     * {@code processed_event} declares the three columns its migrations create, and no
      * column naming a consumer group, an event type or a payload.
      *
      * <p>Two of the three are the primary key after
@@ -664,7 +657,7 @@ class DuplicateDeliveryIT {
     }
 
     /**
-     * Asserts a delivery whose render fails leaves neither the row nor the marker. One header names
+     * A delivery whose render fails leaves neither the row nor the marker. One header names
      * the render fault, which the claim and the row write both precede inside one transaction.
      */
     @Test
@@ -695,7 +688,7 @@ class DuplicateDeliveryIT {
     }
 
     /**
-     * Asserts one record takes three deliveries, spaced by the configured wait, then reaches the
+     * One record takes three deliveries, spaced by the configured wait, then reaches the
      * dead-letter topic of its own source topic carrying the four metadata components.
      *
      * <p>The two failure series have to agree about what failed. Every attempt is counted on
@@ -771,7 +764,7 @@ class DuplicateDeliveryIT {
     }
 
     /**
-     * Asserts a payload carrying a nested envelope reaches the dead-letter topic on its first pass,
+     * A payload carrying a nested envelope reaches the dead-letter topic on its first pass,
      * and that no listener of the posted-balance group took it.
      */
     @Test
@@ -816,7 +809,7 @@ class DuplicateDeliveryIT {
     }
 
     /**
-     * Asserts a payload carrying every digit of a card number is refused, and that no digit of it
+     * A payload carrying every digit of a card number is refused, and that no digit of it
      * travels in the key, in a header or in the diagnostic record.
      */
     @Test
@@ -850,7 +843,7 @@ class DuplicateDeliveryIT {
     }
 
     /**
-     * Asserts a cleared assessment claims one marker and writes nothing else, since the read model
+     * A cleared assessment claims one marker and writes nothing else, since the read model
      * of {@code app/cpy/COSTM01.CPY:L22-L35} carries no column an assessment fills.
      */
     @Test
@@ -876,7 +869,7 @@ class DuplicateDeliveryIT {
     }
 
     /**
-     * Asserts one delivery fills all fourteen columns of one read-model row, at the widths
+     * One delivery fills all fourteen columns of one read-model row, at the widths
      * {@code app/cpy/COSTM01.CPY:L22-L35} declares and under the key order of
      * {@code app/jcl/CREASTMT.JCL:L53}.
      */
@@ -933,7 +926,7 @@ class DuplicateDeliveryIT {
     }
 
     /**
-     * Asserts the message key names the account, leading zeros intact, while the row key names the
+     * The message key names the account, leading zeros intact, while the row key names the
      * card identity and the transaction of {@code app/jcl/CREASTMT.JCL:L30}.
      */
     @Test
@@ -968,7 +961,6 @@ class DuplicateDeliveryIT {
         }
     }
 
-    /** Returns the one listener container joined to {@code groupId}. */
     private MessageListenerContainer containerOfGroup(String groupId) {
         List<MessageListenerContainer> matched = new ArrayList<>();
         for (MessageListenerContainer container : listenerRegistry.getListenerContainers()) {
@@ -994,7 +986,6 @@ class DuplicateDeliveryIT {
                 });
     }
 
-    /** Returns the one topic the container of {@code groupId} binds. */
     private String onlyTopicOf(String groupId) {
         String[] bound = containerOfGroup(groupId).getContainerProperties().getTopics();
         assertNotNull(bound, () -> "group " + groupId + " binds no topic list");
@@ -1003,13 +994,16 @@ class DuplicateDeliveryIT {
         return bound[0];
     }
 
-    /** Builds a posted-balance event for the account the projection carries a row for. */
     private static TransactionPosted postedEvent(UUID eventId, String cardToken,
             String transactionId) {
         return postedEvent(eventId, ACCOUNT_ID, cardToken, transactionId);
     }
 
-    /** Builds a posted-balance event carrying all fifteen payload values. */
+    /**
+     * Builds a version-two posted-balance event. The built event carries all sixteen payload
+     * values {@code transaction-posted-v2.json} declares: fifteen passed here, and the account
+     * identifier the envelope supplies as its aggregate identifier.
+     */
     private static TransactionPosted postedEvent(UUID eventId, String accountId, String cardToken,
             String transactionId) {
         return TransactionPosted.of(
@@ -1021,7 +1015,6 @@ class DuplicateDeliveryIT {
                 ORIGIN_TIMESTAMP);
     }
 
-    /** Builds a flagged assessment, which carries no card number and no monetary value. */
     private static FraudFlagged flaggedEvent(UUID eventId) {
         EventEnvelope envelope = envelopeFor(FraudFlagged.EVENT_TYPE, eventId, ACCOUNT_ID,
                 EventEnvelope.SCHEMA_VERSION);
@@ -1030,31 +1023,26 @@ class DuplicateDeliveryIT {
                 TRIGGERED_RULES, stampedNow(), envelope.aggregateId());
     }
 
-    /** Builds a cleared assessment, which carries three payload values and no rule list. */
     private static FraudCleared clearedEvent(UUID eventId) {
         return new FraudCleared(envelopeFor(FraudCleared.EVENT_TYPE, eventId, ACCOUNT_ID,
                 EventEnvelope.SCHEMA_VERSION), TRANSACTION_ID, ACCOUNT_ID, stampedNow());
     }
 
-    /** Builds an envelope carrying a chosen event identifier, so two publishes can share one. */
     private static EventEnvelope envelopeFor(String eventType, UUID eventId, String accountId,
             int schemaVersion) {
         return new EventEnvelope(eventId, eventType, schemaVersion, stampedNow(), accountId);
     }
 
-    /** Returns the current moment at millisecond precision, which every pattern here accepts. */
     private static Instant stampedNow() {
         return Instant.now().truncatedTo(ChronoUnit.MILLIS);
     }
 
-    /** Builds the payload whose envelope sits under a nested object. */
     private static String nestedEnvelopePayload(UUID eventId) {
         return NESTED_ENVELOPE_PAYLOAD.formatted(eventId, DETAIL_SCHEMA_VERSION, stampedNow(),
                 ACCOUNT_ID, TRANSACTION_ID, ACCOUNT_ID, NEW_BALANCE, POSTED_AT, AMOUNT,
                 MASKED_CARD_NUMBER);
     }
 
-    /** Builds the payload whose card number carries every digit. */
     private static String unmaskedCardPayload(UUID eventId) {
         return UNMASKED_CARD_PAYLOAD.formatted(eventId, stampedNow(), ACCOUNT_ID, TRANSACTION_ID,
                 ACCOUNT_ID, NEW_BALANCE, POSTED_AT, AMOUNT, UNMASKED_CARD_NUMBER);
@@ -1096,7 +1084,6 @@ class DuplicateDeliveryIT {
         }
     }
 
-    /** Returns the producer settings both publishers share. */
     private static Map<String, Object> producerSettings() {
         Map<String, Object> settings = new LinkedHashMap<>();
         settings.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, KAFKA.getBootstrapServers());
@@ -1105,7 +1092,6 @@ class DuplicateDeliveryIT {
         return settings;
     }
 
-    /** Builds one reader over {@code topics}, in a group of its own, from the earliest offset. */
     private static KafkaConsumer<String, byte[]> newReader(List<String> topics) {
         Map<String, Object> settings = new LinkedHashMap<>();
         settings.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, KAFKA.getBootstrapServers());
@@ -1118,7 +1104,6 @@ class DuplicateDeliveryIT {
         return reader;
     }
 
-    /** Builds one reader over both dead-letter topics this service can reach. */
     private static KafkaConsumer<String, byte[]> deadLetterReader() {
         return newReader(List.of(POSTED_DEAD_LETTER_TOPIC, ASSESSED_DEAD_LETTER_TOPIC));
     }
@@ -1129,7 +1114,6 @@ class DuplicateDeliveryIT {
         return awaitRecord(reader, record -> key.equals(record.key()), timeout, subject);
     }
 
-    /** Asserts no dead letter naming any of {@code keys} arrives inside the silence window. */
     private static void assertNoDeadLetter(KafkaConsumer<String, byte[]> reader, Set<String> keys,
             String subject) {
         assertNoRecord(reader, record -> keys.contains(record.key()), subject);
@@ -1152,7 +1136,6 @@ class DuplicateDeliveryIT {
         return matched.getFirst();
     }
 
-    /** Asserts no matching record arrives throughout the silence window. */
     private static void assertNoRecord(KafkaConsumer<String, byte[]> reader,
             Predicate<ConsumerRecord<String, byte[]>> wanted, String subject) {
         List<ConsumerRecord<String, byte[]>> matched = new ArrayList<>();
@@ -1179,12 +1162,10 @@ class DuplicateDeliveryIT {
         }
     }
 
-    /** Renders one record's broker coordinates, which the dead-letter route carries as its key. */
     private static String coordinates(RecordMetadata metadata) {
         return metadata.topic() + "-" + metadata.partition() + "-" + metadata.offset();
     }
 
-    /** Reads every header one record carries as text, keyed by header name. */
     private static Map<String, String> headersOf(ConsumerRecord<String, byte[]> record) {
         Map<String, String> read = new LinkedHashMap<>();
         for (Header header : record.headers()) {
@@ -1194,7 +1175,6 @@ class DuplicateDeliveryIT {
         return read;
     }
 
-    /** Reads one header as text with its right-hand padding removed. */
     private static String trimmedHeader(ConsumerRecord<String, byte[]> record, String name) {
         String value = headersOf(record).get(name);
         return value == null ? null : value.stripTrailing();
@@ -1214,7 +1194,6 @@ class DuplicateDeliveryIT {
         return wrong;
     }
 
-    /** Asserts no key, header value or payload byte of one dead letter holds a long digit run. */
     private static void assertCarriesNoDigitRun(ConsumerRecord<String, byte[]> record) {
         List<String> carried = new ArrayList<>(headersOf(record).values());
         carried.add(record.key() == null ? "" : record.key());
@@ -1225,7 +1204,6 @@ class DuplicateDeliveryIT {
         }
     }
 
-    /** Runs one count query and returns what it counted. */
     private long count(String sql, Object... arguments) {
         Long counted = jdbc.queryForObject(sql, Long.class, arguments);
         return counted == null ? 0L : counted;
@@ -1246,17 +1224,14 @@ class DuplicateDeliveryIT {
         return jdbc.queryForObject(CARD_TOTAL_SQL, BigDecimal.class, cardToken);
     }
 
-    /** Reads the amount stored under the card identity and transaction of the fixture event. */
     private BigDecimal storedAmount() {
         return jdbc.queryForObject(AMOUNT_SQL, BigDecimal.class, CARD_TOKEN, TRANSACTION_ID);
     }
 
-    /** Reads the topic one marker recorded, and {@code null} where it recorded none. */
     private String markerTopic(UUID eventId) {
         return jdbc.queryForObject(MARKER_TOPIC_SQL, String.class, eventId);
     }
 
-    /** Reads one counter, by meter name alone where {@code tagKey} is {@code null}. */
     private long counterValue(String meter, String tagKey, String tagValue) {
         Counter counter = tagKey == null
                 ? meters.find(meter).counter()
@@ -1275,7 +1250,6 @@ class DuplicateDeliveryIT {
                 .until(() -> counterValue(meter, tagKey, tagValue) == expected);
     }
 
-    /** Asserts one condition holds throughout the silence window. */
     private static void assertHoldsThroughout(String subject, Callable<Boolean> condition) {
         Awaitility.await(subject)
                 .during(SILENCE_WINDOW)
@@ -1285,7 +1259,6 @@ class DuplicateDeliveryIT {
                 .until(condition);
     }
 
-    /** Names every line one appender captured at or above {@code floor}. */
     private static List<String> atOrAbove(ListAppender<ILoggingEvent> appender, Level floor) {
         List<String> reported = new ArrayList<>();
         for (ILoggingEvent line : appender.list) {
@@ -1296,13 +1269,11 @@ class DuplicateDeliveryIT {
         return reported;
     }
 
-    /** Reads one column of one row as text, padding included. */
     private static String text(Map<String, Object> row, String column) {
         Object value = row.get(column);
         return value == null ? null : value.toString();
     }
 
-    /** Names every column of one row holding no value. */
     private static List<String> nullColumns(Map<String, Object> row) {
         List<String> empty = new ArrayList<>();
         row.forEach((column, value) -> {

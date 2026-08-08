@@ -1,5 +1,7 @@
 package com.carddemo.card.outbox;
 
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 import static org.mockito.ArgumentMatchers.any;
@@ -200,7 +202,6 @@ class OutboxRelayTest {
         return value == null ? "<absent>" : value;
     }
 
-    /** Builds a fresh store, publisher, boundary, five meters and relay for one test. */
     @BeforeEach
     void setUp() {
         store = new RelayStore();
@@ -215,8 +216,6 @@ class OutboxRelayTest {
     }
 
     /**
-     * Builds one relay over the collaborators a test supplies.
-     *
      * @param rows       the store the sweep reads and marks
      * @param sends      the publish port the sweep reaches
      * @param properties the bound {@code carddemo} block the relay reads its limits from
@@ -233,8 +232,6 @@ class OutboxRelayTest {
     }
 
     /**
-     * Builds one unpublished row due at {@code createdAt}.
-     *
      * @param accountId the eleven-digit account identifier, which becomes the message key
      * @param createdAt when the writer stored the row, and when the row first falls due
      * @return one row in {@link OutboxEventEntity.RelayState#PENDING}
@@ -245,8 +242,6 @@ class OutboxRelayTest {
     }
 
     /**
-     * Builds one unpublished row due now.
-     *
      * @return one row in {@link OutboxEventEntity.RelayState#PENDING}
      */
     private static OutboxEventEntity row() {
@@ -261,7 +256,7 @@ class OutboxRelayTest {
     class SeparateTransaction {
 
         /**
-         * Asserts one sweep opens exactly one boundary and publishes inside it.
+         * One sweep opens exactly one boundary and publishes inside it.
          *
          * <p>The writer stores its row in the transaction that changed the card. The send happens
          * here, after that transaction closed, which is the split
@@ -286,7 +281,7 @@ class OutboxRelayTest {
         }
 
         /**
-         * Asserts every meter is recorded after the boundary closes.
+         * Every meter is recorded after the boundary closes.
          *
          * <p>A counter takes no part in a database transaction, so an increment made inside one
          * would survive a rollback and report a row as published that carries no mark.
@@ -314,7 +309,7 @@ class OutboxRelayTest {
         }
 
         /**
-         * Asserts a store the relay cannot read counts one failure and marks nothing.
+         * A store the relay cannot read counts one failure and marks nothing.
          *
          * <p>The source answered an unwritable record with the abend routine reached from
          * {@code app/cbl/CBTRN02C.cbl:L577}. The sweep records the failure and the schedule carries
@@ -335,7 +330,7 @@ class OutboxRelayTest {
         }
 
         /**
-         * Asserts the relay holds no reference to the writer that stored the row.
+         * The relay holds no reference to the writer that stored the row.
          *
          * <p>The two components share the table and nothing else, so no writer transaction can
          * reach the mark this relay writes.
@@ -360,7 +355,7 @@ class OutboxRelayTest {
     class PublishThenMark {
 
         /**
-         * Asserts the row is unmarked during its send and marked once the sweep returns.
+         * The row is unmarked during its send and marked once the sweep returns.
          *
          * <p>A process that stops between the send and the mark sends the row again on a later
          * sweep, so delivery is at least once. A mark written first would lose the event outright.
@@ -382,7 +377,7 @@ class OutboxRelayTest {
         }
 
         /**
-         * Asserts each row of a batch is unmarked during its own send.
+         * Each row of a batch is unmarked during its own send.
          *
          * <p>Two rows make the ordering measurable per row. The second send reports the first row as
          * published and its own row as not.
@@ -405,7 +400,7 @@ class OutboxRelayTest {
         }
 
         /**
-         * Asserts a refused send leaves the row unmarked.
+         * A refused send leaves the row unmarked.
          *
          * <p>The same ordering seen from the failure side: the mark follows the send, so a send that
          * never succeeded writes no mark.
@@ -434,7 +429,7 @@ class OutboxRelayTest {
     class PublishOnce {
 
         /**
-         * Asserts two sweeps over one row produce one send and one mark.
+         * Two sweeps over one row produce one send and one mark.
          *
          * <p>The claim query filters on {@link OutboxEventEntity.RelayState#PENDING}, so the second
          * sweep selects nothing. The source detected no duplicate at all: a replayed feed drove the
@@ -458,7 +453,7 @@ class OutboxRelayTest {
         }
 
         /**
-         * Asserts the second sweep claims no row at all.
+         * The second sweep claims no row at all.
          *
          * <p>The claim filters on {@link OutboxEventEntity.RelayState#PENDING}, so a published row
          * leaves the working set. A claim that returned the row again would count a failure, since
@@ -478,7 +473,7 @@ class OutboxRelayTest {
         }
 
         /**
-         * Asserts an idle sweep records no failure.
+         * An idle sweep records no failure.
          *
          * <p>A card list and a card read store no row, so a sweep with nothing to do is the ordinary
          * case and has to stay quiet on the meters.
@@ -498,7 +493,7 @@ class OutboxRelayTest {
         }
 
         /**
-         * Asserts a batch travels oldest due time first.
+         * A batch travels oldest due time first.
          *
          * <p>The writer stamps each row as it stores it, and every message carries the account
          * identifier as its key, so one account's events stay on one partition in commit order.
@@ -527,7 +522,7 @@ class OutboxRelayTest {
     class ConfiguredLimits {
 
         /**
-         * Asserts the relay asks the store for exactly the configured batch size.
+         * The relay asks the store for exactly the configured batch size.
          *
          * <p>The value read here is {@code carddemo.outbox.relay.batch-size} of
          * {@code src/main/resources/application.yml}, bound through {@link CardProperties}.
@@ -544,7 +539,7 @@ class OutboxRelayTest {
         }
 
         /**
-         * Asserts one sweep publishes the configured count and leaves the rest waiting.
+         * One sweep publishes the configured count and leaves the rest waiting.
          *
          * <p>The store holds one row more than the limit allows. The surplus row stays in
          * {@link OutboxEventEntity.RelayState#PENDING} and falls to the next tick.
@@ -575,7 +570,7 @@ class OutboxRelayTest {
         }
 
         /**
-         * Asserts the surplus row of one sweep is published by the next sweep.
+         * The surplus row of one sweep is published by the next sweep.
          *
          * <p>Nothing is lost when a batch fills. The row the limit held back is claimed on the
          * following tick.
@@ -602,7 +597,7 @@ class OutboxRelayTest {
         }
 
         /**
-         * Asserts the sweep schedule names the delay property and no literal.
+         * The sweep schedule names the delay property and no literal.
          *
          * <p>The annotation carries {@code fixedDelayString}, which resolves
          * {@link #SWEEP_DELAY_KEY}. A populated {@code fixedDelay} would ignore that key outright.
@@ -623,7 +618,7 @@ class OutboxRelayTest {
         }
 
         /**
-         * Asserts the shipped configuration resolves the sweep delay to 500 milliseconds.
+         * The shipped configuration resolves the sweep delay to 500 milliseconds.
          *
          * <p>Both the bound record and the raw property are read, so the placeholder the schedule
          * resolves and the value the relay reads are proven to agree.
@@ -636,7 +631,7 @@ class OutboxRelayTest {
         }
 
         /**
-         * Asserts the shipped configuration resolves the batch size to 100 rows.
+         * The shipped configuration resolves the batch size to 100 rows.
          */
         @Test
         @DisplayName("the shipped batch size is 100 rows")
@@ -645,17 +640,13 @@ class OutboxRelayTest {
         }
 
         /**
-         * Builds the shipped configuration with a smaller batch size.
-         *
-         * <p>A smaller limit keeps the surplus tests quick while still crossing the limit, and the
-         * relay reads the value the same way it reads the shipped one.
-         *
          * @return the shipped block with a batch size of three
          */
         private CardProperties smallBatch() {
             CardProperties.Outbox.Relay tuned = new CardProperties.Outbox.Relay(
                     shipped.outbox().relay().fixedDelayMs(), 3,
-                    shipped.outbox().relay().instanceId(), shipped.outbox().relay().claimTimeout());
+                    shipped.outbox().relay().instanceId(), shipped.outbox().relay().claimTimeout(),
+                    shipped.outbox().relay().maxDurationMs());
             return new CardProperties(shipped.api(), shipped.kafka(),
                     new CardProperties.Outbox(tuned, shipped.outbox().publishedRetentionHours()),
                     shipped.processedEvent(), shipped.retention(), shipped.write());
@@ -670,7 +661,7 @@ class OutboxRelayTest {
     class ScheduledPoll {
 
         /**
-         * Asserts {@link CardApplication} carries the annotation that starts the sweep.
+         * {@link CardApplication} carries the annotation that starts the sweep.
          *
          * <p>Without it the relay is inert, the row stays unpublished, and a test that waited for a
          * tick would never return.
@@ -684,7 +675,7 @@ class OutboxRelayTest {
         }
 
         /**
-         * Asserts a row left alone is published by the schedule inside a bounded wait.
+         * A row left alone is published by the schedule inside a bounded wait.
          *
          * <p>The context below enables scheduling and resolves {@link #SWEEP_DELAY_KEY} to
          * {@value #QUICK_SWEEP_DELAY_MS} milliseconds. The wait fails after ten seconds, which turns
@@ -725,7 +716,7 @@ class OutboxRelayTest {
     class BrokerAbsence {
 
         /**
-         * Asserts a refused send leaves the row claimable on the next sweep.
+         * A refused send leaves the row claimable on the next sweep.
          *
          * <p>{@code messaging/KafkaEventPublisher} waits for the broker and then reports a failure
          * as an unchecked exception, which is what arrives here.
@@ -749,7 +740,7 @@ class OutboxRelayTest {
         }
 
         /**
-         * Asserts the row reaches the broker once the broker answers again.
+         * The row reaches the broker once the broker answers again.
          *
          * <p>The first sweep is refused and the second succeeds, so an unreachable broker delays an
          * event and loses none.
@@ -772,7 +763,7 @@ class OutboxRelayTest {
         }
 
         /**
-         * Asserts a refused send stops the sweep and leaves the rows behind it untouched.
+         * A refused send stops the sweep and leaves the rows behind it untouched.
          *
          * <p>Stopping keeps one account's events in commit order. A later event cannot overtake an
          * earlier one that is still waiting.
@@ -805,7 +796,7 @@ class OutboxRelayTest {
     class DestinationAndKey {
 
         /**
-         * Asserts the send names the configured card update topic.
+         * The send names the configured card update topic.
          *
          * <p>The name comes from {@code carddemo.kafka.topics.card-updated}, which
          * {@code card-platform/.env.example} leaves to this service to define.
@@ -823,7 +814,7 @@ class OutboxRelayTest {
         }
 
         /**
-         * Asserts the message key is the row's account identifier, eleven digits wide.
+         * The message key is the row's account identifier, eleven digits wide.
          *
          * <p>{@code XREF-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT03Y.cpy:L7} fixes the width. One
          * key per account keeps that account's events on one partition.
@@ -843,7 +834,7 @@ class OutboxRelayTest {
         }
 
         /**
-         * Asserts the payload travels exactly as the writer stored it.
+         * The payload travels exactly as the writer stored it.
          *
          * <p>The stored text is already serialized JavaScript Object Notation, so the relay passes it
          * through and serializes nothing.
@@ -873,7 +864,7 @@ class OutboxRelayTest {
                 OutboxEventEntity.MAX_DELIVERY_ATTEMPTS - 1;
 
         /**
-         * Asserts the shipped configuration resolves the dead-letter topic name.
+         * The shipped configuration resolves the dead-letter topic name.
          *
          * <p>{@code carddemo.dead-letter} is the one topic every service shares, fixed by
          * {@code card-platform/.env.example}.
@@ -885,7 +876,7 @@ class OutboxRelayTest {
         }
 
         /**
-         * Asserts a row whose attempts are spent is named on the configured dead-letter topic.
+         * A row whose attempts are spent is named on the configured dead-letter topic.
          *
          * <p>The diagnostic carries the account identifier as its key, so it stays on the partition
          * the events it follows used.
@@ -910,7 +901,7 @@ class OutboxRelayTest {
         }
 
         /**
-         * Asserts the diagnostic quotes no card number and no card verification value.
+         * The diagnostic quotes no card number and no card verification value.
          *
          * <p>The relay builds its diagnostic from a failure's type name and its own constants, so no
          * value of the payload can travel on it.
@@ -932,7 +923,7 @@ class OutboxRelayTest {
         }
 
         /**
-         * Asserts the four component widths match {@code app/cpy/CSMSG02Y.cpy:L22-L29}.
+         * The four component widths match {@code app/cpy/CSMSG02Y.cpy:L22-L29}.
          *
          * <p>{@code ABEND-CODE PIC X(4)} sits at L22, {@code ABEND-CULPRIT PIC X(8)} at L24,
          * {@code ABEND-REASON PIC X(50)} at L26 and {@code ABEND-MSG PIC X(72)} at L28. The four
@@ -952,7 +943,7 @@ class OutboxRelayTest {
         }
 
         /**
-         * Asserts a null component becomes the empty string.
+         * A null component becomes the empty string.
          *
          * <p>All four fields of {@code app/cpy/CSMSG02Y.cpy:L22-L29} carry {@code VALUE SPACES}, on
          * L23, L25, L27 and L29, which is the state the empty string mirrors.
@@ -969,7 +960,7 @@ class OutboxRelayTest {
         }
 
         /**
-         * Asserts an over-long component is shortened to its own width and raises nothing.
+         * An over-long component is shortened to its own width and raises nothing.
          *
          * <p>A diagnostic describes a failure that already happened. A second failure raised while
          * building one would suppress the record of the first.
@@ -988,7 +979,7 @@ class OutboxRelayTest {
         }
 
         /**
-         * Asserts the default detail reads exactly as {@code app/cbl/COCRDUPC.cbl:L1534} moves it.
+         * The default detail reads exactly as {@code app/cbl/COCRDUPC.cbl:L1534} moves it.
          *
          * <p>That line runs under the {@code IF ABEND-MSG EQUAL LOW-VALUES} guard at
          * {@code app/cbl/COCRDUPC.cbl:L1533}, inside the {@code ABEND-ROUTINE.} paragraph opening at
@@ -1003,7 +994,7 @@ class OutboxRelayTest {
         }
 
         /**
-         * Asserts the diagnostic carrier holds no annotation and never reaches a table.
+         * The diagnostic carrier holds no annotation and never reaches a table.
          *
          * <p>An unannotated record is not a mapped entity, so no dead-letter route can write a row.
          */
@@ -1017,8 +1008,6 @@ class OutboxRelayTest {
         }
 
         /**
-         * Builds one row that a single further failure abandons.
-         *
          * @return a row holding one attempt fewer than its ceiling allows
          */
         private OutboxEventEntity spentRow() {
@@ -1039,7 +1028,7 @@ class OutboxRelayTest {
     class ConfigurationAndTheMarkerTable {
 
         /**
-         * Asserts the acknowledgement and idempotence settings come from the shipped file.
+         * The acknowledgement and idempotence settings come from the shipped file.
          *
          * <p>Both keys sit under {@code spring.kafka.producer} in
          * {@code src/main/resources/application.yml}, and {@code config/KafkaProducerConfig} sets
@@ -1053,7 +1042,7 @@ class OutboxRelayTest {
         }
 
         /**
-         * Asserts the value serializer writes the stored text as it stands.
+         * The value serializer writes the stored text as it stands.
          *
          * <p>The payload the relay republishes is already-serialized JavaScript Object Notation, so a
          * text serializer carries it whole.
@@ -1066,9 +1055,9 @@ class OutboxRelayTest {
         }
 
         /**
-         * Asserts a sweep writes no duplicate-delivery marker.
+         * A sweep writes no duplicate-delivery marker.
          *
-         * <p>The relay produces and consumes nothing, so it takes no
+         * <p>The relay publishes, but it consumes no broker event, so it takes no
          * {@link ProcessedEventRepository} at all. The marker table waits for a consumer this
          * service does not have.
          */
@@ -1091,7 +1080,6 @@ class OutboxRelayTest {
         }
     }
 
-    /** Registers the properties bean and no auto-configuration. */
     @Configuration(proxyBeanMethods = false)
     @EnableConfigurationProperties(CardProperties.class)
     static class PropertiesEnabled {
@@ -1139,8 +1127,6 @@ class OutboxRelayTest {
         }
 
         /**
-         * Makes every later claim raise {@code failure}.
-         *
          * @param failure the failure each claim raises
          */
         void failEveryClaimWith(RuntimeException failure) {
@@ -1187,8 +1173,6 @@ class OutboxRelayTest {
         }
 
         /**
-         * Builds the repository the relay reads, answering both queries from these rows.
-         *
          * @return a repository backed by this store
          */
         OutboxEventRepository asRepository() {
@@ -1299,8 +1283,6 @@ class OutboxRelayTest {
         }
 
         /**
-         * Makes the next {@code occurrences} sends to {@code topic} raise {@code refusal}.
-         *
          * @param topic       the topic whose sends fail
          * @param refusal     the failure each of those sends raises
          * @param occurrences how many sends fail
@@ -1331,13 +1313,17 @@ class OutboxRelayTest {
         }
 
         @Override
-        public void publish(String topic, String aggregateId, String payload) {
+        public CompletionStage<Void> publish(String topic, String aggregateId, String payload) {
             sends.add(new Send(topic, aggregateId, payload, store.publishedIds(),
                     boundary.isOpen()));
             if (failuresRemaining > 0 && topic.equals(failingTopic)) {
                 failuresRemaining = failuresRemaining - 1;
-                throw failure;
+                // A broker refusal fails the stage rather than the call, which is what the
+                // Kafka-backed publisher does now. outbox/OutboxRelay unwraps the stage and
+                // rethrows this exception, so the relay sees exactly what it saw before.
+                return CompletableFuture.failedFuture(failure);
             }
+            return CompletableFuture.completedFuture(null);
         }
     }
 
@@ -1369,8 +1355,6 @@ class OutboxRelayTest {
         private final AtomicInteger openings = new AtomicInteger();
 
         /**
-         * Builds the template the relay runs its sweep inside.
-         *
          * @return a template that runs the callback and tracks the boundary
          */
         TransactionTemplate asTemplate() {

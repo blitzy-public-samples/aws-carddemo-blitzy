@@ -28,7 +28,7 @@ import org.springframework.transaction.annotation.Transactional;
  *
  * <p>The published event carries the same nine descriptive values the row does, under
  * {@link TransactionPosted#DETAIL_SCHEMA_VERSION}.
- * {@link TransactionPosted#forPostedAuthorization} reads them from the authorized event this
+ * {@link TransactionPosted#forAuthorized} reads them from the authorized event this
  * method received, so a downstream read model needs no second source and receives no substituted
  * value in place of a transaction field.
  *
@@ -87,6 +87,8 @@ public class PostingService {
      * replaces that job.
      *
      * @param event the authorized transaction to post
+     * @param messageKey the Kafka message key the delivery carried, which must equal the aggregate
+     *                   identifier of {@code event}
      * @throws NullPointerException when {@code event} is {@code null}
      * @throws IllegalArgumentException when {@code messageKey} is absent or names another aggregate
      * @throws AccountBalanceUpdater.AccountBalanceRowMissingException when no balance row carries

@@ -215,7 +215,7 @@ final class AuthorizationRequestTest {
         assertEquals(Set.of(), messages(withIdentifiers(null, CARD_NUMBER)),
                 "a card number alone names the subject");
         assertEquals(Set.of(), messages(withIdentifiers(ACCOUNT_ID, CARD_NUMBER)),
-                "both identifiers together are a cross-check rather than a conflict");
+                "both identifiers together are accepted, and the account branch decides");
     }
 
     /**
@@ -239,7 +239,7 @@ final class AuthorizationRequestTest {
         assertTrue(withIdentifiers(null, CARD_NUMBER).isCardNumberSupplied(),
                 "a card-only request took the card branch");
         assertTrue(withIdentifiers(ACCOUNT_ID, CARD_NUMBER).isCardNumberSupplied(),
-                "a request carrying both takes the card branch and cross-checks the account");
+                "a card number arrived, whether or not the account branch is the branch taken");
     }
 
     /**
@@ -261,12 +261,16 @@ final class AuthorizationRequestTest {
     }
 
     /**
-     * Asserts a valid account identifier may accompany the required card as a domain cross-check.
+     * Asserts a body carrying both identifiers is accepted by every constraint.
+     *
+     * <p>Which of the two decides the call is settled by {@code domain/AuthorizationService}, which
+     * reproduces the {@code EVALUATE TRUE} at {@code app/cbl/COTRN02C.cbl:L195} by testing the account
+     * field first. No constraint of this record refuses the pair.
      */
     @Test
-    void bothIdentifiersTogetherReachTheDomainCrossCheck() {
+    void bothIdentifiersTogetherAreAccepted() {
         assertEquals(Set.of(), messages(withIdentifiers(ACCOUNT_ID, CARD_NUMBER)),
-                "the card is the lookup key and the account is an optional cross-check");
+                "no constraint refuses a body naming both identifiers");
     }
 
     /**
@@ -496,7 +500,7 @@ final class AuthorizationRequestTest {
                 "the account identifier carries digits only");
         assertEquals(Set.of(AuthorizationRequest.ACCOUNT_ID_NOT_NUMERIC_MESSAGE),
                 messages(withIdentifiers("0000000007X", CARD_NUMBER)),
-                "the account shape is reported before the domain cross-check runs");
+                "the account shape is reported before any stored row is read");
     }
 
     /**

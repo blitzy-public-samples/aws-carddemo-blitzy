@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -94,6 +95,9 @@ class RiskScoringServiceTest {
     /** The ceiling the event contract declares, which the accumulated points hold at. */
     private static final int HIGHEST_SCORE = FraudFlagged.MAXIMUM_RISK_SCORE;
     private static final int ONE_ROW = 1;
+
+    /** Window writes one assessment performs, so one stamp is written and not several. */
+    private static final int ONE_WINDOW_WRITE = 1;
     private static final FraudProperties SHIPPED_SETTINGS = settingsFlaggingAt(SHIPPED_THRESHOLD);
 
     /** Collaborator kinds the scorer holds no field of. */
@@ -199,25 +203,55 @@ class RiskScoringServiceTest {
     }
 
     @Nested
-    @DisplayName("One clock read, shared by the assessment and the window row")
-    class OneClockRead {
+    @DisplayName("One instant, shared by the assessment and the window row's update stamp")
+    class OneSharedInstant {
 
+        /**
+         * Asserts one instant reaches both the returned assessment and the window row's stamp.
+         *
+         * <p>This is the guarantee the class offers, stated as what it is. The test claimed the clock
+         * was read once, which it could not establish: the count of reads is not observable from
+         * outside, because {@code holdsEveryFieldPrivateAndFinal} above requires that this class hold
+         * no {@link java.time.Clock} field, listing {@code Clock} among the types it must not carry.
+         * Adding one to count reads through would break that invariant, so the honest claim is the one
+         * below, and it is the claim that matters: a second read would let the assessment and the row
+         * disagree, and {@code assertSame} refuses that.
+         *
+         * <p>Two wall-clock readings taken around the call used to bracket the instant. That
+         * established nothing about the read count, and a clock moved backward between the two
+         * readings failed it while the code was correct. Nothing here reads a wall clock.
+         *
+         * <p>Three claims replace the bracket, all deterministic. The stamp is the same object the
+         * assessment carries. The stamp is the fourth argument and the window start is the second, so
+         * the two instants the row receives are not conflated: the start comes from the event and the
+         * stamp does not. And the stamp is not the event's own instant, which is the realistic way a
+         * stamp read at call time would be wrong. The event is dated 2022, so that last claim holds
+         * under any clock adjustment a running system could see.
+         */
         @Test
-        @DisplayName("Reads the clock once and hands the window row the assessment instant")
-        void readsTheClockOnceAndSharesTheInstant() {
+        @DisplayName("Hands the window row the same instant the assessment carries")
+        void handsTheWindowRowTheSameInstantTheAssessmentCarries() {
             VelocityWindowRepository windows = countingWindow();
-            ArgumentCaptor<Instant> recorded = ArgumentCaptor.forClass(Instant.class);
+            ArgumentCaptor<Instant> windowStart = ArgumentCaptor.forClass(Instant.class);
+            ArgumentCaptor<Instant> stamp = ArgumentCaptor.forClass(Instant.class);
             RiskScoringService scorer = scorer(windows, triggering(FIRST_RULE, 10));
 
-            Instant opened = Instant.now();
             RiskAssessment assessment = scorer.assess(authorization(FIXTURE_AMOUNT));
-            Instant closed = Instant.now();
 
-            verify(windows).addAuthorization(eq(ACCOUNT_ID), any(), any(), recorded.capture());
-            assertAll("the one instant the call reads",
-                    () -> assertSame(assessment.assessedAt(), recorded.getValue(), "shared"),
-                    () -> assertFalse(assessment.assessedAt().isBefore(opened), "at or after"),
-                    () -> assertFalse(assessment.assessedAt().isAfter(closed), "at or before"));
+            verify(windows, times(ONE_WINDOW_WRITE)).addAuthorization(eq(ACCOUNT_ID),
+                    windowStart.capture(), any(), stamp.capture());
+            assertAll("the one instant the assessment and the row share",
+                    () -> assertSame(assessment.assessedAt(), stamp.getValue(),
+                            "the row's stamp is the very object the assessment carries"),
+                    () -> assertNotNull(assessment.assessedAt(), "the assessment is stamped"),
+                    () -> assertEquals(BUCKET_START, windowStart.getValue(),
+                            "the window start comes from the event, truncated to its bucket"),
+                    () -> assertNotEquals(windowStart.getValue(), stamp.getValue(),
+                            "the start and the stamp are two different instants, not one value"
+                                    + " passed twice"),
+                    () -> assertNotEquals(OCCURRED_AT, assessment.assessedAt(),
+                            "the stamp is read when the assessment runs and is not the event's own"
+                                    + " instant"));
         }
 
         @Test

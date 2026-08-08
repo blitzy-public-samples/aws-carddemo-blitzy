@@ -6,15 +6,22 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.nullable;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.carddemo.events.serde.EventContracts;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import org.apache.kafka.clients.consumer.Consumer;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
 import org.apache.kafka.common.TopicPartition;
@@ -25,8 +32,13 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.kafka.listener.ContainerProperties;
+import org.springframework.kafka.listener.MessageListenerContainer;
 import org.springframework.kafka.support.SendResult;
 import org.springframework.kafka.support.serializer.DeserializationException;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.node.ObjectNode;
+import org.springframework.test.util.ReflectionTestUtils;
 
 /**
  * Asserts nothing a refused record carried reaches the dead-letter topic.
@@ -44,6 +56,12 @@ import org.springframework.kafka.support.serializer.DeserializationException;
  * recoverer publishes. A sentinel rather than a realistic value, because a test that searches for a
  * realistic Primary Account Number can pass by coincidence when a digit sequence appears in a
  * timestamp.
+ *
+ * <p>A three-digit sentinel is short enough to appear by coincidence in the two members the envelope
+ * generates for itself, so the scan for it runs over {@link #recordDerivedText()} rather than over
+ * the whole envelope. {@code eventId} is a random universally unique identifier and
+ * {@code occurredAt} is the moment of the run, and neither carries a value the refused record
+ * supplied.
  */
 @DisplayName("Dead-letter sanitization, the authorization service")
 class DeadLetterSanitizationTest {
@@ -68,8 +86,25 @@ class DeadLetterSanitizationTest {
      */
     private static final String SENTINEL_PAN = "9999888877776666";
 
-    /** A sentinel standing in for the three-digit verification value, at the declared width. */
+    /**
+     * A sentinel standing in for the three-digit verification value, at the declared width.
+     *
+     * <p>Three digits is the width {@code app/cpy/CVACT02Y.cpy:L7} declares, and a sentinel that
+     * narrow occurs inside a random identifier often enough to matter: the envelope carries a
+     * generated {@code eventId} of thirty-two hexadecimal characters and a generated
+     * {@code occurredAt}, and a run of three digits matching this one appears there by chance in
+     * roughly one run in a hundred. The assertions below therefore search the text this service
+     * copies rather than the text it generates, which is what {@link #producerInfluencedText()}
+     * separates. Widening the sentinel instead would have made it stop standing for a value of the
+     * declared width.</p>
+     */
     private static final String SENTINEL_CVV = "731";
+
+    /** Members of one envelope that a run generates, which no scan for a record value reads. */
+    private static final List<String> GENERATED_MEMBERS = List.of("eventId", "occurredAt");
+
+    /** Reader of the published envelope, used only to drop the generated members before a scan. */
+    private static final ObjectMapper MAPPER = new ObjectMapper();
 
     /** A sentinel standing in for a header a producer chose. */
     private static final String SENTINEL_HEADER_VALUE = "producer-chose-this-" + SENTINEL_PAN;
@@ -109,7 +144,9 @@ class DeadLetterSanitizationTest {
         String value = valueText();
         assertFalse(value.contains(SENTINEL_PAN),
                 "the refused bytes reached the dead-letter topic: " + value);
-        assertFalse(value.contains(SENTINEL_CVV),
+        assertFalse(recordDerivedText().contains(SENTINEL_CVV),
+                "the verification value was republished");
+        assertFalse(producerInfluencedText().contains(SENTINEL_CVV),
                 "the verification value reached the dead-letter topic: " + value);
     }
 
@@ -209,7 +246,10 @@ class DeadLetterSanitizationTest {
 
         String value = valueText();
         assertFalse(value.contains(SENTINEL_PAN), "the applied-record value was republished");
-        assertFalse(value.contains(SENTINEL_CVV), "the verification value was republished");
+        assertFalse(recordDerivedText().contains(SENTINEL_CVV),
+                "the verification value was republished");
+        assertFalse(producerInfluencedText().contains(SENTINEL_CVV),
+                "the verification value was republished: " + value);
         assertEquals(List.of(), EventContracts.violationsOf(EventContracts.DEAD_LETTER, value),
                 "the envelope satisfies its contract on this path too");
     }
@@ -232,6 +272,63 @@ class DeadLetterSanitizationTest {
 
         assertEquals(List.of(), EventContracts.violationsOf(EventContracts.DEAD_LETTER, valueText()),
                 "an out-of-range attempt count left the envelope unpublishable");
+    }
+
+    /**
+     * Asserts a dead-lettered record commits the offset that follows it, so the route is terminal.
+     *
+     * <p>Both replica listeners acknowledge by hand, so nothing acknowledges a record whose
+     * listener never accepted it. Without {@code setCommitRecovered(true)} the offset of a
+     * record the route had already published stayed uncommitted, and the next start-up or the
+     * next partition assignment read that record again and published a second envelope naming
+     * the same coordinates: one refused record, two dead letters, and the replica stage of
+     * {@code carddemo.authorization.failures} counting one record more than once. The other
+     * four services of this platform set it, so this assertion is what keeps the sixth from
+     * being the exception again.
+     *
+     * <p>The commit is asserted rather than the setting alone, because the container applies the
+     * setting only under acknowledgement mode {@code MANUAL_IMMEDIATE}: under {@code MANUAL} it
+     * reports the setting as ignored and commits nothing. The container here declares the mode the
+     * shipped {@code spring.kafka.listener.ack-mode} names, so the assertion covers the setting and
+     * the mode it depends on together.
+     */
+    @Test
+    @SuppressWarnings("unchecked")
+    void aDeadLetteredRecordCommitsTheOffsetThatFollowsIt() {
+        // One delivery, so the first handling exhausts the budget and reaches the route.
+        org.springframework.kafka.listener.DefaultErrorHandler singleDelivery =
+                new KafkaConsumerConfig().replicaConsumerErrorHandler(mock(KafkaTemplate.class),
+                        DEAD_LETTER_TOPIC, new SimpleMeterRegistry(), 1, 0L);
+        Consumer<?, ?> consumer = mock(Consumer.class);
+        ConsumerRecord<String, String> refused = new ConsumerRecord<>(SOURCE_TOPIC,
+                SOURCE_PARTITION, SOURCE_OFFSET, SENTINEL_PAN, null);
+
+        assertEquals(Boolean.TRUE,
+                ReflectionTestUtils.getField(singleDelivery, "commitRecovered"),
+                "the route is not terminal, so a dead-lettered record is read again");
+        assertTrue(singleDelivery.isAckAfterHandle(),
+                "a handled record has to be acknowledged for the commit to mean anything");
+
+        singleDelivery.handleRemaining(new IllegalStateException("replica store unavailable"),
+                List.of(refused), consumer, manualImmediateContainer());
+
+        verify(consumer).commitSync(
+                eq(Map.of(new TopicPartition(SOURCE_TOPIC, SOURCE_PARTITION),
+                        new OffsetAndMetadata(SOURCE_OFFSET + 1))),
+                nullable(Duration.class));
+    }
+
+    /**
+     * Builds a container declaring the acknowledgement mode the shipped configuration names.
+     *
+     * @return a container whose properties carry {@code MANUAL_IMMEDIATE}
+     */
+    private static MessageListenerContainer manualImmediateContainer() {
+        ContainerProperties properties = new ContainerProperties(SOURCE_TOPIC);
+        properties.setAckMode(ContainerProperties.AckMode.MANUAL_IMMEDIATE);
+        MessageListenerContainer container = mock(MessageListenerContainer.class);
+        when(container.getContainerProperties()).thenReturn(properties);
+        return container;
     }
 
     /**
@@ -282,7 +379,42 @@ class DeadLetterSanitizationTest {
         assertNotNull(published, "the recoverer published nothing");
     }
 
+    /**
+     * Returns the published envelope with the two values this service generates removed.
+     *
+     * <p>{@code eventId} and {@code occurredAt} are produced here, from a random identifier and a
+     * clock, so neither can carry anything a producer sent and neither is evidence of a leak.
+     * Everything else in the envelope either names the refused record's coordinates or is fixed
+     * text, so a sentinel found in what remains was copied. Removing the two is what lets a
+     * three-digit sentinel be searched for at all without a random identifier failing the run.</p>
+     *
+     * @return the published value as text, with the generated identifier and timestamp blanked
+     */
+    private String producerInfluencedText() {
+        return valueText()
+                .replaceAll("\"eventId\"\\s*:\\s*\"[^\"]*\"", "\"eventId\":\"\"")
+                .replaceAll("\"occurredAt\"\\s*:\\s*\"[^\"]*\"", "\"occurredAt\":\"\"");
+    }
+
     /** @return the published value rendered as text */
+    /**
+     * Renders the published envelope without the two members a run generates.
+     *
+     * <p>{@code eventId} matches the universally-unique-identifier pattern of
+     * {@code schemas/dead-letter-v1.json} and {@code occurredAt} matches its date-time pattern.
+     * Both change on every run and neither is read from the refused record. A random identifier
+     * carries a three-character sentinel roughly once in a hundred renderings, and a scan that read
+     * one would report a leak no code performed.
+     *
+     * @return the same envelope without those two members
+     */
+    private String recordDerivedText() {
+        ObjectNode scanned = (ObjectNode) MAPPER.readTree(valueText());
+        scanned.remove(GENERATED_MEMBERS);
+        assertFalse(scanned.isEmpty(), "the envelope carries members beyond the generated two");
+        return scanned.toString();
+    }
+
     private String valueText() {
         assertNotNull(published, "nothing was published");
         Object value = published.value();

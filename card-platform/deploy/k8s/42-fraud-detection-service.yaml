@@ -60,6 +60,12 @@ spec:
           #   docker build -f card-platform/services/fraud-detection-service/Dockerfile \
           #     -t "carddemo/fraud-detection-service:${version}" \
           #     card-platform/services/fraud-detection-service
+          # THE TAG IS MUTABLE, AND THAT IS THE RESIDUAL RISK. Bytes tagged
+          # carddemo/fraud-detection-service:1.0.0-SNAPSHOT on one node are whatever an operator
+          # loaded there, and no manifest in this folder would notice a different build under the
+          # same name. The six references therefore live in one place, deploy/k8s/kustomization.yaml,
+          # so pinning them by digest is one edit rather than six. deploy/k8s/README.md gives the
+          # procedure and states plainly what a node verifies about each kind of image.
           image: carddemo/fraud-detection-service:1.0.0-SNAPSHOT
           # This local-demo image must already be loaded on the node.
           imagePullPolicy: Never

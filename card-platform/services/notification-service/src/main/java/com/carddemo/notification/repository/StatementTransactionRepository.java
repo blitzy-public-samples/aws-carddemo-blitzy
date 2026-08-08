@@ -8,10 +8,9 @@ import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.ListCrudRepository;
 import org.springframework.data.repository.query.Param;
-import org.springframework.transaction.annotation.Transactional;
 
 /**
- * Reads and writes the account-keyed statement read model this service builds from the events it
+ * Reads and writes the card-keyed statement read model this service builds from the events it
  * consumes, held in the table {@code statement_transaction}.
  *
  * <p>The composite key is the group {@code 05 TRNX-KEY.} at {@code app/cpy/COSTM01.CPY:L21}:
@@ -21,9 +20,10 @@ import org.springframework.transaction.annotation.Transactional;
  * same order. The card half is the card token, not a card number: a masked number identifies no
  * single card and a full one belongs in no index.
  *
- * <p>Every finder below takes a limit. A card accumulates one row per posted transaction and nothing
- * removes a row, so an unbounded finder would grow without ceiling and load a whole card history into
- * memory to serve one bounded response.
+ * <p>The finder below takes a limit, and each caller supplies the one its own work needs.
+ * {@code GET /notifications/&#123;cardNumber&#125;} passes {@link Limit#unlimited()}, because
+ * {@code app/cbl/CBSTM03A.CBL:L429} totals every row of one card between two key breaks. An alert
+ * renders at most {@code NotificationRenderer.MAXIMUM_STATEMENT_ROWS} rows and passes that number.
  *
  * <p>The one-interface-per-aggregate shape comes from the generic parameter area
  * {@code 01 LK-M03B-AREA} at {@code app/cbl/CBSTM03B.CBL:L100-L112}, whose operation code
@@ -46,14 +46,13 @@ public interface StatementTransactionRepository
      * {@code SORT FIELDS=(263,16,CH,A,1,16,CH,A)} at {@code app/jcl/CREASTMT.JCL:L53} produced, and
      * the primary key of {@code statement_transaction} serves it as a range scan.
      *
-     * <p>The limit reaches the database as a row count on the statement, so a card holding more rows
-     * than the limit costs one page and not a whole history. The caller supplies the ceiling:
-     * {@code NotificationRenderer.MAXIMUM_STATEMENT_ROWS} fixes the one every caller in this service
-     * uses, and {@code StatementRowCapTest} holds that constant and the interface description to the
-     * same number.
+     * <p>A bounded limit reaches the database as a row count on the statement, so a card holding
+     * more rows than the limit costs one read of that many rows. {@link Limit#unlimited()} sets no row
+     * count and returns every row of the card, which is what
+     * {@code GET /notifications/&#123;cardNumber&#125;} reads.
      *
      * @param cardToken the stored card token
-     * @param limit the greatest number of rows to return
+     * @param limit the greatest number of rows to return, or {@link Limit#unlimited()} for every row
      * @return the card's first {@code limit} rows in that order, and empty when the read model holds
      *         none for the card
      */
@@ -72,7 +71,7 @@ public interface StatementTransactionRepository
      *
      * <p>{@code limit} bounds one statement, and {@code domain/RetentionSweeper} repeats the call
      * until it removes fewer rows than it asked for. This table gains one row per posted
-     * transaction and backs {@code GET /notifications/&#123;cardToken&#125;}, so its horizon is the
+     * transaction and backs {@code GET /notifications/&#123;cardNumber&#125;}, so its horizon is the
      * longest this service applies.
      *
      * @param horizon the timestamp text before which a row is removed, in the source's own

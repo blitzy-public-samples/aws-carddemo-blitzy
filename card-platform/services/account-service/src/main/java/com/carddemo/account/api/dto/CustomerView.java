@@ -22,8 +22,21 @@ import com.carddemo.events.EventEnvelope;
  * <p>The two fields at {@code app/cpy/CVCUS01Y.cpy:L17-L18} map to no component here.
  *
  * <p>Fifteen components hold text as the customer record stores it, with the stored width as the
- * maximum and no trimming applied. The sixteenth, {@code ficoCreditScore}, holds a number. Any
- * component is null when the caller supplies none, and no component here carries a constraint.
+ * maximum and no trimming applied. The sixteenth, {@code ficoCreditScore}, holds a number. No
+ * component here carries a bean constraint, because nothing binds a caller's value to this record.
+ *
+ * <p>Every component carries a value on every row. All eighteen columns of table {@code customer}
+ * are declared {@code NOT NULL} by {@code src/main/resources/db/migration/V1__schema.sql}, and
+ * {@code api/AccountRecordMapper.viewOf} reads each of the sixteen this record carries.
+ * {@code src/main/resources/openapi.yaml} declares all sixteen properties required.
+ *
+ * <p>{@code ficoCreditScore} arrives as the row stores it, between 0 and 999 as
+ * {@code PIC 9(03)} holds. {@code 88 FICO-RANGE-IS-VALID VALUES 300 THROUGH 850} at
+ * {@code app/cbl/COACTUPC.cbl:L848-L849} is an edit of the update path, applied by
+ * {@code 1275-EDIT-FICO-SCORE}. No paragraph of {@code app/cbl/COACTVWC.cbl} applies it to a value
+ * being displayed: {@code app/cbl/COACTVWC.cbl:L505-L506} moves the score to the screen and tests
+ * nothing. Columns 330 to 332 of {@code app/data/ASCII/custdata.txt} hold scores from 1 to 793, and
+ * 21 of the 50 rows sit below 300.
  *
  * @param customerId nine-character customer identifier, padded on the left with zeros. Source
  *        {@code CUST-ID PIC 9(09)} at {@code app/cpy/CVCUS01Y.cpy:L5}, moved at

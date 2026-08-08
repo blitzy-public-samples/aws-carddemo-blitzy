@@ -1,5 +1,11 @@
 package com.carddemo.card.api;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import com.carddemo.card.TestIdentityPasswords;
+import com.carddemo.card.config.CrossSiteRequestFilter;
 import com.carddemo.card.entity.CardEntity;
 import com.carddemo.card.repository.CardRepository;
 import java.net.URI;
@@ -15,7 +21,10 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.Objects;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -28,22 +37,24 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.http.server.PathContainer;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.web.bind.annotation.RequestMethod;
+import org.springframework.web.servlet.mvc.method.RequestMappingInfo;
+import org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerMapping;
+import org.springframework.web.util.pattern.PathPatternParser;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
-import static org.junit.jupiter.api.Assertions.assertAll;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Full-stack test of {@link CardController} over a PostgreSQL container. Nothing is stubbed. The
@@ -145,13 +156,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * no client-side test artifact carrying {@code TestRestTemplate} either, and Spring Boot 4.1.0
  * ships that type outside {@code spring-boot-test}.
  *
- * <p>DEVIATION, routes: the read route is {@code POST /cards/detail}, carrying the account
- * identifier and the full card number in a body. The update route is {@code PUT /cards}, carrying
- * the card number in a body. Neither identifier travels in a path. The list route requires
- * the account identifier and takes its paging position in header {@code X-Card-Cursor}.
+ * <p>The read route is {@code GET /cards/{cardNumber}} and the update route is
+ * {@code PUT /cards/{cardNumber}}, each reproducing one Customer Information Control System (CICS)
+ * transaction that addresses one card: {@code CCDL} at {@code app/csd/CARDDEMO.CSD:L347-L348} and
+ * {@code CCUP} at {@code app/csd/CARDDEMO.CSD:L367-L369}. The list route requires the account
+ * identifier and takes its paging position in header {@code X-Card-Cursor}.
  *
- * <p>DEVIATION, failed write after the lock: {@code CardController.statusOf} answers 500, and
- * {@code src/main/resources/openapi.yaml} documents 500 carrying the same text.
+ * <p>DEVIATION, failed write after the lock: {@code CardController.statusOf} answers 503, and
+ * {@code src/main/resources/openapi.yaml} documents 503 carrying the same text in the failure body.
  *
  * <p>DEVIATION, error body: the third component of a plain error body is named {@code route} and
  * holds a route template.
@@ -196,9 +208,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
         webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
         properties = {
                 "KAFKA_SASL_PASSWORD=not-a-real-broker-password",
-                "ADMIN_PASSWORD_HASH={noop}" + CardControllerIT.ADMIN_PASSWORD,
-                "USER_PASSWORD_HASH={noop}not-a-real-user-password",
-                "MONITORING_PASSWORD_HASH={noop}not-a-real-monitoring-password",
+                "ADMIN_PASSWORD_HASH=" + TestIdentityPasswords.ADMIN_PASSWORD_HASH,
+                "USER_PASSWORD_HASH=" + TestIdentityPasswords.USER_PASSWORD_HASH,
+                "MONITORING_PASSWORD_HASH=" + TestIdentityPasswords.MONITORING_PASSWORD_HASH,
                 "carddemo.outbox.relay.fixed-delay-ms=3600000",
                 "carddemo.retention.sweep-interval-ms=3600000"
         })
@@ -228,9 +240,9 @@ class CardControllerIT {
 
     /**
      * Password of the administrator identity, plainly synthetic and matching no live credential.
-     * The context encodes it with the {@code noop} prefix the property above carries.
+     * The property above configures its bcrypt hash, and this value is what a request presents.
      */
-    static final String ADMIN_PASSWORD = "not-a-real-admin-password";
+    static final String ADMIN_PASSWORD = TestIdentityPasswords.ADMIN_PASSWORD;
 
     /**
      * Rows one screen of the card list holds, from
@@ -423,6 +435,16 @@ class CardControllerIT {
     /** Inserts the rows a page of seven and a vanishing row need. */
     @Autowired
     private CardRepository cardRepository;
+
+    /**
+     * The route table the running application built, read to establish which paths carry a handler.
+     *
+     * <p>Named rather than taken by type. The actuator contributes handler mappings of its own, and
+     * this is the one holding the annotated business routes.
+     */
+    @Autowired
+    @Qualifier("requestMappingHandlerMapping")
+    private RequestMappingHandlerMapping handlerMappings;
 
     /** Sends every request. Built once per test instance and closed by the runtime. */
     private final HttpClient httpClient = HttpClient.newBuilder()
@@ -644,7 +666,7 @@ class CardControllerIT {
     }
 
     /**
-     * {@code POST /cards/detail}, where the order of the lookup and the mask becomes observable.
+     * {@code GET /cards/{cardNumber}}, where the order of the lookup and the mask becomes observable.
      *
      * <p>The route replaces the Customer Information Control System (CICS) transaction
      * {@code CCDL}, which dispatches into {@code COCRDSLC}.
@@ -666,7 +688,7 @@ class CardControllerIT {
         @Test
         @DisplayName("the lookup runs on the full card number and the answer carries the mask")
         void theLookupRunsOnTheFullCardNumber() {
-            HttpResponse<String> answer = readCard(ROW_1_ACCOUNT_ID, ROW_1_CARD_NUMBER);
+            HttpResponse<String> answer = readCard(ROW_1_CARD_NUMBER);
             JsonNode body = bodyOf(answer);
 
             assertAll("the masked answer to a full-number read",
@@ -697,7 +719,7 @@ class CardControllerIT {
         @Test
         @DisplayName("the detail body carries five components and no card verification value")
         void theDetailBodyCarriesFiveComponents() {
-            JsonNode body = bodyOf(readCard(ROW_1_ACCOUNT_ID, ROW_1_CARD_NUMBER));
+            JsonNode body = bodyOf(readCard(ROW_1_CARD_NUMBER));
             Set<String> names = propertyNamesOf(body);
 
             assertAll("the detail body",
@@ -729,7 +751,7 @@ class CardControllerIT {
         @Test
         @DisplayName("an absent card answers 404 with the text the source declares")
         void anAbsentCardAnswersNotFound() {
-            HttpResponse<String> answer = readCard(ROW_1_ACCOUNT_ID, ABSENT_CARD_NUMBER);
+            HttpResponse<String> answer = readCard(ABSENT_CARD_NUMBER);
 
             assertAll("the absent-row answer",
                     () -> assertEquals(404, answer.statusCode(), "an absent row answers 404"),
@@ -750,7 +772,7 @@ class CardControllerIT {
         @Test
         @DisplayName("a wrong check digit reaches the lookup and answers the absent-row arm")
         void aWrongCheckDigitReachesTheLookup() {
-            HttpResponse<String> answer = readCard(ROW_1_ACCOUNT_ID, WRONG_CHECK_DIGIT_CARD_NUMBER);
+            HttpResponse<String> answer = readCard(WRONG_CHECK_DIGIT_CARD_NUMBER);
 
             assertAll("the answer to a value no checksum admits",
                     () -> assertEquals(404, answer.statusCode(),
@@ -774,7 +796,7 @@ class CardControllerIT {
             jdbcTemplate.update("UPDATE card SET active_status = ? WHERE card_number = ?",
                     ACTIVE_STATUS_NO, ROW_1_CARD_NUMBER);
 
-            HttpResponse<String> answer = readCard(ROW_1_ACCOUNT_ID, ROW_1_CARD_NUMBER);
+            HttpResponse<String> answer = readCard(ROW_1_CARD_NUMBER);
             JsonNode body = bodyOf(answer);
 
             assertAll("the read of an inactive card",
@@ -841,7 +863,7 @@ class CardControllerIT {
             HttpResponse<String> answer = updateCard(ROW_1_CARD_NUMBER, "Marisol Reyes", "2028",
                     "11", ROW_1_EXPIRY_DAY, ACTIVE_STATUS_NO);
             JsonNode body = bodyOf(answer);
-            JsonNode reread = bodyOf(readCard(ROW_1_ACCOUNT_ID, ROW_1_CARD_NUMBER));
+            JsonNode reread = bodyOf(readCard(ROW_1_CARD_NUMBER));
 
             assertAll("the applied update",
                     () -> assertEquals(200, answer.statusCode(), "a rewritten row answers 200"),
@@ -1070,11 +1092,14 @@ class CardControllerIT {
          * {@code LOCKED-BUT-UPDATE-FAILED} at {@code app/cbl/COCRDUPC.cbl:L1491}, under no guard,
          * and {@code app/cbl/COCRDUPC.cbl:L209/L210} declares the text. This test withholds the
          * event table for one request, so the write inside the held transaction fails.
-         * {@code src/main/resources/openapi.yaml} documents the same status and the same text.
+         *
+         * <p>The answer carries the failure body rather than the outcome body, so one status on one
+         * operation carries one schema. {@code src/main/resources/openapi.yaml} documents the same
+         * status, the same shape and the same text.
          */
         @Test
-        @DisplayName("a failed write after the lock answers 500 and rolls the row back")
-        void aFailedWriteAfterTheLockAnswersFiveHundred() {
+        @DisplayName("a failed write after the lock answers 503 and rolls the row back")
+        void aFailedWriteAfterTheLockAnswersServiceUnavailable() {
             HttpResponse<String> answer;
             jdbcTemplate.execute("ALTER TABLE outbox_event RENAME TO outbox_event_withheld");
             try {
@@ -1086,13 +1111,14 @@ class CardControllerIT {
             JsonNode body = bodyOf(answer);
 
             assertAll("the failed-write answer",
-                    () -> assertEquals(500, answer.statusCode(), "a failed write answers 500"),
+                    () -> assertEquals(503, answer.statusCode(),
+                            "a write the datastore refused is retryable rather than a defect"),
                     () -> assertEquals("Update of record failed", messageOf(answer),
                             "the answer carries the failed-write text"),
-                    () -> assertEquals("UPDATE_FAILED_AFTER_LOCK", body.get("outcome").asString(),
-                            "the outcome names the failed write"),
-                    () -> assertTrue(body.get("refreshedCard").isNull(),
-                            "a failed write carries no snapshot"),
+                    () -> assertEquals(503, body.get("status").asInt(),
+                            "the failure body reports the status it was sent with"),
+                    () -> assertEquals("/cards/{cardNumber}", body.get("route").asString(),
+                            "the failure body carries the route template and no resolved path"),
                     () -> assertEquals(ROW_1_EMBOSSED_NAME,
                             storedValueOf("embossed_name", ROW_1_CARD_NUMBER),
                             "the row still carries the name it had"));
@@ -1113,11 +1139,11 @@ class CardControllerIT {
                     propertyNamesOf(bodyOf(updateCard(ABSENT_CARD_NUMBER, "Marisol Reyes", "2028",
                             "11", "09", ACTIVE_STATUS_YES)));
             Set<String> readNames =
-                    propertyNamesOf(bodyOf(readCard(ROW_1_ACCOUNT_ID, ABSENT_CARD_NUMBER)));
+                    propertyNamesOf(bodyOf(readCard(ABSENT_CARD_NUMBER)));
 
             assertAll("the two failing bodies",
                     () -> assertEquals(Set.of("outcome", "message", "refreshedCard"), updateNames,
-                            "the update body carries three properties"),
+                            "the update body carries three properties, all three serialized"),
                     () -> assertEquals(Set.of("status", "message", "route"), readNames,
                             "the read body carries three properties"),
                     () -> assertFalse(readNames.contains("errors"), "no error collection"),
@@ -1149,7 +1175,7 @@ class CardControllerIT {
         @Test
         @DisplayName("neither the read, the update nor a one-row list carries the value")
         void noSingleRecordBodyCarriesTheValue() {
-            String detail = readCard(ROW_1_ACCOUNT_ID, ROW_1_CARD_NUMBER).body();
+            String detail = readCard(ROW_1_CARD_NUMBER).body();
             String update = updateCard(ROW_1_CARD_NUMBER, "Marisol Reyes", "2028", "11",
                     ROW_1_EXPIRY_DAY, ACTIVE_STATUS_NO).body();
             String list = listCards(ROW_1_ACCOUNT_ID, null).body();
@@ -1215,7 +1241,7 @@ class CardControllerIT {
         @DisplayName("a list and a read produce no event row")
         void readsProduceNoEventRow() {
             HttpResponse<String> list = listCards(ROW_1_ACCOUNT_ID, null);
-            HttpResponse<String> read = readCard(ROW_1_ACCOUNT_ID, ROW_1_CARD_NUMBER);
+            HttpResponse<String> read = readCard(ROW_1_CARD_NUMBER);
 
             Integer total =
                     jdbcTemplate.queryForObject("SELECT count(*) FROM outbox_event", Integer.class);
@@ -1239,24 +1265,156 @@ class CardControllerIT {
     class AbsencesTheSourceEstablishes {
 
         /**
-         * No card-status resource answers, so no authorization path can call one.
+         * The one route in the table this service did not declare.
+         *
+         * <p>The framework's error controller registers it, under no named method, so it answers
+         * every method. It is named here so the inventory comparison stays exact.
+         */
+        private static final String FRAMEWORK_ERROR_ROUTE = "ANY /error";
+
+        /**
+         * No handler is mapped to a card-status path, under any method.
          *
          * <p>The posting program never opens the card file. {@code app/jcl/POSTTRAN.jcl} runs to 45
          * lines and runs the program in {@code STEP15} at {@code app/jcl/POSTTRAN.jcl:L23}. It
          * allocates six datasets at {@code app/jcl/POSTTRAN.jcl:L28}, {@code L30}, {@code L32},
          * {@code L34}, {@code L39} and {@code L41}, where {@code L32} names the card
-         * cross-reference. The refusal below comes from the default-deny rule of
-         * {@code config/SecurityConfig}, which answers before any route is matched. The status
-         * states that no rule and no handler admits the request.
+         * cross-reference and none of them is the card master file. No source program reads the
+         * active status before it posts, so no route here may offer it.
+         *
+         * <p>The claim is read from the route table the running application built. It was read from
+         * a refusal instead, and a refusal cannot carry it: the default-deny rule of
+         * {@code config/SecurityConfig} answers 403 before a route is matched, so every unmapped
+         * path answers exactly as this one did and the assertion held whether or not a handler
+         * existed. Adding a card-status handler would have left it passing.
+         *
+         * <p>Every registered pattern is matched against the concrete path with the same parser the
+         * dispatcher uses, so a handler mapped as a literal, as a template or under a wildcard is
+         * caught alike.
          */
         @Test
-        @DisplayName("no card-status resource answers")
-        void noCardStatusResourceAnswers() {
+        @DisplayName("no handler is mapped to a card-status path, under any method")
+        void noHandlerIsMappedToACardStatusPath() {
+            String statusPath = CardController.BASE_PATH + "/" + ROW_1_CARD_NUMBER + "/status";
+            PathPatternParser parser = new PathPatternParser();
+            PathContainer requested = PathContainer.parsePath(statusPath);
+
+            Set<String> matching = declaredPatterns().stream()
+                    .filter(pattern -> parser.parse(pattern).matches(requested))
+                    .collect(java.util.stream.Collectors.toCollection(TreeSet::new));
+
+            assertAll("the route table",
+                    () -> assertTrue(matching.isEmpty(),
+                            statusPath + " is carried by " + matching),
+                    () -> assertFalse(declaredPatterns().isEmpty(),
+                            "the route table was read as empty, so nothing was actually inspected:"
+                                    + " the absence above would hold for every path"),
+                    () -> assertTrue(declaredPatterns().stream()
+                                    .noneMatch(pattern -> pattern.toLowerCase(Locale.ROOT)
+                                            .contains("status")),
+                            "a route names status: " + declaredPatterns()));
+        }
+
+        /**
+         * The whole route inventory is the three operations this service declares, and the one route
+         * the framework contributes.
+         *
+         * <p>This is what makes the absence above complete rather than one spot check. A fourth
+         * business route of any shape fails here, so no resource can be added to this service
+         * without a decision being recorded against this assertion, whatever it is named.
+         *
+         * <p>{@code ANY /error} is the container's error dispatch, registered by the framework's own
+         * error controller rather than by this service. It is listed instead of filtered out, so the
+         * comparison stays a comparison of the complete table: a filter wide enough to drop it would
+         * be wide enough to drop a route somebody added. {@code config/SecurityConfig} permits the
+         * error dispatch for the same reason, which is what lets an unmatched path answer 404 rather
+         * than 403.
+         */
+        @Test
+        @DisplayName("the route inventory is the three declared operations and the error dispatch")
+        void theRouteInventoryIsTheThreeDeclaredOperationsAndTheErrorDispatch() {
+            Set<String> expected = new TreeSet<>(Set.of(
+                    "GET " + CardController.COLLECTION_ROUTE,
+                    "GET " + CardController.CARD_ROUTE,
+                    "PUT " + CardController.CARD_ROUTE,
+                    FRAMEWORK_ERROR_ROUTE));
+
+            assertEquals(expected, declaredRoutes(), "the declared route inventory");
+        }
+
+        /**
+         * No business route beyond the three carries a handler, whatever the framework contributes.
+         *
+         * <p>Stated separately from the inventory above so that the claim survives a framework
+         * upgrade that adds or renames an infrastructure route: the inventory would then need
+         * updating, and this would still refuse a fourth route under this service's own base path.
+         */
+        @Test
+        @DisplayName("no fourth route sits under this service's base path")
+        void noFourthRouteSitsUnderThisServicesBasePath() {
+            Set<String> underBasePath = declaredRoutes().stream()
+                    .filter(route -> route.contains(" " + CardController.BASE_PATH))
+                    .collect(java.util.stream.Collectors.toCollection(TreeSet::new));
+
+            assertEquals(3, underBasePath.size(),
+                    "routes under " + CardController.BASE_PATH + ": " + underBasePath);
+        }
+
+        /**
+         * The chain also refuses the absent path, which corroborates the absence without proving it.
+         *
+         * <p>Kept as a separate statement about the chain rather than about the route table. On its
+         * own it says only that nothing reachable answers there, which is true of every path this
+         * service does not declare.
+         */
+        @Test
+        @DisplayName("the chain also refuses the absent path")
+        void theChainAlsoRefusesTheAbsentPath() {
             HttpResponse<String> answer =
                     send(authorized("/cards/" + ROW_1_CARD_NUMBER + "/status").GET().build());
 
             assertEquals(403, answer.statusCode(),
-                    "an authenticated caller reaches no handler on an unnamed route");
+                    "an authenticated caller reaches nothing on an undeclared route");
+        }
+
+        /**
+         * Reads every path pattern the running application registered for an annotated handler.
+         *
+         * @return the patterns, ordered
+         */
+        private Set<String> declaredPatterns() {
+            return handlerMappings.getHandlerMethods().keySet().stream()
+                    .map(RequestMappingInfo::getPathPatternsCondition)
+                    .filter(Objects::nonNull)
+                    .flatMap(condition -> condition.getPatternValues().stream())
+                    .collect(java.util.stream.Collectors.toCollection(TreeSet::new));
+        }
+
+        /**
+         * Reads every method-and-pattern pair the running application registered.
+         *
+         * <p>A mapping that names no method would answer every method, so it is reported as
+         * {@code ANY} rather than dropped.
+         *
+         * @return the pairs, ordered
+         */
+        private Set<String> declaredRoutes() {
+            Set<String> routes = new TreeSet<>();
+            for (RequestMappingInfo info : handlerMappings.getHandlerMethods().keySet()) {
+                Set<RequestMethod> methods = info.getMethodsCondition().getMethods();
+                Set<String> names = methods.isEmpty() ? Set.of("ANY")
+                        : methods.stream().map(RequestMethod::name)
+                                .collect(java.util.stream.Collectors.toSet());
+                if (info.getPathPatternsCondition() == null) {
+                    continue;
+                }
+                for (String pattern : info.getPathPatternsCondition().getPatternValues()) {
+                    for (String name : names) {
+                        routes.add(name + " " + pattern);
+                    }
+                }
+            }
+            return routes;
         }
     }
 
@@ -1276,18 +1434,13 @@ class CardControllerIT {
     }
 
     /**
-     * Reads one card by its full card number.
+     * Reads one card by its full card number, which the path carries.
      *
-     * @param accountId  the eleven-digit account the caller names
      * @param cardNumber the full sixteen-digit card number
      * @return the answer, body included as served text
      */
-    private HttpResponse<String> readCard(String accountId, String cardNumber) {
-        String body = "{\"accountId\":\"" + accountId + "\",\"cardNumber\":\"" + cardNumber + "\"}";
-        return send(authorized("/cards/detail")
-                .header("Content-Type", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
-                .build());
+    private HttpResponse<String> readCard(String cardNumber) {
+        return send(authorized("/cards/" + cardNumber).GET().build());
     }
 
     /**
@@ -1304,13 +1457,12 @@ class CardControllerIT {
      */
     private HttpResponse<String> updateCard(String cardNumber, String embossedName,
             String expiryYear, String expiryMonth, String expiryDay, String activeStatus) {
-        String body = "{\"cardNumber\":\"" + cardNumber + "\""
-                + ",\"embossedName\":\"" + embossedName + "\""
+        String body = "{\"embossedName\":\"" + embossedName + "\""
                 + ",\"expiryYear\":\"" + expiryYear + "\""
                 + ",\"expiryMonth\":\"" + expiryMonth + "\""
                 + ",\"expiryDay\":\"" + expiryDay + "\""
                 + ",\"activeStatus\":\"" + activeStatus + "\"}";
-        return send(authorized("/cards")
+        return send(authorized("/cards/" + cardNumber)
                 .header("Content-Type", "application/json")
                 .PUT(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
                 .build());
@@ -1332,6 +1484,10 @@ class CardControllerIT {
         return HttpRequest.newBuilder(URI.create("http://localhost:" + port + pathAndQuery))
                 .header("Authorization", "Basic " + encoded)
                 .header("Accept", "application/json")
+                // config/CrossSiteRequestFilter requires this on every state-changing request. A
+                // first-party client sets it on all of them, and an HTML form can set no header at
+                // all, which is what separates the two.
+                .header(CrossSiteRequestFilter.DEFAULT_REQUIRED_HEADER, "1")
                 .timeout(REQUEST_TIMEOUT);
     }
 

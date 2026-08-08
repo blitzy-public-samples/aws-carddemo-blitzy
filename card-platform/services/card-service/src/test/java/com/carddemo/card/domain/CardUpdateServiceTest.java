@@ -11,9 +11,10 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
 import com.carddemo.card.CardApplication;
+import com.carddemo.card.TestIdentityPasswords;
 import com.carddemo.card.api.dto.CardUpdateRequest;
-import com.carddemo.card.api.dto.CardUpdateResponse;
 import com.carddemo.card.api.dto.CardUpdateResponse.UpdateOutcome;
+import com.carddemo.card.api.dto.CardUpdateResponse;
 import com.carddemo.card.api.dto.CardValidationMessages;
 import com.carddemo.card.entity.CardEntity;
 import com.carddemo.card.messaging.CardUpdated;
@@ -97,9 +98,9 @@ import tools.jackson.databind.ObjectMapper;
         webEnvironment = SpringBootTest.WebEnvironment.NONE,
         properties = {
                 "KAFKA_SASL_PASSWORD=not-a-real-broker-password",
-                "ADMIN_PASSWORD_HASH={noop}not-a-real-admin-password",
-                "USER_PASSWORD_HASH={noop}not-a-real-user-password",
-                "MONITORING_PASSWORD_HASH={noop}not-a-real-monitoring-password",
+                "ADMIN_PASSWORD_HASH=" + TestIdentityPasswords.ADMIN_PASSWORD_HASH,
+                "USER_PASSWORD_HASH=" + TestIdentityPasswords.USER_PASSWORD_HASH,
+                "MONITORING_PASSWORD_HASH=" + TestIdentityPasswords.MONITORING_PASSWORD_HASH,
                 "carddemo.outbox.relay.fixed-delay-ms=3600000",
                 "carddemo.retention.sweep-interval-ms=3600000"
         })
@@ -297,7 +298,6 @@ class CardUpdateServiceTest {
     /**
      * Builds one request over the six components {@link CardUpdateRequest} declares.
      *
-     * @param cardNumber   the sixteen-digit card number the update names
      * @param embossedName the cardholder name
      * @param expiryYear   the four-character year slice
      * @param expiryMonth  the two-character month slice
@@ -305,10 +305,9 @@ class CardUpdateServiceTest {
      * @param activeStatus the one-character active status
      * @return the request
      */
-    private static CardUpdateRequest request(String cardNumber, String embossedName,
-            String expiryYear, String expiryMonth, String expiryDay, String activeStatus) {
-        return new CardUpdateRequest(cardNumber, embossedName, expiryYear, expiryMonth, expiryDay,
-                activeStatus);
+    private static CardUpdateRequest request(String embossedName, String expiryYear,
+            String expiryMonth, String expiryDay, String activeStatus) {
+        return new CardUpdateRequest(embossedName, expiryYear, expiryMonth, expiryDay, activeStatus);
     }
 
     /**
@@ -321,7 +320,7 @@ class CardUpdateServiceTest {
      * @return the request
      */
     private static CardUpdateRequest witnessRequestWithStatus(String activeStatus) {
-        return request(WITNESS_CARD, RENAMED_CARDHOLDER, WITNESS_YEAR, WITNESS_MONTH, WITNESS_DAY,
+        return request(RENAMED_CARDHOLDER, WITNESS_YEAR, WITNESS_MONTH, WITNESS_DAY,
                 activeStatus);
     }
 
@@ -334,7 +333,7 @@ class CardUpdateServiceTest {
      */
     private static CardUpdateRequest witnessRequestWithExpiry(String expiryYear,
             String expiryMonth) {
-        return request(WITNESS_CARD, RENAMED_CARDHOLDER, expiryYear, expiryMonth, WITNESS_DAY,
+        return request(RENAMED_CARDHOLDER, expiryYear, expiryMonth, WITNESS_DAY,
                 STATUS_YES);
     }
 
@@ -345,7 +344,7 @@ class CardUpdateServiceTest {
      * @return the request
      */
     private static CardUpdateRequest witnessRequestWithName(String embossedName) {
-        return request(WITNESS_CARD, embossedName, WITNESS_YEAR, WITNESS_MONTH, WITNESS_DAY,
+        return request(embossedName, WITNESS_YEAR, WITNESS_MONTH, WITNESS_DAY,
                 STATUS_YES);
     }
 
@@ -424,10 +423,8 @@ class CardUpdateServiceTest {
         @Test
         @DisplayName("Y and N both reach the stored row")
         void theTwoActiveStatusFlagsAreAdmitted() {
-            CardUpdateResponse keptAffirmative = cardUpdateService.updateCard(
-                    request(STATUS_YES_CARD, RENAMED_CARDHOLDER, "2023", "10", "24", STATUS_YES));
-            CardUpdateResponse turnedNegative = cardUpdateService.updateCard(
-                    request(STATUS_NO_CARD, RENAMED_CARDHOLDER, "2025", "09", "23", STATUS_NO));
+            CardUpdateResponse keptAffirmative = cardUpdateService.updateCard(STATUS_YES_CARD, request(RENAMED_CARDHOLDER, "2023", "10", "24", STATUS_YES));
+            CardUpdateResponse turnedNegative = cardUpdateService.updateCard(STATUS_NO_CARD, request(RENAMED_CARDHOLDER, "2025", "09", "23", STATUS_NO));
 
             assertAll(
                     () -> assertEquals(UpdateOutcome.UPDATED, keptAffirmative.outcome(),
@@ -452,10 +449,10 @@ class CardUpdateServiceTest {
         @DisplayName("a lower-case y, the letter A and a missing flag all answer the status text")
         void anyOtherActiveStatusIsRefused() {
             CardUpdateResponse lowerCase =
-                    cardUpdateService.updateCard(witnessRequestWithStatus("y"));
+                    cardUpdateService.updateCard(WITNESS_CARD, witnessRequestWithStatus("y"));
             CardUpdateResponse otherLetter =
-                    cardUpdateService.updateCard(witnessRequestWithStatus("A"));
-            CardUpdateResponse missing = cardUpdateService.updateCard(witnessRequestWithStatus(""));
+                    cardUpdateService.updateCard(WITNESS_CARD, witnessRequestWithStatus("A"));
+            CardUpdateResponse missing = cardUpdateService.updateCard(WITNESS_CARD, witnessRequestWithStatus(""));
 
             assertAll(
                     () -> assertEquals(CardValidationMessages.CARD_STATUS_MUST_BE_YES_NO,
@@ -481,10 +478,8 @@ class CardUpdateServiceTest {
         @Test
         @DisplayName("month 01 and month 12 both reach the stored row")
         void theTwoMonthBoundsAreAdmitted() {
-            CardUpdateResponse lowest = cardUpdateService.updateCard(
-                    request(MONTH_LOWER_CARD, RENAMED_CARDHOLDER, "2025", "01", "08", STATUS_YES));
-            CardUpdateResponse highest = cardUpdateService.updateCard(
-                    request(MONTH_UPPER_CARD, RENAMED_CARDHOLDER, "2025", "12", "11", STATUS_YES));
+            CardUpdateResponse lowest = cardUpdateService.updateCard(MONTH_LOWER_CARD, request(RENAMED_CARDHOLDER, "2025", "01", "08", STATUS_YES));
+            CardUpdateResponse highest = cardUpdateService.updateCard(MONTH_UPPER_CARD, request(RENAMED_CARDHOLDER, "2025", "12", "11", STATUS_YES));
 
             assertAll(
                     () -> assertEquals(UpdateOutcome.UPDATED, lowest.outcome(),
@@ -510,9 +505,9 @@ class CardUpdateServiceTest {
         @DisplayName("month 00 and month 13 both answer the month text")
         void aMonthOutsideOneThroughTwelveIsRefused() {
             CardUpdateResponse belowRange =
-                    cardUpdateService.updateCard(witnessRequestWithExpiry(WITNESS_YEAR, "00"));
+                    cardUpdateService.updateCard(WITNESS_CARD, witnessRequestWithExpiry(WITNESS_YEAR, "00"));
             CardUpdateResponse aboveRange =
-                    cardUpdateService.updateCard(witnessRequestWithExpiry(WITNESS_YEAR, "13"));
+                    cardUpdateService.updateCard(WITNESS_CARD, witnessRequestWithExpiry(WITNESS_YEAR, "13"));
 
             assertAll(
                     () -> assertEquals(CardValidationMessages.CARD_EXPIRY_MONTH_NOT_VALID,
@@ -534,10 +529,8 @@ class CardUpdateServiceTest {
         @Test
         @DisplayName("year 1950 and year 2099 both reach the stored row")
         void theTwoYearBoundsAreAdmitted() {
-            CardUpdateResponse earliest = cardUpdateService.updateCard(
-                    request(YEAR_LOWER_CARD, RENAMED_CARDHOLDER, "1950", "10", "08", STATUS_YES));
-            CardUpdateResponse latest = cardUpdateService.updateCard(
-                    request(YEAR_UPPER_CARD, RENAMED_CARDHOLDER, "2099", "12", "28", STATUS_YES));
+            CardUpdateResponse earliest = cardUpdateService.updateCard(YEAR_LOWER_CARD, request(RENAMED_CARDHOLDER, "1950", "10", "08", STATUS_YES));
+            CardUpdateResponse latest = cardUpdateService.updateCard(YEAR_UPPER_CARD, request(RENAMED_CARDHOLDER, "2099", "12", "28", STATUS_YES));
 
             assertAll(
                     () -> assertEquals(UpdateOutcome.UPDATED, earliest.outcome(),
@@ -561,9 +554,9 @@ class CardUpdateServiceTest {
         @DisplayName("year 1949 and year 2100 both answer the year text")
         void aYearOutsideNineteenFiftyThroughTwentyNinetyNineIsRefused() {
             CardUpdateResponse belowRange =
-                    cardUpdateService.updateCard(witnessRequestWithExpiry("1949", WITNESS_MONTH));
+                    cardUpdateService.updateCard(WITNESS_CARD, witnessRequestWithExpiry("1949", WITNESS_MONTH));
             CardUpdateResponse aboveRange =
-                    cardUpdateService.updateCard(witnessRequestWithExpiry("2100", WITNESS_MONTH));
+                    cardUpdateService.updateCard(WITNESS_CARD, witnessRequestWithExpiry("2100", WITNESS_MONTH));
 
             assertAll(
                     () -> assertEquals(CardValidationMessages.CARD_EXPIRY_YEAR_NOT_VALID,
@@ -587,18 +580,18 @@ class CardUpdateServiceTest {
         @Test
         @DisplayName("a missing value and an out-of-range value share one text per rule")
         void aBlankValueAndAnOutOfRangeValueShareOneTextPerRule() {
-            String missingStatus = cardUpdateService.updateCard(witnessRequestWithStatus(""))
+            String missingStatus = cardUpdateService.updateCard(WITNESS_CARD, witnessRequestWithStatus(""))
                     .message();
-            String refusedStatus = cardUpdateService.updateCard(witnessRequestWithStatus("A"))
+            String refusedStatus = cardUpdateService.updateCard(WITNESS_CARD, witnessRequestWithStatus("A"))
                     .message();
-            String missingMonth = cardUpdateService
-                    .updateCard(witnessRequestWithExpiry(WITNESS_YEAR, "")).message();
-            String refusedMonth = cardUpdateService
-                    .updateCard(witnessRequestWithExpiry(WITNESS_YEAR, "13")).message();
-            String missingYear = cardUpdateService
-                    .updateCard(witnessRequestWithExpiry("", WITNESS_MONTH)).message();
-            String refusedYear = cardUpdateService
-                    .updateCard(witnessRequestWithExpiry("2100", WITNESS_MONTH)).message();
+            String missingMonth = cardUpdateService.updateCard(WITNESS_CARD,
+                    witnessRequestWithExpiry(WITNESS_YEAR, "")).message();
+            String refusedMonth = cardUpdateService.updateCard(WITNESS_CARD,
+                    witnessRequestWithExpiry(WITNESS_YEAR, "13")).message();
+            String missingYear = cardUpdateService.updateCard(WITNESS_CARD,
+                    witnessRequestWithExpiry("", WITNESS_MONTH)).message();
+            String refusedYear = cardUpdateService.updateCard(WITNESS_CARD,
+                    witnessRequestWithExpiry("2100", WITNESS_MONTH)).message();
 
             assertAll(
                     () -> assertEquals(missingStatus, refusedStatus,
@@ -634,8 +627,7 @@ class CardUpdateServiceTest {
         @Test
         @DisplayName("a request breaking the status, month and year rules answers the status text")
         void theStatusTextArrivesAloneWhenStatusMonthAndYearAllFail() {
-            CardUpdateResponse answer = cardUpdateService.updateCard(
-                    request(WITNESS_CARD, RENAMED_CARDHOLDER, "2100", "13", WITNESS_DAY, "A"));
+            CardUpdateResponse answer = cardUpdateService.updateCard(WITNESS_CARD, request(RENAMED_CARDHOLDER, "2100", "13", WITNESS_DAY, "A"));
 
             assertAll(
                     () -> assertEquals(UpdateOutcome.VALIDATION_REJECTED, answer.outcome(),
@@ -663,9 +655,7 @@ class CardUpdateServiceTest {
         @Test
         @DisplayName("a missing card number answers the card-number text, not the both-blank text")
         void aMissingCardNumberAnswersItsOwnTextAndNeverTheBothBlankText() {
-            CardUpdateResponse answer = cardUpdateService.updateCard(
-                    request("", RENAMED_CARDHOLDER, WITNESS_YEAR, WITNESS_MONTH, WITNESS_DAY,
-                            STATUS_YES));
+            CardUpdateResponse answer = cardUpdateService.updateCard("", request(RENAMED_CARDHOLDER, WITNESS_YEAR, WITNESS_MONTH, WITNESS_DAY, STATUS_YES));
 
             assertAll(
                     () -> assertEquals(UpdateOutcome.VALIDATION_REJECTED, answer.outcome(),
@@ -699,8 +689,7 @@ class CardUpdateServiceTest {
         @Test
         @DisplayName("an unchanged resubmission answers the no-change text and skips every edit")
         void anUnchangedResubmissionAnswersTheNoChangeTextAlone() {
-            CardUpdateResponse answer = cardUpdateService.updateCard(
-                    request(WITNESS_CARD, WITNESS_NAME.toUpperCase(Locale.ROOT), WITNESS_YEAR,
+            CardUpdateResponse answer = cardUpdateService.updateCard(WITNESS_CARD, request(WITNESS_NAME.toUpperCase(Locale.ROOT), WITNESS_YEAR,
                             WITNESS_MONTH, WITNESS_DAY, STATUS_YES.toLowerCase(Locale.ROOT)));
 
             assertAll(
@@ -737,10 +726,9 @@ class CardUpdateServiceTest {
         @Test
         @DisplayName("a name of letters and spaces reaches the stored row, two spaces included")
         void aNameOfLettersAndSpacesIsAdmitted() {
-            CardUpdateResponse oneSpace = cardUpdateService.updateCard(
-                    request(NAME_ONE_SPACE_CARD, "Aniya Von", "2023", "12", "16", STATUS_YES));
-            CardUpdateResponse twoSpaces = cardUpdateService.updateCard(
-                    request(NAME_TWO_SPACE_CARD, "Aniya  Von", "2023", "01", "27", STATUS_YES));
+            CardUpdateResponse oneSpace = cardUpdateService.updateCard(NAME_ONE_SPACE_CARD, request("Aniya Von", "2023", "12", "16", STATUS_YES));
+            CardUpdateResponse twoSpaces = cardUpdateService.updateCard(NAME_TWO_SPACE_CARD,
+                    request("Aniya  Von", "2023", "01", "27", STATUS_YES));
 
             assertAll(
                     () -> assertEquals(UpdateOutcome.UPDATED, oneSpace.outcome(),
@@ -771,11 +759,11 @@ class CardUpdateServiceTest {
         @Test
         @DisplayName("a hyphen, a digit and an apostrophe each answer the name text")
         void aNameHoldingAnyOtherCharacterIsRefused() {
-            CardUpdateResponse hyphen = cardUpdateService.updateCard(witnessRequestWithName(
+            CardUpdateResponse hyphen = cardUpdateService.updateCard(WITNESS_CARD, witnessRequestWithName(
                     "Aniya-Von"));
-            CardUpdateResponse digit = cardUpdateService.updateCard(witnessRequestWithName(
+            CardUpdateResponse digit = cardUpdateService.updateCard(WITNESS_CARD, witnessRequestWithName(
                     "Aniya1"));
-            CardUpdateResponse apostrophe = cardUpdateService.updateCard(witnessRequestWithName(
+            CardUpdateResponse apostrophe = cardUpdateService.updateCard(WITNESS_CARD, witnessRequestWithName(
                     "O'Brien"));
 
             assertAll(
@@ -839,8 +827,7 @@ class CardUpdateServiceTest {
         @Test
         @DisplayName("resubmitting the year and month a card holds leaves its stored date alone")
         void theThreeSlicesReassembleIntoTheStoredDate() {
-            CardUpdateResponse answer = cardUpdateService.updateCard(
-                    request(REASSEMBLY_CARD, "Irving Emard", "2024", "01", "17", STATUS_NO));
+            CardUpdateResponse answer = cardUpdateService.updateCard(REASSEMBLY_CARD, request("Irving Emard", "2024", "01", "17", STATUS_NO));
 
             assertAll(
                     () -> assertEquals(UpdateOutcome.UPDATED, answer.outcome(),
@@ -875,8 +862,7 @@ class CardUpdateServiceTest {
         @Test
         @DisplayName("day 31 with a February expiry is refused and the stored date is left alone")
         void aSubmittedDayTheCalendarDoesNotHoldIsRefused() {
-            CardUpdateResponse answer = cardUpdateService.updateCard(
-                    request(EXPIRY_DAY_CARD, "Maci Robel", "2023", "02", "31", STATUS_YES));
+            CardUpdateResponse answer = cardUpdateService.updateCard(EXPIRY_DAY_CARD, request("Maci Robel", "2023", "02", "31", STATUS_YES));
 
             assertAll(
                     () -> assertEquals(UpdateOutcome.VALIDATION_REJECTED, answer.outcome(),
@@ -911,8 +897,7 @@ class CardUpdateServiceTest {
         @Test
         @DisplayName("moving the day from 23 to 24 and nothing else is a change and lands")
         void aChangeToTheDayAloneReachesTheColumn() {
-            CardUpdateResponse answer = cardUpdateService.updateCard(
-                    request(DAY_ONLY_CARD, "Hadley Hamill", "2025", "07", "24", STATUS_YES));
+            CardUpdateResponse answer = cardUpdateService.updateCard(DAY_ONLY_CARD, request("Hadley Hamill", "2025", "07", "24", STATUS_YES));
 
             assertAll(
                     () -> assertEquals(UpdateOutcome.UPDATED, answer.outcome(),
@@ -958,8 +943,7 @@ class CardUpdateServiceTest {
         void anAppliedUpdateMovesThreeValuesAndLeavesTheOtherFour() {
             List<String> before = storedRow(SUCCESS_PATH_CARD);
 
-            CardUpdateResponse answer = cardUpdateService.updateCard(
-                    request(SUCCESS_PATH_CARD, RENAMED_CARDHOLDER, "2030", "06", "13", STATUS_NO));
+            CardUpdateResponse answer = cardUpdateService.updateCard(SUCCESS_PATH_CARD, request(RENAMED_CARDHOLDER, "2030", "06", "13", STATUS_NO));
 
             List<String> after = storedRow(SUCCESS_PATH_CARD);
             assertAll(
@@ -991,8 +975,7 @@ class CardUpdateServiceTest {
         @Test
         @DisplayName("a card number no row holds answers the not-found text and stores nothing")
         void aCardNumberNoRowHoldsAnswersNotFoundAndWritesNothing() {
-            CardUpdateResponse answer = cardUpdateService.updateCard(
-                    request(UNSEEDED_CARD, RENAMED_CARDHOLDER, "2030", "06", "13", STATUS_NO));
+            CardUpdateResponse answer = cardUpdateService.updateCard(UNSEEDED_CARD, request(RENAMED_CARDHOLDER, "2030", "06", "13", STATUS_NO));
 
             Integer rows = jdbcTemplate.queryForObject(
                     "SELECT count(*) FROM card WHERE card_number = ?", Integer.class,
@@ -1022,8 +1005,7 @@ class CardUpdateServiceTest {
         @Test
         @DisplayName("the writer receives the card carrying the full sixteen digits")
         void theWriterReceivesTheCardCarryingTheFullCardNumber() {
-            cardUpdateService.updateCard(request(OUTBOX_HANDOFF_CARD, RENAMED_CARDHOLDER, "2024",
-                    "08", "11", STATUS_NO));
+            cardUpdateService.updateCard(OUTBOX_HANDOFF_CARD, request(RENAMED_CARDHOLDER, "2024", "08", "11", STATUS_NO));
 
             ArgumentCaptor<CardEntity> handedOver = ArgumentCaptor.forClass(CardEntity.class);
             verify(outboxWriter).writeCardUpdated(handedOver.capture());
@@ -1048,8 +1030,7 @@ class CardUpdateServiceTest {
         @Test
         @DisplayName("the stored payload carries the masked number, the event type and the key")
         void theStoredPayloadCarriesTheMaskedCardNumberAndNoCardholderSecret() {
-            cardUpdateService.updateCard(request(OUTBOX_PAYLOAD_CARD, RENAMED_CARDHOLDER, "2027",
-                    "03", "13", STATUS_NO));
+            cardUpdateService.updateCard(OUTBOX_PAYLOAD_CARD, request(RENAMED_CARDHOLDER, "2027", "03", "13", STATUS_NO));
 
             String payload = storedPayloadText(OUTBOX_PAYLOAD_ACCOUNT);
             var stored = MAPPER.readTree(payload);
@@ -1098,8 +1079,7 @@ class CardUpdateServiceTest {
         @Test
         @DisplayName("a card number failing a checksum passes the edit and reaches the read")
         void aCardNumberFailingAChecksumPassesTheEdit() {
-            CardUpdateResponse answer = cardUpdateService.updateCard(
-                    request(UNSEEDED_CARD, RENAMED_CARDHOLDER, "2030", "06", "13", STATUS_NO));
+            CardUpdateResponse answer = cardUpdateService.updateCard(UNSEEDED_CARD, request(RENAMED_CARDHOLDER, "2030", "06", "13", STATUS_NO));
 
             assertAll(
                     () -> assertEquals(UpdateOutcome.CARD_NOT_FOUND, answer.outcome(),
@@ -1119,11 +1099,9 @@ class CardUpdateServiceTest {
         @Test
         @DisplayName("a card whose active status is N can still be updated")
         void aNegativeActiveStatusDoesNotBlockAnUpdate() {
-            cardUpdateService.updateCard(request(NEGATIVE_STATUS_CARD, RENAMED_CARDHOLDER, "2025",
-                    "03", "01", STATUS_NO));
+            cardUpdateService.updateCard(NEGATIVE_STATUS_CARD, request(RENAMED_CARDHOLDER, "2025", "03", "01", STATUS_NO));
 
-            CardUpdateResponse second = cardUpdateService.updateCard(request(NEGATIVE_STATUS_CARD,
-                    NEGATIVE_STATUS_CARD_NAME, "2025", "03", "01", STATUS_NO));
+            CardUpdateResponse second = cardUpdateService.updateCard(NEGATIVE_STATUS_CARD, request(NEGATIVE_STATUS_CARD_NAME, "2025", "03", "01", STATUS_NO));
 
             assertAll(
                     () -> assertEquals(UpdateOutcome.UPDATED, second.outcome(),

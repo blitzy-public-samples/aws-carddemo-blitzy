@@ -17,13 +17,14 @@ import org.junit.jupiter.api.Test;
 /**
  * Record-shape and mapping tests for {@link NotificationTransactionItem}.
  *
- * <p>Thirteen components map the record {@code 01 TRNX-RECORD.} at
- * {@code app/cpy/COSTM01.CPY:L20}. Two take the transaction identifier and masked display value,
- * and eleven take the fields at {@code app/cpy/COSTM01.CPY:L25-L35}.
+ * <p>Twelve components map the record {@code 01 TRNX-RECORD.} at
+ * {@code app/cpy/COSTM01.CPY:L20}. One takes the transaction identifier, and eleven take the fields
+ * at {@code app/cpy/COSTM01.CPY:L25-L35}.
  *
  * <p>Two source constructs carry no component. {@code TRNX-CARD-NUM PIC X(16)} at {@code
  * app/cpy/COSTM01.CPY:L22} sits inside the group {@code 05 TRNX-KEY.} at {@code
- * app/cpy/COSTM01.CPY:L21} and is envelope-level. The trailing {@code FILLER PIC X(20)} at {@code
+ * app/cpy/COSTM01.CPY:L21} and is envelope-level, so the card is named once on
+ * {@link NotificationHistoryResponse}. The trailing {@code FILLER PIC X(20)} at {@code
  * app/cpy/COSTM01.CPY:L36} is dropped.
  *
  * <p>The statement program splits the envelope from the item. The move into
@@ -42,11 +43,11 @@ import org.junit.jupiter.api.Test;
 final class NotificationTransactionItemTest {
 
     /**
-     * The thirteen component names, in the order the response declares them. Source order:
+     * The twelve component names, in the order the response declares them. Source order:
      * {@code app/cpy/COSTM01.CPY:L23} then {@code app/cpy/COSTM01.CPY:L25-L35}.
      */
     private static final List<String> DECLARED_COMPONENTS = List.of(
-            "transactionId", "maskedCardNumber", "typeCode", "categoryCode", "source",
+            "transactionId", "typeCode", "categoryCode", "source",
             "description", "amount", "merchantId", "merchantName", "merchantCity",
             "merchantZip", "originTimestamp", "processingTimestamp");
 
@@ -155,13 +156,11 @@ final class NotificationTransactionItemTest {
                 "NotificationTransactionItem is a record");
     }
 
-    /**
-     * Asserts the component count is thirteen, including the display-only masked card number.
-     */
+    /** Asserts the component count is twelve, one per transaction field and none for the card. */
     @Test
-    void theItemDeclaresThirteenComponents() {
-        assertEquals(13, NotificationTransactionItem.class.getRecordComponents().length,
-                "one display value plus the transaction fields");
+    void theItemDeclaresTwelveComponents() {
+        assertEquals(12, NotificationTransactionItem.class.getRecordComponents().length,
+                "the transaction fields, and no card value");
     }
 
     /**
@@ -198,14 +197,26 @@ final class NotificationTransactionItemTest {
     }
 
     /**
-     * Asserts the item carries only the masked display form of the card number.
+     * Asserts the item names no card at all, in either form.
+     *
+     * <p>The card is named once, by {@link NotificationHistoryResponse#cardNumber()}, so no item
+     * repeats it. A component carrying a card value would repeat one identifier on every row of a
+     * history.
      */
     @Test
-    void theItemCarriesOnlyTheMaskedCardNumber() {
+    void theItemNamesNoCard() {
+        assertFalse(anyComponentNameContains("card"), "a component name carries card");
+
         NotificationTransactionItem item = NotificationTransactionItem.from(row());
-        assertEquals(MASKED_CARD_NUMBER, item.maskedCardNumber(), "display value unchanged");
-        assertTrue(item.maskedCardNumber().matches("^\\*{12}[0-9]{4}$"), "masked shape");
-        assertFalse(item.maskedCardNumber().matches("^[0-9]{16}$"), "no full card number");
+        List<String> values = List.of(item.transactionId(), item.typeCode(), item.categoryCode(),
+                item.source(), item.description(), item.amount(), item.merchantId(),
+                item.merchantName(), item.merchantCity(), item.merchantZip(),
+                item.originTimestamp(), item.processingTimestamp());
+
+        assertFalse(values.contains(MASKED_CARD_NUMBER), "a component reads as the masked number");
+        assertFalse(values.contains(CARD_TOKEN), "a component reads as the card token");
+        assertFalse(values.stream().anyMatch(value -> value.matches("^[0-9]{16}$")),
+                "a component reads as a full card number");
     }
 
     /**

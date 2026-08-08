@@ -185,9 +185,6 @@ class NumericRequiredValidatorTest {
     private static final String CURRENCY_AMOUNT = "$1,234.56";
 
     /**
-     * Supplies the six call sites of paragraph 1245 in call-site order. Each set carries a label,
-     * a declared width, and a value of digits that converts above zero.
-     *
      * @return one argument set per call site
      */
     private static Stream<Arguments> sourceCallSites() {
@@ -496,10 +493,10 @@ class NumericRequiredValidatorTest {
     @Test
     @DisplayName("A value carrying content past its declared width reports the added width message")
     void aValueCarryingContentPastItsDeclaredWidthReportsTheAddedWidthMessage() {
-        // No COBOL ancestor. app/cbl/COACTUPC.cbl:L1546-L1547 moves a fixed-width screen field into
-        // the edit field, so the source never receives a wider value and carries no literal for
-        // one. Trailing spaces past the width are the padding the MOVE itself supplies, and they
-        // leave
+        // ADDITIVE. app/cbl/COACTUPC.cbl:L1546-L1547 moves a fixed-width screen field into the edit
+        // field, so the source never receives a wider value and carries no literal for one.
+        // Trailing spaces past the width are the padding that MOVE supplies and are ignored; any
+        // other character past the width is content and is refused.
         String wider = "750ABC";
 
         assertThat(NumericRequiredValidator

@@ -96,11 +96,12 @@ public class OutboxWriter {
     /**
      * Writes one approval event as an unpublished row.
      *
-     * <p>The event carries fifteen payload properties. Twelve come from the twelve field moves of
-     * paragraph {@code 2000-POST-TRANSACTION} at {@code app/cbl/CBTRN02C.cbl:L425-L436}, the
+     * <p>Version 1 of the contract declares nineteen properties, of which five are the envelope
+     * and fourteen the payload. Twelve of the payload properties come from the twelve field moves
+     * of paragraph {@code 2000-POST-TRANSACTION} at {@code app/cbl/CBTRN02C.cbl:L425-L436}, the
      * thirteenth is the account identifier the cross-reference read at
-     * {@code app/cbl/CBTRN02C.cbl:L382-L383} resolved, the fourteenth is the currency, and the
-     * fifteenth is the card token every consumer correlates a card on.
+     * {@code app/cbl/CBTRN02C.cbl:L382-L383} resolved, and the fourteenth is the currency. Version 2
+     * adds one payload property, the card token a consumer correlates a card on.
      *
      * <p>The masked card number and the currency have no COBOL ancestor. The source masks nothing:
      * the card number occupies its full sixteen characters unprotected on the card detail map at
@@ -144,14 +145,13 @@ public class OutboxWriter {
      * stops the account read from running. Both keys are stored in {@code aggregate_id} and both are
      * published as the message key.
      *
+     * <p>A decline whose card resolved no account is keyed on its transaction identifier rather
+     * than on an account, and this method stores it as readily as the account-keyed form. Refusing
+     * the event would leave that one outcome with no event at all while every other outcome
+     * published one.
+     *
      * @param event the decline event, carrying its own envelope, its reject code and its masked card
      *              number
-     * <p>A decline whose card resolved no account is keyed on its transaction identifier rather than
-     * on an account, and this method stores it as readily as the account-keyed form. Reject code
-     * {@code 0100} at {@code app/cbl/CBTRN02C.cbl:L385-L387} fires before an account identifier
-     * exists, and refusing the event would leave that outcome with no event at all while every other
-     * outcome published one.
-     *
      * @return the row saved, keyed on the event identifier {@link OutboxRelay} publishes under
      * @throws NullPointerException     when {@code event} is {@code null}
      * @throws IllegalArgumentException when the event carries neither key form, or when the written

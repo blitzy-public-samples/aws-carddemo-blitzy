@@ -14,7 +14,6 @@ import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.List;
-import java.util.Map;
 
 import com.carddemo.events.DeadLetterEnvelope;
 import com.carddemo.events.DeclineReason;
@@ -241,6 +240,220 @@ class EventSerdeSecurityTest {
                 "a three-two-four government identifier passed the consume-side screen");
     }
 
+    /**
+     * Every punctuation a caller may write between the groups of a card number.
+     *
+     * <p>The screen removed the space and the hyphen and nothing else, so each spelling below
+     * reached a topic, an outbox row, a ledger row and the notification renderer. A separator list
+     * cannot be enumerated from the outside, which is why the screen now removes whatever stands
+     * between two digits. The last entry mixes four separators in one value, because a value that
+     * defeats a per-separator remedy is the one worth asserting on.
+     *
+     * @return one card number per punctuation, each holding the same sixteen digits
+     */
+    private static java.util.stream.Stream<String> punctuatedCardNumbers() {
+        return java.util.stream.Stream.of(
+                "4111.1111.1111.1111",
+                "4111/1111/1111/1111",
+                "4111,1111,1111,1111",
+                "4111_1111_1111_1111",
+                "4111:1111:1111:1111",
+                "4111*1111*1111*1111",
+                "(4111)(1111)(1111)(1111)",
+                "4111 - 1111 . 1111 / 1111");
+    }
+
+    /**
+     * Card numbers grouped by a separator outside printable ASCII.
+     *
+     * <p>These reach the consume side alone. A typed free-text field is constrained to
+     * {@code ^[ -~]*$} by the record that declares it, so a non-breaking space in a description is
+     * refused before serialization begins and {@link #aTypedFreeTextFieldRefusesNonAscii} asserts
+     * that. The {@code extensions} subtree is open by design, so it is the path these values arrive
+     * on and the path the screen has to cover.
+     *
+     * @return one card number per non-ASCII separator, each holding the same sixteen digits
+     */
+    private static java.util.stream.Stream<String> unicodeSeparatedCardNumbers() {
+        return java.util.stream.Stream.of(
+                "4111\u00a01111\u00a01111\u00a01111",
+                "4111\u20091111\u20091111\u20091111",
+                "4111\u20111111\u20111111\u20111111",
+                "4111\u200b1111\u200b1111\u200b1111");
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.MethodSource("punctuatedCardNumbers")
+    @DisplayName("a punctuated card number in a free-text property is refused on publish")
+    void aPunctuatedCardNumberIsRefusedOnPublish(String punctuated) {
+        TransactionAuthorized smuggled = TransactionAuthorized.of(ACCOUNT_ID, TRANSACTION_ID, "01",
+                "0001", "POS TERM", "Purchase for " + punctuated, new BigDecimal("50.47"),
+                "800000000", "Abshire-Lowe", "North Enoshaven", "72112", MASKED_CARD_NUMBER,
+                CARD_TOKEN, AUTHORIZED_AT);
+
+        SerializationException refused = assertThrows(SerializationException.class,
+                () -> serializer.serialize(topicFor(smuggled), smuggled),
+                "a card number written as " + punctuated + " reached a topic");
+
+        assertTrue(refused.getMessage().contains("description"),
+                "the refusal does not name the property that carried it: " + refused.getMessage());
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.MethodSource("punctuatedCardNumbers")
+    @DisplayName("a punctuated card number inside the extensions object is refused on consume")
+    void aPunctuatedCardNumberIsRefusedOnConsume(String punctuated) {
+        String smuggled = withProperty(serialized(authorized()),
+                "\"extensions\":{\"note\":" + quoted(punctuated) + "}");
+
+        SerializationException refused = assertThrows(SerializationException.class,
+                () -> deserializer.deserialize("topic",
+                        smuggled.getBytes(StandardCharsets.UTF_8)),
+                "a card number written as " + punctuated + " passed the consume-side screen");
+
+        assertTrue(refused.getMessage().contains("note"),
+                "the refusal does not name the property inside the open subtree that carried it: "
+                        + refused.getMessage());
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.MethodSource("unicodeSeparatedCardNumbers")
+    @DisplayName("a card number grouped by a non-ASCII separator is refused on consume")
+    void aUnicodeSeparatedCardNumberIsRefusedOnConsume(String separated) {
+        String smuggled = withProperty(serialized(authorized()),
+                "\"extensions\":{\"note\":" + quoted(separated) + "}");
+
+        assertThrows(SerializationException.class,
+                () -> deserializer.deserialize("topic",
+                        smuggled.getBytes(StandardCharsets.UTF_8)),
+                "a card number grouped by a non-ASCII separator passed the consume-side screen");
+    }
+
+    @Test
+    @DisplayName("a typed free-text field refuses a non-ASCII character before serialization begins")
+    void aTypedFreeTextFieldRefusesNonAscii() {
+        IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
+                () -> TransactionAuthorized.of(ACCOUNT_ID, TRANSACTION_ID, "01", "0001",
+                        "POS TERM", "Purchase for 4111\u00a01111\u00a01111\u00a01111",
+                        new BigDecimal("50.47"), "800000000", "Abshire-Lowe", "North Enoshaven",
+                        "72112", MASKED_CARD_NUMBER, CARD_TOKEN, AUTHORIZED_AT),
+                "a typed description accepted a non-breaking space, so the consume-side screen is "
+                        + "the only control covering that spelling");
+
+        assertTrue(refused.getMessage().contains("^[ -~]*$"),
+                "the refusal does not name the shape it wanted: " + refused.getMessage());
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {
+            "020.97.3888", "020/97/3888", "020_97_3888", "020 97 3888", "020-97.3888",
+            "020.97-3888"})
+    @DisplayName("a government identifier is refused whatever separates its groups")
+    void aPunctuatedGovernmentIdentifierIsRefused(String punctuated) {
+        String smuggled = withProperty(serialized(authorized()),
+                "\"extensions\":{\"note\":\"holder " + punctuated + "\"}");
+
+        assertThrows(SerializationException.class,
+                () -> deserializer.deserialize("topic",
+                        smuggled.getBytes(StandardCharsets.UTF_8)),
+                "a government identifier written as " + punctuated + " passed the consume-side "
+                        + "screen");
+    }
+
+    @Test
+    @DisplayName("full-width digits are folded before the screen runs, so they are refused too")
+    void fullWidthDigitsAreRefused() {
+        String smuggled = withProperty(serialized(authorized()),
+                "\"extensions\":{\"note\":\"\uff14\uff11\uff11\uff11\uff11\uff11\uff11\uff11"
+                        + "\uff11\uff11\uff11\uff11\uff11\uff11\uff11\uff11\"}");
+
+        assertThrows(SerializationException.class,
+                () -> deserializer.deserialize("topic",
+                        smuggled.getBytes(StandardCharsets.UTF_8)),
+                "sixteen full-width digits passed the consume-side screen, and a reader sees a "
+                        + "card number in them");
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {
+            "REF 1234 SEQ 5678 LOT 9012",
+            "aisle 12 bay 34 shelf 56 bin 78 row 90 slot 12",
+            "order 2022-06-10 line 7",
+            "terminal 800-000-0000 lane 4",
+            "basket of 12 at 4.99 each"})
+    @DisplayName("digits separated by words are not joined, so ordinary text still passes")
+    void digitsSeparatedByWordsStillPass(String ordinary) {
+        String accepted = withProperty(serialized(authorized()),
+                "\"extensions\":{\"note\":" + quoted(ordinary) + "}");
+
+        assertDoesNotThrow(() -> deserializer.deserialize("topic",
+                        accepted.getBytes(StandardCharsets.UTF_8)),
+                "the screen joined digit groups a letter stands between, which would refuse "
+                        + "ordinary merchant text: " + ordinary);
+    }
+
+    /**
+     * Wraps one value as a JSON string, escaping the two characters a description may hold.
+     *
+     * @param value the value to wrap
+     * @return the value as a JSON string literal
+     */
+    private static String quoted(String value) {
+        return "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
+    }
+
+    @Test
+    @DisplayName("a card number grouped by a dot, slash, underscore or mixture of separators is refused")
+    void aCardNumberGroupedByAnySeparatorIsRefused() {
+        for (String written : List.of("4111.1111.1111.1111", "4111/1111/1111/1111",
+                "4111_1111_1111_1111", "4111-1111.1111 1111", "4111 1111/1111-1111")) {
+            String smuggled = withProperty(serialized(authorized()),
+                    "\"extensions\":{\"note\":\"card " + written + "\"}");
+
+            SerializationException refused = assertThrows(SerializationException.class,
+                    () -> deserializer.deserialize("topic",
+                            smuggled.getBytes(StandardCharsets.UTF_8)),
+                    "a card number written as " + written + " passed the value screen: stripping "
+                            + "the space and the hyphen alone left three of these five shapes "
+                            + "unread");
+
+            assertTrue(refused.getMessage().contains("note"),
+                    "the refusal does not name the property that carried " + written + ": "
+                            + refused.getMessage());
+        }
+    }
+
+    @Test
+    @DisplayName("a card verification value a label names is refused wherever it is written")
+    void aLabelledCardVerificationValueIsRefused() {
+        for (String written : List.of("CVV 123", "cvc: 4321", "cv2=999", "CID 1234",
+                "security code = 999", "card-verification-value#123", "CSC 4321")) {
+            String smuggled = withProperty(serialized(authorized()),
+                    "\"extensions\":{\"note\":\"" + written + "\"}");
+
+            assertThrows(SerializationException.class,
+                    () -> deserializer.deserialize("topic",
+                            smuggled.getBytes(StandardCharsets.UTF_8)),
+                    "a verification value written as " + written + " reached a consumer: no"
+                            + " property name reveals a code written inside free text");
+        }
+    }
+
+    @Test
+    @DisplayName("an amount, a timestamp and a short reference code inside free text still pass")
+    void anAmountATimestampAndAShortCodeStillPass() {
+        for (String written : List.of("total 1234567890.12", "posted 2026-08-07 19:12:06",
+                "category 0001 type 01", "merchant 800000000", "zip 72112-1234")) {
+            String allowed = withProperty(serialized(authorized()),
+                    "\"extensions\":{\"note\":\"" + written + "\"}");
+
+            assertDoesNotThrow(() -> deserializer.deserialize("topic",
+                            allowed.getBytes(StandardCharsets.UTF_8)),
+                    "reading the grouping instead of erasing it refused legitimate text, which"
+                            + " would refuse valid traffic: " + written);
+        }
+    }
+
     @Test
     @DisplayName("the value screen is field-specific, so a sixteen-digit transaction identifier passes")
     void aSixteenDigitTransactionIdentifierStillPasses() {
@@ -379,7 +592,9 @@ class EventSerdeSecurityTest {
     /**
      * Builds one declined event through the canonical constructor, bypassing the factories.
      *
-     * <p>The record is flat, so the five envelope components are passed one by one.
+     * <p>The record is flat, so the five envelope components are passed one by one. The nine
+     * descriptive components version 3 adds are passed absent, because these tests assert on the
+     * envelope and the money and card fields rather than on the reject render.
      *
      * @param envelope      the envelope whose components the record carries
      * @param transactionId the transaction identifier
@@ -393,7 +608,7 @@ class EventSerdeSecurityTest {
         return new TransactionDeclined(envelope.eventId(), envelope.eventType(),
                 envelope.schemaVersion(), envelope.occurredAt(), envelope.aggregateId(),
                 transactionId, accountId, reason, reason.description(), amount,
-                MASKED_CARD_NUMBER);
+                MASKED_CARD_NUMBER, null, null, null, null, null, null, null, null, null);
     }
 
     /** The five core events, each built through its own factory. */
@@ -499,13 +714,13 @@ class EventSerdeSecurityTest {
         String future = serialized(TransactionDeclined.of(ACCOUNT_ID, TRANSACTION_ID,
                         DeclineReason.ACCOUNT_NOT_FOUND, new BigDecimal("50.47"),
                         MASKED_CARD_NUMBER))
-                .replace("\"schemaVersion\":1", "\"schemaVersion\":3");
+                .replace("\"schemaVersion\":1", "\"schemaVersion\":4");
 
         SerializationException refused = assertThrows(SerializationException.class,
                 () -> deserializer.deserialize("transaction.declined",
                         future.getBytes(StandardCharsets.UTF_8)));
 
-        assertTrue(refused.getMessage().contains("[1, 2]"),
+        assertTrue(refused.getMessage().contains("[1, 2, 3]"),
                 "the refusal must name the versions this module does govern: "
                         + refused.getMessage());
     }

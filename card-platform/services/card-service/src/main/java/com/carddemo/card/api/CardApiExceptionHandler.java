@@ -10,25 +10,35 @@ import java.util.TreeSet;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.MessageSourceResolvable;
+import org.springframework.dao.DataAccessResourceFailureException;
+import org.springframework.dao.QueryTimeoutException;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpStatusCode;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.ResponseEntity.BodyBuilder;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.transaction.CannotCreateTransactionException;
 import org.springframework.validation.method.ParameterValidationResult;
+import org.springframework.web.ErrorResponse;
+import org.springframework.web.HttpMediaTypeException;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MissingRequestValueException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.HandlerMethodValidationException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.servlet.HandlerMapping;
+import org.springframework.web.servlet.NoHandlerFoundException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 /**
  * Turns a failure of a card endpoint into an {@link ApiErrorResponse}.
  *
  * <p>The framework's own problem detail carries the resolved request path in its {@code instance}
- * member. Two of the three routes of this service name a card in the request body and the list route
- * carries its paging cursor in a request header, so a body that echoed the request would put a card
- * number in the response and in any log line built from it. Every response this class returns
+ * member. Two of the three routes of this service carry a card number as a path variable and the list
+ * route carries its paging cursor in a request header, so a body that echoed the request would put a
+ * card number in the response and in any log line built from it. Every response this class returns
  * carries a route template and one fixed or validated text, and no value read from the request.
  *
  * <p>Six outcomes, and only the last is a fault of this service.
@@ -59,16 +69,17 @@ import org.springframework.web.servlet.HandlerMapping;
  * <p>The route template is the mapping pattern the dispatcher matched, read from the request
  * attribute {@link HandlerMapping#BEST_MATCHING_PATTERN_ATTRIBUTE}. A pattern is not request content:
  * it is one of the two templates this service declares, chosen by the dispatcher, and it holds no
- * value a caller sent. Reporting the collection template for every failure was wrong on the read
- * route, where a caller reading {@code /cards} for a failure of {@code /cards/detail} is told the
- * wrong endpoint failed, and the published examples of that route carry {@code /cards/detail}.
+ * value a caller sent. Reporting the collection template for every failure was wrong on the two
+ * routes that name one card, where a caller reading {@code /cards} for a failure of
+ * {@code /cards/{cardNumber}} is told the wrong endpoint failed.
  *
  * <p>{@link #routeOf} falls back to the collection template when no pattern is available, which is
  * the case when a failure arises before the dispatcher matched one and the case when this class is
  * called outside a request. It also falls back when a pattern would not satisfy
- * {@link ApiErrorResponse}, whose constructor refuses a run of more than four digits. No route of
- * this service carries a path variable, so no pattern can carry one, and the check is there so that
- * a route added later cannot turn a handled failure into an unhandled one.
+ * {@link ApiErrorResponse}, whose constructor refuses a run of more than four digits. The template of
+ * the two routes that carry a path variable is {@code /cards/{cardNumber}}, which holds the variable
+ * name and no digit, and the check is there so that a route added later cannot turn a handled failure
+ * into an unhandled one.
  *
  * <p>The advice deliberately names no base package, and {@code config/ReadinessHealthConfig} is why it
  * does not have to. A poll of {@code /actuator/health} reached this class only because a health
@@ -94,6 +105,9 @@ public class CardApiExceptionHandler {
     /** Records one line per refusal, naming no card number and no submitted value. */
     private static final Logger log = LoggerFactory.getLogger(CardApiExceptionHandler.class);
 
+    /** Causes rendered into one failure line, deepest first, before the chain is cut. */
+    private static final int FAILURE_TYPE_DEPTH = 3;
+
     /** Text a response carries when a required request value did not arrive. */
     static final String MISSING_REQUEST_VALUE_MESSAGE =
             "The account to list cards for is required";
@@ -105,6 +119,25 @@ public class CardApiExceptionHandler {
 
     /** Text a response carries when the service faults. */
     static final String SERVICE_FAULT_MESSAGE = "The request could not be completed";
+
+    /**
+     * Text a response carries when the card table could not be reached.
+     *
+     * <p>The text names a condition a caller may retry and names no host, no driver and no statement.
+     */
+    static final String DEPENDENCY_UNAVAILABLE_MESSAGE =
+            "The card store is not reachable, so this request may be retried";
+
+    /**
+     * Text a response carries when the protocol refused the call.
+     *
+     * <p>A method a route does not serve, a media type it does not read, a media type it cannot write
+     * and a path that matches no route all carry this text. The status separates them, and a
+     * {@code 405} also carries {@code Allow}. The text names neither the method nor the path
+     * submitted.
+     */
+    static final String UNSUPPORTED_REQUEST_MESSAGE =
+            "This route does not serve the method, path or media type the request named";
 
     /**
      * Longest run of digits a route template may hold, matching the bound {@link ApiErrorResponse}
@@ -126,6 +159,7 @@ public class CardApiExceptionHandler {
      * its three constraints carry three distinct texts.
      *
      * @param violation the reported violations
+     * @param request the failing request, read for its mapping pattern alone
      * @return {@code 400} carrying the route template and one constraint text
      */
     @ExceptionHandler(ConstraintViolationException.class)
@@ -192,6 +226,7 @@ public class CardApiExceptionHandler {
      * itself rather than a proxy.
      *
      * @param violation the reported violations, read for nothing but their texts
+     * @param request the failing request, read for its mapping pattern alone
      * @return {@code 400} carrying the route template and one constraint text
      */
     @ExceptionHandler(HandlerMethodValidationException.class)
@@ -214,6 +249,7 @@ public class CardApiExceptionHandler {
      * Answers a required query parameter or request header that did not arrive.
      *
      * @param missing the reported absence, read for nothing but its type
+     * @param request the failing request, read for its mapping pattern alone
      * @return {@code 400} carrying the route template and one fixed text
      */
     @ExceptionHandler(MissingRequestValueException.class)
@@ -227,6 +263,7 @@ public class CardApiExceptionHandler {
      * Answers a request body that could not be read at all.
      *
      * @param unreadable the reported failure, whose message reaches no response body
+     * @param request the failing request, read for its mapping pattern alone
      * @return {@code 400} carrying the route template and one fixed text
      */
     @ExceptionHandler(HttpMessageNotReadableException.class)
@@ -234,6 +271,69 @@ public class CardApiExceptionHandler {
             HttpMessageNotReadableException unreadable, HttpServletRequest request) {
         log.info("A card request carried a body that could not be read");
         return badRequest(UNREADABLE_BODY_MESSAGE, request);
+    }
+
+    /**
+     * Answers a call the protocol refused, at the status and with the headers the framework named.
+     *
+     * <p>Four failures reach here, each raised before a route ran: a method the route does not serve,
+     * a media type it does not read, a media type it cannot write, and a path that matches no route.
+     * Each carries its own status and its own headers, and {@code Allow} on a {@code 405} is how a
+     * caller learns which methods the route does serve. Answering {@code 500} instead would record a
+     * caller's mistake as a fault of this service and invite an unsafe retry.
+     *
+     * <p>The body carries the route template, as every body this class writes does, so no resolved
+     * path and therefore no card number reaches a caller through a refusal. A {@code 406} carries no
+     * body at all: a caller that accepts no type this service writes cannot be sent one.
+     *
+     * @param failure the protocol refusal, read for its status and its headers
+     * @param request the failing request, read for its mapping pattern alone
+     * @return the status the framework named, carrying that status's headers
+     */
+    @ExceptionHandler({HttpRequestMethodNotSupportedException.class, HttpMediaTypeException.class,
+            NoResourceFoundException.class, NoHandlerFoundException.class})
+    public ResponseEntity<ApiErrorResponse> onUnsupportedRequest(ErrorResponse failure,
+            HttpServletRequest request) {
+        HttpStatusCode status = failure.getStatusCode();
+        HttpStatus resolved = HttpStatus.valueOf(status.value());
+
+        log.info("Refusing a card call on the protocol, answering {}", status.value());
+        BodyBuilder response = ResponseEntity.status(status).headers(failure.getHeaders());
+        if (resolved == HttpStatus.NOT_ACCEPTABLE) {
+            return response.build();
+        }
+        return response.contentType(MediaType.APPLICATION_JSON)
+                .body(new ApiErrorResponse(status.value(), UNSUPPORTED_REQUEST_MESSAGE,
+                        routeOf(request)));
+    }
+
+    /**
+     * Answers a card table this service could not reach.
+     *
+     * <p>The request was well formed and this service holds no defect, so neither {@code 400} nor
+     * {@code 500} describes what happened. {@code 503} does, and it names a condition a caller may
+     * retry. The three families named here are the connection this service could not open, the
+     * transaction it could not begin and the statement the database gave up on.
+     *
+     * <p>The update route reaches the same status through its own outcome. A write that failed once
+     * the row was held answers {@code 503} from {@code api/CardController#statusOf}, carrying the
+     * text {@code app/cbl/COCRDUPC.cbl:L210} declares. That answer carries the update body and this
+     * one carries the failure body, because a failure raised before or outside the outcome chain has
+     * no outcome to report.
+     *
+     * @param failure the reported failure, read for its type alone and never logged whole
+     * @param request the failing request, read for its mapping pattern alone
+     * @return {@code 503} carrying the route template and the declared text
+     */
+    @ExceptionHandler({DataAccessResourceFailureException.class,
+            CannotCreateTransactionException.class, QueryTimeoutException.class})
+    public ResponseEntity<ApiErrorResponse> onDatastoreUnreachable(Exception failure,
+            HttpServletRequest request) {
+        log.error("A card request could not reach the card table. The failure was {}. Its message is not recorded, because a datastore message quotes the statement and the value that caused it.", failureType(failure));
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(new ApiErrorResponse(HttpStatus.SERVICE_UNAVAILABLE.value(),
+                        DEPENDENCY_UNAVAILABLE_MESSAGE, routeOf(request)));
     }
 
     /**
@@ -245,7 +345,7 @@ public class CardApiExceptionHandler {
      */
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiErrorResponse> onFault(Exception fault, HttpServletRequest request) {
-        log.error("A card request failed inside this service", fault);
+        log.error("A card request failed inside this service. The failure was {}. Its message is not recorded, because a message quotes the value that caused it.", failureType(fault));
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                 .contentType(MediaType.APPLICATION_JSON)
                 .body(new ApiErrorResponse(HttpStatus.INTERNAL_SERVER_ERROR.value(),
@@ -293,7 +393,7 @@ public class CardApiExceptionHandler {
      * attribute {@link HandlerMapping#BEST_MATCHING_PATTERN_ATTRIBUTE}. A pattern is one of the two
      * templates this service declares and holds no value a caller sent, so reporting it discloses
      * nothing. Reporting the collection template for every failure told a caller of
-     * {@code POST /cards/detail} that {@code /cards} had failed.
+     * {@code GET /cards/{cardNumber}} that {@code /cards} had failed.
      *
      * <p>Three cases fall back to the collection template, and each is a case where no pattern is
      * available or usable rather than a case where one is ignored: a null request, which is how this
@@ -301,9 +401,11 @@ public class CardApiExceptionHandler {
      * before the dispatcher matched a pattern; and a pattern {@link ApiErrorResponse} would refuse.
      * That last check exists because the constructor of that record throws on a run of more than four
      * digits, and an exception thrown inside an exception handler reaches a caller as an unhandled
-     * failure. No route of this service carries a path variable, so no pattern can carry such a run
-     * today, and the check keeps a route added later from turning a handled failure into one this
-     * class cannot answer.
+     * failure. Two routes of this service carry a path variable, and the template of both is
+     * {@code /cards/{cardNumber}}, which holds the variable name and no digit. The check reads the
+     * template the dispatcher matched and never the path a caller sent, so no card number can reach a
+     * body through it, and a route added later cannot turn a handled failure into one this class
+     * cannot answer.
      *
      * @param request the failing request, or {@code null}
      * @return the mapping pattern the dispatcher matched, otherwise
@@ -338,5 +440,34 @@ public class CardApiExceptionHandler {
             }
         }
         return false;
+    }
+
+    /**
+     * Renders one failure as its type and the types of its causes, and never as its message.
+     *
+     * <p>A type is code and safe to record. An exception message is not: a constraint violation
+     * quotes the value that violated it, a query timeout quotes the statement, and a connection
+     * failure quotes the data-source URL. Passing the throwable to the logger emits both, so this
+     * method emits the half that is code and drops the half that is data.
+     *
+     * <p>The chain is bounded because a wrapped failure can nest deeply and one log line is not the
+     * place to render all of it. Three levels reach the framework wrapper, the driver exception and
+     * the cause underneath it, which is what a reader needs to tell a timeout from a constraint from
+     * a broken connection.
+     *
+     * @param failure the failure that reached this handler
+     * @return the type chain as text, never null and never a message
+     */
+    private static String failureType(Throwable failure) {
+        StringBuilder types = new StringBuilder();
+        Throwable current = failure;
+        for (int depth = 0; current != null && depth < FAILURE_TYPE_DEPTH; depth++) {
+            if (depth > 0) {
+                types.append(" caused by ");
+            }
+            types.append(current.getClass().getName());
+            current = current.getCause() == current ? null : current.getCause();
+        }
+        return types.toString();
     }
 }

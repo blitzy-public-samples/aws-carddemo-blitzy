@@ -54,9 +54,11 @@ class NotificationPropertiesTest {
             assertThat(properties.consumer().retry().backoffMs()).isEqualTo(1000L);
             assertThat(properties.history().statementRetentionDays()).isEqualTo(400);
             assertThat(properties.history().logRetentionDays()).isEqualTo(90);
-            assertThat(properties.history().defaultPageSize()).isEqualTo(50);
-            assertThat(properties.history().maximumPageSize()).isEqualTo(200);
-            assertThat(properties.processedEvent().markerRetentionHours()).isEqualTo(168);
+            assertThat(properties.history().sweepIntervalMs()).isEqualTo(3_600_000L);
+            assertThat(properties.processedEvent().markerRetentionHours())
+                    .as("the marker horizon outlasts broker retention rather than equalling it")
+                    .isEqualTo(720);
+            assertThat(properties.processedEvent().brokerRetentionHours()).isEqualTo(168);
         });
     }
 
@@ -105,13 +107,13 @@ class NotificationPropertiesTest {
     }
 
     @Test
-    @DisplayName("a page size under one stops start-up")
-    void aPageSizeUnderOneStopsStartUp() {
-        shipped.withPropertyValues("carddemo.history.maximum-page-size=0")
+    @DisplayName("a statement retention under one stops start-up")
+    void aStatementRetentionUnderOneStopsStartUp() {
+        shipped.withPropertyValues("carddemo.history.statement-retention-days=0")
                 .run(context -> {
                     assertThat(context).hasFailed();
                     assertThat(context.getStartupFailure())
-                            .hasStackTraceContaining("history.maximumPageSize");
+                            .hasStackTraceContaining("history.statementRetentionDays");
                 });
     }
 
@@ -127,18 +129,54 @@ class NotificationPropertiesTest {
     }
 
     @Test
-    @DisplayName("the history resolver applies its default, request and ceiling")
-    void theHistoryResolverAppliesItsDefaultRequestAndCeiling() {
+    @DisplayName("the history record carries three horizons and no page size")
+    void theHistoryRecordCarriesThreeHorizonsAndNoPageSize() {
         NotificationProperties.History history =
-                new NotificationProperties.History(400, 90, 3_600_000L, 50, 200);
+                new NotificationProperties.History(400, 90, 3_600_000L);
 
-        assertThat(history.resolvePageSize(null)).isEqualTo(50);
-        assertThat(history.resolvePageSize(75)).isEqualTo(75);
-        assertThat(history.resolvePageSize(100_000)).isEqualTo(200);
-        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
-                () -> history.resolvePageSize(0));
+        assertThat(history.statementRetentionDays()).isEqualTo(400);
+        assertThat(history.logRetentionDays()).isEqualTo(90);
+        assertThat(history.sweepIntervalMs()).isEqualTo(3_600_000L);
+        assertThat(NotificationProperties.History.class.getRecordComponents())
+                .extracting(java.lang.reflect.RecordComponent::getName)
+                .containsExactly("statementRetentionDays", "logRetentionDays", "sweepIntervalMs");
     }
 
+
+    @Test
+    @DisplayName("a marker horizon that does not outlast broker retention stops start-up")
+    void aMarkerHorizonUnderTheMarginStopsStartUp() {
+        shipped.withPropertyValues("carddemo.processed-event.marker-retention-hours=168")
+                .run(context -> {
+                    assertThat(context).hasFailed();
+                    assertThat(context.getStartupFailure())
+                            .hasStackTraceContaining("markerRetentionHours")
+                            .hasStackTraceContaining("brokerRetentionHours");
+                });
+    }
+
+    @Test
+    @DisplayName("a marker horizon at exactly the margin starts")
+    void aMarkerHorizonAtExactlyTheMarginStarts() {
+        shipped.withPropertyValues("carddemo.processed-event.marker-retention-hours=336")
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context.getBean(NotificationProperties.class).processedEvent()
+                            .markerRetentionHours()).isEqualTo(336);
+                });
+    }
+
+    @Test
+    @DisplayName("raising broker retention without raising the marker horizon stops start-up")
+    void raisingBrokerRetentionAloneStopsStartUp() {
+        shipped.withPropertyValues("carddemo.processed-event.broker-retention-hours=720")
+                .run(context -> {
+                    assertThat(context).hasFailed();
+                    assertThat(context.getStartupFailure())
+                            .hasStackTraceContaining("markerRetentionHours must be at")
+                            .hasStackTraceContaining("least 2 times");
+                });
+    }
 
     @Test
     @DisplayName("the bound record is the only properties bean and it is immutable")

@@ -1,5 +1,6 @@
 package com.carddemo.authorization.domain.rules;
 
+import com.carddemo.authorization.domain.CycleExposureReservation;
 import com.carddemo.authorization.domain.DeclineRule;
 import com.carddemo.authorization.entity.AccountCreditSnapshotEntity;
 import com.carddemo.cobol.CobolDecimal;
@@ -46,17 +47,50 @@ import org.springframework.stereotype.Component;
  * {@code app/cbl/CBTRN02C.cbl:L414} opens the expiration test with no gate between them, so
  * {@link AccountExpirationRule} runs even after this rule declines.
  *
+ * <h2>What the two accumulators hold here that they do not hold in the source</h2>
+ *
+ * <p>The source reads accumulators that already carry every earlier approval of the run, because
+ * paragraph {@code 2700-UPDATE-ACCOUNT} at {@code app/cbl/CBTRN02C.cbl:L545-L560} rewrites the account
+ * record inside the same sequential loop that validates the next record. Two transactions of 60.00
+ * against a limit of 100.00 therefore approve once and decline once.
+ *
+ * <p>Here the account service owns the accumulators and reports them back four asynchronous hops after
+ * the decision, so {@code account_credit_snapshot} holds the exposure the account carried before this
+ * service approved. {@link CycleExposureReservation} supplies the difference: the exposure already
+ * approved and not yet reported. Each figure is added to its authoritative twin before the working
+ * balance is computed, so this rule reads the figures the account would carry had every approved
+ * transaction already posted, which is what the source reads.
+ *
+ * <p>Nothing about the computation changes. Both additions run through {@link CobolDecimal} at the
+ * accumulator scale, matching the {@code ADD} statements at
+ * {@code app/cbl/CBTRN02C.cbl:L549} and {@code :L551} that the ledger service reproduces; the
+ * subtraction, the addition of the amount and the one narrowing store below are untouched.
+ *
  * <p>Flagged source findings: {@code card-platform/docs/business-rule-flags.md}.
  */
 @Component
 @Order(30)
 public class CreditLimitRule implements DeclineRule {
 
+    /** Supplies the approved exposure the account service has not yet reported back. */
+    private final CycleExposureReservation reservation;
+
+    /**
+     * Takes the reservation this rule reads.
+     *
+     * @param reservation supplier of the approved exposure not yet reported back
+     * @throws NullPointerException when {@code reservation} is {@code null}
+     */
+    public CreditLimitRule(CycleExposureReservation reservation) {
+        this.reservation = Objects.requireNonNull(reservation, "reservation must be present");
+    }
+
     /**
      * Computes the working balance and declines when the credit limit does not reach it.
      *
-     * <p>Three steps carry {@code app/cbl/CBTRN02C.cbl:L403-L407}. The subtraction and the addition
-     * run at {@link PicClause#WS_TEMP_BAL_SCALE} through {@link CobolDecimal}, which truncates
+     * <p>Three steps carry {@code app/cbl/CBTRN02C.cbl:L403-L407}, over accumulators that carry their
+     * reserved exposure. The subtraction and the addition run at
+     * {@link PicClause#WS_TEMP_BAL_SCALE} through {@link CobolDecimal}, which truncates
      * toward zero. The single store narrows the result to {@link PicClause#WS_TEMP_BAL_PRECISION}
      * through {@link CobolDecimal#truncateToPictureField(BigDecimal, int, int)}. The comparison
      * reads that narrowed value.
@@ -75,8 +109,15 @@ public class CreditLimitRule implements DeclineRule {
                 "the credit test follows the account read, and no account snapshot reached this "
                         + "call");
 
-        BigDecimal cycleDifference = CobolDecimal.subtract(account.getCurrentCycleCredit(),
-                account.getCurrentCycleDebit(), PicClause.WS_TEMP_BAL_SCALE);
+        BigDecimal cycleCredit = CobolDecimal.add(account.getCurrentCycleCredit(),
+                reservation.reservedCycleCredit(account),
+                PicClause.ACCT_CURR_CYC_CREDIT_SCALE);
+        BigDecimal cycleDebit = CobolDecimal.add(account.getCurrentCycleDebit(),
+                reservation.reservedCycleDebit(account),
+                PicClause.ACCT_CURR_CYC_DEBIT_SCALE);
+
+        BigDecimal cycleDifference =
+                CobolDecimal.subtract(cycleCredit, cycleDebit, PicClause.WS_TEMP_BAL_SCALE);
         BigDecimal computed = CobolDecimal.add(cycleDifference, context.getAmount(),
                 PicClause.WS_TEMP_BAL_SCALE);
         BigDecimal workingBalance = CobolDecimal.truncateToPictureField(computed,

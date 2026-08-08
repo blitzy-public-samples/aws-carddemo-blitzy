@@ -12,22 +12,18 @@ import static org.mockito.Mockito.when;
 
 import com.carddemo.account.config.AccountProperties;
 import com.carddemo.account.config.ObservabilityConfig.AccountMeters;
-import com.carddemo.account.config.ObservabilityConfig;
 import com.carddemo.account.domain.validation.EditResult;
 import com.carddemo.account.entity.AccountEntity;
 import com.carddemo.account.entity.CustomerEntity;
 import com.carddemo.account.outbox.OutboxWriter;
 import com.carddemo.account.repository.AccountRepository;
-import com.carddemo.account.repository.CardCrossReferenceRepository;
+import com.carddemo.account.repository.AccountCustomerLinkRepository;
 import com.carddemo.account.repository.CustomerRepository;
-import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Duration;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
 import org.mockito.InOrder;
 import org.springframework.dao.CannotAcquireLockException;
-import org.springframework.transaction.support.SimpleTransactionStatus;
-import org.springframework.transaction.support.TransactionCallback;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /** Verifies account success meters are recorded after commit and rollback meters separately. */
@@ -165,7 +161,7 @@ class TransactionalObservabilityTest {
         return new AccountUpdateService(
                 accounts,
                 customers,
-                mock(CardCrossReferenceRepository.class),
+                mock(AccountCustomerLinkRepository.class),
                 changeDetector,
                 outboxWriter,
                 transactions,
@@ -193,7 +189,7 @@ class TransactionalObservabilityTest {
                 new AccountProperties.Outbox(new AccountProperties.Outbox.Relay(500L, 100,
                         "account-relay", java.time.Duration.ofMinutes(2L), 1_000L,
                         java.time.Duration.ofSeconds(10L)), 168L),
-                new AccountProperties.ProcessedEvent(168L),
+                new AccountProperties.ProcessedEvent(720L, 168L),
                 new AccountProperties.Retention(3_600_000L),
                 new AccountProperties.Write(3_000L));
     }

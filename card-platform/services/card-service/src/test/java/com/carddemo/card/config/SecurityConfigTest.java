@@ -1,9 +1,11 @@
 package com.carddemo.card.config;
 
+import com.carddemo.card.TestIdentityPasswords;
 import com.carddemo.cobol.PanMasker;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -34,7 +36,9 @@ import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContext;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.core.userdetails.UserDetails;
+import org.springframework.security.crypto.password.DelegatingPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.crypto.password.Pbkdf2PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.access.intercept.RequestAuthorizationContext;
 
@@ -287,34 +291,44 @@ class SecurityConfigTest {
         }
 
         @Test
-        @DisplayName("the body-borne predicate derives the token from the full number it is handed")
-        void theBodyBornePredicateDerivesTheTokenFromTheFullNumber() {
-            SecurityConfig.CardOwnership ownership = new SecurityConfig().cardOwnership();
+        @DisplayName("the card path variable is read as a full number and compared as a token")
+        void theCardPathVariableDerivesTheTokenFromTheFullNumber() {
+            AuthorizationManager<RequestAuthorizationContext> rule =
+                    SecurityConfig.ownsCardNumberPathVariable("cardNumber");
 
-            withAuthentication(cardholder(), () -> assertAll(
-                    () -> assertTrue(ownership.ownsCard(OWNED_CARD_NUMBER),
-                            "the predicate derives the token of the number it is handed, so the "
+            assertAll(
+                    () -> assertTrue(rule.authorize(SecurityConfigTest::cardholder,
+                                    pathContext("cardNumber", OWNED_CARD_NUMBER)).isGranted(),
+                            "the rule derives the token of the number the path carries, so the "
                                     + "authority the platform grants is the authority it compares"),
-                    () -> assertFalse(ownership.ownsCard(OTHER_CARD_NUMBER),
+                    () -> assertFalse(rule.authorize(SecurityConfigTest::cardholder,
+                                    pathContext("cardNumber", OTHER_CARD_NUMBER)).isGranted(),
                             "another card's number derives another token"),
-                    () -> assertFalse(ownership.ownsCard(COLLIDING_CARD_NUMBER),
+                    () -> assertFalse(rule.authorize(SecurityConfigTest::cardholder,
+                                    pathContext("cardNumber", COLLIDING_CARD_NUMBER)).isGranted(),
                             "a card sharing the last four digits derives a different token, so one "
                                     + "authority admits one card and not a group of them"),
-                    () -> assertFalse(ownership.ownsCard(
-                                    PanMasker.maskCardNumber(OWNED_CARD_NUMBER)),
-                            "the masked form is not accepted, because it names every card ending "
-                                    + "in those four digits"),
-                    () -> assertFalse(ownership.ownsCard(OWNED_CARD),
-                            "the derived token is not accepted either: the predicate derives one "
-                                    + "from a full number and nothing else"),
-                    () -> assertFalse(ownership.ownsCard(null), "an absent number owns nothing"),
-                    () -> assertFalse(ownership.ownsCard("   "),
-                            "a blank number owns nothing")));
-
-            withAuthentication(administrator(), () -> assertTrue(
-                    ownership.ownsCard(OTHER_CARD_NUMBER),
-                    "an administrator owns every card, which is COSGN00C L232-L236 expressed as an "
-                            + "entitlement"));
+                    () -> assertFalse(rule.authorize(SecurityConfigTest::cardholder,
+                                    pathContext("cardNumber",
+                                            PanMasker.maskCardNumber(OWNED_CARD_NUMBER)))
+                                    .isGranted(),
+                            "the masked form is refused, because it names every card ending in "
+                                    + "those four digits"),
+                    () -> assertFalse(rule.authorize(SecurityConfigTest::cardholder,
+                                    pathContext("cardNumber", OWNED_CARD)).isGranted(),
+                            "the derived token is refused too: the rule derives one from a full "
+                                    + "number and nothing else"),
+                    () -> assertFalse(rule.authorize(SecurityConfigTest::cardholder,
+                                    new RequestAuthorizationContext(new MockHttpServletRequest(),
+                                            Map.of())).isGranted(),
+                            "an absent path variable owns nothing"),
+                    () -> assertFalse(rule.authorize(SecurityConfigTest::cardholder,
+                                    pathContext("cardNumber", "   ")).isGranted(),
+                            "a blank value owns nothing"),
+                    () -> assertTrue(rule.authorize(SecurityConfigTest::administrator,
+                                    pathContext("cardNumber", OTHER_CARD_NUMBER)).isGranted(),
+                            "an administrator owns every card, which is COSGN00C L232-L236 "
+                                    + "expressed as an entitlement"));
         }
 
         @Test
@@ -459,17 +473,108 @@ class SecurityConfigTest {
         private static final String BROKER_JAAS = "org.apache.kafka.common.security.plain."
                 + "PlainLoginModule required username=\"svc\" password=\"a-generated-value\";";
 
+        /**
+         * A card-token key of the accepted length that this repository names nowhere else.
+         *
+         * <p>It is not the key the repository publishes, so it needs no acknowledgement, and it is
+         * not a placeholder, so the marker check leaves it alone. It derives no token here: nothing
+         * in this class tokenizes a card number.
+         */
+        private static final String GENERATED_CARD_TOKEN_KEY =
+                "a-generated-card-token-key-for-this-test-only";
+
         /** An environment with every checked credential fit to run with. */
         private MockEnvironment usable() {
             return new MockEnvironment()
                     .withProperty(SecurityConfig.DATASOURCE_PASSWORD_PROPERTY, "a-generated-value")
-                    .withProperty(SecurityConfig.BROKER_JAAS_PROPERTY, BROKER_JAAS);
+                    .withProperty(SecurityConfig.BROKER_JAAS_PROPERTY, BROKER_JAAS)
+                    .withProperty(PanMasker.CARD_TOKEN_SECRET_VARIABLE, GENERATED_CARD_TOKEN_KEY);
+        }
+
+        /** The message from refusing one identity password, so a case below reads as one line. */
+        private String refusalFor(String identityPassword) {
+            return assertThrows(IllegalStateException.class,
+                    () -> SecurityConfig.requireUsableSecret(identityPassword,
+                            SecurityConfig.IDENTITY_PASSWORD_PROPERTY))
+                    .getMessage();
         }
 
         @Test
         @DisplayName("a usable configuration passes")
         void usableConfigurationPasses() {
             SecurityConfig.requireUsableCredentials(usable());
+        }
+
+        @Test
+        @DisplayName("an identity password that is not adaptively encoded is refused")
+        void anIdentityPasswordThatIsNotAdaptivelyEncodedIsRefused() {
+            assertAll(
+                    () -> assertTrue(refusalFor("{noop}not-a-hash").contains("{noop}"),
+                            "the delegating encoder answers noop by comparing the stored and"
+                                    + " supplied values, so a password under it is plaintext"),
+                    () -> assertTrue(refusalFor("{MD5}0123456789abcdef").contains("{MD5}"),
+                            "a digest identifier names no adaptive encoder"),
+                    () -> assertTrue(refusalFor("{sha256}0123456789abcdef").contains("{sha256}"),
+                            "the delegating encoder's sha256 entry is refused as well"),
+                    () -> assertTrue(refusalFor("{ldap}{SSHA}0123456789").contains("{ldap}"),
+                            "an ldap entry is refused"),
+                    () -> assertTrue(refusalFor("{bcrypt}").contains("no bcrypt hash"),
+                            "a prefix carrying no payload authenticates nobody, and the shape check"
+                                    + " is what refuses it"),
+                    () -> assertTrue(refusalFor("{bcrypt}not-a-hash").contains("no bcrypt hash"),
+                            "a bcrypt prefix has to carry a bcrypt hash"),
+                    () -> assertTrue(refusalFor("{bcrypt}$2a$04$" + "a".repeat(53))
+                                    .contains("cost of 4"),
+                            "a cost below " + SecurityConfig.BCRYPT_MINIMUM_COST
+                                    + " verifies faster for whoever holds the hash too"));
+        }
+
+        /**
+         * Asserts the deployment path of the card-token key is checked.
+         *
+         * <p>The build supplies the same key as a system property, and {@code SecurityConfig} reads
+         * that path first so this check does not stop every test that starts a context. The three
+         * cases below are about the path a deployment uses, so the build property is cleared while
+         * they run and restored afterwards.
+         */
+        @Test
+        @DisplayName("a card-token key that is absent, a placeholder or too short is refused")
+        void anUnusableCardTokenKeyIsRefused() {
+            MockEnvironment absent = new MockEnvironment()
+                    .withProperty(SecurityConfig.DATASOURCE_PASSWORD_PROPERTY, "a-generated-value")
+                    .withProperty(SecurityConfig.BROKER_JAAS_PROPERTY, BROKER_JAAS);
+            MockEnvironment tooShort = usable()
+                    .withProperty(PanMasker.CARD_TOKEN_SECRET_VARIABLE, "too-short-a-key");
+            MockEnvironment placeholder = usable().withProperty(
+                    PanMasker.CARD_TOKEN_SECRET_VARIABLE,
+                    "REPLACE-THIS-PLACEHOLDER-WITH-A-GENERATED-CARD-TOKEN-KEY");
+
+            String heldKey = System.getProperty(SecurityConfig.CARD_TOKEN_KEY_PROPERTY);
+            try {
+                System.clearProperty(SecurityConfig.CARD_TOKEN_KEY_PROPERTY);
+                assertAll(
+                        () -> assertTrue(refusalFrom(absent)
+                                        .contains(PanMasker.CARD_TOKEN_SECRET_VARIABLE),
+                                "an absent key has to name the variable that supplies it"),
+                        () -> assertTrue(refusalFrom(tooShort).contains(
+                                        String.valueOf(PanMasker.CARD_TOKEN_SECRET_MIN_LENGTH)),
+                                "a short key is refused rather than padded"),
+                        () -> assertTrue(refusalFrom(placeholder).contains("placeholder"),
+                                "the value deploy/k8s/31-secret.example.yaml carries is a"
+                                        + " placeholder and not a key"));
+            } finally {
+                if (heldKey == null) {
+                    System.clearProperty(SecurityConfig.CARD_TOKEN_KEY_PROPERTY);
+                } else {
+                    System.setProperty(SecurityConfig.CARD_TOKEN_KEY_PROPERTY, heldKey);
+                }
+            }
+        }
+
+        /** The message from refusing one whole environment. */
+        private String refusalFrom(MockEnvironment environment) {
+            return assertThrows(IllegalStateException.class,
+                    () -> SecurityConfig.requireUsableCredentials(environment)).getMessage();
         }
 
         @Test
@@ -488,6 +593,66 @@ class SecurityConfigTest {
                             "the message opens with the property: " + thrown.getMessage()),
                     () -> assertFalse(thrown.getMessage().contains("REPLACE-WITH"),
                             "and repeats no part of the value: " + thrown.getMessage()));
+        }
+
+        /**
+         * Proves this service refuses to start on the card-token key this repository publishes,
+         * however that key arrives and whatever the configuration says about it.
+         *
+         * <p>{@code PanMasker.requireCardTokenSecretFitForUse} admits the published key when a
+         * deployment states that it means to use it, and that library rule is proved by
+         * {@code com.carddemo.cobol.PanMaskerTest}. This service is stricter, because it derives a
+         * token: {@code requireUsableCardTokenKey} refuses the published value outright, so no
+         * statement makes it usable here. Both are kept, and the stricter one runs first, which is
+         * why the refusal below names the variable and the condition rather than a value to set.
+         *
+         * <p>Setting the acknowledgement afterwards therefore changes nothing, and the second
+         * assertion is what proves the outright refusal rather than a conditional one.
+         */
+        @Test
+        @DisplayName("the card-token key this repository publishes is refused however it arrives")
+        void publishedCardTokenKeyIsRefusedUnlessStated() {
+            String held =
+                    System.getProperty(PanMasker.CARD_TOKEN_ALLOW_PUBLISHED_KEY_PROPERTY);
+            String heldKey = System.getProperty(PanMasker.CARD_TOKEN_SECRET_PROPERTY);
+            try {
+                System.setProperty(PanMasker.CARD_TOKEN_SECRET_PROPERTY,
+                        PanMasker.PUBLISHED_DEMO_CARD_TOKEN_SECRET);
+                System.clearProperty(PanMasker.CARD_TOKEN_ALLOW_PUBLISHED_KEY_PROPERTY);
+
+                IllegalStateException unstated = assertThrows(IllegalStateException.class,
+                        () -> SecurityConfig.requireUsableCredentials(usable()),
+                        "this service started on the key this repository publishes with nothing"
+                                + " stating that it meant to");
+                assertAll(
+                        () -> assertTrue(unstated.getMessage()
+                                        .contains(SecurityConfig.CARD_TOKEN_KEY_VARIABLE),
+                                "the refusal names the variable that carries the key: "
+                                        + unstated.getMessage()),
+                        () -> assertFalse(unstated.getMessage()
+                                        .contains(PanMasker.PUBLISHED_DEMO_CARD_TOKEN_SECRET),
+                                "and repeats no part of the key itself: " + unstated.getMessage()));
+
+                System.setProperty(PanMasker.CARD_TOKEN_ALLOW_PUBLISHED_KEY_PROPERTY, "true");
+                IllegalStateException stated = assertThrows(IllegalStateException.class,
+                        () -> SecurityConfig.requireUsableCredentials(usable()),
+                        "a statement made the published key usable in a service that derives"
+                                + " tokens, which is the one place it must not be");
+                assertTrue(stated.getMessage().contains(SecurityConfig.CARD_TOKEN_KEY_VARIABLE),
+                        "the refusal is the same one, so the statement changed nothing: "
+                                + stated.getMessage());
+            } finally {
+                if (held == null) {
+                    System.clearProperty(PanMasker.CARD_TOKEN_ALLOW_PUBLISHED_KEY_PROPERTY);
+                } else {
+                    System.setProperty(PanMasker.CARD_TOKEN_ALLOW_PUBLISHED_KEY_PROPERTY, held);
+                }
+                if (heldKey == null) {
+                    System.clearProperty(PanMasker.CARD_TOKEN_SECRET_PROPERTY);
+                } else {
+                    System.setProperty(PanMasker.CARD_TOKEN_SECRET_PROPERTY, heldKey);
+                }
+            }
         }
 
         @Test
@@ -608,6 +773,135 @@ class SecurityConfigTest {
                                     .isAssignableFrom(factory.getReturnType()),
                             "a post-processor is built before an ordinary bean, which is what"
                                     + " puts this check ahead of the connection pool"));
+        }
+    }
+    @Nested
+    @DisplayName("Only approved adaptive password encodings are accepted")
+    class ApprovedPasswordEncodings {
+
+        /**
+         * Encodings Spring Security's stock delegating encoder maps and this platform refuses.
+         *
+         * <p>{@code noop} stores a password in plain text. {@code MD4}, {@code MD5},
+         * {@code SHA-1}, {@code SHA-256}, {@code sha256} and {@code ldap} are unsalted or
+         * single-pass digests, so a guess costs one hash. {@code pbkdf2} without a suffix names
+         * the parameter set Spring Security shipped before 5.8. {@code argon2} and {@code scrypt}
+         * are adaptive, and they are refused for a different reason: both implementations call
+         * Bouncy Castle, which is not a dependency of this platform.
+         */
+        private final List<String> refusedEncodings = List.of(
+                "noop", "MD4", "MD5", "SHA-1", "SHA-256", "sha256", "ldap", "pbkdf2",
+                "argon2", "argon2@SpringSecurity_v5_8", "scrypt", "scrypt@SpringSecurity_v5_8");
+
+        /** A password no identity holds, used where a value has to be present and mean nothing. */
+        private static final String SAMPLE = "a-value-that-authenticates-nothing";
+
+        @Test
+        @DisplayName("the allowlist names bcrypt and the current pbkdf2 parameter set, and no more")
+        void theAllowlistNamesTwoAdaptiveEncodings() {
+            assertAll(
+                    () -> assertEquals(List.of("bcrypt", "pbkdf2@SpringSecurity_v5_8"),
+                            SecurityConfig.APPROVED_PASSWORD_ENCODINGS,
+                            "the allowlist is the whole set of encodings a configured password may"
+                                    + " declare, so a third entry is a decision and not a detail"),
+                    () -> assertEquals(10, SecurityConfig.BCRYPT_MINIMUM_COST,
+                            "ten is the cost the generation recipes in .env.example and ci.yml"
+                                    + " produce, so lowering the floor accepts a hash neither"
+                                    + " recipe would generate"));
+        }
+
+        @Test
+        @DisplayName("every legacy and plaintext encoding is refused at start-up")
+        void everyLegacyEncodingIsRefusedAtStartUp() {
+            for (String encoding : refusedEncodings) {
+                IllegalStateException thrown = assertThrows(IllegalStateException.class,
+                        () -> SecurityConfig.requireUsableSecret("{" + encoding + "}" + SAMPLE,
+                                SecurityConfig.IDENTITY_PASSWORD_PROPERTY),
+                        "an identity password declaring {" + encoding + "} must stop start-up");
+                assertAll(
+                        () -> assertTrue(thrown.getMessage().contains("{" + encoding + "}"),
+                                "the message names the encoding that was declared: "
+                                        + thrown.getMessage()),
+                        () -> assertFalse(thrown.getMessage().contains(SAMPLE),
+                                "no message carries the value: " + thrown.getMessage()));
+            }
+        }
+
+        @Test
+        @DisplayName("an approved encoding passes, and a bcrypt cost below the floor does not")
+        void anApprovedEncodingPassesAndACheapBcryptCostDoesNot() {
+            String cheap = "{bcrypt}$2a$04$" + "0123456789012345678901"
+                    + "0123456789012345678901234567890";
+            IllegalStateException tooCheap = assertThrows(IllegalStateException.class,
+                    () -> SecurityConfig.requireUsableSecret(cheap,
+                            SecurityConfig.IDENTITY_PASSWORD_PROPERTY));
+            IllegalStateException notAHash = assertThrows(IllegalStateException.class,
+                    () -> SecurityConfig.requireUsableSecret("{bcrypt}" + SAMPLE,
+                            SecurityConfig.IDENTITY_PASSWORD_PROPERTY));
+            IllegalStateException noPrefix = assertThrows(IllegalStateException.class,
+                    () -> SecurityConfig.requireUsableSecret(SAMPLE,
+                            SecurityConfig.IDENTITY_PASSWORD_PROPERTY));
+
+            assertAll(
+                    () -> SecurityConfig.requireUsableSecret(ENCODED_PASSWORD,
+                            SecurityConfig.IDENTITY_PASSWORD_PROPERTY),
+                    () -> SecurityConfig.requireUsableSecret(
+                            "{pbkdf2@SpringSecurity_v5_8}"
+                                    + Pbkdf2PasswordEncoder.defaultsForSpringSecurity_v5_8()
+                                            .encode(SAMPLE),
+                            SecurityConfig.IDENTITY_PASSWORD_PROPERTY),
+                    () -> assertTrue(tooCheap.getMessage().contains("cost of 4"),
+                            "the message names the cost that was declared: "
+                                    + tooCheap.getMessage()),
+                    () -> assertTrue(notAHash.getMessage().contains("no bcrypt"),
+                            "a value declaring bcrypt and carrying something else is refused: "
+                                    + notAHash.getMessage()),
+                    () -> assertTrue(noPrefix.getMessage().contains("encoding prefix"),
+                            "a value declaring no encoding at all is refused: "
+                                    + noPrefix.getMessage()));
+        }
+
+        @Test
+        @DisplayName("the encoder bean refuses a refused encoding rather than answering false")
+        void theEncoderBeanRefusesARefusedEncodingRatherThanAnsweringFalse() {
+            PasswordEncoder encoder = new SecurityConfig().passwordEncoder();
+
+            assertAll(
+                    () -> assertInstanceOf(DelegatingPasswordEncoder.class, encoder,
+                            "the bean delegates by encoding identifier"),
+                    () -> assertThrows(IllegalArgumentException.class,
+                            () -> encoder.matches(SAMPLE, "{noop}" + SAMPLE),
+                            "a plaintext stored value must throw. Answering false would read as a"
+                                    + " wrong password and leave the encoding in place"),
+                    () -> assertThrows(IllegalArgumentException.class,
+                            () -> encoder.matches(SAMPLE, "{MD5}" + SAMPLE),
+                            "an unsalted digest must throw for the same reason"),
+                    () -> assertTrue(encoder.encode(SAMPLE).startsWith("{bcrypt}$2"),
+                            "this class encodes with bcrypt, so a hash it generates is one it"
+                                    + " accepts"));
+        }
+
+        @Test
+        @DisplayName("each test hash still verifies the plaintext declared beside it")
+        void eachTestHashStillVerifiesThePlaintextDeclaredBesideIt() {
+            PasswordEncoder encoder = new SecurityConfig().passwordEncoder();
+
+            assertAll(
+                    () -> assertTrue(encoder.matches(TestIdentityPasswords.ADMIN_PASSWORD,
+                                    TestIdentityPasswords.ADMIN_PASSWORD_HASH),
+                            "the ADMIN hash in TestIdentityPasswords no longer verifies its"
+                                    + " plaintext, so every test that authenticates as that"
+                                    + " identity would fail for a reason unrelated to its subject"),
+                    () -> assertTrue(encoder.matches(TestIdentityPasswords.USER_PASSWORD,
+                                    TestIdentityPasswords.USER_PASSWORD_HASH),
+                            "the USER hash in TestIdentityPasswords no longer verifies its"
+                                    + " plaintext, so every test that authenticates as that"
+                                    + " identity would fail for a reason unrelated to its subject"),
+                    () -> assertTrue(encoder.matches(TestIdentityPasswords.MONITORING_PASSWORD,
+                                    TestIdentityPasswords.MONITORING_PASSWORD_HASH),
+                            "the MONITORING hash in TestIdentityPasswords no longer verifies its"
+                                    + " plaintext, so every test that authenticates as that"
+                                    + " identity would fail for a reason unrelated to its subject"));
         }
     }
 }

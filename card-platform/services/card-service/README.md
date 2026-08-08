@@ -69,8 +69,8 @@ No file under `app/` is modified by this work. The binding constraint reads: *"D
 | Method and path | Source program | Notes |
 | :--- | :--- | :--- |
 | `GET /cards` | `app/cbl/COCRDLIC.cbl` | Paginated list. **Default page size seven**, and a caller may name any size from 1 through 100. A required `accountId` query parameter and an optional `direction` of `forward` or `backward` reproduce the filter at `app/cbl/COCRDLIC.cbl:L1382-L1409` and the forward and backward browse paragraphs. Keyset pagination on the card number. The response carries a next-page flag derived by a lookahead, plus the cursor for the next request |
-| `POST /cards/detail` | `app/cbl/COCRDSLC.cbl` | Card detail. The body carries the account identifier and the full sixteen-character card number, and the read keys on the card number alone, as `app/cbl/COCRDSLC.cbl:L740` does |
-| `PUT /cards` | `app/cbl/COCRDUPC.cbl` | Update. A committed change writes one `CardUpdated` row to the outbox in the same local transaction |
+| `GET /cards/{cardNumber}` | `app/cbl/COCRDSLC.cbl` | Card detail, reproducing transaction `CCDL` at `app/csd/CARDDEMO.CSD:L347-L348`. The path carries the full sixteen-character card number, which is the key `app/cbl/COCRDSLC.cbl:L740` moves into the read. The read keys on that value alone: the account move above it at `:L739` is commented out, so no account accompanies the card and no relationship between the two is tested |
+| `PUT /cards/{cardNumber}` | `app/cbl/COCRDUPC.cbl` | Update, reproducing transaction `CCUP` at `app/csd/CARDDEMO.CSD:L367-L369`. The path names the row and the body carries the five values `CCUP-NEW-CARDDATA` holds at `app/cbl/COCRDUPC.cbl:L307-L313`. A committed change writes one `CardUpdated` row to the outbox in the same local transaction |
 
 Seven is a default and not a hard limit. A request that names no size receives seven rows, which is what `WS-MAX-SCREEN-LINES` gave the 3270 screen.
 
@@ -80,7 +80,27 @@ The `direction` parameter replaces a program function key. `app/cbl/COCRDLIC.cbl
 
 The hand-written interface description is [openapi.yaml](src/main/resources/openapi.yaml). No documentation generator produces it, so the file is edited by hand when a contract changes.
 
-The plan's file-by-file table sketched these three operations as `GET /cards/{cardNumber}` and `PUT /cards/{cardNumber}`. The delivered shapes are the three above, they match the [platform README](../../README.md) service table, and the change is recorded in the [Decision Log](../../docs/decision-log.md).
+The two routes that name one card carry the full card number in their path, which is what the plan's file-by-file table specifies and what each source transaction addresses. A path reaches an access log, a reverse proxy log, a distributed trace and a browser history, so [Suggested next tasks](../../docs/suggested-next-tasks.md) carries the deployment guidance that follows.
+
+A request body is read strictly. `config/RequestJsonStrictnessConfig` refuses a body naming a property this contract does not declare, and refuses a property declared as text that arrives as a JSON number or a JSON boolean. Both answer `400`. Left at its defaults the reader bound a misspelled property to nothing and then refused it as absent, and read `7` for an `expiryMonth` of `07`.
+
+### Two controls in front of every route
+
+`config/CrossSiteRequestFilter` guards state change. A `PUT /cards/{cardNumber}` must carry `X-CardDemo-Request` with any non-blank value, must not declare a `Sec-Fetch-Site` other than `same-origin` or `same-site`, and must not carry an `Origin` naming anything but this service. HTTP Basic is a credential a browser attaches by itself, so without this check a page on any other site could submit a form against a route above and the browser would authenticate it. An HTML form cannot set a request header at all, which is what makes one header the control. A refusal answers 403 with the same problem document every other refusal of this service answers and counts `carddemo.card.requests.cross.site.refused`. `GET`, `HEAD`, `OPTIONS` and `TRACE` pass untouched, so the container health check and every read need nothing.
+
+`config/RequestRateCeilingFilter` bounds volume. It runs one place ahead of the security chain, because a refusal has to cost less than the attempt it refuses and an attempt that reached the chain would already have paid for a bcrypt verification.
+
+| Ceiling | Default | Counted by |
+| :--- | ---: | :--- |
+| Failed authentications | 20 per 60s | Source address, and only when the request carried a credential and was answered 401 |
+| Requests | 600 per 60s | Source address |
+| Requests | 600 per 60s | The username the credential names, read as a counter key and never verified or logged |
+| State-changing requests | 120 per 60s | Source address |
+| Requests in flight | 64 | The whole instance |
+
+A refusal answers 429 with `Retry-After` and counts `carddemo.card.requests.throttled`, tagged with the stage that refused: `authentication`, `source`, `identity`, `write` or `concurrency`. The five ceilings read `API_RATE_WINDOW_SECONDS`, `API_RATE_REQUESTS_PER_WINDOW`, `API_RATE_WRITE_REQUESTS_PER_WINDOW`, `API_RATE_AUTHENTICATION_FAILURES_PER_WINDOW` and `API_RATE_CONCURRENT_REQUESTS` from [`.env.example`](../../.env.example). The management base path is exempt, because a throttled probe reads as a failed container.
+
+Both filters count in this process, so several replicas bound each replica rather than the service as a whole, and the source address is the one the container resolves rather than a forwarding header a caller could write. A deployment behind a proxy sets `SERVER_FORWARD_HEADERS_STRATEGY=framework` so the container resolves the client address and the client-facing host. Both residual limits are recorded in [suggested next tasks](../../docs/suggested-next-tasks.md), and the reasoning behind the two controls is in the [Decision Log](../../docs/decision-log.md).
 
 <br/>
 
@@ -95,15 +115,21 @@ One event, published on a mutation only. Nothing is consumed here.
 
 `CardUpdated` carries the shared envelope of `com.carddemo.events.EventEnvelope`: `eventId`, `eventType`, `schemaVersion`, `occurredAt`, and `aggregateId`. Four card fields follow: the masked card number, the account identifier, the expiration date, and the active status.
 
-The account identifier is always `aggregateId`, and always the Kafka message key, even for a card event. Kafka orders records within a partition and not across partitions, so keying on the account keeps every event touching one account on one partition and in publish order. The authorization service consumes `card.updated` under the group `authorization-card-updated` to keep its own cross-reference copy current. That consumer reaches nothing in this module, and this module reaches nothing in it.
+The account identifier is always `aggregateId`, and always the Kafka message key, even for a card event. Kafka orders records within a partition and not across partitions, so keying on the account keeps every event touching one account on one partition and in publish order. The authorization service consumes `card.updated` under the group `authorization-card-updated`. What that consumer can do with the event is narrower than it sounds, and the platform holds three differently-lived copies of the cross-reference, so each is stated on its own:
+
+- **The authorization copy is refreshed, but only in its observation column.** `CardUpdated` carries a *masked* card number, because no full number travels on a topic here, and `card_xref` is keyed by the full sixteen characters. The message therefore cannot name a key: it can neither create a row nor move a card's mapping to another account. `CardUpdatedConsumer` refreshes the observation timestamp on the matching rows of the account the event names and writes no mapping field.
+- **The account copy is seeded and then left alone.** `V4__card_cross_reference_replica.sql` loads 50 rows and no listener updates them. `AccountUpdateService` reads them for `customer_id`.
+- **This module's own copy is seeded and unused.** `V2__seed.sql` loads 50 rows into `card_xref` here, and `CardCrossReferenceRepository` has no caller in `src/main/java` — the only references are in `CardCrossReferenceRepositoryIT`. Nothing reads it at runtime, nothing writes it, no listener refreshes it and no meter compares it against anything. Read it as a seeded copy awaiting a reader rather than as a live replica; reconciling or removing it is carried in [suggested next tasks](../../docs/suggested-next-tasks.md).
+
+That consumer reaches nothing in this module, and this module reaches nothing in it.
 
 Money travels as a decimal string in every event payload on this platform, never as a JSON number. Most parsers read a JSON number into a double, which returns binary floating point to a system whose correctness rests on fixed-point arithmetic. `CardUpdated` carries no monetary field, so the rule constrains no field here today and governs any amount added later.
 
-The card row and the outbox row commit in **one local transaction**. `OutboxRelay` sweeps afterwards in a separate transaction, publishes, then marks the row sent. Request handling never publishes, so an unreachable broker delays an event and never fails an update. A publish precedes its mark, so delivery is at least once and every consumer absorbs a repeat.
+The card row and the outbox row commit in **one local transaction**. `OutboxRelay` sweeps afterwards in a separate transaction, publishes, then marks the row sent. Request handling never publishes, so an unreachable broker delays an event and never fails an update. A publish precedes its mark, so delivery is at least once and every consumer absorbs a repeat. `carddemo.card.update.applied` is taken after that transaction commits, through a transaction synchronization rather than at the foot of the update method, so a rewrite the database later rolls back never counts as an applied update.
 
 Two measured facts stand behind that outbox. All eight `DEFINE FILE` blocks of `app/csd/CARDDEMO.CSD` carry `RECOVERY(NONE)` and `JOURNAL(NO)`, eight occurrences of each, so the source had no transactional recovery to inherit. The source holds exactly one asynchronous handoff, `EXEC CICS WRITEQ TD QUEUE('JOBS')` at `app/cbl/CORPT00C.cbl:L517-L518`, where a write and a later pickup are two units of work, as they are here.
 
-The dead-letter topic is `carddemo.dead-letter`, shared across the platform. A row reaches it only after its delivery attempts are spent, and the envelope it carries names the row without repeating any card number or account identifier.
+The dead-letter topic is `carddemo.dead-letter`, shared across the platform. A row reaches it only after its delivery attempts are spent. What the envelope omits and what it keeps are both worth stating exactly. It **omits** the card number, the card verification value, the failed payload, the exception message and the stack trace. It **keeps** `aggregateId`, which is the account identifier and the message key, together with `sourceTopic`, `sourcePartition`, `sourceOffset`, `attemptCount` and the four `01 ABEND-DATA` components — every one of them required by `schemas/dead-letter-v1.json`. An operator therefore learns which account and which record failed without the diagnostic disclosing a card.
 
 <br/>
 
@@ -118,8 +144,10 @@ The private schema is `card_service`, inside this service's own database `cardde
 | Table | Derivation |
 | :--- | :--- |
 | `card` | `app/cpy/CVACT02Y.cpy` L5-L10: `CARD-NUM X(16)`, `CARD-ACCT-ID 9(11)`, `CARD-CVV-CD 9(03)`, `CARD-EMBOSSED-NAME X(50)`, `CARD-EXPIRAION-DATE X(10)`, `CARD-ACTIVE-STATUS X(01)`. The 59-byte `FILLER` at L11 is dropped. Primary key from `app/jcl/CARDFILE.jcl:L54`; non-unique secondary index on `account_id` from `:L85-L87` |
-| `card_xref` replica | `app/cpy/CVACT03Y.cpy` L5-L7: `XREF-CARD-NUM X(16)`, `XREF-CUST-ID 9(09)`, `XREF-ACCT-ID 9(11)`. The 14-byte `FILLER` at L8 is dropped. A **service-local replica kept current by events** |
+| `card_xref` copy | `app/cpy/CVACT03Y.cpy` L5-L7: `XREF-CARD-NUM X(16)`, `XREF-CUST-ID 9(09)`, `XREF-ACCT-ID 9(11)`. The 14-byte `FILLER` at L8 is dropped. **Seeded from the fixture and unreconciled**: this module registers no listener, and no delivered path reads or writes the table |
 | `outbox_event`, `processed_event` | New abstractions, with no source ancestor |
+
+`card.card_token` is additive and derived rather than stored from a source field. `CardEntity` applies `PanMasker.cardToken` in its constructor to every row this service writes, and `CardTokenReconciler` brings a row loaded by the seed onto the configured key at start-up. There is no setter for the column: a row this service builds is correct by construction, and a row it did not build is corrected by a statement.
 
 No table is shared. The authorization service owns its own `card_xref` and this module owns a second copy. The source sets the precedent: `app/jcl/CREASTMT.JCL` materialises a second, differently keyed copy of the transaction file rather than sharing an index.
 
@@ -177,15 +205,27 @@ One citation in the plan needs correcting, and Rule 1 treats a silent deviation 
 
 ## Pitfalls
 
-**The cross-reference fixture holds 36 bytes per record, not the declared 50.** `app/cpy/CVACT03Y.cpy` declares a 50-byte record, and `app/data/ASCII/cardxref.txt` measures exactly 36 characters on every one of its 50 lines. The 36 are 16 plus 9 plus 11, with the 14-byte `FILLER` absent, so record one reads `0500024453765740`, then `000000050`, then `00000000050`. A loader that assumes the declared width fails on this data. `app/data/ASCII/carddata.txt` behaves differently: 50 records at exactly 150 characters, matching its copybook.
+**The cross-reference fixture holds 36 bytes per record, not the declared 50.** `app/cpy/CVACT03Y.cpy` declares a 50-byte record, and `app/data/ASCII/cardxref.txt` measures exactly 36 characters on every one of its 50 lines. The 36 are 16 plus 9 plus 11, with the 14-byte `FILLER` absent, so record one reads sixteen characters of card number, then `000000050`, then `00000000050`. Read the card number with `cut -c1-16 app/data/ASCII/cardxref.txt | sed -n '1p'`; this guide carries none. A loader that assumes the declared width fails on this data. `app/data/ASCII/carddata.txt` behaves differently: 50 records at exactly 150 characters, matching its copybook.
 
-**Two fields with the same picture clause take two different column types.** Both `CARD-EXPIRAION-DATE` and the account expiry field are `PIC X(10)` in the source, and the card column is `DATE` because this module only decomposes or displays it. `app/cbl/COCRDUPC.cbl:L115-L121` slices the field into a four-character year, a two-character month, and a two-character day, and `:L1505-L1507` compares those same slices. The account column stays `VARCHAR(10)`, because the authorization service compares it as raw text against a timestamp prefix. The difference changes behaviour at the boundaries, and both column types are recorded in the [Traceability Matrix](../../docs/traceability-matrix.md).
+**Two fields with the same picture clause take two different column types.** Both `CARD-EXPIRAION-DATE` and the account expiry field are `PIC X(10)` in the source. The card column is `DATE` because this module only decomposes or displays it. `app/cbl/COCRDUPC.cbl:L115-L121` slices the field into a four-character year, a two-character month, and a two-character day, and `:L1505-L1507` compares those same slices. The account column stays `VARCHAR(10)`, because the authorization service compares it as raw text against a timestamp prefix. The difference changes behaviour at the boundaries, and both column types are recorded in the [Traceability Matrix](../../docs/traceability-matrix.md).
 
 **The Java language level fails silently.** Every module descriptor must declare `<java.version>25</java.version>`. The Spring Boot parent defaults the language level and the compiler release to 17. A module that omits the override compiles cleanly at release 17, with no warning and no failure. Check the class-file major version: it must read 69, not 61.
 
-**A contended update gives up rather than waiting, and the two 409 outcomes mean different things.** `carddemo.write.lock-wait-ms` bounds the locked read at three seconds by default, reading `WRITE_LOCK_WAIT_MS`. `CardRepository.applyLockWaitBound` applies it with `set_config('lock_timeout', ?, true)`, whose third argument makes it transaction-local, so it bounds this update and never a schema migration or the outbox relay sweep. Without the bound PostgreSQL waits for a held row indefinitely and `Could not lock record for update` was unreachable through contention, because the source sets that condition when a `READ UPDATE` returns anything other than a normal response and a wait that never ends returns nothing. `LOCK_NOT_ACQUIRED` therefore means the row never came back held; `UPDATE_FAILED_AFTER_LOCK` means it did and the rewrite that followed failed. One is the caller's circumstance and the other is this service's, which is why they carry different statuses. Ordinary concurrent writes settle in milliseconds and still answer `Record changed by some one else. Please review`. Worth knowing while testing: PostgreSQL requires the `UPDATE` privilege to issue `SELECT ... FOR NO KEY UPDATE`, so revoking `UPDATE` produces `LOCK_NOT_ACQUIRED` and not the rewrite failure.
+**A contended update gives up rather than waiting, and the two 409 outcomes mean different things.** `carddemo.write.lock-wait-ms` bounds the locked read at three seconds by default, reading `WRITE_LOCK_WAIT_MS`. `CardRepository.applyLockWaitBound` applies it with `set_config('lock_timeout', ?, true)`, whose third argument makes it transaction-local, so it bounds this update and never a schema migration or the outbox relay sweep. Without the bound PostgreSQL waits for a held row indefinitely and `Could not lock record for update` was unreachable through contention, because the source sets that condition when a `READ UPDATE` returns anything other than a normal response and a wait that never ends returns nothing. `LOCK_NOT_ACQUIRED` therefore means the row never came back held; `UPDATE_FAILED_AFTER_LOCK` means it did and the rewrite that followed failed. One is the caller's circumstance and the other is this service's, which is why they carry different statuses. Ordinary concurrent writes settle in milliseconds and still answer `Record changed by some one else. Please review`. Only two faults answer 409, because `applyUpdate` catches `PessimisticLockingFailureException` and `QueryTimeoutException` and nothing wider. Every other database fault is this deployment's circumstance rather than the caller's, so it reaches the generic handler and answers 500. Worth knowing while testing: PostgreSQL requires the `UPDATE` privilege to issue `SELECT ... FOR NO KEY UPDATE`, so revoking `UPDATE` answers 500, and a 409 there would have offered a retry for a grant no retry can repair.
+
+**One sweep of the outbox finishes inside the interval that started it.** `carddemo.outbox.relay.max-duration-ms` bounds a whole pass at five seconds by default, reading `OUTBOX_RELAY_MAX_DURATION_MS`, and the producer budget is set so one send cannot outlast it: `max.block.ms` of two seconds plus `delivery.timeout.ms` of two seconds is four, and `delivery.timeout.ms` is at least `linger.ms` of zero plus `request.timeout.ms` of two seconds. `EventPublisherPort.publish` hands back a `CompletionStage`, so the relay watches a send under its own remaining deadline and drops the watch when that deadline lapses. Dropping a watch does not abort a send already on the wire, which is why the producer's window is the shorter of the two: the broker gives up before the relay stops watching, so a lapsed pass leaves nothing in flight that could land after the row is swept again. `CardPropertiesTest.oneSendResolvesInsideTheSweepThatIssuedIt` fails the build if either inequality is broken.
+
+**Retention deletes in batches and drains them.** `RetentionSweep` removes at most 500 rows per statement, oldest first, and repeats until a batch comes back short or a thirty-second ceiling for that table passes. A backlog therefore clears rather than shrinking by one batch an hour. Each batch is its own transaction, and a failure on one table still sweeps the other.
 
 **The card verification value must never leave this service.** The column is persisted because the card record defines it. A test asserts its absence from every event, log line, and response. Do not add it to a response body because a caller asks for it.
+
+**The card-token key is required and this repository ships none.** `CARD_TOKEN_SECRET` is a `REPLACE` placeholder in `card-platform/.env.example` and in `deploy/k8s/31-secret.example.yaml`, and this service refuses to start while it is absent, blank, still a placeholder, shorter than 32 characters, or equal to either card-token key this repository has published. Generate one with `openssl rand -base64 48 | tr -d '/+='`. Only this service and the authorization service read it, so the Kubernetes Secret that carries it is pulled by those two Deployments alone.
+
+**The fifty seeded card tokens are a bootstrap, not a live identity.** `V2__seed.sql` carries a literal token on each of its fifty rows, derived under the build-scope key in `card-platform/pom.xml`, which is what lets a test compare a checked-in literal against the derivation. `CardTokenReconciler` re-derives every row under the configured key before this service accepts traffic, in pages of 500 and capped at 200,000 rows, and rewrites nothing on a later start. Raising `CARD_TOKEN_VERSION` and restarting applies a rollover the same way. A token something else already stored — a `statement_transaction` row, an `authorization_decision` row, a granted `SCOPE_CARD` authority — does not move with it.
+
+**A state-changing call needs one extra header.** A `curl` that worked before this control answers 403 until it adds `-H 'X-CardDemo-Request: 1'`. `config/CrossSiteRequestFilter` requires the header on every `POST`, `PUT`, `PATCH` and `DELETE`, because HTTP Basic is a credential a browser attaches without being asked and an HTML form cannot set a header. Reads need nothing. The name is configurable through `API_CROSS_SITE_HEADER` and it is not a secret: the value is never checked, only its presence.
+
+**A burst answers 429 rather than being served.** A load generator, a retry loop, or a test that hammers one address reaches `config/RequestRateCeilingFilter` and answers 429 with `Retry-After`. The blanket ceiling is 600 requests a minute per address and per identity, writes are 120, and 20 failed authentications from one address close the rest of that minute. Raise `API_RATE_*` for a load run rather than removing the filter, and read the `stage` tag on `carddemo.card.requests.throttled` to see which ceiling refused.
 
 <br/>
 
@@ -195,7 +235,7 @@ A competent engineer would reasonably add each item below. Each one must stay ou
 
 - **No Luhn check and no checksum.** `app/cbl/COCRDUPC.cbl:L194` declares the only card-number rule the source has, and `:L784` applies it as `IF CC-CARD-NUM IS NOT NUMERIC`. Sixteen numeric digits is the whole test.
 - **No card-status check exported into the authorization path.** `CARD-ACTIVE-STATUS` is stored and returned here, and the posting path never reads it. `app/jcl/POSTTRAN.jcl` STEP15 allocates TRANFILE, DALYTRAN, XREFFILE, DALYREJS, ACCTFILE, and TCATBALF across its 45 lines, and no CARDFILE. The authorization service must not consult the status.
-- **No version column.** The update path reproduces the field-level comparison at `app/cbl/COCRDUPC.cbl:L1498-L1521`, which folds the embossed name to upper case at L1499-L1501 and then compares five values, and answers `Record changed by some one else. Please review` when one differs. A version column detects a different set of conflicts.
+- **No version column.** The update path reproduces the field-level comparison at `app/cbl/COCRDUPC.cbl:L1498-L1521`. That paragraph folds the embossed name to upper case at L1499-L1501, then compares five values, and answers `Record changed by some one else. Please review` when one differs. A version column detects a different set of conflicts.
 - **No user interface.** The BMS screens have no target equivalent, and none is generated.
 - **No boilerplate generator, no object-mapping framework, and no documentation generator.** Java records and explicit mapper classes carry the field mapping, and `openapi.yaml` is written by hand.
 - **No cache and no key-value store.** This module holds its state in its own PostgreSQL schema.
@@ -243,41 +283,105 @@ Every version below is an exact release. Nothing here is a range or a minimum.
 | Topics published | `card.updated`, `carddemo.dead-letter` |
 | Listeners registered | None |
 
-Run it from `card-platform/`:
+Run it from `card-platform/`. The first block gives every credential a value, including
+`CARD_DB_PASSWORD` and `CARD_KAFKA_PASSWORD`. None has a default, and nothing below prompts.
 
 ```bash
 cp .env.example .env
-# Fill in CARD_DB_PASSWORD, CARD_KAFKA_PASSWORD and the three password hashes. None has a default.
+# Fill in all 19 REPLACE markers: fourteen passwords, one card-token key and four
+# {bcrypt} identity hashes. Compose reads every one with ${VAR:?} and refuses to start
+# while any is unset, so the three this service uses are not enough on their own.
+# Onboarding generates them all.
 mvn -B -pl services/card-service -am package
 docker compose up -d --build card-service
 curl -fsS http://localhost:9086/actuator/health
 ```
 
-The Dockerfile copies the packaged archive out of `target/`, so package the module before building its image.
+`--wait` returns only once every container is healthy, so the health request cannot race start-up. Each
+Dockerfile copies its packaged archive out of `target/`, and the `mvn package` above is what puts one
+there.
 
-One call per endpoint, against the host port. Each example uses the administrator identity, which passes every ownership check by role. An ordinary identity needs a matching `SCOPE_ACCOUNT_` or `SCOPE_CARD_` entry in `USER_SCOPES`. Only the bcrypt hash of each password lives in `.env`, so supply the password you chose when you generated that hash. The values below are seed record one of `app/data/ASCII/carddata.txt`.
+One call per endpoint, against the host port. Each example uses the administrator identity, which passes every ownership check by role. An ordinary identity needs a matching `SCOPE_ACCOUNT_` or `SCOPE_CARD_` entry in `USER_SCOPES`. Give `-u` the user name alone and `curl` prompts for the password, keeping it out of the process environment and the shell history; `.env` holds only the bcrypt hash, so supply the plaintext you chose when you generated that hash.
+
+> **Synthetic data only.** `CARD_NUMBER` below is read out of the public repository fixture
+> `app/data/ASCII/carddata.txt`, which holds made-up numbers and identifies no real card. This guide
+> carries no card number of its own, so nothing here can be replayed. Never substitute a real card
+> number into these commands: the demonstration binds its ports to the loopback address and carries
+> none of the controls real card data requires.
 
 ```bash
+# The card number is read from the fixture V2__seed.sql loads rather than written
+# here. No guide in this repository carries a card number a reader could replay:
+# the value below exists for the length of the shell that reads it. Run from the
+# repository root, where app/ is.
+CARD_NUMBER="$(cut -c1-16 app/data/ASCII/carddata.txt | sed -n '1p')"
+
 # List the first page for one account. Seven rows unless pageSize names another.
-curl -fsS -u "$ADMIN_USERNAME:the password you chose" \
+curl -fsS -u admin001 \
   "http://localhost:8086/cards?accountId=00000000050"
 
-# Read one card. The body carries the account identifier and the full card number.
+# Read one card. The path carries the full card number.
 curl -fsS -u "$ADMIN_USERNAME:the password you chose" \
-  -H 'Content-Type: application/json' \
-  -d '{"accountId":"00000000050","cardNumber":"0500024453765740"}' \
-  "http://localhost:8086/cards/detail"
+  "http://localhost:8086/cards/${CARD_NUMBER}"
 
-# Update one card. A committed change publishes one CardUpdated event.
+# Update one card. A committed change publishes one CardUpdated event. The header is what
+# config/CrossSiteRequestFilter requires of every state-changing call.
 curl -fsS -u "$ADMIN_USERNAME:the password you chose" -X PUT \
+  -H 'X-CardDemo-Request: card-cli' \
   -H 'Content-Type: application/json' \
-  -d '{"cardNumber":"0500024453765740","embossedName":"ANIYA VON","expiryYear":"2026","expiryMonth":"03","expiryDay":"09","activeStatus":"Y"}' \
-  "http://localhost:8086/cards"
+  -d '{"embossedName":"ANIYA VON","expiryYear":"2026","expiryMonth":"03","expiryDay":"09","activeStatus":"Y"}' \
+  "http://localhost:8086/cards/${CARD_NUMBER}"
 ```
+
+**The update example moves the expiry forward to 2031-03-09, and the choice needs explaining.** The
+service applies the source's rule and nothing more: `app/cbl/COCRDUPC.cbl:L1260`ff tests only that the
+year falls in `88 VALID-YEAR VALUES 1950 THRU 2099` and that the month and day name a real calendar
+date. **No future-date check exists, in the source or here**, so a past expiry is accepted and stored.
+That matters when reading the seed data: all 50 expiries in
+`src/main/resources/db/migration/V2__seed.sql` fall between 2023-01-06 and 2025-12-28 and are
+therefore already past, and the service still lists, returns and updates every one of those cards. A
+future date is used above only so the example does not read as though it were setting a card live
+today. Nothing in the authorization path consults a card expiry either — reason 0103 at
+`app/cbl/CBTRN02C.cbl:L414-L420` compares the **account** expiry, and the posting program never opens
+the card file at all.
 
 The Compose file sets these properties, and each one is overridable: `SPRING_DATASOURCE_URL`, `SPRING_DATASOURCE_USERNAME`, `SPRING_DATASOURCE_PASSWORD`, `SPRING_JPA_PROPERTIES_HIBERNATE_DEFAULT_SCHEMA`, `SPRING_FLYWAY_SCHEMAS`, and `SPRING_KAFKA_BOOTSTRAP_SERVERS`.
 
-Flyway owns schema creation. Hibernate runs with `ddl-auto: validate`, never `update` and never `create`, so the `DATE` expiry column and the non-unique index on `account_id` survive every restart. A mapping that disagrees with the migration stops start-up instead of quietly altering a table.
+Flyway owns schema creation and runs three migrations on every start, in this order:
+
+| Migration | What it does |
+| :--- | :--- |
+| `V1__schema.sql` | Creates `card`, `card_xref`, `outbox_event` and `processed_event`, with their indexes and named constraints. Keys come from `KEYS(16 0)` at `app/jcl/CARDFILE.jcl` and `app/jcl/XREFFILE.jcl` |
+| `V2__seed.sql` | Loads 50 cards from `app/data/ASCII/carddata.txt` and 50 cross-reference rows from `app/data/ASCII/cardxref.txt`, each card row carrying its `card_token` derived under the shipped demo key |
+| `V3__processed_event_topic_key.sql` | Makes the consumed topic part of the duplicate-delivery marker's identity, keeping the marker table's shape uniform with the other five services even though this module consumes nothing |
+| `V4__subject_request_posture.sql` | Corrects the `card_xref` comment, which described an erasure workflow this platform does not implement |
+
+There is no fourth, and this module ships no `db/demo` overlay — the demo expiry extension exists only for the account and authorization schemas, because reason 0103 reads an account expiry and nothing reads a card expiry.
+
+Hibernate runs with `ddl-auto: validate`, never `update` and never `create`, so the `DATE` expiry column and the non-unique index on `account_id` survive every restart. A mapping that disagrees with the migration stops start-up instead of quietly altering a table.
+
+<br/>
+
+## Metrics this service registers
+
+Eight meters, each registered by `config/ObservabilityConfig` and readable at `/actuator/metrics` and
+`/actuator/prometheus` on the management port. None carries a tag, so each is one series.
+
+| Meter | What it counts or times |
+| :--- | :--- |
+| `carddemo.card.update.applied` | Card updates that committed |
+| `carddemo.card.update.conflicts` | Card updates refused after a concurrent change |
+| `carddemo.card.update.latency` | Wall time of one card update, from request entry to commit |
+| `carddemo.card.events.published` | Card events published to the broker |
+| `carddemo.card.publish.latency` | Wall time of one publish attempt made by the outbox relay |
+| `carddemo.card.failures` | Card work that failed on infrastructure |
+| `carddemo.card.outbox.abandoned` | Outbox rows given up on after exhausting their attempts |
+| `carddemo.card.dead.letters.failed` | Terminal diagnostic attempts the broker refused |
+
+`update.applied` is taken after the transaction commits and `update.conflicts` on the refusal, so the
+two never both move for one request. A 409 answering a lock the database would not give moves
+`update.conflicts`; a fault that is neither a lock nor a timeout answers 500 and moves `failures`
+instead, which is what keeps a broken grant out of the conflict series.
 
 <br/>
 

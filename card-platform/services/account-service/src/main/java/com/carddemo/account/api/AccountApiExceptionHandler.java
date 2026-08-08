@@ -8,14 +8,21 @@ import java.util.TreeSet;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpStatusCode;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.ResponseEntity.BodyBuilder;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.validation.FieldError;
+import org.springframework.web.ErrorResponse;
+import org.springframework.web.HttpMediaTypeException;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.HandlerMethodValidationException;
+import org.springframework.web.servlet.NoHandlerFoundException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 /**
  * Turns a failure into a status code and a problem document.
@@ -157,6 +164,38 @@ public class AccountApiExceptionHandler {
         LOG.warn("Rejecting an account request: {}", failure.getMessage());
         return problem(HttpStatus.UNPROCESSABLE_CONTENT, ApiProblem.VALIDATION_FAILED,
                 ApiProblem.VALIDATION_FAILED_DETAIL, null);
+    }
+
+    /**
+     * Answers a call the protocol refused, at the status and with the headers the framework named.
+     *
+     * <p>Three failures reach here, each raised before a handler ran: a method the route does not
+     * serve, a media type this service cannot write, and a path that matches no route. Each carries
+     * its own status and its own headers, and {@code Allow} on a {@code 405} names the methods the
+     * route does serve. Answering these here keeps every failure of this service in one document
+     * shape; the container's own error dispatch writes a second shape whose {@code path} member
+     * copies the resolved request path into the body.
+     *
+     * <p>A {@code 406} carries no body: a caller that accepts no type this service writes cannot be
+     * sent a problem document either.
+     *
+     * @param failure the protocol refusal, read for its status and its headers
+     * @return the status the framework named, carrying that status's headers
+     */
+    @ExceptionHandler({HttpRequestMethodNotSupportedException.class, HttpMediaTypeException.class,
+            NoResourceFoundException.class, NoHandlerFoundException.class})
+    public ResponseEntity<ApiProblem> onUnsupportedRequest(ErrorResponse failure) {
+        HttpStatusCode status = failure.getStatusCode();
+        HttpStatus resolved = HttpStatus.valueOf(status.value());
+
+        LOG.info("Refusing an account call on the protocol, answering {}", status.value());
+        BodyBuilder response = ResponseEntity.status(status).headers(failure.getHeaders());
+        if (resolved == HttpStatus.NOT_ACCEPTABLE) {
+            return response.build();
+        }
+        return response.contentType(MediaType.APPLICATION_PROBLEM_JSON)
+                .body(ApiProblem.of(status.value(), resolved.getReasonPhrase(),
+                        ApiProblem.UNSUPPORTED_REQUEST_DETAIL));
     }
 
     /**

@@ -18,13 +18,18 @@ import org.apache.kafka.common.header.Header;
 import org.apache.kafka.common.record.TimestampType;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.listener.ContainerProperties;
 import org.springframework.kafka.listener.DefaultErrorHandler;
 import org.springframework.kafka.listener.MessageListenerContainer;
 import org.springframework.kafka.support.SendResult;
 import org.springframework.kafka.support.serializer.DeserializationException;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.node.ObjectNode;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -89,8 +94,23 @@ class KafkaConsumerConfigTest {
     /** A digit run no timestamp or offset can produce, standing in for a card number. */
     private static final String SENTINEL_PAN = "4747474747474747";
 
-    /** A second digit run, standing in for the three-digit verification value. */
+    /**
+     * A second digit run, standing in for the three-digit verification value.
+     *
+     * <p>Three digits is the width {@code app/cpy/CVACT02Y.cpy:L7} declares, and a run that short
+     * appears inside a generated identifier often enough to fail a run that has nothing wrong with
+     * it: the diagnostic carries an {@code eventId} of thirty-two hexadecimal characters and an
+     * {@code occurredAt}. The scan below therefore reads the diagnostic with those two members
+     * blanked, which is what {@link #copiedMembersOf(String)} returns, and the card service's
+     * {@code OutboxRelayDeadLetterTest} separates the same two for the same reason.</p>
+     */
     private static final String SENTINEL_CVV = "919";
+
+    /** Members of one envelope that a run generates, which no scan for a record value reads. */
+    private static final List<String> GENERATED_MEMBERS = List.of("eventId", "occurredAt");
+
+    /** Reader of the published envelope, used only to drop the generated members before a scan. */
+    private static final ObjectMapper MAPPER = new ObjectMapper();
 
     /** Publications the template captured, one per routed record. */
     private List<ProducerRecord<String, byte[]>> published;
@@ -184,7 +204,13 @@ class KafkaConsumerConfigTest {
         String value = new String(published.getFirst().value(), StandardCharsets.UTF_8);
         assertThat(value)
                 .as("the refused bytes reached a topic with a different set of readers")
-                .doesNotContain(SENTINEL_PAN)
+                .doesNotContain(SENTINEL_PAN);
+        assertThat(scannableMembersOf(value))
+                .as("the refused verification value reached a topic with a different set of readers")
+                .doesNotContain(SENTINEL_CVV);
+        assertThat(copiedMembersOf(value))
+                .as("the verification value reached a topic with a different set of readers: %s",
+                        value)
                 .doesNotContain(SENTINEL_CVV);
         assertThat(published.getFirst().key())
                 .as("a key is producer-controlled, so it can hold anything a payload can")
@@ -229,6 +255,24 @@ class KafkaConsumerConfigTest {
     }
 
     /**
+     * Renders one published envelope without the two members a run generates.
+     *
+     * <p>{@code eventId} is a random universally unique identifier and {@code occurredAt} is the
+     * moment the handler gave up, and neither is read from the refused record. A random identifier
+     * carries a three-character sentinel roughly once in a hundred renderings, and a scan that read
+     * one would report a leak no code performed.
+     *
+     * @param envelope the published envelope
+     * @return the same envelope without those two members
+     */
+    private static String scannableMembersOf(String envelope) {
+        ObjectNode scanned = (ObjectNode) MAPPER.readTree(envelope);
+        scanned.remove(GENERATED_MEMBERS);
+        assertThat(scanned.propertyNames()).isNotEmpty();
+        return scanned.toString();
+    }
+
+    /**
      * Hands one refused record and its failure to the handler, as the container does per delivery.
      *
      * <p>The handler rethrows while attempts remain and routes the record once they are spent, so a
@@ -269,6 +313,23 @@ class KafkaConsumerConfigTest {
     }
 
     /**
+     * Returns one diagnostic with the two members a run generates blanked.
+     *
+     * <p>{@code eventId} comes from a random identifier and {@code occurredAt} from a clock, so
+     * neither can carry anything a producer sent and neither is evidence that a refused value was
+     * copied. Everything else in the diagnostic either names the refused record's coordinates or is
+     * fixed text, so a sentinel found in what remains was copied from the payload.</p>
+     *
+     * @param diagnostic the published diagnostic, as text
+     * @return the same text with the generated identifier and timestamp blanked
+     */
+    private static String copiedMembersOf(String diagnostic) {
+        return diagnostic
+                .replaceAll("\"eventId\"\\s*:\\s*\"[^\"]*\"", "\"eventId\":\"\"")
+                .replaceAll("\"occurredAt\"\\s*:\\s*\"[^\"]*\"", "\"occurredAt\":\"\"");
+    }
+
+    /**
      * Reads one untagged counter back from the registry.
      *
      * @param name the meter name
@@ -276,5 +337,47 @@ class KafkaConsumerConfigTest {
      */
     private double counter(String name) {
         return registry.get(name).counter().count();
+    }
+
+    /**
+     * Asserts the acknowledgement mode this service runs under is an invariant rather than a comment.
+     *
+     * <p>{@code setCommitRecovered(true)} on the shipped handler commits the offset of a routed
+     * record, and the framework applies that setting under
+     * {@link ContainerProperties.AckMode#MANUAL_IMMEDIATE} alone. The mode reaches the container
+     * factory from {@code spring.kafka.listener.ack-mode}, so a deployment can move it; each case
+     * below proves a moved mode stops the context instead of quietly withdrawing the guarantee.
+     */
+    @Nested
+    @DisplayName("The acknowledgement mode")
+    class AcknowledgementMode {
+
+        @Test
+        @DisplayName("is accepted where it names the immediate manual mode")
+        void isAcceptedWhereItNamesTheImmediateManualMode() {
+            assertThat(KafkaConsumerConfig.requireImmediateManualAcknowledgement(
+                    ContainerProperties.AckMode.MANUAL_IMMEDIATE))
+                    .isEqualTo(ContainerProperties.AckMode.MANUAL_IMMEDIATE);
+        }
+
+        @ParameterizedTest
+        @EnumSource(value = ContainerProperties.AckMode.class,
+                names = "MANUAL_IMMEDIATE", mode = EnumSource.Mode.EXCLUDE)
+        @DisplayName("stops start-up on every other mode, naming the property that moved it")
+        void stopsStartUpOnEveryOtherMode(ContainerProperties.AckMode mode) {
+            assertThatThrownBy(
+                    () -> KafkaConsumerConfig.requireImmediateManualAcknowledgement(mode))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("spring.kafka.listener.ack-mode")
+                    .hasMessageContaining(mode.name());
+        }
+
+        @Test
+        @DisplayName("stops start-up where no value is bound, because the framework default is BATCH")
+        void stopsStartUpWhereNoValueIsBound() {
+            assertThatThrownBy(() -> KafkaConsumerConfig.requireImmediateManualAcknowledgement(null))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("spring.kafka.listener.ack-mode");
+        }
     }
 }

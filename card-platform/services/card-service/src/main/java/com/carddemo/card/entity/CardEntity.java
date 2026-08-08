@@ -11,7 +11,6 @@ import jakarta.persistence.Index;
 import jakarta.persistence.Table;
 import java.time.LocalDate;
 import java.util.Objects;
-import java.util.UUID;
 
 /**
  * One row of {@code card}, the table the card service owns.
@@ -244,11 +243,15 @@ public class CardEntity {
      * Card token, the platform identity of one card. No field of
      * {@code app/cpy/CVACT02Y.cpy} declares it.
      *
-     * <p>Column {@code card_token CHAR(64) NOT NULL}, unique and derived. The constructor
-     * derives it from the card number through {@link PanMasker#cardToken(String)}, and
-     * {@code V2__seed.sql} derives the same value in SQL. Both derivations are documented on the
-     * column in {@code V1__schema.sql}, and {@code CardRepositoryIT} compares them over every
-     * seeded row.
+     * <p>Column {@code card_token CHAR(64) NOT NULL}, unique and derived. The constructor derives it
+     * from the card number through {@link PanMasker#cardToken(String)}, which is the one derivation
+     * this platform holds. {@code V2__seed.sql} carries the result of that derivation as a
+     * checked-in literal on each of its fifty rows, under the build-scope key the build supplies,
+     * and {@code com.carddemo.card.domain.CardTokenReconciler} brings each of those rows onto the
+     * deployment's own key at start-up. There is deliberately no setter: a row this service builds
+     * is correct by construction, and a row it did not build is corrected by a statement.
+     * {@code V1__schema.sql} documents the column, and {@code CardRepositoryIT} compares the
+     * literals against this derivation over every seeded row.
      *
      * <p>This value, not the masked card number, identifies a card outside this service. The
      * masked form keeps four digits, so every card sharing those four digits masks to one value

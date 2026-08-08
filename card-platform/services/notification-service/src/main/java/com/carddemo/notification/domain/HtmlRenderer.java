@@ -63,7 +63,7 @@ public final class HtmlRenderer implements NotificationRenderer {
     private static final int L23_NAME_WIDTH = 50;
 
     /**
-     * Field width the risk score renders at. with no COBOL ancestor.
+     * Field width the risk score renders at. No COBOL ancestor.
      *
      * <p>{@code app/cbl/CBSTM03A.CBL} carries no fraud concept. The score renders at the width of
      * the nearest score field the source declares, {@code ST-FICO-SCORE PIC X(20)} at
@@ -72,7 +72,7 @@ public final class HtmlRenderer implements NotificationRenderer {
     private static final int FRAUD_RISK_SCORE_WIDTH = 20;
 
     /**
-     * Field width the triggered rule list renders at. with no COBOL ancestor.
+     * Field width the triggered rule list renders at. No COBOL ancestor.
      *
      * <p>The list renders at the width of {@code ST-TRANDT PIC X(49)} at
      * {@code app/cbl/CBSTM03A.CBL:L135}, the widest detail field the source declares. A long list
@@ -109,7 +109,7 @@ public final class HtmlRenderer implements NotificationRenderer {
     private static final String TWO_SPACES_IN_FULL = "  ";
 
     /**
-     * Separator placed between triggered rule identifiers. with no COBOL ancestor.
+     * Separator placed between triggered rule identifiers. No COBOL ancestor.
      */
     private static final String TRIGGERED_RULES_SEPARATOR = ", ";
 
@@ -356,7 +356,7 @@ public final class HtmlRenderer implements NotificationRenderer {
     private static final String FICO_SCORE_LABEL = "<p>FICO Score         : ";
 
     /**
-     * Centred heading of a fraud alert. with no COBOL ancestor.
+     * Centred heading of a fraud alert. No COBOL ancestor.
      *
      * <p>{@code app/cbl/CBSTM03A.CBL} carries no fraud concept. The heading takes the form of
      * {@code HTML-L31} at {@code app/cbl/CBSTM03A.CBL:L179-L180} and {@code HTML-L43} at
@@ -460,7 +460,7 @@ public final class HtmlRenderer implements NotificationRenderer {
     }
 
     /**
-     * Renders a fraud alert as markup. with no COBOL ancestor.
+     * Renders a fraud alert as markup. No COBOL ancestor.
      *
      * <p>{@code app/cbl/CBSTM03A.CBL} carries no fraud concept, so no source paragraph writes
      * these records. Every literal and both assembly methods come from the statement path. The

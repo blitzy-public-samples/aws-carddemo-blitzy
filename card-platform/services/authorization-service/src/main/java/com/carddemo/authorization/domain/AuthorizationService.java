@@ -2,6 +2,7 @@ package com.carddemo.authorization.domain;
 
 import com.carddemo.authorization.api.AuthorizationRequest;
 import com.carddemo.authorization.config.AuthorizationProperties;
+import com.carddemo.authorization.config.ObservabilityConfig;
 import com.carddemo.authorization.entity.CardCrossReferenceEntity;
 import com.carddemo.authorization.entity.AuthorizationDecisionEntity;
 import com.carddemo.authorization.entity.UnresolvedCardAttemptEntity;
@@ -54,42 +55,55 @@ import org.springframework.transaction.support.TransactionTemplate;
 @Service
 public class AuthorizationService {
 
-    /** Name of the counter carrying one authorization outcome. */
-    static final String DECISION_COUNTER = "carddemo.authorization.decisions";
+    /**
+     * Every meter name, tag key and stage value below is the one
+     * {@code config/ObservabilityConfig} registers.
+     *
+     * <p>The names are read from that class rather than written again here. A registered series reads
+     * zero from start-up and a recorded series appears on first use, so two spellings of one name
+     * produce two series and a dashboard reading the registered one shows a service that never
+     * records anything. Deriving them cannot drift.
+     */
+    static final String DECISION_COUNTER = ObservabilityConfig.DECISIONS_COUNTER;
 
     /** Name of the counter carrying events written to the outbox. */
-    static final String EVENT_COUNTER = "carddemo.authorization.events.written";
+    static final String EVENT_COUNTER = ObservabilityConfig.EVENTS_WRITTEN_COUNTER;
 
     /** Name of the timer over one decision. */
-    static final String DECISION_TIMER = "carddemo.authorization.decision.duration";
+    static final String DECISION_TIMER = ObservabilityConfig.DECISION_TIMER;
 
     /** Tag value marking the counted outcome of an approved call. */
-    static final String APPROVED_OUTCOME_TAG = "approved";
+    static final String APPROVED_OUTCOME_TAG = ObservabilityConfig.APPROVED_OUTCOME;
 
     /** Name of the counter carrying one infrastructure fault. No decline reaches it. */
-    static final String FAILURES_COUNTER = "carddemo.authorization.failures";
+    static final String FAILURES_COUNTER = ObservabilityConfig.FAILURES_COUNTER;
 
     /** The {@link #FAILURES_COUNTER} stage of a decision and event row that could not commit. */
-    static final String PERSIST_STAGE = "persist";
+    static final String PERSIST_STAGE = ObservabilityConfig.PERSIST_STAGE;
 
     /** The {@link #FAILURES_COUNTER} stage of a call refused because its replica rows were too old. */
-    static final String REPLICA_STAGE = "replica";
+    static final String REPLICA_STAGE = ObservabilityConfig.REPLICA_STAGE;
+
+    /**
+     * The {@link #FAILURES_COUNTER} stage of a caller refused the subject its request resolved to.
+     *
+     * <p>A refusal and not a fault, exactly as {@link #REPLICA_STAGE} is. What both stages have in
+     * common, and what separates them from a decline, is that the call produced no decision: a decline
+     * is a committed outcome and expected traffic per {@code app/cbl/CBTRN02C.cbl:L229-L230}.
+     */
+    static final String ENTITLEMENT_STAGE = ObservabilityConfig.ENTITLEMENT_STAGE;
 
     /** Name of the tag carrying the outcome of one counted call. */
-    private static final String OUTCOME_TAG_NAME = "outcome";
+    private static final String OUTCOME_TAG_NAME = ObservabilityConfig.OUTCOME_TAG;
 
     /** Name of the tag carrying the type of one written event. */
-    private static final String EVENT_TYPE_TAG_NAME = "eventType";
+    private static final String EVENT_TYPE_TAG_NAME = ObservabilityConfig.EVENT_TYPE_TAG;
 
     /** Name of the tag carrying the stage that raised one counted fault. */
-    private static final String STAGE_TAG_NAME = "stage";
+    private static final String STAGE_TAG_NAME = ObservabilityConfig.STAGE_TAG;
 
     /** Scale a scale-0 account identifier holds, from {@code XREF-ACCT-ID PIC 9(11)}. */
     private static final int ACCOUNT_IDENTIFIER_SCALE = 0;
-
-    /** Fixed refusal for a caller-supplied account cross-check that names another account. */
-    static final String ACCOUNT_CROSS_CHECK_MISMATCH_MESSAGE =
-            "accountId does not match the account resolved from cardNumber";
 
     /**
      * One authorization decision, as one value.
@@ -227,9 +241,6 @@ public class AuthorizationService {
     /** Records each decision and the identity that asked for it. */
     private final AuthorizationDecisionRepository authorizationDecisions;
 
-    /** Bounds how far from the service clock a capture moment may sit. */
-    private final OriginTimestampWindow originTimestampWindow;
-
     /** Counts outcomes and events, and times the decision. */
     private final MeterRegistry meters;
 
@@ -256,6 +267,16 @@ public class AuthorizationService {
     private final Clock clock = Clock.systemUTC();
 
     /**
+     * Bounds the lock wait of one decision and records the exposure an approval commits.
+     *
+     * <p>The reason both belong to one collaborator is that neither is useful without the other. A
+     * reservation written without the lock is a reservation two concurrent calls can each compute from
+     * the same figures, and a lock taken without a reservation serializes two calls that then approve
+     * the same exposure anyway.
+     */
+    private final CycleExposureReservation cycleExposure;
+
+    /**
      * Takes the whole rule chain and splits it into its two segments.
      *
      * <p>Each rule declares its own {@link DeclineRule.Segment}, and this constructor reads that
@@ -267,11 +288,12 @@ public class AuthorizationService {
      * @param outboxWriter           writer of the one event a resolved call produces
      * @param unresolvedCardAttempts store of attempts that name no account
      * @param authorizationDecisions store of each decision and the identity behind it
-     * @param originTimestampWindow  bound on the capture moment a caller may supply
      * @param meters                 registry the three measurements register with
      * @param transactionTemplate    opens the one transaction a decision commits in, so every meter
      *                               is touched after that transaction has committed
      * @param properties             the validated service configuration, including replica freshness
+     * @param cycleExposure          bound on the lock wait of one decision, and recorder of the
+     *                               exposure an approval commits
      * @throws NullPointerException     when an argument or a rule of {@code rules} is {@code null}
      * @throws IllegalArgumentException when a rule declares a segment this class cannot place
      */
@@ -279,9 +301,9 @@ public class AuthorizationService {
             CardCrossReferenceRepository cardCrossReferences,
             TransactionIdentifierSource transactionIdentifiers, OutboxWriter outboxWriter,
             UnresolvedCardAttemptRepository unresolvedCardAttempts,
-            AuthorizationDecisionRepository authorizationDecisions,
-            OriginTimestampWindow originTimestampWindow, MeterRegistry meters,
-            TransactionTemplate transactionTemplate, AuthorizationProperties properties) {
+            AuthorizationDecisionRepository authorizationDecisions, MeterRegistry meters,
+            TransactionTemplate transactionTemplate, AuthorizationProperties properties,
+            CycleExposureReservation cycleExposure) {
         Objects.requireNonNull(rules, "rules must be present");
 
         List<DeclineRule> stopping = new ArrayList<>();
@@ -314,11 +336,11 @@ public class AuthorizationService {
                 "unresolvedCardAttempts must be present");
         this.authorizationDecisions = Objects.requireNonNull(authorizationDecisions,
                 "authorizationDecisions must be present");
-        this.originTimestampWindow = Objects.requireNonNull(originTimestampWindow,
-                "originTimestampWindow must be present");
         this.meters = Objects.requireNonNull(meters, "meters must be present");
         this.transactionTemplate = Objects.requireNonNull(transactionTemplate,
                 "transactionTemplate must be present");
+        this.cycleExposure =
+                Objects.requireNonNull(cycleExposure, "cycleExposure must be present");
 
         AuthorizationProperties.Replica replica =
                 Objects.requireNonNull(
@@ -359,24 +381,34 @@ public class AuthorizationService {
      * committed outcome and expected traffic per {@code app/cbl/CBTRN02C.cbl:L229-L230}. The publish
      * stage is recorded by the relay, which is the only component that publishes.
      *
+     * <p>A caller refused the subject its request resolved to increments the entitlement stage, and
+     * that refusal is counted here for the same reason: nothing inside the transactional unit touches a
+     * meter.
+     *
      * @param request the validated request body
-     * @param actor   the request identity the decision row records, bounded by
-     *                {@link AuthenticatedActor#actorOf(java.security.Principal)}
+     * @param caller  the request identity and what it is entitled to reach, built by
+     *                {@link AuthenticatedActor#callerOf(java.security.Principal, java.util.Collection)}
      * @return the decision, naming the reject reason that stands on a decline
-     * @throws NullPointerException when {@code request} or {@code actor} is {@code null}, or when the
+     * @throws NullPointerException when {@code request} or {@code caller} is {@code null}, or when the
      *                             request carries no amount the tolerant numeric grammar reads
+     * @throws CallerNotEntitledException when the caller owns neither the resolved account nor the
+     *                             resolved card, in which case no decision was recorded and no event
+     *                             was written
      */
-    public Outcome authorize(AuthorizationRequest request, String actor) {
+    public Outcome authorize(AuthorizationRequest request, RequestCaller caller) {
         Objects.requireNonNull(request, "request must be present");
-        Objects.requireNonNull(actor, "actor must be present");
+        Objects.requireNonNull(caller, "caller must be present");
 
         Timer.Sample sample = Timer.start(meters);
         try {
-            Decision decision = transactionTemplate.execute(status -> decide(request, actor));
+            Decision decision = transactionTemplate.execute(status -> decide(request, caller));
             Objects.requireNonNull(decision, "the transaction must answer with one decision");
 
             decision.record(this);
             return decision.outcome();
+        } catch (CallerNotEntitledException notEntitled) {
+            countFailure(ENTITLEMENT_STAGE);
+            throw notEntitled;
         } catch (StaleReplicaException staleReplica) {
             countFailure(REPLICA_STAGE);
             throw staleReplica;
@@ -429,51 +461,67 @@ public class AuthorizationService {
      * {@link StaleReplicaException} rather than declining: see that class for why it cannot be a
      * fifth reject reason.
      *
-     * <p>Two checks run before the chain. The request must have named its subject, by card number or
-     * by account identifier, and an account-only request resolves its card through the cross-reference
-     * before the chain runs. The capture moment must sit inside the window
-     * {@link OriginTimestampWindow} holds, because reject reason {@code 0103} compares that value
-     * against the account expiry and a caller who backdates it authorizes against an expired account.
-     * Either refusal is an {@link IllegalArgumentException}, which {@code api/GlobalExceptionHandler}
-     * answers {@code 422} to, and neither consumes an identifier from the sequence.
+     * <p>One check runs before the chain. The request must have named its subject, by account
+     * identifier or by card number, and {@link #resolveCardNumber(AuthorizationRequest)} settles
+     * which card the decision runs against. No clock bound applies to the capture moment: the only
+     * test the source applies to it is the date validation of
+     * {@code app/cbl/COTRN02C.cbl:L389-L414} and the lexical comparison reject reason {@code 0103}
+     * performs at {@code app/cbl/CBTRN02C.cbl:L414-L420}.
      *
-     * <p>After the cross-reference rule resolves an account, a caller-supplied account identifier
-     * must agree with it. Where the caller supplied both identifiers the card remains the lookup key
-     * and the account is a cross-check only; where the caller supplied the account alone the two
-     * agree by construction, because the card was read from the row that account keys.
+     * <p>An account identifier the caller supplied takes precedence over a card number, and the card
+     * the cross-reference row carries replaces whatever card the caller named. That is the account
+     * branch of {@code VALIDATE-INPUT-KEY-FIELDS} at {@code app/cbl/COTRN02C.cbl:L196-L209}, which
+     * evaluates the account field first and moves {@code XREF-CARD-NUM} into the card field at
+     * {@code :L209}.
      *
      * <p>Two refusals precede any of that, and they are the two limbs
      * {@code app/cbl/COTRN02C.cbl:L195-L230} ends on.
      * {@link #resolveCardNumber(AuthorizationRequest)} raises
-     * {@value AuthorizationRequest#ACCOUNT_ID_NOT_FOUND_MESSAGE} where an account resolved no card,
-     * and this method raises {@value AuthorizationRequest#IDENTIFIER_REQUIRED_MESSAGE} where no
-     * usable identifier arrived at all. Neither allocates an identifier, writes an event or records
-     * a decision.
+     * {@link AccountNotFoundInCrossReferenceException} where an account resolved no card, and this
+     * method raises {@value AuthorizationRequest#IDENTIFIER_REQUIRED_MESSAGE} where no usable
+     * identifier arrived at all. Neither allocates an identifier, writes an event or records a
+     * decision.
+     *
+     * <p>Two more things happen here that the source has no counterpart for, and both are additions
+     * this service needs because it answers concurrent calls against an account another service owns.
+     * The lock wait of this transaction is bounded before any rule runs, so a decision contending for
+     * an account cannot hold its request open without limit. And after the chain has resolved the card
+     * and the account, the caller is refused unless it owns one of them.
+     *
+     * <p>The entitlement check sits exactly between the cross-check and the identifier allocation, and
+     * both neighbours matter. It runs after resolution because the account it compares against is the
+     * one the cross-reference row named and never the one the caller supplied. It runs before
+     * allocation because a refused call must consume no sequence value, record no decision, write no
+     * unresolved-card attempt and produce no event.
      *
      * @param request the validated request body
-     * @param actor   the request identity the decision row records
+     * @param caller  the request identity, whose name the decision row records and whose entitlements
+     *                decide whether the resolved subject may be authorized against
      * @return the decision and the measurements it earned
      */
-    private Decision decide(AuthorizationRequest request, String actor) {
+    private Decision decide(AuthorizationRequest request, RequestCaller caller) {
+        cycleExposure.boundLockWait();
+
         String cardNumber = resolveCardNumber(request);
         if (cardNumber == null) {
             throw new IllegalArgumentException(AuthorizationRequest.IDENTIFIER_REQUIRED_MESSAGE);
         }
-        originTimestampWindow.require(request.originTimestamp(), clock.instant());
-
         BigDecimal amount = Objects.requireNonNull(request.amountValue(),
                 "amount must read as a number under the tolerant currency grammar");
 
-        DeclineRule.Context context =
-                new DeclineRule.Context(cardNumber, amount, request.originTimestamp());
+        DeclineRule.Context context = new DeclineRule.Context(cardNumber, amount,
+                request.recordOriginTimestamp());
         DeclineReason standing = runChain(context);
         String resolvedAccountId = context.getResolvedAccountId();
 
-        requireAccountCrossCheck(request, resolvedAccountId);
+        CallerEntitlement.require(caller, resolvedAccountId, cardNumber);
+
+        String actor = caller.actor();
         String transactionId = allocateTransactionId();
 
         if (resolvedAccountId == null) {
-            return recordUnresolvedCard(transactionId, cardNumber, amount, standing, actor);
+            return recordUnresolvedCard(transactionId, cardNumber, amount, standing, actor,
+                    request.recordProcessingTimestamp());
         }
 
         requireFreshReplicaData(context, resolvedAccountId);
@@ -481,7 +529,8 @@ public class AuthorizationService {
         if (standing == null) {
             return approve(request, context, transactionId, resolvedAccountId, amount, actor);
         }
-        return decline(context, transactionId, resolvedAccountId, amount, standing, actor);
+        return decline(request, context, transactionId, resolvedAccountId, amount, standing, actor,
+                request.recordProcessingTimestamp());
     }
 
     /**
@@ -564,7 +613,18 @@ public class AuthorizationService {
     }
 
     /**
-     * Writes the approval event and answers with the approved outcome.
+     * Reserves the approved exposure, writes the approval event and answers with the approved outcome.
+     *
+     * <p>The reservation is what makes this approval visible to the next decision for the same
+     * account. {@code app/cbl/CBTRN02C.cbl} needs no equivalent because paragraph
+     * {@code 2700-UPDATE-ACCOUNT} at {@code app/cbl/CBTRN02C.cbl:L545-L560} rewrites the account record
+     * inside the same loop that validates the next record. Here the account service owns that rewrite
+     * and reports it back four asynchronous hops later, so without the reservation two calls arriving
+     * inside that window would both approve against the same exposure.
+     *
+     * <p>All three writes join the transaction {@link #authorize} opened, so an approval that reached a
+     * consumer without reserving its exposure cannot exist, and a reservation for an approval that
+     * rolled back cannot either.
      *
      * @param request           the validated request body
      * @param context           values this call resolved
@@ -581,12 +641,13 @@ public class AuthorizationService {
                 request.description(), amount, request.merchantId(), request.merchantName(),
                 request.merchantCity(), request.merchantZip(),
                 PanMasker.maskCardNumber(context.getCardNumber()),
-                PanMasker.cardToken(context.getCardNumber()), request.originTimestamp());
+                PanMasker.cardToken(context.getCardNumber()), request.recordOriginTimestamp());
 
+        cycleExposure.reserve(context.getAccountCreditSnapshot(), amount);
         outboxWriter.writeAuthorized(event);
         authorizationDecisions.save(AuthorizationDecisionEntity.approved(transactionId, actor,
                 resolvedAccountId, event.maskedCardNumber(), event.cardToken(), amount,
-                clock.instant(), event.eventId()));
+                clock.instant(), event.eventId(), request.recordProcessingTimestamp()));
         return new Decision(Outcome.approved(accountIdentifierOf(resolvedAccountId), transactionId),
                 APPROVED_OUTCOME_TAG, TransactionAuthorized.EVENT_TYPE);
     }
@@ -594,24 +655,46 @@ public class AuthorizationService {
     /**
      * Writes the decline event and answers with the declined outcome.
      *
+     * <p>The event is version {@value TransactionDeclined#TRANSACTION_DETAIL_SCHEMA_VERSION}, which
+     * {@code schemas/transaction-declined-v3.json} governs. That contract carries the nine
+     * descriptive values of the attempted transaction beside the reject reason, and it carries them
+     * because {@code 2500-WRITE-REJECT-REC} at {@code app/cbl/CBTRN02C.cbl:L446-L465} writes
+     * {@code REJECT-TRAN-DATA PIC X(350)} — the whole daily record — ahead of the reason code and its
+     * text. A consumer that owns the reject row cannot render those 350 bytes from a reason code
+     * alone, and inventing the values it was not given is the one outcome equivalence forbids.
+     *
+     * <p>Every one of the nine comes from the request this call refused, never from a lookup. The
+     * refused request is the only place they exist: the source reads them from the daily record it is
+     * rejecting, and no dataset holds a transaction that never posted.
+     *
+     * @param request           the validated request body this call refused
      * @param context           values this call resolved
      * @param transactionId     the identifier this decision applies to
      * @param resolvedAccountId the account the cross-reference named, eleven digits
      * @param amount            the amount at two digits after the decimal point
      * @param standing          the reject reason that stands
      * @param actor             the request identity the decision row records
+     * @param declaredProcessingTimestamp the processing moment the caller declared, at the record
+     *                                    width, which {@code app/cbl/COTRN02C.cbl:L470} moves into
+     *                                    {@code TRAN-PROC-TS}
      * @return the declined decision, holding the measurements it earned
      */
-    private Decision decline(DeclineRule.Context context, String transactionId,
-            String resolvedAccountId, BigDecimal amount, DeclineReason standing, String actor) {
-        TransactionDeclined event = TransactionDeclined.of(resolvedAccountId, transactionId,
-                standing, amount, PanMasker.maskCardNumber(context.getCardNumber()));
+    private Decision decline(AuthorizationRequest request, DeclineRule.Context context,
+            String transactionId, String resolvedAccountId, BigDecimal amount,
+            DeclineReason standing, String actor, String declaredProcessingTimestamp) {
+        TransactionDeclined event = TransactionDeclined.withTransactionDetail(resolvedAccountId,
+                transactionId, standing, request.transactionTypeCode(),
+                canonicalCategoryCode(request), request.source(), request.description(), amount,
+                request.merchantId(), request.merchantName(), request.merchantCity(),
+                request.merchantZip(), PanMasker.maskCardNumber(context.getCardNumber()),
+                request.recordOriginTimestamp());
 
         outboxWriter.writeDeclined(event);
         authorizationDecisions.save(AuthorizationDecisionEntity.declined(transactionId, actor,
                 resolvedAccountId, event.maskedCardNumber(),
                 PanMasker.cardToken(context.getCardNumber()), amount, standing.code(),
-                standing.description(), clock.instant(), event.eventId()));
+                standing.description(), clock.instant(), event.eventId(),
+                declaredProcessingTimestamp));
         return new Decision(
                 Outcome.declined(standing, accountIdentifierOf(resolvedAccountId), transactionId),
                 standing.code(), TransactionDeclined.EVENT_TYPE);
@@ -623,9 +706,10 @@ public class AuthorizationService {
      *
      * <p>The attempt lands in {@code unresolved_card_attempt}, which carries the reject reason
      * {@code app/cbl/CBTRN02C.cbl:L385-L387} assigns, and the event row lands in the outbox beside
-     * it. Both writes and the decision row join the transaction {@link #authorize(AuthorizationRequest)}
-     * opened, so one call still produces exactly one event and an attempt that reached no consumer
-     * cannot exist.
+     * it. Both writes and the decision row join the transaction
+     * {@link #authorize(AuthorizationRequest, String)} opened, so a committed attempt always has
+     * exactly one outbox row. Broker delivery is the relay's obligation, not this transaction's:
+     * {@code outbox/OutboxRelay} publishes the row and retries until it succeeds.
      *
      * <p>The event is version {@value TransactionDeclined#UNRESOLVED_ACCOUNT_SCHEMA_VERSION}, which
      * {@code schemas/transaction-declined-v2.json} governs. That contract declares no
@@ -640,10 +724,13 @@ public class AuthorizationService {
      * @param amount        the amount at two digits after the decimal point
      * @param standing      the reject reason a rule assigned, or {@code null} when no rule ran
      * @param actor         the request identity the decision row records
+     * @param declaredProcessingTimestamp the processing moment the caller declared, at the record
+     *                                    width, which {@code app/cbl/COTRN02C.cbl:L470} moves into
+     *                                    {@code TRAN-PROC-TS}
      * @return the declined decision, naming no account and holding the measurements it earned
      */
     private Decision recordUnresolvedCard(String transactionId, String cardNumber, BigDecimal amount,
-            DeclineReason standing, String actor) {
+            DeclineReason standing, String actor, String declaredProcessingTimestamp) {
         DeclineReason reason = standing == null ? DeclineReason.INVALID_CARD_NUMBER : standing;
         String maskedCardNumber = PanMasker.maskCardNumber(cardNumber);
 
@@ -654,7 +741,8 @@ public class AuthorizationService {
         outboxWriter.writeDeclined(event);
         authorizationDecisions.save(AuthorizationDecisionEntity.declined(transactionId, actor, null,
                 maskedCardNumber, PanMasker.tokenOf(cardNumber), amount, reason.code(),
-                reason.description(), clock.instant(), event.eventId()));
+                reason.description(), clock.instant(), event.eventId(),
+                declaredProcessingTimestamp));
         return new Decision(Outcome.declined(reason, null, transactionId), reason.code(),
                 TransactionDeclined.EVENT_TYPE);
     }
@@ -664,17 +752,19 @@ public class AuthorizationService {
      * holds.
      *
      * <p>{@code VALIDATE-INPUT-KEY-FIELDS} at {@code app/cbl/COTRN02C.cbl:L195-L230} accepts either
-     * identifier, and both of its branches are reproduced here. A request carrying a card number
-     * uses it, which is the card branch at {@code :L210-L223}. A request carrying an account
-     * identifier alone reads the cross-reference by that identifier and takes the card number the
-     * row carries, which is {@code PERFORM READ-CXACAIX-FILE} at {@code :L208} followed by
-     * {@code MOVE XREF-CARD-NUM TO CARDNINI} at {@code :L209}. The alternate index that read uses is
-     * defined at {@code app/jcl/XREFFILE.jcl:L72-L77} over the account identifier at offset 25, and
+     * identifier, and both of its branches are reproduced here in the order the
+     * {@code EVALUATE TRUE} evaluates them. The account branch at {@code :L196-L209} runs first: it
+     * reads the cross-reference by the account identifier and then moves {@code XREF-CARD-NUM} into
+     * the card field at {@code :L209}, so a card number the caller also sent is replaced by the card
+     * that row carries. The card branch at {@code :L210-L223} runs only where the account field
+     * arrived empty. The alternate index the account read uses is defined at
+     * {@code app/jcl/XREFFILE.jcl:L72-L77} over the account identifier at offset 25, and
      * {@link CardCrossReferenceRepository#findFirstByAccountIdOrderByCardNumberAsc} is the target
      * form of it: a keyed read of one row, taken in ascending card-number order so one account
      * always resolves the same card.
      *
      * <p>An account that holds no cross-reference row resolves no card, and this method raises
+     * {@link AccountNotFoundInCrossReferenceException} carrying
      * {@value AuthorizationRequest#ACCOUNT_ID_NOT_FOUND_MESSAGE} where the read missed rather than
      * returning {@code null}. That is the source shape: the {@code NOTFND} limb of that same read
      * answers with the identical text at {@code app/cbl/COTRN02C.cbl:L591-L592} and re-sends the
@@ -698,42 +788,22 @@ public class AuthorizationService {
      *
      * @param request the validated request body
      * @return the full sixteen-character Primary Account Number (PAN), or {@code null} when the
-     *         account the request named resolves no card
+     *         request named no usable identifier
+     * @throws AccountNotFoundInCrossReferenceException when the account the request named holds no
+     *                                                 cross-reference row
      */
     private String resolveCardNumber(AuthorizationRequest request) {
+        String accountId = request.canonicalAccountId();
+        if (accountId != null) {
+            return cardCrossReferences.findFirstByAccountIdOrderByCardNumberAsc(accountId)
+                    .map(CardCrossReferenceEntity::getCardNumber)
+                    .orElseThrow(AccountNotFoundInCrossReferenceException::new);
+        }
+
         if (request.isCardNumberSupplied()) {
             return request.canonicalCardNumber();
         }
-
-        String accountId = request.canonicalAccountId();
-        if (accountId == null) {
-            return null;
-        }
-        return cardCrossReferences.findFirstByAccountIdOrderByCardNumberAsc(accountId)
-                .map(CardCrossReferenceEntity::getCardNumber)
-                .orElseThrow(() -> new IllegalArgumentException(
-                        AuthorizationRequest.ACCOUNT_ID_NOT_FOUND_MESSAGE));
-    }
-
-    /**
-     * Refuses an optional account cross-check that differs from the account the card resolved.
-     *
-     * <p>The comparison runs only after a cross-reference row has supplied an authoritative
-     * account. A missing-card decline has no account to compare and publishes its transaction-keyed
-     * version 2 event without attributing the caller's untrusted value to any account.
-     *
-     * @param request           the validated request body
-     * @param resolvedAccountId the account the card cross-reference supplied, or {@code null}
-     * @throws IllegalArgumentException when a supplied account identifier differs from the
-     *                                  resolved one
-     */
-    private static void requireAccountCrossCheck(AuthorizationRequest request,
-            String resolvedAccountId) {
-        String suppliedAccountId = request.canonicalAccountId();
-        if (resolvedAccountId != null && suppliedAccountId != null
-                && !resolvedAccountId.equals(suppliedAccountId)) {
-            throw new IllegalArgumentException(ACCOUNT_CROSS_CHECK_MISMATCH_MESSAGE);
-        }
+        return null;
     }
 
     /**
@@ -882,6 +952,27 @@ public class AuthorizationService {
         public StaleReplicaException(String accountId, Duration maxAge) {
             super("Replica data for account " + accountId + " was not observed within " + maxAge
                     + ", so this service cannot authorize against it");
+        }
+    }
+
+    /**
+     * Raised when the account a request named holds no cross-reference row.
+     *
+     * <p>{@code READ-CXACAIX-FILE} answers its {@code NOTFND} limb with
+     * {@value AuthorizationRequest#ACCOUNT_ID_NOT_FOUND_MESSAGE} at
+     * {@code app/cbl/COTRN02C.cbl:L591-L592} and re-sends the screen, so the source tells the caller
+     * which of its two values could not be resolved. This type carries that text, and it carries no
+     * value read from the request, so {@code api/GlobalExceptionHandler} can publish the message as
+     * it stands. Every other pre-decision refusal answers one fixed text, and none of them carries a
+     * value read from the request either.
+     */
+    public static class AccountNotFoundInCrossReferenceException extends IllegalArgumentException {
+
+        private static final long serialVersionUID = 1L;
+
+        /** Carries the verbatim source text and no value read from the request. */
+        public AccountNotFoundInCrossReferenceException() {
+            super(AuthorizationRequest.ACCOUNT_ID_NOT_FOUND_MESSAGE);
         }
     }
 }

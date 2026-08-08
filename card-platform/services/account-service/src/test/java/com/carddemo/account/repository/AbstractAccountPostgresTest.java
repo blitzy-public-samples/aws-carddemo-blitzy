@@ -1,5 +1,6 @@
 package com.carddemo.account.repository;
 
+import com.carddemo.account.TestIdentityPasswords;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -24,11 +25,12 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
  * <p><b>Four variables the shipped configuration leaves undefined.</b>
  * {@code application.yml} reads four variables and gives none a default:
  * {@code KAFKA_SASL_PASSWORD}, {@code ADMIN_PASSWORD_HASH}, {@code USER_PASSWORD_HASH} and
- * {@code MONITORING_PASSWORD_HASH}. The guard at {@code config/SecurityConfig.java:L589-L599}
- * refuses a blank broker login entry, and {@code config/SecurityConfig.java:L648-L652} refuses an
- * identity password carrying no encoding prefix. The class annotation supplies one fake value per
- * variable and restates no setting from {@code application.yml}. Each value is inert: the broker
- * password reaches no broker, and a {@code noop} identity password authenticates nobody.</p>
+ * {@code MONITORING_PASSWORD_HASH}. {@code SecurityConfig.requireUsableCredentials} refuses a
+ * blank broker login entry, and {@code SecurityConfig.requireApprovedPasswordEncoding} refuses an
+ * identity password whose encoding this platform does not approve. The class annotation supplies
+ * one fake value per variable and restates no setting from {@code application.yml}. Each value is
+ * inert: the broker password reaches no broker, and the identity hashes in
+ * {@code TestIdentityPasswords} encode passwords that authenticate nothing outside this build.</p>
  *
  * <p><b>What a subclass author does.</b>
  * A subclass that inserts a row annotates itself {@code @Transactional}, and Spring then rolls
@@ -81,9 +83,9 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
                 "spring.kafka.listener.auto-startup=false",
                 "spring.kafka.bootstrap-servers=" + AbstractAccountPostgresTest.UNREACHABLE_BROKER,
                 "KAFKA_SASL_PASSWORD=not-a-real-broker-password",
-                "ADMIN_PASSWORD_HASH={noop}not-a-real-admin-password",
-                "USER_PASSWORD_HASH={noop}not-a-real-user-password",
-                "MONITORING_PASSWORD_HASH={noop}not-a-real-monitoring-password"
+                "ADMIN_PASSWORD_HASH=" + TestIdentityPasswords.ADMIN_PASSWORD_HASH,
+                "USER_PASSWORD_HASH=" + TestIdentityPasswords.USER_PASSWORD_HASH,
+                "MONITORING_PASSWORD_HASH=" + TestIdentityPasswords.MONITORING_PASSWORD_HASH
         })
 public abstract class AbstractAccountPostgresTest {
 

@@ -3,11 +3,13 @@ package com.carddemo.fraud.outbox;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assertions.assertAll;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -50,6 +52,9 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Pattern;
 import org.apache.kafka.clients.producer.ProducerRecord;
@@ -270,6 +275,8 @@ public class OutboxRelayTest {
                 .thenAnswer(call -> call.getArgument(0));
         when(outboxEvents.findByRelayStateAndClaimedAtBeforeOrderByClaimedAtAsc(
                 any(), any(), any())).thenReturn(List.of());
+        when(outboxEvents.findByDeadLetterStateOrderByLastAttemptAtAsc(any(), any()))
+                .thenReturn(List.of());
         when(outboxEvents.claimDueRows(any(), any())).thenReturn(List.of());
         when(transactionTemplate.execute(any())).thenAnswer(call -> {
             TransactionCallback<?> callback = call.getArgument(0);
@@ -370,8 +377,8 @@ public class OutboxRelayTest {
                 new FraudProperties.Outbox(new FraudProperties.Outbox.Relay(
                         FIXED_DELAY_MS, batchSize, RELAY_INSTANCE,
                         Duration.ofSeconds(30L), 5000L), 168L),
-                new FraudProperties.ProcessedEvent(168L),
-                new FraudProperties.Retention(3_600_000L),
+                new FraudProperties.ProcessedEvent(720L, 168L),
+                new FraudProperties.Retention(3_600_000L, 90, 7),
                 new FraudProperties.Fraud(new FraudProperties.Fraud.Risk(
                         50, 60, 5, new BigDecimal("500.00"))));
     }
@@ -639,8 +646,8 @@ public class OutboxRelayTest {
     class StoreContract {
 
         @Test
-        @DisplayName("the store declares five methods and no name carries a digit")
-        void storeDeclaresFiveMethodsAndNoNameCarriesADigit() {
+        @DisplayName("the store declares six methods and no name carries a digit")
+        void storeDeclaresSixMethodsAndNoNameCarriesADigit() {
             List<String> names = Arrays.stream(OutboxEventRepository.class.getDeclaredMethods())
                     .map(Method::getName)
                     .sorted()
@@ -650,6 +657,7 @@ public class OutboxRelayTest {
                     "claimDueRows",
                     "deletePublishedBefore",
                     "existsByRelayState",
+                    "findByDeadLetterStateOrderByLastAttemptAtAsc",
                     "findByPublishedFalseOrderByCreatedAtAsc",
                     "findByRelayStateAndClaimedAtBeforeOrderByClaimedAtAsc");
             assertThat(names).allSatisfy(name -> assertThat(name)
@@ -725,6 +733,8 @@ public class OutboxRelayTest {
 
             relay().publishPendingEvents();
 
+            verify(outboxEvents).findByDeadLetterStateOrderByLastAttemptAtAsc(
+                    eq(OutboxEventEntity.DeadLetterState.REQUIRED), any());
             verify(outboxEvents).findByRelayStateAndClaimedAtBeforeOrderByClaimedAtAsc(
                     eq(OutboxEventEntity.RelayState.CLAIMED), any(), any());
             verify(outboxEvents).claimDueRows(any(), any());
@@ -1342,12 +1352,231 @@ public class OutboxRelayTest {
     }
 
     @Nested
+    @DisplayName("The row that runs out of attempts")
+    class AbandonedRow {
+
+        /**
+         * Fails the assessed topic on every attempt and lets the dead-letter topic answer.
+         *
+         * <p>The relay abandons a row only when its recorded failure reaches the attempt ceiling, so
+         * a test that needs an abandonment has to drive the row to the ceiling rather than assert on
+         * one refused send.
+         */
+        private void everyAssessedSendFails() {
+            sendFails(ASSESSED_TOPIC, new TimeoutException("the broker did not answer"));
+            deadLetterSendSucceeds();
+        }
+
+        /**
+         * Drives one row through the ceiling by giving it a tick per attempt.
+         *
+         * <p>The claim query is stubbed unconditionally rather than through the backoff-aware
+         * stand-in, because the backoff is not what is under test here: a tick that honoured it
+         * would place the next attempt in the future and one tick would produce one attempt for
+         * ever. The relay claims each row itself, so nothing here touches the row's state.
+         *
+         * <p>The loop runs exactly {@link OutboxEventEntity#MAX_DELIVERY_ATTEMPTS} times, which is
+         * the attempt that abandons the row. An eleventh tick would try to claim a terminal row and
+         * the entity refuses that, which is the guard rather than a limitation of this helper.
+         *
+         * @param row the row every tick refuses to publish
+         */
+        private void spendEveryAttempt(OutboxEventEntity row) {
+            dueRows(row);
+            OutboxRelay relay = relay();
+            for (int attempt = 0; attempt < OutboxEventEntity.MAX_DELIVERY_ATTEMPTS; attempt++) {
+                relay.publishPendingEvents();
+            }
+        }
+
+        @Test
+        @DisplayName("the abandonment and the diagnostic obligation are one write")
+        void theAbandonmentAndTheObligationAreOneWrite() {
+            OutboxEventEntity row = clearedRow();
+            sendFails(ASSESSED_TOPIC, new TimeoutException("the broker did not answer"));
+            sendFails(DEAD_LETTER_TOPIC, new TimeoutException("the broker did not answer"));
+
+            spendEveryAttempt(row);
+
+            assertThat(row.getRelayState())
+                    .as("the row must be abandoned once its attempts are spent")
+                    .isEqualTo(OutboxEventEntity.RelayState.ABANDONED);
+            assertThat(row.owesDeadLetter())
+                    .as("an abandoned row nobody has named owes a diagnostic")
+                    .isTrue();
+            assertThat(row.getDeadLetterState())
+                    .isEqualTo(OutboxEventEntity.DeadLetterState.REQUIRED);
+            assertThat(row.getDeadLetterPublishedAt())
+                    .as("no acknowledgement has arrived, so no moment is recorded")
+                    .isNull();
+        }
+
+        @Test
+        @DisplayName("the abandoning tick names the row and clears the obligation")
+        void theAbandoningTickNamesTheRowAndClearsTheObligation() {
+            OutboxEventEntity row = clearedRow();
+            everyAssessedSendFails();
+
+            spendEveryAttempt(row);
+
+            assertThat(row.getRelayState())
+                    .isEqualTo(OutboxEventEntity.RelayState.ABANDONED);
+            assertThat(row.owesDeadLetter())
+                    .as("the broker acknowledged the diagnostic, so nothing is owed")
+                    .isFalse();
+            assertThat(row.getDeadLetterState())
+                    .isEqualTo(OutboxEventEntity.DeadLetterState.PUBLISHED);
+            assertThat(row.getDeadLetterPublishedAt()).isNotNull();
+            verify(kafkaTemplate, times(1)).send(eq(DEAD_LETTER_TOPIC), anyString(), any());
+        }
+
+        @Test
+        @DisplayName("an abandoned row is never marked published, because nothing was delivered")
+        void anAbandonedRowIsNeverMarkedPublished() {
+            OutboxEventEntity row = clearedRow();
+            everyAssessedSendFails();
+
+            spendEveryAttempt(row);
+
+            assertThat(row.isPublished())
+                    .as("the assessment reached no consumer, so the row is not published")
+                    .isFalse();
+            assertThat(row.getPublishedAt()).isNull();
+        }
+
+        @Test
+        @DisplayName("an obligation an earlier pass left owing is offered again at the next head")
+        void anObligationLeftOwingIsOfferedAgainAtTheNextHead() {
+            OutboxEventEntity row = clearedRow();
+            sendFails(ASSESSED_TOPIC, new TimeoutException("the broker did not answer"));
+            sendFails(DEAD_LETTER_TOPIC, new TimeoutException("the broker did not answer"));
+            spendEveryAttempt(row);
+            assertThat(row.owesDeadLetter()).isTrue();
+
+            // The broker recovers, and the row is no longer claimable: it is ABANDONED, so only the
+            // owed-diagnostic read at the head of a pass can reach it.
+            // doReturn, not when: a when(...) call invokes the method on the mock, and the answer
+            // already in place for the claim query reads its arguments, which are null under a
+            // matcher.
+            doReturn(List.of()).when(outboxEvents).claimDueRows(any(), any());
+            doReturn(List.of(row)).when(outboxEvents)
+                    .findByDeadLetterStateOrderByLastAttemptAtAsc(
+                            eq(OutboxEventEntity.DeadLetterState.REQUIRED), any());
+            deadLetterSendSucceeds();
+
+            relay().publishPendingEvents();
+
+            assertThat(row.owesDeadLetter())
+                    .as("the later pass named the row, so the obligation is discharged")
+                    .isFalse();
+            assertThat(row.getDeadLetterState())
+                    .isEqualTo(OutboxEventEntity.DeadLetterState.PUBLISHED);
+            assertThat(row.getDeadLetterPublishedAt()).isNotNull();
+        }
+
+        @Test
+        @DisplayName("only an acknowledgement clears the obligation, never the attempt")
+        void onlyAnAcknowledgementClearsTheObligation() {
+            OutboxEventEntity row = clearedRow();
+            sendFails(ASSESSED_TOPIC, new TimeoutException("the broker did not answer"));
+            sendFails(DEAD_LETTER_TOPIC, new TimeoutException("the broker did not answer"));
+            spendEveryAttempt(row);
+            doReturn(List.of()).when(outboxEvents).claimDueRows(any(), any());
+            doReturn(List.of(row)).when(outboxEvents)
+                    .findByDeadLetterStateOrderByLastAttemptAtAsc(
+                            eq(OutboxEventEntity.DeadLetterState.REQUIRED), any());
+
+            relay().publishPendingEvents();
+            relay().publishPendingEvents();
+
+            assertThat(row.owesDeadLetter())
+                    .as("two refused offers must leave the obligation standing")
+                    .isTrue();
+            assertThat(row.getDeadLetterState())
+                    .isEqualTo(OutboxEventEntity.DeadLetterState.REQUIRED);
+        }
+
+        @Test
+        @DisplayName("the owed read is ordered by the attempt that has gone unnamed longest")
+        void theOwedReadIsOrderedByTheLongestUnnamedAttempt() {
+            relay().publishPendingEvents();
+
+            ArgumentCaptor<Limit> bound = ArgumentCaptor.forClass(Limit.class);
+            verify(outboxEvents).findByDeadLetterStateOrderByLastAttemptAtAsc(
+                    eq(OutboxEventEntity.DeadLetterState.REQUIRED), bound.capture());
+            assertThat(bound.getValue().max())
+                    .as("the owed read is bounded by the same batch size as the claim")
+                    .isEqualTo(DEFAULT_BATCH_SIZE);
+        }
+
+        @Test
+        @DisplayName("an abandonment counts one row, not one attempt per row")
+        void anAbandonmentCountsOneRowNotOneAttemptPerRow() {
+            OutboxEventEntity row = clearedRow();
+            everyAssessedSendFails();
+
+            spendEveryAttempt(row);
+
+            verify(meters, times(1)).recordOutboxAbandoned();
+            verify(meters, times(OutboxEventEntity.MAX_DELIVERY_ATTEMPTS))
+                    .recordPublishFailure();
+            verify(meters, times(1)).recordDeadLetterPublished();
+            verify(meters, never()).recordDeadLetterFailure();
+        }
+
+        @Test
+        @DisplayName("an unnamed abandonment counts the refusal and still counts the row")
+        void anUnnamedAbandonmentCountsTheRefusalAndStillCountsTheRow() {
+            OutboxEventEntity row = clearedRow();
+            sendFails(ASSESSED_TOPIC, new TimeoutException("the broker did not answer"));
+            sendFails(DEAD_LETTER_TOPIC, new TimeoutException("the broker did not answer"));
+
+            spendEveryAttempt(row);
+
+            verify(meters, times(1)).recordOutboxAbandoned();
+            verify(meters, times(1)).recordDeadLetterFailure();
+            verify(meters, never()).recordDeadLetterPublished();
+        }
+
+        @Test
+        @DisplayName("the diagnostic keys on the account identifier and quotes no payload value")
+        void theDiagnosticKeysOnTheAccountIdentifierAndQuotesNoPayloadValue() {
+            OutboxEventEntity row = clearedRow();
+            everyAssessedSendFails();
+
+            spendEveryAttempt(row);
+
+            ArgumentCaptor<String> keys = ArgumentCaptor.forClass(String.class);
+            ArgumentCaptor<Object> values = ArgumentCaptor.forClass(Object.class);
+            verify(kafkaTemplate).send(eq(DEAD_LETTER_TOPIC), keys.capture(), values.capture());
+            assertThat(keys.getValue()).isEqualTo(ACCOUNT_IDENTIFIER);
+            assertThat(String.valueOf(values.getValue()))
+                    .as("a diagnostic must carry no property of the payload it names")
+                    .doesNotContain(TRANSACTION_IDENTIFIER);
+        }
+
+        @Test
+        @DisplayName("a healthy relay pays for one indexed read of no owed rows")
+        void aHealthyRelayPaysForOneIndexedReadOfNoOwedRows() {
+            dueRows(flaggedRow());
+            everySendSucceeds();
+
+            relay().publishPendingEvents();
+
+            verify(outboxEvents, times(1)).findByDeadLetterStateOrderByLastAttemptAtAsc(
+                    eq(OutboxEventEntity.DeadLetterState.REQUIRED), any());
+            verify(kafkaTemplate, never()).send(eq(DEAD_LETTER_TOPIC), anyString(), any());
+            verify(meters, never()).recordOutboxAbandoned();
+        }
+    }
+
+    @Nested
     @DisplayName("Row mutator surface")
     class RowMutatorSurface {
 
         @Test
-        @DisplayName("the row declares no setter and three named mutators")
-        void rowDeclaresNoSetterAndThreeNamedMutators() {
+        @DisplayName("the row declares no setter and four named mutators")
+        void rowDeclaresNoSetterAndFourNamedMutators() {
             List<String> setters = Arrays.stream(OutboxEventEntity.class.getDeclaredMethods())
                     .map(Method::getName)
                     .filter(name -> name.startsWith("set"))
@@ -1361,7 +1590,8 @@ public class OutboxRelayTest {
                     .toList();
 
             assertThat(setters).as("setters on the row").isEmpty();
-            assertThat(mutators).containsExactly("claim", "markPublished", "recordFailure");
+            assertThat(mutators).containsExactly(
+                    "claim", "markDeadLetterPublished", "markPublished", "recordFailure");
         }
     }
 
@@ -1413,16 +1643,50 @@ public class OutboxRelayTest {
     }
 
     /**
-     * Holds the finding F-3 outcome: a send the relay issued is waited out inside the pass that
-     * issued it, rather than against whatever remains of that pass.
+     * Holds the pass budget to its stated meaning: {@code carddemo.outbox.relay.max-duration-ms} bounds
+     * the whole tick, so a send is waited out against what is left of that budget and not against the
+     * budget again.
+     *
+     * <p>Waiting the full value per send made the setting a per-send ceiling wearing the name of a
+     * wall-time limit: a send admitted a millisecond before the deadline kept the scheduled thread for
+     * another whole window, and a tick could run for close to twice its stated bound. The account
+     * service's relay already waited only the remainder, so the two now read one setting the same way.
+     *
+     * <p>The cost is the one this platform already carries everywhere. A send abandoned with the budget
+     * spent may still reach the broker, and the next tick offers the row again, so one event can be
+     * published twice — which is what every consumer's processed-event marker exists to absorb, and
+     * what {@code card-platform/docs/event-flow.md} states about publication being at least once.
      */
     @Nested
     @DisplayName("Pass budget")
     class PassBudget {
 
+        /**
+         * Asserts every send in one pass is granted the whole pass budget, not the remainder of it.
+         *
+         * <p>{@code sendWithinDeadline} reads the pass deadline before it issues a send and then waits
+         * {@code maxDurationNanos}, the whole configured budget. Waiting only what remained of the
+         * pass would abandon a record the producer still holds, and a later tick would publish
+         * another copy of the same event, which is how one event reached the topic twice.
+         *
+         * <p>The granted timeout is read rather than inferred from elapsed time. Each send hands back
+         * an already-completed future that records the timeout it was asked to wait for, so the two
+         * recorded values are the two the relay actually granted and the pass finishes in no
+         * measurable time.
+         *
+         * <p>This replaces a first send that slept 400 milliseconds against a 500 millisecond budget,
+         * with the second send's success taken as the evidence. That was flaky in one direction and
+         * weak in the other: a scheduling delay above roughly 100 milliseconds exhausted the budget
+         * before the second send was issued and failed the test on correct code, while a build that
+         * happened to run fast passed whatever timeout the second send was granted.
+         *
+         * <p>Exact equality with the full budget is what discriminates the two implementations. A
+         * remainder is {@code deadline - System.nanoTime()}, which is strictly smaller than the full
+         * budget by however long the claim and the first send took, so it can never equal it.
+         */
         @Test
-        @DisplayName("a send is granted the whole pass budget rather than what is left of it")
-        void aSendIsGrantedTheWholePassBudgetRatherThanWhatIsLeftOfIt() {
+        @DisplayName("a send is waited out against what is left of the pass budget")
+        void aSendIsWaitedOutAgainstWhatIsLeftOfThePassBudget() {
             long passBudgetMs = 500L;
             long sendMs = 400L;
             OutboxEventEntity first = clearedRow();
@@ -1435,21 +1699,72 @@ public class OutboxRelayTest {
                     .thenAnswer(call -> CompletableFuture.supplyAsync(
                             () -> acknowledgeAfter(sendMs)));
 
+            long startedAt = System.nanoTime();
             relayUnderBudget.publishPendingEvents();
+            long elapsedMs = Duration.ofNanos(System.nanoTime() - startedAt).toMillis();
 
-            // The first send consumes 400 of the 500 millisecond budget, so the second is issued
-            // with 100 left. Waiting only that remainder would abandon a record the producer still
-            // holds, which is how one event reached the topic twice.
-            assertAll("both sends were waited out",
+            // The first send consumes 400 of the 500 millisecond budget, so the second is issued with
+            // 100 left and is waited for exactly that. The tick therefore ends inside its stated
+            // bound; the unpublished row becomes due again and a consumer marker absorbs the copy a
+            // late delivery of the abandoned send would add.
+            assertAll("the tick honoured its own wall-time bound",
                     () -> assertTrue(first.isPublished(), "the first row"),
-                    () -> assertTrue(second.isPublished(),
-                            "the second row's send was abandoned with the pass budget nearly "
-                                    + "spent, so its record could still reach the broker while a "
-                                    + "later tick published another copy of the same event"),
-                    () -> assertThat(second.getAttemptCount()).isZero());
+                    () -> assertFalse(second.isPublished(),
+                            "the second send outlived the budget the tick had left, so its row stays "
+                                    + "unpublished and the next tick offers it again"),
+                    () -> assertThat(second.getAttemptCount()).isEqualTo(1),
+                    () -> assertTrue(elapsedMs < passBudgetMs + sendMs,
+                            () -> "the tick ran " + elapsedMs + " ms against a stated bound of "
+                                    + passBudgetMs + " ms, which is the overrun this setting names"));
             verify(kafkaTemplate, times(2))
                     .send(eq(ASSESSED_TOPIC), eq(ACCOUNT_IDENTIFIER), any());
-            verify(meters, never()).recordPublishFailure();
+            verify(meters).recordPublishFailure();
+        }
+
+        /**
+         * Asserts each send is granted what the pass has left, never the whole budget again.
+         *
+         * <p>The assertion above reads the wall clock, which is what a slow send needs. This one
+         * reads the timeout the relay asked for instead, so it needs no delay at all: each stubbed
+         * send is already acknowledged and records the value it was granted.
+         *
+         * <p>{@code sendWithinDeadline} computes {@code deadline - System.nanoTime()} per send, so a
+         * later send in the same pass is always granted strictly less than an earlier one. A relay
+         * that passed the configured value to every send would grant the same figure twice, which is
+         * the defect this discriminates: it would let a pass admitted a moment before its deadline
+         * run for another whole window.
+         */
+        @Test
+        @DisplayName("each send is granted the remainder of the pass, never the whole budget")
+        void eachSendIsGrantedTheRemainderOfThePass() {
+            long passBudgetMs = 500L;
+            long wholeBudgetNanos = TimeUnit.MILLISECONDS.toNanos(passBudgetMs);
+            List<Long> grantedNanos = new CopyOnWriteArrayList<>();
+            OutboxEventEntity first = clearedRow();
+            OutboxEventEntity second = thirdClearedRow();
+            OutboxRelay relayUnderBudget = new OutboxRelay(outboxEvents, kafkaTemplate, meters,
+                    ASSESSED_TOPIC, DEAD_LETTER_TOPIC, transactionTemplate,
+                    propertiesWithPassBudget(passBudgetMs));
+            dueRows(first, second);
+            when(kafkaTemplate.send(eq(ASSESSED_TOPIC), eq(ACCOUNT_IDENTIFIER), any()))
+                    .thenAnswer(call -> recordingAcknowledgement(grantedNanos));
+
+            relayUnderBudget.publishPendingEvents();
+
+            assertAll("the timeout each send was granted",
+                    () -> assertThat(grantedNanos)
+                            .as("each of the two sends was waited on exactly once")
+                            .hasSize(2),
+                    () -> assertThat(grantedNanos.getFirst())
+                            .as("the first send is granted what the pass has left, which is under"
+                                    + " the whole budget by the time the claim took")
+                            .isLessThan(wholeBudgetNanos),
+                    () -> assertThat(grantedNanos.get(1))
+                            .as("the second is granted strictly less again, so the deadline is"
+                                    + " shared by the pass rather than restarted per send")
+                            .isLessThan(grantedNanos.getFirst()),
+                    () -> assertTrue(first.isPublished() && second.isPublished(),
+                            "both sends resolved inside the pass, so both rows are published"));
         }
     }
 
@@ -1463,6 +1778,28 @@ public class OutboxRelayTest {
                     interrupted);
         }
         return null;
+    }
+
+    /**
+     * Builds an already-acknowledged send that records the timeout each wait was granted.
+     *
+     * <p>Already complete, so the relay's wait returns without pausing and the recorded value is the
+     * timeout the relay asked for rather than the time the wait took.
+     *
+     * @param grantedNanos collects one entry per wait, in nanoseconds
+     * @return the future the stubbed send hands back
+     */
+    private static CompletableFuture<Object> recordingAcknowledgement(List<Long> grantedNanos) {
+        CompletableFuture<Object> acknowledged = new CompletableFuture<>() {
+            @Override
+            public Object get(long timeout, TimeUnit unit) throws InterruptedException,
+                    ExecutionException, java.util.concurrent.TimeoutException {
+                grantedNanos.add(unit.toNanos(timeout));
+                return super.get(timeout, unit);
+            }
+        };
+        acknowledged.complete(null);
+        return acknowledged;
     }
 
     /** Builds the shipped settings with one chosen relay pass budget in milliseconds. */

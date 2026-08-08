@@ -18,7 +18,6 @@ import java.util.Objects;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.dao.DataAccessException;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.kafka.support.Acknowledgment;
 import org.springframework.kafka.support.KafkaHeaders;
@@ -113,7 +112,7 @@ public class TransactionPostedConsumer {
     /** Reads the account-keyed cardholder fields one alert reports. */
     private final CardholderContextReader cardholderContextReader;
 
-    /** Renders one cardholder alert and records the delivery attempt. */
+    /** Renders one cardholder alert and records that it was rendered; nothing sends it. */
     private final NotificationService notificationService;
 
     /** Runs the guard, the row, the alert and the marker inside one local transaction. */
@@ -169,6 +168,12 @@ public class TransactionPostedConsumer {
      * <p>The message key is checked against the aggregate the payload names before any side effect
      * runs. {@link #requireKeyNamesPayloadAggregate(String, TransactionPosted)} states why.
      *
+     * <p>That check sits inside the measured block, and the delivery is counted before it. A refused
+     * key is a delivery this service consumed and could not apply, and it travels through retry to the
+     * dead-letter topic. Refusing it ahead of the meters left exactly that record absent from the
+     * consumed counter, the failure counter and the latency timer, so the one delivery an operator
+     * needs to see was the one the metrics endpoint did not report.
+     *
      * @param event          the validated event this delivery carries
      * @param acknowledgment the offset commit, invoked once the transaction has committed
      * @param consumedTopic  the topic the delivery arrived on, recorded on the marker
@@ -184,11 +189,11 @@ public class TransactionPostedConsumer {
             @Header(name = KafkaHeaders.RECEIVED_KEY, required = false) String messageKey) {
         Objects.requireNonNull(event, "event is required");
         Objects.requireNonNull(acknowledgment, "acknowledgment is required");
-        requireKeyNamesPayloadAggregate(messageKey, event);
 
         metrics.eventsConsumed(NotificationMetrics.EVENT_TRANSACTION_POSTED).increment();
         long startedAt = System.nanoTime();
         try {
+            requireKeyNamesPayloadAggregate(messageKey, event);
             StatementTransactionEntity row = readModelRow(event);
             transactionTemplate
                     .executeWithoutResult(status -> applyOneEvent(event, row, consumedTopic));

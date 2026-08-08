@@ -22,6 +22,13 @@ import static org.assertj.core.api.Assertions.assertThat;
  * references are the paragraph label, two exits, and the exit label. No caller of this validator
  * exists in this module.</p>
  *
+ * <p><b>Where the classification is enforced.</b> Wiring this edit to a request field would add an
+ * edit the source never performs, which the equivalence requirement of AAP 0.1.1 forbids.
+ * {@code UnreachableEditClassificationTest} asserts that no field of any request type carries
+ * {@code DomainEdit.Edit.ALPHANUMERIC_OPTIONAL}, so the absence of wiring is a checked property
+ * rather than an observation. This suite holds the translated behaviour; that one holds the wiring
+ * state.</p>
+ *
  * <p>The paragraph is optional, so one message is reachable. The three-way not-supplied test at
  * app/cbl/COACTUPC.cbl:L2066-L2071 resolves to success at app/cbl/COACTUPC.cbl:L2072 and leaves at
  * app/cbl/COACTUPC.cbl:L2073. The one message stands at app/cbl/COACTUPC.cbl:L2095 and carries the

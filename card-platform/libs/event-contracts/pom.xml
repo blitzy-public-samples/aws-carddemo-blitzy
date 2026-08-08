@@ -2,24 +2,22 @@
 <!--
   Shared module holding the JSON Schema documents the six services read.
 
-  src/main/resources/schemas holds nine versioned documents:
-    transaction-authorized-v1  authorization approval
-    transaction-declined-v1    decline with a resolved account identifier
-    transaction-declined-v2    decline with no resolved account identifier,
-                               keyed on the transaction identifier
-    transaction-posted-v1      ledger posting
-    fraud-flagged-v1           risk assessment that triggered
-    fraud-cleared-v1           risk assessment that did not trigger
-    account-state-changed-v1   account mutation
-    card-updated-v1            card mutation
-    dead-letter-v1             the shape every dead-letter topic carries
+  src/main/resources/schemas holds one versioned document per event contract, in
+  these families: transaction-authorized, transaction-declined, transaction-posted,
+  fraud-flagged, fraud-cleared, account-state-changed, card-updated,
+  customer-context-changed, and dead-letter for the shape every dead-letter topic
+  carries. A family carries a v2 document where a field was added or a key changed,
+  and both versions stay readable. Read the directory for the current set rather than
+  a count stated here.
 
-  Every document is JSON Schema Draft 2020-12. Every document names the account
-  identifier as the single source of the Kafka message key, closes its top-level
-  property set, declares a maxProperties ceiling and carries one bounded
-  extensions object.
+  Every document is JSON Schema Draft 2020-12, closes its top-level property set,
+  declares a maxProperties ceiling and carries one bounded extensions object. The
+  aggregateId property is the Kafka message key of every document: it holds the
+  account identifier everywhere except transaction-declined-v2, where no account has
+  been resolved and the key is the transaction identifier.
 
-  Rationale for the choices in this file: card-platform/docs/decision-log.md
+  Rationale for the choices in this file, including the language level and the
+  bill-of-materials import below: card-platform/docs/decision-log.md
 -->
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
@@ -39,13 +37,12 @@
   <packaging>jar</packaging>
 
   <name>event-contracts</name>
-  <description>Nine versioned JSON Schema documents: six for the authorization, ledger and fraud events, two for the account and card mutation events, and one for the dead-letter envelope. Every document is Draft 2020-12. Every document closes its top-level property set and carries one bounded extensions object, so an undeclared field is refused and evolution stays additive.</description>
+  <description>Versioned JSON Schema documents for the authorization, ledger, fraud, account, card and customer events, and for the dead-letter envelope. Every document is Draft 2020-12. Every document closes its top-level property set and carries one bounded extensions object, so an undeclared field is refused and evolution stays additive.</description>
 
-  <!-- Language level. The build reads maven.compiler.release: the compiler plugin in
-       card-platform/pom.xml configures its release from that property, and the aggregator's
-       enforcer rule requires 25 in every module. java.version carries the framework's
-       conventional name for the same level and no plugin resolves it, because the aggregator
-       imports the Spring Boot bill of materials rather than inheriting the Spring Boot parent. -->
+  <!-- Language level. The compiler plugin in card-platform/pom.xml reads
+       maven.compiler.release, and the aggregator's enforcer rule requires 25 in every module.
+       java.version carries the framework's conventional name for the same level and no plugin
+       resolves it. -->
   <properties>
     <java.version>25</java.version>
     <maven.compiler.release>25</maven.compiler.release>

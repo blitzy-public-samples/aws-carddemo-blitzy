@@ -1,13 +1,11 @@
 package com.carddemo.notification.config;
 
 import jakarta.validation.Valid;
-import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Positive;
 import jakarta.validation.constraints.PositiveOrZero;
-import java.time.Duration;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.validation.annotation.Validated;
 
@@ -21,8 +19,8 @@ import org.springframework.validation.annotation.Validated;
  * <p>Every value the notification service takes from configuration arrives through this record. A
  * key with no component here is not configuration, and a component with no key fails start-up. That
  * rule is why {@link History} exists: {@code carddemo.history} was declared in
- * {@code application.yml} and bound by nothing, so its page limits documented a bound that no query
- * applied and its retention windows named a horizon no delete could read.
+ * {@code application.yml} and bound by nothing, so its retention windows named a horizon no delete
+ * could read.
  *
  * <p>{@link Validated} runs the constraints below while the context builds. A blank consumer group,
  * a blank topic name or a retry count under one therefore stops start-up with the offending property
@@ -38,8 +36,7 @@ import org.springframework.validation.annotation.Validated;
  * @param kafka         the consumer groups and the topic names this service reads
  * @param consumer      the delivery-attempt settings a listener applies
  * @param processedEvent the duplicate-marker horizon the retention sweep applies
- * @param history       the read-model horizons the retention sweep applies, and the page sizes the
- *                      history endpoint applies
+ * @param history       the read-model horizons the retention sweep applies
  */
 @ConfigurationProperties(prefix = "carddemo")
 @Validated
@@ -150,29 +147,76 @@ public record NotificationProperties(
     }
 
     /**
-     * The duplicate-marker horizon.
+     * The duplicate-marker horizon, and the broker retention it has to outlast.
      *
      * <p>A marker matters only while a redelivery of its event is still possible, and past that
-     * point it is dead weight on a table every message passes through. The horizon has to outlast
-     * the topic retention the broker itself applies, or a replayed event finds no marker and is
-     * processed twice.
+     * point it is dead weight on a table every message passes through. That makes the horizon a
+     * relationship rather than a number: the marker has to outlast every window through which the
+     * record itself can come back. Broker log retention is the shortest of those windows and the
+     * only one this platform configures, so it is the one the relationship is stated against.
      *
-     * @param markerRetentionHours how long a marker is kept after it was written
+     * <p>The two shipped values were equal, which made the relationship an equality rather than a
+     * margin. Segment cleanup is not instant, a restored backup can carry a record older than the
+     * broker would still hold, and an operator resetting a consumer group replays whatever the log
+     * still has. Any one of those leaves a record readable after its marker has been swept, and the
+     * consumer then applies it a second time: for {@code account-posted} that means one transaction
+     * amount reaching a balance and a cycle accumulator twice.
+     *
+     * <p>{@link #MINIMUM_RETENTION_MARGIN} is therefore enforced here rather than documented,
+     * and at start-up rather than later, because the two values arrive from configuration and a
+     * mismatch is invisible until the day a replay happens. The shipped pair is 720 hours of
+     * markers against 168 hours of broker log, which is a margin above four.
+     *
+     * @param markerRetentionHours hours a processed-event marker remains
+     * @param brokerRetentionHours hours the broker is configured to retain a topic log, which
+     *                             {@code KAFKA_LOG_RETENTION_HOURS} sets for the broker and for
+     *                             every service that has to outlast it
      */
-    public record ProcessedEvent(@Positive int markerRetentionHours) {
+    public record ProcessedEvent(@Positive int markerRetentionHours,
+            @Positive int brokerRetentionHours) {
+
+        /**
+         * The smallest multiple of broker retention a marker horizon may be.
+         *
+         * <p>Two rather than one, because equality is what the review found: it leaves no room for
+         * segment cleanup lag, a restored backup, or a manually replayed window. Two rather than a
+         * larger figure, because the floor has to be one a deployment can meet by configuration
+         * alone, and the shipped pair clears it four times over.
+         */
+        public static final long MINIMUM_RETENTION_MARGIN = 2L;
+
+        /**
+         * Refuses a marker horizon that does not outlast broker retention by the required margin.
+         *
+         * @throws IllegalArgumentException when the marker horizon is under the margin
+         */
+        public ProcessedEvent {
+            if (markerRetentionHours > 0 && brokerRetentionHours > 0
+                    && markerRetentionHours
+                            < brokerRetentionHours * MINIMUM_RETENTION_MARGIN) {
+                throw new IllegalArgumentException(
+                        "processed-event.markerRetentionHours must be at least "
+                                + MINIMUM_RETENTION_MARGIN + " times"
+                                + " processed-event.brokerRetentionHours, so a replayed record"
+                                + " cannot outlive the marker that suppresses it. Found "
+                                + markerRetentionHours + " against " + brokerRetentionHours);
+            }
+        }
     }
 
     /**
-     * The read-model horizons and the page sizes of the history endpoint.
+     * The read-model horizons the retention sweep applies.
      *
      * <p>Both tables grow by one row per consumed event, so a sweep is what bounds them. A statement
      * row backs the history endpoint and therefore outlives an alert by a wide margin.
      *
+     * <p>No page size is configured. {@code GET /notifications/&#123;cardNumber&#125;} returns every
+     * row of one card, because {@code app/cbl/CBSTM03A.CBL:L429} totals every row of one card between
+     * two key breaks.
+     *
      * @param statementRetentionDays how long a read-model row is kept after its processing timestamp
      * @param logRetentionDays       how long an alert attempt row is kept after it was attempted
      * @param sweepIntervalMs        milliseconds between the end of one retention sweep and the next
-     * @param defaultPageSize        rows the history endpoint returns when a caller names no limit
-     * @param maximumPageSize        the largest limit the history endpoint honours
      */
     public record History(
 
@@ -180,57 +224,6 @@ public record NotificationProperties(
 
             @Positive int logRetentionDays,
 
-            @Positive long sweepIntervalMs,
-
-            @Positive @Max(MAXIMUM_PAGE_CEILING) int defaultPageSize,
-
-            @Positive @Max(MAXIMUM_PAGE_CEILING) int maximumPageSize) {
-
-        /**
-         * The ceiling both page sizes are held under, which is the row cap one rendered alert
-         * carries.
-         *
-         * <p>A page larger than a rendered alert can hold would report a total over rows the alert
-         * never showed, so the two limits are one number.
-         */
-        public static final int MAXIMUM_PAGE_CEILING = 200;
-
-        /**
-         * Resolves the page size one request reads, from the caller's value or the default.
-         *
-         * <p>A request naming no size takes {@code carddemo.history.default-page-size}. A request
-         * naming more rows than {@code carddemo.history.maximum-page-size} takes the maximum, which
-         * is what {@code src/main/resources/openapi.yaml} declares for the parameter: a caller
-         * asking for more than the renderer accepts is served the ceiling rather than refused. A
-         * size below one is refused, because a page of no rows names no page.
-         *
-         * @param requested the caller's page size, or {@code null} when the caller named none
-         * @return {@code defaultPageSize} for no request, {@code maximumPageSize} for a request
-         *         above it, and the requested value otherwise
-         * @throws IllegalArgumentException when the caller named a size below one
-         */
-        public int resolvePageSize(Integer requested) {
-            if (requested == null) {
-                return defaultPageSize;
-            }
-            if (requested < 1) {
-                throw new IllegalArgumentException("size must be 1 or greater, found " + requested);
-            }
-            return Math.min(requested, maximumPageSize);
-        }
-
-        /**
-         * Holds the default page size at or under the maximum.
-         *
-         * @throws IllegalArgumentException when the default exceeds the maximum, which would make
-         *                                  the maximum unreachable and the default unusable
-         */
-        public History {
-            if (defaultPageSize > 0 && maximumPageSize > 0
-                    && defaultPageSize > maximumPageSize) {
-                throw new IllegalArgumentException("carddemo.history.default-page-size must be at "
-                        + "or under carddemo.history.maximum-page-size");
-            }
-        }
+            @Positive long sweepIntervalMs) {
     }
 }

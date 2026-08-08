@@ -1,5 +1,6 @@
 package com.carddemo.account.api;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -11,6 +12,8 @@ import com.carddemo.account.api.dto.AccountView;
 import com.carddemo.account.api.dto.CustomerDataRequest;
 import com.carddemo.account.api.dto.CustomerView;
 import com.carddemo.account.api.dto.CycleCloseResponse;
+import com.carddemo.account.config.CrossSiteRequestFilter;
+import com.carddemo.account.config.RequestRateCeilingFilter;
 import com.carddemo.account.domain.AccountUpdateService;
 import com.carddemo.account.domain.ConcurrentChangeDetector;
 import java.io.InputStream;
@@ -19,13 +22,16 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.TreeSet;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.springframework.http.HttpStatus;
 import org.yaml.snakeyaml.Yaml;
 
 /**
@@ -45,6 +51,20 @@ final class OpenApiContractTest {
     /** The hand-written description of this service. */
     private static final String DOCUMENT = "openapi.yaml";
 
+    /** Each documented schema paired with the record whose components it describes. */
+    private static final Map<String, Class<?>> RECORD_BACKED_SCHEMAS = Map.of(
+            "AccountView", AccountView.class,
+            "CustomerView", CustomerView.class,
+            "AccountUpdateRequest", AccountUpdateRequest.class,
+            "AccountDataRequest", AccountDataRequest.class,
+            "CustomerDataRequest", CustomerDataRequest.class,
+            "AccountUpdateResponse", AccountUpdateResponse.class,
+            "CycleCloseResponse", CycleCloseResponse.class,
+            "ApiProblem", ApiProblem.class);
+
+    /** Properties the pairings above cover, asserted so a shrunken map cannot pass unnoticed. */
+    private static final int RECORD_BACKED_PROPERTIES = 69;
+
     /** The account route, which carries a read and an update. */
     private static final String ACCOUNT_PATH = "/accounts/{accountId}";
 
@@ -53,6 +73,15 @@ final class OpenApiContractTest {
 
     /** The customer route. */
     private static final String CUSTOMER_PATH = "/customers/{customerId}";
+
+    /**
+     * The one status that carries no body.
+     *
+     * <p>{@link AccountApiExceptionHandler#onUnsupportedRequest} returns the status alone for
+     * {@code 406}: a caller that accepts no media type this service writes cannot be sent a problem
+     * document either.
+     */
+    private static final String BODILESS_STATUS = "406";
 
     /** The parsed document every test below reads. */
     private static Map<String, Object> openApi;
@@ -128,39 +157,58 @@ final class OpenApiContractTest {
     @DisplayName("status codes")
     class StatusCodes {
 
-        /** Asserts the read answers the six codes it can answer. */
+        /**
+         * Asserts the read answers the nine codes it can answer.
+         *
+         * <p>{@code 405} and {@code 406} are the protocol refusals
+         * {@link AccountApiExceptionHandler#onUnsupportedRequest} answers, keeping the framework
+         * status and, on a {@code 405}, the {@code Allow} header. {@code 415} is absent because a read
+         * carries no body to type. {@code 429} is the rate ceiling
+         * {@code config/RequestRateCeilingFilter} applies ahead of the chain.
+         */
         @Test
-        void theAccountReadAnswersSixCodes() {
-            assertEquals(Set.of("200", "401", "403", "404", "422", "500"),
+        void theAccountReadAnswersNineCodes() {
+            assertEquals(Set.of("200", "401", "403", "404", "405", "406", "422", "429", "500"),
                     responsesOf(ACCOUNT_PATH, "get").keySet(),
                     "a read has no body to malform and no race to lose");
         }
 
         /**
-         * Asserts the update answers eight codes, the two a read cannot.
+         * Asserts the update answers twelve codes, the three a read cannot.
          *
-         * <p>{@code 400} is a body that could not be read, and {@code 409} is a lost race. Both are
-         * outcomes only a write reaches.
+         * <p>{@code 400} is a body that could not be read, {@code 409} is a lost race and {@code 415}
+         * is a body typed as something this route does not read. All three are outcomes only an
+         * operation carrying a body reaches.
          */
         @Test
-        void theAccountUpdateAnswersEightCodes() {
-            assertEquals(Set.of("200", "400", "401", "403", "404", "409", "422", "500"),
+        void theAccountUpdateAnswersTwelveCodes() {
+            assertEquals(Set.of("200", "400", "401", "403", "404", "405", "406", "409", "415",
+                            "422", "429", "500"),
                     responsesOf(ACCOUNT_PATH, "put").keySet(),
-                    "a write adds an unreadable body and a lost race to what a read can answer");
+                    "a write adds an unreadable body, a lost race and a media type this route does"
+                            + " not read to what a read can answer");
         }
 
-        /** Asserts the cycle close answers six codes, carrying no body to malform. */
+        /**
+         * Asserts the cycle close answers ten codes, carrying no body to malform.
+         *
+         * <p>{@code 400} is absent because no body is read, and {@code 415} is present for the
+         * opposite reason: the route requires {@code application/json} as its cross-site request
+         * forgery control, so a call naming no media type is refused before the accumulators are
+         * touched. {@code 405} and {@code 406} are the protocol answers every route of this service
+         * carries.
+         */
         @Test
-        void theCycleCloseAnswersSixCodes() {
-            assertEquals(Set.of("200", "401", "403", "404", "422", "500"),
+        void theCycleCloseAnswersTenCodes() {
+            assertEquals(Set.of("200", "401", "403", "404", "405", "406", "415", "422", "429", "500"),
                     responsesOf(CYCLE_CLOSE_PATH, "post").keySet(),
-                    "the call carries no body, so no body can be unreadable");
+                    "the call carries no body to malform and still names a media type it requires");
         }
 
-        /** Asserts the customer read answers the same six codes the account read does. */
+        /** Asserts the customer read answers the same nine codes the account read does. */
         @Test
-        void theCustomerReadAnswersSixCodes() {
-            assertEquals(Set.of("200", "401", "403", "404", "422", "500"),
+        void theCustomerReadAnswersNineCodes() {
+            assertEquals(Set.of("200", "401", "403", "404", "405", "406", "422", "429", "500"),
                     responsesOf(CUSTOMER_PATH, "get").keySet(),
                     "the two reads answer alike");
         }
@@ -178,9 +226,17 @@ final class OpenApiContractTest {
             for (Map.Entry<String, Map<String, Object>> route : paths().entrySet()) {
                 for (String method : route.getValue().keySet()) {
                     responsesOf(route.getKey(), method).forEach((status, response) -> {
+                        Set<String> types = contentTypesOf(response);
+                        if (BODILESS_STATUS.equals(status)) {
+                            if (!types.isEmpty()) {
+                                divergent.add(method + " " + route.getKey() + " " + status
+                                        + " answers " + types + " and a caller that accepts none of"
+                                        + " them can read none of them");
+                            }
+                            return;
+                        }
                         String expected = status.startsWith("2") ? "application/json"
                                 : "application/problem+json";
-                        Set<String> types = contentTypesOf(response);
                         if (!types.equals(Set.of(expected))) {
                             divergent.add(method + " " + route.getKey() + " " + status + " answers "
                                     + types + " and not [" + expected + "]");
@@ -243,6 +299,53 @@ final class OpenApiContractTest {
                     "the document describes exactly the components the response declares");
         }
 
+        /**
+         * Asserts every property of a response schema is required.
+         *
+         * <p>A record serializes every component, so each of these properties is on the wire on every
+         * response. Every column the three projections read is declared {@code NOT NULL} by
+         * {@code src/main/resources/db/migration/V1__schema.sql}, so none of them can be null either.
+         * A property left out of {@code required} tells a caller it may be absent, and a caller that
+         * believes that writes a branch it will never reach.
+         */
+        @Test
+        void everyPropertyOfAResponseSchemaIsRequired() {
+            for (String schema : List.of("AccountView", "CustomerView", "CycleCloseResponse")) {
+                assertEquals(propertyNamesOf(schema), new LinkedHashSet<>(requiredOf(schema)),
+                        schema + " serializes every component and holds no nullable column");
+            }
+        }
+
+        /**
+         * Asserts the update response requires both members and admits the null one of them can hold.
+         *
+         * <p>{@code api/AccountController.answerOf} reads the account row again and passes
+         * {@code null} when that read finds none, and a record serializes the component either way.
+         * A schema that referenced {@link AccountView} alone would declare a body the service can
+         * write invalid.
+         *
+         * <p>The union is spelled as {@code type: 'null'} beside the reference, which is what JSON
+         * Schema 2020-12 defines and what the {@code openapi: 3.1.0} version of this document admits.
+         * The {@code nullable} keyword of earlier versions appears nowhere.
+         */
+        @Test
+        void theUpdateResponseRequiresBothMembersAndAdmitsANullAccount() {
+            assertEquals(List.of("message", "account"), requiredOf("AccountUpdateResponse"),
+                    "both members reach the wire on every 200");
+
+            Map<String, Object> account =
+                    asMap(propertiesOf("AccountUpdateResponse").get("account"));
+            assertFalse(account.containsKey("$ref"),
+                    "a bare reference would refuse the null this member can carry");
+            List<?> alternatives = (List<?>) account.get("oneOf");
+            assertEquals(List.of(Map.of("$ref", "#/components/schemas/AccountView"),
+                            Map.of("type", "null")),
+                    alternatives, "the view or a null, and nothing else");
+
+            assertFalse(documentText().contains("nullable"),
+                    "nullable is not a keyword of JSON Schema 2020-12");
+        }
+
         /** Asserts the cycle-close schema declares one property per component, and no other. */
         @Test
         void theCycleCloseSchemaMatchesItsRecord() {
@@ -256,6 +359,58 @@ final class OpenApiContractTest {
         void theProblemSchemaMatchesItsRecord() {
             assertEquals(componentNamesOf(ApiProblem.class), propertyNamesOf("ApiProblem"),
                     "the document describes exactly the members the problem record declares");
+        }
+
+        /**
+         * Asserts every documented property declares the wire type its component serializes to, and
+         * that every monetary component is actually sent as text.
+         *
+         * <p>The tests above hold each schema to the <em>names</em> its record declares. None held it
+         * to the types, so a property could describe a number where the record sends text. That gap is
+         * not theoretical here: publishing {@code AccountDataRequest.creditLimit} as a number passed
+         * every test in this module, and a credit limit read into a double is the value the overlimit
+         * rule at {@code app/cbl/CBTRN02C.cbl:L403-L413} compares against.
+         *
+         * <p>The monetary claim has two halves, and the second is the one a document cannot show. Five
+         * components of the account view and two of the cycle-close response are {@code BigDecimal},
+         * and they reach the wire as text only because each carries
+         * {@code @JsonSerialize(using = ToStringSerializer.class)}. Removing that annotation would
+         * send a JSON number while this document still said string, so the annotation is asserted
+         * rather than assumed. {@code ACCT-CURR-BAL PIC S9(10)V99} at {@code app/cpy/CVACT01Y.cpy:L7}
+         * carries twelve digits, which is beyond what a double holds exactly.
+         */
+        @Test
+        void everyDocumentedPropertyDeclaresItsWireType() {
+            List<String> mismatches = new ArrayList<>();
+            int compared = 0;
+            for (Map.Entry<String, Class<?>> backed : RECORD_BACKED_SCHEMAS.entrySet()) {
+                Map<String, Object> properties = propertiesOf(backed.getKey());
+                for (RecordComponent component : backed.getValue().getRecordComponents()) {
+                    String property = component.getName();
+                    if (!properties.containsKey(property)) {
+                        mismatches.add(backed.getKey() + " publishes no " + property);
+                        continue;
+                    }
+                    compared++;
+                    if (component.getType() == java.math.BigDecimal.class
+                            && !sentAsText(component)) {
+                        mismatches.add(backed.getKey() + "." + property + " is a BigDecimal carrying"
+                                + " no ToStringSerializer, so it reaches the wire as a number"
+                                + " whatever this document declares");
+                        continue;
+                    }
+                    Object declared = asMap(properties.get(property)).get("type");
+                    if (!declares(declared, wireTypeOf(component))) {
+                        mismatches.add(backed.getKey() + "." + property + " declares " + declared
+                                + " for a " + component.getType().getSimpleName());
+                    }
+                }
+            }
+
+            assertEquals(List.of(), mismatches,
+                    "properties whose declared type is not the type their component sends");
+            assertEquals(RECORD_BACKED_PROPERTIES, compared,
+                    "properties compared, so a pairing dropped from the map fails here");
         }
 
         /**
@@ -369,18 +524,119 @@ final class OpenApiContractTest {
         }
 
         /**
+         * Asserts each documented pattern is the pattern its controller constrains.
+         *
+         * <p>The assertion above compares the document against a literal, so the document and the
+         * test could agree with each other while both drifted from the code. These compare it against
+         * the constants the handlers annotate their path variables with, which is the only comparison
+         * that fails when a controller changes.
+         *
+         * <p>All three routes carrying an account identifier are covered.
+         * {@code BillingCycleController} takes its constant from {@code AccountController} rather than
+         * restating it, and that is asserted rather than assumed, because a restated copy is what
+         * would let one route drift from the other two.
+         */
+        @Test
+        void everyDocumentedPatternIsTheOneItsControllerConstrains() {
+            String documentedAccount =
+                    String.valueOf(asMap(parameterOf("AccountId").get("schema")).get("pattern"));
+            String documentedCustomer =
+                    String.valueOf(asMap(parameterOf("CustomerId").get("schema")).get("pattern"));
+
+            assertAll("the documented patterns against the handlers",
+                    () -> assertEquals(AccountController.ACCOUNT_ID_PATTERN, documentedAccount,
+                            "the account pattern the read and update handlers constrain"),
+                    () -> assertEquals(CustomerController.CUSTOMER_ID_PATTERN, documentedCustomer,
+                            "the customer pattern the customer handler constrains"),
+                    () -> assertEquals(AccountController.ACCOUNT_ID_PATTERN,
+                            BillingCycleController.ACCOUNT_ID_PATTERN,
+                            "the cycle-close route reuses the account pattern rather than restating"
+                                    + " it, so all three routes cannot drift apart"),
+                    () -> assertTrue("00000000050".matches(documentedAccount),
+                            "the seeded account passes its own pattern"),
+                    () -> assertFalse("50".matches(documentedAccount),
+                            "an identifier stripped of its leading zeros does not"),
+                    () -> assertTrue("000000050".matches(documentedCustomer),
+                            "the seeded customer passes its own pattern"),
+                    () -> assertFalse("00000000050".matches(documentedCustomer),
+                            "an eleven-digit value does not pass the nine-digit pattern"));
+        }
+
+        /**
+         * Asserts every operation declares the shared parameter its own path names.
+         *
+         * <p>Each route carries exactly one path parameter, referenced rather than restated, so the
+         * pattern asserted above governs every one of them. An operation that dropped its reference,
+         * or referenced the wrong component, would take its identifier unconstrained while the shared
+         * definitions above still looked correct.
+         *
+         * <p>Only referenced parameters are read here. The two state-changing operations also declare
+         * the first-party request header inline, because that header is a requirement of this service
+         * rather than a shared component, and {@link #stateChangingOperationsDeclareTheRequestHeader}
+         * is what holds it to the filter that enforces it.
+         */
+        @Test
+        void everyOperationReferencesTheSharedParameterItsPathNames() {
+            Map<String, String> expected = Map.of(
+                    "GET /accounts/{accountId}", "#/components/parameters/AccountId",
+                    "PUT /accounts/{accountId}", "#/components/parameters/AccountId",
+                    "POST /accounts/{accountId}/cycle-close", "#/components/parameters/AccountId",
+                    "GET /customers/{customerId}", "#/components/parameters/CustomerId");
+
+            assertEquals(new TreeMap<>(expected), new TreeMap<>(declaredParameterReferences()),
+                    "each operation references the shared parameter its path names");
+        }
+
+        /**
+         * Asserts the two state-changing operations document the header their chain requires.
+         *
+         * <p>{@code config/CrossSiteRequestFilter} refuses a state-changing request that carries no
+         * {@value com.carddemo.account.config.CrossSiteRequestFilter#DEFAULT_REQUIRED_HEADER}, and it
+         * refuses it with 403 before any route rule is consulted. A document that omitted the header
+         * would describe a call that cannot succeed, and a reader following it would receive a
+         * refusal naming a control the document never mentioned. The two reads declare no such
+         * header, because the filter passes every safe method through.
+         */
+        @Test
+        void stateChangingOperationsDeclareTheRequestHeader() {
+            assertEquals(Map.of(
+                            "PUT /accounts/{accountId}", true,
+                            "POST /accounts/{accountId}/cycle-close", true,
+                            "GET /accounts/{accountId}", false,
+                            "GET /customers/{customerId}", false),
+                    declaredRequestHeaders(),
+                    "the header the chain requires is documented on exactly the operations that"
+                            + " require it");
+        }
+
+        /**
          * Asserts the credit score is bounded exactly where the source bounds it.
          *
-         * <p>{@code app/cbl/COACTUPC.cbl} accepts 300 through 850 and rejects everything else with one
-         * message, which the document reproduces character for character.
+         * <p>{@code 88 FICO-RANGE-IS-VALID VALUES 300 THROUGH 850} at
+         * {@code app/cbl/COACTUPC.cbl:L848-L849} is reached from {@code 1275-EDIT-FICO-SCORE}, which
+         * only {@code 1200-EDIT-MAP-INPUTS} performs. {@code app/cbl/COACTVWC.cbl:L505-L506} moves a
+         * stored score to the screen and tests nothing, and 21 of the 50 rows of
+         * {@code app/data/ASCII/custdata.txt} carry a score below 300. A read schema bounded at 300
+         * would declare 21 of the 50 seeded rows unrepresentable.
+         *
+         * <p>The read schema therefore carries the bounds {@code PIC 9(03)} holds, and the range
+         * message stays in the document for the update path that emits it.
          */
         @Test
         void theCreditScoreCarriesTheRangeTheSourceEnforces() {
             Map<String, Object> score = asMap(propertiesOf("CustomerView").get("ficoCreditScore"));
-            assertEquals(300, score.get("minimum"), "the lowest passing score");
-            assertEquals(850, score.get("maximum"), "the highest passing score");
+            assertEquals(0, score.get("minimum"), "the lowest value PIC 9(03) holds");
+            assertEquals(999, score.get("maximum"), "the highest value PIC 9(03) holds");
             assertTrue(documentText().contains(CustomerDataRequest.FICO_RANGE_MESSAGE),
                     "the document reproduces the range message character for character");
+
+            Map<String, Object> submitted =
+                    asMap(propertiesOf("CustomerDataRequest").get("ficoCreditScore"));
+            assertTrue(String.valueOf(submitted.get("description")).contains("300 and 850"),
+                    "the update path is where the source range applies");
+            assertTrue(String.valueOf(score.get("description")).replaceAll("\\s+", " ")
+                            .contains("A read answers the stored value unchanged"),
+                    "and the read path says a stored value arrives as stored");
         }
 
         /**
@@ -413,7 +669,7 @@ final class OpenApiContractTest {
                 }
             }
             assertTrue(propertyNamesOf("CustomerView").contains("primaryCardHolderIndicator"),
-                    "CUST-PRI-CARD-HOLDER-IND PIC X(01) at app/cpy/CVCUS01Y.cpy:L22 belongs to the"
+                    "CUST-PRI-CARD-HOLDER-IND PIC X(01) at app/cpy/CVCUS01Y.cpy:L21 belongs to the"
                             + " customer record and stays, however much its name reads like a card"
                             + " field");
         }
@@ -483,9 +739,18 @@ final class OpenApiContractTest {
         /**
          * Asserts every title the code can write is enumerated in the document.
          *
-         * <p>The five this service's own handlers write plus the two
-         * {@code config/SecurityConfig} writes. A title the code writes and the document omits would
-         * reach a client that had been told it could not.
+         * <p>Ten titles reach a caller. Five are constants of {@link ApiProblem} and two are the ones
+         * {@code config/SecurityConfig} writes. Two are reason phrases:
+         * {@link AccountApiExceptionHandler#onUnsupportedRequest} reads the title from the status the
+         * framework named rather than from a constant, so a {@code 405} and a {@code 415} carry the
+         * reason phrase of their own status and its capitalization. {@code 406} contributes none,
+         * because it carries no body. The tenth is
+         * {@link RequestRateCeilingFilter#REFUSAL_TITLE}, which a filter ahead of the security chain
+         * writes, so it can arrive before any handler of this service is reached.
+         *
+         * <p>Every phrase is read from a constant or from {@link HttpStatus} rather than written out,
+         * so a title this document publishes cannot drift from the one the code supplies. A title the
+         * code writes and the document omits reaches a client that had been told it could not.
          */
         @Test
         void theDocumentEnumeratesEveryProblemTitle() {
@@ -494,9 +759,13 @@ final class OpenApiContractTest {
                     (List<String>) asMap(propertiesOf("ApiProblem").get("title")).get("enum");
             assertEquals(new TreeSet<>(List.of(ApiProblem.VALIDATION_FAILED, ApiProblem.NOT_FOUND,
                             ApiProblem.CONFLICT, ApiProblem.MALFORMED_REQUEST,
-                            ApiProblem.INTERNAL_FAILURE, "Unauthorized", "Forbidden")),
+                            ApiProblem.INTERNAL_FAILURE, "Unauthorized", "Forbidden",
+                            HttpStatus.METHOD_NOT_ALLOWED.getReasonPhrase(),
+                            HttpStatus.UNSUPPORTED_MEDIA_TYPE.getReasonPhrase(),
+                            RequestRateCeilingFilter.REFUSAL_TITLE)),
                     new TreeSet<>(enumerated),
-                    "five titles from this service's handlers and two from its security chain");
+                    "five titles from this service's handlers, two from its security chain, two"
+                            + " reason phrases from the protocol arm and one from the rate ceiling");
         }
 
         /**
@@ -601,6 +870,86 @@ final class OpenApiContractTest {
      * @return the properties of one schema
      */
     @SuppressWarnings("unchecked")
+    /**
+     * Returns the JSON type a property describing {@code component} must declare.
+     *
+     * <p>An unmapped type is an error rather than a default. Letting one fall through to a number is
+     * the drift this method exists to prevent, so a component type nobody has considered stops the
+     * build with a message naming it. A {@code BigDecimal} reaching here has already been shown to
+     * carry a to-text serializer, which is why it maps to a string.
+     *
+     * @param component the record component the property describes
+     * @return the type the document must declare, or {@code null} where the component is itself a
+     *     record and the property is therefore a reference to another schema
+     */
+    private static String wireTypeOf(RecordComponent component) {
+        Class<?> type = component.getType();
+        if (type == String.class || type.isEnum() || type == java.math.BigDecimal.class) {
+            return "string";
+        }
+        if (type == int.class || type == Integer.class) {
+            return "integer";
+        }
+        if (type == boolean.class || type == Boolean.class) {
+            return "boolean";
+        }
+        if (List.class.isAssignableFrom(type)) {
+            return "array";
+        }
+        if (type.isRecord()) {
+            return null;
+        }
+        throw new AssertionError("this test carries no wire type for " + type.getName()
+                + ", newly held by " + component.getDeclaringRecord().getSimpleName() + "."
+                + component.getName() + ". Add the mapping deliberately: a monetary value left to"
+                + " default to a JSON number rounds beyond fifteen digits.");
+    }
+
+    /**
+     * Returns whether a declared type satisfies the expected one, allowing a nullable union.
+     *
+     * @param declared the type the document declares, a name or a union of names
+     * @param expected the type the component requires, or {@code null} for a reference
+     * @return whether the declaration satisfies the requirement
+     */
+    private static boolean declares(Object declared, String expected) {
+        if (expected == null) {
+            return declared == null;
+        }
+        if (declared instanceof List<?> union) {
+            return union.contains(expected);
+        }
+        return expected.equals(declared);
+    }
+
+    /**
+     * Returns whether one component is serialized as text rather than as a JSON number.
+     *
+     * <p>The annotation is looked for on the component, on its accessor and on the backing field,
+     * because which of the three carries it depends on how the record declares it.
+     *
+     * @param component the component to inspect
+     * @return whether a to-text serializer is bound to it
+     */
+    private static boolean sentAsText(RecordComponent component) {
+        Class<tools.jackson.databind.annotation.JsonSerialize> annotation =
+                tools.jackson.databind.annotation.JsonSerialize.class;
+        tools.jackson.databind.annotation.JsonSerialize bound = component.getAnnotation(annotation);
+        if (bound == null) {
+            bound = component.getAccessor().getAnnotation(annotation);
+        }
+        if (bound == null) {
+            try {
+                bound = component.getDeclaringRecord()
+                        .getDeclaredField(component.getName()).getAnnotation(annotation);
+            } catch (NoSuchFieldException absent) {
+                return false;
+            }
+        }
+        return bound != null
+                && bound.using() == tools.jackson.databind.ser.std.ToStringSerializer.class;
+    }
+
     private static Map<String, Object> propertiesOf(String schema) {
         Map<String, Object> schemas = (Map<String, Object>) components().get("schemas");
         Map<String, Object> declared = asMap(schemas.get(schema));
@@ -659,4 +1008,64 @@ final class OpenApiContractTest {
     private static Map<String, Object> asMap(Object value) {
         return value instanceof Map<?, ?> map ? (Map<String, Object>) map : Map.of();
     }
+
+    /**
+     * Reads the parameter reference each operation declares, keyed by method and path.
+     *
+     * <p>Only parameters declared by reference are read. An operation referencing none, or more than
+     * one, is reported rather than skipped, so the comparison above cannot pass by omission. A header
+     * declared inline is not a reference and is read by {@link #declaredRequestHeaders()} instead.
+     *
+     * @return the method and path of each operation mapped to its single parameter reference
+     */
+    @SuppressWarnings("unchecked")
+    private static Map<String, String> declaredParameterReferences() {
+        Map<String, String> references = new TreeMap<>();
+        Map<String, Object> paths = (Map<String, Object>) openApi.get("paths");
+        for (Map.Entry<String, Object> route : paths.entrySet()) {
+            Map<String, Object> operations = (Map<String, Object>) route.getValue();
+            for (Map.Entry<String, Object> operation : operations.entrySet()) {
+                Map<String, Object> definition = (Map<String, Object>) operation.getValue();
+                List<Map<String, Object>> declared =
+                        (List<Map<String, Object>>) definition.get("parameters");
+                String key = operation.getKey().toUpperCase(Locale.ROOT) + " " + route.getKey();
+                List<Map<String, Object>> referenced = declared == null ? List.of()
+                        : declared.stream().filter(one -> one.containsKey("$ref")).toList();
+                if (referenced.size() != 1) {
+                    references.put(key, "expected one referenced parameter but found "
+                            + referenced.size());
+                    continue;
+                }
+                references.put(key, String.valueOf(referenced.get(0).get("$ref")));
+            }
+        }
+        return references;
+    }
+
+    /**
+     * Reads whether each operation declares the required first-party request header.
+     *
+     * @return one entry per operation, true when the header is declared, required and in the header
+     */
+    @SuppressWarnings("unchecked")
+    private static Map<String, Boolean> declaredRequestHeaders() {
+        Map<String, Boolean> declaredHeaders = new TreeMap<>();
+        Map<String, Object> paths = (Map<String, Object>) openApi.get("paths");
+        for (Map.Entry<String, Object> route : paths.entrySet()) {
+            Map<String, Object> operations = (Map<String, Object>) route.getValue();
+            for (Map.Entry<String, Object> operation : operations.entrySet()) {
+                Map<String, Object> definition = (Map<String, Object>) operation.getValue();
+                List<Map<String, Object>> declared =
+                        (List<Map<String, Object>>) definition.get("parameters");
+                boolean present = declared != null && declared.stream().anyMatch(one ->
+                        CrossSiteRequestFilter.DEFAULT_REQUIRED_HEADER.equals(one.get("name"))
+                                && "header".equals(one.get("in"))
+                                && Boolean.TRUE.equals(one.get("required")));
+                declaredHeaders.put(
+                        operation.getKey().toUpperCase(Locale.ROOT) + " " + route.getKey(), present);
+            }
+        }
+        return declaredHeaders;
+    }
+
 }

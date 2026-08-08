@@ -25,45 +25,28 @@ import org.springframework.transaction.support.TransactionTemplate;
  * {@code ACCT-CURR-CYC-DEBIT PIC S9(10)V99} at {@code app/cpy/CVACT01Y.cpy:L14}. This class
  * reproduces those two statements and no other statement of that paragraph.</p>
  *
- * <p>The two accumulators drive one authorization rule. {@code app/cbl/CBTRN02C.cbl:L403-L405}
- * reads both into {@code WS-TEMP-BAL PIC S9(09)V99} at {@code app/cbl/CBTRN02C.cbl:L187}, and
- * {@code app/cbl/CBTRN02C.cbl:L407} compares that working balance with the credit limit. A failed
- * comparison assigns reject reason 102 at {@code app/cbl/CBTRN02C.cbl:L410-L411}.</p>
+ * <p>The two accumulators drive reject reason 102, which
+ * {@code app/cbl/CBTRN02C.cbl:L403-L411} computes from both of them.</p>
  *
- * <p>The keyed read holds a write lock. The source declares the account file
- * {@code ACCESS MODE IS RANDOM} at {@code app/cbl/CBACT04C.cbl:L43}, opens it
- * {@code OPEN I-O ACCOUNT-FILE} at {@code app/cbl/CBACT04C.cbl:L291} and rewrites the record it
- * holds at {@code app/cbl/CBACT04C.cbl:L356}.</p>
- *
- * <p>{@link #closeBillingCycle(String)} opens the transaction the outbox write joins. The account
- * row and the event row commit together, and {@code outbox/OutboxRelay.java} publishes the stored
- * row on a later sweep.
- *
- * <p>Each committed close counts once against {@code carddemo.account.cycle.closed}.</p>
+ * <p>{@link #closeBillingCycle(String)} opens the transaction the outbox write joins, so the
+ * account row and the event row commit together. The keyed read holds a write lock.</p>
  *
  * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 @Service
 public class BillingCycleService {
 
-    /** Reads the account row under a write lock and stores it again. */
     private final AccountRepository accountRepository;
 
-    /** Stores one event in the same transaction as the account row. */
     private final OutboxWriter outboxWriter;
 
     /** Explicit boundary around the account row and its outbox event. */
     private final TransactionTemplate transactionTemplate;
 
-    /** Records a close only after commit and a failure only after rollback. */
+    /** Recorded only after the transaction completes, so a rollback counts as a failure. */
     private final AccountMeters meters;
 
     /**
-     * Builds the service and resolves the counter one close increments.
-     *
-     * <p>Resolution by name returns the meter already registered under
-     * {@code carddemo.account.cycle.closed}. The registry holds one counter for that name.</p>
-     *
      * @param accountRepository finds and stores the account row; must not be {@code null}
      * @param outboxWriter      stores the event row; must not be {@code null}
      * @param transactionTemplate boundary around one close attempt; must not be {@code null}
@@ -113,7 +96,6 @@ public class BillingCycleService {
         }
     }
 
-    /** Runs the locked read, update, and outbox write inside one transaction. */
     private Optional<AccountEntity> closeWithinTransaction(String accountId) {
         Optional<AccountEntity> stored = accountRepository.findForUpdateByAccountId(accountId);
         if (stored.isEmpty()) {
@@ -135,12 +117,6 @@ public class BillingCycleService {
     }
 
     /**
-     * Returns zero at the scale one Picture field holds.
-     *
-     * <p>{@link CobolDecimal#truncateToScale(BigDecimal, int)} fixes the fractional digits at
-     * {@code scale}. Zero at scale 2 matches {@code NUMERIC(12,2)}, the column type both
-     * accumulators hold.</p>
-     *
      * @param scale fractional digits the target field holds, from {@link PicClause}
      * @return zero at {@code scale}
      */

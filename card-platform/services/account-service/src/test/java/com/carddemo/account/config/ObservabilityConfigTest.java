@@ -381,6 +381,24 @@ class ObservabilityConfigTest {
         RUNNER.run(context -> assertThat(context).hasSingleBean(AccountMeters.class));
     }
 
+    @Test
+    @DisplayName("all seven instruments this file was asked for register at start-up")
+    void allSevenRequestedInstrumentsRegisterAtStartUp() {
+        RUNNER.run(context -> {
+            MeterRegistry registry = context.getBean(MeterRegistry.class);
+
+            for (String counter : List.of(EVENTS_CONSUMED, PUBLISH_FAILED, VALIDATION_FAILED,
+                    UPDATE_APPLIED, CYCLE_CLOSED, OUTBOX_PUBLISHED)) {
+                assertThat(counterOf(registry, counter))
+                        .withFailMessage("the requested counter %s is not registered", counter)
+                        .isNotNull();
+            }
+            assertThat(timerOf(registry, UPDATE_LATENCY))
+                    .withFailMessage("the requested update-path timer is not registered")
+                    .isNotNull();
+        });
+    }
+
     /**
      * Finds one untagged counter by name.
      *

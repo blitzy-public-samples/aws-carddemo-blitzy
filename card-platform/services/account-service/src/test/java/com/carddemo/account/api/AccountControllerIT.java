@@ -6,6 +6,8 @@ import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.carddemo.account.TestIdentityPasswords;
+import com.carddemo.account.config.CrossSiteRequestFilter;
 import java.math.BigDecimal;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -92,9 +94,9 @@ import tools.jackson.databind.json.JsonMapper;
         webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
         properties = {
                 "KAFKA_SASL_PASSWORD=not-a-real-broker-password",
-                "ADMIN_PASSWORD_HASH={noop}" + AccountControllerIT.ADMIN_PASSWORD,
-                "USER_PASSWORD_HASH={noop}" + AccountControllerIT.USER_PASSWORD,
-                "MONITORING_PASSWORD_HASH={noop}not-a-real-monitoring-password",
+                "ADMIN_PASSWORD_HASH=" + TestIdentityPasswords.ADMIN_PASSWORD_HASH,
+                "USER_PASSWORD_HASH=" + TestIdentityPasswords.USER_PASSWORD_HASH,
+                "MONITORING_PASSWORD_HASH=" + TestIdentityPasswords.MONITORING_PASSWORD_HASH,
                 "spring.kafka.bootstrap-servers=" + AccountControllerIT.UNREACHABLE_BROKER,
                 "spring.kafka.listener.auto-startup=false",
                 "carddemo.outbox.relay.fixed-delay-ms=3600000",
@@ -106,6 +108,22 @@ class AccountControllerIT {
 
     /** The image tag {@code card-platform/docker-compose.yml} also names. */
     private static final String POSTGRES_IMAGE = "postgres:18.4";
+
+    /** The header every state-changing call of this service has to carry. */
+    private static final String CONTENT_TYPE_HEADER = "Content-Type";
+
+    /**
+     * The only media type a state-changing route of this service accepts.
+     *
+     * <p>Required on the cycle close even though it sends no body. That is the cross-site request
+     * forgery control: {@code application/json} is not one of the three content types a browser can
+     * send cross-origin without a preflight, so requiring it forces one, and this service answers no
+     * preflight.
+     */
+    private static final String JSON_MEDIA_TYPE = "application/json";
+
+    /** A content type a browser can send cross-origin with no preflight, which is the forged shape. */
+    private static final String FORM_MEDIA_TYPE = "application/x-www-form-urlencoded";
 
     /**
      * The database name, the login name and the password of the container, one value for all three.
@@ -128,18 +146,25 @@ class AccountControllerIT {
 
     /**
      * Password of the administrator identity, plainly synthetic and matching no live credential.
-     * The context encodes it with the {@code noop} prefix the property above carries.
+     * The property above configures its bcrypt hash, and this value is what a request presents.
      */
-    static final String ADMIN_PASSWORD = "not-a-real-admin-password";
+    static final String ADMIN_PASSWORD = TestIdentityPasswords.ADMIN_PASSWORD;
 
     /** Login name of the ordinary identity, from {@code USER_USERNAME} in the same file. */
     private static final String USER_USERNAME = "user0001";
 
     /** Password of the ordinary identity, equally synthetic. */
-    static final String USER_PASSWORD = "not-a-real-user-password";
+    static final String USER_PASSWORD = TestIdentityPasswords.USER_PASSWORD;
 
-    /** Migrations under {@code src/main/resources/db/migration}, V1 through V6. */
-    private static final int MIGRATION_COUNT = 6;
+    /**
+     * Migrations under {@code src/main/resources/db/migration}, V1 through V8.
+     *
+     * <p>{@code V8__subject_request_posture.sql} carries no data-definition statement. It re-issues
+     * the {@code customer.social_security_number} comment, which used to say an erasure request
+     * cleared the value with the rest of the row while no export or erasure workflow exists anywhere
+     * on this platform to do that.</p>
+     */
+    private static final int MIGRATION_COUNT = 8;
 
     /** Rows {@code V2__seed.sql} loads into {@code account}, from {@code app/data/ASCII/acctdata.txt}. */
     private static final int SEEDED_ACCOUNT_COUNT = 50;
@@ -167,7 +192,7 @@ class AccountControllerIT {
     private static final String SEEDED_ACCOUNT_ID = "00000000001";
 
     /**
-     * Identifier of the customer {@code card_xref} names for that account. Row 49 of
+     * Identifier of the customer {@code account_customer_link} names for that account. Row 49 of
      * {@code app/data/ASCII/cardxref.txt} carries card {@code 9680294154603697}, customer
      * {@code 000000001} and account {@code 00000000001}, and {@code V4} replicates it. The update
      * path reads that row, as {@code app/cbl/COACTUPC.cbl} derives the customer from the same
@@ -310,6 +335,16 @@ class AccountControllerIT {
     /** An eleven-digit account identifier no seeded row holds. */
     private static final String ABSENT_ACCOUNT_ID = "00000099999";
 
+    /**
+     * The header a first-party client sets on every state-changing request.
+     *
+     * <p>Read from the production constant rather than repeated, so a change to the shipped default
+     * moves this client with it. {@code src/main/resources/application.yml} carries the same value
+     * under {@code carddemo.api.cross-site.required-header}.
+     */
+    private static final String CROSS_SITE_HEADER =
+            CrossSiteRequestFilter.DEFAULT_REQUIRED_HEADER;
+
     /** The event type a change to an account field stores, published to one of two topics. */
     private static final String ACCOUNT_STATE_CHANGED = "AccountStateChanged";
 
@@ -410,16 +445,16 @@ class AccountControllerIT {
 
         @Test
         @DisplayName("every shipped migration applied, each reported successful")
-        void allFiveMigrationsApplied() {
+        void everyShippedMigrationApplied() {
             List<Map<String, Object>> applied = jdbcTemplate.queryForList(
                     "SELECT version, success FROM flyway_schema_history"
                             + " WHERE version IS NOT NULL ORDER BY installed_rank");
 
             assertEquals(MIGRATION_COUNT, applied.size(),
-                    "db/migration carries V1 through V6 and Flyway applied every one");
+                    "db/migration carries V1 through V8 and Flyway applied every one");
             assertTrue(applied.stream().allMatch(row -> Boolean.TRUE.equals(row.get("success"))),
                     "a migration that failed would leave a row reporting failure: " + applied);
-            assertEquals(List.of("1", "2", "3", "4", "5", "6"),
+            assertEquals(List.of("1", "2", "3", "4", "5", "6", "7", "8"),
                     applied.stream().map(row -> String.valueOf(row.get("version"))).toList(),
                     "the versions applied, in the order Flyway applied them");
         }
@@ -550,6 +585,7 @@ class AccountControllerIT {
 
             HttpResponse<String> response = send(authorized(ADMIN_USERNAME, ADMIN_PASSWORD,
                     "/accounts/" + SEEDED_ACCOUNT_ID + "/cycle-close")
+                    .header(CONTENT_TYPE_HEADER, JSON_MEDIA_TYPE)
                     .POST(HttpRequest.BodyPublishers.noBody())
                     .build());
 
@@ -589,6 +625,7 @@ class AccountControllerIT {
         void anAbsentAccountAnswersNotFoundAndStoresNothing() {
             HttpResponse<String> response = send(authorized(ADMIN_USERNAME, ADMIN_PASSWORD,
                     "/accounts/" + ABSENT_ACCOUNT_ID + "/cycle-close")
+                    .header(CONTENT_TYPE_HEADER, JSON_MEDIA_TYPE)
                     .POST(HttpRequest.BodyPublishers.noBody())
                     .build());
 
@@ -603,6 +640,7 @@ class AccountControllerIT {
 
             HttpResponse<String> response = send(authorized(USER_USERNAME, USER_PASSWORD,
                     "/accounts/" + SEEDED_ACCOUNT_ID + "/cycle-close")
+                    .header(CONTENT_TYPE_HEADER, JSON_MEDIA_TYPE)
                     .POST(HttpRequest.BodyPublishers.noBody())
                     .build());
 
@@ -614,16 +652,152 @@ class AccountControllerIT {
         }
 
         @Test
+        @DisplayName("a form-encoded close is refused by the chain, and no accumulator moves")
+        void aFormEncodedCloseIsRefusedByTheChain() {
+            givenCycleAccumulators(CYCLE_CREDIT_BEFORE_CLOSE, CYCLE_DEBIT_BEFORE_CLOSE);
+
+            HttpResponse<String> response = send(authorized(ADMIN_USERNAME, ADMIN_PASSWORD,
+                    "/accounts/" + SEEDED_ACCOUNT_ID + "/cycle-close")
+                    .header(CONTENT_TYPE_HEADER, FORM_MEDIA_TYPE)
+                    .POST(HttpRequest.BodyPublishers.noBody())
+                    .build());
+
+            // The credential here is a valid administrator one, which is the point: this is the
+            // shape a browser driven from another origin would send, carrying the credential it
+            // already holds. The refusal comes from the request's shape and not from who sent it.
+            assertEquals(403, response.statusCode(),
+                    "a content type a browser can send cross-origin is refused ahead of every"
+                            + " route rule: " + response.body());
+            assertEquals(new BigDecimal(CYCLE_CREDIT_BEFORE_CLOSE), storedCycleCredit(),
+                    "the accumulators the credit-limit rule tests must not move");
+            assertEquals(0, storedEvents().size(), "and no event is stored");
+        }
+
+        @Test
+        @DisplayName("a close naming no media type reads 415, and no accumulator moves")
+        void aCloseNamingNoMediaTypeReadsUnsupportedMediaType() {
+            givenCycleAccumulators(CYCLE_CREDIT_BEFORE_CLOSE, CYCLE_DEBIT_BEFORE_CLOSE);
+
+            HttpResponse<String> response = send(authorized(ADMIN_USERNAME, ADMIN_PASSWORD,
+                    "/accounts/" + SEEDED_ACCOUNT_ID + "/cycle-close")
+                    .POST(HttpRequest.BodyPublishers.noBody())
+                    .build());
+
+            // A missing header is a caller's mistake, so it reads 415 from the route rather than
+            // 403 from the chain. The two answers are different on purpose.
+            assertEquals(415, response.statusCode(),
+                    "a bodyless POST still names the media type it requires: " + response.body());
+            assertEquals(new BigDecimal(CYCLE_CREDIT_BEFORE_CLOSE), storedCycleCredit());
+            assertEquals(0, storedEvents().size());
+        }
+
+        @Test
         @DisplayName("a close carrying no credential is refused with 401")
         void anUnauthenticatedCloseIsRefused() {
             HttpResponse<String> response = send(HttpRequest
                     .newBuilder(URI.create(
                             baseUri() + "/accounts/" + SEEDED_ACCOUNT_ID + "/cycle-close"))
                     .timeout(REQUEST_TIMEOUT)
+                    .header(CONTENT_TYPE_HEADER, JSON_MEDIA_TYPE)
                     .POST(HttpRequest.BodyPublishers.noBody())
                     .build());
 
             assertEquals(401, response.statusCode(), response.body());
+        }
+    }
+
+    /**
+     * The forged cycle close, measured against the running service.
+     *
+     * <p>{@code POST /accounts/{accountId}/cycle-close} carries no body, so an HTML form can submit
+     * it, and a browser attaches a cached HTTP Basic credential to that submission without asking
+     * the person reading the page. The call is therefore authenticated and authorized: every test
+     * below presents the administrator credential the route requires, and is refused anyway.
+     *
+     * <p>What the accumulators hold matters as much as the status code. The credit-limit rule at
+     * {@code app/cbl/CBTRN02C.cbl:L403-L413} authorizes against them, so a forged close reaching
+     * {@code domain/BillingCycleService} would clear an overlimit condition on somebody else's
+     * instruction.
+     */
+    @Nested
+    @DisplayName("a forged state-changing request, refused although it authenticates")
+    class ForgedStateChangingRequests {
+
+        @Test
+        @DisplayName("a form submission carrying no cross-site header is refused with 403")
+        void aFormSubmissionCarryingNoCrossSiteHeaderIsRefused() {
+            givenCycleAccumulators(CYCLE_CREDIT_BEFORE_CLOSE, CYCLE_DEBIT_BEFORE_CLOSE);
+            String credential = Base64.getEncoder().encodeToString(
+                    (ADMIN_USERNAME + ":" + ADMIN_PASSWORD).getBytes(StandardCharsets.UTF_8));
+
+            HttpResponse<String> response = send(HttpRequest
+                    .newBuilder(URI.create(
+                            baseUri() + "/accounts/" + SEEDED_ACCOUNT_ID + "/cycle-close"))
+                    .header("Authorization", "Basic " + credential)
+                    .header("Content-Type", "application/x-www-form-urlencoded")
+                    .timeout(REQUEST_TIMEOUT)
+                    .POST(HttpRequest.BodyPublishers.noBody())
+                    .build());
+
+            assertEquals(403, response.statusCode(),
+                    "an authenticated administrator credential is not enough: a state-changing "
+                            + "request has to come from a first-party client: " + response.body());
+            assertEquals(new BigDecimal(CYCLE_CREDIT_BEFORE_CLOSE), storedCycleCredit(),
+                    "a refused request must reach no domain service");
+            assertEquals(new BigDecimal(CYCLE_DEBIT_BEFORE_CLOSE), storedCycleDebit(),
+                    "and must leave the debit accumulator alone as well");
+            assertEquals(0, storedEvents().size(), "and must publish nothing");
+        }
+
+        @Test
+        @DisplayName("a request a foreign page caused is refused although it carries the header")
+        void aRequestAForeignPageCausedIsRefused() {
+            givenCycleAccumulators(CYCLE_CREDIT_BEFORE_CLOSE, CYCLE_DEBIT_BEFORE_CLOSE);
+
+            HttpResponse<String> response = send(authorized(ADMIN_USERNAME, ADMIN_PASSWORD,
+                    "/accounts/" + SEEDED_ACCOUNT_ID + "/cycle-close")
+                    .header("Sec-Fetch-Site", "cross-site")
+                    .POST(HttpRequest.BodyPublishers.noBody())
+                    .build());
+
+            assertEquals(403, response.statusCode(),
+                    "a browser states where a request came from, and page script cannot write that "
+                            + "header: " + response.body());
+            assertEquals(new BigDecimal(CYCLE_CREDIT_BEFORE_CLOSE), storedCycleCredit(),
+                    "a refused request must reach no domain service");
+            assertEquals(0, storedEvents().size(), "and must publish nothing");
+        }
+
+        @Test
+        @DisplayName("a request naming a foreign Origin is refused although it carries the header")
+        void aRequestNamingAForeignOriginIsRefused() {
+            HttpResponse<String> response = send(authorized(ADMIN_USERNAME, ADMIN_PASSWORD,
+                    "/accounts/" + SEEDED_ACCOUNT_ID)
+                    .header("Content-Type", "application/json")
+                    .header("Origin", "https://attacker.example")
+                    .PUT(HttpRequest.BodyPublishers.ofString(
+                            "{\"creditLimit\":\"99999.00\"}", StandardCharsets.UTF_8))
+                    .build());
+
+            assertEquals(403, response.statusCode(), response.body());
+            assertEquals(new BigDecimal(SEEDED_CREDIT_LIMIT), storedCreditLimit(),
+                    "a refused update must leave the stored limit as the seed loaded it");
+            assertEquals(0, storedEvents().size(), "and must publish nothing");
+        }
+
+        @Test
+        @DisplayName("a read from a foreign page is not refused, because it changes nothing")
+        void aReadFromAForeignPageIsNotRefused() {
+            HttpResponse<String> response = send(authorized(ADMIN_USERNAME, ADMIN_PASSWORD,
+                    "/accounts/" + SEEDED_ACCOUNT_ID)
+                    .header("Sec-Fetch-Site", "cross-site")
+                    .header("Origin", "https://attacker.example")
+                    .GET()
+                    .build());
+
+            assertEquals(200, response.statusCode(),
+                    "no chain here grants a cross-origin policy, so a browser withholds this "
+                            + "answer from the page that asked for it: " + response.body());
         }
     }
 
@@ -876,6 +1050,12 @@ class AccountControllerIT {
     /**
      * Starts a request builder carrying one identity's credential and the timeout.
      *
+     * <p>The cross-site header is set here rather than per call, because
+     * {@code config/CrossSiteRequestFilter} requires it on every state-changing request and a
+     * first-party client sets it on all of them. A browser form cannot set a header at all, which
+     * is exactly what separates this client from the forged submission
+     * {@link ForgedStateChangingRequests} measures.
+     *
      * @param username     the login name to present
      * @param password     the password to present
      * @param pathAndQuery the path, and the query string when one applies
@@ -887,6 +1067,7 @@ class AccountControllerIT {
         return HttpRequest.newBuilder(URI.create(baseUri() + pathAndQuery))
                 .header("Authorization", "Basic " + encoded)
                 .header("Accept", "application/json")
+                .header(CROSS_SITE_HEADER, "1")
                 .timeout(REQUEST_TIMEOUT);
     }
 

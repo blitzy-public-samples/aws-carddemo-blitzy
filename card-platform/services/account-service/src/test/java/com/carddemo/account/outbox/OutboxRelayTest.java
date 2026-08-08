@@ -22,6 +22,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashSet;
+import java.util.Locale;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
@@ -48,6 +49,7 @@ import org.springframework.core.annotation.AnnotatedElementUtils;
 import org.springframework.data.domain.Limit;
 import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.test.context.ContextConfiguration;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
@@ -56,6 +58,7 @@ import org.springframework.transaction.support.SimpleTransactionStatus;
 import org.springframework.transaction.support.TransactionCallback;
 import org.springframework.transaction.support.TransactionTemplate;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.tuple;
 import static org.awaitility.Awaitility.await;
 import tools.jackson.databind.ObjectMapper;
 
@@ -93,6 +96,13 @@ import tools.jackson.databind.ObjectMapper;
  * one. It keeps each topic, key and payload triple in call order, and it refuses a publish on
  * request. No test here starts a broker and none needs a created topic.
  *
+ * <p>The class annotation names that configuration outright. A group annotated {@code Nested}
+ * resolves its configuration from its own declared classes, so a group that declares none would
+ * otherwise leave Spring to detect the one nested here: Spring Framework 7.0 detects it, ignores
+ * it, and warns that 7.1 will stop ignoring it. Naming it on the class carries the one registration
+ * to every group under both lines, and the bean definitions of the module arrive alongside it from
+ * the class annotated {@code SpringBootConfiguration}.
+ *
  * <p><b>How rows reach the table.</b> {@link AbstractAccountPostgresTest} owns the one PostgreSQL
  * container of the module, and no container appears here. Most writing tests carry
  * {@link Transactional}; the scheduler and concurrency cases commit their rows and
@@ -107,6 +117,7 @@ import tools.jackson.databind.ObjectMapper;
  * topic name.
  */
 @DisplayName("OutboxRelay, the transactional sweep over claimed outbox_event rows")
+@ContextConfiguration(classes = OutboxRelayTest.RecordingPublisherConfiguration.class)
 class OutboxRelayTest extends AbstractAccountPostgresTest {
 
     /** Name of the one scheduled method of the relay. */
@@ -141,6 +152,32 @@ class OutboxRelayTest extends AbstractAccountPostgresTest {
 
     /** Row number {@link ConfiguredTopicOverride} writes. */
     private static final int OVERRIDE_ROW = 0x90;
+
+    /** The second event type this module writes, which {@code OutboxRelay} routes elsewhere. */
+    private static final String CUSTOMER_CONTEXT_EVENT_TYPE = "CustomerContextChanged";
+
+    /** Name {@code carddemo.kafka.topics.customer-context-changed} resolves to by default. */
+    private static final String CUSTOMER_CONTEXT_TOPIC = "customer.context-changed";
+
+    /** The property key {@code KafkaProducerConfig} owns for that destination. */
+    private static final String CONTEXT_TOPIC_PROPERTY =
+            "carddemo.kafka.topics.customer-context-changed";
+
+    /** Value {@link ConfiguredContextTopicOverride} sets {@value #CONTEXT_TOPIC_PROPERTY} to. */
+    private static final String OVERRIDDEN_CONTEXT_TOPIC = "customer.context-changed-under-test";
+
+    /** Row number {@link ConfiguredContextTopicOverride} writes. */
+    private static final int OVERRIDE_CONTEXT_ROW = 0x91;
+
+    /** An event type {@code OutboxRelay.topicFor} answers no destination for. */
+    private static final String UNCONFIGURED_EVENT_TYPE = "AccountRetired";
+
+    /**
+     * The placeholder a diagnostic reports in place of a destination the stored type names none for.
+     * {@code OutboxRelay} declares the same text privately, and
+     * {@code schemas/dead-letter-v1.json} has to accept it.
+     */
+    private static final String UNRESOLVED_DESTINATION = "no-configured-topic";
 
     /**
      * One payload whose keys run out of alphabetical order and whose spacing is irregular, with a
@@ -729,28 +766,220 @@ class OutboxRelayTest extends AbstractAccountPostgresTest {
                 .isEqualTo(DEFAULT_TOPIC);
     }
 
+    // =============================================================================================
+    // The second configured destination. OutboxRelay.topicFor answers two topics, and every
+    // assertion above writes AccountStateChanged, so the second arm of that switch was never taken.
+    // A relay that routed both types to the account topic, or that answered no topic for the customer
+    // type, would satisfy all of them.
+    //
+    // The two types are not interchangeable. AccountUpdateService writes one, the other, or both from
+    // one update depending on which record the caller changed, so a consumer of the account topic
+    // handed a customer payload would be handed a document its schema refuses, and a consumer of the
+    // customer topic would never learn of the change at all.
+    // =============================================================================================
+
+    @Test
+    @Transactional
+    @DisplayName("A customer context row is published to customer.context-changed")
+    void aCustomerContextRowReachesItsOwnTopic() {
+        OutboxEventEntity row = writeRow(0xa0, BASE_INSTANT, ACCOUNT_ID_LEADING_ZERO,
+                CUSTOMER_CONTEXT_EVENT_TYPE);
+        flushAndDetach();
+
+        relay.publishPendingEvents();
+
+        assertThat(markedMessages())
+                .as("the publication of the one customer context row")
+                .singleElement()
+                .satisfies(message -> {
+                    assertThat(message.topic())
+                            .as("destination of a customer context event")
+                            .isEqualTo(CUSTOMER_CONTEXT_TOPIC)
+                            .isNotEqualTo(DEFAULT_TOPIC);
+                    assertThat(message.key())
+                            .as("the key is the account identifier, leading zero kept")
+                            .isEqualTo(ACCOUNT_ID_LEADING_ZERO);
+                    assertThat(message.payload())
+                            .as("the payload column reaches the broker character for character")
+                            .isEqualTo(payloadOf(row));
+                });
+        assertThat(kafkaProducerConfig.customerContextChangedTopic())
+                .as("name %s resolves to with no override in place", CONTEXT_TOPIC_PROPERTY)
+                .isEqualTo(CUSTOMER_CONTEXT_TOPIC);
+    }
+
+    @Test
+    @Transactional
+    @DisplayName("One sweep carrying both types sends each to its own topic")
+    void oneSweepRoutesEachTypeToItsOwnTopic() {
+        OutboxEventEntity accountRow =
+                writeRow(0xa1, BASE_INSTANT, ACCOUNT_ID_LEADING_ZERO, EVENT_TYPE);
+        OutboxEventEntity customerRow = writeRow(0xa2, BASE_INSTANT.plusSeconds(1L),
+                ACCOUNT_ID_PLAIN, CUSTOMER_CONTEXT_EVENT_TYPE);
+        flushAndDetach();
+
+        relay.publishPendingEvents();
+
+        assertThat(markedMessages())
+                .as("both publications, in the order the sweep made them")
+                .extracting(PublishedMessage::topic, PublishedMessage::payload)
+                .containsExactly(tuple(DEFAULT_TOPIC, payloadOf(accountRow)),
+                        tuple(CUSTOMER_CONTEXT_TOPIC, payloadOf(customerRow)));
+    }
+
+    /**
+     * The retry path of the second type, which shares one backoff with the first.
+     *
+     * <p>The immediate sweep in the middle is the assertion that the backoff applies to this type
+     * too. A row retried by the very next sweep holds every row of its account behind it.
+     */
+    @Test
+    @Transactional
+    @DisplayName("A refused customer context publish waits for its backoff, then is published")
+    void aRefusedCustomerContextPublishWaitsForItsBackoff() {
+        OutboxEventEntity row = writeRow(0xa3, BASE_INSTANT, ACCOUNT_ID_LEADING_ZERO,
+                CUSTOMER_CONTEXT_EVENT_TYPE);
+        flushAndDetach();
+        publisher.refuseEveryPublish();
+
+        relay.publishPendingEvents();
+        flushAndDetach();
+
+        OutboxEventEntity refused = outboxEvents.findById(row.getEventId()).orElseThrow();
+        assertThat(refused.isPublished())
+                .as("published column after the refused publish")
+                .isFalse();
+        assertThat(refused.getAttemptCount())
+                .as("the refused attempt was recorded against the row")
+                .isEqualTo(1);
+
+        publisher.acceptEveryPublish();
+        relay.publishPendingEvents();
+        flushAndDetach();
+
+        assertThat(outboxEvents.findById(row.getEventId()).orElseThrow().isPublished())
+                .as("published column while the row is still inside its backoff")
+                .isFalse();
+
+        makeDueNow(row.getEventId());
+        relay.publishPendingEvents();
+        flushAndDetach();
+
+        assertThat(outboxEvents.findById(row.getEventId()).orElseThrow().isPublished())
+                .as("published column after the sweep that follows the backoff")
+                .isTrue();
+        assertThat(markedMessages())
+                .as("the destination every attempt of this row carried")
+                .extracting(PublishedMessage::topic)
+                .containsOnly(CUSTOMER_CONTEXT_TOPIC);
+    }
+
+    /**
+     * An event type the switch answers no topic for, read against a real table.
+     *
+     * <p>{@code OutboxRelayTerminalPathTest} asserts the same rule over a recording repository, which
+     * is where the bookkeeping order is pinned. This one asserts it against the migrated table and the
+     * container-managed relay, so the row's own columns carry the outcome: the attempt count rises,
+     * the row reaches {@code ABANDONED} on schedule rather than being retried for ever, and the
+     * diagnostic names itself on the dead-letter topic.
+     */
+    @Test
+    @Transactional
+    @DisplayName("An event type with no configured topic is abandoned and dead-lettered")
+    void anUnconfiguredEventTypeIsAbandonedAndDeadLettered() {
+        OutboxEventEntity row = writeRow(0xa4, BASE_INSTANT, ACCOUNT_ID_LEADING_ZERO,
+                UNCONFIGURED_EVENT_TYPE);
+        flushAndDetach();
+
+        for (int sweep = 0; sweep < OutboxEventEntity.MAX_DELIVERY_ATTEMPTS; sweep++) {
+            makeDueNow(row.getEventId());
+            relay.publishPendingEvents();
+            flushAndDetach();
+        }
+
+        OutboxEventEntity spent = outboxEvents.findById(row.getEventId()).orElseThrow();
+        assertThat(spent.getAttemptCount())
+                .as("every sweep recorded its attempt, so the row could reach its bound")
+                .isEqualTo(OutboxEventEntity.MAX_DELIVERY_ATTEMPTS);
+        assertThat(spent.getRelayState())
+                .as("a row naming no topic is given up on rather than retried for ever")
+                .isEqualTo(OutboxEventEntity.RelayState.ABANDONED);
+        assertThat(spent.getDeadLetterState())
+                .as("the diagnostic this row owed was discharged")
+                .isEqualTo(OutboxEventEntity.DeadLetterState.PUBLISHED);
+        assertThat(publisher.everyMessage())
+                .as("the one publication a row naming no topic produces")
+                .filteredOn(message -> DEAD_LETTER_TOPIC.equals(message.topic()))
+                .singleElement()
+                .satisfies(letter -> assertThat(letter.payload())
+                        .contains(row.getEventId().toString())
+                        .contains(UNCONFIGURED_EVENT_TYPE)
+                        .contains(UNRESOLVED_DESTINATION));
+        assertThat(publisher.everyMessage())
+                .as("no publication was addressed to either configured topic")
+                .extracting(PublishedMessage::topic)
+                .doesNotContain(DEFAULT_TOPIC, CUSTOMER_CONTEXT_TOPIC);
+    }
+
+    /**
+     * The customer destination under a different value for {@value #CONTEXT_TOPIC_PROPERTY}.
+     *
+     * <p>{@link TestPropertySource} on this class builds a third application context, and the relay
+     * reads the customer destination from that context. The account destination is left alone, so the
+     * two are shown to be separately configurable rather than one name serving both.
+     */
+    @Nested
+    @TestPropertySource(properties = CONTEXT_TOPIC_PROPERTY + "=" + OVERRIDDEN_CONTEXT_TOPIC)
+    @DisplayName("The customer destination under an overridden property")
+    class ConfiguredContextTopicOverride {
+
+        /**
+         * Registers {@link RecordingEventPublisher} in the third application context.
+         *
+         * <p>A Spring test context takes the configuration classes declared inside its own test
+         * class, so this declaration is not optional: without it the context of this class carries no
+         * recording publisher and the enclosing instance cannot be injected.
+         */
+        @TestConfiguration
+        static class ContextOverridingRecordingPublisherConfiguration
+                extends RecordingPublisherConfiguration {
+        }
+
+        @Test
+        @Transactional
+        @DisplayName("The sweep publishes to the overridden customer topic name")
+        void theSweepPublishesToTheOverriddenContextTopic() {
+            writeRow(OVERRIDE_CONTEXT_ROW, BASE_INSTANT, ACCOUNT_ID_LEADING_ZERO,
+                    CUSTOMER_CONTEXT_EVENT_TYPE);
+            flushAndDetach();
+
+            relay.publishPendingEvents();
+
+            assertThat(markedMessages())
+                    .as("publications the sweep recorded in the overriding context")
+                    .extracting(PublishedMessage::topic)
+                    .containsExactly(OVERRIDDEN_CONTEXT_TOPIC);
+            assertThat(kafkaProducerConfig.customerContextChangedTopic())
+                    .as("name %s resolves to under the override", CONTEXT_TOPIC_PROPERTY)
+                    .isEqualTo(OVERRIDDEN_CONTEXT_TOPIC);
+            assertThat(kafkaProducerConfig.accountStateChangedTopic())
+                    .as("the account destination is untouched by that override")
+                    .isEqualTo(DEFAULT_TOPIC);
+        }
+    }
+
     /**
      * The same sweep under a different value for {@value #TOPIC_PROPERTY}.
      *
      * <p>{@link TestPropertySource} on this class builds a second application context, and the
-     * relay reads the topic name from that context.
+     * relay reads the topic name from that context. {@link RecordingEventPublisher} reaches that
+     * second context from the class annotation of the enclosing class, so this group declares no
+     * configuration of its own.
      */
     @Nested
     @TestPropertySource(properties = TOPIC_PROPERTY + "=" + OVERRIDDEN_TOPIC)
     @DisplayName("The published topic under an overridden property")
     class ConfiguredTopicOverride {
-
-        /**
-         * Registers {@link RecordingEventPublisher} in the second application context.
-         *
-         * <p>A Spring test context takes the configuration classes declared inside its own test
-         * class. This declaration inherits the one bean method of
-         * {@link RecordingPublisherConfiguration} and registers it under the same name.
-         */
-        @TestConfiguration
-        static class OverridingRecordingPublisherConfiguration
-                extends RecordingPublisherConfiguration {
-        }
 
         @Test
         @Transactional
@@ -846,6 +1075,29 @@ class OutboxRelayTest extends AbstractAccountPostgresTest {
     }
 
     /**
+     * Stores one pending row of a named event type.
+     *
+     * <p>{@link #writeRow(int, Instant, String)} writes {@value #EVENT_TYPE}, which is one of the two
+     * types this relay routes. This overload names the type, so a test can write the other one, or one
+     * the relay routes nowhere.
+     *
+     * @param rowNumber the row number, which fixes the event identifier and the payload
+     * @param createdAt the creation instant the pending finder orders by
+     * @param accountId the aggregate identifier, which becomes the message key
+     * @param eventType the stored event type the relay resolves a destination from
+     * @return the stored row
+     */
+    private OutboxEventEntity writeRow(int rowNumber, Instant createdAt, String accountId,
+            String eventType) {
+        UUID identifier = eventId(rowNumber);
+        seededEventIds.add(identifier);
+        OutboxEventEntity row = new OutboxEventEntity(identifier, eventType,
+                payloadFor(rowNumber), accountId, createdAt);
+        outboxEvents.save(row);
+        return row;
+    }
+
+    /**
      * Builds one unpublished row and records its identifier for {@link #removeSeededRows()}.
      *
      * @param rowNumber the row number, which the payload and the identifier both carry
@@ -872,7 +1124,7 @@ class OutboxRelayTest extends AbstractAccountPostgresTest {
 
     /** Returns one eleven-digit account identifier for a row number. */
     private static String accountIdFor(int rowNumber) {
-        return String.format("%011d", 1_000L + rowNumber);
+        return String.format(Locale.ROOT, "%011d", 1_000L + rowNumber);
     }
 
     /** Returns valid account properties with the supplied claim size. */
@@ -897,7 +1149,7 @@ class OutboxRelayTest extends AbstractAccountPostgresTest {
                                 java.time.Duration.ofSeconds(30L), 30_000L,
                                 java.time.Duration.ofSeconds(10L)),
                         retentionHours),
-                new AccountProperties.ProcessedEvent(168L),
+                new AccountProperties.ProcessedEvent(720L, 168L),
                 new AccountProperties.Retention(3_600_000L),
                 new AccountProperties.Write(3_000L));
     }

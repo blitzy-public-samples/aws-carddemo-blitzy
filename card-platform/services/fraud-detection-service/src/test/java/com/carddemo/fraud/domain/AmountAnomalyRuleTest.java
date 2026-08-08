@@ -46,11 +46,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class AmountAnomalyRuleTest {
 
     /**
-     * Card token of the fixture card number, sixty-four lower-case hexadecimal characters.
+     * A card token, sixty-four lower-case hexadecimal characters.
      *
-     * <p>Additive. No source field exists. {@code com.carddemo.cobol.PanMasker#tokenOf} writes this
-     * value from the full card number {@code 4859452612877065}, and the width and case are that
-     * method's.</p>
+     * <p>ADDITIVE: no source field exists. {@code com.carddemo.cobol.PanMasker#tokenOf} derives a
+     * token from a full card number, and the width and case are that method's.</p>
      */
     private static final String CARD_TOKEN =
             "f8da0217fb8bd2e172d427a2ef66d54656a59baa9fe8f9bc2ce9d383b90e1173";
@@ -287,7 +286,6 @@ class AmountAnomalyRuleTest {
         }
     }
 
-    /** Builds one event carrying {@code amount}; every other value is the first fixture record's. */
     private static TransactionAuthorized authorizedFor(String amount) {
         return new TransactionAuthorized(EVENT_ID, TransactionAuthorized.EVENT_TYPE,
                 EventEnvelope.SCHEMA_VERSION, OCCURRED_AT, ACCOUNT_IDENTIFIER,
@@ -297,32 +295,27 @@ class AmountAnomalyRuleTest {
                 TransactionAuthorized.CURRENCY);
     }
 
-    /** Returns the fields the rule declares, leaving out any the compiler added. */
     private static List<Field> declaredFields() {
         return Arrays.stream(SUBJECT.getDeclaredFields())
                 .filter(field -> !field.isSynthetic()).toList();
     }
 
-    /** Reports whether {@code type} is a repository, a sibling risk rule or a clock. */
     private static boolean isCollaboratorType(Class<?> type) {
         String name = type.getName();
         return name.endsWith("Repository") || name.startsWith("org.springframework.data.")
                 || RiskRule.class.isAssignableFrom(type) || "java.time.Clock".equals(name);
     }
 
-    /** Returns the placeholder text of every {@code @Value} on the single constructor. */
     private static List<String> constructorPlaceholders() {
         return Arrays.stream(SUBJECT.getDeclaredConstructors()[0].getParameters())
                 .map(parameter -> parameter.getAnnotation(Value.class))
                 .filter(annotation -> annotation != null).map(Value::value).toList();
     }
 
-    /** Returns the property key {@code placeholder} names, the text ahead of its default. */
     private static String keyOf(String placeholder) {
         return placeholder.replace("${", "").replace("}", "").split(":", 2)[0];
     }
 
-    /** Returns the default {@code placeholder} carries, the text following its first colon. */
     private static String defaultOf(String placeholder) {
         String[] segments = placeholder.replace("${", "").replace("}", "").split(":", 2);
         return segments.length > 1 ? segments[1] : "";

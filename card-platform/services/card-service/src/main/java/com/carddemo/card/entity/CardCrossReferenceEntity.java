@@ -46,8 +46,10 @@ import java.util.UUID;
  * {@code app/csd/CARDDEMO.CSD:L37} and {@code CXACAIX} at {@code app/csd/CARDDEMO.CSD:L63} appear
  * in no card program.</p>
  *
- * <p>Events keep these rows current. No method here mutates a field, and an event-driven upsert
- * replaces a row whole.</p>
+ * <p>No listener of this service consumes an event, so no event maintains these rows: they hold
+ * what {@code src/main/resources/db/migration/V2__seed.sql} loaded.
+ * {@link #markObserved(UUID, Instant, Instant)} is the one method that mutates a field, and it
+ * mutates only the three provenance columns.</p>
  *
  * <p>The key strategy comes from the Job Control Language (JCL) member that defines the Virtual
  * Storage Access Method (VSAM) dataset. {@code KEYS(16 0)} at {@code app/jcl/XREFFILE.jcl:L43}
@@ -125,14 +127,12 @@ public class CardCrossReferenceEntity {
      * Customer identifier. {@code XREF-CUST-ID PIC 9(09)} at {@code app/cpy/CVACT03Y.cpy:L6}.
      *
      * <p>Column {@code customer_id CHAR(9) NOT NULL}, nine bytes at offset 16 of the 50-byte
-     * record. No key and no index in {@code app/jcl/XREFFILE.jcl} names this field. Record one of
-     * {@code app/data/ASCII/cardxref.txt} carries {@code 000000050} here, and the column holds
-     * those nine characters.</p>
+     * record. No key and no index in {@code app/jcl/XREFFILE.jcl} names this field.</p>
      *
      * <p>The field is a {@link String} and not a number. {@code PIC 9(09)} is a display field nine
-     * characters wide, and a numeric column stores {@code 000000050} as fifty and returns
-     * {@code 50}, which is a nine-character identifier reduced to two. The column check
-     * constraint {@code ck_card_xref_customer_id_digits} holds the width and the digit class.</p>
+     * characters wide, and a numeric column drops the leading zeros a value there carries. The
+     * column check constraint {@code ck_card_xref_customer_id_digits} holds the width and the digit
+     * class.</p>
      */
     @Column(name = "customer_id", nullable = false,
             length = PicClause.XREF_CUST_ID_WIDTH,
@@ -146,8 +146,8 @@ public class CardCrossReferenceEntity {
      * {@code idx_card_xref_account_id}. Eleven bytes at offset 25, which is where
      * {@code KEYS(11,25)} at {@code app/jcl/XREFFILE.jcl:L74} points.</p>
      *
-     * <p>This picture clause fixes the account-identifier width for the whole platform. Column
-     * {@code outbox_event.aggregate_id} is {@code VARCHAR(11)} in
+     * <p>This picture clause fixes the account-identifier width for this service. Column
+     * {@code outbox_event.aggregate_id} is {@code CHAR(11)} in
      * {@code src/main/resources/db/migration/V1__schema.sql}, and the shared event envelope holds
      * its aggregate identifier to eleven digits. This column now holds the same eleven characters
      * those two carry, so the value moves from row to event key unchanged and no rendering step
@@ -199,15 +199,16 @@ public class CardCrossReferenceEntity {
     /**
      * No-argument constructor for the persistence provider.
      *
-     * <p>Hibernate calls this constructor to materialise a row, then populates the three fields
-     * directly. A row read from the database therefore reaches no guard below. Application code
-     * calls {@link #CardCrossReferenceEntity(String, String, String)}.</p>
+     * <p>Hibernate calls this constructor to materialise a row, then populates the fields
+     * directly, so a row read from the database reaches no guard below. Application code calls
+     * {@link #CardCrossReferenceEntity(String, String, String, Instant)}.</p>
      */
     protected CardCrossReferenceEntity() {
     }
 
     /**
-     * Builds one cross-reference row from the three mapped fields, in copybook order.
+     * One cross-reference row: the three mapped fields in copybook order, then the moment this
+     * service observed them.
      *
      * @param cardNumber the full card number, exactly
      *                   {@value PicClause#XREF_CARD_NUM_WIDTH} characters wide
@@ -215,7 +216,9 @@ public class CardCrossReferenceEntity {
      *                   {@value PicClause#XREF_CUST_ID_WIDTH} digits
      * @param accountId  the account identifier, exactly
      *                   {@value PicClause#XREF_ACCT_ID_WIDTH} digits
-     * @throws NullPointerException     if any argument is {@code null}
+     * @param observedAt when this service observed the row, or {@code null} for a seeded row that
+     *                   no observation has refreshed
+     * @throws NullPointerException     if any of the first three arguments is {@code null}
      * @throws IllegalArgumentException if the card number is not
      *                                  {@value PicClause#XREF_CARD_NUM_WIDTH} characters wide,
      *                                  or if either identifier is the wrong width or holds a

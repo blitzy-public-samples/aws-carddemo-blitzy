@@ -34,9 +34,10 @@ import org.springframework.context.annotation.Configuration;
  * {@code posting} operation, so the three transactional paths of this service report their failures
  * on one series with one bounded tag rather than on three names.
  *
- * <p>Every meter surfaces under {@code /actuator}, where the service exposes
- * {@code health,metrics,prometheus} and answers its container probe at
- * {@code http://localhost:8080/actuator/health}. Every meter carries the bounded
+ * <p>Every meter surfaces under {@code /actuator} on the management port, which
+ * {@code application.yml} sets to 9080 and never the service port. The service exposes
+ * {@code health,metrics,prometheus} there and answers its container probe at
+ * {@code http://localhost:9080/actuator/health}. Every meter carries the bounded
  * {@code service=account-service} tag. No meter name holds a
  * Social Security Number or a government-issued identifier, the two customer fields declared at
  * {@code app/cpy/CVCUS01Y.cpy:L17-L18}.
@@ -72,8 +73,6 @@ public class ObservabilityConfig {
     public static final String POSTING_OPERATION = "posting";
 
     /**
-     * Registers the account meter set and publishes it as one injectable bean.
-     *
      * @param registry the meter registry Spring Boot supplies
      * @return the facade every measured path in this service records through
      */
@@ -96,36 +95,21 @@ public class ObservabilityConfig {
      * The recording surface of the account service. One method names one measured path, so a
      * caller injects {@code AccountMeters} and calls the method that matches the work it just did.
      *
-     * <p>No COBOL program declares a meter. The two counters below track the two totals
-     * the batch posting program printed, and the eight remaining meters have no source ancestor.
+     * <p>No COBOL program declares a meter, so every meter here is additive. Thirteen named meters
+     * are declared below, and {@code carddemo.account.transaction.failures} carries three series
+     * under its bounded {@code operation} tag, one each for {@code update}, {@code cycle-close} and
+     * {@code posting}. Sixteen series in total.
      *
      * <p>Adding a measurement means adding one meter field and one record method here.
      *
-     * <p>The path that calls each method: {@code domain/AccountUpdateService.java} calls
-     * {@link AccountMeters#recordUpdateLatency(Duration)},
-     * {@link AccountMeters#recordUpdateApplied()} and
-     * {@link AccountMeters#recordValidationFailure()}, with
-     * {@link AccountMeters#recordUpdateFailure()} on rollback;
-     * {@code domain/BillingCycleService.java} calls
-     * {@link AccountMeters#recordCycleClosed()} or
-     * {@link AccountMeters#recordCycleCloseFailure()}; and {@code outbox/OutboxRelay.java} calls
-     * {@link AccountMeters#recordOutboxPublished(long)},
-     * {@link AccountMeters#recordPublishFailure()},
-     * {@link AccountMeters#recordOutboxAbandoned()},
-     * {@link AccountMeters#recordDeadLetterPublished()} and
-     * {@link AccountMeters#recordDeadLetterFailure()};
-     * {@code messaging/TransactionPostedConsumer.java} calls
-     * {@link AccountMeters#recordEventConsumed()},
-     * {@link AccountMeters#recordPostingLatency(Duration)},
-     * {@link AccountMeters#recordPostingApplied()},
-     * {@link AccountMeters#recordPostingDuplicateSkipped()} and
-     * {@link AccountMeters#recordPostingFailure()}; and {@code config/KafkaConsumerConfig.java}
-     * calls the two dead-letter methods for a record it routes. The relay is the sole caller of the
-     * five relay methods
-     * and records them once its transaction has committed, so no publisher, repository or template
-     * increments a meter behind it. The events-consumed counter has no caller and takes none. Every
-     * meter registers at start-up, so each one is scrapable before its caller records against
-     * it.</p>
+     * <p>Four callers record: {@code domain/AccountUpdateService} the four update meters,
+     * {@code domain/BillingCycleService} the two cycle-close meters, {@code outbox/OutboxRelay} the
+     * five relay meters, and {@code messaging/TransactionPostedConsumer} the five consumption
+     * meters including {@link AccountMeters#recordEventConsumed()}.
+     * {@code config/KafkaConsumerConfig} records the two dead-letter meters for a record it routes.
+     * The relay records once its transaction has committed, so no publisher, repository or template
+     * increments a meter behind it. Every meter registers at start-up, so each one is scrapable
+     * before its caller first records against it.</p>
      */
     public static final class AccountMeters {
 
@@ -158,8 +142,8 @@ public class ObservabilityConfig {
         /**
          * Duplicate deliveries the processed-event marker suppressed.
          *
-         * <p>Kafka delivers at least once, so this rising is ordinary rather than a fault. It rising
-         * without {@link #postingApplied} rising is the signal that a partition is being redelivered.
+         * <p>Kafka delivers at least once, so a rise here is ordinary rather than a fault. A rise
+         * without {@link #postingApplied} rising signals that a partition is being redelivered.
          */
         private final Counter postingDuplicatesSkipped;
 
@@ -170,9 +154,7 @@ public class ObservabilityConfig {
          */
         private final Timer updateLatency;
 
-        /**
-         * Account updates that committed. with no COBOL ancestor.
-         */
+        /** Account updates that committed. No COBOL ancestor. */
         private final Counter updateApplied;
 
         /**
@@ -229,9 +211,6 @@ public class ObservabilityConfig {
         private final Map<String, Counter> transactionFailures;
 
         /**
-         * Registers every meter against {@code registry}. Each meter appears under
-         * {@code /actuator/metrics} from startup, before any path records against it.
-         *
          * @param registry the meter registry every meter registers against
          */
         AccountMeters(MeterRegistry registry) {
@@ -289,8 +268,6 @@ public class ObservabilityConfig {
         }
 
         /**
-         * Reads the events-consumed count.
-         *
          * @return the number of posted-transaction deliveries this service has read
          */
         public double eventsConsumedTotal() {
@@ -308,20 +285,16 @@ public class ObservabilityConfig {
         }
 
         /**
-         * Records how long one posted-transaction delivery took.
-         *
          * @param elapsed the wall time of the delivery, whether it committed or failed
          */
         public void recordPostingLatency(Duration elapsed) {
             postingLatency.record(elapsed);
         }
 
-        /** Records one posted amount applied to the account record. */
         public void recordPostingApplied() {
             postingApplied.increment();
         }
 
-        /** Records one duplicate delivery the processed-event marker suppressed. */
         public void recordPostingDuplicateSkipped() {
             postingDuplicatesSkipped.increment();
         }
@@ -339,8 +312,6 @@ public class ObservabilityConfig {
         }
 
         /**
-         * Records how long one account update took.
-         *
          * @param elapsed the wall time the update took, from request entry to commit
          */
         public void recordUpdateLatency(Duration elapsed) {

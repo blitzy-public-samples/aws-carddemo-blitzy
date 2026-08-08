@@ -27,10 +27,10 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
-import org.mockito.ArgumentMatchers;
 import org.springframework.data.domain.Limit;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -681,13 +681,14 @@ class NotificationServiceTest {
     private static final class RecordingAttemptLog implements NotificationLogRepository {
 
         /**
-         * Answers the unbounded retention delete by removing nothing.
+         * Answers the bounded retention delete by removing nothing.
          *
          * @param horizon ignored
+         * @param limit   ignored
          * @return 0, because this fake holds every row handed to it
          */
         @Override
-        public int deleteAttemptsBefore(java.time.Instant horizon) {
+        public int deleteRenderedBefore(java.time.Instant horizon, int limit) {
             return 0;
         }
 
@@ -1585,7 +1586,7 @@ class NotificationServiceTest {
      * {@code WS-TOTAL-AMT} as its receiving field and carries no {@code ON SIZE ERROR} phrase, so a
      * sum needing a tenth integer digit loses that digit at the addition and every later addition
      * works from the truncated value. The total this service reports through
-     * {@code GET /notifications/{cardToken}} is therefore the same truncated value the statement
+     * {@code GET /notifications/{cardNumber}} is therefore the same truncated value the statement
      * renders, which is the whole point: an endpoint that answered with an untruncated total would
      * disagree with the statement for the same rows, and one that tried to serialize ten integer
      * digits into the nine-digit contract would fail the request outright.</p>
@@ -1659,7 +1660,7 @@ class NotificationServiceTest {
          * Holds that the total an API response reports equals the total a statement renders.
          *
          * <p>Both come from the one accumulation, so a caller reading
-         * {@code GET /notifications/{cardToken}} and a cardholder reading the statement see the same
+         * {@code GET /notifications/{cardNumber}} and a cardholder reading the statement see the same
          * digits. This is the property that failed before the store was performed where the source
          * performs it: the endpoint assembled an untruncated ten-digit total, the response contract
          * of nine integer digits refused it, and the request answered {@code 500} for as long as
@@ -1790,12 +1791,18 @@ class NotificationServiceTest {
      * {@code card-platform/docs/decision-log.md}.</p>
      */
     @Nested
-    @DisplayName("The delivery-attempt row")
-    class DeliveryAttemptRow {
+    @DisplayName("The rendered-alert row")
+    class RenderedAlertRow {
 
         /**
          * Field-name fragments that would name a rendered document. The writes at
          * {@code app/cbl/CBSTM03A.CBL:L488-L502} emit one and record none.
+         *
+         * <p>The fragments are matched against text-holding fields alone. {@code renderedAt} is an
+         * {@link java.time.Instant} and contains the fragment {@code rendered}, and a timestamp
+         * cannot hold a document however it is named. Testing the type rather than exempting the
+         * name keeps the check strict where it matters: any new {@code String} field naming any of
+         * these fragments still fails.</p>
          */
         private static final List<String> DOCUMENT_FIELD_FRAGMENTS = List.of(
                 "body", "content", "payload", "document", "rendered", "text", "html", "markup",
@@ -1838,7 +1845,7 @@ class NotificationServiceTest {
             assertThat(saved.getChannel()).isEqualTo(RenderedFormat.PLAIN_TEXT.name());
             assertThat(saved.getTransactionId()).isEqualTo(NotificationRenderer
                     .pic(TRANSACTION_ID, NotificationLogEntity.TRANSACTION_ID_LENGTH));
-            assertThat(saved.getAttemptedAt()).isEqualTo(ATTEMPT_INSTANT);
+            assertThat(saved.getRenderedAt()).isEqualTo(ATTEMPT_INSTANT);
 
             service.renderPostedTransactionAlert(CARD_TOKEN, FULL_CARD_NUMBER, TRANSACTION_ID, ACCOUNT_ID,
                     CURRENT_BALANCE, cardholder(), RenderedFormat.PLAIN_TEXT);
@@ -1909,17 +1916,22 @@ class NotificationServiceTest {
         }
 
         /**
-         * Holds that the attempt aggregate declares six fields and no rendered document.
+         * Holds that the rendered-alert aggregate declares seven fields and no rendered document.
          *
-         * <p>The six are the identifier, account identifier, masked card number, transaction identifier at
-         * the width {@code TRNX-ID PIC X(16)} at {@code app/cpy/COSTM01.CPY:L23} declares, the
-         * format name and the instant of the attempt. The writes at
+         * <p>The seven are the identifier, the card token, the masked card number, the transaction
+         * identifier at the width {@code TRNX-ID PIC X(16)} at {@code app/cpy/COSTM01.CPY:L23}
+         * declares, the format name, the instant rendering finished and the outcome. The writes at
          * {@code app/cbl/CBSTM03A.CBL:L488-L502} emit the document to a dataset, and no column
          * holds it.</p>
+         *
+         * <p>{@code outcome} is the seventh and it arrived with
+         * {@code db/migration/V5__rendered_not_delivered.sql}. A security review found this table
+         * described as a delivery attempt while nothing on this platform sends anything, so the row
+         * now carries that fact rather than the prose carrying it.</p>
          */
         @Test
-        @DisplayName("The attempt aggregate declares six fields and none of them holds a document")
-        void theAttemptAggregateDeclaresSixFieldsAndNoDocument() {
+        @DisplayName("The rendered-alert aggregate declares seven fields and none holds a document")
+        void theRenderedAlertAggregateDeclaresSevenFieldsAndNoDocument() {
             List<Field> declared = new ArrayList<>();
             for (Field field : NotificationLogEntity.class.getDeclaredFields()) {
                 if (!Modifier.isStatic(field.getModifiers()) && !field.isSynthetic()) {
@@ -1927,14 +1939,48 @@ class NotificationServiceTest {
                 }
             }
 
-            assertThat(declared).hasSize(6);
+            assertThat(declared).hasSize(7);
             assertThat(declared).extracting(Field::getName).containsExactlyInAnyOrder(
                     "id", "cardToken", "maskedCardNumber", "transactionId", "channel",
-                    "attemptedAt");
+                    "renderedAt", "outcome");
             for (Field field : declared) {
+                if (!CharSequence.class.isAssignableFrom(field.getType())
+                        && !byte[].class.equals(field.getType())) {
+                    continue;
+                }
                 assertThat(DOCUMENT_FIELD_FRAGMENTS)
                         .noneMatch(fragment -> field.getName().toLowerCase().contains(fragment));
             }
+        }
+
+        /**
+         * Holds that every row this service writes says it was rendered and not sent.
+         *
+         * <p>This is the assertion the finding asked for. The service reaches no mail, message,
+         * webhook or push gateway, and the value below is the only one
+         * {@code ck_notification_log_outcome} permits, so a reader of the table cannot mistake a
+         * row for evidence that a cardholder was told anything.</p>
+         */
+        @Test
+        @DisplayName("Every stored row carries RENDERED_NOT_SENT, and no caller can change it")
+        void everyStoredRowCarriesRenderedNotSent() {
+            holdRows(CARD_TOKEN, List.of(
+                    row("0000000000000001", storedDescription('A', 'B'), "10.00")));
+            NotificationService service = serviceWith(textRenderer);
+
+            service.renderPostedTransactionAlert(CARD_TOKEN, FULL_CARD_NUMBER, TRANSACTION_ID,
+                    ACCOUNT_ID, CURRENT_BALANCE, cardholder(), RenderedFormat.PLAIN_TEXT);
+
+            assertThat(attemptLog.savedRows())
+                    .isNotEmpty()
+                    .allSatisfy(saved -> assertThat(saved.getOutcome())
+                            .isEqualTo(NotificationLogEntity.RENDERED_NOT_SENT));
+            assertThat(Arrays.stream(NotificationLogEntity.class.getConstructors())
+                    .flatMap(constructor -> Arrays.stream(constructor.getParameterTypes()))
+                    .filter(String.class::equals)
+                    .count())
+                    .as("the public constructor takes four strings, none of them the outcome")
+                    .isEqualTo(4L);
         }
 
         /**

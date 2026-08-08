@@ -28,6 +28,16 @@ class KafkaEventPublisherTest {
 
     private static final String DECLINED_TOPIC = "transaction.declined";
 
+    /**
+     * The dead-letter destination this publisher is configured with.
+     *
+     * <p>{@code outbox/OutboxRelay} publishes the diagnostic of an abandoned row through this same
+     * seam, so the topic has to be bound here or every such diagnostic would be refused before it
+     * started. The value matches {@code carddemo.kafka.topics.dead-letter} in
+     * {@code application.yml}.
+     */
+    private static final String DEAD_LETTER_TOPIC = "carddemo.dead-letter";
+
     private static final String ACCOUNT_ID = "00000000007";
 
     private static final String TRANSACTION_ID = "0000001000000001";
@@ -53,7 +63,7 @@ class KafkaEventPublisherTest {
                 org.mockito.ArgumentMatchers.anyString()))
                 .thenReturn(CompletableFuture.completedFuture(result));
         publisher = new KafkaEventPublisher(template, AUTHORIZED_TOPIC, DECLINED_TOPIC,
-                java.time.Duration.ofSeconds(30L));
+                DEAD_LETTER_TOPIC, java.time.Duration.ofSeconds(30L));
         jsonMapper = JsonMapper.builder().build();
     }
 

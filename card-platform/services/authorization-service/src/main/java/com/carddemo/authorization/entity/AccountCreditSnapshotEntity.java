@@ -16,10 +16,11 @@ import java.util.UUID;
 /**
  * Credit and expiry values the authorization decline rules read for one account.
  *
- * <p>Eight columns are mapped: five carrying fields of {@code app/cpy/CVACT01Y.cpy}, and three
- * carrying the provenance and age of the copy. The account service owns the whole account record.
- * {@code AccountStateChangedConsumer} keeps these rows current after the fixture-backed seed load.
- * The table is
+ * <p>Eleven columns are mapped: five carrying fields of {@code app/cpy/CVACT01Y.cpy}, three carrying
+ * the provenance and age of the copy, and three carrying the exposure this service has approved and
+ * the account service has not yet reported back. The account service owns the whole account record.
+ * {@code AccountStateChangedConsumer} keeps these rows current after the fixture-backed seed load, and
+ * releases a reservation as the posting it anticipates is reported. The table is
  * {@code account_credit_snapshot}, created by
  * {@code src/main/resources/db/migration/V1__schema.sql}, which is authoritative for the column
  * and constraint definitions.</p>
@@ -70,6 +71,17 @@ import java.util.UUID;
         indexes = @Index(name = "ix_account_credit_snapshot_observed_at",
                 columnList = "observed_at"))
 public class AccountCreditSnapshotEntity {
+
+    /**
+     * Zero reserved exposure, at the scale both cycle accumulators carry.
+     *
+     * <p>Both reservation columns are declared {@code NOT NULL DEFAULT 0}, so a row read from the
+     * database always carries a value. This constant is what an instance built by the constructor
+     * carries before any reservation is written, so a caller reading the effective figures of a
+     * freshly built row receives zero rather than an absence.
+     */
+    public static final BigDecimal NO_RESERVED_EXPOSURE =
+            BigDecimal.ZERO.setScale(PicClause.ACCT_CURR_CYC_CREDIT_SCALE);
 
     /**
      * {@code ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT01Y.cpy:L5}, held as {@code CHAR(11)}:
@@ -128,6 +140,68 @@ public class AccountCreditSnapshotEntity {
             precision = PicClause.ACCT_CURR_CYC_DEBIT_PRECISION,
             scale = PicClause.ACCT_CURR_CYC_DEBIT_SCALE)
     private BigDecimal currentCycleDebit;
+
+    // ------------------------------------------------------------------------------------
+    // Reserved cycle exposure. No COBOL ancestor, and the reason is a difference in timing
+    // rather than in arithmetic. app/cbl/CBTRN02C.cbl posts each record before it validates
+    // the next one, because paragraph 2000-POST-TRANSACTION at :L424-L444 runs inside the read
+    // loop and the account rewrite at :L545-L560 has already moved both accumulators by the
+    // time :L403-L405 reads them again. Every earlier approval of the run is therefore visible
+    // to the overlimit test at :L407.
+    //
+    // Here the account service owns the accumulators and reports them back through an event,
+    // four asynchronous hops after the decision. Between the two, the columns above still
+    // report the exposure the account carried BEFORE this service approved. The two columns
+    // below carry what this service has approved and not yet had reported back, so
+    // domain/rules/CreditLimitRule reads the figures the account would carry had every
+    // approved transaction already posted. Nothing about the arithmetic changes: the source
+    // truncation, the narrower WS-TEMP-BAL working field and the refund sign convention all
+    // stay exactly where they were.
+    // ------------------------------------------------------------------------------------
+
+    /**
+     * Approved exposure of zero or more this service has committed and the account service has not
+     * yet reported back, accumulated as {@code app/cbl/CBTRN02C.cbl:L549} accumulates
+     * {@code ACCT-CURR-CYC-CREDIT}: an amount of zero or more is added, so the column is never
+     * negative and a check constraint in
+     * {@code src/main/resources/db/migration/V7__cycle_exposure_reservation.sql} holds that.
+     *
+     * <p>Read through {@link #effectivePendingCycleCredit(Instant)}, which answers zero once
+     * {@link #getPendingExpiresAt()} has passed. {@code domain/CycleExposureReservation} is the only
+     * writer.
+     */
+    @Column(name = "pending_cycle_credit", nullable = false,
+            precision = PicClause.ACCT_CURR_CYC_CREDIT_PRECISION,
+            scale = PicClause.ACCT_CURR_CYC_CREDIT_SCALE)
+    private BigDecimal pendingCycleCredit = NO_RESERVED_EXPOSURE;
+
+    /**
+     * Approved exposure of zero or less, accumulated as {@code app/cbl/CBTRN02C.cbl:L551} accumulates
+     * {@code ACCT-CURR-CYC-DEBIT}: a negative amount is added, making the accumulator more negative,
+     * and {@code app/cbl/CBTRN02C.cbl:L404} then subtracts it. The column is never positive and a
+     * check constraint holds that.
+     *
+     * <p>The sign convention is the source's, refund defect included:
+     * {@code card-platform/docs/business-rule-flags.md} carries it. Read through
+     * {@link #effectivePendingCycleDebit(Instant)}.
+     */
+    @Column(name = "pending_cycle_debit", nullable = false,
+            precision = PicClause.ACCT_CURR_CYC_DEBIT_PRECISION,
+            scale = PicClause.ACCT_CURR_CYC_DEBIT_SCALE)
+    private BigDecimal pendingCycleDebit = NO_RESERVED_EXPOSURE;
+
+    /**
+     * When the reserved figures stop counting, or null for a row that has never held a reservation.
+     *
+     * <p>A reservation is released when the posting it anticipates is reported back. An approval whose
+     * posting never arrives — its event routed to the dead-letter topic, or consumed by a ledger that
+     * could not apply it — would otherwise hold its exposure for ever, and available credit would
+     * shrink monotonically until every call declined. That is the failure mode
+     * {@code card-platform/docs/onboarding.md} warns about for the accumulators themselves, whose only
+     * source-side reset is {@code app/cbl/CBACT04C.cbl:L353-L354}. This column bounds it.
+     */
+    @Column(name = "pending_expires_at")
+    private Instant pendingExpiresAt;
 
     // ------------------------------------------------------------------------------------
     // Replica freshness. No COBOL ancestor: the source has no replica to keep current.
@@ -329,6 +403,75 @@ public class AccountCreditSnapshotEntity {
     }
 
     /**
+     * Returns the reserved cycle credit as stored, whether or not its expiry has passed.
+     *
+     * <p>{@code domain/CycleExposureReservation} reads this when it writes the next reservation, so
+     * that an expired figure is replaced rather than added to. A rule reads
+     * {@link #effectivePendingCycleCredit(Instant)} instead.
+     *
+     * @return the stored reserved cycle credit at scale 2, never negative
+     */
+    public BigDecimal getPendingCycleCredit() {
+        return pendingCycleCredit;
+    }
+
+    /**
+     * Returns the reserved cycle debit as stored, whether or not its expiry has passed.
+     *
+     * @return the stored reserved cycle debit at scale 2, never positive
+     */
+    public BigDecimal getPendingCycleDebit() {
+        return pendingCycleDebit;
+    }
+
+    /**
+     * Returns when the reserved figures stop counting.
+     *
+     * @return the expiry, or null for a row that has never held a reservation
+     */
+    public Instant getPendingExpiresAt() {
+        return pendingExpiresAt;
+    }
+
+    /**
+     * Reports whether a reservation on this row still counts at one moment.
+     *
+     * <p>A row that has never held a reservation carries no expiry and holds nothing to count. A row
+     * whose expiry has passed anticipates a posting that never arrived, and counting it for ever would
+     * shrink available credit until every call declined.
+     *
+     * @param now the moment under test
+     * @return true when this row carries an expiry that has not yet passed
+     * @throws NullPointerException if {@code now} is null
+     */
+    public boolean holdsReservationAt(Instant now) {
+        Objects.requireNonNull(now, "now");
+        return pendingExpiresAt != null && pendingExpiresAt.isAfter(now);
+    }
+
+    /**
+     * Returns the reserved cycle credit that counts at one moment.
+     *
+     * @param now the moment the decision is being taken
+     * @return the stored figure while the reservation stands, and zero once it has expired
+     * @throws NullPointerException if {@code now} is null
+     */
+    public BigDecimal effectivePendingCycleCredit(Instant now) {
+        return holdsReservationAt(now) ? pendingCycleCredit : NO_RESERVED_EXPOSURE;
+    }
+
+    /**
+     * Returns the reserved cycle debit that counts at one moment.
+     *
+     * @param now the moment the decision is being taken
+     * @return the stored figure while the reservation stands, and zero once it has expired
+     * @throws NullPointerException if {@code now} is null
+     */
+    public BigDecimal effectivePendingCycleDebit(Instant now) {
+        return holdsReservationAt(now) ? pendingCycleDebit : NO_RESERVED_EXPOSURE;
+    }
+
+    /**
      * Compares on {@code accountId} alone, the primary key of
      * {@code account_credit_snapshot}.
      *
@@ -357,18 +500,20 @@ public class AccountCreditSnapshotEntity {
     }
 
     /**
-     * Names all five columns and withholds every value.
+     * Names all seven business columns and withholds every value.
      *
      * <p>Each column carries either an account identifier or a monetary value that the
      * authorization decision reads, so the text names the column and prints
      * {@link EventEnvelope#WITHHELD} in place of the value. That marker is the platform-wide
      * redaction marker, and this rendering reaches a log line the moment any code concatenates
-     * the entity into a message. The credit limit, the expiration date and the two cycle
-     * accumulators are the account holder's financial position, and the identifier names the
-     * person the position belongs to. Every one of the five stays behind its accessor, which is
-     * where a caller states its intent to read it.</p>
+     * the entity into a message. The credit limit, the expiration date, the two cycle
+     * accumulators and the two figures reserved against them are the account holder's financial
+     * position, and the identifier names the person the position belongs to. Every one of the seven
+     * stays behind its accessor, which is where a caller states its intent to read it. The
+     * reservation expiry is the one mapped column no line here names, because a moment in time names
+     * no person and discloses no position.</p>
      *
-     * @return a single-line rendering that names all five columns and discloses none
+     * @return a single-line rendering that names all seven columns and discloses none
      */
     @Override
     public String toString() {
@@ -377,6 +522,8 @@ public class AccountCreditSnapshotEntity {
                 + ", accountExpirationDate=" + EventEnvelope.WITHHELD
                 + ", currentCycleCredit=" + EventEnvelope.WITHHELD
                 + ", currentCycleDebit=" + EventEnvelope.WITHHELD
+                + ", pendingCycleCredit=" + EventEnvelope.WITHHELD
+                + ", pendingCycleDebit=" + EventEnvelope.WITHHELD
                 + "]";
     }
 

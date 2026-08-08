@@ -1,0 +1,95 @@
+# Secret-scanning configuration for the CardDemo repository.
+#
+# The secret-scan stage of .github/workflows/ci.yml runs gitleaks over the working tree and
+# over the history, and a finding fails the run. That only works if the known-safe values
+# this repository ships on purpose are named here: a scanner that fires on every run gets
+# switched off, and a scanner nobody reads is worse than none.
+#
+# Every entry below is a decision with a reason. Each is scoped as narrowly as the value
+# allows, by regular expression where the value has a recognizable shape and by path only
+# where the whole file is a template of refused values. A new secret in an allowlisted file
+# still fires unless it matches one of the shapes below.
+#
+# The rule pack is gitleaks' own default set, extended by nothing. Adding a rule is a change
+# to what this repository considers a secret and belongs in
+# card-platform/docs/decision-log.md alongside this file.
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = """
+Card tokens. A card token is the keyed digest com.carddemo.cobol.PanMasker derives from a
+card number, and it is the value every external surface of this platform names a card by:
+events, API responses, log lines and two read models. It is deliberately not a secret, and
+publishing one is the design. The shape is exact: 64 lowercase hexadecimal characters, which
+is HMAC-SHA-256 output rendered as hex.
+"""
+regexTarget = "match"
+regexes = ['''\b[0-9a-f]{64}\b''']
+
+[[allowlists]]
+description = """
+The two test keys of libs/cobol-compat PanMaskerTest. PanMasker refuses a key under 32
+characters, so a test that configures a key of its own has to name one that long. Both are
+literals in a test source file, neither reaches a deployment artifact, and
+card-platform/equivalence-tests CardTokenKeyContractTest fails the build if either does.
+"""
+regexTarget = "match"
+regexes = [
+  '''panmasker-test-key-one-0123456789''',
+  '''panmasker-test-key-two-9876543210''',
+]
+
+[[allowlists]]
+description = """
+Card tokens a test builds by repeating a short literal, which is how a test states a
+64-character token without a 64-character line. The shape is exact: sixteen lowercase
+hexadecimal characters repeated four times. The value is a card token and carries the same
+reasoning as the entry above it.
+"""
+regexTarget = "match"
+regexes = [
+  '''"[0-9a-f]{16}"\.repeat\(4\)''',
+  '''[A-Z_]*CARD_TOKEN[A-Z_]*\s*=\s*"[0-9a-f]{16,64}"''',
+]
+
+[[allowlists]]
+description = """
+Version 4 identifiers. Every event on this platform carries one as its eventId, every
+processed-event marker is keyed by one, and tests name them as literals so an assertion can
+compare a specific delivery. An identifier is published in every event envelope by design.
+"""
+regexTarget = "match"
+regexes = ['''\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b''']
+
+[[allowlists]]
+description = """
+The build-scope card-token key of card-platform/pom.xml. It exists because PanMasker supplies
+no default key and every test that tokenizes a card number would otherwise fail. It travels
+one way only, as a system property to Surefire and Failsafe, the authorization and card
+services refuse to start on it, and CardTokenKeyContractTest fails the build if it reaches a
+deployment artifact.
+"""
+regexTarget = "match"
+regexes = ['''carddemo-build-scope-card-token-key-tests-only''']
+
+[[allowlists]]
+description = """
+card-platform/deploy/k8s/31-secret.example.yaml. Every value in that file is a refused
+template value rather than a credential: the services check each one at start-up and refuse
+to run on any of them, and card-platform/docs/onboarding.md documents generating the real
+values. The allowlist is scoped to this one path because the whole file is the template; a
+real credential committed anywhere else still fails the scan.
+"""
+paths = ['''card-platform/deploy/k8s/31-secret\.example\.yaml''']
+
+[[allowlists]]
+description = """
+The documented curl examples of the service READMEs. Each passes --user with the literal
+phrase that tells a reader to substitute the password they generated, which gitleaks reads as
+a credential in a command line. No README carries a password: every one is generated per
+deployment by the recipe in card-platform/docs/onboarding.md.
+"""
+regexTarget = "match"
+regexes = ['''the password you chose''']

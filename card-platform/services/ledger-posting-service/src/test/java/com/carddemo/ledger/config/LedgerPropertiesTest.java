@@ -48,6 +48,8 @@ class LedgerPropertiesTest {
                     .isEqualTo("transaction.posted");
             assertThat(properties.kafka().topics().transactionDeclined())
                     .isEqualTo("transaction.declined");
+            assertThat(properties.kafka().topics().accountStateChanged())
+                    .isEqualTo("account.state-changed");
             assertThat(properties.kafka().topics().deadLetter())
                     .isEqualTo("carddemo.dead-letter");
             assertThat(properties.kafka().topics().deadLetterSuffix()).isEqualTo(".DLT");
@@ -58,10 +60,115 @@ class LedgerPropertiesTest {
             assertThat(properties.outbox().relay().instanceId()).isNotBlank();
             assertThat(properties.outbox().relay().claimTimeout())
                     .isEqualTo(java.time.Duration.ofMinutes(2L));
+            assertThat(properties.outbox().relay().maxDurationMs()).isEqualTo(5_000L);
             assertThat(properties.outbox().publishedRetentionHours()).isEqualTo(168L);
-            assertThat(properties.processedEvent().markerRetentionHours()).isEqualTo(168L);
+            assertThat(properties.processedEvent().markerRetentionHours())
+                    .as("the marker horizon outlasts broker retention rather than equalling it")
+                    .isEqualTo(720L);
+            assertThat(properties.processedEvent().brokerRetentionHours()).isEqualTo(168L);
             assertThat(properties.retention().sweepIntervalMs()).isEqualTo(3_600_000L);
+            assertThat(properties.retention().rejectedTransactionRetentionDays())
+                    .as("the horizon COMMENT ON TABLE rejected_transaction declares")
+                    .isEqualTo(90);
         });
+    }
+
+    /**
+     * Asserts one broker acknowledgement resolves inside the relay pass that issued it.
+     *
+     * <p>{@code outbox/OutboxRelay} bounds each pass with
+     * {@code carddemo.outbox.relay.max-duration-ms}. A send the pass abandoned can still be delivered
+     * by the producer afterwards, and the retry the same pass scheduled then publishes a second copy
+     * of one event. The producer takes at most {@code max.block.ms} plus
+     * {@code delivery.timeout.ms} to resolve one send, so that sum has to stay below the pass budget.
+     *
+     * <p>The second relationship is one the producer enforces itself: it refuses to construct when
+     * {@code delivery.timeout.ms} is below {@code linger.ms} plus {@code request.timeout.ms}. Failing
+     * here rather than at start-up names the two keys that disagree.
+     */
+    @Test
+    @DisplayName("one send resolves inside the relay pass that issued it")
+    void oneSendResolvesInsideTheRelayPassThatIssuedIt() {
+        shipped.run(context -> {
+            assertThat(context).hasNotFailed();
+            LedgerProperties properties = context.getBean(LedgerProperties.class);
+            long maxBlock = milliseconds(context.getEnvironment()
+                    .getProperty("spring.kafka.producer.properties.max.block.ms"));
+            long deliveryTimeout = milliseconds(context.getEnvironment()
+                    .getProperty("spring.kafka.producer.properties.delivery.timeout.ms"));
+            long requestTimeout = milliseconds(context.getEnvironment()
+                    .getProperty("spring.kafka.producer.properties.request.timeout.ms"));
+            long linger = milliseconds(context.getEnvironment()
+                    .getProperty("spring.kafka.producer.properties.linger.ms"));
+            long passBudget = properties.outbox().relay().maxDurationMs();
+
+            assertThat(maxBlock + deliveryTimeout)
+                    .as("max.block.ms plus delivery.timeout.ms against "
+                            + "carddemo.outbox.relay.max-duration-ms, which is %d. A send the relay "
+                            + "abandons can still be delivered, and the next pass then publishes a "
+                            + "second copy of the same event", passBudget)
+                    .isLessThan(passBudget);
+            assertThat(deliveryTimeout)
+                    .as("delivery.timeout.ms against linger.ms plus request.timeout.ms, which is "
+                            + "%d. The producer refuses that combination at construction",
+                            linger + requestTimeout)
+                    .isGreaterThanOrEqualTo(linger + requestTimeout);
+        });
+    }
+
+    /**
+     * Reads one producer timing key as a whole number of milliseconds.
+     *
+     * @param value the resolved property value
+     * @return the value in milliseconds
+     */
+    private static long milliseconds(String value) {
+        assertThat(value).as("a producer timing key the relay budget depends on").isNotNull();
+        return Long.parseLong(value.trim());
+    }
+
+    @Test
+    @DisplayName("a relay pass budget past the five-minute ceiling stops start-up")
+    void aRelayPassBudgetPastTheCeilingStopsStartUp() {
+        shipped.withPropertyValues("carddemo.outbox.relay.max-duration-ms=300001")
+                .run(context -> {
+                    assertThat(context).hasFailed();
+                    assertThat(context.getStartupFailure())
+                            .hasStackTraceContaining("outbox.relay.maxDurationMs");
+                });
+    }
+
+    @Test
+    @DisplayName("a relay pass budget of zero stops start-up")
+    void aRelayPassBudgetOfZeroStopsStartUp() {
+        shipped.withPropertyValues("carddemo.outbox.relay.max-duration-ms=0")
+                .run(context -> {
+                    assertThat(context).hasFailed();
+                    assertThat(context.getStartupFailure())
+                            .hasStackTraceContaining("outbox.relay.maxDurationMs");
+                });
+    }
+
+    @Test
+    @DisplayName("a blank account state-changed topic name stops start-up")
+    void aBlankAccountStateChangedTopicStopsStartUp() {
+        shipped.withPropertyValues("carddemo.kafka.topics.account-state-changed=")
+                .run(context -> {
+                    assertThat(context).hasFailed();
+                    assertThat(context.getStartupFailure())
+                            .hasStackTraceContaining("kafka.topics.accountStateChanged");
+                });
+    }
+
+    @Test
+    @DisplayName("a reject horizon of zero stops start-up")
+    void aRejectHorizonOfZeroStopsStartUp() {
+        shipped.withPropertyValues("carddemo.retention.rejected-transaction-retention-days=0")
+                .run(context -> {
+                    assertThat(context).hasFailed();
+                    assertThat(context.getStartupFailure())
+                            .hasStackTraceContaining("rejectedTransactionRetentionDays");
+                });
     }
 
     @Test
@@ -127,6 +234,41 @@ class LedgerPropertiesTest {
                     assertThat(context).hasFailed();
                     assertThat(context.getStartupFailure())
                             .hasStackTraceContaining("claimTimeout");
+                });
+    }
+
+    @Test
+    @DisplayName("a marker horizon that does not outlast broker retention stops start-up")
+    void aMarkerHorizonUnderTheMarginStopsStartUp() {
+        shipped.withPropertyValues("carddemo.processed-event.marker-retention-hours=168")
+                .run(context -> {
+                    assertThat(context).hasFailed();
+                    assertThat(context.getStartupFailure())
+                            .hasStackTraceContaining("markerRetentionHours")
+                            .hasStackTraceContaining("brokerRetentionHours");
+                });
+    }
+
+    @Test
+    @DisplayName("a marker horizon at exactly the margin starts")
+    void aMarkerHorizonAtExactlyTheMarginStarts() {
+        shipped.withPropertyValues("carddemo.processed-event.marker-retention-hours=336")
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context.getBean(LedgerProperties.class).processedEvent()
+                            .markerRetentionHours()).isEqualTo(336L);
+                });
+    }
+
+    @Test
+    @DisplayName("raising broker retention without raising the marker horizon stops start-up")
+    void raisingBrokerRetentionAloneStopsStartUp() {
+        shipped.withPropertyValues("carddemo.processed-event.broker-retention-hours=720")
+                .run(context -> {
+                    assertThat(context).hasFailed();
+                    assertThat(context.getStartupFailure())
+                            .hasStackTraceContaining("markerRetentionHours must be at")
+                            .hasStackTraceContaining("least 2 times");
                 });
     }
 

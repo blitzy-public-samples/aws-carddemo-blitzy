@@ -1,0 +1,50 @@
+# The build toolchain every job of card-platform CI needs, declared once.
+#
+# Six jobs need the same two things: the Java release the reactor compiles at, and the
+# exact Apache Maven release the aggregator's enforcer rule admits. Both were written out
+# in every job, twenty-one identical lines each. A checksum step corrected in one copy and
+# not the other five is the failure that shape invites, and the copies gave no way to see
+# it had happened.
+#
+# Both versions arrive as inputs rather than being read from the workflow environment, so
+# this action states its own contract and a caller cannot silently pass nothing.
+name: Set up the build toolchain
+description: Installs the pinned Java and Apache Maven releases and puts Maven on PATH.
+
+inputs:
+  java-version:
+    description: The Java release to install, which is the release the reactor compiles at.
+    required: true
+  maven-version:
+    description: >
+      The Apache Maven release to install. card-platform/pom.xml requires
+      [3.9.16,4.0.0), so Maven 4 fails the build and this value is not free.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Install Java
+      uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+      with:
+        distribution: temurin
+        java-version: ${{ inputs.java-version }}
+        cache: maven
+        cache-dependency-path: card-platform/**/pom.xml
+
+    - name: Install the pinned Maven release
+      shell: bash
+      env:
+        MAVEN_VERSION: ${{ inputs.maven-version }}
+      run: |
+        archive="apache-maven-${MAVEN_VERSION}-bin.tar.gz"
+        base="https://archive.apache.org/dist/maven/maven-3/${MAVEN_VERSION}/binaries"
+        curl --fail --location --silent --show-error "${base}/${archive}" --output "/tmp/${archive}"
+        curl --fail --location --silent --show-error "${base}/${archive}.sha512" --output "/tmp/${archive}.sha512"
+        # Apache publishes the digest on its own, with no file name and no closing
+        # newline. GNU coreutils reads a checksum line as digest, two spaces, name,
+        # so the line is assembled here and --strict refuses any other shape.
+        printf '%s  %s\n' "$(awk '{print $1}' "/tmp/${archive}.sha512")" "${archive}" > "/tmp/${archive}.sha512sum"
+        (cd /tmp && sha512sum --check --strict "${archive}.sha512sum")
+        sudo tar --extract --gzip --file "/tmp/${archive}" --directory /opt
+        echo "/opt/apache-maven-${MAVEN_VERSION}/bin" >> "${GITHUB_PATH}"

@@ -33,6 +33,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
@@ -54,76 +55,52 @@ import tools.jackson.databind.ObjectMapper;
 @DisplayName("Fraud assessment read routes")
 final class FraudAssessmentControllerTest {
 
-    /** Route of the single assessment. */
     private static final String ITEM_ROUTE = "/fraud-assessments/{transactionId}";
 
-    /** Route of one account's assessments. */
     private static final String COLLECTION_ROUTE = "/fraud-assessments";
 
-    /** Identifier record one of the daily transaction fixture carries. */
     private static final String STORED_TRANSACTION = "0000000000" + "683580";
 
-    /** Identifier of the row whose stored verdict is false while its rule list names two rules. */
     private static final String VERDICT_FALSE_TRANSACTION = "0000000001" + "774260";
 
-    /** Identifier of the row whose stored verdict is true while its rule list is empty. */
     private static final String VERDICT_TRUE_TRANSACTION = "0000000006" + "292564";
 
-    /** Identifier of the row holding two rules out of alphabetical order. */
     private static final String RULE_ORDER_TRANSACTION = "0000000009" + "101861";
 
-    /** Identifier of the row naming one rule twice. */
     private static final String REPEATED_RULE_TRANSACTION = "0000000010" + "142252";
 
-    /** Identifier of the row naming no rule. */
     private static final String NO_RULES_TRANSACTION = "0000000010" + "229018";
 
-    /** Identifier the second row of the collection answer carries. */
     private static final String SECOND_TRANSACTION = "0000000017" + "874199";
 
-    /** Identifier no row holds, and which no other test stubs. */
     private static final String ABSENT_TRANSACTION = "0000000016" + "259484";
 
-    /** Identifier of sixteen characters holding letters and digits. */
     private static final String ALPHANUMERIC_TRANSACTION = "ABCDEF0123456789";
 
-    /** Identifier one character short of the width the route accepts. */
     private static final String SHORT_TRANSACTION = "0000000000" + "68358";
 
-    /** Identifier one character longer than the width the route accepts. */
     private static final String LONG_TRANSACTION = "0000000000" + "6835801";
 
-    /** Account the cross-reference fixture holds, eleven digits. */
     private static final String ACCOUNT = "00000000007";
 
-    /** A second account the cross-reference fixture holds, holding no assessment. */
     private static final String ACCOUNT_WITHOUT_ASSESSMENTS = "00000000027";
 
-    /** Account identifier one digit short of eleven. */
     private static final String SHORT_ACCOUNT = "0000000007";
 
-    /** Account identifier one digit longer than eleven. */
     private static final String LONG_ACCOUNT = "00000000" + "0007";
 
-    /** Account identifier of eleven characters carrying a letter. */
     private static final String NON_NUMERIC_ACCOUNT = "0000000000A";
 
-    /** Rule identifier the velocity rule reports. */
     private static final String VELOCITY = "VELOCITY";
 
-    /** Rule identifier the amount anomaly rule reports. */
     private static final String AMOUNT_ANOMALY = "AMOUNT_ANOMALY";
 
-    /** Rule identifier the merchant category rule reports. */
     private static final String MERCHANT_CATEGORY = "MERCHANT_CATEGORY";
 
-    /** Score every flagged row in these tests reports. */
     private static final int SCORE = 42;
 
-    /** Score every cleared row in these tests reports. */
     private static final int CLEARED_SCORE = 0;
 
-    /** Time every stubbed row reports. */
     private static final Instant ASSESSED_AT = Instant.parse("2026-02-14T09:15:30.120Z");
 
     /** The six properties an assessment answer declares. */
@@ -139,13 +116,10 @@ final class FraudAssessmentControllerTest {
             "select ", "insert ", "update ", "delete ", "from ", "where ",
             "exception", "throwable", "at com.", "jdbc", "hibernate", "constraint", "sqlstate");
 
-    /** Reads a response body into its properties. */
     private static final ObjectMapper JSON = new ObjectMapper();
 
-    /** The repository the controller reads, stubbed. */
     private FraudAssessmentRepository assessments;
 
-    /** Drives the two routes. */
     private MockMvc mockMvc;
 
     /**
@@ -549,17 +523,58 @@ final class FraudAssessmentControllerTest {
                 .map(method -> List.<Class<?>>of(method.getParameterTypes()))
                 .orElseThrow(() -> new AssertionError("the controller declares no collection route"));
 
-        assertEquals(List.of(String.class, int.class, int.class), parameterTypes,
-                "the collection route takes the account identifier and two bounded numbers; a"
-                        + " framework page argument would decide the page silently instead");
+        assertEquals(List.of(String.class, String.class, String.class, String.class), parameterTypes,
+                "the collection route takes the account identifier and three parameters of its own,"
+                        + " each read as text; a framework page argument would decide the page"
+                        + " silently instead, and a number with a default would read a present-empty"
+                        + " value as an omitted one");
+    }
+
+    @Test
+    @DisplayName("a paging value that arrived carrying no characters is refused, never defaulted")
+    void aPagingValueThatArrivedEmptyIsRefused() throws Exception {
+        for (String parameter : List.of("page", "size")) {
+            mockMvc.perform(get(COLLECTION_ROUTE)
+                            .param("accountId", ACCOUNT)
+                            .param(parameter, ""))
+                    .andExpect(status().isBadRequest());
+        }
+
+        verifyNoInteractions(assessments);
+    }
+
+    @Test
+    @DisplayName("an omitted paging value takes its default and reads the first page")
+    void anOmittedPagingValueTakesItsDefault() throws Exception {
+        when(assessments.findByAccountIdOrderByAssessedAtDesc(eq(ACCOUNT), any()))
+                .thenReturn(List.of());
+
+        mockMvc.perform(get(COLLECTION_ROUTE).param("accountId", ACCOUNT))
+                .andExpect(status().isOk());
+
+        ArgumentCaptor<PageRequest> requested = ArgumentCaptor.forClass(PageRequest.class);
+        verify(assessments)
+                .findByAccountIdOrderByAssessedAtDesc(eq(ACCOUNT), requested.capture());
+
+        assertEquals(FraudAssessmentController.FIRST_PAGE,
+                requested.getValue().getPageNumber(), "the first page");
+        assertEquals(FraudAssessmentController.DEFAULT_PAGE_SIZE,
+                requested.getValue().getPageSize(), "the default rows one page carries");
+    }
+
+    @Test
+    @DisplayName("a page number past its ceiling is refused rather than overflowing an offset")
+    void aPageNumberPastItsCeilingIsRefused() throws Exception {
+        mockMvc.perform(get(COLLECTION_ROUTE)
+                        .param("accountId", ACCOUNT)
+                        .param("page", String.valueOf(
+                                FraudAssessmentController.MAXIMUM_PAGE_NUMBER + 1)))
+                .andExpect(status().isBadRequest());
+
+        verifyNoInteractions(assessments);
     }
 
     /**
-     * Builds one stubbed assessment row.
-     *
-     * <p>Every value the row answers is supplied here. A row built this way may report a verdict
-     * its rule list contradicts.
-     *
      * @param transactionId  identifier the row answers
      * @param accountId      account the row answers
      * @param riskScore      score the row answers
@@ -580,8 +595,6 @@ final class FraudAssessmentControllerTest {
     }
 
     /**
-     * Returns the page the collection route forwarded to the repository.
-     *
      * @return the forwarded page
      */
     private Pageable capturedPage() {

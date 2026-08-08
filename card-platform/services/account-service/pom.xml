@@ -22,7 +22,9 @@
   <description>
     Spring Boot application module for the CardDemo account service. Declares the web,
     persistence, messaging and observability dependencies the service needs, and
-    packages an executable archive. It subscribes to no topic.
+    packages an executable archive. It publishes account.state-changed and
+    customer.context-changed, and it subscribes to transaction.posted, which its listener
+    adds to the account record.
   </description>
 
   <!-- Language level. The build reads maven.compiler.release: the compiler plugin in

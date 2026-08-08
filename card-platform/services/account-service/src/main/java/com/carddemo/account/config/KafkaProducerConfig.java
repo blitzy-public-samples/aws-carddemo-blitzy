@@ -78,10 +78,6 @@ public class KafkaProducerConfig {
     }
 
     /**
-     * Returns the topic name the relay passes to
-     * {@link EventPublisherPort#publish(String, String, String)}. The default is
-     * {@code account.state-changed} and {@code TOPIC_ACCOUNT_STATE_CHANGED} overrides it.
-     *
      * @return the resolved topic name, never blank
      */
     public String accountStateChangedTopic() {
@@ -89,9 +85,6 @@ public class KafkaProducerConfig {
     }
 
     /**
-     * Returns the topic name a {@code CustomerContextChanged} row travels on. The default is
-     * {@code customer.context-changed} and {@code TOPIC_CUSTOMER_CONTEXT_CHANGED} overrides it.
-     *
      * @return the resolved topic name, never blank
      */
     public String customerContextChangedTopic() {
@@ -99,9 +92,6 @@ public class KafkaProducerConfig {
     }
 
     /**
-     * Returns the topic bound to one event type, or {@code null} when this service publishes no
-     * event of that type.
-     *
      * @param eventType the {@code EventEnvelope.eventType} value of one stored row
      * @return the configured topic name, or {@code null}
      */
@@ -110,13 +100,6 @@ public class KafkaProducerConfig {
     }
 
     /**
-     * Builds the producer this service sends every event through.
-     *
-     * <p>The settings start from {@code spring.kafka}, then take the broker address and the
-     * security protocol from {@code connectionDetails}. Four settings are pinned here: text
-     * serialization on the key and on the value, {@code acks=all} and
-     * {@code enable.idempotence=true}.
-     *
      * @param kafkaProperties   the bound {@code spring.kafka} block
      * @param connectionDetails the broker address and protocol this deployment resolved
      * @return the producer factory the template sends through
@@ -143,25 +126,29 @@ public class KafkaProducerConfig {
     }
 
     /**
-     * Builds the template the publisher sends through.
-     *
      * @param producerFactory the pinned producer factory
      * @return the template, keyed and valued as text
      */
     @Bean
     public KafkaTemplate<String, String> accountEventKafkaTemplate(
             ProducerFactory<String, String> producerFactory) {
-        return new KafkaTemplate<>(producerFactory);
+        KafkaTemplate<String, String> template = new KafkaTemplate<>(producerFactory);
+        // A failed send records its destination and failure type only.
+        // SafeProducerListener displaces LoggingProducerListener, which would write the
+        // key and the first hundred characters of the payload into the log line.
+        template.setProducerListener(new SafeProducerListener<>());
+        return template;
     }
 
     /**
-     * Builds the mapper this module reads and writes event text with.
+     * The mapper this module reads and writes event text with.
      *
      * <p>The mapper parses inside {@link EventWireBounds#streamReadConstraints()} and writes a
      * moment as an ISO-8601 string. No setting here quotes an ordinary number, so
-     * {@code schemaVersion} stays the integer {@code 1}. Each monetary property carries a quoted
-     * decimal form of its own, from the three {@code S9(10)V99} pictures at
-     * {@code app/cpy/CVACT01Y.cpy:L8}, {@code L13} and {@code L14}.
+     * {@code schemaVersion} stays the integer {@code 1}. Each of the four monetary properties of
+     * {@code AccountStateChanged} carries a quoted decimal form of its own, from the four
+     * {@code S9(10)V99} pictures at {@code app/cpy/CVACT01Y.cpy:L7}, {@code L8}, {@code L13} and
+     * {@code L14}.
      *
      * <p>The framework keeps its own primary mapper for the web layer, so a caller of this one
      * names it: {@code @Qualifier("accountEventObjectMapper")}.
@@ -178,12 +165,11 @@ public class KafkaProducerConfig {
     }
 
     /**
-     * Builds the one publisher of this module, and the only bean here that holds a broker type.
+     * The one publisher of this module, and the only bean here that holds a broker type.
      *
      * <p>The publisher takes no meter. {@code outbox/OutboxRelay} is the one caller of every publish
-     * and the one component that can see every way an attempt fails, so it owns
-     * {@code carddemo.account.publish.failed} alone. When both counted, one refused publish was
-     * reported twice.
+     * and the one component that sees every way an attempt fails, so it owns
+     * {@code carddemo.account.publish.failed} alone.
      *
      * @param kafkaTemplate the pinned template
      * @return the publisher the relay calls
@@ -277,9 +263,6 @@ public class KafkaProducerConfig {
         }
 
         /**
-         * Returns the event type the envelope declares, once that type is bound to {@code topic}.
-         * The type comes from the payload and never from a separate argument.
-         *
          * @param event the validated event
          * @param topic the destination topic the caller read from configuration
          * @return the event type the envelope declares

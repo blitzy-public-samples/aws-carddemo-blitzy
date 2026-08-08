@@ -32,10 +32,9 @@ import org.hibernate.type.SqlTypes;
  * <p>Each column, with the source field and source line it maps:
  *
  * <pre>
- * TRNX-CARD-NUM       L22   card_token             CHAR(64)  identity
- *                           masked_card_number     CHAR(16)  display
+ * TRNX-CARD-NUM       L22   card_token             CHAR(64)  identity, ADDITIVE form
+ *                           masked_card_number     CHAR(16)  display only, ADDITIVE form
  * TRNX-ID             L23   transaction_id         CHAR(16)
- * TRNX-CARD-NUM       L22   card_number            CHAR(16)   display only, ADDITIVE form
  * TRNX-TYPE-CD        L25   type_code              CHAR(2)
  * TRNX-CAT-CD         L26   category_code          CHAR(4)
  * TRNX-SOURCE         L27   source                 CHAR(10)

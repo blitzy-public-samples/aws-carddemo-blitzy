@@ -51,7 +51,7 @@ graph TB
     DEAD{{"topic carddemo.dead-letter"}}
     subgraph SVC["fraud-detection-service"]
         CON["TransactionAuthorizedConsumer"]
-        GUARD{"eventId already in processed_event"}
+        GUARD{"eventId plus consumed topic<br/>already in processed_event"}
         SCORE["RiskScoringService"]
         VEL["VelocityRule"]
         AMT["AmountAnomalyRule"]
@@ -79,12 +79,12 @@ Legend for Figure 1:
 
 - Thick arrow: an asynchronous Kafka consume or publish, and therefore a decoupling point.
 - Plain arrow: in-process control flow, a database write, or a database read.
-- Dotted arrow: dead-letter routing. There are two, and they are not the same route: a consumed record spent after its retries goes to the source topic's `.DLT`, and an outbox row the relay abandons goes to the shared `carddemo.dead-letter` topic.
-- Hexagon: a Kafka topic, always outside the boundary. Cylinder: the private `fraud_service` schema, whose four tables commit inside one local transaction. Diamond: the duplicate-delivery check, where a repeat delivery leaves by the branch that writes nothing. Labelled box: the service boundary, inside which no other service's datastore appears.
+- Dotted arrow: dead-letter routing. There are two, and they are not the same route. A consumed record spent after its retries goes to the source topic's `.DLT`. An outbox row the relay abandons goes to the shared `carddemo.dead-letter` topic.
+- Hexagon: a Kafka topic, always outside the boundary. Cylinder: the private `fraud_service` schema, whose four tables commit inside one local transaction. Diamond: the duplicate-delivery check, keyed on the event identifier together with the topic the delivery arrived on, where a repeat delivery leaves by the branch that writes nothing. Labelled box: the service boundary, inside which no other service's datastore appears.
 
-Figure 2 shows what is absent. This service and the ledger service read `transaction.authorized` directly, each under a consumer group of its own, and the notification service reads the two topics they publish. No arrow joins any two of the three consumers, and none returns to the authorization service. That absence is the architectural claim, and nothing in this service may create such an arrow.
+Figure 2 shows what is absent. Three services read `transaction.authorized` directly, each under a consumer group of its own: this one, the ledger, and the notification service. The notification service reads it in addition to the two topics the other two publish, which is why it appears with three groups below. No arrow joins any two of the three consumers, and none returns to the authorization service. That absence is the architectural claim, and nothing in this service may create such an arrow.
 
-**Figure 2 — Consumer Independence: Three Consumers of One Authorization Event With No Edge Between Them**
+**Figure 2 — Consumer Independence: Three Direct Consumers of One Authorization Event With No Edge Between Them**
 
 ```mermaid
 graph LR
@@ -94,9 +94,10 @@ graph LR
     TP{{"topic transaction.posted"}}
     F["fraud-detection-service<br/>group fraud-detection"]
     L["ledger-posting-service<br/>group ledger-posting"]
-    N["notification-service<br/>groups notification-fraud<br/>and notification-posted"]
+    N["notification-service<br/>groups notification-authorized,<br/>notification-fraud<br/>and notification-posted"]
     AUTH ==> T
     T ==> F & L
+    T ==> N
     F ==> FA
     L ==> TP
     FA & TP ==> N
@@ -104,8 +105,10 @@ graph LR
 
 Legend for Figure 2:
 
-- Hexagon: a Kafka topic. Box: one service, labelled with the consumer group it reads under. Thick arrow: an asynchronous publish or consume, which every edge here is.
+- Hexagon: a Kafka topic. Box: one service, labelled with the consumer groups it reads under. Thick arrow: an asynchronous publish or consume, which every edge here is.
+- Three thick arrows leave `transaction.authorized`, one for each direct consumer. The notification service has two further inbound arrows because it also reads what the other two publish.
 - No arrow between two service boxes, in either direction. Services meet at a topic and nowhere else.
+- Three arrows leave `transaction.authorized`, one per independent consumer. Notification carries three edges here, because it also reads the topics the other two consumers publish, and every edge is a separate group holding its own offsets. Its fourth listener reads `customer.context-changed`, which this figure leaves out.
 
 For the platform before-and-after pair, read [Architecture, Before and After](../../docs/architecture-before-after.md). The two figures above cover one service and claim nothing about the platform as a whole.
 
@@ -123,6 +126,24 @@ Two routes answer. Both read, neither writes, and both require the `ADMIN` role 
 These routes serve a demonstration and support queries. Neither sits on any authorization path or any posting path. A caller that asks for an unsupported `sort` order receives `400` rather than a differently ordered page and no word about it.
 
 The management port answers `/actuator` and exposes `health,metrics,prometheus`. Health is open so a container probe can read it, and the metrics and Prometheus routes require the `MONITORING` role. The full request and response contract is [openapi.yaml](src/main/resources/openapi.yaml), and that file is hand-written: the aggregator build bans every documentation-generation library, so no generated description can drift from the code.
+
+### Two controls in front of every route
+
+`config/CrossSiteRequestFilter` guards state change: a `POST`, `PUT`, `PATCH` or `DELETE` must carry `X-CardDemo-Request`, must not declare a cross-site `Sec-Fetch-Site`, and must not carry a foreign `Origin`. This service answers reads alone, so no state-changing route exists here to forge today. That is the reason the filter is here rather than a reason it is not: the read-only shape becomes an enforced property instead of a fact a reader has to go and check, and the first write added inherits the control rather than needing someone to remember it. A refusal answers 403 and counts `carddemo.fraud.requests.cross.site.refused`. `GET`, `HEAD`, `OPTIONS` and `TRACE` pass untouched, which is why no path is exempted: the liveness probe and the metrics scrape are reads.
+
+`config/RequestRateCeilingFilter` bounds volume. It runs one place ahead of the security chain, because a refusal has to cost less than the attempt it refuses and an attempt that reached the chain would already have paid for a bcrypt verification.
+
+| Ceiling | Default | Counted by |
+| :--- | ---: | :--- |
+| Failed authentications | 20 per 60s | Source address, and only when the request carried a credential and was answered 401 |
+| Requests | 600 per 60s | Source address |
+| Requests | 600 per 60s | The username the credential names, read as a counter key and never verified or logged |
+| State-changing requests | 120 per 60s | Source address |
+| Requests in flight | 64 | The whole instance |
+
+A refusal answers 429 with `Retry-After` and counts `carddemo.fraud.requests.throttled`, tagged with the stage that refused: `authentication`, `source`, `identity`, `write` or `concurrency`. The five ceilings read `API_RATE_WINDOW_SECONDS`, `API_RATE_REQUESTS_PER_WINDOW`, `API_RATE_WRITE_REQUESTS_PER_WINDOW`, `API_RATE_AUTHENTICATION_FAILURES_PER_WINDOW` and `API_RATE_CONCURRENT_REQUESTS` from [`.env.example`](../../.env.example). The management base path is exempt, because a throttled probe reads as a failed container.
+
+Both filters count in this process, so several replicas bound each replica rather than the service as a whole, and the source address is the one the container resolves rather than a forwarding header a caller could write. A deployment behind a proxy sets `SERVER_FORWARD_HEADERS_STRATEGY=framework` so the container resolves the client address and the client-facing host. Both residual limits are recorded in [suggested next tasks](../../docs/suggested-next-tasks.md), and the reasoning behind the two controls is in the [Decision Log](../../docs/decision-log.md).
 
 <br/>
 
@@ -142,23 +163,27 @@ Two event types share one topic, and a reader routes on the envelope's `eventTyp
 
 The account identifier is always the envelope's `aggregateId` and always the Kafka message key. Every event for one account therefore lands on one partition and stays in order, which is what velocity counting depends on. Money travels as a decimal string in every payload, never as a JSON (JavaScript Object Notation) number, and every amount this service compares runs through `CobolDecimal`, which truncates toward zero.
 
-A failure is retried three times, one second apart. A message that still fails routes to its source topic's dead-letter topic, and `carddemo.dead-letter` catches a failure carrying no source topic. A payload that fails schema validation never reaches the listener and takes that route with no retry at all.
+A record is attempted three times, one second apart: `carddemo.consumer.retry.max-attempts` is 3 and `FixedBackOff` receives `maxAttempts - 1`, so the count is one initial delivery plus two retries rather than three retries after the first. A message that still fails routes to its source topic's dead-letter topic, and `carddemo.dead-letter` catches a failure carrying no source topic. A payload that fails schema validation never reaches the listener and takes that route with no retry at all.
 
 <br/>
 
 ## Observability
 
-Five meters carry this service, and their names come from what the source counted rather than from invention.
+Nine meters carry this service. **None of them has a source ancestor.** This service has no COBOL predecessor at all, so there is no counter in `app/cbl/` for any of them to derive from.
 
 | Meter | Kind | What moves it |
 | :--- | :--- | :--- |
 | `carddemo.fraud.events.consumed` | Counter | One delivery accepted for processing |
-| `carddemo.fraud.assessments.produced` | Counter | One verdict, tagged `outcome=flagged` or `outcome=cleared` |
+| `carddemo.fraud.assessments.produced` | Counter | One verdict written to the outbox, tagged `outcome=flagged` or `outcome=cleared` |
+| `carddemo.fraud.events.published` | Counter | One outbox row the broker acknowledged, counted after the tick commits |
 | `carddemo.fraud.failures` | Counter | One failed attempt, tagged by stage |
 | `carddemo.fraud.dead.letters` | Counter | One spent record, tagged `outcome=published` or `outcome=failed` |
+| `carddemo.fraud.outbox.abandoned` | Counter | One outbox row the relay gave up on after ten attempts |
 | `carddemo.fraud.processing.latency` | Timer | Consumer duration to commit |
 
 `failures` counts attempts and `dead.letters` counts records, so summing the two is never meaningful. A fourth `stage` value would have overlapped `deserialize`, because a record spent at deserialization is also a terminal record.
+
+`outbox.abandoned` counts rows and answers the one question the other two cannot: whether a row this service gave up on was actually named anywhere. Read beside the `published` series of `dead.letters`, the two agree while every abandonment reaches the topic, and `abandoned` runs ahead while a diagnostic is still owed. A row that owes one is offered again at the head of every later pass, so `abandoned` running ahead means delayed rather than lost.
 
 <br/>
 
@@ -184,12 +209,28 @@ The private database is `carddemo_fraud`, and the schema inside it is `fraud_ser
 | :--- | :--- |
 | `fraud_assessment` | One verdict per transaction: transaction and account identifiers, risk score, triggered rule identifiers, assessment time |
 | `velocity_window` | The per-account, per-hour counters `VelocityRule` reads: an authorization count and an accumulated amount magnitude. A PostgreSQL table, not a cache, reached through `VelocityWindowRepository` |
-| `processed_event` | Event identifier as primary key, with the time the marker was written |
-| `outbox_event` | The verdict event, stored in the same local transaction as the assessment and published later |
+| `processed_event` | Event identifier and consumed topic as the composite primary key, with the time the marker was written. `V4__processed_event_topic_key.sql` widened the key so an identifier another service assigned on another topic cannot claim this one |
+| `outbox_event` | The verdict event, stored in the same local transaction as the assessment and published later. Two further columns record whether a row the relay abandoned still owes the dead-letter topic a diagnostic |
 
 No other service reads this schema, and this service reads no other schema. The login it connects with owns `carddemo_fraud` and can reach none of the other five databases.
 
+All three growing tables are swept. `RetentionSweep` runs hourly and issues a bounded, ordered delete of at most five hundred rows per statement against `outbox_event`, `processed_event` and `velocity_window`, repeating each until it comes back short or a thirty-second per-table ceiling stops it. The ceiling is what keeps one large table from starving the other two; the repeat is what keeps a bounded statement from leaving a permanent backlog behind.
+
+`fraud_assessment` and `velocity_window` are the two business tables here, and each declared its horizon in a `COMMENT ON TABLE` before any code applied it. `FRAUD_ASSESSMENT_RETENTION_DAYS` supplies the first and defaults to ninety days, measured from `assessed_at`. `FRAUD_VELOCITY_RETENTION_DAYS` supplies the second and defaults to seven days, measured from `window_start`, and it is the one setting here that is not free to be any value: nothing reads a window once its span elapses, so every authorization otherwise leaves a row behind for ever, and a horizon shorter than `carddemo.fraud.risk.velocity-window-minutes` would delete the bucket a live authorization is counting into. The symptom would be a burst that quietly stopped triggering the velocity rule rather than an error anyone could see, so the service refuses to start when it does not, which is the only moment at which refusing costs nothing. Both rows are pseudonymous rather than anonymous, because their account and transaction identifiers resolve to a named customer through the account and ledger services, so both horizons are privacy horizons and not only housekeeping.
+
 Flyway owns schema creation. The entity model is validated against the migrated schema and never generates it, so the column types derived from the source copybooks survive. Why the velocity window is a relational table rather than a cache sits in the [Decision Log](../../docs/decision-log.md). That log carries the reasoning behind every choice this document merely states.
+Flyway owns schema creation and runs three migrations on every start, in this order:
+
+| Migration | What it does |
+| :--- | :--- |
+| `V1__schema.sql` | Creates all four tables above, with their indexes and named constraints |
+| `V3__velocity_total_headroom.sql` | Widens the accumulated-amount column of `velocity_window` so a full hour of authorizations cannot overflow it |
+| `V4__processed_event_topic_key.sql` | Makes the consumed topic part of the duplicate-delivery marker's identity |
+| `V5__outbox_dead_letter_state.sql` | Adds the dead-letter obligation an abandoned outbox row carries, its published stamp and the partial index the relay reads the owed rows from |
+
+There is no `V2`. The number was used by a seed migration that was withdrawn: this schema seeds nothing, because every row it holds is derived from events it consumes rather than from a repository fixture. Flyway does not require contiguous versions, and reusing the number later would make an already-migrated database disagree with a fresh one, so the gap stays.
+
+The entity model is validated against the migrated schema and never generates it, so the column types derived from the source copybooks survive. Why the velocity window is a relational table rather than a cache sits in the [Decision Log](../../docs/decision-log.md). That log carries the reasoning behind every choice this document merely states.
 
 <br/>
 
@@ -209,13 +250,17 @@ For the fuller domain background, including the four decline codes and their sou
 
 **Truncate, never round half-up.** Every amount comparison here runs through `CobolDecimal`, which pins `RoundingMode.DOWN`. The `ROUNDED` phrase appears zero times across all 28 programs under `app/cbl/`, so truncation toward zero is the platform rule. That rule holds here too, even though no COBOL program is this module's ancestor, so no later reader finds two rounding conventions in one codebase.
 
-**A duplicate delivery must not count a velocity entry twice.** Kafka delivers at least once, and a redelivery follows a consumer group rebalance, a restart mid-batch, or a crash after the side effects and before the offset commit. The listener claims a `processed_event` marker before it scores anything, and that claim commits in the same transaction as the assessment and the velocity update. Guard and effect therefore stand or fall together.
+**A duplicate delivery must not count a velocity entry twice.** Kafka delivers at least once. A redelivery follows a consumer group rebalance, a restart mid-batch, or a crash after the side effects and before the offset commit. The listener claims a `processed_event` marker before it scores anything, keyed on the event identifier together with the topic the delivery arrived on. That claim commits in the same transaction as the assessment and the velocity update. Guard and effect therefore stand or fall together.
 
 **Never publish from the listener.** The assessment row and the outbox row commit in one local transaction, and `OutboxRelay` publishes afterwards on a transaction of its own. A send from inside the listener could leave a published event with no committed assessment behind it. What drives that relay is `@EnableScheduling` on `FraudApplication`: without the annotation the service starts, reports healthy, stores assessments, and publishes nothing at all.
 
 **The card number and the card verification value never reach a log or a payload here.** The consumed event carries the masked form only. No rule may depend on a digit the mask hides, because this service never sees one.
 
 **`cobol-compat` is not a Spring module.** Its classes carry no framework annotation and no Spring or Jakarta dependency, so the container supplies no bean from it. Call its helpers directly, or expose one from this module's own `config` package.
+
+**A state-changing call needs one extra header.** This service answers reads, so nothing a caller can reach today is affected. A state-changing route added later is refused from any client that does not send `X-CardDemo-Request`, because `config/CrossSiteRequestFilter` guards the method rather than a list of routes. Add the header to the client at the same time as the route.
+
+**A burst answers 429 rather than being served.** A load generator, a retry loop, or a test that hammers one address reaches `config/RequestRateCeilingFilter` and answers 429 with `Retry-After`. The blanket ceiling is 600 requests a minute per address and per identity, writes are 120, and 20 failed authentications from one address close the rest of that minute. Raise `API_RATE_*` for a load run rather than removing the filter, and read the `stage` tag on `carddemo.fraud.requests.throttled` to see which ceiling refused.
 
 <br/>
 
@@ -242,26 +287,74 @@ Follow-up work found while building this service, including the owner decisions 
 | Broker address | `kafka:29092` inside the compose network, `localhost:9092` from the host |
 | Consumer group | `fraud-detection` |
 
-Copy `.env.example` to `.env` first, then replace every value it marks `REPLACE` with a generated one. This service reads `FRAUD_DB_PASSWORD` and `FRAUD_KAFKA_PASSWORD`, and neither carries a default. The stack refuses to start on a placeholder or on an unset value, so a published password never reaches a running service.
-
-Build this module alone, then start it. The `-am` flag builds the two libraries it depends on first. The image build has a prerequisite: the archive under `target/` arrives from `mvn -f card-platform/pom.xml package`, which runs ahead of this image build. Starting the container without packaging first leaves the `COPY target/*.jar` step nothing to copy.
+Generate every credential first, from `card-platform/`. This service reads `FRAUD_DB_PASSWORD` and `FRAUD_KAFKA_PASSWORD`, and neither carries a default. The stack refuses to start on a placeholder or on an unset value, so a published password never reaches a running service. Nothing below prompts.
 
 ```bash
-cd card-platform
+cp .env.example .env
+
+for variable in POSTGRES_PASSWORD \
+  AUTHORIZATION_DB_PASSWORD LEDGER_DB_PASSWORD FRAUD_DB_PASSWORD \
+  NOTIFICATION_DB_PASSWORD ACCOUNT_DB_PASSWORD CARD_DB_PASSWORD \
+  KAFKA_ADMIN_PASSWORD \
+  AUTHORIZATION_KAFKA_PASSWORD LEDGER_KAFKA_PASSWORD FRAUD_KAFKA_PASSWORD \
+  NOTIFICATION_KAFKA_PASSWORD ACCOUNT_KAFKA_PASSWORD CARD_KAFKA_PASSWORD; do
+  sed -i "s|^${variable}=.*|${variable}=$(openssl rand -base64 24 | tr -d '/+=')|" .env
+done
+
+export ADMIN_PASSWORD="$(openssl rand -base64 18 | tr -d '/+=')"
+export USER_PASSWORD="$(openssl rand -base64 18 | tr -d '/+=')"
+export MONITORING_PASSWORD="$(openssl rand -base64 18 | tr -d '/+=')"
+
+mvn -B -ntp -DskipTests package
+
+CRYPTO_CP="$(find ~/.m2/repository/org/springframework/security/spring-security-crypto \
+  -name 'spring-security-crypto-*.jar' | sort | tail -1):\
+$(find ~/.m2/repository/commons-logging/commons-logging \
+  -name 'commons-logging-*.jar' | sort | tail -1):\
+$(find ~/.m2/repository/org/springframework/spring-core \
+  -name 'spring-core-*.jar' | sort | tail -1)"
+
+hash_password() {
+  DEMO_PASSWORD="$1" jshell --class-path "$CRYPTO_CP" -s - <<'JSHELL' 2>/dev/null | grep -m1 '^{bcrypt}'
+System.out.println(org.springframework.security.crypto.factory.PasswordEncoderFactories.createDelegatingPasswordEncoder().encode(System.getenv("DEMO_PASSWORD")));
+/exit
+JSHELL
+}
+
+sed -i "s|^ADMIN_PASSWORD_HASH=.*|ADMIN_PASSWORD_HASH='$(hash_password "$ADMIN_PASSWORD")'|" .env
+sed -i "s|^USER_PASSWORD_HASH=.*|USER_PASSWORD_HASH='$(hash_password "$USER_PASSWORD")'|" .env
+sed -i "s|^MONITORING_PASSWORD_HASH=.*|MONITORING_PASSWORD_HASH='$(hash_password "$MONITORING_PASSWORD")'|" .env
+
+grep -n '^[A-Z_]*=.*REPLACE' .env || echo "all 17 values are set"
+```
+
+Keep the single quotes on the three hashes. A bcrypt value is full of `$`, and Compose expands `$` in an unquoted dotenv value. `mvn package` above builds every module, so every image has an archive to copy.
+
+Run this module's own tests, then start it. The `-am` flag builds the two libraries it depends on first, and the `mvn package` in the block above already produced every archive the images copy. Starting a container without packaging first leaves the `COPY target/*.jar` step nothing to copy.
+
+```bash
 mvn -B -pl services/fraud-detection-service -am test
-mvn -B -pl services/fraud-detection-service -am package
-docker compose up -d --build fraud-detection-service
+docker compose up -d --build --wait postgres kafka fraud-detection-service
 curl -fsS http://localhost:9083/actuator/health
 ```
 
-Watch the fan-out. One authorization call produces one event, and the verdict appears on `fraud.assessed` a moment later without the caller having waited for it:
+Watch the fan-out. One authorization request that reaches a decision produces one event — a request refused before the decision, by authentication or by validation, produces none — and the verdict appears on `fraud.assessed` a moment later without the caller having waited for it:
 
 ```bash
 docker compose exec kafka /opt/kafka/bin/kafka-console-consumer.sh \
   --bootstrap-server kafka:29092 \
   --command-config /tmp/kafka-admin.properties \
-  --topic fraud.assessed
+  --topic fraud.assessed --from-beginning --max-messages 1
 ```
+
+`--max-messages 1` is what makes that command return. The same assessment is readable over the API, where `accountId` is required:
+
+```bash
+curl -fsS -u "admin001:$ADMIN_PASSWORD" \
+  "http://localhost:8083/fraud-assessments?accountId=00000000050"
+```
+
+One approved authorization of `+00000504.77` against account `00000000050` answers with a risk score of 55, `flagged` true, and the two rules that objected: `AMOUNT_ANOMALY` and `MERCHANT_CATEGORY`.
 
 The platform-wide setup path, from a clean machine to a running stack, lives in [Onboarding](../../docs/onboarding.md) and the [Platform README](../../README.md). Neither is repeated here.
 
@@ -277,7 +370,7 @@ Each item below is something a reader of a fraud service reasonably expects to f
 
 **No cache and no key-value store.** The velocity window is a PostgreSQL table reached through `VelocityWindowRepository`, and this service runs no cache of any kind.
 
-**No dependency on another service module, and no HTTP client pointing at one.** The aggregator's `maven-enforcer-plugin` carries a `bannedDependencies` rule naming all six service artifacts, so a forbidden import fails the build with a message that names the rule rather than an unresolved symbol.
+**No dependency on another service module, and no HTTP client pointing at one.** The aggregator's `maven-enforcer-plugin` carries a `bannedDependencies` rule naming all six service artifacts. A forbidden import therefore fails the build with a message that names the rule rather than an unresolved symbol.
 
 Two structures here have no source equivalent either, and both close a measured gap. All eight `DEFINE FILE` blocks in `app/csd/CARDDEMO.CSD` carry both `RECOVERY(NONE)` and `JOURNAL(NO)`, eight occurrences of each, so there is no transactional recovery to inherit. `outbox_event` and `processed_event` supply it. Their one ancestor construct is the transient data queue write at `app/cbl/CORPT00C.cbl:L517-L518`, the single asynchronous handoff in the whole repository. Every finding behind these entries is catalogued in [Business Rule Flags](../../docs/business-rule-flags.md).
 

@@ -79,14 +79,14 @@ class CardDtoRenderingTest {
         @Test
         @DisplayName("the rendering names no card number, name, expiry part or status")
         void theRenderingNamesNoValue() {
-            String rendered = new CardUpdateRequest(CARD_NUMBER, EMBOSSED_NAME, EXPIRY_YEAR,
-                    EXPIRY_MONTH, EXPIRY_DAY, ACTIVE_STATUS).toString();
+            String rendered = new CardUpdateRequest(EMBOSSED_NAME, EXPIRY_YEAR, EXPIRY_MONTH,
+                                      EXPIRY_DAY, ACTIVE_STATUS).toString();
 
             for (String value : List.of(CARD_NUMBER, EMBOSSED_NAME, EXPIRY_YEAR)) {
                 assertFalse(rendered.contains(value),
                         "the rendering carries " + value + ": " + rendered);
             }
-            assertTrue(rendered.contains("6 of 6 components supplied"),
+            assertTrue(rendered.contains("5 of 5 components supplied"),
                     "the rendering reports how many components arrived: " + rendered);
             assertTrue(rendered.contains(EventEnvelope.WITHHELD),
                     "the rendering states that every value is withheld: " + rendered);
@@ -95,21 +95,21 @@ class CardDtoRenderingTest {
         @Test
         @DisplayName("a sparse request reports a lower count, which is the whole diagnostic value")
         void aSparseRequestReportsALowerCount() {
-            String rendered = new CardUpdateRequest(CARD_NUMBER, null, "  ", null, null, null)
+            String rendered = new CardUpdateRequest(null, "  ", null, null, null)
                     .toString();
 
-            assertTrue(rendered.contains("1 of 6 components supplied"),
+            assertTrue(rendered.contains("0 of 5 components supplied"),
                     "a blank component counts as absent and a null one does too: " + rendered);
             assertFalse(rendered.contains(CARD_NUMBER),
-                    "the one supplied component is still withheld: " + rendered);
+                    "no value is rendered, supplied or not: " + rendered);
         }
 
         @Test
         @DisplayName("nothing is masked rather than withheld, because the value may be malformed")
         void aMalformedCardNumberRendersWithoutFailing() {
             String rendered =
-                    new CardUpdateRequest("41112222", EMBOSSED_NAME, EXPIRY_YEAR, EXPIRY_MONTH,
-                            EXPIRY_DAY, ACTIVE_STATUS).toString();
+                    new CardUpdateRequest(EMBOSSED_NAME, EXPIRY_YEAR, EXPIRY_MONTH, EXPIRY_DAY,
+                            ACTIVE_STATUS).toString();
 
             assertFalse(rendered.contains("41112222"),
                     "an eight-character number is still withheld: " + rendered);

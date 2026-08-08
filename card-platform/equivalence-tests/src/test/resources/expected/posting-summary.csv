@@ -1,4 +1,4 @@
-# Model A and Model B expected outputs derived from app/cbl/CBTRN02C.cbl and the checked-in CardDemo fixtures. Hashes cover canonical newline-terminated rows and contain no card numbers.
+# Model A and Model B expected outputs derived from app/cbl/CBTRN02C.cbl and the checked-in CardDemo fixtures. Hashes cover canonical newline-terminated rows and contain no card numbers. Consuming tests PostingEquivalenceTest and AuthorizationDecisionEquivalenceTest.
 evaluation_model,derived_from,record_seq,entity_key,expected_field,expected_value,pic_clause,source_locator
 A_STATELESS,app/data/ASCII/dailytran.txt,1,model_a,declined_count,13,NONE,app/cbl/CBTRN02C.cbl:L370-L420
 B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,2,posting,record_count,300,NONE,app/cbl/CBTRN02C.cbl:L202-L219
@@ -18,3 +18,5 @@ B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,15,posting,approved_tran
 B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,16,posting,declined_outcomes_sha256,b93d65b17a19727e7fb07b4bb5bed95ab9a339e2fc31d4700d2001e500798def,SHA-256,app/cbl/CBTRN02C.cbl:L213-L215
 B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/acctdata.txt,17,account_projection,state_sha256,d6630831b5ef8fd2ae9f0fccc7a891ca2483769ca572aab52bf4185606c2953b,SHA-256,app/cbl/CBTRN02C.cbl:L545-L560
 B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/tcatbal.txt,18,category_balance,state_sha256,0866c6e0112f5dfe228b8e7b678c83d8dfe86d5edf9c1749cf00c05073df803b,SHA-256,app/cbl/CBTRN02C.cbl:L467-L542
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,19,posting,ledger_declined_consumer_reject_row_count,38,NONE,card-platform/services/ledger-posting-service/src/main/java/com/carddemo/ledger/messaging/TransactionDeclinedConsumer.java
+B_CUMULATIVE_DECLINES_SKIP,app/data/ASCII/dailytran.txt,20,posting,ledger_declined_processed_event_count,38,NONE,card-platform/services/ledger-posting-service/src/main/java/com/carddemo/ledger/messaging/TransactionDeclinedConsumer.java

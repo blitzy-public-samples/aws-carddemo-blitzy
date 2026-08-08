@@ -1,6 +1,7 @@
 package com.carddemo.authorization.config;
 
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Positive;
@@ -38,6 +39,7 @@ import org.springframework.validation.annotation.Validated;
  * @param processedEvent the processed-marker retention setting
  * @param retention      the cleanup schedule
  * @param replica        the freshness policy applied to the two replica tables
+ * @param decision       the locking and reservation settings of one decision
  */
 @ConfigurationProperties(prefix = "carddemo")
 @Validated
@@ -51,7 +53,9 @@ public record AuthorizationProperties(
 
         @NotNull @Valid Retention retention,
 
-        @NotNull @Valid Replica replica) {
+        @NotNull @Valid Replica replica,
+
+        @NotNull @Valid Decision decision) {
 
     /**
      * The broker-facing names this service uses.
@@ -113,6 +117,15 @@ public record AuthorizationProperties(
     }
 
     /**
+     * Ceiling on {@link Outbox.Relay#maxDurationMs()}, five minutes in milliseconds.
+     *
+     * <p>The bound exists so a misconfiguration cannot turn the pass deadline off. A pass that spends
+     * five minutes waiting for broker acknowledgements is a stalled relay, and the scheduled thread it
+     * holds is the one thread every later event of every account waits behind.
+     */
+    static final long MAX_PASS_DURATION_MS = 300_000L;
+
+    /**
      * The transactional outbox settings.
      *
      * @param relay                   the sweep the relay performs
@@ -126,10 +139,15 @@ public record AuthorizationProperties(
          * How often the relay sweeps due rows, how many it claims, its instance name, and the claim
          * recovery window.
          *
-         * @param fixedDelayMs milliseconds between the end of one sweep and the start of the next
-         * @param batchSize    due rows one sweep claims
-         * @param instanceId   value written into {@code outbox_event.claimed_by}
-         * @param claimTimeout how long a claim may stand before another sweep recovers the row
+         * @param fixedDelayMs   milliseconds between the end of one sweep and the start of the next
+         * @param batchSize      due rows one sweep claims
+         * @param instanceId     value written into {@code outbox_event.claimed_by}
+         * @param claimTimeout   how long a claim may stand before another sweep recovers the row
+         * @param maxDurationMs  wall time one pass may spend waiting for broker acknowledgements,
+         *                       measured on the monotonic clock. A pass that reaches it stops, and
+         *                       the rows it did not reach are claimed by the next pass. The ceiling
+         *                       is five minutes, because a pass longer than that is a stalled relay
+         *                       rather than a busy one
          */
         public record Relay(
 
@@ -139,7 +157,9 @@ public record AuthorizationProperties(
 
                 @NotBlank String instanceId,
 
-                @NotNull @DurationUnit(ChronoUnit.SECONDS) Duration claimTimeout) {
+                @NotNull @DurationUnit(ChronoUnit.SECONDS) Duration claimTimeout,
+
+                @Positive @Max(MAX_PASS_DURATION_MS) long maxDurationMs) {
 
             /**
              * Refuses a claim timeout that cannot protect an active claim.
@@ -156,8 +176,61 @@ public record AuthorizationProperties(
         }
     }
 
-    /** @param markerRetentionHours hours a processed-event marker remains */
-    public record ProcessedEvent(@Positive long markerRetentionHours) {
+    /**
+     * The duplicate-marker horizon, and the broker retention it has to outlast.
+     *
+     * <p>A marker matters only while a redelivery of its event is still possible, and past that
+     * point it is dead weight on a table every message passes through. That makes the horizon a
+     * relationship rather than a number: the marker has to outlast every window through which the
+     * record itself can come back. Broker log retention is the shortest of those windows and the
+     * only one this platform configures, so it is the one the relationship is stated against.
+     *
+     * <p>The two shipped values were equal, which made the relationship an equality rather than a
+     * margin. Segment cleanup is not instant, a restored backup can carry a record older than the
+     * broker would still hold, and an operator resetting a consumer group replays whatever the log
+     * still has. Any one of those leaves a record readable after its marker has been swept, and the
+     * consumer then applies it a second time: for {@code account-posted} that means one transaction
+     * amount reaching a balance and a cycle accumulator twice.
+     *
+     * <p>{@link #MINIMUM_RETENTION_MARGIN} is therefore enforced here rather than documented,
+     * and at start-up rather than later, because the two values arrive from configuration and a
+     * mismatch is invisible until the day a replay happens. The shipped pair is 720 hours of
+     * markers against 168 hours of broker log, which is a margin above four.
+     *
+     * @param markerRetentionHours hours a processed-event marker remains
+     * @param brokerRetentionHours hours the broker is configured to retain a topic log, which
+     *                             {@code KAFKA_LOG_RETENTION_HOURS} sets for the broker and for
+     *                             every service that has to outlast it
+     */
+    public record ProcessedEvent(@Positive long markerRetentionHours,
+            @Positive long brokerRetentionHours) {
+
+        /**
+         * The smallest multiple of broker retention a marker horizon may be.
+         *
+         * <p>Two rather than one, because equality is what the review found: it leaves no room for
+         * segment cleanup lag, a restored backup, or a manually replayed window. Two rather than a
+         * larger figure, because the floor has to be one a deployment can meet by configuration
+         * alone, and the shipped pair clears it four times over.
+         */
+        public static final long MINIMUM_RETENTION_MARGIN = 2L;
+
+        /**
+         * Refuses a marker horizon that does not outlast broker retention by the required margin.
+         *
+         * @throws IllegalArgumentException when the marker horizon is under the margin
+         */
+        public ProcessedEvent {
+            if (markerRetentionHours > 0 && brokerRetentionHours > 0
+                    && markerRetentionHours < brokerRetentionHours * MINIMUM_RETENTION_MARGIN) {
+                throw new IllegalArgumentException(
+                        "processed-event.markerRetentionHours must be at least "
+                                + MINIMUM_RETENTION_MARGIN + " times"
+                                + " processed-event.brokerRetentionHours, so a replayed record"
+                                + " cannot outlive the marker that suppresses it. Found "
+                                + markerRetentionHours + " against " + brokerRetentionHours);
+            }
+        }
     }
 
     /**
@@ -199,6 +272,47 @@ public record AuthorizationProperties(
                     && (maxStaleness.isZero() || maxStaleness.isNegative())) {
                 throw new IllegalArgumentException(
                         "carddemo.replica.max-staleness must be positive, found " + maxStaleness);
+            }
+        }
+    }
+
+    /**
+     * The locking and reservation settings of one decision.
+     *
+     * <p>ADDITIVE. {@code app/cbl/CBTRN02C.cbl} is one batch program reading one sequential feed, so
+     * it needs no lock and no reservation: paragraph {@code 2700-UPDATE-ACCOUNT} at
+     * {@code app/cbl/CBTRN02C.cbl:L545-L560} rewrites the account record in the same loop that
+     * validates the next one, and {@code app/cbl/CBTRN02C.cbl:L403-L405} therefore reads figures that
+     * already carry every earlier approval. This service answers concurrent calls and does not own the
+     * account record, so it needs both.
+     *
+     * @param lockWaitMs     how long the locked read of one decision waits for a row another decision
+     *                       holds, applied as a transaction-local {@code lock_timeout} by
+     *                       {@code AccountCreditSnapshotRepository#applyLockWaitBound}
+     * @param reservationTtl how long an approval's reserved exposure counts before it is treated as
+     *                       never having been posted. Long enough that an ordinary posting round trip
+     *                       reports back first, short enough that an approval whose event was
+     *                       dead-lettered does not hold its exposure for ever and shrink available
+     *                       credit until every call declines
+     */
+    public record Decision(
+            @Positive long lockWaitMs,
+            @NotNull @DurationUnit(ChronoUnit.SECONDS) Duration reservationTtl) {
+
+        /**
+         * Holds the reservation lifetime above zero.
+         *
+         * <p>A zero or negative lifetime would release every reservation the moment it was written,
+         * which is exactly the behaviour these columns exist to replace.
+         *
+         * @throws IllegalArgumentException when the lifetime is not positive
+         */
+        public Decision {
+            if (reservationTtl != null
+                    && (reservationTtl.isZero() || reservationTtl.isNegative())) {
+                throw new IllegalArgumentException(
+                        "carddemo.decision.reservation-ttl must be positive, found "
+                                + reservationTtl);
             }
         }
     }

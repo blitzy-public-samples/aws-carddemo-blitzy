@@ -12,6 +12,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 
 import com.carddemo.events.serde.JsonSchemaValidatingDeserializer;
 import com.carddemo.events.serde.JsonSchemaValidatingSerializer;
+import com.carddemo.fraud.TestIdentityPasswords;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.Meter;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -87,9 +88,9 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
         webEnvironment = SpringBootTest.WebEnvironment.MOCK,
         properties = {
                 "KAFKA_SASL_PASSWORD=not-a-real-broker-password",
-                "ADMIN_PASSWORD_HASH={noop}not-a-real-admin-password",
-                "USER_PASSWORD_HASH={noop}not-a-real-user-password",
-                "MONITORING_PASSWORD_HASH={noop}not-a-real-monitoring-password",
+                "ADMIN_PASSWORD_HASH=" + TestIdentityPasswords.ADMIN_PASSWORD_HASH,
+                "USER_PASSWORD_HASH=" + TestIdentityPasswords.USER_PASSWORD_HASH,
+                "MONITORING_PASSWORD_HASH=" + TestIdentityPasswords.MONITORING_PASSWORD_HASH,
                 "management.server.port=${server.port}"
         })
 @DisplayName("Effective configuration of the fraud detection service with no broker reachable")
@@ -111,7 +112,7 @@ class ConfigurationInvariantsIT {
     private static final String MONITORING_USERNAME = "monitor01";
 
     /** Monitoring password this class supplies, matching the inert hash above. */
-    private static final String MONITORING_PASSWORD = "not-a-real-monitoring-password";
+    private static final String MONITORING_PASSWORD = TestIdentityPasswords.MONITORING_PASSWORD;
 
     private static final String BOOTSTRAP_SERVERS_PROPERTY = "spring.kafka.bootstrap-servers";
     private static final String ADMIN_FAIL_FAST_PROPERTY = "spring.kafka.admin.fail-fast";
@@ -163,11 +164,26 @@ class ConfigurationInvariantsIT {
     private static final String METER_PROCESSING_LATENCY = "carddemo.fraud.processing.latency";
     private static final String METER_FAILURES = "carddemo.fraud.failures";
     private static final String METER_DEAD_LETTERS = "carddemo.fraud.dead.letters";
+    private static final String METER_OUTBOX_ABANDONED = "carddemo.fraud.outbox.abandoned";
+    private static final String METER_EVENTS_PUBLISHED = "carddemo.fraud.events.published";
 
-    /** The five meter names this service registers. */
+    /**
+     * The two meters the request-surface filters register.
+     *
+     * <p>{@code config/RequestRateCeilingFilter} registers the throttle counter under five
+     * {@code stage} tags, and {@code config/CrossSiteRequestFilter} registers one counter with no
+     * tag of its own. Both register in their constructors, so both exist before the first refusal
+     * and a dashboard reads zero rather than reading nothing at all.
+     */
+    private static final String METER_THROTTLED = "carddemo.fraud.requests.throttled";
+    private static final String METER_CROSS_SITE_REFUSED =
+            "carddemo.fraud.requests.cross.site.refused";
+
+    /** The nine meter names this service registers. */
     private static final List<String> FRAUD_METER_NAMES = List.of(METER_EVENTS_CONSUMED,
             METER_ASSESSMENTS_PRODUCED, METER_PROCESSING_LATENCY, METER_FAILURES,
-            METER_DEAD_LETTERS);
+            METER_DEAD_LETTERS, METER_EVENTS_PUBLISHED, METER_OUTBOX_ABANDONED, METER_THROTTLED,
+            METER_CROSS_SITE_REFUSED);
 
     /** The complete set of tag keys a meter of this service may carry. */
     private static final Set<String> ALLOWED_TAG_KEYS = Set.of("service", "outcome", "stage");
@@ -553,17 +569,26 @@ class ConfigurationInvariantsIT {
     }
 
     /**
-     * Asserts the five fraud meter names register before the first message arrives and each reports
-     * zero.
+     * Asserts the nine fraud meter names register before the first message arrives, and that each
+     * one reports zero.
+     *
+     * <p>{@code carddemo.fraud.events.published} counts the assessment events the broker
+     * acknowledged, and the two request-surface counters count refusals. All nine are registered as
+     * the context starts, so a dashboard reads zero from a service that has published nothing and
+     * refused nothing rather than finding no series at all.
      */
     @Test
-    @DisplayName("the five fraud meter names register before the first message and report zero")
-    void theFiveFraudMeterNamesRegisterBeforeTheFirstMessageAndReportZero() {
+    @DisplayName("the nine fraud meter names register before the first message and report zero")
+    void theNineFraudMeterNamesRegisterBeforeTheFirstMessageAndReportZero() {
         Collection<Counter> counters = new ArrayList<>();
         counters.addAll(registry.find(METER_EVENTS_CONSUMED).counters());
         counters.addAll(registry.find(METER_ASSESSMENTS_PRODUCED).counters());
         counters.addAll(registry.find(METER_FAILURES).counters());
         counters.addAll(registry.find(METER_DEAD_LETTERS).counters());
+        counters.addAll(registry.find(METER_OUTBOX_ABANDONED).counters());
+        counters.addAll(registry.find(METER_EVENTS_PUBLISHED).counters());
+        counters.addAll(registry.find(METER_THROTTLED).counters());
+        counters.addAll(registry.find(METER_CROSS_SITE_REFUSED).counters());
         Collection<Timer> timers = registry.find(METER_PROCESSING_LATENCY).timers();
 
         assertAll(
@@ -571,7 +596,7 @@ class ConfigurationInvariantsIT {
                         () -> "registered fraud meter names: " + fraudMeterNames()),
                 () -> assertEquals(new LinkedHashSet<>(FRAUD_METER_NAMES), fraudMeterNames(),
                         () -> "registered fraud meter names: " + fraudMeterNames()),
-                () -> assertFalse(counters.isEmpty(), "the four counter names are registered"),
+                () -> assertFalse(counters.isEmpty(), "the eight counter names are registered"),
                 () -> assertFalse(timers.isEmpty(), "the timer name is registered"),
                 () -> assertAll(counters.stream().map(counter -> (Executable) () ->
                         assertEquals(0.0d, counter.count(),
@@ -632,8 +657,8 @@ class ConfigurationInvariantsIT {
     }
 
     @Test
-    @DisplayName("the Prometheus body renders the five fraud meter names with underscores")
-    void thePrometheusBodyRendersTheFiveFraudMeterNames() throws Exception {
+    @DisplayName("the Prometheus body renders the nine fraud meter names with underscores")
+    void thePrometheusBodyRendersTheNineFraudMeterNames() throws Exception {
         String body = monitoringGet(client(), PROMETHEUS_PATH).getContentAsString();
 
         assertAll(FRAUD_METER_NAMES.stream().map(name -> (Executable) () -> {

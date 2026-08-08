@@ -1,10 +1,21 @@
 package com.carddemo.ledger.domain;
 
-import com.carddemo.cobol.PanMasker;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
+import static org.mockito.Mockito.when;
 import com.carddemo.cobol.PicClause;
 import com.carddemo.events.EventEnvelope;
 import com.carddemo.events.TransactionAuthorized;
 import com.carddemo.events.TransactionPosted;
+import com.carddemo.ledger.TestIdentityPasswords;
 import com.carddemo.ledger.entity.OutboxEventEntity;
 import com.carddemo.ledger.entity.TransactionEntity;
 import com.carddemo.ledger.outbox.OutboxRelay;
@@ -35,17 +46,6 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.doThrow;
-import static org.mockito.Mockito.inOrder;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.times;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.verifyNoInteractions;
-import static org.mockito.Mockito.verifyNoMoreInteractions;
-import static org.mockito.Mockito.when;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -635,9 +635,9 @@ final class PostingServiceTest {
     @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE, properties = {
             "spring.kafka.listener.auto-startup=false",
             "KAFKA_SASL_PASSWORD=not-a-real-broker-password",
-            "ADMIN_PASSWORD_HASH={noop}not-a-real-admin-password",
-            "USER_PASSWORD_HASH={noop}not-a-real-user-password",
-            "MONITORING_PASSWORD_HASH={noop}not-a-real-monitoring-password",
+            "ADMIN_PASSWORD_HASH=" + TestIdentityPasswords.ADMIN_PASSWORD_HASH,
+            "USER_PASSWORD_HASH=" + TestIdentityPasswords.USER_PASSWORD_HASH,
+            "MONITORING_PASSWORD_HASH=" + TestIdentityPasswords.MONITORING_PASSWORD_HASH,
             "TOPIC_DEAD_LETTER_SUFFIX=.DLT",
             "spring.jpa.hibernate.ddl-auto=validate"
     })
@@ -790,6 +790,14 @@ final class PostingServiceTest {
             assertThat(boundary).isNotNull();
             assertThat(boundary.propagation()).isEqualTo(Propagation.REQUIRED)
                     .isNotEqualTo(Propagation.REQUIRES_NEW);
+
+            Transactional writerBoundary = OutboxWriter.class.getMethod("write", Object.class)
+                    .getAnnotation(Transactional.class);
+            assertThat(writerBoundary.propagation())
+                    .as("the writer refuses to persist an event outside its caller's transaction, "
+                            + "which is what makes the posted event and the three updates of "
+                            + "app/cbl/CBTRN02C.cbl:L440-L442 one unit")
+                    .isEqualTo(Propagation.MANDATORY);
         }
 
         @Test

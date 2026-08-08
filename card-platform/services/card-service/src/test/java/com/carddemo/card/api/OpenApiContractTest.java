@@ -5,7 +5,6 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.carddemo.card.api.dto.ApiErrorResponse;
-import com.carddemo.card.api.dto.CardDetailRequest;
 import com.carddemo.card.api.dto.CardDetailResponse;
 import com.carddemo.card.api.dto.CardListResponse;
 import com.carddemo.card.api.dto.CardSummary;
@@ -24,6 +23,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -55,8 +55,16 @@ final class OpenApiContractTest {
     /** The collection route, which carries the list and the update. */
     private static final String COLLECTION_PATH = "/cards";
 
-    /** The read route, which carries the search condition in its body. */
-    private static final String DETAIL_PATH = "/cards/detail";
+    /** The route that names one card, which carries the read and the update. */
+    private static final String CARD_PATH = "/cards/{cardNumber}";
+
+    /** Keys of a route block that are operations rather than shared declarations. */
+    private static final Set<String> HTTP_METHODS =
+            Set.of("get", "put", "post", "delete", "patch", "head", "options", "trace");
+
+    /** The four status-specific outcome schemas of the update route. */
+    private static final List<String> OUTCOME_SCHEMAS = List.of("CardUpdated",
+            "CardUpdateNotFound", "CardUpdateConflict", "CardUpdateRejected");
 
     /** The parsed document every test below reads. */
     private static Map<String, Object> openApi;
@@ -86,7 +94,7 @@ final class OpenApiContractTest {
          */
         @Test
         void theDocumentDescribesTheTwoRoutes() {
-            assertEquals(Set.of(COLLECTION_PATH, DETAIL_PATH), paths().keySet(),
+            assertEquals(Set.of(COLLECTION_PATH, CARD_PATH), paths().keySet(),
                     "three Customer Information Control System transactions over two paths");
         }
 
@@ -100,11 +108,11 @@ final class OpenApiContractTest {
         @Test
         void theDocumentedOperationsAreTheMappedOnes() {
             Set<String> documented = new TreeSet<>();
-            paths().forEach((path, operations) -> operations.keySet()
+            paths().forEach((path, operations) -> operationsOf(operations).keySet()
                     .forEach(method -> documented.add(method.toUpperCase(Locale.ROOT) + " " + path)));
 
-            assertEquals(new TreeSet<>(List.of("GET " + COLLECTION_PATH, "PUT " + COLLECTION_PATH,
-                            "POST " + DETAIL_PATH)),
+            assertEquals(new TreeSet<>(List.of("GET " + COLLECTION_PATH, "GET " + CARD_PATH,
+                            "PUT " + CARD_PATH)),
                     documented,
                     "app/cbl/COCRDLIC.cbl lists, app/cbl/COCRDSLC.cbl reads and"
                             + " app/cbl/COCRDUPC.cbl updates");
@@ -123,7 +131,8 @@ final class OpenApiContractTest {
                     .collect(Collectors.toCollection(TreeSet::new));
 
             for (Map.Entry<String, Map<String, Object>> route : paths().entrySet()) {
-                for (Map.Entry<String, Object> operation : route.getValue().entrySet()) {
+                for (Map.Entry<String, Object> operation : operationsOf(route.getValue())
+                        .entrySet()) {
                     String identifier =
                             String.valueOf(asMap(operation.getValue()).get("operationId"));
                     assertTrue(handlers.contains(identifier),
@@ -150,7 +159,7 @@ final class OpenApiContractTest {
             assertTrue(securitySchemes().containsKey("basicIdentity"),
                     "the scheme the requirement names is defined");
             for (Map<String, Object> operations : paths().values()) {
-                for (Object operation : operations.values()) {
+                for (Object operation : operationsOf(operations).values()) {
                     assertFalse(asMap(operation).containsKey("security"),
                             "no operation overrides the top-level requirement, so none can open it");
                 }
@@ -158,21 +167,25 @@ final class OpenApiContractTest {
         }
 
         /**
-         * Asserts no route carries a card number in its path and none declares one as a query
-         * parameter.
+         * Asserts the card number appears as a path variable and never as a query parameter.
          *
-         * <p>A path and a query string reach an access log, a reverse proxy log and a browser history.
-         * The two routes that name one card take it in the body, and the paging cursor travels in a
-         * header for the same reason.
+         * <p>Transaction {@code CCDL} at {@code app/csd/CARDDEMO.CSD:L347-L348} and transaction
+         * {@code CCUP} at {@code app/csd/CARDDEMO.CSD:L367-L369} each address one card, so each is
+         * one addressable resource and the card number is the path variable that names it. A query
+         * string is different: it is not part of the resource identity, and the list route filters by
+         * account rather than by card, so no query parameter of this service names a card.
          */
         @Test
-        void noRouteCarriesACardNumberInItsPathOrQuery() {
-            for (String path : paths().keySet()) {
-                assertFalse(path.contains("{"), path + " declares a path variable, and the only"
-                        + " identifiers this service keys on are a card number and an account");
-            }
+        void theCardNumberIsAPathVariableAndNeverAQueryParameter() {
+            Map<String, Object> variable = pathVariableOf(CARD_PATH, "cardNumber");
+            assertEquals(Boolean.TRUE, variable.get("required"),
+                    "a path variable cannot be omitted");
+            assertEquals(CardController.CARD_NUMBER_PATTERN,
+                    asMap(variable.get("schema")).get("pattern"),
+                    "the shape app/cbl/COCRDUPC.cbl:L784 tests");
+
             for (Map<String, Object> operations : paths().values()) {
-                for (Object operation : operations.values()) {
+                for (Object operation : operationsOf(operations).values()) {
                     for (Object parameter : parametersOf(operation)) {
                         Map<String, Object> declared = asMap(parameter);
                         String name = String.valueOf(declared.get("name"));
@@ -185,6 +198,18 @@ final class OpenApiContractTest {
             }
         }
     }
+
+    /**
+     * The statuses a filter of the chain writes, rather than a handler.
+     *
+     * <p>{@code config/SecurityConfig} writes the 401 and the role-refused 403,
+     * {@code config/CrossSiteRequestFilter} writes a 403 of its own, and
+     * {@code config/RequestRateCeilingFilter} writes the 429. All are written before a handler
+     * runs, so all carry the problem document rather than a record a serializer built. Every card
+     * route names its subject in the path or the query, so no chain rule has to read a body and one
+     * shape describes each of these three statuses on every operation.
+     */
+    private static final Set<String> CHAIN_REFUSAL_STATUSES = Set.of("401", "403", "429");
 
     /** The request values the list route accepts, against the constants the controller declares. */
     @Nested
@@ -217,6 +242,15 @@ final class OpenApiContractTest {
             assertEquals(CardController.ACCOUNT_ID_PATTERN,
                     asMap(account.get("schema")).get("pattern"),
                     "CARD-ACCT-ID PIC 9(11) at app/cpy/CVACT02Y.cpy:L6");
+            assertEquals(Map.of("const", "00000000000"),
+                    asMap(account.get("schema")).get("not"),
+                    "eleven zeros name no account, from CC-ACCT-ID-N EQUAL ZEROS at "
+                            + "app/cbl/COCRDSLC.cbl:L653, so the filtered route refuses the value "
+                            + "rather than dropping it and walking every account");
+            assertFalse("00000000000".matches(CardController.ACCOUNT_ID_PRESENT_PATTERN),
+                    "the controller refuses the same value it declares here");
+            assertTrue("00000000050".matches(CardController.ACCOUNT_ID_PRESENT_PATTERN),
+                    "an account that names a row still passes");
         }
 
         /**
@@ -277,46 +311,61 @@ final class OpenApiContractTest {
     class StatusCodes {
 
         /**
-         * Asserts the list answers five codes and never 404.
+         * Statuses {@code api/CardApiExceptionHandler.onUnsupportedRequest} answers, taking the
+         * status and the headers from the framework rather than reporting a caller's mistake as a
+         * fault of this service.
+         */
+        private final Set<String> PROTOCOL_REFUSAL_STATUSES = Set.of("405", "406");
+
+        /** Statuses that carry no body, so no schema and no media type describes them. */
+        private final Set<String> BODYLESS_STATUSES = Set.of("406");
+
+        /**
+         * Asserts the list answers nine codes and never 404.
          *
          * <p>A browse that reaches end of file is not an error:
          * {@code app/cbl/COCRDLIC.cbl:L1235} clears the next-page flag and the screen shows no row.
          */
         @Test
-        void theListAnswersFiveCodesAndNeverNotFound() {
-            assertEquals(Set.of("200", "400", "401", "403", "500"),
+        void theListAnswersNineCodesAndNeverNotFound() {
+            assertEquals(Set.of("200", "400", "401", "403", "405", "406", "429", "500", "503"),
                     responsesOf(COLLECTION_PATH, "get").keySet(),
                     "an account with no card is an empty page and not an absent thing");
         }
 
         /**
-         * Asserts the update answers exactly the codes its three writers can produce.
+         * Asserts the update answers exactly the codes its writers can produce.
          *
          * <p>The set is derived rather than transcribed: five statuses come from
          * {@link CardController#statusOf(CardUpdateResponse)} over all seven outcomes, one from the
-         * unreadable-body handler, and two from the filter chain. A new outcome mapped to a status the
-         * document omits fails here.
+         * unreadable-body handler, one from the fault handler, and three from the filter chain. A new
+         * outcome mapped to a status the document omits fails here.
          */
         @Test
-        void theUpdateAnswersTheCodesItsThreeWritersProduce() {
+        void theUpdateAnswersTheCodesItsWritersProduce() {
             TreeSet<String> reachable = new TreeSet<>();
             for (CardUpdateResponse outcome : everyOutcome()) {
                 reachable.add(String.valueOf(CardController.statusOf(outcome).value()));
             }
             reachable.add("400");
-            reachable.add("401");
-            reachable.add("403");
+            reachable.addAll(CHAIN_REFUSAL_STATUSES);
+            reachable.add("500");
+            reachable.addAll(PROTOCOL_REFUSAL_STATUSES);
+            reachable.add("415");
 
-            assertEquals(reachable, new TreeSet<>(responsesOf(COLLECTION_PATH, "put").keySet()),
-                    "five outcome statuses, one unreadable body, and two the chain writes");
+            assertEquals(reachable, new TreeSet<>(responsesOf(CARD_PATH, "put").keySet()),
+                    "five outcome statuses, one unreadable body, one fault, three the chain writes "
+                            + "and the protocol refusals");
         }
 
-        /** Asserts the read answers seven codes. */
+        /** Asserts the read answers nine codes. */
         @Test
-        void theReadAnswersSevenCodes() {
-            assertEquals(Set.of("200", "400", "401", "403", "404", "422", "500"),
-                    responsesOf(DETAIL_PATH, "post").keySet(),
-                    "a body to malform, four edits to fail, an ownership refusal and an absent row");
+        void theReadAnswersNineCodes() {
+            assertEquals(
+                    Set.of("200", "400", "401", "403", "404", "405", "406", "429", "500", "503"),
+                    responsesOf(CARD_PATH, "get").keySet(),
+                    "a path value to malform, an ownership refusal, an absent row, the two protocol "
+                            + "refusals, a rate ceiling, a fault and an unreachable store");
         }
 
         /**
@@ -327,7 +376,7 @@ final class OpenApiContractTest {
          */
         @Test
         void everyOutcomeReachesADocumentedStatus() {
-            Set<String> documented = responsesOf(COLLECTION_PATH, "put").keySet();
+            Set<String> documented = responsesOf(CARD_PATH, "put").keySet();
             for (CardUpdateResponse outcome : everyOutcome()) {
                 String status = String.valueOf(CardController.statusOf(outcome).value());
                 assertTrue(documented.contains(status),
@@ -345,7 +394,7 @@ final class OpenApiContractTest {
         @Test
         void everyCredentialRefusalAnswersAProblemDocument() {
             for (Map.Entry<String, Map<String, Object>> route : paths().entrySet()) {
-                for (String method : route.getValue().keySet()) {
+                for (String method : operationsOf(route.getValue()).keySet()) {
                     Object unauthorized = responsesOf(route.getKey(), method).get("401");
                     assertEquals(Set.of("application/problem+json"), contentTypesOf(unauthorized),
                             method + " " + route.getKey() + " answers 401 in another shape");
@@ -356,32 +405,32 @@ final class OpenApiContractTest {
         }
 
         /**
-         * Asserts a refusal answers the shape of whichever writer produced it.
+         * Asserts every credential and entitlement refusal answers a problem document.
          *
-         * <p>The two routes the chain guards by rule answer a problem document, because the chain
-         * writes the body before a handler runs. The read route decides ownership in the handler,
-         * because the identifier sits in the body and a chain that read the body would consume the
-         * stream the handler needs, so its 403 answers the same error record every other refusal of
-         * that route answers. Describing that difference is the point: a client of the read route
-         * parses one shape for all seven of its outcomes.
+         * <p>The chain of {@code config/SecurityConfig} decides both on all three operations, and it
+         * writes the body before a handler runs. The card number is a path variable, so the chain
+         * reads it without touching the request body, which is what lets one writer own every
+         * refusal of this kind and one shape describe it.
          */
         @Test
-        void eachRefusalAnswersTheShapeOfItsWriter() {
+        void everyEntitlementRefusalAnswersAProblemDocument() {
             assertEquals("Problem", schemaNameOf(responsesOf(COLLECTION_PATH, "get").get("403")),
                     "the chain decides ownership of the list from the query parameter");
-            assertEquals("Problem", schemaNameOf(responsesOf(COLLECTION_PATH, "put").get("403")),
+            assertEquals("Problem", schemaNameOf(responsesOf(CARD_PATH, "get").get("403")),
+                    "the chain decides ownership of the read from the path variable");
+            assertEquals("Problem", schemaNameOf(responsesOf(CARD_PATH, "put").get("403")),
                     "the chain decides the update by role");
-            assertEquals("ApiError", schemaNameOf(responsesOf(DETAIL_PATH, "post").get("403")),
-                    "the handler decides ownership of a read, because the card sits in the body");
 
-            for (Map.Entry<String, Object> response : responsesOf(DETAIL_PATH, "post").entrySet()) {
-                if (response.getKey().startsWith("2") || "401".equals(response.getKey())) {
+            for (Map.Entry<String, Object> response : responsesOf(CARD_PATH, "get").entrySet()) {
+                if (response.getKey().startsWith("2")
+                        || CHAIN_REFUSAL_STATUSES.contains(response.getKey())
+                        || BODYLESS_STATUSES.contains(response.getKey())) {
                     continue;
                 }
                 assertEquals(Set.of("application/json"), contentTypesOf(response.getValue()),
                         "the read route answers " + response.getKey() + " in another shape, and"
-                                + " every failure of it but the credential one, which the chain"
-                                + " writes, is an error record");
+                                + " every failure of it but the three the chain writes is an error"
+                                + " record");
             }
         }
 
@@ -395,12 +444,18 @@ final class OpenApiContractTest {
         @Test
         void everyFailingUpdateAnswersTheOutcomeRecord() {
             List<String> divergent = new ArrayList<>();
-            responsesOf(COLLECTION_PATH, "put").forEach((status, response) -> {
+            responsesOf(CARD_PATH, "put").forEach((status, response) -> {
                 String expected = switch (status) {
-                    case "400" -> "ApiError";
-                    case "401", "403" -> "Problem";
-                    default -> "CardUpdateResponse";
+                    case "400", "405", "415", "500", "503" -> "ApiError";
+                    case "401", "403", "429" -> "Problem";
+                    case "200" -> "CardUpdated";
+                    case "404" -> "CardUpdateNotFound";
+                    case "409" -> "CardUpdateConflict";
+                    default -> "CardUpdateRejected";
                 };
+                if (BODYLESS_STATUSES.contains(status)) {
+                    return;
+                }
                 if (!expected.equals(schemaNameOf(response))) {
                     divergent.add(status + " answers " + schemaNameOf(response) + " and not "
                             + expected);
@@ -410,21 +465,32 @@ final class OpenApiContractTest {
                     "the outcome carries the text and the refreshed row: " + divergent);
         }
 
-        /** Asserts every response declares exactly one media type, so no outcome is ambiguous. */
+        /**
+         * Asserts one outcome alone declares two media types, and names which one.
+         *
+         * <p>Two shapes for one status is a cost to a client, so no outcome of this document carries
+         * two and this test is the inventory that keeps it so. Every route of this service names its
+         * subject in the path or the query, so each of {@code 401}, {@code 403} and {@code 429} has
+         * one writer, the chain, and one shape. An ambiguity appearing anywhere fails here.
+         */
         @Test
-        void everyResponseDeclaresOneMediaType() {
-            List<String> divergent = new ArrayList<>();
+        void noOutcomeDeclaresTwoMediaTypes() {
+            Map<String, Set<String>> ambiguous = new TreeMap<>();
             for (Map.Entry<String, Map<String, Object>> route : paths().entrySet()) {
-                for (String method : route.getValue().keySet()) {
+                for (String method : operationsOf(route.getValue()).keySet()) {
                     responsesOf(route.getKey(), method).forEach((status, response) -> {
+                        if (BODYLESS_STATUSES.contains(status)) {
+                            return;
+                        }
                         if (contentTypesOf(response).size() != 1) {
-                            divergent.add(method + " " + route.getKey() + " " + status + " declares "
-                                    + contentTypesOf(response));
+                            ambiguous.put(method + " " + route.getKey() + " " + status,
+                                    Set.copyOf(contentTypesOf(response)));
                         }
                     });
                 }
             }
-            assertEquals(List.of(), divergent, "one shape per outcome: " + divergent);
+            assertEquals(Map.of(), ambiguous,
+                    "one shape per outcome, with no exception: " + ambiguous);
         }
     }
 
@@ -454,28 +520,23 @@ final class OpenApiContractTest {
                     "the document describes exactly the components the card declares");
         }
 
-        /** Asserts the read request schema declares one property per component, and no other. */
-        @Test
-        void theReadRequestSchemaMatchesItsRecord() {
-            assertEquals(componentNamesOf(CardDetailRequest.class),
-                    propertyNamesOf("CardDetailRequest"),
-                    "the document describes exactly the two components the search condition holds");
-        }
-
         /** Asserts the update request schema declares one property per component, and no other. */
         @Test
         void theUpdateRequestSchemaMatchesItsRecord() {
             assertEquals(componentNamesOf(CardUpdateRequest.class),
                     propertyNamesOf("CardUpdateRequest"),
-                    "the document describes exactly the six components the update carries");
+                    "the document describes exactly the five components the update carries");
+            assertFalse(propertyNamesOf("CardUpdateRequest").contains("cardNumber"),
+                    "the card number names the row and travels in the path");
         }
 
         /** Asserts the update response schema declares one property per component, and no other. */
         @Test
         void theUpdateResponseSchemaMatchesItsRecord() {
-            assertEquals(componentNamesOf(CardUpdateResponse.class),
-                    propertyNamesOf("CardUpdateResponse"),
-                    "the document describes exactly the components the outcome declares");
+            for (String schema : OUTCOME_SCHEMAS) {
+                assertEquals(componentNamesOf(CardUpdateResponse.class), propertyNamesOf(schema),
+                        schema + " describes other than the components the outcome declares");
+            }
         }
 
         /** Asserts the refreshed-card schema declares one property per component, and no other. */
@@ -490,6 +551,47 @@ final class OpenApiContractTest {
         void theErrorSchemaMatchesItsRecord() {
             assertEquals(componentNamesOf(ApiErrorResponse.class), propertyNamesOf("ApiError"),
                     "the document describes exactly the three members the error record declares");
+        }
+
+        /**
+         * Asserts every documented property declares the wire type its component serializes to.
+         *
+         * <p>The tests above hold each schema to the <em>names</em> its record declares. None held it
+         * to the types, so a property could describe a number where the record carries text. That
+         * gap is not theoretical here: publishing {@code CardSummary.cardNumber} as a number passed
+         * every test in this module while breaking two things at once, since sixteen digits exceed
+         * what a double holds exactly and a leading zero disappears — and every seeded card number
+         * in {@code app/data/ASCII/carddata.txt} begins with one.
+         *
+         * <p>A generated client reads the declared type rather than the description, so this is the
+         * assertion that keeps a documented type from diverging from the value actually sent.
+         */
+        @Test
+        @DisplayName("every documented property declares the wire type its component serializes to")
+        void everyDocumentedPropertyDeclaresItsWireType() {
+            List<String> mismatches = new ArrayList<>();
+            int compared = 0;
+            for (Map.Entry<String, Class<?>> backed : RECORD_BACKED_SCHEMAS.entrySet()) {
+                Map<String, Object> properties = propertiesOf(backed.getKey());
+                for (RecordComponent component : backed.getValue().getRecordComponents()) {
+                    String property = component.getName();
+                    if (!properties.containsKey(property)) {
+                        mismatches.add(backed.getKey() + " publishes no " + property);
+                        continue;
+                    }
+                    compared++;
+                    Object declared = asMap(properties.get(property)).get("type");
+                    if (!declares(declared, wireTypeOf(component))) {
+                        mismatches.add(backed.getKey() + "." + property + " declares " + declared
+                                + " for a " + component.getType().getSimpleName());
+                    }
+                }
+            }
+
+            assertEquals(List.of(), mismatches,
+                    "properties whose declared type is not the type their component sends");
+            assertEquals(RECORD_BACKED_PROPERTIES, compared,
+                    "properties compared, so a pairing dropped from the map fails here");
         }
 
         /**
@@ -519,21 +621,44 @@ final class OpenApiContractTest {
             assertEquals(new ArrayList<>(componentNamesOf(CardUpdateRequest.class)),
                     requiredOf("CardUpdateRequest"),
                     "the screen submits one fixed-width group, so the request is whole or refused");
-            assertEquals(new ArrayList<>(componentNamesOf(CardDetailRequest.class)),
-                    requiredOf("CardDetailRequest"),
-                    "both edits refuse an absent value, and a third rule refuses both absent");
         }
 
         /**
-         * Asserts the outcome is the only required member of the update response.
+         * Asserts every member of every outcome schema is required, and that the null members are
+         * typed as null rather than omitted.
          *
-         * <p>Two outcomes carry no message and six carry no refreshed row, so the other two members
-         * are absent from most answers. Requiring them would describe a body the service never sends.
+         * <p>The record declares three components and the writer serializes all three, so all three
+         * arrive on every answer. A member the document called optional would describe a body a
+         * caller could receive without the key, and a caller reading the absence of a key rather
+         * than its null value would then treat a rewritten row and a refused one alike.
+         *
+         * <p>One schema per status is what makes the null members statable. {@code CardUpdated}
+         * carries {@code message} and {@code refreshedCard} as null and nothing else, and
+         * {@code CardUpdateConflict} is the one schema whose refreshed card may hold a row.
          */
         @Test
-        void theOutcomeIsTheOnlyRequiredMemberOfTheResponse() {
-            assertEquals(List.of("outcome"), requiredOf("CardUpdateResponse"),
-                    "UPDATED carries no message and only CHANGED_BEFORE_UPDATE carries a row");
+        void everyMemberOfEveryOutcomeSchemaIsRequired() {
+            List<String> components = new ArrayList<>(componentNamesOf(CardUpdateResponse.class));
+            for (String schema : OUTCOME_SCHEMAS) {
+                assertEquals(components, requiredOf(schema),
+                        schema + " calls a serialized member optional");
+            }
+
+            assertEquals("null", asMap(propertiesOf("CardUpdated").get("message")).get("type"),
+                    "a rewritten row carries no text");
+            assertEquals("null",
+                    asMap(propertiesOf("CardUpdated").get("refreshedCard")).get("type"),
+                    "a rewritten row re-reads nothing");
+            assertEquals("null",
+                    asMap(propertiesOf("CardUpdateNotFound").get("refreshedCard")).get("type"),
+                    "an absent row re-reads nothing");
+            assertEquals("null",
+                    asMap(propertiesOf("CardUpdateRejected").get("refreshedCard")).get("type"),
+                    "a refused value writes nothing and re-reads nothing");
+            assertTrue(asMap(propertiesOf("CardUpdateConflict").get("refreshedCard"))
+                            .containsKey("oneOf"),
+                    "the conflict schema is the one that may carry a row, from "
+                            + "app/cbl/COCRDUPC.cbl:L1512-L1517");
         }
 
         /** Asserts every schema the document declares is referenced, and every reference resolves. */
@@ -649,7 +774,7 @@ final class OpenApiContractTest {
         /** Asserts the account identifier keeps its leading zeros wherever it appears. */
         @Test
         void theAccountIdentifierKeepsItsLeadingZeros() {
-            for (String schema : List.of("CardSummary", "CardDetail", "CardDetailRequest")) {
+            for (String schema : List.of("CardSummary", "CardDetail")) {
                 Map<String, Object> account = asMap(propertiesOf(schema).get("accountId"));
                 assertEquals("string", account.get("type"),
                         schema + ".accountId as a number would drop the zeros the source compares");
@@ -699,12 +824,34 @@ final class OpenApiContractTest {
          */
         @Test
         void theDocumentEnumeratesTheSevenOutcomesInOrder() {
-            @SuppressWarnings("unchecked")
-            List<String> enumerated =
-                    (List<String>) asMap(propertiesOf("CardUpdateResponse").get("outcome"))
-                            .get("enum");
-            assertEquals(Arrays.stream(UpdateOutcome.values()).map(Enum::name).toList(), enumerated,
-                    "the document enumerates the outcomes the code declares, in declaration order");
+            Set<String> enumerated = new TreeSet<>();
+            for (String schema : OUTCOME_SCHEMAS) {
+                Map<String, Object> outcome = asMap(propertiesOf(schema).get("outcome"));
+                Object one = outcome.get("const");
+                if (one != null) {
+                    enumerated.add(String.valueOf(one));
+                    continue;
+                }
+                for (Object value : (List<?>) outcome.get("enum")) {
+                    enumerated.add(String.valueOf(value));
+                }
+            }
+
+            TreeSet<String> carriedByAnOutcomeSchema =
+                    Arrays.stream(UpdateOutcome.values()).map(Enum::name)
+                            .collect(Collectors.toCollection(TreeSet::new));
+            carriedByAnOutcomeSchema.remove(UpdateOutcome.UPDATE_FAILED_AFTER_LOCK.name());
+
+            assertEquals(carriedByAnOutcomeSchema, enumerated,
+                    "the four status-specific schemas together name the six outcomes that answer "
+                            + "with an update body, and each names only the outcomes its status "
+                            + "carries");
+            assertEquals(503, CardController.statusOf(CardUpdateResponse.updateFailedAfterLock())
+                            .value(),
+                    "the seventh outcome is a write the datastore refused, which is retryable");
+            assertEquals("ApiError", schemaNameOf(responsesOf(CARD_PATH, "put").get("503")),
+                    "it answers the failure shape, so its text reaches a caller through the message "
+                            + "member and one status carries one schema");
         }
 
         /**
@@ -758,18 +905,20 @@ final class OpenApiContractTest {
         @Test
         void theDocumentReproducesTheSearchConditionTextsAndTheirOrder() {
             String text = documentText();
-            for (String message : List.of(CardValidationMessages.NO_SEARCH_CRITERIA_RECEIVED,
-                    CardValidationMessages.PROMPT_FOR_ACCT,
+            for (String message : List.of(CardValidationMessages.PROMPT_FOR_ACCT,
                     CardValidationMessages.ACCOUNT_FILTER_NOT_NUMERIC,
-                    CardValidationMessages.PROMPT_FOR_CARD,
-                    CardValidationMessages.CARD_FILTER_NOT_NUMERIC)) {
+                    CardValidationMessages.CARD_FILTER_NOT_NUMERIC,
+                    CardValidationMessages.DID_NOT_FIND_ACCTCARD_COMBO)) {
                 assertTrue(text.contains(message),
                         "the document omits the search text: " + message);
             }
-            assertTrue(text.contains("firstSearchFailure"),
-                    "the document names the method that owns the order");
-            assertTrue(text.contains("L630-L640"),
-                    "and cites the paragraph that performs the edits in that order");
+            assertTrue(text.contains("L740"),
+                    "the document cites the line that moves the card number into the read key");
+            assertTrue(text.contains("L779-L810"),
+                    "and the unreachable paragraph whose text this route never answers");
+            assertFalse(text.contains(CardValidationMessages.NO_SEARCH_CRITERIA_RECEIVED),
+                    "the cross-field text belongs to a submitted pair, and the read route names one "
+                            + "card in its path, so no request can arrive with neither value");
         }
 
         /**
@@ -863,6 +1012,43 @@ final class OpenApiContractTest {
     }
 
     /**
+     * Reads the operations of one route, leaving out the path-level members that are not operations.
+     *
+     * <p>A route may declare {@code parameters} beside its methods, which is where a path variable
+     * shared by every method of the route is declared. That member is not an operation, so a test
+     * walking operations skips it.
+     *
+     * @param route one route block
+     * @return the operations, keyed by method
+     */
+    private static Map<String, Object> operationsOf(Map<String, Object> route) {
+        Map<String, Object> operations = new java.util.LinkedHashMap<>();
+        route.forEach((key, value) -> {
+            if (HTTP_METHODS.contains(key)) {
+                operations.put(key, value);
+            }
+        });
+        return operations;
+    }
+
+    /**
+     * Reads one path-level variable declaration.
+     *
+     * @param path the route
+     * @param name the variable name
+     * @return the declaration
+     */
+    private static Map<String, Object> pathVariableOf(String path, String name) {
+        for (Object parameter : parametersOf(operationsOn(path))) {
+            Map<String, Object> declared = asMap(parameter);
+            if (name.equals(declared.get("name")) && "path".equals(declared.get("in"))) {
+                return declared;
+            }
+        }
+        throw new AssertionError(DOCUMENT + " declares no path variable " + name + " on " + path);
+    }
+
+    /**
      * @param path   the route
      * @param method the method
      * @return the responses of one operation, keyed by status
@@ -941,10 +1127,124 @@ final class OpenApiContractTest {
         return named.substring(named.lastIndexOf('/') + 1);
     }
 
+    /**
+     * Reads the schema name each media type of one response answers with.
+     *
+     * <p>{@link #schemaNameOf(Object)} answers the first media type alone, which is enough for the
+     * outcomes carrying one shape and hides a difference in the one that carries two.
+     *
+     * @param response the response block
+     * @return the schema name per media type, empty when the response carries no body
+     */
+    private static Map<String, String> schemaNamesOf(Object response) {
+        Object content = asMap(response).get("content");
+        if (content == null) {
+            return Map.of();
+        }
+        Map<String, String> named = new TreeMap<>();
+        asMap(content).forEach((mediaType, body) -> {
+            Object reference = asMap(asMap(body).get("schema")).get("$ref");
+            if (reference != null) {
+                String target = reference.toString();
+                named.put(mediaType.toString(), target.substring(target.lastIndexOf('/') + 1));
+            }
+        });
+        return named;
+    }
+
     /** @return the security schemes block */
     @SuppressWarnings("unchecked")
     private static Map<String, Object> securitySchemes() {
         return (Map<String, Object>) components().get("securitySchemes");
+    }
+
+    /**
+     * Each documented schema paired with the record whose components it describes.
+     *
+     * <p>{@link CardUpdateResponse} is described four times, once per status the update answers:
+     * {@code CardUpdated} for the rewrite, {@code CardUpdateRejected} for a failed edit,
+     * {@code CardUpdateConflict} for a row that changed first and {@code CardUpdateNotFound} for a
+     * card the schema does not hold. One record, four documented answers, so all four are paired
+     * here — a schema left out would be free to describe a member the record does not send.
+     */
+    private static final Map<String, Class<?>> RECORD_BACKED_SCHEMAS = Map.of(
+            "ApiError", ApiErrorResponse.class,
+            "CardSummary", CardSummary.class,
+            "CardList", CardListResponse.class,
+            "CardDetail", CardDetailResponse.class,
+            "CardUpdateRequest", CardUpdateRequest.class,
+            "RefreshedCard", RefreshedCard.class,
+            "CardUpdated", CardUpdateResponse.class,
+            "CardUpdateRejected", CardUpdateResponse.class,
+            "CardUpdateConflict", CardUpdateResponse.class,
+            "CardUpdateNotFound", CardUpdateResponse.class);
+
+    /**
+     * Properties the pairings above cover, asserted so a shrunken map cannot pass unnoticed.
+     *
+     * <p>Twenty-four from the six schemas that each describe one record, plus three for each of the
+     * four answers of the update, which is thirty-six.
+     */
+    private static final int RECORD_BACKED_PROPERTIES = 36;
+
+    /**
+     * Returns the JSON type a property describing {@code component} must declare.
+     *
+     * <p>An unmapped type is an error rather than a default. Letting one fall through to a number is
+     * the drift this method exists to prevent, so a component type nobody has considered stops the
+     * build with a message naming it.
+     *
+     * @param component the record component the property describes
+     * @return the type the document must declare, or {@code null} where the component is itself a
+     *     record and the property is therefore a reference to another schema
+     */
+    private static String wireTypeOf(RecordComponent component) {
+        Class<?> type = component.getType();
+        if (type == String.class || type.isEnum() || type == java.time.LocalDate.class) {
+            return "string";
+        }
+        if (type == int.class || type == Integer.class) {
+            return "integer";
+        }
+        if (type == boolean.class || type == Boolean.class) {
+            return "boolean";
+        }
+        if (List.class.isAssignableFrom(type)) {
+            return "array";
+        }
+        if (type.isRecord()) {
+            return null;
+        }
+        throw new AssertionError("this test carries no wire type for " + type.getName()
+                + ", newly held by " + component.getDeclaringRecord().getSimpleName() + "."
+                + component.getName() + ". Add the mapping deliberately: a value left to default to"
+                + " a JSON number loses a leading zero and rounds beyond fifteen digits.");
+    }
+
+    /**
+     * Returns whether a declared type satisfies the expected one, allowing a nullable union.
+     *
+     * <p>A declared type of {@code "null"} satisfies every component. The four answers of the update
+     * describe one record per status and narrow the members that status never carries to the JSON
+     * null type: a {@code 200} sends no message and no refreshed card, and both are documented as
+     * always absent rather than omitted from the schema. That is a stronger statement than a type
+     * name, not a weaker one, and it is why it is accepted here for any component.
+     *
+     * @param declared the type the document declares, a name, a union of names, or {@code "null"}
+     * @param expected the type the component requires, or {@code null} for a reference
+     * @return whether the declaration satisfies the requirement
+     */
+    private static boolean declares(Object declared, String expected) {
+        if ("null".equals(declared)) {
+            return true;
+        }
+        if (expected == null) {
+            return declared == null;
+        }
+        if (declared instanceof List<?> union) {
+            return union.contains(expected);
+        }
+        return expected.equals(declared);
     }
 
     /** @return the components block */

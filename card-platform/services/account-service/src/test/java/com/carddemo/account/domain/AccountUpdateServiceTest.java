@@ -1,5 +1,6 @@
 package com.carddemo.account.domain;
 
+import com.carddemo.account.domain.validation.DateOfBirthValidator;
 import com.carddemo.account.domain.validation.EditResult;
 import com.carddemo.account.entity.AccountEntity;
 import com.carddemo.account.entity.CustomerEntity;
@@ -13,19 +14,36 @@ import com.carddemo.account.repository.OutboxEventRepository;
 import com.carddemo.cobol.CobolDateValidator;
 import com.carddemo.cobol.CobolDecimal;
 import com.carddemo.cobol.PicClause;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import jakarta.persistence.EntityManager;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.dao.PessimisticLockingFailureException;
+import org.springframework.orm.jpa.JpaSystemException;
+import org.springframework.test.context.TestPropertySource;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -91,6 +109,16 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
     private static final DateTimeFormatter TEN_CHARACTER_DATE =
             DateTimeFormatter.ofPattern("yyyy-MM-dd");
 
+    /**
+     * Renders the eight characters a date edit reads.
+     *
+     * <p>{@code AccountUpdateService.editDateField} strips the two separators of the ten-character
+     * column before either date edit sees the value, so a validator called directly takes the form
+     * {@code WS-EDIT-DATE-CCYYMMDD} at {@code app/cpy/CSUTLDWY.cpy} holds.
+     */
+    private static final DateTimeFormatter EIGHT_CHARACTER_DATE =
+            DateTimeFormatter.ofPattern("yyyyMMdd");
+
     /** Text {@code app/cbl/COACTUPC.cbl:L2146} appends when the class test refuses a field. */
     private static final String MUST_BE_ALL_NUMERIC = " must be all numeric.";
 
@@ -114,6 +142,12 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
 
     /** Text the signed-decimal edit at {@code app/cbl/COACTUPC.cbl:L2191} appends. */
     private static final String MUST_BE_SUPPLIED = " must be supplied.";
+
+    /**
+     * A credit limit above the one {@link #account(Keys)} stores, so a submitted pair carrying it
+     * differs from the fetched pair and reaches {@code 9600-WRITE-PROCESSING}.
+     */
+    private static final BigDecimal RAISED_CREDIT_LIMIT = new BigDecimal("20300.00");
 
     @Autowired
     private AccountUpdateService service;
@@ -1347,28 +1381,76 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
             assertThat(verdict.message()).startsWith(AccountUpdateService.DATE_OF_BIRTH_LABEL);
         }
 
+        /**
+         * The boundary itself, against one date that does not move while the test runs.
+         *
+         * <p>{@code app/cpy/CSUTLDPY.cpy:L350} compares with strict greater-than, so the reference
+         * day is refused and the day before it passes. Both verdicts are read at the seam
+         * {@link DateOfBirthValidator#validate(String, String, LocalDate)} exposes, which takes the
+         * day the comparison runs against as an argument. One captured date supplies both the
+         * submitted value and the reference, so the pair cannot disagree about which day it is.
+         *
+         * <p>This used to read {@code LocalDate.now()} for the value while production read it again
+         * for the comparison. A run that crossed local midnight between those two reads submitted
+         * yesterday's date against today's reference, which passes, and the assertion that today is
+         * refused failed for a reason that had nothing to do with the rule.
+         */
         @Test
-        @Transactional
-        @DisplayName("CSUTLDPY L350 compares with strict greater-than, so today is refused as a "
-                + "date of birth")
-        void todayIsRefusedAsADateOfBirth() {
-            Keys keys = persistedPair();
-            CustomerEntity today = customer(keys);
-            today.setDateOfBirth(LocalDate.now().format(TEN_CHARACTER_DATE));
-            CustomerEntity yesterday = customer(keys);
-            yesterday.setDateOfBirth(LocalDate.now().minusDays(1).format(TEN_CHARACTER_DATE));
+        @DisplayName("CSUTLDPY L350 compares with strict greater-than, so the reference day is "
+                + "refused and the day before it passes")
+        void theReferenceDayIsRefusedAndTheDayBeforeItPasses() {
+            LocalDate reference = LocalDate.of(2024, 2, 29);
 
-            EditResult todayVerdict = service.updateAccount(account(keys), today, account(keys),
-                    customer(keys));
-            EditResult yesterdayVerdict = service.updateAccount(account(keys), yesterday,
-                    account(keys), customer(keys));
+            EditResult onTheDay = DateOfBirthValidator.validate(
+                    AccountUpdateService.DATE_OF_BIRTH_LABEL,
+                    reference.format(EIGHT_CHARACTER_DATE), reference);
+            EditResult theDayBefore = DateOfBirthValidator.validate(
+                    AccountUpdateService.DATE_OF_BIRTH_LABEL,
+                    reference.minusDays(1).format(EIGHT_CHARACTER_DATE), reference);
 
-            assertThat(todayVerdict.valid()).isFalse();
-            assertThat(todayVerdict.message())
+            assertThat(onTheDay.valid()).isFalse();
+            assertThat(onTheDay.message())
                     .isEqualTo(AccountUpdateService.DATE_OF_BIRTH_LABEL
                             + CobolDateValidator.FUTURE_DATE_MESSAGE);
-            assertThat(yesterdayVerdict.valid()).isTrue();
-            assertThat(yesterdayVerdict.hasMessage()).isFalse();
+            assertThat(theDayBefore.valid()).isTrue();
+            assertThat(theDayBefore.hasMessage()).isFalse();
+        }
+
+        /**
+         * The same rule reached through the public method, using two values whose verdict a rollover
+         * cannot change.
+         *
+         * <p>{@code AccountUpdateService} reaches the check through
+         * {@link DateOfBirthValidator#validate(String, String)}, which reads the current date itself,
+         * so no fixed date can be handed to it. What can be fixed is the distance from the boundary:
+         * one day after the captured date is refused whether the comparison runs on the captured day
+         * or on the next one, and one day before it passes on either. Both verdicts are therefore
+         * invariant under a midnight crossing, and together they prove the service compares against
+         * the current date rather than against a constant.
+         */
+        @Test
+        @Transactional
+        @DisplayName("The update path refuses a date one day ahead and accepts one day behind, on "
+                + "either side of a rollover")
+        void theUpdatePathRefusesADateAheadAndAcceptsOneBehind() {
+            LocalDate captured = LocalDate.now();
+            Keys keys = persistedPair();
+            CustomerEntity ahead = customer(keys);
+            ahead.setDateOfBirth(captured.plusDays(1).format(TEN_CHARACTER_DATE));
+            CustomerEntity behind = customer(keys);
+            behind.setDateOfBirth(captured.minusDays(1).format(TEN_CHARACTER_DATE));
+
+            EditResult aheadVerdict = service.updateAccount(account(keys), ahead, account(keys),
+                    customer(keys));
+            EditResult behindVerdict = service.updateAccount(account(keys), behind,
+                    account(keys), customer(keys));
+
+            assertThat(aheadVerdict.valid()).isFalse();
+            assertThat(aheadVerdict.message())
+                    .isEqualTo(AccountUpdateService.DATE_OF_BIRTH_LABEL
+                            + CobolDateValidator.FUTURE_DATE_MESSAGE);
+            assertThat(behindVerdict.valid()).isTrue();
+            assertThat(behindVerdict.hasMessage()).isFalse();
         }
     }
 
@@ -1462,6 +1544,349 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
     }
 
     // =============================================================================================
+    // The two locked reads of 9600-WRITE-PROCESSING, and the answers a refused lock produces.
+    // app/cbl/COACTUPC.cbl:L3892-L3903 reads the account for update and L3907-L3915 answers a
+    // response other than DFHRESP(NORMAL). app/cbl/COACTUPC.cbl:L3919-L3930 reads the customer and
+    // L3934-L3942 answers the same way.
+    // =============================================================================================
+
+    /**
+     * The exception arms of the two locked reads.
+     *
+     * <p>Each locked read has two ways of not producing a row, and the source draws no distinction
+     * between them: {@code app/cbl/COACTUPC.cbl:L3907} tests for a response other than
+     * {@code DFHRESP(NORMAL)} and answers one message for every one of them. A row that has gone
+     * returns empty, which the groups above cover. A lock the datastore will not grant inside the
+     * bound {@code carddemo.write.lock-wait-ms} sets raises instead, and the raising arm had no test
+     * of its own.
+     *
+     * <p>Two exception types reach each arm. Hibernate reports a refused lock as a pessimistic-lock
+     * failure, and reports a statement the driver aborted for another reason as a system fault; the
+     * production catch names both, because a lock timeout has been observed to arrive as either
+     * depending on where the driver raises. Four cases follow: two types on the account read and the
+     * same two on the customer read.
+     *
+     * <p>Every test in this group runs OUTSIDE a test transaction, which is a deliberate departure
+     * from every other group of this class. The refusal is carried out of
+     * {@code updateAccount} as {@code LockNotTaken}, which leaves the transaction the service opened
+     * marked for rollback. A test transaction would have been that transaction, so the rollback would
+     * have been the test's own and nothing about it observable. Running outside one makes the service
+     * open a physical transaction of its own, so what it did or did not commit can be read back
+     * afterwards. The rows are committed by {@link #inOwnTransaction(Supplier)} and removed by
+     * {@link #removeCommittedRows()}.
+     *
+     * <p>{@link MockitoSpyBean} wraps the two repositories, so the bound {@code lock_timeout}
+     * statement and every unstubbed read still reach the real repository and the real database. Only
+     * the one locked read a test names is made to raise, and it is stubbed with {@code doThrow} rather
+     * than {@code when(...).thenThrow(...)}: the latter calls the method being stubbed, which would
+     * perform the very read the test is arranging.
+     */
+    @Nested
+    @TestPropertySource(properties = {
+            "carddemo.outbox.relay.fixed-delay-ms=3600000",
+            "carddemo.retention.sweep-interval-ms=3600000"
+    })
+    @DisplayName("a refused lock at L3907 and at L3934")
+    class RefusedLocks {
+
+        /** Text a refused lock reports, which reveals nothing about the row or the datastore. */
+        private static final String DRIVER_TEXT = "canceling statement due to lock timeout";
+
+        /** Meter name the update latency timer carries. */
+        private static final String UPDATE_LATENCY = "carddemo.account.update.latency";
+
+        /** Meter name the transaction-failure counter carries. */
+        private static final String TRANSACTION_FAILURES = "carddemo.account.transaction.failures";
+
+        /** Tag value that counter carries for the update path. */
+        private static final String UPDATE_OPERATION = "update";
+
+        /** Wraps the account repository so one locked read can be made to raise. */
+        @MockitoSpyBean
+        private AccountRepository lockedAccounts;
+
+        /** Wraps the customer repository for the same reason. */
+        @MockitoSpyBean
+        private CustomerRepository lockedCustomers;
+
+        /** Opens the committing and cleaning transactions this group needs. */
+        @Autowired
+        private PlatformTransactionManager transactionManager;
+
+        /** Reads the meter values a refusal moved. */
+        @Autowired
+        private MeterRegistry meters;
+
+        /** Keys of the rows this group committed, removed after each test. */
+        private Keys committed;
+
+        /** Removes the rows the test committed, whatever the test did. */
+        @AfterEach
+        void removeCommittedRows() {
+            if (committed == null) {
+                return;
+            }
+            Keys keys = committed;
+            committed = null;
+            inOwnTransaction(() -> {
+                entityManager.createNativeQuery("DELETE FROM outbox_event WHERE aggregate_id = ?1")
+                        .setParameter(1, keys.accountId())
+                        .executeUpdate();
+                entityManager
+                        .createNativeQuery(
+                                "DELETE FROM account_customer_link WHERE account_id = ?1")
+                        .setParameter(1, keys.accountId())
+                        .executeUpdate();
+                entityManager.createNativeQuery("DELETE FROM account WHERE account_id = ?1")
+                        .setParameter(1, keys.accountId())
+                        .executeUpdate();
+                entityManager.createNativeQuery("DELETE FROM customer WHERE customer_id = ?1")
+                        .setParameter(1, keys.customerId())
+                        .executeUpdate();
+                return null;
+            });
+        }
+
+        /**
+         * The four cases: two exception types on each of the two locked reads.
+         *
+         * @param onTheCustomerRead whether the customer read raises rather than the account read
+         * @param systemFault       whether the raised type is the system fault rather than the
+         *                          pessimistic-lock failure
+         */
+        @ParameterizedTest(name = "customerRead={0}, systemFault={1}")
+        @CsvSource({"false,false", "false,true", "true,false", "true,true"})
+        @DisplayName("answers the fixed message of its own paragraph and commits nothing")
+        void aRefusedLockAnswersItsFixedMessageAndCommitsNothing(boolean onTheCustomerRead,
+                boolean systemFault) {
+            Keys keys = commitPair();
+            AccountEntity before = readCommittedAccount(keys);
+            CustomerEntity customerBefore = readCommittedCustomer(keys);
+            refuseTheLock(keys, onTheCustomerRead, systemFault);
+
+            EditResult verdict = service.updateAccount(raisedLimit(keys), customer(keys),
+                    account(keys), customer(keys));
+
+            String expected = onTheCustomerRead
+                    ? AccountUpdateService.COULD_NOT_LOCK_CUSTOMER
+                    : AccountUpdateService.COULD_NOT_LOCK_ACCOUNT;
+            assertThat(verdict.valid())
+                    .as("a refused lock is a failing verdict and not a fault")
+                    .isFalse();
+            assertThat(verdict.message())
+                    .as("the message app/cbl/COACTUPC.cbl answers for this paragraph")
+                    .isEqualTo(expected);
+
+            assertThat(readCommittedAccount(keys).getCreditLimit())
+                    .as("the credit limit the caller submitted did not commit")
+                    .isEqualByComparingTo(before.getCreditLimit());
+            assertThat(readCommittedCustomer(keys).getFirstName())
+                    .isEqualTo(customerBefore.getFirstName());
+            assertThat(committedOutboxRows(keys))
+                    .as("a transaction that wrote nothing announces nothing")
+                    .isZero();
+            assertThat(TransactionSynchronizationManager.isActualTransactionActive())
+                    .as("the transaction the service opened ended rather than staying open")
+                    .isFalse();
+        }
+
+        /**
+         * Asserts the message names nothing about the row, the caller or the datastore.
+         *
+         * <p>The two texts are fixed constants, and the driver text of the cause reaches neither.
+         * A refused lock names which record could not be locked and stops there: telling a caller
+         * that another writer holds a row, or which statement the driver cancelled, describes the
+         * traffic of every other caller of the same account.
+         */
+        @ParameterizedTest(name = "customerRead={0}")
+        @CsvSource({"false", "true"})
+        @DisplayName("reveals no identifier and no text from the cause")
+        void aRefusedLockRevealsNoIdentifierAndNoDriverText(boolean onTheCustomerRead) {
+            Keys keys = commitPair();
+            refuseTheLock(keys, onTheCustomerRead, false);
+
+            EditResult verdict = service.updateAccount(raisedLimit(keys), customer(keys),
+                    account(keys), customer(keys));
+
+            assertThat(verdict.message())
+                    .doesNotContain(keys.accountId())
+                    .doesNotContain(keys.customerId())
+                    .doesNotContain(keys.cardNumber())
+                    .doesNotContain(DRIVER_TEXT)
+                    .doesNotContain("lock_timeout")
+                    .doesNotContain(PessimisticLockingFailureException.class.getSimpleName())
+                    .doesNotContain(JpaSystemException.class.getSimpleName());
+        }
+
+        /**
+         * Asserts a refused lock is timed and is not counted as a service failure.
+         *
+         * <p>{@code AccountUpdateService.updateAccount} records the latency of the refused attempt
+         * and leaves the transaction-failure counter alone, exactly as the empty-result arm of the
+         * same paragraph does. The two arms answer one message for one reason, so counting one of
+         * them as a defect would have an operator read a contended write as a fault of this service.
+         */
+        @Test
+        @DisplayName("is timed as an update and counted as no failure")
+        void aRefusedLockIsTimedAndCountedAsNoFailure() {
+            Keys keys = commitPair();
+            long timedBefore = updateLatencyCount();
+            double failuresBefore = updateFailureCount();
+            refuseTheLock(keys, false, false);
+
+            service.updateAccount(raisedLimit(keys), customer(keys), account(keys), customer(keys));
+
+            assertThat(updateLatencyCount())
+                    .as("the refused attempt was timed")
+                    .isEqualTo(timedBefore + 1L);
+            assertThat(updateFailureCount())
+                    .as("a contended write is not a failure of this service")
+                    .isEqualTo(failuresBefore);
+        }
+
+        /**
+         * Asserts the refused attempt left nothing behind that stops the next one.
+         *
+         * <p>This is the observable content of the rollback. The refusal is carried out of a
+         * transaction that PostgreSQL has already put beyond use, and a transaction left open or a
+         * connection returned to the pool inside an aborted transaction would make the next update
+         * fail too. Removing the stub and updating the same pair proves the opposite: the second
+         * attempt commits its columns and writes its event.
+         */
+        @Test
+        @DisplayName("leaves the next update of the same pair free to commit")
+        void aRefusedLockLeavesTheNextUpdateFreeToCommit() {
+            Keys keys = commitPair();
+            refuseTheLock(keys, false, false);
+            service.updateAccount(raisedLimit(keys), customer(keys), account(keys), customer(keys));
+
+            Mockito.reset(lockedAccounts);
+            EditResult second = service.updateAccount(raisedLimit(keys), customer(keys),
+                    account(keys), customer(keys));
+
+            assertThat(second.valid()).isTrue();
+            assertThat(second.hasMessage()).isFalse();
+            assertThat(readCommittedAccount(keys).getCreditLimit())
+                    .as("the second attempt committed the limit the first could not")
+                    .isEqualByComparingTo(RAISED_CREDIT_LIMIT);
+            assertThat(committedOutboxRows(keys))
+                    .as("one event announces the one change that committed")
+                    .isEqualTo(1L);
+        }
+
+        /**
+         * Makes one of the two locked reads raise one of the two types.
+         *
+         * @param keys              the keys the read names
+         * @param onTheCustomerRead whether the customer read raises rather than the account read
+         * @param systemFault       whether the raised type is the system fault
+         */
+        private void refuseTheLock(Keys keys, boolean onTheCustomerRead, boolean systemFault) {
+            RuntimeException refusal = systemFault
+                    ? new JpaSystemException(new RuntimeException(DRIVER_TEXT))
+                    : new PessimisticLockingFailureException(DRIVER_TEXT);
+            if (onTheCustomerRead) {
+                Mockito.doThrow(refusal).when(lockedCustomers)
+                        .findForUpdateByCustomerId(keys.customerId());
+                return;
+            }
+            Mockito.doThrow(refusal).when(lockedAccounts)
+                    .findForUpdateByAccountId(keys.accountId());
+        }
+
+        /**
+         * Commits one account, one customer and one relationship row, and records them for removal.
+         *
+         * @return the keys the three rows carry
+         */
+        private Keys commitPair() {
+            committed = inOwnTransaction(this::persistOnePair);
+            return committed;
+        }
+
+        /**
+         * Stores the three rows inside the committing transaction.
+         *
+         * @return the keys they carry
+         */
+        private Keys persistOnePair() {
+            Keys keys = keys();
+            persist(account(keys), customer(keys), keys);
+            return keys;
+        }
+
+        /**
+         * Builds the submitted account, differing from the stored one by its credit limit alone.
+         *
+         * @param keys the keys it carries
+         * @return the submitted account
+         */
+        private AccountEntity raisedLimit(Keys keys) {
+            AccountEntity submitted = account(keys);
+            submitted.setCreditLimit(RAISED_CREDIT_LIMIT);
+            return submitted;
+        }
+
+        /**
+         * Reads the committed account row on a transaction of its own.
+         *
+         * @param keys the keys it carries
+         * @return the stored row
+         */
+        private AccountEntity readCommittedAccount(Keys keys) {
+            return inOwnTransaction(() -> accounts.findById(keys.accountId()).orElseThrow());
+        }
+
+        /**
+         * Reads the committed customer row on a transaction of its own.
+         *
+         * @param keys the keys it carries
+         * @return the stored row
+         */
+        private CustomerEntity readCommittedCustomer(Keys keys) {
+            return inOwnTransaction(() -> customers.findById(keys.customerId()).orElseThrow());
+        }
+
+        /**
+         * Counts the committed outbox rows of one account.
+         *
+         * @param keys the keys they carry
+         * @return the count
+         */
+        private long committedOutboxRows(Keys keys) {
+            return inOwnTransaction(() -> outboxEvents.findAll().stream()
+                    .filter(row -> keys.accountId().equals(row.getAggregateId()))
+                    .count());
+        }
+
+        /** @return how many update latencies have been recorded */
+        private long updateLatencyCount() {
+            Timer timer = meters.find(UPDATE_LATENCY).timer();
+            return timer == null ? 0L : timer.count();
+        }
+
+        /** @return how many update transactions have been counted as failures */
+        private double updateFailureCount() {
+            Counter counter = meters.find(TRANSACTION_FAILURES)
+                    .tag("operation", UPDATE_OPERATION).counter();
+            return counter == null ? 0.0d : counter.count();
+        }
+
+        /**
+         * Runs one unit of work in a transaction of its own and commits it.
+         *
+         * @param work the work to run
+         * @param <T>  what it answers
+         * @return what it answered
+         */
+        private <T> T inOwnTransaction(Supplier<T> work) {
+            TransactionTemplate own = new TransactionTemplate(transactionManager);
+            own.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+            return own.execute(status -> work.get());
+        }
+    }
+
+    // =============================================================================================
     // Fixtures and helpers.
     // =============================================================================================
 
@@ -1482,8 +1907,9 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
      */
     private static Keys keys() {
         int ordinal = KEY_SEQUENCE.incrementAndGet();
-        return new Keys("009%08d".formatted(ordinal), "009%06d".formatted(ordinal),
-                "9%015d".formatted(ordinal));
+        return new Keys(String.format(Locale.ROOT, "009%08d", ordinal),
+                String.format(Locale.ROOT, "009%06d", ordinal),
+                String.format(Locale.ROOT, "9%015d", ordinal));
     }
 
     /**
@@ -1502,10 +1928,12 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
      * Stores one account row, one customer row and the relationship the update resolves the
      * customer through, then detaches everything.
      *
-     * <p>{@code domain/AccountUpdateService} reads {@code card_xref} for the customer the account
-     * names, the read {@code app/cbl/COACTUPC.cbl:L3617-L3618} performs. The insert below is
-     * Structured Query Language (SQL) over the table
-     * {@code src/main/resources/db/migration/V4__card_cross_reference_replica.sql} creates.
+     * <p>{@code domain/AccountUpdateService} reads {@code account_customer_link} for the customer
+     * the account names, the read {@code app/cbl/COACTUPC.cbl:L3617-L3618} performs. The insert
+     * below is Structured Query Language (SQL) over the table
+     * {@code src/main/resources/db/migration/V7__account_customer_link.sql} creates. The card
+     * number {@code keys} carries is not written: the table holds the pair alone, because no query
+     * in this service reads a card.
      *
      * @param account  the account row to store
      * @param customer the customer row to store
@@ -1516,11 +1944,10 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
         customers.save(customer);
         entityManager
                 .createNativeQuery(
-                        "INSERT INTO card_xref (card_number, customer_id, account_id) "
-                                + "VALUES (?1, ?2, ?3)")
-                .setParameter(1, keys.cardNumber())
+                        "INSERT INTO account_customer_link (account_id, customer_id) "
+                                + "VALUES (?1, ?2)")
+                .setParameter(1, keys.accountId())
                 .setParameter(2, keys.customerId())
-                .setParameter(3, keys.accountId())
                 .executeUpdate();
         flushAndDetach();
     }

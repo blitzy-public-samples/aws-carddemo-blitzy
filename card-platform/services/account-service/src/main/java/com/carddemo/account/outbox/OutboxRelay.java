@@ -236,8 +236,11 @@ public class OutboxRelay {
      * sit inside the transaction, and a commit that failed afterwards would leave a count of rows
      * that were never published.
      *
-     * <p>A sweep that cannot commit throws, the scheduler logs it, and nothing is counted — which is
-     * the honest outcome, because nothing was published.
+     * <p>A sweep that cannot commit throws, the scheduler logs it, and nothing is counted. That is
+     * not a claim that nothing reached the broker: a send the broker acknowledged before the
+     * transaction failed to commit has been published, and its row stays claimable, so the next
+     * sweep publishes it again. Delivery here is at least once, and each consumer's processed-event
+     * marker is what makes the repeat harmless.
      */
     @Scheduled(fixedDelayString = "${carddemo.outbox.relay.fixed-delay-ms:500}")
     public void publishPendingEvents() {
@@ -279,13 +282,6 @@ public class OutboxRelay {
     }
 
     /**
-     * Returns rows a dead instance left claimed to {@link RelayState#PENDING}.
-     *
-     * <p>Without this one crash costs one event permanently: the row stays {@link RelayState#CLAIMED},
-     * the claim query filters on {@link RelayState#PENDING}, and nothing looks at it again. The
-     * recovery counts as an attempt, so a row that strands repeatedly is eventually abandoned rather
-     * than recovered for ever.
-     *
      * @param now the moment this sweep started
      */
     private int recoverStrandedClaims(Instant now) {
@@ -350,10 +346,10 @@ public class OutboxRelay {
     /**
      * Discharges the diagnostics abandoned rows still owe, oldest attempt first.
      *
-     * <p>This runs at the head of a sweep rather than at its end. An owed diagnostic is the only
-     * remaining record of an event this service gave up on, the set is empty while the relay is
-     * healthy, and a business row that yields its place is retried on the next sweep with nothing
-     * lost.
+     * <p>This runs at the head of a sweep rather than at its end. The set is empty while the relay
+     * is healthy, and a business row that yields its place is retried on the next sweep with nothing
+     * lost. The abandoned row itself is retained in the terminal state, so the payload survives
+     * whether or not its diagnostic has landed.
      *
      * <p>A refusal here is not a failure of the sweep. The obligation is durable, so the row
      * survives to be attempted again, and the attempt is counted so an operator can see a diagnostic
@@ -390,13 +386,6 @@ public class OutboxRelay {
     }
 
     /**
-     * Names the destination of one stored event type, or {@link #UNRESOLVED_DESTINATION}.
-     *
-     * <p>A diagnostic reports the topic the event was meant for, and an event type this relay has no
-     * topic for is one of the reasons a row is abandoned. Reporting that as a placeholder rather
-     * than as a second failure keeps the diagnostic publishable, which is the whole point of
-     * publishing it.
-     *
      * @param eventType the stored event type
      * @return the configured topic, or the placeholder when the type names none
      */
@@ -409,12 +398,6 @@ public class OutboxRelay {
     }
 
     /**
-     * Returns how long to wait before attempting a row again.
-     *
-     * <p>The wait doubles per attempt from the sweep delay and stops at the claim timeout, so a row
-     * the broker keeps refusing is retried less and less often without ever falling out of the
-     * sweep's reach. Both bounds are configured values rather than numbers written here.
-     *
      * @param attemptsSoFar attempts this row had taken before the one that just failed
      * @return the wait, never longer than the claim timeout
      */
@@ -427,11 +410,6 @@ public class OutboxRelay {
     }
 
     /**
-     * Returns the deepest cause of one failure.
-     *
-     * <p>A publish wraps the fault it met, so the outermost type names the wrapper and not the
-     * failure. The walk ends on a chain that names itself as its own cause.
-     *
      * @param failure the failure raised
      * @return the deepest cause, or {@code failure} when it has none
      */
@@ -500,8 +478,6 @@ public class OutboxRelay {
     private record SweepResult(int published, int failed, Terminal terminal) {
 
         /**
-         * Records this result against {@code meters}.
-         *
          * @param meters the recording surface of this service
          */
         void record(AccountMeters meters) {
@@ -573,9 +549,10 @@ public class OutboxRelay {
      *
      * <p>The envelope is the governed form of {@code 01 ABEND-DATA} at
      * {@code app/cpy/CSMSG02Y.cpy:L21-L29}. It names the row through {@code failedEventId} and
-     * {@code failedEventType} and carries no field of the payload, so an operator can reach the
-     * abandoned event without a credit limit, a cycle balance or an account identifier leaving this
-     * service on the diagnostic.
+     * {@code failedEventType} and carries no field of the abandoned payload, so no credit limit and
+     * no cycle balance leaves this service on the diagnostic. The account identifier does travel:
+     * it is the aggregate identifier of the envelope and the message key of the send, which is what
+     * lets an operator find the abandoned event.
      *
      * <p>A refusal is logged and counted and does not propagate. The caller is either the refused-row
      * path, which has already recorded the business failure that abandoned the row, or the owed-

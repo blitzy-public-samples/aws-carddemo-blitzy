@@ -40,8 +40,9 @@ import java.util.regex.Pattern;
  * {@code event_type}, {@code aggregate_id}, {@code payload}), its publication
  * ({@code published}, {@code created_at}, {@code published_at}), and the relay's own bookkeeping
  * ({@code relay_state}, {@code attempt_count}, {@code next_attempt_at}, {@code last_attempt_at},
- * {@code last_error}, {@code claimed_by}, {@code claimed_at}). Three indexes serve the pending
- * scan, the claim query and the published purge.
+ * {@code last_error}, {@code claimed_by}, {@code claimed_at}, {@code dead_letter_state},
+ * {@code dead_letter_published_at}). Four indexes serve the pending scan, the claim query, the
+ * published purge and the diagnostics abandoned rows still owe.
  *
  * <p>{@link #getPayload()} holds one event serialized as JavaScript Object Notation (JSON). That
  * document is flat: one object, one level deep, with the five envelope fields beside the payload
@@ -64,7 +65,9 @@ import java.util.regex.Pattern;
                         columnList = "created_at, event_id"),
                 @Index(name = "ix_outbox_event_claimable",
                         columnList = "relay_state, next_attempt_at"),
-                @Index(name = "ix_outbox_event_published_at", columnList = "published_at")})
+                @Index(name = "ix_outbox_event_published_at", columnList = "published_at"),
+                @Index(name = "ix_outbox_event_dead_letter_required",
+                        columnList = "last_attempt_at")})
 public class OutboxEventEntity {
 
     /**
@@ -402,6 +405,38 @@ public class OutboxEventEntity {
     /** Widest value {@code relay_state} holds, from {@code relay_state VARCHAR(16)}. */
     public static final int RELAY_STATE_MAX_LENGTH = 16;
 
+    /**
+     * Whether this row still owes the dead-letter topic a diagnostic naming what was given up on.
+     *
+     * <p>Abandoning a row is the last thing the relay does with it: {@link RelayState#ABANDONED} is
+     * terminal and the claim query never returns it again. Publishing the diagnostic inside that one
+     * moment and hoping it lands is what loses the event, because a broker that refuses the diagnostic
+     * leaves the row terminal, unpublished and named nowhere.
+     *
+     * <p>These three values are that obligation, recorded in the same transaction as the abandonment.
+     * {@link #REQUIRED} is durable and outlives a broker outage, a restart and a redeployment, and
+     * {@code outbox/OutboxRelay} offers the diagnostic on every later pass until the broker
+     * acknowledges one. That is the whole difference between an abandoned row and a lost one.
+     *
+     * <p>The names are stored as text in {@code dead_letter_state VARCHAR(16)}, which a check
+     * constraint in {@code src/main/resources/db/migration/V8__outbox_dead_letter_state.sql} restricts
+     * to exactly these three.
+     */
+    public enum DeadLetterState {
+
+        /** No diagnostic is owed. Every row starts here and a published row stays here. */
+        NOT_REQUIRED,
+
+        /** A diagnostic is owed and no broker has acknowledged one. Offered on every pass. */
+        REQUIRED,
+
+        /** The broker acknowledged the diagnostic. Terminal, and paired with a timestamp. */
+        PUBLISHED
+    }
+
+    /** Widest value {@code dead_letter_state} holds, from {@code dead_letter_state VARCHAR(16)}. */
+    public static final int DEAD_LETTER_STATE_MAX_LENGTH = 16;
+
     /** Where this row stands with the relay. Never null. */
     @Enumerated(EnumType.STRING)
     @Column(name = "relay_state", nullable = false, length = RELAY_STATE_MAX_LENGTH)
@@ -430,6 +465,15 @@ public class OutboxEventEntity {
     /** When the claim was taken, or null when no claim is held. */
     @Column(name = "claimed_at")
     private Instant claimedAt;
+
+    /** Whether this row still owes a terminal diagnostic. Never null. */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "dead_letter_state", nullable = false, length = DEAD_LETTER_STATE_MAX_LENGTH)
+    private DeadLetterState deadLetterState = DeadLetterState.NOT_REQUIRED;
+
+    /** When the broker acknowledged the diagnostic, or null while one is owed or none is. */
+    @Column(name = "dead_letter_published_at")
+    private Instant deadLetterPublishedAt;
 
     /**
      * Returns where this row stands with the relay.
@@ -544,6 +588,12 @@ public class OutboxEventEntity {
      * to {@link RelayState#ABANDONED} and the relay leaves it alone. Either way the claim is
      * released, so a relay instance that dies mid-attempt does not strand the row.
      *
+     * <p>The attempt that abandons a row also records the obligation to name it on the dead-letter
+     * topic, as {@link DeadLetterState#REQUIRED}. Both facts are written in this one call, so they
+     * commit in one transaction: an abandoned row owing nothing would be a lost event, and a row owing
+     * a diagnostic it was never abandoned for would be reported as lost while it was still being
+     * retried.
+     *
      * <p>A reason longer than {@value #LAST_ERROR_MAX_LENGTH} characters is truncated rather than
      * refused. The caller is responsible for passing a reason that names a failure and quotes no
      * event value, which is why this method neither reads nor writes the payload.
@@ -570,9 +620,63 @@ public class OutboxEventEntity {
         if (this.attemptCount >= MAX_DELIVERY_ATTEMPTS) {
             this.relayState = RelayState.ABANDONED;
             this.nextAttemptAt = at;
+            this.deadLetterState = DeadLetterState.REQUIRED;
         } else {
             this.relayState = RelayState.PENDING;
             this.nextAttemptAt = retryAt;
         }
+    }
+
+    /**
+     * Returns whether this row still owes a terminal diagnostic.
+     *
+     * @return the dead-letter state, never null
+     */
+    public DeadLetterState getDeadLetterState() {
+        return deadLetterState;
+    }
+
+    /**
+     * Returns when the broker acknowledged this row's terminal diagnostic.
+     *
+     * @return the acknowledgement moment, or null while a diagnostic is owed or none is
+     */
+    public Instant getDeadLetterPublishedAt() {
+        return deadLetterPublishedAt;
+    }
+
+    /**
+     * Answers whether this row owes a diagnostic no broker has acknowledged.
+     *
+     * <p>{@code outbox/OutboxRelay} offers the diagnostic on every pass while this answers true. A row
+     * answers true only after {@link #recordFailure(String, Instant, Instant)} abandoned it, and stops
+     * answering true once {@link #markDeadLetterPublished(Instant)} records the acknowledgement.
+     *
+     * @return true while a diagnostic is owed
+     */
+    public boolean owesDeadLetter() {
+        return deadLetterState == DeadLetterState.REQUIRED;
+    }
+
+    /**
+     * Records that the broker acknowledged this row's terminal diagnostic.
+     *
+     * <p>Called after the acknowledgement and never before it. The obligation is the thing that
+     * survives a broker outage, so clearing it on the attempt rather than on the acknowledgement would
+     * lose exactly the diagnostic it exists to keep.
+     *
+     * @param publishedAt when the broker acknowledged the diagnostic
+     * @throws NullPointerException  when {@code publishedAt} is null
+     * @throws IllegalStateException when this row owes no diagnostic, which means either that none was
+     *                               ever owed or that one was already acknowledged
+     */
+    public void markDeadLetterPublished(Instant publishedAt) {
+        Objects.requireNonNull(publishedAt, "publishedAt");
+        if (deadLetterState != DeadLetterState.REQUIRED) {
+            throw new IllegalStateException("a row in dead-letter state " + deadLetterState
+                    + " owes no diagnostic to acknowledge");
+        }
+        this.deadLetterState = DeadLetterState.PUBLISHED;
+        this.deadLetterPublishedAt = publishedAt;
     }
 }

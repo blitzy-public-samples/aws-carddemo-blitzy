@@ -1779,4 +1779,3 @@ public final class CobolDateValidator {
         }
     }
 }
-

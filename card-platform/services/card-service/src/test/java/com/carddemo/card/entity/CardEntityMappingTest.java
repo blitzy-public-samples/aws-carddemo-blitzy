@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.carddemo.card.TestIdentityPasswords;
 import com.carddemo.cobol.PanMasker;
 import com.carddemo.cobol.PicClause;
 import jakarta.persistence.Column;
@@ -164,15 +165,16 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
  * {@code org.springframework.boot:spring-boot-testcontainers}, is absent from
  * {@code card-platform/services/card-service/pom.xml}. The class annotation supplies one inert
  * value for each of the four variables that {@code application.yml} leaves without a default. The
- * broker password reaches no broker, and a {@code noop} identity password authenticates nobody.
+ * broker password reaches no broker, and the identity hashes in {@code TestIdentityPasswords}
+ * encode passwords that authenticate nothing outside this build.
  */
 @SpringBootTest(
         webEnvironment = SpringBootTest.WebEnvironment.NONE,
         properties = {
                 "KAFKA_SASL_PASSWORD=not-a-real-broker-password",
-                "ADMIN_PASSWORD_HASH={noop}not-a-real-admin-password",
-                "USER_PASSWORD_HASH={noop}not-a-real-user-password",
-                "MONITORING_PASSWORD_HASH={noop}not-a-real-monitoring-password"
+                "ADMIN_PASSWORD_HASH=" + TestIdentityPasswords.ADMIN_PASSWORD_HASH,
+                "USER_PASSWORD_HASH=" + TestIdentityPasswords.USER_PASSWORD_HASH,
+                "MONITORING_PASSWORD_HASH=" + TestIdentityPasswords.MONITORING_PASSWORD_HASH
         })
 @DisplayName("Card entities map onto CVACT02Y.cpy and CVACT03Y.cpy, filler dropped")
 class CardEntityMappingTest {

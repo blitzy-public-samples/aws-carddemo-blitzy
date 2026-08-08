@@ -46,22 +46,28 @@ class StreamNameReportTest {
 
             assertThat(report.reportedNames())
                     .extracting(StreamNameReport.ReportedName::environmentKey)
-                    .containsExactly("TOPIC_TRANSACTION_POSTED",
+                    .containsExactly("TOPIC_TRANSACTION_AUTHORIZED",
+                            "GROUP_NOTIFICATION_AUTHORIZED",
+                            "TOPIC_TRANSACTION_POSTED",
                             "GROUP_NOTIFICATION_POSTED",
                             "TOPIC_FRAUD_ASSESSED",
                             "GROUP_NOTIFICATION_FRAUD",
                             "TOPIC_CUSTOMER_CONTEXT_CHANGED",
                             "GROUP_NOTIFICATION_CUSTOMER",
-                            "TOPIC_DEAD_LETTER");
+                            "TOPIC_DEAD_LETTER",
+                            "TOPIC_DEAD_LETTER_SUFFIX");
             assertThat(report.reportedNames())
                     .extracting(StreamNameReport.ReportedName::value)
-                    .containsExactly("transaction.posted",
+                    .containsExactly("transaction.authorized",
+                            "notification-authorized",
+                            "transaction.posted",
                             "notification-posted",
                             "fraud.assessed",
                             "notification-fraud",
                             "customer.context-changed",
                             "notification-customer",
-                            "carddemo.dead-letter");
+                            "carddemo.dead-letter",
+                            ".DLT");
         });
     }
 

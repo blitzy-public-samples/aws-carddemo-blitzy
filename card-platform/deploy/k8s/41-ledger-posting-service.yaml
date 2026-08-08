@@ -1,11 +1,15 @@
-# Deployment and Service for the ledger posting service, the second intended
-# reader of transaction.authorized. The consumer group ledger-posting configured
-# below is idle: the module registers no listener, so nothing invokes the posting
-# arithmetic on a delivered event. It calls no other service.
+# Deployment and Service for the ledger posting service, the second reader of
+# transaction.authorized. Three listeners run, each under a group of its own:
+# TransactionAuthorizedConsumer on transaction.authorized under ledger-posting,
+# TransactionDeclinedConsumer on transaction.declined under ledger-reject, which
+# writes the 430-byte reject row of app/cbl/CBTRN02C.cbl:L446-L465, and
+# AccountStateChangedConsumer on account.state-changed under ledger-account-state,
+# which keeps account_balance_projection current. It calls no other service.
 #
 # The posting arithmetic of app/cbl/CBTRN02C.cbl, the balance query and the outbox
 # relay that publishes transaction.posted are all present, so the container starts,
-# migrates its schema, serves its balance query and answers /actuator.
+# migrates its schema, posts a delivered event, serves its balance query and answers
+# /actuator.
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -60,6 +64,12 @@ spec:
           #   docker build -f card-platform/services/ledger-posting-service/Dockerfile \
           #     -t "carddemo/ledger-posting-service:${version}" \
           #     card-platform/services/ledger-posting-service
+          # THE TAG IS MUTABLE, AND THAT IS THE RESIDUAL RISK. Bytes tagged
+          # carddemo/ledger-posting-service:1.0.0-SNAPSHOT on one node are whatever an operator
+          # loaded there, and no manifest in this folder would notice a different build under the
+          # same name. The six references therefore live in one place, deploy/k8s/kustomization.yaml,
+          # so pinning them by digest is one edit rather than six. deploy/k8s/README.md gives the
+          # procedure and states plainly what a node verifies about each kind of image.
           image: carddemo/ledger-posting-service:1.0.0-SNAPSHOT
           imagePullPolicy: Never
           securityContext:
@@ -157,14 +167,18 @@ spec:
                   name: carddemo-config
                   key: LEDGER_KAFKA_USER
             # Consumes transaction.authorized in consumer group ledger-posting. Each
-            # consumer group holds its own read position, so the eight groups
+            # consumer group holds its own read position, so the eleven groups
             # 30-configmap.yaml declares advance independently. 10-kafka.yaml grants this
-            # broker identity that group and GROUP_LEDGER_ACCOUNT, and no other.
+            # broker identity that group, GROUP_LEDGER_REJECT and GROUP_LEDGER_ACCOUNT, and no
+            # other.
             #
-            # This service runs a second listener, which reads account.state-changed under
-            # GROUP_LEDGER_ACCOUNT to keep account_balance_projection current. That group and
-            # the topic name arrive through the envFrom above rather than as a binding here,
-            # because only the group the framework property below names needs one.
+            # This service runs two further listeners. One reads transaction.declined under
+            # GROUP_LEDGER_REJECT and writes the 430-byte reject row of
+            # app/cbl/CBTRN02C.cbl:L446-L465, which is the production ingress of the reject
+            # path. The other reads account.state-changed under GROUP_LEDGER_ACCOUNT to keep
+            # account_balance_projection current. Both groups and both topic names arrive
+            # through the envFrom above rather than as a binding here, because only the group
+            # the framework property below names needs one.
             - name: SPRING_KAFKA_CONSUMER_GROUP_ID
               valueFrom:
                 configMapKeyRef:

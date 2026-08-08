@@ -4,6 +4,7 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.TreeSet;
 
@@ -383,7 +384,7 @@ class UsStateZipPrefixValidatorTest {
     @DisplayName("The last three characters of the zip code reach no test")
     void lastThreeZipCharactersReachNoTest() {
         for (int trailing = 0; trailing < TRAILING_THREE_VALUE_COUNT; trailing++) {
-            String trailingThree = "%03d".formatted(trailing);
+            String trailingThree = String.format(Locale.ROOT, "%03d", trailing);
 
             assertThat(UsStateZipPrefixValidator
                     .validate(SEEDED_STATE_CODE, NC_ACCEPTED_PREFIX + trailingThree).valid())
@@ -521,7 +522,8 @@ class UsStateZipPrefixValidatorTest {
             for (char second = 'A'; second <= 'Z'; second++) {
                 String stateCode = String.valueOf(new char[] {first, second});
                 for (int prefix = 0; prefix < PREFIX_VALUE_COUNT; prefix++) {
-                    String zipCode = "%02d".formatted(prefix) + TRAILING_THREE_FILLER;
+                    String zipCode = String.format(Locale.ROOT, "%02d", prefix)
+                            + TRAILING_THREE_FILLER;
                     EditResult result = UsStateZipPrefixValidator.validate(stateCode, zipCode);
                     if (result.valid()) {
                         passCount++;

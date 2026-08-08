@@ -22,17 +22,27 @@ import java.util.Objects;
  * field, reproduced character for character, so a caller reads exactly what a terminal operator would
  * have read. It is omitted from the wire form when a failure produces no field text.
  *
- * <p>No member echoes a request value. Nothing carries the rejected value, the path, the query string
- * or a header, so a Social Security number or a date of birth sent in the wrong position cannot be
- * reflected back to the caller or written to an access log through this body. That omission is
- * deliberate and is the difference between this record and a framework default error body.
+ * <p>No member echoes a submitted body value. Nothing carries the rejected value, the request path,
+ * the query string or a header, so a Social Security number or a date of birth sent in the wrong
+ * position cannot be reflected back to the caller or written to an access log through this body. That
+ * omission is deliberate and is the difference between this record and a framework default error
+ * body.
+ *
+ * <p>Two details name the identifier the caller put in the path, and both are read misses. The
+ * {@code detail} of a missed account read reproduces the text
+ * {@code 9300-GETACCTDATA-BYACCT} builds at {@code app/cbl/COACTVWC.cbl:L796-L806}, which
+ * concatenates four literals around the account identifier. The {@code detail} of a missed customer
+ * read reproduces the text {@code 9400-GETCUSTDATA-BYCUST} builds at
+ * {@code app/cbl/COACTVWC.cbl:L846-L856}, which does the same around the customer identifier. Every
+ * other detail this service writes is one of the fixed constants below.
  *
  * @param type      the problem type. Always {@link #ABOUT_BLANK}, because the status code and the
  *                  title carry the whole meaning and no dereferenceable type document exists
  * @param title     a short, fixed phrase naming the class of failure. Every value comes from a
  *                  constant of this record and never from caller-supplied text
  * @param status    the Hypertext Transfer Protocol status code of the response
- * @param detail    the explanation. Fixed text, naming no identifier and no route
+ * @param detail    the explanation. One of the fixed constants of this record, except on the two read
+ *                  misses, where it is the source text built around the identifier the path named
  * @param messages  one text per failing field, each reproduced from the source paragraph that emits
  *                  it, or {@code null} when the failure produced no field text
  */
@@ -79,6 +89,16 @@ public record ApiProblem(String type, String title, int status, String detail,
     /** Detail of a fault inside this service. */
     public static final String INTERNAL_FAILURE_DETAIL =
             "This request could not be completed. Nothing was changed.";
+
+    /**
+     * Detail of a call the protocol refused before this service read or wrote anything.
+     *
+     * <p>A method a route does not serve, a media type it cannot write and a path that matches no
+     * route all carry this text. The status separates them, and a {@code 405} also carries
+     * {@code Allow}. The text names neither the method nor the path submitted.
+     */
+    public static final String UNSUPPORTED_REQUEST_DETAIL =
+            "This route does not serve the method, path or media type the request named.";
 
     /**
      * Copies the message list and rejects an incomplete document.

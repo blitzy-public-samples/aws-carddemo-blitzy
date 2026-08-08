@@ -1,9 +1,11 @@
 package com.carddemo.ledger.config;
 
 import com.carddemo.cobol.PanMasker;
+import com.carddemo.ledger.TestIdentityPasswords;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -32,7 +34,9 @@ import org.springframework.security.config.annotation.web.configuration.EnableWe
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.userdetails.UserDetails;
+import org.springframework.security.crypto.password.DelegatingPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.crypto.password.Pbkdf2PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.access.intercept.RequestAuthorizationContext;
 
@@ -405,17 +409,66 @@ class SecurityConfigTest {
         private static final String BROKER_JAAS = "org.apache.kafka.common.security.plain."
                 + "PlainLoginModule required username=\"svc\" password=\"a-generated-value\";";
 
+        /**
+         * A card-token key of the accepted length that this repository names nowhere else.
+         *
+         * <p>It is not the key the repository publishes, so it needs no acknowledgement, and it is
+         * not a placeholder, so the marker check leaves it alone. It derives no token here: nothing
+         * in this class tokenizes a card number.
+         */
+        private static final String GENERATED_CARD_TOKEN_KEY =
+                "a-generated-card-token-key-for-this-test-only";
+
         /** An environment with every checked credential fit to run with. */
         private MockEnvironment usable() {
             return new MockEnvironment()
                     .withProperty(SecurityConfig.DATASOURCE_PASSWORD_PROPERTY, "a-generated-value")
-                    .withProperty(SecurityConfig.BROKER_JAAS_PROPERTY, BROKER_JAAS);
+                    .withProperty(SecurityConfig.BROKER_JAAS_PROPERTY, BROKER_JAAS)
+                    .withProperty(PanMasker.CARD_TOKEN_SECRET_VARIABLE, GENERATED_CARD_TOKEN_KEY);
+        }
+
+        /** The message from refusing one identity password, so a case below reads as one line. */
+        private String refusalFor(String identityPassword) {
+            return assertThrows(IllegalStateException.class,
+                    () -> SecurityConfig.requireUsableSecret(identityPassword,
+                            SecurityConfig.IDENTITY_PASSWORD_PROPERTY))
+                    .getMessage();
         }
 
         @Test
         @DisplayName("a usable configuration passes")
         void usableConfigurationPasses() {
             SecurityConfig.requireUsableCredentials(usable());
+        }
+
+        @Test
+        @DisplayName("an identity password that is not adaptively encoded is refused")
+        void anIdentityPasswordThatIsNotAdaptivelyEncodedIsRefused() {
+            assertAll(
+                    () -> assertTrue(refusalFor("{noop}not-a-hash").contains("{noop}"),
+                            "the delegating encoder answers noop by comparing the stored and"
+                                    + " supplied values, so a password under it is plaintext"),
+                    () -> assertTrue(refusalFor("{MD5}0123456789abcdef").contains("{MD5}"),
+                            "a digest identifier names no adaptive encoder"),
+                    () -> assertTrue(refusalFor("{sha256}0123456789abcdef").contains("{sha256}"),
+                            "the delegating encoder's sha256 entry is refused as well"),
+                    () -> assertTrue(refusalFor("{ldap}{SSHA}0123456789").contains("{ldap}"),
+                            "an ldap entry is refused"),
+                    () -> assertTrue(refusalFor("{bcrypt}").contains("no bcrypt hash"),
+                            "a prefix carrying no payload authenticates nobody, and the shape check"
+                                    + " is what refuses it"),
+                    () -> assertTrue(refusalFor("{bcrypt}not-a-hash").contains("no bcrypt hash"),
+                            "a bcrypt prefix has to carry a bcrypt hash"),
+                    () -> assertTrue(refusalFor("{bcrypt}$2a$04$" + "a".repeat(53))
+                                    .contains("cost of 4"),
+                            "a cost below " + SecurityConfig.BCRYPT_MINIMUM_COST
+                                    + " verifies faster for whoever holds the hash too"));
+        }
+
+        /** The message from refusing one whole environment. */
+        private String refusalFrom(MockEnvironment environment) {
+            return assertThrows(IllegalStateException.class,
+                    () -> SecurityConfig.requireUsableCredentials(environment)).getMessage();
         }
 
         @Test
@@ -434,6 +487,51 @@ class SecurityConfigTest {
                             "the message opens with the property: " + thrown.getMessage()),
                     () -> assertFalse(thrown.getMessage().contains("REPLACE-WITH"),
                             "and repeats no part of the value: " + thrown.getMessage()));
+        }
+
+        /**
+         * Proves this service refuses to start on the card-token key this repository publishes,
+         * unless its own configuration states that it means to use it.
+         *
+         * <p>The refusal itself belongs to {@code PanMasker}, which owns how the key is read, and
+         * {@code com.carddemo.cobol.PanMaskerTest} proves its rules. What this test proves is the
+         * part only this service can: that its start-up guard performs the check at all. Without
+         * the call, a deployment carrying the published key starts, works, and says nothing, while
+         * every token it derives is recomputable by anyone holding this repository.
+         */
+        @Test
+        @DisplayName("the card-token key this repository publishes is refused unless it is stated")
+        void publishedCardTokenKeyIsRefusedUnlessStated() {
+            String held =
+                    System.getProperty(PanMasker.CARD_TOKEN_ALLOW_PUBLISHED_KEY_PROPERTY);
+            String heldKey = System.getProperty(PanMasker.CARD_TOKEN_SECRET_PROPERTY);
+            try {
+                System.setProperty(PanMasker.CARD_TOKEN_SECRET_PROPERTY,
+                        PanMasker.PUBLISHED_DEMO_CARD_TOKEN_SECRET);
+                System.clearProperty(PanMasker.CARD_TOKEN_ALLOW_PUBLISHED_KEY_PROPERTY);
+
+                IllegalStateException thrown = assertThrows(IllegalStateException.class,
+                        () -> SecurityConfig.requireUsableCredentials(usable()),
+                        "this service started on the key this repository publishes with nothing"
+                                + " stating that it meant to");
+                assertTrue(thrown.getMessage()
+                                .contains(PanMasker.CARD_TOKEN_ALLOW_PUBLISHED_KEY_PROPERTY),
+                        "the refusal must name what to set: " + thrown.getMessage());
+
+                System.setProperty(PanMasker.CARD_TOKEN_ALLOW_PUBLISHED_KEY_PROPERTY, "true");
+                SecurityConfig.requireUsableCredentials(usable());
+            } finally {
+                if (held == null) {
+                    System.clearProperty(PanMasker.CARD_TOKEN_ALLOW_PUBLISHED_KEY_PROPERTY);
+                } else {
+                    System.setProperty(PanMasker.CARD_TOKEN_ALLOW_PUBLISHED_KEY_PROPERTY, held);
+                }
+                if (heldKey == null) {
+                    System.clearProperty(PanMasker.CARD_TOKEN_SECRET_PROPERTY);
+                } else {
+                    System.setProperty(PanMasker.CARD_TOKEN_SECRET_PROPERTY, heldKey);
+                }
+            }
         }
 
         @Test
@@ -554,6 +652,135 @@ class SecurityConfigTest {
                                     .isAssignableFrom(factory.getReturnType()),
                             "a post-processor is built before an ordinary bean, which is what"
                                     + " puts this check ahead of the connection pool"));
+        }
+    }
+    @Nested
+    @DisplayName("Only approved adaptive password encodings are accepted")
+    class ApprovedPasswordEncodings {
+
+        /**
+         * Encodings Spring Security's stock delegating encoder maps and this platform refuses.
+         *
+         * <p>{@code noop} stores a password in plain text. {@code MD4}, {@code MD5},
+         * {@code SHA-1}, {@code SHA-256}, {@code sha256} and {@code ldap} are unsalted or
+         * single-pass digests, so a guess costs one hash. {@code pbkdf2} without a suffix names
+         * the parameter set Spring Security shipped before 5.8. {@code argon2} and {@code scrypt}
+         * are adaptive, and they are refused for a different reason: both implementations call
+         * Bouncy Castle, which is not a dependency of this platform.
+         */
+        private final List<String> refusedEncodings = List.of(
+                "noop", "MD4", "MD5", "SHA-1", "SHA-256", "sha256", "ldap", "pbkdf2",
+                "argon2", "argon2@SpringSecurity_v5_8", "scrypt", "scrypt@SpringSecurity_v5_8");
+
+        /** A password no identity holds, used where a value has to be present and mean nothing. */
+        private static final String SAMPLE = "a-value-that-authenticates-nothing";
+
+        @Test
+        @DisplayName("the allowlist names bcrypt and the current pbkdf2 parameter set, and no more")
+        void theAllowlistNamesTwoAdaptiveEncodings() {
+            assertAll(
+                    () -> assertEquals(List.of("bcrypt", "pbkdf2@SpringSecurity_v5_8"),
+                            SecurityConfig.APPROVED_PASSWORD_ENCODINGS,
+                            "the allowlist is the whole set of encodings a configured password may"
+                                    + " declare, so a third entry is a decision and not a detail"),
+                    () -> assertEquals(10, SecurityConfig.BCRYPT_MINIMUM_COST,
+                            "ten is the cost the generation recipes in .env.example and ci.yml"
+                                    + " produce, so lowering the floor accepts a hash neither"
+                                    + " recipe would generate"));
+        }
+
+        @Test
+        @DisplayName("every legacy and plaintext encoding is refused at start-up")
+        void everyLegacyEncodingIsRefusedAtStartUp() {
+            for (String encoding : refusedEncodings) {
+                IllegalStateException thrown = assertThrows(IllegalStateException.class,
+                        () -> SecurityConfig.requireUsableSecret("{" + encoding + "}" + SAMPLE,
+                                SecurityConfig.IDENTITY_PASSWORD_PROPERTY),
+                        "an identity password declaring {" + encoding + "} must stop start-up");
+                assertAll(
+                        () -> assertTrue(thrown.getMessage().contains("{" + encoding + "}"),
+                                "the message names the encoding that was declared: "
+                                        + thrown.getMessage()),
+                        () -> assertFalse(thrown.getMessage().contains(SAMPLE),
+                                "no message carries the value: " + thrown.getMessage()));
+            }
+        }
+
+        @Test
+        @DisplayName("an approved encoding passes, and a bcrypt cost below the floor does not")
+        void anApprovedEncodingPassesAndACheapBcryptCostDoesNot() {
+            String cheap = "{bcrypt}$2a$04$" + "0123456789012345678901"
+                    + "0123456789012345678901234567890";
+            IllegalStateException tooCheap = assertThrows(IllegalStateException.class,
+                    () -> SecurityConfig.requireUsableSecret(cheap,
+                            SecurityConfig.IDENTITY_PASSWORD_PROPERTY));
+            IllegalStateException notAHash = assertThrows(IllegalStateException.class,
+                    () -> SecurityConfig.requireUsableSecret("{bcrypt}" + SAMPLE,
+                            SecurityConfig.IDENTITY_PASSWORD_PROPERTY));
+            IllegalStateException noPrefix = assertThrows(IllegalStateException.class,
+                    () -> SecurityConfig.requireUsableSecret(SAMPLE,
+                            SecurityConfig.IDENTITY_PASSWORD_PROPERTY));
+
+            assertAll(
+                    () -> SecurityConfig.requireUsableSecret(ENCODED_PASSWORD,
+                            SecurityConfig.IDENTITY_PASSWORD_PROPERTY),
+                    () -> SecurityConfig.requireUsableSecret(
+                            "{pbkdf2@SpringSecurity_v5_8}"
+                                    + Pbkdf2PasswordEncoder.defaultsForSpringSecurity_v5_8()
+                                            .encode(SAMPLE),
+                            SecurityConfig.IDENTITY_PASSWORD_PROPERTY),
+                    () -> assertTrue(tooCheap.getMessage().contains("cost of 4"),
+                            "the message names the cost that was declared: "
+                                    + tooCheap.getMessage()),
+                    () -> assertTrue(notAHash.getMessage().contains("no bcrypt"),
+                            "a value declaring bcrypt and carrying something else is refused: "
+                                    + notAHash.getMessage()),
+                    () -> assertTrue(noPrefix.getMessage().contains("encoding prefix"),
+                            "a value declaring no encoding at all is refused: "
+                                    + noPrefix.getMessage()));
+        }
+
+        @Test
+        @DisplayName("the encoder bean refuses a refused encoding rather than answering false")
+        void theEncoderBeanRefusesARefusedEncodingRatherThanAnsweringFalse() {
+            PasswordEncoder encoder = new SecurityConfig().passwordEncoder();
+
+            assertAll(
+                    () -> assertInstanceOf(DelegatingPasswordEncoder.class, encoder,
+                            "the bean delegates by encoding identifier"),
+                    () -> assertThrows(IllegalArgumentException.class,
+                            () -> encoder.matches(SAMPLE, "{noop}" + SAMPLE),
+                            "a plaintext stored value must throw. Answering false would read as a"
+                                    + " wrong password and leave the encoding in place"),
+                    () -> assertThrows(IllegalArgumentException.class,
+                            () -> encoder.matches(SAMPLE, "{MD5}" + SAMPLE),
+                            "an unsalted digest must throw for the same reason"),
+                    () -> assertTrue(encoder.encode(SAMPLE).startsWith("{bcrypt}$2"),
+                            "this class encodes with bcrypt, so a hash it generates is one it"
+                                    + " accepts"));
+        }
+
+        @Test
+        @DisplayName("each test hash still verifies the plaintext declared beside it")
+        void eachTestHashStillVerifiesThePlaintextDeclaredBesideIt() {
+            PasswordEncoder encoder = new SecurityConfig().passwordEncoder();
+
+            assertAll(
+                    () -> assertTrue(encoder.matches(TestIdentityPasswords.ADMIN_PASSWORD,
+                                    TestIdentityPasswords.ADMIN_PASSWORD_HASH),
+                            "the ADMIN hash in TestIdentityPasswords no longer verifies its"
+                                    + " plaintext, so every test that authenticates as that"
+                                    + " identity would fail for a reason unrelated to its subject"),
+                    () -> assertTrue(encoder.matches(TestIdentityPasswords.USER_PASSWORD,
+                                    TestIdentityPasswords.USER_PASSWORD_HASH),
+                            "the USER hash in TestIdentityPasswords no longer verifies its"
+                                    + " plaintext, so every test that authenticates as that"
+                                    + " identity would fail for a reason unrelated to its subject"),
+                    () -> assertTrue(encoder.matches(TestIdentityPasswords.MONITORING_PASSWORD,
+                                    TestIdentityPasswords.MONITORING_PASSWORD_HASH),
+                            "the MONITORING hash in TestIdentityPasswords no longer verifies its"
+                                    + " plaintext, so every test that authenticates as that"
+                                    + " identity would fail for a reason unrelated to its subject"));
         }
     }
 }

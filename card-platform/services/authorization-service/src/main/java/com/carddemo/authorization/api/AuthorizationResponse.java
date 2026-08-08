@@ -23,14 +23,16 @@ import java.util.regex.Pattern;
  * {@code app/cbl/CBTRN02C.cbl:L414-L420}, and all three read an account that resolved. An approval
  * without one cannot occur.
  *
- * <p>One account identifier reaches this response, the {@code TransactionAuthorized} or
- * {@code TransactionDeclined} event published beside it, and the Kafka message key. Both event
- * contracts require eleven digits, so a response carrying none cannot produce an event.
+ * <p>Every outcome that resolved an account carries one account identifier into this response, into
+ * the event published beside it and into the Kafka message key. {@code TransactionAuthorized} and
+ * {@code TransactionDeclined} version 1 both require those eleven digits.
  * {@link DeclineReason#INVALID_CARD_NUMBER} is the one outcome where no account exists, because the
  * cross-reference read at {@code app/cbl/CBTRN02C.cbl:L383-L384} took its invalid-key branch.
- * {@link #declineUnresolvedCard(String)} builds that one outcome and is the only path to a response
- * carrying no account identifier. No other factory accepts an absent one, and no factory invents a
- * substitute.
+ * {@link #declineUnresolvedCard(String)} builds that outcome and is the only path to a response
+ * carrying no account identifier. It publishes {@code TransactionDeclined} version 2, which
+ * declares no {@code accountId} at all and keys on the sixteen-character transaction identifier
+ * instead, so that outcome produces an event like every other. No factory invents a substitute
+ * account identifier.
  *
  * <p>A declined response carries one decline reason and its text. The source field holds a single
  * {@code PIC 9(04)} value, overwritten by whichever test fails last. This record holds one decline
@@ -51,6 +53,8 @@ import java.util.regex.Pattern;
  * status, an account status or a failure trace. The three-hundred-and-fifty-byte payload beside the
  * trailer, {@code REJECT-TRAN-DATA PIC X(350)} at {@code app/cbl/CBTRN02C.cbl:L177}, has no
  * component here either.
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  *
  * @param transactionId            identifier of the transaction this decision applies to, from
  *                                 {@code TRAN-ID PIC X(16)} at {@code app/cpy/CVTRA05Y.cpy:L5}.
@@ -77,8 +81,6 @@ import java.util.regex.Pattern;
  *                                 {@code app/cbl/CBTRN02C.cbl:L182}. Present on a declined
  *                                 response, absent on an approved one, and at most
  *                                 {@value #DECLINE_REASON_DESCRIPTION_MAX_LENGTH} characters.
- *
- * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 public record AuthorizationResponse(
         String transactionId,
@@ -248,9 +250,11 @@ public record AuthorizationResponse(
      * here substitutes a sentinel, a zero-filled identifier or a value the caller supplied, because
      * each of those would name an account that was never resolved.
      *
-     * <p>A caller therefore has no account identifier to key an event on, and publishes no
-     * account-keyed event for this outcome. It records the rejected attempt durably instead, as
-     * {@code app/cbl/CBTRN02C.cbl:L446-L465} writes a reject row for the same condition.
+     * <p>A caller therefore has no account identifier to key an event on, and publishes
+     * {@code TransactionDeclined} version 2 for this outcome: that contract declares no
+     * {@code accountId} and keys on the transaction identifier. The attempt is also recorded
+     * durably in {@code unresolved_card_attempt}, as {@code app/cbl/CBTRN02C.cbl:L446-L465} writes a
+     * reject row for the same condition.
      *
      * @param transactionId identifier of the transaction this decision applies to, at most
      *                      {@value #TRANSACTION_ID_MAX_LENGTH} characters

@@ -1,6 +1,7 @@
 package com.carddemo.fraud.config;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 
 import com.carddemo.events.TransactionAuthorized;
@@ -8,6 +9,8 @@ import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.springframework.boot.kafka.autoconfigure.KafkaProperties;
 import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
 import org.springframework.kafka.core.ConsumerFactory;
@@ -103,12 +106,60 @@ class ListenerContainerFactoryTest {
      *                    {@code null} for an unset key
      * @return the factory the shipped configuration produces
      */
+
+    /**
+     * Asserts a bound acknowledgement mode naming anything other than the pinned one is refused.
+     *
+     * <p>This factory pins {@code MANUAL_IMMEDIATE}, because that is the one mode which commits the
+     * offset at the acknowledgement the listener issues after its own writes commit, and the one mode
+     * under which the framework applies {@code setCommitRecovered(true)} to a dead-lettered record.
+     * Pinning it silently would leave a deployment that names another mode believing its setting took
+     * effect, so the refusal below reports the conflict instead of hiding it.
+     *
+     * @param mode the value {@code spring.kafka.listener.ack-mode} carries
+     */
+    @ParameterizedTest
+    @EnumSource(value = ContainerProperties.AckMode.class,
+            names = "MANUAL_IMMEDIATE", mode = EnumSource.Mode.EXCLUDE)
+    @DisplayName("It refuses a bound acknowledgement mode that names anything else")
+    void itRefusesABoundModeThatNamesAnythingElse(ContainerProperties.AckMode mode) {
+        assertThatThrownBy(() -> factoryFor(true, null, mode))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("spring.kafka.listener.ack-mode")
+                .hasMessageContaining(mode.name());
+    }
+
+    @Test
+    @DisplayName("It accepts the shipped mode where the property names it explicitly")
+    void itAcceptsTheShippedModeWhereThePropertyNamesIt() {
+        assertThat(factoryFor(true, null, ContainerProperties.AckMode.MANUAL_IMMEDIATE)
+                .getContainerProperties().getAckMode())
+                .isEqualTo(ContainerProperties.AckMode.MANUAL_IMMEDIATE);
+    }
+
     @SuppressWarnings("unchecked")
     private static ConcurrentKafkaListenerContainerFactory<String, TransactionAuthorized> factoryFor(
             boolean autoStartup, Integer concurrency) {
+        return factoryFor(autoStartup, concurrency, null);
+    }
+
+    /**
+     * Builds the factory with one bound acknowledgement mode as well.
+     *
+     * @param autoStartup  the value {@code spring.kafka.listener.auto-startup} carries
+     * @param concurrency  the value {@code spring.kafka.listener.concurrency} carries, or
+     *                     {@code null} for an unset key
+     * @param ackMode      the value {@code spring.kafka.listener.ack-mode} carries, or {@code null}
+     *                     for an unset key
+     * @return the factory the shipped configuration produces
+     */
+    @SuppressWarnings("unchecked")
+    private static ConcurrentKafkaListenerContainerFactory<String, TransactionAuthorized> factoryFor(
+            boolean autoStartup, Integer concurrency, ContainerProperties.AckMode ackMode) {
         KafkaProperties properties = new KafkaProperties();
         properties.getListener().setAutoStartup(autoStartup);
         properties.getListener().setConcurrency(concurrency);
+        properties.getListener().setAckMode(ackMode);
 
         KafkaConsumerConfig config = new KafkaConsumerConfig("kafka:29092", TOPIC,
                 "fraud-detection", DEAD_LETTER_TOPIC, DEAD_LETTER_SUFFIX, 3L, 1000L);

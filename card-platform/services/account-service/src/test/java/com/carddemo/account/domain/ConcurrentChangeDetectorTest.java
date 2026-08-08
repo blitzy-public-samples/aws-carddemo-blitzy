@@ -6,7 +6,7 @@ import com.carddemo.account.entity.AccountEntity;
 import com.carddemo.account.entity.CustomerEntity;
 import com.carddemo.account.outbox.OutboxWriter;
 import com.carddemo.account.repository.AccountRepository;
-import com.carddemo.account.repository.CardCrossReferenceRepository;
+import com.carddemo.account.repository.AccountCustomerLinkRepository;
 import com.carddemo.account.repository.CustomerRepository;
 import com.carddemo.cobol.CobolDecimal;
 import com.carddemo.cobol.PicClause;
@@ -455,7 +455,7 @@ class ConcurrentChangeDetectorTest {
         private AccountUpdateService updateService(AccountRepository accounts,
                 CustomerRepository customers, OutboxWriter outbox) {
             return new AccountUpdateService(accounts, customers,
-                    mock(CardCrossReferenceRepository.class), DETECTOR, outbox,
+                    mock(AccountCustomerLinkRepository.class), DETECTOR, outbox,
                     immediateTransactions(), accountMeters(), accountProperties());
         }
     }
@@ -942,7 +942,7 @@ class ConcurrentChangeDetectorTest {
 
     /** Builds a clearly synthetic nine-digit Social Security Number. */
     private static String syntheticSocialSecurityNumber(long serial) {
-        return "999" + String.format("%06d", serial);
+        return "999" + String.format(Locale.ROOT, "%06d", serial);
     }
 
     /** Builds a clearly synthetic twenty-character government identifier. */
@@ -989,7 +989,7 @@ class ConcurrentChangeDetectorTest {
                 new AccountProperties.Outbox(new AccountProperties.Outbox.Relay(500L, 100,
                         "account-relay", java.time.Duration.ofMinutes(2L), 1_000L,
                         java.time.Duration.ofSeconds(10L)), 168L),
-                new AccountProperties.ProcessedEvent(168L),
+                new AccountProperties.ProcessedEvent(720L, 168L),
                 new AccountProperties.Retention(3_600_000L),
                 new AccountProperties.Write(3_000L));
     }

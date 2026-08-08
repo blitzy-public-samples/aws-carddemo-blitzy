@@ -1,7 +1,6 @@
 package com.carddemo.ledger.outbox;
 
 import com.carddemo.events.DeadLetterEnvelope;
-import com.carddemo.events.TransactionDeclined;
 import com.carddemo.events.TransactionPosted;
 import com.carddemo.ledger.config.LedgerProperties;
 import com.carddemo.ledger.config.ObservabilityConfig.LedgerMeters;
@@ -15,6 +14,10 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -40,6 +43,21 @@ import tools.jackson.databind.json.JsonMapper;
  * {@code config/KafkaProducerConfig} supplies. Every message is keyed on the eleven-digit account
  * identifier of {@code XREF-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT03Y.cpy:L7}, as text, so a
  * leading zero survives.
+ *
+ * <h2>Why one pass bounds itself</h2>
+ *
+ * <p>Every broker acknowledgement this pass waits for is awaited against one monotonic deadline
+ * derived from {@code carddemo.outbox.relay.max-duration-ms}. Without it a broker that accepts a
+ * connection and never answers holds the scheduled thread and the database connection this pass's
+ * transaction owns for as long as the producer waits, which is the whole
+ * {@code delivery.timeout.ms}. The relay runs on a fixed delay, so that one stall stops every later
+ * event of every account behind it.
+ *
+ * <p>The producer window is configured to close one send inside the deadline anyway:
+ * {@code max.block.ms} plus {@code delivery.timeout.ms} stays below {@code max-duration-ms}, and a
+ * test asserts the relationship. The deadline is what keeps the guarantee true if either value is
+ * later raised alone, and the cancellation on expiry is what stops this pass observing a send it has
+ * given up on and would otherwise publish a second time.
  *
  * <p>Rationale: {@code card-platform/docs/decision-log.md}.
  */
@@ -84,6 +102,16 @@ public class OutboxRelay {
 
     /** What this instance writes into {@code claimed_by}. */
     private final String instanceId;
+
+    /**
+     * Wall-clock ceiling on one whole sweep, in nanoseconds, from
+     * {@code carddemo.outbox.relay.max-duration-ms}.
+     *
+     * <p>Nanoseconds because the deadline is measured from {@link System#nanoTime()}, which is
+     * monotonic. A wall-clock instant would move under a clock correction and could put the deadline
+     * behind the moment the pass started.
+     */
+    private final long maxDurationNanos;
 
     /**
      * Where a row this relay gave up on is published, from
@@ -156,21 +184,21 @@ public class OutboxRelay {
         this.sweepDelay = Duration.ofMillis(relay.fixedDelayMs());
         this.claimTimeout = relay.claimTimeout();
         this.instanceId = relay.instanceId();
+        this.maxDurationNanos = Duration.ofMillis(relay.maxDurationMs()).toNanos();
         this.deadLetterTopic = Objects.requireNonNull(topics.deadLetter(),
                 "the dead-letter topic must be present");
         this.destinations = Map.of(
                 TransactionPosted.EVENT_TYPE,
-                new Destination(topics.transactionPosted(), TransactionPosted.class),
-                TransactionDeclined.EVENT_TYPE,
-                new Destination(topics.transactionDeclined(), TransactionDeclined.class));
+                new Destination(topics.transactionPosted(), TransactionPosted.class));
     }
 
     /** Runs one claimed sweep and records its failures after the transaction commits. */
     @Scheduled(fixedDelayString = "${carddemo.outbox.relay.fixed-delay-ms}")
     public void publishPendingEvents() {
+        long deadline = System.nanoTime() + maxDurationNanos;
         SweepResult result;
         try {
-            result = transactionTemplate.execute(status -> sweepOnce());
+            result = transactionTemplate.execute(status -> sweepOnce(deadline));
         } catch (RuntimeException failure) {
             meters.recordFailure(LedgerMeters.PUBLISH_STAGE);
             log.warn("The ledger outbox sweep failed after {} and will run again",
@@ -183,9 +211,10 @@ public class OutboxRelay {
     /**
      * Recovers stranded claims, claims due rows and publishes them in order.
      *
+     * @param deadline monotonic deadline shared by every acknowledgement this sweep waits for
      * @return the work this committed sweep completed
      */
-    private SweepResult sweepOnce() {
+    private SweepResult sweepOnce(long deadline) {
         Instant now = clock.instant();
         int failed = recoverStrandedClaims(now);
         int published = 0;
@@ -210,9 +239,9 @@ public class OutboxRelay {
                 continue;
             }
             try {
-                publishAndMark(row, destination);
+                publishAndMark(row, destination, deadline);
             } catch (RuntimeException failure) {
-                boolean abandonedNow = recordRefusedRow(row, failure, now);
+                boolean abandonedNow = recordRefusedRow(row, failure, now, deadline);
                 return new SweepResult(published, failed + 1,
                         abandonedNow ? abandoned + 1 : abandoned);
             }
@@ -244,11 +273,14 @@ public class OutboxRelay {
     /**
      * Schedules another attempt for a row the broker refused.
      *
-     * @param row     the refused row
-     * @param failure the publish failure
-     * @param now     the moment this sweep started
+     * @param row      the refused row
+     * @param failure  the publish failure
+     * @param now      the moment this sweep started
+     * @param deadline monotonic deadline shared by the whole sweep
+     * @return {@code true} when this failure abandoned the row
      */
-    private boolean recordRefusedRow(OutboxEventEntity row, RuntimeException failure, Instant now) {
+    private boolean recordRefusedRow(OutboxEventEntity row, RuntimeException failure, Instant now,
+            long deadline) {
         String failureClass = rootCause(failure).getClass().getSimpleName();
         row.recordFailure(failureClass, now, now.plus(backoffAfter(row.getAttemptCount())));
         outboxEvents.save(row);
@@ -261,7 +293,7 @@ public class OutboxRelay {
             return false;
         }
 
-        publishDeadLetter(row, failure);
+        publishDeadLetter(row, failure, deadline);
         log.error("A ledger outbox row of type {} was abandoned after {} attempts, the last failing "
                         + "with {}. One dead letter names it on {}.",
                 row.getEventType(), row.getAttemptCount(), failureClass, deadLetterTopic);
@@ -283,13 +315,15 @@ public class OutboxRelay {
      * which row, so an operator can reach it without the payload ever leaving this service.
      *
      * <p>The send is awaited, so a broker that refuses the dead letter is a failure of this sweep
-     * rather than a silent loss. The row is already {@link RelayState#ABANDONED} and the claim query
-     * does not return it, so this is the one chance to publish it.
+     * rather than a silent loss. It is awaited against this pass's deadline like every other send,
+     * and an expiry rolls the whole sweep back, which returns the row to the state it held before the
+     * sweep so the next one attempts the abandonment again.
      *
-     * @param row     the row this relay gave up on
-     * @param failure the failure of its last attempt
+     * @param row      the row this relay gave up on
+     * @param failure  the failure of its last attempt
+     * @param deadline monotonic deadline shared by the whole sweep
      */
-    private void publishDeadLetter(OutboxEventEntity row, RuntimeException failure) {
+    private void publishDeadLetter(OutboxEventEntity row, RuntimeException failure, long deadline) {
         Destination destination = destinations.get(row.getEventType());
         String sourceTopic = destination == null ? deadLetterTopic : destination.topic();
 
@@ -300,7 +334,7 @@ public class OutboxRelay {
                         NO_SOURCE_OFFSET, row.getEventId().toString(), row.getEventType(),
                         row.getAttemptCount());
 
-        ledgerEventTemplate.send(deadLetterTopic, row.getAggregateId(), envelope).join();
+        await(ledgerEventTemplate.send(deadLetterTopic, row.getAggregateId(), envelope), deadline);
     }
 
     /**
@@ -326,13 +360,59 @@ public class OutboxRelay {
      *
      * @param row         the unpublished row
      * @param destination the topic its event type travels on, and the record its payload holds
+     * @param deadline    monotonic deadline shared by the whole sweep
      */
-    private void publishAndMark(OutboxEventEntity row, Destination destination) {
+    private void publishAndMark(OutboxEventEntity row, Destination destination, long deadline) {
         Object event = jsonMapper.readValue(row.getPayload(), destination.eventClass());
 
-        ledgerEventTemplate.send(destination.topic(), row.getAggregateId(), event).join();
+        await(ledgerEventTemplate.send(destination.topic(), row.getAggregateId(), event), deadline);
         row.markPublished(clock.instant());
         outboxEvents.save(row);
+    }
+
+    /**
+     * Waits for one broker acknowledgement without crossing this sweep's deadline.
+     *
+     * <p>The future is cancelled when the deadline expires, so this sweep stops observing a send it
+     * has given up on. A send left running would be delivered later, and the retry this sweep
+     * schedules would then publish the same event a second time.
+     *
+     * @param publication the broker acknowledgement
+     * @param deadline    monotonic deadline shared by the whole sweep
+     * @throws IllegalStateException when the wait is interrupted, or when the send failed with a
+     *                               checked cause
+     */
+    private static void await(CompletableFuture<?> publication, long deadline) {
+        Objects.requireNonNull(publication, "the producer returned no acknowledgement");
+        long remaining = deadline - System.nanoTime();
+        if (remaining <= 0L) {
+            throw new RelayDeadlineExceededException();
+        }
+        try {
+            publication.get(remaining, TimeUnit.NANOSECONDS);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("the ledger outbox relay was interrupted", interrupted);
+        } catch (ExecutionException failed) {
+            Throwable cause = failed.getCause();
+            if (cause instanceof RuntimeException runtime) {
+                throw runtime;
+            }
+            throw new IllegalStateException("a ledger outbox publication failed", cause);
+        } catch (TimeoutException timedOut) {
+            publication.cancel(true);
+            throw new RelayDeadlineExceededException();
+        }
+    }
+
+    /** Fixed exception used when the configured sweep deadline expires. */
+    private static final class RelayDeadlineExceededException extends RuntimeException {
+
+        private static final long serialVersionUID = 1L;
+
+        RelayDeadlineExceededException() {
+            super("the ledger outbox relay sweep deadline expired");
+        }
     }
 
     /** Returns the deepest cause of one failure. */
@@ -361,6 +441,7 @@ public class OutboxRelay {
 
         void record(LedgerMeters meters) {
             if (published > 0) {
+                meters.recordEventsPublished(published);
                 log.debug("Published {} ledger outbox rows", published);
             }
             for (int failure = 0; failure < failed; failure++) {

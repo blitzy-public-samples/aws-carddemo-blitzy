@@ -56,6 +56,23 @@ import tools.jackson.databind.json.JsonMapper;
  * row whose payload no longer satisfies its event contract. Both are then marked published, so no
  * later tick takes either one again.
  *
+ * <h2>The row that runs out of attempts</h2>
+ *
+ * <p>A row the broker keeps refusing is a third case, and it used to be the silent one. After
+ * {@link OutboxEventEntity#MAX_DELIVERY_ATTEMPTS} attempts the row becomes
+ * {@link OutboxEventEntity.RelayState#ABANDONED}, and since the claim query returns
+ * {@link OutboxEventEntity.RelayState#PENDING} rows only, the tick that abandoned it was the last
+ * tick to look at it. The assessment reached no consumer and nothing named it anywhere but this
+ * container's log.
+ *
+ * <p>That gap costs more in this service than in its siblings. Fraud detection is ADDITIVE, so
+ * there is no batch job an operator can re-run and no reject dataset holding what was missed: the
+ * published assessment is the only record that the rules ever ran on a transaction. Abandonment
+ * therefore records a durable obligation on the row itself, in the same write that abandons it, and
+ * this relay discharges that obligation by naming the row on the dead-letter topic. The head of
+ * every pass offers each obligation still outstanding, so a broker outage that swallows the
+ * diagnostic delays it rather than losing it.
+ *
  * <p>Two facts a reader needs. {@code FraudApplication} carries {@code @EnableScheduling}, and
  * without it this application starts, reports healthy, and publishes nothing. The wire form is
  * flat: the five envelope properties sit beside the payload properties in one JavaScript Object
@@ -85,6 +102,9 @@ public class OutboxRelay {
 
     /** Failing pointer a dead letter carries for a row naming such a type. */
     private static final String UNKNOWN_TYPE_MESSAGE = "failing pointer /eventType";
+
+    /** Classification a dead letter carries for a row whose delivery attempts are spent. */
+    private static final String ABANDONED_REASON = "delivery attempts spent, row abandoned";
 
     /** Classification a dead letter carries for a payload its own event contract refuses. */
     private static final String CONTRACT_REASON = "payload does not satisfy its event contract";
@@ -151,13 +171,14 @@ public class OutboxRelay {
     private final String instanceId;
 
     /**
-     * Nanoseconds one whole pass may take, from {@code carddemo.outbox.relay.max-duration-ms}, and
-     * the ceiling on one send this relay has already issued.
+     * Nanoseconds one whole pass may take, from {@code carddemo.outbox.relay.max-duration-ms}.
      *
-     * <p>A broker that accepts a connection and never answers would otherwise hold the scheduled
-     * thread for the life of the process. A pass issues no new send once this budget is spent, the
-     * rows it did not reach stay due, and the next tick starts fresh. The shipped producer settings
-     * resolve one send well inside this value, and
+     * <p>This is a wall-time limit on the pass and not a ceiling per send. A broker that accepts a
+     * connection and never answers would otherwise hold the scheduled thread for the life of the
+     * process. A pass issues no new send once this budget is spent, and a send it has issued waits
+     * only for whatever of the budget is left, so the pass ends inside its stated bound rather than
+     * one send window past it. The rows a pass did not reach stay due and the next tick starts fresh.
+     * The shipped producer settings resolve one send well inside this value, and
      * {@code src/main/resources/application.yml} states that relationship where it declares them.
      */
     private final long maxDurationNanos;
@@ -252,16 +273,18 @@ public class OutboxRelay {
     private TickResult publishOneTick() {
         long deadline = System.nanoTime() + maxDurationNanos;
         Instant now = Instant.now();
+        Owed owed = dischargeOwedDiagnostics(deadline);
         int failed = recoverStrandedClaims(now);
 
         List<OutboxEventEntity> due = outboxEvents.claimDueRows(now, Limit.of(batchSize));
         if (due.isEmpty() && failed == 0) {
-            return new TickResult(0, 0, 0, 0);
+            return new TickResult(0, 0, owed.published(), owed.failed(), 0);
         }
 
         int published = 0;
-        int deadLettersPublished = 0;
-        int deadLettersFailed = 0;
+        int abandoned = 0;
+        int deadLettersPublished = owed.published();
+        int deadLettersFailed = owed.failed();
         for (OutboxEventEntity row : due) {
             row.claim(instanceId, now);
             Class<?> recordType = recordTypesByEventType.get(row.getEventType());
@@ -283,15 +306,126 @@ public class OutboxRelay {
                 Terminal terminal = onFailedRow(row, failure, now, deadline);
                 deadLettersPublished += terminal.published();
                 deadLettersFailed += terminal.failed();
+                abandoned += terminal.abandoned();
                 if (terminal.rowIsClosed()) {
                     continue;
                 }
                 log.info("Outbox relay published {} rows this tick and failed {}", published, failed);
-                return new TickResult(published, failed, deadLettersPublished, deadLettersFailed);
+                return new TickResult(published, failed, deadLettersPublished, deadLettersFailed,
+                        abandoned);
             }
         }
         log.info("Outbox relay published {} rows this tick and failed {}", published, failed);
-        return new TickResult(published, failed, deadLettersPublished, deadLettersFailed);
+        return new TickResult(published, failed, deadLettersPublished, deadLettersFailed, abandoned);
+    }
+
+    /**
+     * Offers the dead-letter topic every diagnostic an earlier pass left owing, oldest first.
+     *
+     * <p>This runs before the claim, and it is the reason an abandonment is delayed rather than lost.
+     * A row records its obligation in the same write that abandons it, so the obligation survives the
+     * broker outage, the restart or the redeployment that stopped the diagnostic reaching a topic.
+     * Nothing else would ever look at the row again: it is {@link OutboxEventEntity.RelayState#ABANDONED}
+     * and {@link OutboxEventEntity#claimDueRows} returns {@link OutboxEventEntity.RelayState#PENDING}
+     * rows only.
+     *
+     * <p>The set is empty while the relay is healthy, and the partial index
+     * {@code ix_outbox_event_dead_letter_required} covers exactly it, so a pass that has nothing to
+     * report pays for one indexed read of no rows.
+     *
+     * <p>A diagnostic the broker refuses again leaves the obligation standing, so the next pass
+     * offers it once more. Only an acknowledgement clears it.
+     *
+     * @param deadline the pass deadline on the monotonic clock
+     * @return how many owed diagnostics this pass named and how many it could not
+     */
+    private Owed dischargeOwedDiagnostics(long deadline) {
+        List<OutboxEventEntity> owing = outboxEvents.findByDeadLetterStateOrderByLastAttemptAtAsc(
+                OutboxEventEntity.DeadLetterState.REQUIRED, Limit.of(batchSize));
+        if (owing.isEmpty()) {
+            return Owed.NONE;
+        }
+
+        int named = 0;
+        int unnamed = 0;
+        for (OutboxEventEntity row : owing) {
+            if (nameAbandonedRow(row, row.getLastError(), deadline)) {
+                named++;
+            } else {
+                unnamed++;
+            }
+        }
+        log.warn("Outbox relay named {} abandoned rows on topic {} that an earlier pass left owing,"
+                + " and {} still owe one", named, deadLetterTopic, unnamed);
+        return new Owed(named, unnamed);
+    }
+
+    /**
+     * Names one abandoned row on the dead-letter topic and clears its obligation on acknowledgement.
+     *
+     * <p>The row cannot be marked published: it is {@link OutboxEventEntity.RelayState#ABANDONED},
+     * which is terminal, and the event it holds was never delivered. What is recorded instead is that
+     * the diagnostic reached the broker, so a later pass stops offering it. That distinction is the
+     * whole point of a separate column: a reader can tell a delivered event from an event that was
+     * given up on and merely reported.
+     *
+     * <p>The dead letter carries the four diagnostic values, the topic the row was bound for, the
+     * event identifier and the attempts it took. It carries no property of the payload.
+     *
+     * @param row          the abandoned row owing a diagnostic
+     * @param failureClass the last failure recorded on the row, or null when none was
+     * @param deadline     the pass deadline on the monotonic clock
+     * @return {@code true} when the broker acknowledged the diagnostic
+     */
+    private boolean nameAbandonedRow(OutboxEventEntity row, String failureClass, long deadline) {
+        try {
+            Object deadLetter = DeadLetterMetadata
+                    .of(ABEND_CODE, CULPRIT, ABANDONED_REASON, abandonedMessage(failureClass))
+                    .toEnvelope(row.getAggregateId(), fraudAssessedTopic, NO_SOURCE_PARTITION,
+                            NO_SOURCE_OFFSET, row.getEventId().toString(),
+                            reportableEventType(row.getEventType()), row.getAttemptCount());
+
+            sendWithinDeadline(deadLetterTopic, row.getAggregateId(), deadLetter, deadline);
+        } catch (RuntimeException undelivered) {
+            log.error("The diagnostic naming an abandoned outbox row of type {} did not reach topic"
+                            + " {} after {}. The row still owes one and a later pass offers it"
+                            + " again.", row.getEventType(), deadLetterTopic,
+                    rootCause(undelivered).getClass().getSimpleName());
+            return false;
+        }
+        row.markDeadLetterPublished(Instant.now());
+        outboxEvents.save(row);
+        log.error("An abandoned outbox row of type {} is named on topic {}. Its assessment reached"
+                + " no consumer.", row.getEventType(), deadLetterTopic);
+        return true;
+    }
+
+    /**
+     * Returns the failing-pointer text a diagnostic carries for an abandoned row.
+     *
+     * <p>It names the attempt ceiling and the last failure class and nothing else. The class name is
+     * a type, never a value, so the text quotes no property of the payload and no message key.
+     *
+     * @param failureClass the last failure recorded on the row, or null when none was
+     * @return the text, which {@link DeadLetterMetadata} holds to its own width
+     */
+    private static String abandonedMessage(String failureClass) {
+        return "spent " + OutboxEventEntity.MAX_DELIVERY_ATTEMPTS + " attempts, last "
+                + (failureClass == null || failureClass.isBlank() ? "unrecorded" : failureClass);
+    }
+
+    /**
+     * What the owed-diagnostic pass at the head of one tick achieved.
+     *
+     * <p>Both components count ROWS, and each row appears in exactly one of them.
+     *
+     * @param published owed diagnostics the broker acknowledged on this pass
+     * @param failed    owed diagnostics the broker refused again, still owing
+     */
+    private record Owed(int published, int failed) {
+
+        /** Nothing was owed, which is the reading of a healthy relay. */
+        private static final Owed NONE = new Owed(0, 0);
     }
 
     /**
@@ -342,19 +476,27 @@ public class OutboxRelay {
     /**
      * What one tick did, carried out of the transaction so it can be counted after the commit.
      *
-     * <p>{@code failed} counts ATTEMPTS and the two terminal components count RECORDS, which is why
+     * <p>{@code failed} counts ATTEMPTS and the three terminal components count RECORDS, which is why
      * they are separate components rather than one total. A row that will be attempted again appears
      * in {@code failed} alone; a row this relay can never publish appears in {@code failed} once and
-     * in exactly one of the two terminal components. Nothing is counted twice, and a reader can tell a
-     * retry from a permanent loss without opening a log.
+     * in exactly one of the two dead-letter components. Nothing is counted twice, and a reader can
+     * tell a retry from a permanent loss without opening a log.
+     *
+     * <p>{@code abandoned} counts the rows whose attempts ran out on this tick, and it is deliberately
+     * independent of the two dead-letter components rather than derived from them. An abandonment whose
+     * diagnostic the broker refused raises {@code abandoned} and {@code deadLettersFailed}, and a later
+     * pass that finally names it raises {@code deadLettersPublished} and not {@code abandoned} again.
+     * Comparing the two readings over time therefore answers whether every row this service gave up on
+     * has been named somewhere, which one combined total could not.
      *
      * @param published            rows the broker accepted and this tick marked
      * @param failed               publish attempts this tick could not complete
      * @param deadLettersPublished rows this relay gave up on whose diagnostic the broker acknowledged
      * @param deadLettersFailed    rows this relay gave up on whose diagnostic the broker refused
+     * @param abandoned            rows whose attempts this tick spent, whether named or still owing
      */
     private record TickResult(int published, int failed, int deadLettersPublished,
-            int deadLettersFailed) {
+            int deadLettersFailed, int abandoned) {
 
         /**
          * Records this result against {@code meters}.
@@ -362,6 +504,7 @@ public class OutboxRelay {
          * @param meters the recording surface of this service
          */
         void record(FraudMeters meters) {
+            meters.recordEventsPublished(published);
             for (int failure = 0; failure < failed; failure++) {
                 meters.recordPublishFailure();
             }
@@ -370,6 +513,9 @@ public class OutboxRelay {
             }
             for (int refused = 0; refused < deadLettersFailed; refused++) {
                 meters.recordDeadLetterFailure();
+            }
+            for (int spent = 0; spent < abandoned; spent++) {
+                meters.recordOutboxAbandoned();
             }
         }
     }
@@ -403,6 +549,12 @@ public class OutboxRelay {
      * attempt, becomes due again after a backoff, and the caller stops the tick so a later assessment
      * of the same account cannot overtake it.
      *
+     * <p>Unless that attempt was the last one. A row at its attempt ceiling is abandoned, which the
+     * recorded failure itself decides, and an abandoned row is never claimed again. It is therefore
+     * named on the dead-letter topic here, and the tick carries on rather than stopping: the ordering
+     * the message key protects is already lost once one event of an account is given up on, and
+     * holding the rows behind it would give up on those too.
+     *
      * <p>The log line names the event type and the failure class. It carries no payload, no message
      * key and no event value, and neither does the reason stored on the row.
      *
@@ -426,6 +578,18 @@ public class OutboxRelay {
         row.recordFailure(failureClass, now, now.plus(backoffAfter(row.getAttemptCount())));
         outboxEvents.save(row);
 
+        if (row.owesDeadLetter()) {
+            // That attempt was the last one. The row is now ABANDONED and the claim query will never
+            // return it again, so this is the only moment at which anything still holds it. The
+            // obligation was recorded in the same write as the abandonment, so a diagnostic refused
+            // here is delayed to a later pass rather than lost.
+            boolean named = nameAbandonedRow(row, failureClass, deadline);
+            log.error("An outbox row of type {} spent all {} attempts, the last on {}, and its"
+                            + " assessment reaches no consumer.", row.getEventType(),
+                    OutboxEventEntity.MAX_DELIVERY_ATTEMPTS, failureClass);
+            return named ? Terminal.ABANDONED_NAMED : Terminal.ABANDONED_UNNAMED;
+        }
+
         log.warn("An outbox row of type {} stays unpublished after {}, becomes due again after a "
                         + "backoff, and the tick stops there. Attempt {} of {}.", row.getEventType(),
                 failureClass, row.getAttemptCount(), OutboxEventEntity.MAX_DELIVERY_ATTEMPTS);
@@ -441,18 +605,35 @@ public class OutboxRelay {
      *
      * @param published   1 when a diagnostic reached the broker, otherwise 0
      * @param failed      1 when a diagnostic was refused, otherwise 0
+     * @param abandoned   1 when this failure spent the row's last attempt, otherwise 0
      * @param rowIsClosed whether the row takes no further attempt
      */
-    private record Terminal(int published, int failed, boolean rowIsClosed) {
+    private record Terminal(int published, int failed, int abandoned, boolean rowIsClosed) {
 
         /** The row stays open and becomes due again after a backoff. */
-        private static final Terminal RETRY = new Terminal(0, 0, false);
+        private static final Terminal RETRY = new Terminal(0, 0, 0, false);
 
         /** The row is closed and its diagnostic reached the broker. */
-        private static final Terminal DEAD_LETTER_PUBLISHED = new Terminal(1, 0, true);
+        private static final Terminal DEAD_LETTER_PUBLISHED = new Terminal(1, 0, 0, true);
 
         /** The row is closed to this tick and its diagnostic was refused. */
-        private static final Terminal DEAD_LETTER_FAILED = new Terminal(0, 1, true);
+        private static final Terminal DEAD_LETTER_FAILED = new Terminal(0, 1, 0, true);
+
+        /**
+         * The row spent its last attempt and its diagnostic reached the broker.
+         *
+         * <p>Closed, so the tick carries on. The ordering the message key protects is already lost
+         * once a row is abandoned, and holding the rows behind it would lose them too.
+         */
+        private static final Terminal ABANDONED_NAMED = new Terminal(1, 0, 1, true);
+
+        /**
+         * The row spent its last attempt and its diagnostic was refused.
+         *
+         * <p>Closed to this tick, and the obligation stands. The head of a later pass offers the
+         * diagnostic again, which is what the durable {@code dead_letter_state} column buys.
+         */
+        private static final Terminal ABANDONED_UNNAMED = new Terminal(0, 1, 1, true);
     }
 
     /**
@@ -496,23 +677,28 @@ public class OutboxRelay {
     /**
      * Sends one record, and waits for that send to resolve.
      *
-     * <p>The pass deadline is read before the send and not after it. A tick that has run out of
-     * budget issues no further send, and a send that has been issued is waited out: the producer
-     * resolves one send within {@code max.block.ms} plus {@code delivery.timeout.ms}, which
-     * {@code src/main/resources/application.yml} holds below
-     * {@code carddemo.outbox.relay.max-duration-ms}, so the wait below always outlives the
-     * producer's own window. A record the producer still holds is therefore never left to be
-     * delivered after this relay has given up on it and published another copy.
+     * <p>The wait is the budget the pass has left, and nothing longer.
+     * {@code carddemo.outbox.relay.max-duration-ms} bounds one whole sweep, so waiting that value per
+     * send let a send admitted a millisecond before the deadline keep the sweep running for another
+     * whole window: the setting named a wall-time limit and behaved as a per-send ceiling, and a sweep
+     * could overrun by close to twice its stated bound. The account service's relay already waited
+     * only the remaining budget, so the two relays now read the same setting the same way.
      *
-     * @throws RelayDeadlineExceededException when the pass has no budget left, or when a send
-     *                                        outlived the whole pass budget
+     * <p>The deadline is read before the send as well, so a tick with no budget left issues no send at
+     * all. A send the producer still holds when the budget runs out raises the deadline failure and
+     * leaves the row unpublished, and the next sweep offers it again; each consumer's processed-event
+     * marker absorbs the duplicate that a late delivery of the first copy would otherwise cause.
+     *
+     * @throws RelayDeadlineExceededException when the pass has no budget left, or when a send outlived
+     *                                        the budget that was left
      */
     private void sendWithinDeadline(String topic, String key, Object event, long deadline) {
-        if (remainingNanos(deadline) <= 0L) {
+        long remaining = remainingNanos(deadline);
+        if (remaining <= 0L) {
             throw new RelayDeadlineExceededException();
         }
         try {
-            kafkaTemplate.send(topic, key, event).get(maxDurationNanos, TimeUnit.NANOSECONDS);
+            kafkaTemplate.send(topic, key, event).get(remaining, TimeUnit.NANOSECONDS);
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
             throw new CompletionException(interrupted);
@@ -635,9 +821,11 @@ public class OutboxRelay {
     /**
      * Builds the one mapper this relay holds.
      *
-     * <p>The setting that fails on an unknown property is enabled, matching the
-     * {@code additionalProperties} of {@code false} both fraud schema documents set and the mapper
-     * {@link OutboxWriter} writes with. No setting quotes an ordinary number, so
+     * <p>{@code FAIL_ON_UNKNOWN_PROPERTIES} governs reading, which is all this mapper does: it
+     * refuses a stored payload carrying a property the event record does not declare. What closes
+     * the written document is the {@code additionalProperties} of {@code false} in both fraud schema
+     * documents, applied by {@code com.carddemo.events.serde.EventContracts} before
+     * {@link OutboxWriter} saves a row. No setting quotes an ordinary number, so
      * {@code schemaVersion} and {@code riskScore} read back as integers. No setting reads a date as
      * a number, so {@code occurredAt} and {@code assessedAt} read back from ISO-8601 text.
      *

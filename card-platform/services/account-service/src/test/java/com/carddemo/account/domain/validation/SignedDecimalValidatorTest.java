@@ -46,18 +46,10 @@ import static org.assertj.core.api.Assertions.catchThrowable;
  * of that tolerance in one test. A currency sign fails the {@code IS NUMERIC} class check at
  * app/cbl/COACTUPC.cbl:L2137, and {@code NumericRequiredValidatorTest} owns that refusal.
  *
- * <p>The paragraph writes one flag, {@code WS-FLG-SIGNED-NUMBER-EDIT PIC X(1)} at
- * app/cbl/COACTUPC.cbl:L56, over the three condition names at app/cbl/COACTUPC.cbl:L57-L59: valid
- * on {@code LOW-VALUES}, not-ok on {@code '0'}, and blank on {@code 'B'}. {@link EditResult}
- * carries one verdict and one message, so each failing state arrives as its own message.
- * {@link #exactlyTwoMessagesAreReachable()} asserts the pair.
- *
- * <p>Five call sites reach the paragraph, at app/cbl/COACTUPC.cbl:L1486,
- * app/cbl/COACTUPC.cbl:L1499, app/cbl/COACTUPC.cbl:L1511, app/cbl/COACTUPC.cbl:L1518 and
- * app/cbl/COACTUPC.cbl:L1525. They carry the credit limit, the cash credit limit, the current
- * balance, the current cycle credit and the current cycle debit.
- * {@link #fiveSourceCallSitesPerformParagraph1250()} counts them in the source, so the count is an
- * asserted fact.
+ * <p>{@link EditResult} carries one verdict and one message, so each failing state of
+ * {@code WS-FLG-SIGNED-NUMBER-EDIT} at app/cbl/COACTUPC.cbl:L56-L59 arrives as its own message.
+ * The five call sites at app/cbl/COACTUPC.cbl:L1486, L1499, L1511, L1518 and L1525 are counted in
+ * the source rather than asserted from this prose.
  *
  * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
@@ -69,10 +61,9 @@ class SignedDecimalValidatorTest {
     /** Message literal at app/cbl/COACTUPC.cbl:L2209, carrying its leading space and no period. */
     private static final String NOT_VALID = " is not valid";
 
-    /** Label of the credit-limit call site at app/cbl/COACTUPC.cbl:L1486. */
+    /** Labels of the credit-limit and current-balance call sites, app/cbl/COACTUPC.cbl:L1486 and L1511. */
     private static final String CREDIT_LIMIT_LABEL = "Credit Limit";
 
-    /** Label of the current-balance call site at app/cbl/COACTUPC.cbl:L1511. */
     private static final String CURRENT_BALANCE_LABEL = "Current Balance";
 
     /**

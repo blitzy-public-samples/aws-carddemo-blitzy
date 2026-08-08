@@ -60,10 +60,70 @@ class AuthorizationPropertiesTest {
             assertThat(properties.outbox().relay().claimTimeout())
                     .isEqualTo(java.time.Duration.ofMinutes(2L));
             assertThat(properties.outbox().publishedRetentionHours()).isEqualTo(168L);
-            assertThat(properties.processedEvent().markerRetentionHours()).isEqualTo(168L);
+            assertThat(properties.processedEvent().markerRetentionHours())
+                    .as("the marker horizon outlasts broker retention rather than equalling it")
+                    .isEqualTo(720L);
+            assertThat(properties.processedEvent().brokerRetentionHours()).isEqualTo(168L);
             assertThat(properties.retention().sweepIntervalMs()).isEqualTo(3_600_000L);
             assertThat(properties.replica().maxStaleness()).isEqualTo(java.time.Duration.ofDays(1L));
+            assertThat(properties.outbox().relay().maxDurationMs()).isEqualTo(5_000L);
         });
+    }
+
+    /**
+     * Asserts one producer send resolves inside the relay pass that issued it.
+     *
+     * <p>Four values decide that, and a change to any one of them can break it silently. The relay
+     * awaits each send against one deadline shared by the whole pass; the producer closes a send after
+     * {@code max.block.ms + delivery.timeout.ms}. While the producer window was the larger of the two,
+     * the relay could stop waiting on a send the broker went on to deliver, and the next pass then
+     * published a second copy of the same event. A duplicate is survivable — every consumer records
+     * the event identifiers it has processed — but it is avoidable here, and the accompanying relay
+     * state was simply wrong.
+     *
+     * <p>The second assertion is a construction-time rule of the producer rather than a choice of
+     * this platform: a delivery timeout below {@code linger.ms + request.timeout.ms} is refused
+     * outright, so a start-up failure is the alternative to this test.
+     */
+    @Test
+    @DisplayName("one producer send resolves inside the relay pass that issued it")
+    void oneSendResolvesInsideTheRelayPassThatIssuedIt() {
+        shipped.run(context -> {
+            assertThat(context).hasNotFailed();
+            AuthorizationProperties properties = context.getBean(AuthorizationProperties.class);
+            long maxBlock = milliseconds(context.getEnvironment()
+                    .getProperty("spring.kafka.producer.properties.max.block.ms"));
+            long deliveryTimeout = milliseconds(context.getEnvironment()
+                    .getProperty("spring.kafka.producer.properties.delivery.timeout.ms"));
+            long requestTimeout = milliseconds(context.getEnvironment()
+                    .getProperty("spring.kafka.producer.properties.request.timeout.ms"));
+            long linger = milliseconds(context.getEnvironment()
+                    .getProperty("spring.kafka.producer.properties.linger.ms"));
+            long passBudget = properties.outbox().relay().maxDurationMs();
+
+            assertThat(maxBlock + deliveryTimeout)
+                    .as("max.block.ms plus delivery.timeout.ms against "
+                            + "carddemo.outbox.relay.max-duration-ms, which is %d. A send the relay "
+                            + "abandons can still be delivered, and the next pass then publishes a "
+                            + "second copy of the same event", passBudget)
+                    .isLessThan(passBudget);
+            assertThat(deliveryTimeout)
+                    .as("delivery.timeout.ms against linger.ms plus request.timeout.ms, which is "
+                            + "%d. The producer refuses that combination at construction",
+                            linger + requestTimeout)
+                    .isGreaterThanOrEqualTo(linger + requestTimeout);
+        });
+    }
+
+    /**
+     * Reads one millisecond setting, failing rather than defaulting when the key is absent.
+     *
+     * @param value the configured text
+     * @return the value in milliseconds
+     */
+    private static long milliseconds(String value) {
+        assertThat(value).as("a producer timing key the relay budget depends on").isNotNull();
+        return Long.parseLong(value.trim());
     }
 
     /**
@@ -80,7 +140,8 @@ class AuthorizationPropertiesTest {
                 .as("the components of the bound carddemo block")
                 .extracting(java.lang.reflect.RecordComponent::getName)
                 .containsExactlyInAnyOrder(
-                        "kafka", "outbox", "processedEvent", "retention", "replica");
+                        "kafka", "outbox", "processedEvent", "retention", "replica",
+                        "decision");
     }
 
     @Test
@@ -131,6 +192,41 @@ class AuthorizationPropertiesTest {
                     assertThat(context).hasFailed();
                     assertThat(context.getStartupFailure())
                             .hasStackTraceContaining("max-staleness");
+                });
+    }
+
+    @Test
+    @DisplayName("a marker horizon that does not outlast broker retention stops start-up")
+    void aMarkerHorizonUnderTheMarginStopsStartUp() {
+        shipped.withPropertyValues("carddemo.processed-event.marker-retention-hours=168")
+                .run(context -> {
+                    assertThat(context).hasFailed();
+                    assertThat(context.getStartupFailure())
+                            .hasStackTraceContaining("markerRetentionHours")
+                            .hasStackTraceContaining("brokerRetentionHours");
+                });
+    }
+
+    @Test
+    @DisplayName("a marker horizon at exactly the margin starts")
+    void aMarkerHorizonAtExactlyTheMarginStarts() {
+        shipped.withPropertyValues("carddemo.processed-event.marker-retention-hours=336")
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context.getBean(AuthorizationProperties.class).processedEvent()
+                            .markerRetentionHours()).isEqualTo(336L);
+                });
+    }
+
+    @Test
+    @DisplayName("raising broker retention without raising the marker horizon stops start-up")
+    void raisingBrokerRetentionAloneStopsStartUp() {
+        shipped.withPropertyValues("carddemo.processed-event.broker-retention-hours=720")
+                .run(context -> {
+                    assertThat(context).hasFailed();
+                    assertThat(context.getStartupFailure())
+                            .hasStackTraceContaining("markerRetentionHours must be at")
+                            .hasStackTraceContaining("least 2 times");
                 });
     }
 

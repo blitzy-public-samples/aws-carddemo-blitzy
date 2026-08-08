@@ -166,9 +166,37 @@ class NotificationOpenApiContractTest {
     private static final List<String> OFFSET_PAGING_PARAMETERS =
             List.of("page", "size", "limit", "offset", "cursor", "sort");
 
-    /** Response keys the document declares none of. */
+    /**
+     * Response keys the document declares none of.
+     *
+     * <p>{@code 500} left this list when the document gained the response. A caller that reads only
+     * the document has to know a service fault is answerable, and the handler that produces one
+     * returns the same {@code ApiError} shape every other refusal returns.
+     */
     private static final List<String> UNDECLARED_STATUSES =
-            List.of("404", "409", "422", "500", "default");
+            List.of("404", "409", "422", "default");
+
+    /** Statuses the filter chain writes, as a problem document rather than as the record shape. */
+    private static final List<String> SECURITY_WRITTEN_STATUSES = List.of("401", "403");
+
+    /**
+     * The statuses a filter of the chain writes, rather than the exception handler.
+     *
+     * <p>{@code config/SecurityConfig} writes the 401 and the 403, and
+     * {@code config/RequestRateCeilingFilter} writes the 429. All three are written by hand as a
+     * fixed literal, so all three carry the problem document and not the handler shape.
+     */
+    private static final Set<String> CHAIN_REFUSAL_STATUSES = Set.of("401", "403", "429");
+
+    /** The four members the problem document RFC 9457 defines. */
+    private static final Set<String> PROBLEM_DOCUMENT_MEMBERS =
+            Set.of("type", "title", "status", "detail");
+
+    /** Statuses that carry no body, so no schema describes them. */
+    private static final List<String> BODYLESS_STATUSES = List.of("406");
+
+    /** Media type RFC 9457 names, which the filter chain writes its refusals under. */
+    private static final String PROBLEM_MEDIA_TYPE = "application/problem+json";
 
     /** Envelope property names the document declares none of. */
     private static final List<String> OFFSET_PAGING_PROPERTIES =
@@ -318,7 +346,7 @@ class NotificationOpenApiContractTest {
         void theDocumentDeclaresTheOneRouteTheControllerMaps() {
             assertEquals(NotificationHistoryController.ROUTE_TEMPLATE, routeKey(),
                     "the route the document declares against the route the controller maps");
-            assertEquals("/notifications/{cardToken}", routeKey(), "the route template");
+            assertEquals("/notifications/{cardNumber}", routeKey(), "the route template");
         }
 
         /** Asserts the document carries no gateway prefix and no version segment. */
@@ -362,43 +390,59 @@ class NotificationOpenApiContractTest {
                     + namesOf(parameters()));
         }
 
-        /** Asserts the path parameter names the card token and is required. */
+        /** Asserts the path parameter names the card number and is required. */
         @Test
-        void thePathParameterIsTheRequiredCardToken() {
-            Map<String, Object> token = pathParameter();
-            assertEquals("cardToken", textAt(token, "name", "the path parameter"), "its name");
-            assertEquals("path", textAt(token, "in", "the path parameter"), "where it is carried");
-            assertEquals(Boolean.TRUE, token.get("required"), "the path parameter is required");
+        void thePathParameterIsTheRequiredCardNumber() {
+            Map<String, Object> cardNumber = pathParameter();
+            assertEquals("cardNumber", textAt(cardNumber, "name", "the path parameter"),
+                    "its name");
+            assertEquals("path", textAt(cardNumber, "in", "the path parameter"),
+                    "where it is carried");
+            assertEquals(Boolean.TRUE, cardNumber.get("required"),
+                    "the path parameter is required");
         }
 
         /**
-         * Asserts the path parameter is text at the token width, and never a number. The width is
-         * {@link PanMasker#CARD_TOKEN_LENGTH}, and it stands in for
-         * {@code TRNX-CARD-NUM PIC X(16)} at {@code app/cpy/COSTM01.CPY:L22}.
+         * Asserts the path parameter is text at the card-number width, and never a number. The width
+         * is {@link PanMasker#CARD_NUMBER_LENGTH}, from {@code TRNX-CARD-NUM PIC X(16)} at
+         * {@code app/cpy/COSTM01.CPY:L22}.
          */
         @Test
-        void thePathParameterIsTextAtTheTokenWidth() {
+        void thePathParameterIsTextAtTheCardNumberWidth() {
             Map<String, Object> schema = mapAt(pathParameter(), "schema", "the path parameter");
             assertEquals("string", textAt(schema, TYPE, "the path parameter schema"), "its type");
-            assertEquals(PanMasker.CARD_TOKEN_LENGTH, intAt(schema, MIN_LENGTH, "the token schema"),
-                    "the lower character bound of the token");
-            assertEquals(PanMasker.CARD_TOKEN_LENGTH, intAt(schema, MAX_LENGTH, "the token schema"),
-                    "the upper character bound of the token");
+            assertEquals(PanMasker.CARD_NUMBER_LENGTH,
+                    intAt(schema, MIN_LENGTH, "the card-number schema"),
+                    "the lower character bound of the card number");
+            assertEquals(PanMasker.CARD_NUMBER_LENGTH,
+                    intAt(schema, MAX_LENGTH, "the card-number schema"),
+                    "the upper character bound of the card number");
         }
 
         /**
-         * Asserts the declared shape is the one {@link PanMasker} derives and the one
-         * {@link NotificationHistoryController} enforces, so all three carry one value.
+         * Asserts the declared shape is the one {@link NotificationHistoryController} enforces, so
+         * the document and the constraint carry one value.
          */
         @Test
         void theDeclaredShapeIsTheOneTheControllerEnforces() {
             String declared =
                     textAt(mapAt(pathParameter(), "schema", "the path parameter"), PATTERN,
                             "the path parameter schema");
-            assertEquals(PanMasker.CARD_TOKEN_PATTERN, declared,
-                    "the shape the document declares against the shape the library derives");
-            assertEquals(NotificationHistoryController.CARD_TOKEN_PATTERN, declared,
+            assertEquals("^[0-9]{" + PanMasker.CARD_NUMBER_LENGTH + "}$", declared,
+                    "the shape the document declares against the width the source field declares");
+            assertEquals(NotificationHistoryController.CARD_NUMBER_PATTERN, declared,
                     "the shape the document declares against the shape the controller enforces");
+        }
+
+        /** Asserts the operation declares the path parameter alone, and no query parameter. */
+        @Test
+        void theOperationDeclaresThePathParameterAlone() {
+            assertEquals(List.of("cardNumber"), namesOf(parameters()),
+                    "the parameters the operation declares");
+            for (Map<String, Object> parameter : parameters()) {
+                assertEquals("path", parameter.get("in"),
+                        parameter.get("name") + " is carried outside the path");
+            }
         }
 
         /** Asserts no parameter names an offset paging value. */
@@ -416,10 +460,18 @@ class NotificationOpenApiContractTest {
     @DisplayName("The documented status set, and the statuses the document omits")
     class DocumentedStatuses {
 
-        /** Asserts the status keys the operation declares, normalised to text. */
+        /**
+         * Asserts the status keys the operation declares, normalised to text.
+         *
+         * <p>Four are reached before the read: a successful page, a refused cursor, a missing
+         * credential and a credential without the scope. {@code 500} is the fifth, and it is the one
+         * the service answers when the read itself fails. Documenting it is what lets a caller
+         * distinguish a fault from a refusal without reading Java.
+         */
         @Test
         void theOperationDeclaresTheDocumentedStatusSet() {
-            assertEquals(List.of("200", "400", "401", "403"), statusKeys(),
+            assertEquals(
+                    List.of("200", "400", "401", "403", "405", "406", "429", "500"), statusKeys(),
                     "the statuses the operation documents");
         }
 
@@ -449,20 +501,56 @@ class NotificationOpenApiContractTest {
         }
 
         /**
-         * Asserts every failing response carries the shape {@link ApiErrorResponse} declares, read
-         * as the document declares it.
+         * Asserts every failing response the endpoint writes carries the shape
+         * {@link ApiErrorResponse} declares, read as the document declares it.
+         *
+         * <p>Two statuses are written by the filter chain rather than by the endpoint.
+         * {@code config/SecurityConfig} writes the four members RFC 9457 names, by hand and under
+         * {@code application/problem+json}, so those two responses declare the {@code Problem}
+         * schema. Every status the endpoint itself writes declares the record shape. A caller reads
+         * one schema per status either way.
          */
         @Test
-        void everyFailingResponseCarriesTheErrorRecordShape() {
-            Set<String> components = Set.copyOf(componentNamesOf(ApiErrorResponse.class));
+        void everyFailingResponseCarriesTheShapeItsWriterProduces() {
+            Set<String> handlerShape = Set.copyOf(componentNamesOf(ApiErrorResponse.class));
             for (String status : statusKeys()) {
-                if (status.startsWith("2")) {
+                if (status.startsWith("2") || SECURITY_WRITTEN_STATUSES.contains(status)
+                        || BODYLESS_STATUSES.contains(status)) {
                     continue;
                 }
                 Map<String, Object> schema =
                         resolve(textAt(bodySchemaOf(status), REFERENCE, "the body of " + status));
-                assertEquals(components, propertiesOf(schema, "the error schema").keySet(),
+                Set<String> expected = CHAIN_REFUSAL_STATUSES.contains(status)
+                        ? PROBLEM_DOCUMENT_MEMBERS : handlerShape;
+                assertEquals(expected, propertiesOf(schema, "the error schema").keySet(),
                         "the properties the body of " + status + " declares");
+            }
+        }
+
+        /**
+         * Asserts the two statuses the filter chain writes declare the problem document.
+         *
+         * <p>The document declared the record shape under {@code application/json} for both, while
+         * {@code config/SecurityConfig} writes the four members RFC 9457 names under
+         * {@code application/problem+json}. A client generated from the document parsed a body the
+         * service never sends.
+         */
+        @Test
+        void thePairTheFilterChainWritesDeclaresTheProblemDocument() {
+            for (String status : SECURITY_WRITTEN_STATUSES) {
+                Map<String, Object> response =
+                        mapAt(responses(), status, "the response " + status);
+                Map<String, Object> content =
+                        mapAt(response, "content", "the response " + status);
+                assertEquals(List.of(PROBLEM_MEDIA_TYPE), new ArrayList<>(content.keySet()),
+                        "the media type the response " + status + " declares");
+                Map<String, Object> schema = resolve(textAt(
+                        mapAt(mapAt(content, PROBLEM_MEDIA_TYPE, "the response " + status),
+                                "schema", "the response " + status),
+                        REFERENCE, "the body of " + status));
+                assertEquals(Set.of("type", "title", "status", "detail"),
+                        propertiesOf(schema, "the problem schema").keySet(),
+                        "the four members RFC 9457 names");
             }
         }
 
@@ -535,7 +623,7 @@ class NotificationOpenApiContractTest {
     }
 
     @Nested
-    @DisplayName("The envelope: the card identity, the masked display value and three page values")
+    @DisplayName("The envelope: the masked display value, the count, the total and the entries")
     class TheEnvelopeSchema {
 
         /**
@@ -548,7 +636,7 @@ class NotificationOpenApiContractTest {
             assertEquals(Set.copyOf(components),
                     propertiesOf(envelopeSchema(), "the envelope").keySet(),
                     "the properties the envelope declares against the record components");
-            assertEquals(List.of("cardToken", "cardNumber", "transactionCount", "totalAmount",
+            assertEquals(List.of("cardNumber", "transactionCount", "totalAmount",
                     "transactions"), components, "the components of the response record");
         }
 
@@ -560,13 +648,23 @@ class NotificationOpenApiContractTest {
                     "the order the envelope declares against the order the record declares");
         }
 
-        /** Asserts the card identity is text carrying the token shape. */
+        /**
+         * Asserts the envelope carries no card identity beyond the masked display value. The card
+         * token keys the read model and reaches no response: it names one card for as long as its
+         * key stands.
+         */
         @Test
-        void theCardIdentityCarriesTheTokenShape() {
-            Map<String, Object> token = property(envelopeSchema(), "cardToken", "the envelope");
-            assertEquals("string", textAt(token, TYPE, "cardToken"), "the type of cardToken");
-            assertEquals(PanMasker.CARD_TOKEN_PATTERN, textAt(token, PATTERN, "cardToken"),
-                    "the shape of cardToken");
+        void theEnvelopeCarriesNoCardIdentity() {
+            Set<String> declared = propertiesOf(envelopeSchema(), "the envelope").keySet();
+            assertFalse(declared.contains("cardToken"), "the envelope declares cardToken");
+            assertEquals(List.of("cardNumber"), declared.stream()
+                            .filter(name -> name.toLowerCase(Locale.ROOT).contains("card"))
+                            .toList(),
+                    "the card-bearing properties of the envelope");
+            assertFalse(document.contains("cardToken:"),
+                    "the storage key appears as a property of the document");
+            assertFalse(document.contains("name: cardToken"),
+                    "the storage key appears as a parameter of the document");
         }
 
         /**
@@ -649,7 +747,7 @@ class NotificationOpenApiContractTest {
             List<String> components = componentNamesOf(NotificationTransactionItem.class);
             assertEquals(Set.copyOf(components), propertiesOf(itemSchema(), "the item").keySet(),
                     "the properties the item declares against the record components");
-            assertEquals(List.of("transactionId", "maskedCardNumber", "typeCode", "categoryCode",
+            assertEquals(List.of("transactionId", "typeCode", "categoryCode",
                     "source", "description", "amount", "merchantId", "merchantName",
                     "merchantCity", "merchantZip", "originTimestamp", "processingTimestamp"),
                     components, "the components of the item record");
@@ -663,27 +761,24 @@ class NotificationOpenApiContractTest {
         }
 
         /**
-         * Asserts the item carries no card identity. {@code TRNX-CARD-NUM PIC X(16)} at
+         * Asserts the item names no card at all. {@code TRNX-CARD-NUM PIC X(16)} at
          * {@code app/cpy/COSTM01.CPY:L22} sits inside {@code 05 TRNX-KEY} and reaches the envelope.
          * The source loop moves that field once per card group at
          * {@code app/cbl/CBSTM03A.CBL:L421} while setting the identifier and the remaining fields
-         * once per transaction at {@code app/cbl/CBSTM03A.CBL:L424-L427}. The one card-bearing
-         * property of the item holds the masked display value, whose shape admits no card number.
+         * once per transaction at {@code app/cbl/CBSTM03A.CBL:L424-L427}, so the card is named once
+         * per history and not once per entry.
          */
         @Test
-        void theItemCarriesNoCardIdentity() {
+        void theItemNamesNoCard() {
             List<String> declared = itemPropertyOrder();
-            for (String identity : List.of("cardToken", "cardNumber", "cardNum", "pan")) {
+            for (String identity
+                    : List.of("cardToken", "cardNumber", "cardNum", "maskedCardNumber", "pan")) {
                 assertFalse(declared.contains(identity), "the item declares " + identity);
             }
-            assertEquals(List.of("maskedCardNumber"), declared.stream()
+            assertEquals(List.of(), declared.stream()
                             .filter(name -> name.toLowerCase(Locale.ROOT).contains("card"))
                             .toList(),
                     "the card-bearing properties of the item");
-            assertEquals(MASKED_CARD_NUMBER_PATTERN,
-                    textAt(property(itemSchema(), "maskedCardNumber", "the item"), PATTERN,
-                            "maskedCardNumber"),
-                    "the shape the one card-bearing property of the item carries");
         }
 
         /** Asserts every property of the item is text, so no digit field travels as a number. */
@@ -999,9 +1094,9 @@ class NotificationOpenApiContractTest {
             }
         }
 
-        /**
-         * Asserts the document declares no decline outcome of the authorization path, and declares
-         * one enumeration alone: the caching directive of the successful response.
+         /**
+         * Asserts the document declares no decline outcome of the authorization path, and no
+         * enumeration at all: every fixed header value it declares is a {@code const}.
          */
         @Test
         void noDeclineOutcomeOfTheAuthorizationPathAppears() {
@@ -1011,10 +1106,32 @@ class NotificationOpenApiContractTest {
                         "the document declares the property " + absent);
             }
             List<Object> enumerations = everyValueOf("enum");
-            assertEquals(1, enumerations.size(),
-                    "the document declares one enumeration, and declares " + enumerations.size());
-            assertEquals(List.of("no-store"), enumerations.get(0),
-                    "the one enumeration the document declares");
+            assertEquals(List.of(), enumerations,
+                    "the document declares an enumeration where a fixed value belongs");
+        }
+
+        /**
+         * Asserts the successful response documents the caching header Spring Security writes,
+         * character for character.
+         *
+         * <p>{@code config/SecurityConfig} installs {@code CacheControlHeadersWriter} through
+         * {@code headers().cacheControl()}, and that writer sets four directives rather than
+         * {@code no-store} alone. A document naming one directive would advertise bytes no response
+         * carries.
+         */
+        @Test
+        void theSuccessfulResponseDocumentsTheCachingHeaderTheChainWrites() {
+            Map<String, Object> success = mapAt(responses(), "200", "the successful response");
+            Map<String, Object> headers = mapAt(success, "headers", "the successful response");
+            Map<String, Object> caching = mapAt(headers, "Cache-Control", "the caching header");
+            Map<String, Object> schema = mapAt(caching, "schema", "the caching header");
+
+            assertEquals(Set.of("Cache-Control"), headers.keySet(),
+                    "the headers the successful response documents");
+            assertEquals(Boolean.TRUE, caching.get("required"), "the header is always present");
+            assertEquals("no-cache, no-store, max-age=0, must-revalidate",
+                    textAt(schema, "const", "the caching header schema"),
+                    "the directives the response carries");
         }
 
         /** Asserts no response restates an event envelope. */
@@ -1045,18 +1162,30 @@ class NotificationOpenApiContractTest {
         }
 
         /**
-         * Asserts no run of sixteen digits appears anywhere in the document, an example included.
-         * An example naming a card carries the masked form. The message counts the runs and prints
-         * none of them.
+         * Asserts every run of sixteen digits in the document is the all-zero placeholder of the
+         * path parameter example.
+         *
+         * <p>The route reads a card number, so its example has to be sixteen digits. No card of
+         * {@code app/data/ASCII/carddata.txt} carries that value, so the document publishes no card
+         * number that exists, and no response example carries a run at all: a response names a card
+         * by its masked form. The message counts the runs and prints none of them.
          */
         @Test
-        void noSixteenDigitRunAppearsAnywhere() {
+        void everySixteenDigitRunIsThePlaceholderExample() {
             Matcher run = SIXTEEN_DIGIT_RUN.matcher(document);
             int runs = 0;
             while (run.find()) {
                 runs++;
+                assertEquals("0".repeat(16), run.group(),
+                        "a sixteen-digit run other than the placeholder");
             }
-            assertEquals(0, runs, "the document carries " + runs + " runs of sixteen digits");
+            assertEquals(1, runs, "the document carries " + runs + " runs of sixteen digits");
+
+            Map<String, Object> examples = mapAt(pathParameter(), "examples", "the path parameter");
+            Map<String, Object> example =
+                    mapAt(examples, "number", "the path parameter examples");
+            assertEquals("0".repeat(16), textAt(example, "value", "the path parameter example"),
+                    "the example the path parameter publishes");
         }
 
         /**
@@ -1271,15 +1400,25 @@ class NotificationOpenApiContractTest {
     /**
      * Reads the schema a failing response carries.
      *
+     * <p>Two media types answer, and which one a status carries follows from where the answer is
+     * written. {@code api/NotificationApiExceptionHandler} runs inside the dispatcher and
+     * serializes {@link ApiErrorResponse} as {@code application/json}. A refusal written in the
+     * filter chain reaches no handler and no serializer, so {@code config/SecurityConfig} and
+     * {@code config/RequestRateCeilingFilter} write the problem document RFC 9457 defines as
+     * {@code application/problem+json} instead. Publishing one type for both would describe a body
+     * no code path produces.
+     *
      * @param status the status key the document declares
      * @return the failing body schema
      */
     private static Map<String, Object> bodySchemaOf(String status) {
         Map<String, Object> response = mapAt(responses(), status, "the response " + status);
         Map<String, Object> content = mapAt(response, "content", "the response " + status);
-        assertEquals(List.of(JSON_MEDIA_TYPE), new ArrayList<>(content.keySet()),
+        String mediaType = CHAIN_REFUSAL_STATUSES.contains(status)
+                ? PROBLEM_MEDIA_TYPE : JSON_MEDIA_TYPE;
+        assertEquals(List.of(mediaType), new ArrayList<>(content.keySet()),
                 "the response " + status + " declares one media type");
-        Map<String, Object> media = mapAt(content, JSON_MEDIA_TYPE, "the response " + status);
+        Map<String, Object> media = mapAt(content, mediaType, "the response " + status);
         return mapAt(media, "schema", "the response " + status);
     }
 

@@ -17,7 +17,12 @@ import com.carddemo.ledger.entity.AccountBalanceProjectionEntity;
 import com.carddemo.ledger.repository.AccountBalanceProjectionRepository;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.Query;
+import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoField;
@@ -28,6 +33,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -189,6 +196,87 @@ class BillPaymentEquivalenceTest {
 
     /** The schema the sequence lives in, matching the authorization service configuration. */
     private static final String MAPPED_SCHEMA = "authorization_service";
+
+    /** The checked-in bill-payment expectations this class is the declared consumer of. */
+    private static final String EXPECTED_PAYMENT_FILE = "bill-payment-results.csv";
+
+    /** Every row of {@link #EXPECTED_PAYMENT_FILE}, parsed once for the whole class. */
+    private static final ExpectedOutcomes EXPECTED_PAYMENTS =
+            ExpectedOutcomes.load(EXPECTED_PAYMENT_FILE);
+
+    /** The online bill-payment program, which is the only source of the payment path. */
+    private static final String ONLINE_PROGRAM = "app/cbl/COBIL00C.cbl";
+
+    /** The batch posting program, which the online path is compared against. */
+    private static final String POSTING_PROGRAM = "app/cbl/CBTRN02C.cbl";
+
+    /** The copybook that declares the online timestamp structure. */
+    private static final String TIMESTAMP_COPYBOOK = "app/cpy/CSDAT01Y.cpy";
+
+    /** The migrated allocation this platform replaced the browse-backwards race with. */
+    private static final String TRANSACTION_IDENTIFIER_SOURCE = "card-platform/services/"
+            + "authorization-service/src/main/java/com/carddemo/authorization/domain/"
+            + "TransactionIdentifierSource.java";
+
+    /** The sibling file that records where the guard becomes reachable after posting. */
+    private static final String ACCOUNT_END_STATE_FILE =
+            "acctdata-final-account-state-model-b.csv";
+
+    /** The cycle-credit accumulator the online path never touches. */
+    private static final String CYCLE_CREDIT_FIELD = "ACCT-CURR-CYC-CREDIT";
+
+    /** The cycle-debit accumulator the online path never touches. */
+    private static final String CYCLE_DEBIT_FIELD = "ACCT-CURR-CYC-DEBIT";
+
+    /** The category balance the online path never writes. */
+    private static final String CATEGORY_BALANCE_FIELD = "TRAN-CAT-BAL";
+
+    /** The balance field the online path moves whole into the transaction amount. */
+    private static final String ONLINE_BALANCE_FIELD = "ACCT-CURR-BAL";
+
+    /** The active-status value every seeded account carries. */
+    private static final String ACTIVE_STATUS = "Y";
+
+    /** The phrase whose absence pins truncation on the subtraction. */
+    private static final String ROUNDED_PHRASE = "ROUNDED";
+
+    /** The upper-case confirmation literal the branch accepts. */
+    private static final String UPPER_CASE_YES = "Y";
+
+    /** The lower-case confirmation literal the branch accepts. */
+    private static final String LOWER_CASE_YES = "y";
+
+    /** A fragment of the invalid-confirmation message, enough to name it uniquely. */
+    private static final String INVALID_VALUE_FRAGMENT = "Invalid value";
+
+    /** A fragment of the unconfirmed-payment message. */
+    private static final String UNCONFIRMED_FRAGMENT = "Confirm to make";
+
+    /** A fragment of the nothing-to-pay guard message. */
+    private static final String NOTHING_TO_PAY_FRAGMENT = "nothing to pay";
+
+    /** The prefix every positional separator expectation carries. */
+    private static final String SEPARATOR_FIELD_PREFIX = "separator_at_position_";
+
+    /** The first accumulator the batch program adds a signed amount into. */
+    private static final int FIRST_ACCUMULATOR = 1;
+
+    /** The second accumulator the batch program adds a signed amount into. */
+    private static final int SECOND_ACCUMULATOR = FIRST_ACCUMULATOR + 1;
+
+    /** The paragraphs the allocation browse is made of, in the order the program performs them. */
+    private static final List<String> ALLOCATION_BROWSE_PARAGRAPHS = List.of(
+            "STARTBR-TRANSACT-FILE", "READPREV-TRANSACT-FILE", "ENDBR-TRANSACT-FILE");
+
+    /** The update intent a browse would have to carry in order to serialise two callers. */
+    private static final String UPDATE_INTENT = "UPDATE";
+
+    /** The enqueue the program would have to issue in order to serialise two callers. */
+    private static final String ENQUEUE_COMMAND = "EXEC CICS ENQ";
+
+    /** The rendered shape of the online timestamp of {@code app/cpy/CSDAT01Y.cpy:L42-L55}. */
+    private static final String ONLINE_TIMESTAMP_SHAPE = "YYYY-MM-DD HH:MM:SS.000000";
+
 
     /** All {@value PicClause#ACCTDATA_FIXTURE_RECORD_COUNT} account records, loaded once. */
     private static final List<CopybookRecordParser.AccountRecord> ACCOUNTS =
@@ -751,5 +839,518 @@ class BillPaymentEquivalenceTest {
             String merchantZip,
             String originTimestamp,
             String processingTimestamp) {
+    }
+
+    @Nested
+    @DisplayName(EXPECTED_PAYMENT_FILE + " bound row by row")
+    class CheckedInPaymentExpectations {
+
+        @Test
+        @DisplayName("every row matches the fixture, the online program or the batch program")
+        void everyRowOfThePaymentExpectationsMatches() {
+            for (ExpectedOutcomes.Row row : EXPECTED_PAYMENTS.rows()) {
+                String expected = EXPECTED_PAYMENTS.value(row.recordSequence(), row.entityKey(),
+                        row.expectedField());
+
+                assertEquals(expected, actualPaymentValue(row),
+                        EXPECTED_PAYMENT_FILE + " row " + row.key() + ", derived from "
+                                + row.sourceLocator() + ", Picture clause " + row.picClause());
+            }
+
+            assertTrue(EXPECTED_PAYMENTS.unconsumedRows().isEmpty(),
+                    EXPECTED_PAYMENTS.unconsumedDescription());
+        }
+    }
+
+    /**
+     * Resolves what the fixture, the online program or the batch program holds for one row.
+     *
+     * <p>The file carries nine rows for each of the fifty seeded accounts, then eight mechanics
+     * sections whose {@code record_seq} names the section. No branch reads
+     * {@code expected_value}.</p>
+     *
+     * @param row the expectation to resolve
+     * @return the value the row must equal
+     * @throws IllegalStateException when the row names a field this method does not resolve
+     */
+    private static String actualPaymentValue(ExpectedOutcomes.Row row) {
+        return switch (row.recordSequence()) {
+            case "TXN-SHAPE" -> paymentTransactionValue(row.expectedField());
+            case "DIVERGENCE" -> divergenceValue(row.expectedField());
+            case "CONFIRM-GATE" -> confirmationGateValue(row.expectedField());
+            case "ZERO-GUARD" -> zeroGuardValue(row.expectedField());
+            case "TRAN-ID" -> allocationValue(row.expectedField());
+            case "TIMESTAMP" -> timestampValue(row.expectedField());
+            case "SUMMARY" -> paymentSummaryValue(row.expectedField());
+            case "PROHIBITION" -> paymentProhibitionValue(row.expectedField());
+            default -> seededAccountPaymentValue(row);
+        };
+    }
+
+    /** Resolves one of the nine expectations of one seeded account. */
+    private static String seededAccountPaymentValue(ExpectedOutcomes.Row row) {
+        int ordinal = Integer.parseInt(row.recordSequence());
+        CopybookRecordParser.AccountRecord account = ACCOUNTS.get(ordinal - 1);
+
+        assertEquals(row.entityKey(), account.accountId(), EXPECTED_PAYMENT_FILE + " row "
+                + row.key() + " names an account the fixture does not carry at that sequence");
+
+        BigDecimal balance = account.currentBalance();
+        return switch (row.expectedField()) {
+            case "acct_curr_bal_before_payment" -> balance.toPlainString();
+            case "tran_amt_equals_balance_before" -> CobolDecimal
+                    .truncateToScale(balance, PicClause.TRAN_AMT_SCALE).toPlainString();
+            case "acct_curr_bal_after_payment" -> CobolDecimal
+                    .subtract(balance, balance, PicClause.ACCT_CURR_BAL_SCALE).toPlainString();
+            case "acct_curr_cyc_credit_before", "acct_curr_cyc_credit_after" ->
+                    account.currentCycleCredit().toPlainString();
+            case "acct_curr_cyc_debit_before", "acct_curr_cyc_debit_after" ->
+                    account.currentCycleDebit().toPlainString();
+            case "tran_card_num" -> cardNumberOf(account.accountId());
+            case "payable" -> paymentYesOrNo(balance.signum() > 0);
+            default -> throw new IllegalStateException(EXPECTED_PAYMENT_FILE
+                    + " names unresolved account field " + row.expectedField());
+        };
+    }
+
+    /** Resolves one {@code TXN-SHAPE} expectation of the online transaction build. */
+    private static String paymentTransactionValue(String field) {
+        return switch (field) {
+            case "record_initialized_before_build" -> paymentYesOrNo(CobolSourceEvidence
+                    .containsStatement(ONLINE_PROGRAM, "INITIALIZE TRAN-RECORD"));
+            case "tran_type_cd" -> onlineLiteralInto("TRAN-TYPE-CD");
+            case "tran_cat_cd" -> paddedCode(onlineLiteralInto("TRAN-CAT-CD"),
+                    PicClause.TRAN_CAT_CD_WIDTH);
+            case "tran_source" -> spacePadded(onlineLiteralInto("TRAN-SOURCE"),
+                    PicClause.TRAN_SOURCE_WIDTH);
+            case "tran_desc_literal" -> onlineLiteralInto("TRAN-DESC");
+            case "tran_desc_space_padded_to_declared_width" -> paymentYesOrNo(
+                    spacePadded(onlineLiteralInto("TRAN-DESC"), PicClause.TRAN_DESC_WIDTH)
+                            .length() == PicClause.TRAN_DESC_WIDTH);
+            case "tran_amt_source_field" -> onlineFieldInto("TRAN-AMT");
+            case "tran_amt_narrows_from_balance_picture" ->
+                    paymentYesOrNo(PicClause.TRAN_AMT_PRECISION < PicClause.ACCT_CURR_BAL_PRECISION);
+            case "tran_card_num_source_field" -> onlineFieldInto("TRAN-CARD-NUM");
+            case "tran_merchant_id" -> paddedCode(onlineLiteralInto("TRAN-MERCHANT-ID"),
+                    PicClause.TRAN_MERCHANT_ID_WIDTH);
+            case "tran_merchant_name_literal" -> onlineLiteralInto("TRAN-MERCHANT-NAME");
+            case "tran_merchant_city_literal" -> onlineLiteralInto("TRAN-MERCHANT-CITY");
+            case "tran_merchant_zip_literal" -> onlineLiteralInto("TRAN-MERCHANT-ZIP");
+            case "one_timestamp_into_both_ts_fields" ->
+                    paymentYesOrNo(oneTimestampReachesBothFields());
+            case "write_precedes_balance_update" -> paymentYesOrNo(writePrecedesTheSubtraction());
+            default -> throw new IllegalStateException(
+                    EXPECTED_PAYMENT_FILE + " names unresolved shape field " + field);
+        };
+    }
+
+    /** Resolves one {@code DIVERGENCE} expectation between the online and batch paths. */
+    private static String divergenceValue(String field) {
+        return switch (field) {
+            case "online_path_updates_current_balance" -> paymentYesOrNo(CobolSourceEvidence
+                    .containsStatement(ONLINE_PROGRAM, "COMPUTE ACCT-CURR-BAL = ACCT-CURR-BAL - TRAN-AMT"));
+            case "online_path_updates_cycle_credit" -> paymentYesOrNo(
+                    CobolSourceEvidence.occurrences(ONLINE_PROGRAM, CYCLE_CREDIT_FIELD) > 0L);
+            case "online_path_updates_cycle_debit" -> paymentYesOrNo(
+                    CobolSourceEvidence.occurrences(ONLINE_PROGRAM, CYCLE_DEBIT_FIELD) > 0L);
+            case "cyc_credit_occurrences_in_program" ->
+                    Long.toString(CobolSourceEvidence.occurrences(ONLINE_PROGRAM,
+                            CYCLE_CREDIT_FIELD));
+            case "cyc_debit_occurrences_in_program" ->
+                    Long.toString(CobolSourceEvidence.occurrences(ONLINE_PROGRAM,
+                            CYCLE_DEBIT_FIELD));
+            case "batch_path_updates_current_balance" -> paymentYesOrNo(CobolSourceEvidence
+                    .containsStatement(POSTING_PROGRAM, "ADD DALYTRAN-AMT TO ACCT-CURR-BAL"));
+            case "batch_path_updates_one_accumulator_on_sign" -> paymentYesOrNo(CobolSourceEvidence
+                    .containsStatement(POSTING_PROGRAM, "IF DALYTRAN-AMT >= 0"));
+            case "batch_positive_amount_target" -> batchAccumulatorTarget(FIRST_ACCUMULATOR);
+            case "batch_negative_amount_target" -> batchAccumulatorTarget(SECOND_ACCUMULATOR);
+            case "online_path_uses_subtraction" -> paymentYesOrNo(
+                    CobolSourceEvidence.containsStatement(ONLINE_PROGRAM, "ACCT-CURR-BAL - TRAN-AMT"));
+            case "batch_path_uses_addition" -> paymentYesOrNo(
+                    CobolSourceEvidence.containsStatement(POSTING_PROGRAM, "ADD DALYTRAN-AMT TO"));
+            case "online_path_writes_no_category_balance" -> paymentYesOrNo(
+                    CobolSourceEvidence.occurrences(ONLINE_PROGRAM, CATEGORY_BALANCE_FIELD) == 0L);
+            case "batch_path_writes_category_balance" -> paymentYesOrNo(
+                    CobolSourceEvidence.occurrences(POSTING_PROGRAM, CATEGORY_BALANCE_FIELD) > 0L);
+            default -> throw new IllegalStateException(
+                    EXPECTED_PAYMENT_FILE + " names unresolved divergence field " + field);
+        };
+    }
+
+    /** Resolves one {@code CONFIRM-GATE} expectation of the confirmation branch. */
+    private static String confirmationGateValue(String field) {
+        return switch (field) {
+            case "payment_requires_confirmation" -> paymentYesOrNo(
+                    CobolSourceEvidence.containsStatement(ONLINE_PROGRAM, "IF CONF-PAY-YES"));
+            case "confirm_accepts_upper_y" -> paymentYesOrNo(
+                    confirmationBranchAccepts(UPPER_CASE_YES));
+            case "confirm_accepts_lower_y" -> paymentYesOrNo(
+                    confirmationBranchAccepts(LOWER_CASE_YES));
+            case "decline_clears_screen_and_sets_error" -> paymentYesOrNo(CobolSourceEvidence
+                    .containsStatement(ONLINE_PROGRAM, "PERFORM CLEAR-CURRENT-SCREEN"));
+            case "blank_reads_account_without_paying" -> paymentYesOrNo(
+                    CobolSourceEvidence.containsStatement(ONLINE_PROGRAM, "WHEN SPACES"));
+            case "invalid_value_message" -> onlineMessageContaining(INVALID_VALUE_FRAGMENT);
+            case "unconfirmed_message" -> onlineMessageContaining(UNCONFIRMED_FRAGMENT);
+            default -> throw new IllegalStateException(
+                    EXPECTED_PAYMENT_FILE + " names unresolved gate field " + field);
+        };
+    }
+
+    /** Resolves one {@code ZERO-GUARD} expectation of the nothing-to-pay guard. */
+    private static String zeroGuardValue(String field) {
+        return switch (field) {
+            case "guard_condition" -> guardCondition();
+            case "guard_message" -> onlineMessageContaining(NOTHING_TO_PAY_FRAGMENT);
+            case "guard_rejects_zero_balance" -> paymentYesOrNo(guardRejects(BigDecimal.ZERO));
+            case "guard_rejects_negative_balance" -> paymentYesOrNo(
+                    guardRejects(BigDecimal.ONE.negate()));
+            case "guard_requires_account_id_supplied" -> paymentYesOrNo(CobolSourceEvidence
+                    .containsStatement(ONLINE_PROGRAM, "ACTIDINI OF COBIL0AI NOT = SPACES AND LOW-VALUES"));
+            case "seeded_accounts_with_zero_or_negative_balance" -> Long.toString(
+                    ACCOUNTS.stream().filter(a -> a.currentBalance().signum() <= 0).count());
+            case "guard_unreachable_on_seeded_balances" -> paymentYesOrNo(
+                    ACCOUNTS.stream().noneMatch(a -> guardRejects(a.currentBalance())));
+            case "guard_reachability_after_posting_recorded_in" ->
+                    expectedResourceOnTheClasspath(ACCOUNT_END_STATE_FILE);
+            default -> throw new IllegalStateException(
+                    EXPECTED_PAYMENT_FILE + " names unresolved guard field " + field);
+        };
+    }
+
+    /** Resolves one {@code TRAN-ID} expectation of the browse-backwards allocation. */
+    private static String allocationValue(String field) {
+        return switch (field) {
+            case "allocation_seeds_with_high_values" -> paymentYesOrNo(
+                    CobolSourceEvidence.containsStatement(ONLINE_PROGRAM, "MOVE HIGH-VALUES TO TRAN-ID"));
+            case "allocation_reads_previous_record" -> paymentYesOrNo(CobolSourceEvidence
+                    .containsStatement(ONLINE_PROGRAM, "PERFORM READPREV-TRANSACT-FILE"));
+            case "allocation_adds_one" -> paymentYesOrNo(
+                    CobolSourceEvidence.containsStatement(ONLINE_PROGRAM, "ADD 1 TO WS-TRAN-ID-NUM"));
+            case "working_counter_pic" ->
+                    CobolSourceEvidence.pictureOf(ONLINE_PROGRAM, "WS-TRAN-ID-NUM");
+            case "empty_file_yields_zero_then_one" -> paymentYesOrNo(
+                    CobolSourceEvidence.containsStatement(ONLINE_PROGRAM, "MOVE ZEROS TO TRAN-ID"));
+            case "allocation_is_read_modify_write_race" ->
+                    paymentYesOrNo(theAllocationIsARace());
+            case "target_replaces_allocation_with_database_sequence" ->
+                    paymentYesOrNo(theTargetAllocatesFromASequence());
+            default -> throw new IllegalStateException(
+                    EXPECTED_PAYMENT_FILE + " names unresolved allocation field " + field);
+        };
+    }
+
+    /** Resolves one {@code TIMESTAMP} expectation of either timestamp shape. */
+    private static String timestampValue(String field) {
+        if (field.startsWith(SEPARATOR_FIELD_PREFIX)) {
+            return Character.toString(onlineSeparatorAt(
+                    Integer.parseInt(field.substring(field.lastIndexOf('_') + 1))));
+        }
+        return switch (field) {
+            case "total_length" -> Integer.toString(ONLINE_TIMESTAMP_SHAPE.length());
+            case "year_component_pic" ->
+                    CobolSourceEvidence.pictureOf(TIMESTAMP_COPYBOOK, "WS-TIMESTAMP-DT-YYYY");
+            case "fraction_digit_count" -> Integer.toString(ONLINE_TIMESTAMP_SHAPE.length()
+                    - ONLINE_TIMESTAMP_SHAPE.indexOf(ONLINE_TIMESTAMP_FRACTION_SEPARATOR) - 1);
+            case "fraction_explicitly_zeroed" -> paymentYesOrNo(CobolSourceEvidence
+                    .containsStatement(ONLINE_PROGRAM, "MOVE ZEROS TO WS-TIMESTAMP-TM-MS6"));
+            case "rendered_shape" -> ONLINE_TIMESTAMP_SHAPE;
+            case "matches_fixture_origin_timestamp_shape" ->
+                    paymentYesOrNo(theFeedTimestampCarriesTheOnlineShape());
+            case "batch_proc_timestamp_separator_at_position_11" ->
+                    Character.toString(PicClause.PROCESSING_TIMESTAMP_SHAPE
+                            .charAt(DATE_TIME_SEPARATOR_INDEX));
+            case "batch_proc_timestamp_significant_fraction_digits" -> Integer
+                    .toString(PicClause.PROCESSING_TIMESTAMP_SIGNIFICANT_FRACTION_DIGITS);
+            case "batch_proc_timestamp_trailing_literal_zeros" ->
+                    Integer.toString(PicClause.PROCESSING_TIMESTAMP_TRAILING_ZERO_DIGITS);
+            case "two_timestamp_shapes_must_not_be_conflated" -> paymentYesOrNo(
+                    ONLINE_TIMESTAMP_SHAPE.charAt(DATE_TIME_SEPARATOR_INDEX)
+                            != PicClause.PROCESSING_TIMESTAMP_SHAPE
+                                    .charAt(DATE_TIME_SEPARATOR_INDEX));
+            default -> throw new IllegalStateException(
+                    EXPECTED_PAYMENT_FILE + " names unresolved timestamp field " + field);
+        };
+    }
+
+    /** Resolves one {@code SUMMARY} expectation of the seeded account set. */
+    private static String paymentSummaryValue(String field) {
+        return switch (field) {
+            case "accounts_evaluated" -> Integer.toString(ACCOUNTS.size());
+            case "accounts_payable" -> Long.toString(
+                    ACCOUNTS.stream().filter(a -> a.currentBalance().signum() > 0).count());
+            case "accounts_rejected_by_guard" -> Long.toString(
+                    ACCOUNTS.stream().filter(a -> guardRejects(a.currentBalance())).count());
+            case "minimum_seeded_balance" -> extremeSeededBalance(true).toPlainString();
+            case "maximum_seeded_balance" -> extremeSeededBalance(false).toPlainString();
+            case "all_seeded_balances_are_whole_dollars" -> paymentYesOrNo(ACCOUNTS.stream()
+                    .allMatch(a -> a.currentBalance().remainder(BigDecimal.ONE).signum() == 0));
+            case "distinct_seeded_cycle_credit_values" -> Integer.toString(ACCOUNTS.stream()
+                    .map(a -> a.currentCycleCredit().toPlainString()).distinct().toList().size());
+            case "distinct_seeded_cycle_debit_values" -> Integer.toString(ACCOUNTS.stream()
+                    .map(a -> a.currentCycleDebit().toPlainString()).distinct().toList().size());
+            case "accounts_with_active_status_y" -> Long.toString(ACCOUNTS.stream()
+                    .filter(a -> ACTIVE_STATUS.equals(a.activeStatus())).count());
+            case "balance_after_payment_on_every_account" -> everyBalanceAfterPayment();
+            default -> throw new IllegalStateException(
+                    EXPECTED_PAYMENT_FILE + " names unresolved summary field " + field);
+        };
+    }
+
+    /** Resolves one {@code PROHIBITION} expectation of the online payment discipline. */
+    private static String paymentProhibitionValue(String field) {
+        return switch (field) {
+            case "no_cycle_accumulator_update_on_online_path" -> paymentYesOrNo(
+                    CobolSourceEvidence.occurrences(ONLINE_PROGRAM, CYCLE_CREDIT_FIELD) == 0L
+                            && CobolSourceEvidence
+                                    .occurrences(ONLINE_PROGRAM, CYCLE_DEBIT_FIELD) == 0L);
+            case "no_category_balance_write_on_online_path" -> paymentYesOrNo(
+                    CobolSourceEvidence.occurrences(ONLINE_PROGRAM, CATEGORY_BALANCE_FIELD) == 0L);
+            case "no_shared_posting_routine_with_batch" -> paymentYesOrNo(CobolSourceEvidence
+                    .occurrences(ONLINE_PROGRAM, "2800-UPDATE-ACCOUNT-REC") == 0L);
+            case "no_partial_payment_path_exists" -> paymentYesOrNo(
+                    ONLINE_BALANCE_FIELD.equals(onlineFieldInto("TRAN-AMT")));
+            case "no_account_status_check_before_payment" -> paymentYesOrNo(CobolSourceEvidence
+                    .occurrences(ONLINE_PROGRAM, "ACCT-ACTIVE-STATUS") == 0L);
+            case "no_rounding_on_the_subtraction" -> paymentYesOrNo(!CobolSourceEvidence
+                    .contains(ONLINE_PROGRAM, ROUNDED_PHRASE));
+            default -> throw new IllegalStateException(
+                    EXPECTED_PAYMENT_FILE + " names unresolved prohibition field " + field);
+        };
+    }
+
+    /** Answers the literal the online program moves into one transaction field. */
+    private static String onlineLiteralInto(String field) {
+        Matcher matcher = Pattern
+                .compile("MOVE '?([^'\\n]*?)'? +TO " + field + "$", Pattern.MULTILINE)
+                .matcher(String.join("\n", CobolSourceEvidence.lines(ONLINE_PROGRAM)));
+        if (!matcher.find()) {
+            throw new IllegalStateException(
+                    ONLINE_PROGRAM + " moves no literal into " + field);
+        }
+        return matcher.group(1);
+    }
+
+    /** Names the field the online program moves into one transaction field. */
+    private static String onlineFieldInto(String field) {
+        Matcher matcher = Pattern
+                .compile("MOVE ([A-Z0-9-]+) +TO " + field + "$", Pattern.MULTILINE)
+                .matcher(String.join("\n", CobolSourceEvidence.lines(ONLINE_PROGRAM)));
+        if (!matcher.find()) {
+            throw new IllegalStateException(ONLINE_PROGRAM + " moves no field into " + field);
+        }
+        return matcher.group(1);
+    }
+
+    /** Left-pads a numeric literal to the width its Picture clause declares. */
+    private static String paddedCode(String value, int width) {
+        if (value.length() > width) {
+            throw new IllegalArgumentException(value + " exceeds " + width + " digits");
+        }
+        return "0".repeat(width - value.length()) + value;
+    }
+
+    /** Right-pads an alphanumeric literal to the width its Picture clause declares. */
+    private static String spacePadded(String value, int width) {
+        if (value.length() > width) {
+            throw new IllegalArgumentException(value + " exceeds " + width + " bytes");
+        }
+        return value + " ".repeat(width - value.length());
+    }
+
+    /**
+     * Reports whether one timestamp move reaches both timestamp fields.
+     *
+     * <p>The statement is written across two source lines, with the second receiving field on a
+     * continuation line of its own, so the pairing is checked as adjacent lines rather than as one
+     * normalised line.</p>
+     *
+     * @return {@code true} when the move names the origin field and the next line names the
+     *         processing field
+     */
+    private static boolean oneTimestampReachesBothFields() {
+        List<String> lines = CobolSourceEvidence.lines(ONLINE_PROGRAM);
+        int move = lines.indexOf("MOVE WS-TIMESTAMP TO TRAN-ORIG-TS");
+        return move >= 0 && move + 1 < lines.size() && "TRAN-PROC-TS".equals(lines.get(move + 1));
+    }
+
+    /** Reports whether the write really precedes the subtraction in source order. */
+    private static boolean writePrecedesTheSubtraction() {
+        List<String> lines = CobolSourceEvidence.lines(ONLINE_PROGRAM);
+        int write = lines.indexOf("PERFORM WRITE-TRANSACT-FILE");
+        int subtract = lines.indexOf("COMPUTE ACCT-CURR-BAL = ACCT-CURR-BAL - TRAN-AMT");
+        if (write < 0 || subtract < 0) {
+            throw new IllegalStateException(
+                    ONLINE_PROGRAM + " carries no write-then-subtract pairing");
+        }
+        return write < subtract;
+    }
+
+    /** Names the accumulator the batch program adds a signed amount into, in source order. */
+    private static String batchAccumulatorTarget(int ordinal) {
+        List<String> targets = new ArrayList<>();
+        Pattern add = Pattern.compile("ADD DALYTRAN-AMT TO (ACCT-CURR-CYC-[A-Z]+)");
+        for (String line : CobolSourceEvidence.lines(POSTING_PROGRAM)) {
+            Matcher matcher = add.matcher(line);
+            if (matcher.find()) {
+                targets.add(matcher.group(1));
+            }
+        }
+        if (targets.size() < ordinal) {
+            throw new IllegalStateException(POSTING_PROGRAM + " adds the amount into only "
+                    + targets.size() + " accumulators");
+        }
+        return targets.get(ordinal - 1);
+    }
+
+    /** Reports whether the confirmation branch accepts one literal. */
+    private static boolean confirmationBranchAccepts(String literal) {
+        return CobolSourceEvidence.containsStatement(ONLINE_PROGRAM, "WHEN '" + literal + "'");
+    }
+
+    /** Answers the online program's message literal containing one fragment. */
+    private static String onlineMessageContaining(String fragment) {
+        for (String line : CobolSourceEvidence.lines(ONLINE_PROGRAM)) {
+            Matcher matcher = Pattern.compile("MOVE '([^']*" + Pattern.quote(fragment)
+                    + "[^']*)'").matcher(line);
+            if (matcher.find()) {
+                return matcher.group(1);
+            }
+        }
+        throw new IllegalStateException(
+                ONLINE_PROGRAM + " carries no message containing " + fragment);
+    }
+
+    /** Answers the nothing-to-pay guard condition as the program writes it. */
+    private static String guardCondition() {
+        Matcher matcher = Pattern.compile("IF (ACCT-CURR-BAL <= ZEROS) AND")
+                .matcher(String.join("\n", CobolSourceEvidence.lines(ONLINE_PROGRAM)));
+        if (!matcher.find()) {
+            throw new IllegalStateException(ONLINE_PROGRAM + " carries no nothing-to-pay guard");
+        }
+        return matcher.group(1);
+    }
+
+    /** Applies the nothing-to-pay guard of {@code app/cbl/COBIL00C.cbl:L198} to one balance. */
+    private static boolean guardRejects(BigDecimal balance) {
+        return balance.signum() <= 0;
+    }
+
+    /**
+     * Reports whether the allocation is a read-modify-write race.
+     *
+     * <p>Three separate statements make it one: the browse is seeded with the highest key, the
+     * previous record is read, and one is added to what came back. None of the three browse
+     * paragraphs carries update intent and the program issues no enqueue, so two terminals reading
+     * the same highest identifier both allocate the same successor. The account read elsewhere in
+     * the program does carry update intent, which is why the check is confined to the browse.</p>
+     *
+     * @return {@code true} when all three statements are present and nothing serialises them
+     */
+    private static boolean theAllocationIsARace() {
+        boolean seeds = CobolSourceEvidence
+                .containsStatement(ONLINE_PROGRAM, "MOVE HIGH-VALUES TO TRAN-ID");
+        boolean readsPrevious = CobolSourceEvidence
+                .containsStatement(ONLINE_PROGRAM, "PERFORM READPREV-TRANSACT-FILE");
+        boolean increments = CobolSourceEvidence
+                .containsStatement(ONLINE_PROGRAM, "ADD 1 TO WS-TRAN-ID-NUM");
+        boolean browseHoldsUpdateIntent = ALLOCATION_BROWSE_PARAGRAPHS.stream()
+                .anyMatch(label -> CobolSourceEvidence
+                        .paragraphContains(ONLINE_PROGRAM, label, UPDATE_INTENT));
+        boolean enqueued = CobolSourceEvidence.containsStatement(ONLINE_PROGRAM, ENQUEUE_COMMAND);
+        return seeds && readsPrevious && increments && !browseHoldsUpdateIntent && !enqueued;
+    }
+
+    /** Reports whether the migrated allocation really draws from a database sequence. */
+    private static boolean theTargetAllocatesFromASequence() {
+        Path source = repositoryRoot().resolve(TRANSACTION_IDENTIFIER_SOURCE);
+        try {
+            return Files.readString(source, StandardCharsets.UTF_8)
+                    .toLowerCase(Locale.ROOT)
+                    .contains(SEQUENCE_FUNCTION.toLowerCase(Locale.ROOT));
+        } catch (IOException unreadable) {
+            throw new UncheckedIOException("cannot read " + source, unreadable);
+        }
+    }
+
+    /** Answers the separator the online timestamp shape carries at one one-based position. */
+    private static char onlineSeparatorAt(int position) {
+        return ONLINE_TIMESTAMP_SHAPE.charAt(position - 1);
+    }
+
+    /** Reports whether the feed's origin timestamp carries the online shape's separators. */
+    private static boolean theFeedTimestampCarriesTheOnlineShape() {
+        String moment = FEED_RECORD.originTimestamp();
+        if (moment.length() < ONLINE_TIMESTAMP_SHAPE.length()) {
+            return false;
+        }
+        for (int index = 0; index < ONLINE_TIMESTAMP_SHAPE.length(); index++) {
+            char shape = ONLINE_TIMESTAMP_SHAPE.charAt(index);
+            if (Character.isLetterOrDigit(shape)) {
+                continue;
+            }
+            if (moment.charAt(index) != shape) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** Answers the smallest or largest seeded balance. */
+    private static BigDecimal extremeSeededBalance(boolean smallest) {
+        Comparator<BigDecimal> order = Comparator.naturalOrder();
+        return ACCOUNTS.stream()
+                .map(CopybookRecordParser.AccountRecord::currentBalance)
+                .reduce((left, right) -> (smallest ? order.compare(left, right) <= 0
+                        : order.compare(left, right) >= 0) ? left : right)
+                .orElseThrow(() -> new IllegalStateException("the fixture carries no account"));
+    }
+
+    /** Answers the balance every account holds after its payment, refusing any disagreement. */
+    private static String everyBalanceAfterPayment() {
+        String only = null;
+        for (CopybookRecordParser.AccountRecord account : ACCOUNTS) {
+            String after = CobolDecimal.subtract(account.currentBalance(),
+                    account.currentBalance(), PicClause.ACCT_CURR_BAL_SCALE).toPlainString();
+            if (only == null) {
+                only = after;
+            } else if (!only.equals(after)) {
+                throw new IllegalStateException("account " + account.accountId()
+                        + " closes at " + after + " while an earlier one closed at " + only);
+            }
+        }
+        return only;
+    }
+
+    /** Answers the card number the cross-reference gives one account. */
+    private static String cardNumberOf(String accountId) {
+        for (CopybookRecordParser.CardCrossReferenceRecord crossReference
+                : CardDemoFixtureLoader.loadCardCrossReferences()) {
+            if (crossReference.accountId().equals(accountId)) {
+                return crossReference.cardNumber();
+            }
+        }
+        throw new IllegalStateException(
+                "app/data/ASCII/cardxref.txt names no card for account " + accountId);
+    }
+
+    /** Answers one expected resource's name, having confirmed it is really on the classpath. */
+    private static String expectedResourceOnTheClasspath(String fileName) {
+        if (BillPaymentEquivalenceTest.class
+                .getResource(ExpectedOutcomes.RESOURCE_DIRECTORY + fileName) == null) {
+            throw new IllegalStateException(fileName + " is not on the test classpath");
+        }
+        return fileName;
+    }
+
+    /** Writes a boolean the way {@link #EXPECTED_PAYMENT_FILE} writes one. */
+    private static String paymentYesOrNo(boolean value) {
+        return value ? ExpectedOutcomes.YES : ExpectedOutcomes.NO;
+    }
+
+    /** Resolves the repository root from the fixture directory the loader reports. */
+    private static Path repositoryRoot() {
+        return CardDemoFixtureLoader.fixtureDirectory().getParent().getParent().getParent();
     }
 }

@@ -129,6 +129,37 @@ spring:
 
 # Platform properties the three listeners and the dead-letter route read
 carddemo:
+  # Request surface bounds. This service answers reads alone, so it declares no body
+  # ceiling; the two settings below bound who may reach a state-changing route and how fast
+  # any route may be reached.
+  api:
+    # Cross-site protection. config/CrossSiteRequestFilter refuses a state-changing request
+    # that declares a foreign Sec-Fetch-Site, names an Origin other than this service, or
+    # carries no value under the header below. An HTML form cannot set a header at all, and a
+    # cross-origin script call that set one would need a preflight no chain here grants, so the
+    # header is what separates a first-party client from a page replaying a cached credential.
+    # The name is not a secret. Change it only together with every client that sets it.
+    cross-site:
+      required-header: ${API_CROSS_SITE_HEADER:X-CardDemo-Request}
+    # Request-rate ceilings. config/RequestRateCeilingFilter runs ahead of the security chain
+    # and refuses with 429 plus Retry-After. Every ceiling is counted over one fixed window.
+    #
+    # requests-per-window applies twice, once keyed by source address and once by the identity
+    # the credential names, so one credential spread across many addresses is bounded too.
+    # write-requests-per-window is the stricter ceiling on POST, PUT, PATCH and DELETE.
+    # authentication-failures-per-window is the credential-guessing control: past it a source
+    # is refused for the rest of the window, and only a request that carried a credential and
+    # was answered 401 counts. concurrent-requests bounds requests in flight.
+    #
+    # The counters live in one process, so several replicas bound each replica rather than the
+    # service as a whole. card-platform/docs/suggested-next-tasks.md records the shared-store
+    # ceiling a deployment beyond a demo wants.
+    rate-limit:
+      window-seconds: ${API_RATE_WINDOW_SECONDS:60}
+      requests-per-window: ${API_RATE_REQUESTS_PER_WINDOW:600}
+      write-requests-per-window: ${API_RATE_WRITE_REQUESTS_PER_WINDOW:120}
+      authentication-failures-per-window: ${API_RATE_AUTHENTICATION_FAILURES_PER_WINDOW:20}
+      concurrent-requests: ${API_RATE_CONCURRENT_REQUESTS:64}
   kafka:
 
     # One group per listener. Two listeners sharing one group would split the
@@ -169,13 +200,29 @@ carddemo:
   # through the purge method on the repository, and ix_processed_event_processed_at serves
   # that delete. This service publishes nothing, so it declares no outbox.
   processed-event:
-    marker-retention-hours: ${PROCESSED_EVENT_RETENTION_HOURS:168}
+    # A marker has to outlast every window the record itself can come back through,
+    # and broker log retention is the shortest of those and the only one this
+    # platform configures. The two were equal, which left no room for segment
+    # cleanup lag, a restored backup, or a manually replayed window: a record still
+    # readable after its marker was swept is applied a second time. config/*Properties
+    # refuses a marker horizon under twice the broker figure at start-up, so the
+    # relationship is checked rather than remembered.
+    marker-retention-hours: ${PROCESSED_EVENT_RETENTION_HOURS:720}
+    # The broker retention this service is told to assume, which
+    # KAFKA_LOG_RETENTION_HOURS sets for the broker and for every service at once.
+    broker-retention-hours: ${KAFKA_LOG_RETENTION_HOURS:168}
 
   # Read-model retention. statement_transaction and notification_log both grow by one row
   # per consumed event, so each needs a horizon of its own, and domain/RetentionSweep
   # applies both. A statement row backs the history endpoint, so it outlives an alert by a
   # wide margin. ix_statement_transaction_processing_timestamp and
-  # ix_notification_log_attempted_at serve the two deletes.
+  # ix_notification_log_rendered_at serve the two deletes.
+  #
+  # log-retention-days bounds notification_log, which holds one row per alert this service
+  # RENDERED and did not send. Nothing here reaches a mail, message, webhook or push
+  # gateway, so no row is evidence that a cardholder was told anything: every row carries
+  # outcome=RENDERED_NOT_SENT and db/migration/V5__rendered_not_delivered.sql permits no
+  # other value.
 
   # sweep-interval-ms is how often that sweep runs. Once an hour is far more often than a
   # horizon measured in days needs, and often enough that a demo left running does not
@@ -185,14 +232,10 @@ carddemo:
     log-retention-days: ${NOTIFICATION_LOG_RETENTION_DAYS:90}
     sweep-interval-ms: ${RETENTION_SWEEP_INTERVAL_MS:3600000}
 
-    # Paging for GET /notifications/{cardToken}. api/NotificationHistoryController reads
-    # both values through config/NotificationProperties. default-page-size applies when a
-    # caller names no pageSize, and maximum-page-size caps what a caller may ask for. Both
-    # reach the database as a LIMIT. The maximum matches MAXIMUM_STATEMENT_ROWS on
-    # NotificationRenderer, so a rendered alert carries no more rows than one page of
-    # history returns.
-    default-page-size: ${NOTIFICATION_HISTORY_PAGE_SIZE:50}
-    maximum-page-size: ${NOTIFICATION_HISTORY_MAX_PAGE_SIZE:200}
+    # No page size is configured. GET /notifications/{cardNumber} returns every row of one
+    # card, matching app/cbl/CBSTM03A.CBL:L429, which totals every row of one card between
+    # two key breaks. MAXIMUM_STATEMENT_ROWS on NotificationRenderer bounds one rendered
+    # alert and is a constant of that class rather than a property here.
 
   consumer:
 
@@ -310,4 +353,8 @@ logging:
       console: logstash
   level:
     root: "${LOGGING_LEVEL_ROOT:${LOG_LEVEL:INFO}}"
-    com.carddemo: "${LOGGING_LEVEL_COM_CARDDEMO:${LOG_LEVEL_CARDDEMO:DEBUG}}"
+    # INFO rather than DEBUG. A DEBUG default writes identifiers into every
+    # centralized log this deployment feeds, and a default is what an operator gets
+    # who starts this service directly rather than through compose or Kubernetes.
+    # Raise it for one run when tracing a message, and lower it again afterwards.
+    com.carddemo: "${LOGGING_LEVEL_COM_CARDDEMO:${LOG_LEVEL_CARDDEMO:INFO}}"

@@ -60,8 +60,8 @@ import org.junit.jupiter.api.Test;
  * them as camel-case names that no migration declares.</p>
  *
  * <p>One registry is built per service rather than one for the platform. Five services each map a
- * table named {@code outbox_event} and five map one named {@code processed_event}, so a single
- * registry would fold five different tables of either repeated name into one and compare none
+ * table named {@code outbox_event} and six map one named {@code processed_event}, so a single
+ * registry would fold the repeated names into one table apiece and compare none of them
  * correctly.</p>
  *
  * <p>Comparisons run against the SQL type Hibernate renders for the column, which carries the type
@@ -102,13 +102,41 @@ class EntitySchemaMappingContractTest {
      * account dataset directly at {@code app/cbl/CBTRN02C.cbl:L545}, so it has no copy and needs no
      * such column.</p>
      *
-     * <p>The last two sit on the account service's outbox row and have no source field either. A row
-     * the relay gives up on owes one terminal diagnostic, and that obligation has to outlive a broker
-     * outage, so it is a column rather than one unawaited send. The source answers a write it cannot
-     * complete by ending the address space at {@code app/cbl/CBTRN02C.cbl:L707-L711}, which leaves
-     * the operator a job log and nothing to record.</p>
+     * <p>Six sit on an outbox row and have no source field either, two each on the account, the
+     * authorization and the fraud service's. A row the relay gives up on owes one terminal diagnostic,
+     * and that obligation has to outlive a broker outage, so it is a column rather than one unawaited
+     * send. The source answers a write it cannot complete by ending the address space at
+     * {@code app/cbl/CBTRN02C.cbl:L707-L711}, which leaves the operator a job log and nothing to
+     * record. The fraud pair matters most of the three: that service is ADDITIVE, so a lost
+     * assessment has no batch job to re-run and no reject dataset holding what was missed.</p>
+     *
+     * <p>Three sit on the authorization service's account projection and have no source field
+     * either, because the source needed none: {@code app/cbl/CBTRN02C.cbl} rewrote the account at
+     * {@code :L545-L560} before it validated the next record, so the credit-limit test at
+     * {@code :L403-L405} always read every earlier approval. Here the account service owns those
+     * accumulators, so an approval reserves its own exposure in two of the three columns and the third
+     * bounds how long the reservation counts.</p>
+     *
+     * <p>The last one sits on the authorization decision row and carries the processing moment the
+     * caller declared. {@code app/cbl/COTRN02C.cbl:L470} moves {@code TPROCDTI} into
+     * {@code TRAN-PROC-TS} on the record it captures, and this column is where the synchronous path
+     * records the same value.</p>
+     *
+     * <p>One column left this count deliberately. The account service replaced its card-keyed
+     * {@code card_xref} replica with {@code account_customer_link}, which holds the account and
+     * customer pair of {@code app/cpy/CVACT03Y.cpy:L6-L7} and drops {@code XREF-CARD-NUM} at
+     * {@code :L5}: no query in that service reads a card, so the column stored a Primary Account
+     * Number with no reader. The two services that do key on a card still map it in full.</p>
+     *
+     * <p>Five more left it for one reason. The ledger's reject row stores
+     * {@code REJECT-TRAN-DATA PIC X(350)} whole rather than field by field, so the twelve fields
+     * {@code app/cbl/CBTRN02C.cbl:L446-L465} copies onto the reject record reach one column instead
+     * of one column each, beside the transaction identifier, the four-digit reason code, its
+     * seventy-six-character text and the moment. That is what the source writes: a four-hundred-and
+     * -thirty-byte record of the daily-transaction block followed by an eighty-byte trailer, and a
+     * block re-parsed on demand cannot disagree with the bytes the reject dataset held.</p>
      */
-    private static final int MAPPED_COLUMN_COUNT = 252;
+    private static final int MAPPED_COLUMN_COUNT = 255;
 
     /** Dialect the mapping model renders SQL types for, matching the shipped database. */
     private static final String POSTGRES_DIALECT = "org.hibernate.dialect.PostgreSQLDialect";
@@ -163,6 +191,38 @@ class EntitySchemaMappingContractTest {
                     + "(?:\\s*\\([^)]*\\))?(?:\\s+WITH(?:OUT)?\\s+TIME\\s+ZONE)?)",
             Pattern.CASE_INSENSITIVE);
 
+    /**
+     * Matches one later migration renaming a column, capturing the table, the old name and the new.
+     *
+     * <p>A rename changes the schema a service validates against as completely as a create does:
+     * the old name is gone and an entity mapping it would stop start-up. Reading the rename here is
+     * what keeps this comparison measuring the schema Flyway leaves behind rather than the one the
+     * first migration built. The notification service is the live case: {@code
+     * V5__rendered_not_delivered.sql} renames {@code attempted_at} to {@code rendered_at}, because
+     * nothing on this platform sends a cardholder alert and the old name claimed one.
+     *
+     * <p>The rename pass runs before the passes that alter a type, alter a nullability or add a
+     * column, so a migration that renames a column and then alters it names the new column in that
+     * later statement, which is the natural authoring order. A migration that altered a column and
+     * then renamed it would have to name the old column in the alter, and this parser would not
+     * find it; no migration in this repository does that, and the pass reports the mismatch by name
+     * rather than failing silently.
+     */
+    private static final Pattern ALTER_RENAME_COLUMN = Pattern.compile(
+            "ALTER\\s+TABLE\\s+(\\w+)\\s+RENAME\\s+COLUMN\\s+(\\w+)\\s+TO\\s+(\\w+)",
+            Pattern.CASE_INSENSITIVE);
+
+    /**
+     * Matches one later migration renaming an index, capturing the old name and the new.
+     *
+     * <p>PostgreSQL indexes a column by number, so renaming a column leaves an index definition
+     * correct and only its name stale. Renaming the index is therefore the companion of renaming
+     * the column, and the schema carries the new name.
+     */
+    private static final Pattern ALTER_RENAME_INDEX = Pattern.compile(
+            "ALTER\\s+INDEX\\s+(?:IF\\s+EXISTS\\s+)?(\\w+)\\s+RENAME\\s+TO\\s+(\\w+)",
+            Pattern.CASE_INSENSITIVE);
+
     /** Matches one later migration adding a column to an existing table. */
     private static final Pattern ALTER_ADD_COLUMN = Pattern.compile(
             "ALTER\\s+TABLE\\s+(\\w+)\\s+ADD\\s+COLUMN\\s+(\\w+)\\s+([^;]+);",
@@ -194,6 +254,20 @@ class EntitySchemaMappingContractTest {
     private static final Pattern ALTER_ADD_PRIMARY_KEY = Pattern.compile(
             "ALTER\\s+TABLE\\s+(\\w+)\\s+ADD\\s+CONSTRAINT\\s+\\w+\\s+"
                     + "PRIMARY\\s+KEY\\s*\\(([^)]*)\\)",
+            Pattern.CASE_INSENSITIVE);
+
+    /**
+     * Matches one {@code DROP TABLE} statement and captures the table it removes.
+     *
+     * <p>A migration that has been applied is not edited, so a table a later migration drops is
+     * still created, indexed and seeded by the migration that introduced it. The schema a service
+     * validates against is the one Flyway leaves behind, which no longer holds that table, and a
+     * comparison that read only the creates would demand an entity for a table the database does
+     * not have. The account service is the live case: {@code V4} creates its {@code card_xref}
+     * replica and {@code V7} drops it, having replaced it with {@code account_customer_link}.
+     */
+    private static final Pattern DROP_TABLE = Pattern.compile(
+            "DROP\\s+TABLE\\s+(?:IF\\s+EXISTS\\s+)?(\\w+)",
             Pattern.CASE_INSENSITIVE);
 
     /** Matches one {@code CREATE INDEX} statement, the name and the {@code ON} clause included. */
@@ -354,8 +428,8 @@ class EntitySchemaMappingContractTest {
                     com.carddemo.notification.entity.ProcessedEventEntity.class,
                     com.carddemo.notification.entity.StatementTransactionEntity.class)),
             new ServiceModule("account-service", "account", List.of(
+                    com.carddemo.account.entity.AccountCustomerLinkEntity.class,
                     com.carddemo.account.entity.AccountEntity.class,
-                    com.carddemo.account.entity.CardCrossReferenceEntity.class,
                     com.carddemo.account.entity.CustomerEntity.class,
                     com.carddemo.account.entity.DisclosureGroupEntity.class,
                     com.carddemo.account.entity.OutboxEventEntity.class,
@@ -415,14 +489,16 @@ class EntitySchemaMappingContractTest {
         Map<String, String> classified = new LinkedHashMap<>();
         classified.put("notification-service.ix_notification_log_card_token",
                 "NotificationLogEntity declares no index. Its specification states the class "
-                        + "carries none, and this index orders attempted_at descending, which "
+                        + "carries none, and this index orders rendered_at descending, which "
                         + "Hibernate drops from a declared column list, so a declaration would "
-                        + "read [card_token, attempted_at] against migration columns "
-                        + "[card_token, attempted_at DESC] and fail "
+                        + "read [card_token, rendered_at] against migration columns "
+                        + "[card_token, rendered_at DESC] and fail "
                         + "everyDeclaredIndexIsCreatedByItsMigration");
-        classified.put("notification-service.ix_notification_log_attempted_at",
+        classified.put("notification-service.ix_notification_log_rendered_at",
                 "NotificationLogEntity declares no index, on the same footing as "
-                        + "ix_notification_log_card_token");
+                        + "ix_notification_log_card_token. V5__rendered_not_delivered.sql renamed "
+                        + "it from ix_notification_log_attempted_at, because nothing on this "
+                        + "platform sends a cardholder alert and the old name claimed one");
         return Map.copyOf(classified);
     }
 
@@ -518,6 +594,7 @@ class EntitySchemaMappingContractTest {
     private static MigrationSchema parseMigration(String migration, Path path) {
         String statements = SQL_LINE_COMMENT.matcher(migration).replaceAll("");
         Map<String, DdlTable> tables = new LinkedHashMap<>();
+        Map<String, Integer> tableCreatedAt = new LinkedHashMap<>();
         Matcher table = CREATE_TABLE.matcher(statements);
         while (table.find()) {
             String name = table.group(1);
@@ -525,12 +602,56 @@ class EntitySchemaMappingContractTest {
             if (tables.put(name, parsed) != null) {
                 throw new IllegalStateException(path + " creates the table " + name + " twice");
             }
+            tableCreatedAt.put(name, table.start());
         }
         List<DdlIndex> indexes = new ArrayList<>();
         Matcher index = CREATE_INDEX.matcher(statements);
         while (index.find()) {
             indexes.add(new DdlIndex(index.group(2), index.group(3), index.group(1) != null,
                     indexColumns(index.group(4))));
+        }
+        Matcher renamedColumn = ALTER_RENAME_COLUMN.matcher(statements);
+        while (renamedColumn.find()) {
+            String tableName = renamedColumn.group(1);
+            String before = renamedColumn.group(2);
+            String after = renamedColumn.group(3);
+            DdlTable renamed = tables.get(tableName);
+            if (renamed == null) {
+                throw new IllegalStateException(path + " renames the column " + before
+                        + " of the table " + tableName + ", which no migration creates");
+            }
+            DdlColumn column = renamed.columns().get(before);
+            if (column == null) {
+                if (renamed.columns().containsKey(after)) {
+                    continue;
+                }
+                throw new IllegalStateException(path + " renames the column " + before
+                        + ", which the table " + tableName + " does not declare");
+            }
+            Map<String, DdlColumn> renamedColumns = new LinkedHashMap<>();
+            renamed.columns().forEach((name, existing) -> renamedColumns.put(
+                    name.equals(before) ? after : name,
+                    name.equals(before)
+                            ? new DdlColumn(after, existing.type(), existing.nullable())
+                            : existing));
+            List<String> key = renamed.primaryKey().stream()
+                    .map(part -> part.equals(before) ? after : part)
+                    .toList();
+            tables.put(tableName, new DdlTable(tableName, Map.copyOf(renamedColumns), key));
+            indexes.replaceAll(existing -> existing.table().equals(tableName)
+                    ? new DdlIndex(existing.name(), existing.table(), existing.unique(),
+                            existing.columns().stream()
+                                    .map(part -> part.equals(before) ? after : part)
+                                    .toList())
+                    : existing);
+        }
+        Matcher renamedIndex = ALTER_RENAME_INDEX.matcher(statements);
+        while (renamedIndex.find()) {
+            String before = renamedIndex.group(1);
+            String after = renamedIndex.group(2);
+            indexes.replaceAll(existing -> existing.name().equals(before)
+                    ? new DdlIndex(after, existing.table(), existing.unique(), existing.columns())
+                    : existing);
         }
         Matcher alteredColumn = ALTER_COLUMN_TYPE.matcher(statements);
         while (alteredColumn.find()) {
@@ -620,6 +741,24 @@ class EntitySchemaMappingContractTest {
         Matcher sequence = CREATE_SEQUENCE.matcher(statements);
         while (sequence.find()) {
             sequences.add(sequence.group(1));
+        }
+        // A dropped table leaves the schema, and its indexes leave with it. The drop is applied
+        // last and only when it stands after the create it removes, so a name created again
+        // afterwards stays. Every other statement kind above is applied in its own pass for the
+        // same reason: the migrations are read as one joined text in version order.
+        Matcher drop = DROP_TABLE.matcher(statements);
+        while (drop.find()) {
+            String name = drop.group(1);
+            Integer created = tableCreatedAt.get(name);
+            if (created == null) {
+                throw new IllegalStateException(path + " drops the table " + name
+                        + ", which no migration creates");
+            }
+            if (created > drop.start()) {
+                continue;
+            }
+            tables.remove(name);
+            indexes.removeIf(onDroppedTable -> onDroppedTable.table().equals(name));
         }
         return new MigrationSchema(Map.copyOf(tables), List.copyOf(indexes),
                 List.copyOf(sequences));
@@ -1460,6 +1599,68 @@ class EntitySchemaMappingContractTest {
         }
 
         /**
+         * The parser reads a later migration that renames a column and its index.
+         *
+         * <p>A rename leaves nothing of the old name in the schema, so a comparison that missed it
+         * would report the entity's new field as mapping a column no migration declares and the
+         * migration's old column as mapped by nothing, which is exactly the pair of failures the
+         * notification rename produced before this pass existed. The key and the index column list
+         * follow the rename, because both name the column rather than copy it.
+         */
+        @Test
+        @DisplayName("the parser applies a later RENAME COLUMN and ALTER INDEX RENAME TO")
+        void theParserAppliesALaterRename() {
+            MigrationSchema parsed = parseMigration("""
+                    CREATE TABLE probe (
+                        a VARCHAR(3) NOT NULL,
+                        stamped TIMESTAMP(6) WITH TIME ZONE NOT NULL,
+                        CONSTRAINT pk_probe PRIMARY KEY (a)
+                    );
+                    CREATE INDEX ix_probe_stamped ON probe (stamped);
+                    ALTER TABLE probe RENAME COLUMN stamped TO produced;
+                    ALTER INDEX ix_probe_stamped RENAME TO ix_probe_produced;
+                    """, Path.of("probe.sql"));
+
+            DdlTable probe = parsed.tables().get("probe");
+            assertTrue(probe.columns().containsKey("produced"),
+                    "the renamed column is read under its new name");
+            assertFalse(probe.columns().containsKey("stamped"),
+                    "the old column name leaves the schema with the rename");
+            assertEquals("TIMESTAMP(6) WITH TIME ZONE", probe.columns().get("produced").type(),
+                    "a rename changes the name and nothing else");
+            assertFalse(probe.columns().get("produced").nullable(),
+                    "a rename leaves the nullability alone");
+            assertEquals(List.of("ix_probe_produced"),
+                    parsed.indexes().stream().map(DdlIndex::name).toList(),
+                    "the index is read under its new name");
+            assertEquals(List.of("produced"), parsed.indexes().get(0).columns(),
+                    "the index column list follows the column rename");
+        }
+
+        /**
+         * A rename already applied is read as applied rather than as an error.
+         *
+         * <p>The rename pass runs over the joined migration text, so a schema whose column already
+         * carries the new name has nothing left to do. Reporting that as a missing column would
+         * fail a service whose migrations are correct.
+         */
+        @Test
+        @DisplayName("the parser tolerates a rename whose target name is already in place")
+        void theParserToleratesAnAlreadyAppliedRename() {
+            MigrationSchema parsed = parseMigration("""
+                    CREATE TABLE probe (
+                        produced TIMESTAMP(6) WITH TIME ZONE NOT NULL,
+                        CONSTRAINT pk_probe PRIMARY KEY (produced)
+                    );
+                    ALTER TABLE probe RENAME COLUMN stamped TO produced;
+                    """, Path.of("probe.sql"));
+
+            assertEquals(List.of("produced"),
+                    List.copyOf(parsed.tables().get("probe").columns().keySet()),
+                    "the column stays under the name it already carries");
+        }
+
+        /**
          * The parser reads a later migration that makes a mandatory column optional again.
          *
          * <p>The reverse statement is read for the same reason the forward one is: a model that
@@ -1481,6 +1682,38 @@ class EntitySchemaMappingContractTest {
                     "a column a later migration made optional is read as optional");
             assertEquals(List.of("a"), parsed.tables().get("probe").primaryKey(),
                     "the key is untouched");
+        }
+
+        /**
+         * A table a later migration drops leaves the schema, and its indexes leave with it.
+         *
+         * <p>Without this, the comparison would read the schema as the union of every table any
+         * migration ever created and demand an entity for one the database no longer holds.</p>
+         */
+        @Test
+        @DisplayName("the parser removes a table a later migration drops")
+        void theParserRemovesADroppedTable() {
+            MigrationSchema parsed = parseMigration("""
+                    CREATE TABLE kept (
+                        a VARCHAR(3) NOT NULL,
+                        CONSTRAINT pk_kept PRIMARY KEY (a)
+                    );
+                    CREATE TABLE removed (
+                        b VARCHAR(4) NOT NULL,
+                        CONSTRAINT pk_removed PRIMARY KEY (b)
+                    );
+                    CREATE INDEX ix_removed_b ON removed (b);
+                    CREATE INDEX ix_kept_a ON kept (a);
+                    DROP TABLE removed;
+                    """, Path.of("probe.sql"));
+
+            assertEquals(Set.of("kept"), parsed.tables().keySet(),
+                    "the dropped table is not part of the schema the service validates against");
+            assertEquals(List.of(), parsed.indexesOf("removed"),
+                    "an index on a dropped table goes with the table");
+            assertEquals(List.of("ix_kept_a"),
+                    parsed.indexesOf("kept").stream().map(DdlIndex::name).toList(),
+                    "an index on a surviving table is untouched");
         }
 
         /** Type comparison equates the spellings the two sides use and separates the rest. */

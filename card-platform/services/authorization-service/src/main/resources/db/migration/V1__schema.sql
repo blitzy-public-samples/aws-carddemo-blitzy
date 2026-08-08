@@ -9,20 +9,18 @@
 -- at offset zero, alongside RECORDSIZE(50 50) at L44.
 -- customer_id and account_id hold fixed-width digit strings, not numbers. XREF-CUST-ID
 -- PIC 9(09) at app/cpy/CVACT03Y.cpy:L6 and XREF-ACCT-ID PIC 9(11) at :L7 are display
--- fields, and every one of the 50 records of app/data/ASCII/cardxref.txt carries its
--- full declared width with leading zeros: record one holds 000000050 and 00000000050.
--- A numeric column stores 50 for both and returns 50, so the leading zeros are gone and
--- the value no longer round-trips to the eleven characters the alternate-index key
--- occupies at KEYS(11,25) in app/jcl/XREFFILE.jcl:L74. Text keeps every character. The
--- CHECK constraints hold the width and the digit class the Picture clause declares.
+-- fields carrying their full declared width, leading zeros included. A numeric column
+-- drops those zeros, and the value then stops round-tripping to the eleven characters the
+-- alternate-index key occupies at KEYS(11,25) in app/jcl/XREFFILE.jcl:L74. The CHECK
+-- constraints hold the width and the digit class each Picture clause declares.
 -- The three freshness columns have no COBOL ancestor, because the source has no replica:
--- app/cbl/CBTRN02C.cbl:L382 reads the cross-reference dataset itself, so it cannot be stale.
--- This table is a copy, and a copy that cannot say how old it is cannot be refused when it is
--- too old. source_event_id and source_occurred_at name the state-change event that last wrote
--- the row, so an out-of-order delivery is discarded rather than applied (a delivery whose
--- source_occurred_at is not after the stored one changes nothing). observed_at is what a
--- freshness check reads. No listener writes this table today, so every row holds what
--- V2__seed.sql loaded and both source_ columns are NULL.
+-- app/cbl/CBTRN02C.cbl:L382 reads the cross-reference dataset itself and cannot be stale.
+-- source_event_id and source_occurred_at name the event that last wrote the row, so an
+-- out-of-order delivery changes nothing, and observed_at is what a freshness check reads.
+-- messaging/CardUpdatedConsumer refreshes observed_at on the rows of the account a
+-- CardUpdated event names; it moves no mapping, because that event carries a masked card
+-- number and this table is keyed by all sixteen characters. A row loaded by V2__seed.sql
+-- and never touched by that listener holds NULL in both source_ columns.
 CREATE TABLE card_xref (
     card_number  VARCHAR(16) NOT NULL,
     customer_id  CHAR(9)     NOT NULL,
@@ -61,8 +59,9 @@ CREATE INDEX ix_card_xref_observed_at ON card_xref (observed_at);
 CREATE INDEX idx_card_xref_account_id ON card_xref (account_id, card_number);
 
 -- account_credit_snapshot: projection of the account record, read by the
--- decline rules. An account state-change consumer is to keep the rows current; none is
--- registered, so every row holds what V2__seed.sql loaded. Five of
+-- decline rules. messaging/AccountStateChangedConsumer keeps the rows current from
+-- account.state-changed, replacing every value column of the row the event names, and
+-- V2__seed.sql loads the position each row starts from. Five of
 -- the thirteen fields in app/cpy/CVACT01Y.cpy appear below, the trailing
 -- FILLER PIC X(178) at L17 not among them. Primary key from KEYS(11 0) at
 -- app/jcl/ACCTFILE.jcl:L40, eleven bytes at offset zero, alongside
@@ -114,7 +113,8 @@ CREATE INDEX ix_account_credit_snapshot_observed_at
 -- authorization decision. The relay claims a row, publishes it, then sets published.
 --
 -- payload is bounded at 8192 octets, the same ceiling
--- libs/event-contracts/.../serde/EventWireBounds.java applies on the wire. A document
+-- libs/event-contracts/src/main/java/com/carddemo/events/serde/EventWireBounds.java
+-- applies on the wire. A document
 -- this table would refuse could never have been published, and one the wire gate would
 -- refuse can no longer be stored, so the two bounds cannot disagree.
 --
@@ -205,15 +205,16 @@ CREATE INDEX ix_outbox_event_published_at
 -- are covered. This index is also the purge path for rows in a terminal state.
 CREATE INDEX ix_outbox_event_claimable ON outbox_event (relay_state, next_attempt_at);
 
--- processed_event: one row per event identifier a consumer has already handled. No listener
--- in this service writes it today, so the table stays empty.
+-- processed_event: one row per delivery a consumer of this service has already handled.
+-- messaging/AccountStateChangedConsumer and messaging/CardUpdatedConsumer both write it.
 -- The primary key is the guard as well as the key: an insert that collides is how a consumer
--- learns the event was already handled, so the guard cannot be checked and then raced past.
--- A retention index over processed_at follows the table. The consumer inserts this row in the
--- same local transaction as its side effects, marker after effects, and acknowledges the
--- message only after that transaction commits, which is why a crash between the two leaves no
--- half-processed event. consumed_topic exists so a replayed event can be traced to the
--- delivery that first handled it.
+-- learns the delivery was already handled, so the guard cannot be checked and then raced past.
+-- The key declared here is the event identifier alone;
+-- V6__processed_event_topic_key.sql widens it to (event_id, consumed_topic), because an
+-- event identifier is assigned per producing service and stops identifying a delivery once a
+-- service reads two topics. The consumer inserts this row in the same local transaction as
+-- its side effects, marker after effects, and acknowledges the message only after that
+-- transaction commits, so a crash between the two leaves no half-processed event.
 CREATE TABLE processed_event (
     event_id      UUID                        NOT NULL,
     processed_at  TIMESTAMP(6) WITH TIME ZONE NOT NULL,
@@ -259,18 +260,15 @@ CREATE SEQUENCE transaction_id_seq START WITH 1000000000 INCREMENT BY 1 NO CYCLE
 --   SELECT relname, obj_description(oid, 'pg_class') FROM pg_class
 --    WHERE relkind = 'r' ORDER BY relname;
 --
--- The windows below are the demo baseline this platform ships with. No requirement in
--- scope fixes a legal retention period, so a deployment replaces them with the periods
--- its own jurisdiction requires. The purge job itself is out of scope for the same
--- reason: nothing in the Agent Action Plan schedules one, and a job that deletes
--- financial records is not something to add without an owner. The columns and indexes
--- it needs are here.
+-- The retention windows below are this platform's demo baseline; a deployment replaces
+-- them with the periods its jurisdiction requires. The columns and indexes a purge needs
+-- are declared above.
 
 COMMENT ON TABLE card_xref IS
     'retention=relationship; purge_key=none; personal_data=pseudonymous. Card-to-account cross-
      reference, the first hop of every authorization. A row lives as long as the card it
-     names; card, customer and account identifiers link it to a cardholder, and erasure
-     follows the card service deleting the card.';
+     names, and card, customer and account identifiers link it to a cardholder. No route of
+     this platform deletes a card, so erasure is an operator action against this table.';
 
 COMMENT ON TABLE account_credit_snapshot IS
     'retention=relationship; purge_key=none; personal_data=pseudonymous. Credit projection

@@ -1,0 +1,93 @@
+# The one place the six platform image references live.
+#
+# WHY THIS FILE EXISTS. A security review found the six Deployments naming
+# carddemo/<service>:1.0.0-SNAPSHOT, a tag that can be moved over different bytes, and
+# concluded that different nodes or a later retag can execute unreviewed bytes under the
+# same manifest. That is true of a tag, and it stays true however many manifests carry it.
+# This file makes the six references editable in one place, so pinning them by digest is
+# one edit rather than six, and records the exact procedure beside the values it changes.
+#
+# TWO KINDS OF IMAGE LIVE IN THIS FOLDER, AND ONLY ONE OF THEM CAN CARRY A DIGEST TODAY.
+#
+#   upstream  apache/kafka in 10-kafka.yaml and postgres in 20-postgres.yaml. Both are
+#             pulled from a registry and both are already pinned by digest.
+#   platform  the six below. They are built from card-platform/services/*/Dockerfile on
+#             the machine that deploys them and loaded into the cluster. A locally built
+#             image has no manifest digest at all: `docker inspect` reports an empty
+#             RepoDigests list until the image is pushed to a registry, so a digest
+#             reference for these six names nothing a node could resolve.
+#
+# WHAT THE DEMO PATH DOES INSTEAD. The six Deployments set imagePullPolicy: Never, and
+# that setting is deliberate rather than left over. This project publishes no image
+# anywhere: no workflow, script or document pushes to a registry. `carddemo/<service>` is
+# therefore a Docker Hub name this project does not own, and a policy that allowed a pull
+# would let a node fetch bytes from whoever does own it, under a name that reads like ours.
+# Never removes that path: the kubelet runs the image an operator loaded, or it refuses the
+# Pod and says so.
+#
+# HOW A REAL DEPLOYMENT PINS THESE. Publish the six images to a registry the deployment
+# owns, then set each entry below to that registry and to the digest the push reported.
+# `newTag` and `digest` are mutually exclusive; replacing one with the other is the whole
+# edit:
+#
+#   kustomize edit set image \
+#     carddemo/authorization-service=registry.example.internal/carddemo/authorization-service@sha256:<digest>
+#
+# Repeat per service, drop the imagePullPolicy: Never patch below so the digest is pulled
+# and verified, and apply with `kubectl apply -k card-platform/deploy/k8s`. A digest
+# reference is content-addressed: a node that resolves it either gets those exact bytes or
+# fails.
+#
+# WHAT THIS FILE DOES NOT DO. It does not publish an image, sign one, or verify a
+# signature. Signing and admission-time verification need a registry, a key and an
+# admission controller, none of which this platform ships: section 0.2.2 of the plan places
+# production hardening out of scope and section 0.8.5 records the instruction to keep
+# infrastructure configuration minimal and swappable. card-platform/deploy/k8s/README.md
+# states what is verified and what is not, and
+# card-platform/docs/suggested-next-tasks.md carries the publish-sign-verify task.
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Namespace every resource below belongs to, declared by 00-namespace.yaml.
+namespace: carddemo
+
+resources:
+  - 00-namespace.yaml
+  - 10-kafka.yaml
+  - 20-postgres.yaml
+  - 30-configmap.yaml
+  - 40-authorization-service.yaml
+  - 41-ledger-posting-service.yaml
+  - 42-fraud-detection-service.yaml
+  - 43-notification-service.yaml
+  - 44-account-service.yaml
+  - 45-card-service.yaml
+
+# 31-secret.example.yaml is deliberately absent from the list above. It is a template
+# carrying refused values, and applying it would create Secrets no service can start on.
+# card-platform/docs/onboarding.md documents generating the real Secrets from it.
+
+images:
+  # newTag names the tag the local build produces, which is the Maven project version and
+  # the same tag card-platform/docker-compose.yml runs. Replace newTag with
+  # `digest: sha256:<digest>` and newName with your own registry to pin, one entry at a
+  # time or all six.
+  - name: carddemo/authorization-service
+    newName: carddemo/authorization-service
+    newTag: 1.0.0-SNAPSHOT
+  - name: carddemo/ledger-posting-service
+    newName: carddemo/ledger-posting-service
+    newTag: 1.0.0-SNAPSHOT
+  - name: carddemo/fraud-detection-service
+    newName: carddemo/fraud-detection-service
+    newTag: 1.0.0-SNAPSHOT
+  - name: carddemo/notification-service
+    newName: carddemo/notification-service
+    newTag: 1.0.0-SNAPSHOT
+  - name: carddemo/account-service
+    newName: carddemo/account-service
+    newTag: 1.0.0-SNAPSHOT
+  - name: carddemo/card-service
+    newName: carddemo/card-service
+    newTag: 1.0.0-SNAPSHOT

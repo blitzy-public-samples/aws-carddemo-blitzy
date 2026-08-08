@@ -22,19 +22,25 @@ import jakarta.validation.constraints.Size;
  * {@code app/data/ASCII/acctdata.txt} carries {@code 2014-11-20} at columns 49 through 58.
  * {@code app/cbl/CBTRN02C.cbl:L414} compares a stored expiry as raw text.</p>
  *
- * <p>Each component declares one width constraint and nothing else. No component declares a
- * presence constraint, a format constraint, a digit constraint or a bound. The money widths admit a
+ * <p>Every component declares a width bound. Two carry more: {@code groupId} carries a
+ * {@link jakarta.validation.constraints.Pattern} admitting printable characters only, and the
+ * components a domain edit owns carry {@code @DomainEdit} so the framework leaves them to that
+ * edit. No component declares a presence constraint or a digit constraint. The money widths admit a
  * currency sign and grouping commas, so {@code $1,234.56} reaches the parse that
  * {@code FUNCTION TEST-NUMVAL-C} at {@code app/cbl/COACTUPC.cbl:L2201} gates.
  * {@code domain/validation} holds the field edits and returns one message per validation pass, and
- * {@code domain} performs the parse. Neither runs here.</p>
+ * {@code domain} performs the parse. Neither runs here. Rationale for the constraint split and for
+ * the {@code groupId} restriction: {@code card-platform/docs/decision-log.md}.</p>
  *
  * <p>The record carries no account identifier. {@code ACUP-NEW-ACCT-ID-X PIC X(11)} at
  * {@code app/cbl/COACTUPC.cbl:L759} reaches the enclosing request type. The record also carries no
  * customer identifier, since {@code 10 ACUP-NEW-CUST-DATA.} opens at
  * {@code app/cbl/COACTUPC.cbl:L797} with {@code ACUP-NEW-CUST-ID-X PIC X(09)} at
  * {@code app/cbl/COACTUPC.cbl:L798}. No component holds a status the service tests before a write,
- * no component holds a checksum, and the record declares no version column and no method.</p>
+ * no component holds a checksum, and the record declares no version column. The one method it
+ * declares is {@code toString()}, which redacts every component value.</p>
+ *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  *
  * @param activeStatus       one character of account status,
  *                           {@code ACUP-NEW-ACTIVE-STATUS PIC X(01)} at
@@ -100,8 +106,6 @@ import jakarta.validation.constraints.Size;
  *                           {@code ACUP-NEW-GROUP-ID PIC X(10)} at
  *                           {@code app/cbl/COACTUPC.cbl:L796}. No edit reads this component and the
  *                           program moves no label for it, so width alone bounds it
- *
- * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 public record AccountDataRequest(
 
@@ -279,16 +283,6 @@ public record AccountDataRequest(
             "Text fields must hold printable characters only.";
 
     /**
-     * Names all ten components and withholds every value.
-     *
-     * <p>This override replaces the representation the compiler generates for a record. That
-     * generated form prints the balance, both credit limits and both cycle accumulators. One
-     * interpolation into a log line, an assertion failure or an exception message would then
-     * place a cardholder's balance and available credit there.
-     *
-     * <p>Each component appears as {@link EventEnvelope#WITHHELD}, the platform-wide redaction
-     * marker, so a validation failure or a debugger view discloses no cardholder finances.
-     *
      * @return a rendering that names all ten components and discloses none, never {@code null}
      */
     @Override

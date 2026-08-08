@@ -65,6 +65,10 @@ class AccountPropertiesTest {
             assertThat(properties.outbox().relay().batchSize()).isEqualTo(100);
             assertThat(properties.outbox().relay().claimTimeout()).isEqualTo(Duration.ofMinutes(2L));
             assertThat(properties.outbox().publishedRetentionHours()).isEqualTo(168L);
+            assertThat(properties.processedEvent().markerRetentionHours())
+                    .as("the marker horizon outlasts broker retention rather than equalling it")
+                    .isEqualTo(720L);
+            assertThat(properties.processedEvent().brokerRetentionHours()).isEqualTo(168L);
         });
     }
 
@@ -125,6 +129,41 @@ class AccountPropertiesTest {
 
 
     @Test
+    @DisplayName("a marker horizon that does not outlast broker retention stops start-up")
+    void aMarkerHorizonUnderTheMarginStopsStartUp() {
+        shipped.withPropertyValues("carddemo.processed-event.marker-retention-hours=168")
+                .run(context -> {
+                    assertThat(context).hasFailed();
+                    assertThat(context.getStartupFailure())
+                            .hasStackTraceContaining("markerRetentionHours")
+                            .hasStackTraceContaining("brokerRetentionHours");
+                });
+    }
+
+    @Test
+    @DisplayName("a marker horizon at exactly the margin starts")
+    void aMarkerHorizonAtExactlyTheMarginStarts() {
+        shipped.withPropertyValues("carddemo.processed-event.marker-retention-hours=336")
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context.getBean(AccountProperties.class).processedEvent()
+                            .markerRetentionHours()).isEqualTo(336L);
+                });
+    }
+
+    @Test
+    @DisplayName("raising broker retention without raising the marker horizon stops start-up")
+    void raisingBrokerRetentionAloneStopsStartUp() {
+        shipped.withPropertyValues("carddemo.processed-event.broker-retention-hours=720")
+                .run(context -> {
+                    assertThat(context).hasFailed();
+                    assertThat(context.getStartupFailure())
+                            .hasStackTraceContaining("markerRetentionHours must be at")
+                            .hasStackTraceContaining("least 2 times");
+                });
+    }
+
+    @Test
     @DisplayName("the bound record is the only properties bean and it is immutable")
     void theBoundRecordIsTheOnlyPropertiesBean() {
         shipped.run(context -> {
@@ -134,5 +173,59 @@ class AccountPropertiesTest {
                             + "value the constraints already accepted")
                     .isTrue();
         });
+    }
+
+    /**
+     * Holds the producer window inside the relay pass that issued the send.
+     *
+     * <p>{@code outbox/OutboxRelay} bounds a whole pass with
+     * {@code carddemo.outbox.relay.max-duration-ms} and stops watching a send when that bound
+     * lapses. Stopping the watch does not recall a record already on the wire, so if the producer
+     * may keep delivering after the pass ended, the row is swept again and the same event reaches
+     * the topic twice. The remedy is arithmetic rather than code: the broker has to give up first.
+     *
+     * <p>Kafka also refuses a producer whose {@code delivery.timeout.ms} is below
+     * {@code linger.ms} plus {@code request.timeout.ms}, at construction, so both relationships are
+     * asserted here rather than discovered at start-up.
+     */
+    @Test
+    @DisplayName("one send resolves inside the relay pass that issued it")
+    void oneSendResolvesInsideTheRelayPassThatIssuedIt() {
+        shipped.run(context -> {
+            assertThat(context).hasNotFailed();
+            AccountProperties properties = context.getBean(AccountProperties.class);
+            long maxBlock = milliseconds(context.getEnvironment()
+                    .getProperty("spring.kafka.producer.properties.max.block.ms"));
+            long deliveryTimeout = milliseconds(context.getEnvironment()
+                    .getProperty("spring.kafka.producer.properties.delivery.timeout.ms"));
+            long requestTimeout = milliseconds(context.getEnvironment()
+                    .getProperty("spring.kafka.producer.properties.request.timeout.ms"));
+            long linger = milliseconds(context.getEnvironment()
+                    .getProperty("spring.kafka.producer.properties.linger.ms"));
+            long passBudget = properties.outbox().relay().maxDurationMs();
+
+            assertThat(maxBlock + deliveryTimeout)
+                    .as("max.block.ms plus delivery.timeout.ms against "
+                            + "carddemo.outbox.relay.max-duration-ms, which is %d. A send the "
+                            + "relay stops watching can still be delivered, and the next pass then "
+                            + "publishes a second copy of the same event", passBudget)
+                    .isLessThan(passBudget);
+            assertThat(deliveryTimeout)
+                    .as("delivery.timeout.ms against linger.ms plus request.timeout.ms, which is "
+                            + "%d. The producer refuses that combination at construction",
+                            linger + requestTimeout)
+                    .isGreaterThanOrEqualTo(linger + requestTimeout);
+        });
+    }
+
+    /**
+     * Reads one producer timing value the pass budget depends on.
+     *
+     * @param value the configured value, in milliseconds
+     * @return that value as a number
+     */
+    private static long milliseconds(String value) {
+        assertThat(value).as("a producer timing key the pass budget depends on").isNotNull();
+        return Long.parseLong(value.trim());
     }
 }

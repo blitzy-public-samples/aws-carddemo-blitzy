@@ -344,7 +344,7 @@ public final class EventContracts {
     /**
      * Compiles the schema document of one event type, read from the classpath of this class.
      *
-     * @param eventType the routing discriminator naming the document
+     * @param resource the classpath resource of the document to compile
      * @return the compiled schema
      * @throws IllegalStateException when the classpath holds no such document, or reading it fails
      */

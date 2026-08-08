@@ -409,6 +409,36 @@ class DtoValidationWiringTest {
                     "CustomerDataRequest still declares the bounds of its twenty components");
         }
 
+        /**
+         * Asserts the identifier bound of the customer section is the nine digits the column holds.
+         *
+         * <p>{@code CUST-ID PIC 9(09)} at {@code app/cpy/CVCUS01Y.cpy:L5} and
+         * {@code ACUP-NEW-CUST-ID PIC 9(09)} at {@code app/cbl/COACTUPC.cbl:L799-L800} are both nine
+         * digits, and {@code src/main/resources/openapi.yaml} declares the same pattern for the
+         * property. A bound of width alone admitted {@code 1} and {@code 00000000A}.
+         *
+         * <p>This bound is not reached through {@code AccountUpdateRequest}, which declares no cascade
+         * marker. {@code api/AccountController.updateAccount} applies the same pattern to the value the
+         * body carries, and {@code api/AccountControllerOutcomeAndMergeTest} covers that.
+         */
+        @Test
+        @DisplayName("the customer section bounds its identifier at nine digits, not nine characters")
+        void theCustomerSectionBoundsItsIdentifierAtNineDigits() {
+            for (String refused : List.of("1", "0000000012", "00000000A", "-00000001", "")) {
+                Set<ConstraintViolation<CustomerDataRequest>> violations =
+                        validator.validate(withCustomerId(refused));
+
+                assertFalse(violations.isEmpty(),
+                        () -> "CUST-ID PIC 9(09) holds nine digits: " + messagesOf(violations));
+                assertTrue(messagesOf(violations)
+                                .contains(CustomerDataRequest.CUSTOMER_ID_MESSAGE),
+                        () -> "and the refusal names the shape: " + messagesOf(violations));
+            }
+
+            assertTrue(validator.validate(withCustomerId("000000001")).isEmpty(),
+                    "nine digits with leading zeros is the stored form");
+        }
+
         @Test
         @DisplayName("the ordered pass is the one validator, and it answers with one message")
         void theOrderedPassIsTheOneValidator() {
@@ -577,6 +607,25 @@ class DtoValidationWiringTest {
      * @param firstName the value to substitute
      * @return the copy
      */
+    /**
+     * Builds a customer section carrying one identifier and every other component valid.
+     *
+     * @param customerId the identifier to submit
+     * @return the customer section
+     */
+    private static CustomerDataRequest withCustomerId(String customerId) {
+        return new CustomerDataRequest(customerId, VALID_CUSTOMER.firstName(),
+                VALID_CUSTOMER.middleName(), VALID_CUSTOMER.lastName(),
+                VALID_CUSTOMER.addressLine1(), VALID_CUSTOMER.addressLine2(),
+                VALID_CUSTOMER.addressCity(), VALID_CUSTOMER.addressStateCode(),
+                VALID_CUSTOMER.addressCountryCode(), VALID_CUSTOMER.addressZip(),
+                VALID_CUSTOMER.phoneNumber1(), VALID_CUSTOMER.phoneNumber2(),
+                VALID_CUSTOMER.socialSecurityPart1(), VALID_CUSTOMER.socialSecurityPart2(),
+                VALID_CUSTOMER.socialSecurityPart3(), VALID_CUSTOMER.governmentIssuedId(),
+                VALID_CUSTOMER.dateOfBirth(), VALID_CUSTOMER.eftAccountId(),
+                VALID_CUSTOMER.primaryCardHolderIndicator(), VALID_CUSTOMER.ficoCreditScore());
+    }
+
     private static CustomerDataRequest withFirstName(String firstName) {
         return new CustomerDataRequest(VALID_CUSTOMER.customerId(), firstName,
                 VALID_CUSTOMER.middleName(), VALID_CUSTOMER.lastName(),

@@ -1,4 +1,4 @@
-# evaluation_model NOT_APPLICABLE and derived_from SYNTHETIC on every row: every input is constructed, so no posting model applies. Case count 19. Data row count 215. Each case covers a behaviour no combination of the nine app/data/ASCII fixtures reaches. The COVERAGE rows hold those measurements. source_locator carries the COBOL line each case tests. Consuming tests: AuthorizationDecisionEquivalenceTest, DecimalTruncationEquivalenceTest, InterestCalculationEquivalenceTest and ValidationEquivalenceTest, each filtering on record_seq.
+# evaluation_model NOT_APPLICABLE and derived_from SYNTHETIC on every row: every input is constructed, so no posting model applies. Case count 19. Data row count 215. Each case covers a behaviour no combination of the nine app/data/ASCII fixtures reaches. The COVERAGE rows hold those measurements. source_locator carries the COBOL line each case tests. Consuming test: AuthorizationDecisionEquivalenceTest. Every row is bound in one ledger so no case is left unread.
 evaluation_model,derived_from,record_seq,entity_key,expected_field,expected_value,pic_clause,source_locator
 NOT_APPLICABLE,SYNTHETIC,SYN-100-XREF-MISS,9999999999999999,input_card_number,9999999999999999,X(16),app/cpy/CVTRA06Y.cpy:L15
 NOT_APPLICABLE,SYNTHETIC,SYN-100-XREF-MISS,9999999999999999,xref_read_result,INVALID KEY,X(16),app/cbl/CBTRN02C.cbl:L385
@@ -207,7 +207,7 @@ NOT_APPLICABLE,SYNTHETIC,SUMMARY,synthetic_cases,reason_109_cases,1,9(04),app/cb
 NOT_APPLICABLE,SYNTHETIC,SUMMARY,synthetic_cases,truncation_cases,1,S9(09)V99,app/cbl/CBACT04C.cbl:L464-L465
 NOT_APPLICABLE,SYNTHETIC,SUMMARY,synthetic_cases,rate_resolution_cases,5,S9(04)V99,app/cbl/CBACT04C.cbl:L415-L458
 NOT_APPLICABLE,SYNTHETIC,SUMMARY,synthetic_cases,fico_boundary_cases,4,9(03),app/cbl/COACTUPC.cbl:L848-L849
-NOT_APPLICABLE,SYNTHETIC,SUMMARY,synthetic_cases,consuming_test_classes,4,NONE,SYNTHETIC
+NOT_APPLICABLE,SYNTHETIC,SUMMARY,synthetic_cases,consuming_test_classes,1,NONE,SYNTHETIC
 NOT_APPLICABLE,SYNTHETIC,PROHIBITION,synthetic_case_discipline,no_fixture_file_is_modified,yes,NONE,app/cpy/CVACT03Y.cpy:L4
 NOT_APPLICABLE,SYNTHETIC,PROHIBITION,synthetic_case_discipline,no_additional_cases_may_be_invented,yes,NONE,SYNTHETIC
 NOT_APPLICABLE,SYNTHETIC,PROHIBITION,synthetic_case_discipline,no_case_may_assert_a_reachable_outcome_as_synthetic,yes,NONE,SYNTHETIC

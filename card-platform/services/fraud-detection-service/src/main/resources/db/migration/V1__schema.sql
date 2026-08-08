@@ -59,8 +59,8 @@ CREATE INDEX ix_fraud_assessment_account ON fraud_assessment (account_id);
 
 -- The read of api/FraudAssessmentController: one account's assessments, newest first, at
 -- most one page of them. Leading column account_id selects the account and trailing column
--- assessed_at DESC delivers the order, so the page is read from the index and no sort runs
--- over the account's whole history.
+-- assessed_at DESC supports the order, so the planner can read the page from the index rather
+-- than sorting the account's whole history.
 CREATE INDEX ix_fraud_assessment_account_assessed_at
     ON fraud_assessment (account_id, assessed_at DESC);
 
@@ -87,10 +87,10 @@ CREATE TABLE velocity_window (
 
 -- outbox_event: No COBOL ancestor. One row per event this service publishes.
 -- payload is bounded at 8192 octets, the ceiling
--- libs/event-contracts/.../serde/EventWireBounds.java applies on the wire, so the stored
--- bound and the published bound are one bound. The seven relay-state columns are ADDITIVE
--- with no COBOL ancestor. The active relay prevents duplicate concurrent publication with
--- a skip-locked row lock; the state columns retain bounded retry and recovery metadata.
+-- libs/event-contracts/src/main/java/com/carddemo/events/serde/EventWireBounds.java applies on
+-- the wire, so the stored bound and the published bound are one bound. The seven relay-state
+-- columns are ADDITIVE. A skip-locked row lock keeps two relay instances from publishing one
+-- row concurrently, and the state columns hold bounded retry and recovery metadata.
 CREATE TABLE outbox_event (
     -- Idempotency key. The same value travels in the EventEnvelope.eventId field of
     -- the payload, and every consumer records it in its own processed_event marker.
@@ -162,13 +162,13 @@ CREATE INDEX ix_outbox_event_claimable ON outbox_event (relay_state, next_attemp
 -- serves the purge that deletes published rows past the retention horizon.
 CREATE INDEX ix_outbox_event_published_at
     ON outbox_event (published_at) WHERE published = TRUE;
--- processed_event: No COBOL ancestor. One row per event identifier a consumer has already
--- handled. TransactionAuthorizedConsumer is the one writer.
--- The primary key is the guard as well as the key: an insert that collides is how a consumer
--- learns the event was already handled, so the guard cannot be checked and then raced past.
--- The consumer inserts this row in the same local transaction as its side effects and
--- acknowledges the message only after that transaction commits, which is why a crash between
--- the two leaves no half-processed event.
+-- processed_event: ADDITIVE. One row per delivery a consumer has already handled.
+-- TransactionAuthorizedConsumer is the one writer. The primary key is the guard as well as the
+-- key: an insert that collides is how a consumer learns the delivery was already handled, so the
+-- guard cannot be checked and then raced past. The key declared here is the event identifier
+-- alone; V4__processed_event_topic_key.sql widens it to (event_id, consumed_topic). The consumer
+-- inserts this row in the same local transaction as its side effects and acknowledges the message
+-- only after that transaction commits, so a crash between the two leaves no half-processed event.
 CREATE TABLE processed_event (
     event_id     UUID                        NOT NULL,
     processed_at TIMESTAMP(6) WITH TIME ZONE NOT NULL,

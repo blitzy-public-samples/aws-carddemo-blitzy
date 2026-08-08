@@ -21,8 +21,9 @@
 -- The trailing FILLER PIC X(20) at app/cpy/COSTM01.CPY:L36 gets no column.
 --
 -- The card half of that key carries a card token, not a card number of either form. The
--- source key holds a full Primary Account Number (PAN), which this platform never stores
--- or transports. A masked card number cannot stand in for it: twelve of its sixteen
+-- source key holds a full Primary Account Number (PAN); no column in this schema holds one,
+-- and no event this service consumes carries one. The card service owns the one table that
+-- does, card.card_number. A masked card number cannot stand in for the token: twelve of its sixteen
 -- characters are mask characters, so two cards sharing their last four digits mask to one
 -- value and would collide on this key. PanMasker.cardToken in
 -- card-platform/libs/cobol-compat derives the token instead, one value per card, and the
@@ -176,7 +177,9 @@ CREATE TABLE cardholder_context (
         CHECK (fico_score ~ '^[0-9]{3}$')
 );
 
--- The range a purge job scans, and the order a staleness report reads.
+-- The order a staleness report reads. RetentionSweep does not reach this table: a row lives
+-- as long as the customer relationship, so observed_at serves an erasure request rather than
+-- a window.
 CREATE INDEX ix_cardholder_context_observed_at
     ON cardholder_context (observed_at);
 
@@ -189,11 +192,15 @@ CREATE INDEX ix_cardholder_context_observed_at
 -- The consumer inserts this row in the same local transaction as its side effects and
 -- acknowledges the message only after that transaction commits, which is why a crash between
 -- the two leaves no half-processed event.
+-- The key this migration declares is the event identifier alone.
+-- V3__processed_event_topic_key.sql widens it to (event_id, consumed_topic), because four
+-- listener groups share this table and the producing services assign identifiers
+-- independently.
 CREATE TABLE processed_event (
     event_id     UUID                        NOT NULL,
     processed_at TIMESTAMP(6) WITH TIME ZONE NOT NULL,
-    -- Which topic the delivery arrived on. NULL for a marker written before this column
-    -- existed; every marker written since carries one.
+    -- Which topic the delivery arrived on. Nullable here; V3 fills every row and pins the
+    -- column NOT NULL.
     consumed_topic VARCHAR(128),
     CONSTRAINT pk_processed_event PRIMARY KEY (event_id)
 );
@@ -205,9 +212,7 @@ CREATE TABLE processed_event (
 -- with RECOVERY(NONE) and JOURNAL(NO) and no expiry, the Job Control Language members
 -- under app/jcl/ define datasets without an EXPDT or RETPD parameter, and no program
 -- under app/cbl/ deletes a record: the only DELETE in the repository is IDCAMS deleting
--- a whole dataset before it is redefined. A table that only ever grows is a table whose
--- oldest row is as exposed as its newest, so this platform states a rule for every table
--- it owns.
+-- a whole dataset before it is redefined. Every table this schema owns states a rule.
 --
 -- Each COMMENT below reads as four fields followed by a sentence, so an operator can
 -- read the policy out of the catalogue rather than out of a document:
@@ -221,11 +226,10 @@ CREATE TABLE processed_event (
 --                                           describes ONE person and another table in the
 --                                           platform re-identifies them from a column here
 --                             no            the row describes no person at all
---                           A masked card number and an account identifier are
---                           pseudonymous, not absent: masking removes twelve digits, and
---                           the account service resolves an account identifier to a named
---                           customer. Recording such a row as personal_data=no tells a
---                           policy tool to skip it, which is the opposite of correct.
+--                           A card token, a masked card number and an account identifier
+--                           are pseudonymous, not absent: the card service resolves a token
+--                           to a card, and the account service resolves an account
+--                           identifier to a named customer.
 --   purge_op=<method>       the callable that performs the delete, or 'none'
 -- Read them back with:
 --   SELECT relname, obj_description(oid, 'pg_class') FROM pg_class
@@ -236,29 +240,45 @@ CREATE TABLE processed_event (
 -- carries the task of replacing them with the periods a deployment's jurisdiction
 -- requires. com.carddemo.notification.domain.RetentionSweep is what applies them: it
 -- ranges over the purge_key column named below, on the interval
--- carddemo.history.sweep-interval-ms sets, in one transaction per table. A window stated
--- here and in application.yml but applied nowhere would leave a reader taking these
--- tables for bounded when they were not, which is why the sweep ships with them.
+-- carddemo.history.sweep-interval-ms sets. Each purge_op takes a row ceiling and the
+-- sweep repeats it in a transaction per batch until the table is clear, so no one
+-- statement locks a whole table and no backlog outlives the pass that found it. A window
+-- stated here and in application.yml but applied nowhere would leave a reader taking
+-- these tables for bounded when they were not, which is why the sweep ships with them.
 
--- The range a purge job scans.
+-- The range RetentionSweep scans, and the order its batches take. The bounded delete
+-- NotificationLogRepository.deleteRenderedBefore orders by this column before applying
+-- its LIMIT, so this index serves both the range and the ordering. Without the ordering
+-- successive batches could revisit the same rows and never converge. V5 renames the column
+-- to rendered_at and the index with it, because the value was never a delivery attempt.
 CREATE INDEX ix_notification_log_attempted_at ON notification_log (attempted_at);
 
--- The range a purge job scans.
+-- The range RetentionSweep scans, and the order its batches take. The bounded delete
+-- ProcessedEventRepository.deleteMarkersProcessedBefore orders by processed_at before
+-- applying its LIMIT, for the same convergence reason.
 CREATE INDEX ix_processed_event_processed_at ON processed_event (processed_at);
 
 COMMENT ON TABLE statement_transaction IS
-    'retention=24 months; purge_key=processing_timestamp; personal_data=no. Token-keyed read
-     model behind a cardholder alert, card number masked wherever it appears. It mirrors ledger rows this
-     service does not own, so it expires on its own clock: processing_timestamp holds 26
-     characters shaped YYYY-MM-DD-HH.MM.SS.hh0000, which orders lexically, so a purge ranges
-     over it as text.';
+    'retention=400 days; purge_key=processing_timestamp; personal_data=no;
+     purge_op=StatementTransactionRepository.deleteProcessedBefore. Token-keyed read model
+     behind a cardholder alert, card number masked wherever it appears. The window is
+     carddemo.history.statement-retention-days in src/main/resources/application.yml, 400
+     days by default and overridable by STATEMENT_RETENTION_DAYS, and domain/RetentionSweep
+     applies it. That setting is the authority: a window restated here as a second number
+     would drift from the one the sweep reads, and this comment did drift, naming 24 months
+     against a configured 400 days. It mirrors ledger rows this service does not own, so it
+     expires on its own clock: processing_timestamp holds 26 characters shaped
+     YYYY-MM-DD-HH.MM.SS.hh0000, which orders lexically, so a purge ranges over it as text.';
 
 COMMENT ON TABLE notification_log IS
     'retention=90 days; purge_key=attempted_at; personal_data=pseudonymous;
-     purge_op=NotificationLogRepository.purgeAttemptedBefore. One delivery attempt, carrying
-     the account identifier and the masked card number the alert showed. It exists to explain
-     a delivery, and expires with the question: purge rows whose attempted_at is older than
-     90 days.';
+     purge_op=NotificationLogRepository.deleteRenderedBefore. One delivery attempt, carrying
+     the card token, the transaction identifier and the masked card number the alert showed.
+     It carries no account identifier: this table names a card, and the account behind that
+     card is resolved through the account service. The window is
+     carddemo.history.log-retention-days in src/main/resources/application.yml, 90 days by
+     default and overridable by NOTIFICATION_LOG_RETENTION_DAYS, and domain/RetentionSweep
+     applies it. It exists to explain a delivery, and expires with the question.';
 
 COMMENT ON TABLE cardholder_context IS
     'retention=relationship; purge_key=observed_at; personal_data=yes. Projection of the ten

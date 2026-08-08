@@ -116,6 +116,16 @@ spring:
         org.apache.kafka.common.security.plain.PlainLoginModule required
         username="${KAFKA_SASL_USERNAME:carddemo-card}"
         password="${KAFKA_SASL_PASSWORD}";
+    # The four timeouts below are one budget, and outbox/OutboxRelay is why. A sweep bounds itself
+    # with carddemo.outbox.relay.max-duration-ms so a broker that accepts a connection and never
+    # answers cannot hold the scheduled thread. A send the sweep gave up on that the producer still
+    # holds is delivered later, and the sweep's own retry then publishes the same event a second
+    # time, so one send has to resolve inside the sweep that issued it. The producer takes at most
+    # max.block.ms to admit a record and delivery.timeout.ms to place it, and that total sits under
+    # max-duration-ms. 2000 + 2000 = 4000 against 5000. A test asserts the relationship, so raising
+    # one of them means raising the deadline too. Kafka also requires delivery.timeout.ms to be at
+    # least linger.ms + request.timeout.ms, which is why linger.ms is declared here rather than
+    # inherited.
     producer:
       acks: all
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
@@ -123,9 +133,10 @@ spring:
       properties:
         enable.idempotence: true
         max.in.flight.requests.per.connection: 5
-        delivery.timeout.ms: 120000
-        request.timeout.ms: 30000
-        max.block.ms: 5000
+        delivery.timeout.ms: 2000
+        request.timeout.ms: 2000
+        linger.ms: 0
+        max.block.ms: 2000
     # This module registers no listener, and it needs none. Its two copies of state
     # another service owns are the card table, which it owns outright, and the
     # card_xref replica, which no event can change: every column of
@@ -159,6 +170,33 @@ carddemo:
   # constraints to a chunked request that declares no length.
   api:
     max-request-body-bytes: ${API_MAX_REQUEST_BODY_BYTES:65536}
+    # Cross-site protection. config/CrossSiteRequestFilter refuses a state-changing request
+    # that declares a foreign Sec-Fetch-Site, names an Origin other than this service, or
+    # carries no value under the header below. An HTML form cannot set a header at all, and a
+    # cross-origin script call that set one would need a preflight no chain here grants, so the
+    # header is what separates a first-party client from a page replaying a cached credential.
+    # The name is not a secret. Change it only together with every client that sets it.
+    cross-site:
+      required-header: ${API_CROSS_SITE_HEADER:X-CardDemo-Request}
+    # Request-rate ceilings. config/RequestRateCeilingFilter runs ahead of the security chain
+    # and refuses with 429 plus Retry-After. Every ceiling is counted over one fixed window.
+    #
+    # requests-per-window applies twice, once keyed by source address and once by the identity
+    # the credential names, so one credential spread across many addresses is bounded too.
+    # write-requests-per-window is the stricter ceiling on POST, PUT, PATCH and DELETE.
+    # authentication-failures-per-window is the credential-guessing control: past it a source
+    # is refused for the rest of the window, and only a request that carried a credential and
+    # was answered 401 counts. concurrent-requests bounds requests in flight.
+    #
+    # The counters live in one process, so several replicas bound each replica rather than the
+    # service as a whole. card-platform/docs/suggested-next-tasks.md records the shared-store
+    # ceiling a deployment beyond a demo wants.
+    rate-limit:
+      window-seconds: ${API_RATE_WINDOW_SECONDS:60}
+      requests-per-window: ${API_RATE_REQUESTS_PER_WINDOW:600}
+      write-requests-per-window: ${API_RATE_WRITE_REQUESTS_PER_WINDOW:120}
+      authentication-failures-per-window: ${API_RATE_AUTHENTICATION_FAILURES_PER_WINDOW:20}
+      concurrent-requests: ${API_RATE_CONCURRENT_REQUESTS:64}
   kafka:
     topics:
       card-updated: ${TOPIC_CARD_UPDATED:card.updated}
@@ -182,15 +220,31 @@ carddemo:
       # returns the row to PENDING. Also caps the retry backoff, so a row the broker keeps
       # refusing is always claimable again within one timeout.
       claim-timeout: ${OUTBOX_RELAY_CLAIM_TIMEOUT:PT2M}
-      # Longest one send waits for the broker before messaging/KafkaEventPublisher reports the
-      # publish failed. The row then stays unpublished and the next sweep claims it again, so a
-      # slow broker delays an event and never loses one.
+      # Longest one send waits for the broker before messaging/KafkaEventPublisher fails the stage
+      # it returned. The row then stays unpublished and the next sweep claims it again, so a slow
+      # broker delays an event and never loses one. The producer window above resolves a send well
+      # inside this bound, and max-duration-ms below bounds the sweep before either of them.
       publish-timeout: ${OUTBOX_RELAY_PUBLISH_TIMEOUT:PT10S}
+      # One sweep publishes what it claimed and waits for each acknowledgement. This deadline bounds
+      # the whole sweep on the monotonic clock, rather than letting batch-size sends each take
+      # the producer window in turn. A sweep that reaches it stops, and the rows it did not reach
+      # are claimed by the next sweep.
+      max-duration-ms: ${OUTBOX_RELAY_MAX_DURATION_MS:5000}
     # domain/RetentionSweep removes only published rows after this diagnostic horizon.
     published-retention-hours: ${OUTBOX_PUBLISHED_RETENTION_HOURS:168}
   processed-event:
     # The same sweep removes duplicate-delivery markers after this horizon.
-    marker-retention-hours: ${PROCESSED_EVENT_RETENTION_HOURS:168}
+    # A marker has to outlast every window the record itself can come back through,
+    # and broker log retention is the shortest of those and the only one this
+    # platform configures. The two were equal, which left no room for segment
+    # cleanup lag, a restored backup, or a manually replayed window: a record still
+    # readable after its marker was swept is applied a second time. config/*Properties
+    # refuses a marker horizon under twice the broker figure at start-up, so the
+    # relationship is checked rather than remembered.
+    marker-retention-hours: ${PROCESSED_EVENT_RETENTION_HOURS:720}
+    # The broker retention this service is told to assume, which
+    # KAFKA_LOG_RETENTION_HOURS sets for the broker and for every service at once.
+    broker-retention-hours: ${KAFKA_LOG_RETENTION_HOURS:168}
   retention:
     sweep-interval-ms: ${RETENTION_SWEEP_INTERVAL_MS:3600000}
   # Bound on how long each locked read of one update waits for a row another writer holds.
@@ -280,4 +334,8 @@ logging:
       console: logstash
   level:
     root: ${LOG_LEVEL:INFO}
-    com.carddemo: ${LOG_LEVEL_CARDDEMO:DEBUG}
+    # INFO rather than DEBUG. A DEBUG default writes identifiers into every
+    # centralized log this deployment feeds, and a default is what an operator gets
+    # who starts this service directly rather than through compose or Kubernetes.
+    # Raise it for one run when tracing a message, and lower it again afterwards.
+    com.carddemo: ${LOG_LEVEL_CARDDEMO:INFO}

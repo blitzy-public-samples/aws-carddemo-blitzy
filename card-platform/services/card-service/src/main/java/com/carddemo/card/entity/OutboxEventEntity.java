@@ -81,7 +81,7 @@ public class OutboxEventEntity {
     public static final int EVENT_TYPE_MAX_LENGTH = 50;
 
     /**
-     * Length of every {@code aggregateId}, from {@code aggregate_id VARCHAR(11)} in
+     * Length of every {@code aggregateId}, from {@code aggregate_id CHAR(11)} in
      * {@code src/main/resources/db/migration/V1__schema.sql}. The width is
      * {@link PicClause#XREF_ACCT_ID_WIDTH}, which carries {@code XREF-ACCT-ID PIC 9(11)} at
      * {@code app/cpy/CVACT03Y.cpy:L7}.
@@ -311,14 +311,13 @@ public class OutboxEventEntity {
         return Objects.hashCode(eventId);
     }
 
-    // ------------------------------------------------------------------------------------
-    // Relay state. No COBOL ancestor: the source's one asynchronous handoff is the transient data
-    // queue write at app/cbl/CORPT00C.cbl:L517, which carries no lease. The enum, the four
-    // constants, the seven columns and the three operations below hold two invariants. A row is
-    // claimed by at most one relay instance, so one event is published once. A row carries an
-    // attempt count and a next-attempt time, so an undeliverable row is abandoned rather than
-    // retried forever ahead of the rows behind it.
-    // ------------------------------------------------------------------------------------
+    // Relay state. ADDITIVE: the source's one asynchronous handoff is the transient data queue
+    // write at app/cbl/CORPT00C.cbl:L517, which carries no lease. Two invariants hold. A row is
+    // claimed by at most one relay instance at a time, so two instances never publish it
+    // concurrently; a claim is not exactly-once delivery, because a send the broker acknowledged
+    // before the claiming transaction failed to commit leaves the row claimable and the next sweep
+    // publishes it again. A row carries an attempt count and a next-attempt time, so an
+    // undeliverable row is abandoned rather than retried forever ahead of the rows behind it.
 
     /**
      * How one row stands with the relay.

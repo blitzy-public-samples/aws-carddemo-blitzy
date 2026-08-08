@@ -4,7 +4,6 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -29,9 +28,9 @@ import tools.jackson.databind.json.JsonMapper;
 /**
  * Envelope and serialized-body tests for {@link NotificationHistoryResponse}.
  *
- * <p>Five components carry one card's alert history. The record declares them in the order
- * {@code cardToken}, {@code cardNumber}, {@code transactionCount}, {@code totalAmount},
- * {@code transactions}.
+ * <p>Four components carry one card's alert history. The record declares them in the order
+ * {@code cardNumber}, {@code transactionCount}, {@code totalAmount}, {@code transactions}. The card
+ * token that keys the read model is a storage key and reaches no response.
  *
  * <p>The statement program splits the envelope from the item. The move into
  * {@code TRNX-CARD-NUM} at {@code app/cbl/CBSTM03A.CBL:L421} runs once per card group. The move
@@ -74,17 +73,10 @@ import tools.jackson.databind.json.JsonMapper;
 final class NotificationHistoryResponseTest {
 
     /**
-     * The five component names, in the order {@link NotificationHistoryResponse} declares them.
+     * The four component names, in the order {@link NotificationHistoryResponse} declares them.
      */
     private static final List<String> DECLARED_COMPONENTS = List.of(
-            "cardToken", "cardNumber", "transactionCount", "totalAmount", "transactions");
-
-    /**
-     * The property names a body carries where the read model holds no row for the card. The
-     * display card number is left out of the body altogether.
-     */
-    private static final List<String> PROPERTIES_WITHOUT_A_DISPLAY_CARD_NUMBER = List.of(
-            "cardToken", "transactionCount", "totalAmount", "transactions");
+            "cardNumber", "transactionCount", "totalAmount", "transactions");
 
     /**
      * Paging and cursor names, lower-cased. The history route carries no paging parameter. No
@@ -242,10 +234,10 @@ final class NotificationHistoryResponseTest {
                 "NotificationHistoryResponse is a record");
     }
 
-    /** Asserts the response declares five components and no sixth. */
+    /** Asserts the response declares four components and no fifth. */
     @Test
-    void theResponseDeclaresFiveComponents() {
-        assertEquals(5, NotificationHistoryResponse.class.getRecordComponents().length,
+    void theResponseDeclaresFourComponents() {
+        assertEquals(4, NotificationHistoryResponse.class.getRecordComponents().length,
                 "component count");
     }
 
@@ -258,13 +250,12 @@ final class NotificationHistoryResponseTest {
     @Test
     void theComponentNamesFollowTheOrderTheRecordDeclares() {
         assertEquals(DECLARED_COMPONENTS, componentNames(),
-                "the five component names, in declaration order");
+                "the four component names, in declaration order");
     }
 
     /** Asserts the declared type of each component. */
     @Test
     void eachComponentCarriesTheTypeTheRecordDeclares() {
-        assertEquals(String.class, componentNamed("cardToken").getType(), "cardToken");
         assertEquals(String.class, componentNamed("cardNumber").getType(), "cardNumber");
         assertEquals(int.class, componentNamed("transactionCount").getType(), "transactionCount");
         assertEquals(String.class, componentNamed("totalAmount").getType(), "totalAmount");
@@ -346,8 +337,8 @@ final class NotificationHistoryResponseTest {
     }
 
     /**
-     * Asserts no accessor on the response or on any item returns the card number. Five response
-     * accessors and thirteen item accessors are read.
+     * Asserts no accessor on the response or on any item returns the card number. Four response
+     * accessors and twelve item accessors are read.
      */
     @Test
     void noAccessorOnTheResponseOrItsItemsReturnsTheCardNumber() throws Exception {
@@ -355,7 +346,7 @@ final class NotificationHistoryResponseTest {
 
         List<String> values = everyAccessorValue(responseWithThreeRows());
 
-        assertEquals(5 + 3 * 13, values.size(), "accessors read");
+        assertEquals(4 + 3 * 12, values.size(), "accessors read");
         for (String value : values) {
             assertFalse(value.contains(cardNumber), "no accessor returns the card number");
             assertFalse(SIXTEEN_DIGIT_RUN.matcher(value).find(),
@@ -397,32 +388,33 @@ final class NotificationHistoryResponseTest {
         }
     }
 
-    /** Asserts the body carries five properties, named and ordered as the record declares them. */
+    /** Asserts the body carries four properties, named and ordered as the record declares them. */
     @Test
-    void theSerializedBodyCarriesFivePropertiesInDeclarationOrder() {
+    void theSerializedBodyCarriesFourPropertiesInDeclarationOrder() {
         JsonNode body = bodyOf(responseWithThreeRows());
 
         assertEquals(DECLARED_COMPONENTS, propertiesOf(body), "property names, in that order");
-        assertEquals(5, body.size(), "property count");
-        assertTrue(body.get("cardToken").isString(), "the token travels as text");
+        assertEquals(4, body.size(), "property count");
         assertTrue(body.get("cardNumber").isString(), "the display value travels as text");
         assertTrue(body.get("totalAmount").isString(), "the total travels as text");
         assertTrue(body.get("transactions").isArray(), "the transactions travel as an array");
+        assertFalse(body.has("cardToken"), "the storage key reaches no body");
     }
 
     /**
-     * Asserts a body for a card with no row carries four properties and leaves out the display
-     * value.
+     * Asserts a body for a card with no row carries the same four properties, display value
+     * included. The masked form is derived from the path value rather than read from a row, so a
+     * card with no row names its card too, as the statement header does at
+     * {@code app/cbl/CBSTM03A.CBL:L318-L325}.
      */
     @Test
-    void aBodyForACardWithNoRowLeavesOutTheDisplayCardNumber() {
+    void aBodyForACardWithNoRowStillNamesItsCard() {
         JsonNode body = bodyOf(emptyResponse());
 
-        assertEquals(PROPERTIES_WITHOUT_A_DISPLAY_CARD_NUMBER, propertiesOf(body),
-                "property names, in that order");
+        assertEquals(DECLARED_COMPONENTS, propertiesOf(body), "property names, in that order");
         assertEquals(4, body.size(), "property count");
-        assertFalse(body.has("cardNumber"), "the display value is absent from the body");
-        assertEquals(CARD_TOKEN, body.get("cardToken").stringValue(), "the token is present");
+        assertEquals(MASKED_CARD_NUMBER, body.get("cardNumber").stringValue(),
+                "the display value is present");
     }
 
     /** Asserts three rows yield a count of three. */
@@ -445,7 +437,7 @@ final class NotificationHistoryResponseTest {
         for (int size = 0; size <= rows.size(); size++) {
             List<StatementTransactionEntity> page = rows.subList(0, size);
             NotificationHistoryResponse response =
-                    NotificationHistoryResponse.fromCardRows(CARD_TOKEN, ZERO_TOTAL, page);
+                    NotificationHistoryResponse.fromCardRows(MASKED_CARD_NUMBER, ZERO_TOTAL, page);
 
             assertEquals(response.transactions().size(), response.transactionCount(),
                     "count equals the item count at size " + size);
@@ -530,13 +522,13 @@ final class NotificationHistoryResponseTest {
     @Test
     void aTotalPastTwoFractionalDigitsIsRefusedForBothSigns() {
         IllegalArgumentException positive = assertThrows(IllegalArgumentException.class,
-                () -> NotificationHistoryResponse.fromCardRows(CARD_TOKEN, TOTAL_PAST_SCALE_TWO,
+                () -> NotificationHistoryResponse.fromCardRows(MASKED_CARD_NUMBER, TOTAL_PAST_SCALE_TWO,
                         List.of()),
                 "a total at three fractional digits");
         assertTrue(positive.getMessage().contains("scale"), "the message names the scale");
 
         IllegalArgumentException negative = assertThrows(IllegalArgumentException.class,
-                () -> NotificationHistoryResponse.fromCardRows(CARD_TOKEN,
+                () -> NotificationHistoryResponse.fromCardRows(MASKED_CARD_NUMBER,
                         NEGATIVE_TOTAL_PAST_SCALE_TWO, List.of()),
                 "a negative total at three fractional digits");
         assertTrue(negative.getMessage().contains("scale"), "the message names the scale");
@@ -617,13 +609,13 @@ final class NotificationHistoryResponseTest {
         assertEquals(List.of(), transactions, "the list holds no item");
     }
 
-    /** Asserts a card with no row carries its token and withholds the display card number. */
+    /** Asserts a card with no row still names its card, by the masked form of the path value. */
     @Test
-    void aCardWithNoRowCarriesItsTokenAndWithholdsTheDisplayCardNumber() {
+    void aCardWithNoRowStillNamesItsCard() {
         NotificationHistoryResponse response = emptyResponse();
 
-        assertEquals(CARD_TOKEN, response.cardToken(), "the token the request path carried");
-        assertNull(response.cardNumber(), "no row holds a masked form to report");
+        assertEquals(MASKED_CARD_NUMBER, response.cardNumber(), "the masked path value");
+        assertNotNull(response.cardNumber(), "the card is named whether or not a row exists");
     }
 
     /** Asserts a transaction list a caller receives cannot be edited. */
@@ -692,24 +684,22 @@ final class NotificationHistoryResponseTest {
         String cardNumber = fullCardNumber();
 
         IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
-                () -> new NotificationHistoryResponse(CARD_TOKEN, cardNumber, 0, "0.00",
-                        List.of()),
+                () -> new NotificationHistoryResponse(cardNumber, 0, "0.00", List.of()),
                 "a card number in the display component");
 
         assertFalse(refused.getMessage().contains(cardNumber), "no message names a card number");
     }
 
-    /** Asserts the constructor refuses a card token outside the shape it declares. */
+    /** Asserts the constructor refuses a card token where the masked card number belongs. */
     @Test
-    void aCardTokenOutsideItsDeclaredShapeIsRefused() {
+    void aCardTokenWhereTheMaskedCardNumberBelongsIsRefused() {
         assertThrows(IllegalArgumentException.class,
-                () -> new NotificationHistoryResponse(MASKED_CARD_NUMBER, null, 0, "0.00",
-                        List.of()),
-                "a masked card number where the token belongs");
+                () -> new NotificationHistoryResponse(CARD_TOKEN, 0, "0.00", List.of()),
+                "a card token in the display component");
         assertThrows(IllegalArgumentException.class,
-                () -> new NotificationHistoryResponse(CARD_TOKEN.toUpperCase(Locale.ROOT), null, 0,
+                () -> new NotificationHistoryResponse(MASKED_CARD_NUMBER.replace('*', '0'), 0,
                         "0.00", List.of()),
-                "a token in upper case");
+                "a value carrying no mask character");
         assertEquals(PanMasker.CARD_TOKEN_LENGTH, CARD_TOKEN.length(), "token width");
         assertTrue(CARD_TOKEN.matches(PanMasker.CARD_TOKEN_PATTERN), "token shape");
     }
@@ -720,12 +710,10 @@ final class NotificationHistoryResponseTest {
         List<NotificationTransactionItem> one = responseWithOneRow().transactions();
 
         assertThrows(IllegalArgumentException.class,
-                () -> new NotificationHistoryResponse(CARD_TOKEN, MASKED_CARD_NUMBER, 2, "0.00",
-                        one),
+                () -> new NotificationHistoryResponse(MASKED_CARD_NUMBER, 2, "0.00", one),
                 "a count above the items supplied");
         assertThrows(IllegalArgumentException.class,
-                () -> new NotificationHistoryResponse(CARD_TOKEN, MASKED_CARD_NUMBER, -1, "0.00",
-                        List.of()),
+                () -> new NotificationHistoryResponse(MASKED_CARD_NUMBER, -1, "0.00", List.of()),
                 "a negative count");
     }
 
@@ -733,49 +721,52 @@ final class NotificationHistoryResponseTest {
     @Test
     void aTotalOutsideTheDeclaredShapeIsRefused() {
         assertThrows(IllegalArgumentException.class,
-                () -> new NotificationHistoryResponse(CARD_TOKEN, null, 0, "0", List.of()),
+                () -> new NotificationHistoryResponse(MASKED_CARD_NUMBER, 0, "0", List.of()),
                 "a total without its two fractional digits");
         assertThrows(IllegalArgumentException.class,
-                () -> new NotificationHistoryResponse(CARD_TOKEN, null, 0, "1234567890.00",
+                () -> new NotificationHistoryResponse(MASKED_CARD_NUMBER, 0, "1234567890.00",
                         List.of()),
                 "a total at ten integer digits");
     }
 
     /**
-     * Asserts the constructor refuses a display card number that disagrees with the items. The
-     * display value is envelope-level, from {@code TRNX-CARD-NUM PIC X(16)} at
-     * {@code app/cpy/COSTM01.CPY:L22}.
+     * Asserts the display card number stands on its own, whatever the items carry. No item repeats
+     * the card: {@code TRNX-CARD-NUM PIC X(16)} at {@code app/cpy/COSTM01.CPY:L22} sits inside the
+     * group {@code 05 TRNX-KEY.} at {@code app/cpy/COSTM01.CPY:L21} and is envelope-level.
      */
     @Test
-    void aDisplayCardNumberDisagreeingWithTheItemsIsRefused() {
+    void theDisplayCardNumberStandsOnItsOwn() {
         List<NotificationTransactionItem> one = responseWithOneRow().transactions();
 
-        assertThrows(IllegalArgumentException.class,
-                () -> new NotificationHistoryResponse(CARD_TOKEN, SECOND_MASKED_CARD_NUMBER, 1,
-                        "0.00", one),
-                "a display value no item reports");
-        assertThrows(IllegalArgumentException.class,
-                () -> new NotificationHistoryResponse(CARD_TOKEN, null, 1, "0.00", one),
-                "items with no display value beside them");
+        NotificationHistoryResponse response =
+                new NotificationHistoryResponse(SECOND_MASKED_CARD_NUMBER, 1, "0.00", one);
+
+        assertEquals(SECOND_MASKED_CARD_NUMBER, response.cardNumber(), "the value supplied");
         assertNotEquals(MASKED_CARD_NUMBER, SECOND_MASKED_CARD_NUMBER,
                 "two cards ending in different digits mask apart");
+        assertThrows(NullPointerException.class,
+                () -> new NotificationHistoryResponse(null, 1, "0.00", one),
+                "items with no display value beside them");
     }
 
     /** Asserts the factory names each null argument it refuses. */
     @Test
     void aNullArgumentToTheFactoryIsRefusedByName() {
-        NullPointerException noToken = assertThrows(NullPointerException.class,
+        NullPointerException noCardNumber = assertThrows(NullPointerException.class,
                 () -> NotificationHistoryResponse.fromCardRows(null, ZERO_TOTAL, List.of()),
-                "a null card token");
-        assertTrue(noToken.getMessage().contains("cardToken"), "the message names the argument");
+                "a null masked card number");
+        assertTrue(noCardNumber.getMessage().contains("maskedCardNumber"),
+                "the message names the argument");
 
         NullPointerException noTotal = assertThrows(NullPointerException.class,
-                () -> NotificationHistoryResponse.fromCardRows(CARD_TOKEN, null, List.of()),
+                () -> NotificationHistoryResponse.fromCardRows(MASKED_CARD_NUMBER, null,
+                        List.of()),
                 "a null total");
         assertTrue(noTotal.getMessage().contains("total"), "the message names the argument");
 
         NullPointerException noRows = assertThrows(NullPointerException.class,
-                () -> NotificationHistoryResponse.fromCardRows(CARD_TOKEN, ZERO_TOTAL, null),
+                () -> NotificationHistoryResponse.fromCardRows(MASKED_CARD_NUMBER, ZERO_TOTAL,
+                        null),
                 "null rows");
         assertTrue(noRows.getMessage().contains("rows"), "the message names the argument");
     }
@@ -805,7 +796,7 @@ final class NotificationHistoryResponseTest {
      * @return the response
      */
     private static NotificationHistoryResponse responseWithThreeRows() {
-        return NotificationHistoryResponse.fromCardRows(CARD_TOKEN, TOTAL_AT_SCALE_TWO,
+        return NotificationHistoryResponse.fromCardRows(MASKED_CARD_NUMBER, TOTAL_AT_SCALE_TWO,
                 threeRows());
     }
 
@@ -815,7 +806,7 @@ final class NotificationHistoryResponseTest {
      * @return the response
      */
     private static NotificationHistoryResponse responseWithOneRow() {
-        return NotificationHistoryResponse.fromCardRows(CARD_TOKEN, TOTAL_AT_SCALE_TWO,
+        return NotificationHistoryResponse.fromCardRows(MASKED_CARD_NUMBER, TOTAL_AT_SCALE_TWO,
                 List.of(row(FIRST_TRANSACTION_ID)));
     }
 
@@ -826,7 +817,7 @@ final class NotificationHistoryResponseTest {
      * @return the response
      */
     private static NotificationHistoryResponse responseWithTotal(BigDecimal total) {
-        return NotificationHistoryResponse.fromCardRows(CARD_TOKEN, total,
+        return NotificationHistoryResponse.fromCardRows(MASKED_CARD_NUMBER, total,
                 List.of(row(FIRST_TRANSACTION_ID)));
     }
 
@@ -836,7 +827,7 @@ final class NotificationHistoryResponseTest {
      * @return the response
      */
     private static NotificationHistoryResponse emptyResponse() {
-        return NotificationHistoryResponse.fromCardRows(CARD_TOKEN, ZERO_TOTAL, List.of());
+        return NotificationHistoryResponse.fromCardRows(MASKED_CARD_NUMBER, ZERO_TOTAL, List.of());
     }
 
     /**
@@ -918,8 +909,8 @@ final class NotificationHistoryResponseTest {
     }
 
     /**
-     * Reads every accessor of one response and of every item it carries. Five response accessors
-     * and thirteen accessors per item are read.
+     * Reads every accessor of one response and of every item it carries. Four response accessors
+     * and twelve accessors per item are read.
      *
      * @param response the response
      * @return the rendered value of each accessor

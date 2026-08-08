@@ -158,8 +158,11 @@ class TransactionPostedConsumerTest {
     private static final int FRACTION_SEPARATOR = 20;
 
     /**
-     * Columns the read model holds: the thirteen fields of {@code app/cpy/COSTM01.CPY:L22-L35}, and
-     * the masked display value that travels beside the key.
+     * Columns the read model holds: the twelve source fields of
+     * {@code app/cpy/COSTM01.CPY:L23-L35} that carry no card number, plus the two representations
+     * that stand in for {@code TRNX-CARD-NUM PIC X(16)} at {@code app/cpy/COSTM01.CPY:L22} — the
+     * card token that keys a row, and the masked display value beside it. No column and no event
+     * property carries a full card number.
      */
     private static final int COLUMN_COUNT = 14;
 
@@ -383,8 +386,9 @@ class TransactionPostedConsumerTest {
     }
 
     /**
-     * Every column carries a value the event supplied: the thirteen fields of
-     * {@code app/cpy/COSTM01.CPY:L22-L35}, and the masked display value beside the key.
+     * Every column carries a value the event supplied: the twelve source fields that carry no card
+     * number, and the card token and masked display value that stand in for
+     * {@code TRNX-CARD-NUM PIC X(16)}.
      */
     @Test
     @DisplayName("All fourteen columns carry a value the event supplied, and none is null")
@@ -509,7 +513,7 @@ class TransactionPostedConsumerTest {
         assertThat(this.statementTransactions.storedRows()).hasSize(1);
     }
 
-    /** The key check runs ahead of the claim and every write. */
+    /** The key check runs ahead of the claim and every write, and inside the measured block. */
     @Test
     @DisplayName("A key naming another aggregate is refused, and nothing is written")
     void aKeyNamingAnotherAggregateIsRefused() {
@@ -520,6 +524,17 @@ class TransactionPostedConsumerTest {
 
         assertThat(this.sequence).isEmpty();
         assertThat(this.statementTransactions.storedRows()).isEmpty();
+        assertThat(this.metrics.eventsConsumed(NotificationMetrics.EVENT_TRANSACTION_POSTED).count())
+                .as("the delivery reached this listener, so it is counted as read even though it "
+                        + "was refused; this record is the one that travels to the dead-letter topic")
+                .isEqualTo(1.0d);
+        assertThat(this.metrics.failures(NotificationMetrics.FAILURE_RENDERING).count())
+                .as("the refusal is counted as a failed attempt of this listener")
+                .isEqualTo(1.0d);
+        assertThat(this.metrics.processingLatency(NotificationMetrics.EVENT_TRANSACTION_POSTED)
+                .count())
+                .as("the refusal is timed like every other delivery")
+                .isEqualTo(1L);
     }
 
     /** An unkeyed record is ordered against none of its account's other events. */
@@ -533,6 +548,11 @@ class TransactionPostedConsumerTest {
 
         assertThat(this.sequence).isEmpty();
         assertThat(this.processedEvents.claimCalls()).isZero();
+        assertThat(this.metrics.eventsConsumed(NotificationMetrics.EVENT_TRANSACTION_POSTED).count())
+                .as("an unkeyed delivery is still a delivery this listener read")
+                .isEqualTo(1.0d);
+        assertThat(this.metrics.failures(NotificationMetrics.FAILURE_RENDERING).count())
+                .isEqualTo(1.0d);
     }
 
     /**
@@ -594,7 +614,6 @@ class TransactionPostedConsumerTest {
         this.consumer.onTransactionPosted(event, this.acknowledgment, TOPIC, event.aggregateId());
     }
 
-    /** Builds one event carrying every value a row needs, under a fresh event identifier. */
     private static TransactionPosted postedEvent() {
         EventEnvelope envelope = EventEnvelope.of(TransactionPosted.EVENT_TYPE, ACCOUNT_ID,
                 TransactionPosted.TRANSACTION_DETAIL_SCHEMA_VERSION);
@@ -604,7 +623,6 @@ class TransactionPostedConsumerTest {
                 MERCHANT_ID, MERCHANT_NAME, MERCHANT_CITY, MERCHANT_ZIP, ORIGIN_TIMESTAMP);
     }
 
-    /** Reads the row the listener stored first. */
     private StatementTransactionEntity storedRow() {
         assertThat(this.statementTransactions.storedRows()).isNotEmpty();
         return this.statementTransactions.storedRows().get(0);
@@ -656,14 +674,12 @@ class TransactionPostedConsumerTest {
         return bound.get(0);
     }
 
-    /** Reads the binding one method carries. */
     private static Annotation listenerBinding(Method listener) {
         Annotation binding = bindingOrNull(listener);
         assertThat(binding).isNotNull();
         return binding;
     }
 
-    /** Returns the binding one method carries, and null where it carries none. */
     private static Annotation bindingOrNull(Method candidate) {
         for (Annotation annotation : candidate.getAnnotations()) {
             if (LISTENER_ANNOTATION.equals(annotation.annotationType().getSimpleName())) {
@@ -673,13 +689,11 @@ class TransactionPostedConsumerTest {
         return null;
     }
 
-    /** Reads one attribute of one annotation. */
     private static Object attributeOf(Annotation binding, String name)
             throws ReflectiveOperationException {
         return binding.annotationType().getMethod(name).invoke(binding);
     }
 
-    /** Returns one value at its declared width, padded on the right with spaces. */
     private static String padded(String value, int width) {
         return value + " ".repeat(width - value.length());
     }
@@ -695,7 +709,6 @@ class TransactionPostedConsumerTest {
         return positions;
     }
 
-    /** Reads the character one text holds at a one-based position. */
     private static char characterAt(String value, int position) {
         return value.charAt(position - 1);
     }
@@ -945,7 +958,9 @@ class TransactionPostedConsumerTest {
         }
 
         @Override public long count() { throw unused(); }
-        @Override public int deleteAttemptsBefore(Instant horizon) { throw unused(); }
+        @Override public int deleteRenderedBefore(Instant horizon, int limit) {
+            throw unused();
+        }
     }
 
     /** Renderer of the cardholder alert, recording the seven arguments each request carried. */

@@ -10,11 +10,11 @@ import com.carddemo.account.config.AccountProperties;
 import com.carddemo.account.config.ObservabilityConfig;
 import com.carddemo.account.domain.validation.EditResult;
 import com.carddemo.account.entity.AccountEntity;
-import com.carddemo.account.entity.CardCrossReferenceEntity;
+import com.carddemo.account.entity.AccountCustomerLinkEntity;
 import com.carddemo.account.entity.CustomerEntity;
 import com.carddemo.account.outbox.OutboxWriter;
 import com.carddemo.account.repository.AccountRepository;
-import com.carddemo.account.repository.CardCrossReferenceRepository;
+import com.carddemo.account.repository.AccountCustomerLinkRepository;
 import com.carddemo.account.repository.CustomerRepository;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.util.Optional;
@@ -26,7 +26,7 @@ import org.springframework.transaction.support.TransactionCallback;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
- * Verifies that the account update path derives its customer from {@code card_xref}.
+ * Verifies that the account update path derives its customer from {@code account_customer_link}.
  *
  * <p>The tests use the no-change branch so no unrelated field edit obscures the authority check.
  * A malicious pairing must be refused even when the submitted old and new copies are identical.
@@ -40,7 +40,7 @@ class AccountUpdateRelationshipTest {
 
     private AccountRepository accounts;
     private CustomerRepository customers;
-    private CardCrossReferenceRepository crossReferences;
+    private AccountCustomerLinkRepository customerLinks;
     private OutboxWriter outboxWriter;
     private AccountUpdateService service;
 
@@ -48,9 +48,9 @@ class AccountUpdateRelationshipTest {
     void setUp() {
         accounts = mock(AccountRepository.class);
         customers = mock(CustomerRepository.class);
-        crossReferences = mock(CardCrossReferenceRepository.class);
+        customerLinks = mock(AccountCustomerLinkRepository.class);
         outboxWriter = mock(OutboxWriter.class);
-        service = new AccountUpdateService(accounts, customers, crossReferences,
+        service = new AccountUpdateService(accounts, customers, customerLinks,
                 mock(ConcurrentChangeDetector.class), outboxWriter, immediateTransactions(), accountMeters(),
                 accountProperties());
     }
@@ -60,8 +60,8 @@ class AccountUpdateRelationshipTest {
     void aCallerCannotPairAnAccountWithAnotherStoredCustomer() {
         AccountEntity account = account(ACCOUNT_ID);
         CustomerEntity suppliedCustomer = customer(OTHER_CUSTOMER_ID);
-        CardCrossReferenceEntity storedRelationship = relationship(CUSTOMER_ID);
-        when(crossReferences.findFirstByAccountIdOrderByCardNumberAsc(ACCOUNT_ID))
+        AccountCustomerLinkEntity storedRelationship = relationship(CUSTOMER_ID);
+        when(customerLinks.findByAccountId(ACCOUNT_ID))
                 .thenReturn(Optional.of(storedRelationship));
 
         EditResult result = service.updateAccount(
@@ -79,8 +79,8 @@ class AccountUpdateRelationshipTest {
     void aStoredRelationshipPreservesTheNoChangeResult() {
         AccountEntity account = account(ACCOUNT_ID);
         CustomerEntity customer = customer(CUSTOMER_ID);
-        CardCrossReferenceEntity storedRelationship = relationship(CUSTOMER_ID);
-        when(crossReferences.findFirstByAccountIdOrderByCardNumberAsc(ACCOUNT_ID))
+        AccountCustomerLinkEntity storedRelationship = relationship(CUSTOMER_ID);
+        when(customerLinks.findByAccountId(ACCOUNT_ID))
                 .thenReturn(Optional.of(storedRelationship));
 
         EditResult result = service.updateAccount(account, customer, account, customer);
@@ -97,7 +97,7 @@ class AccountUpdateRelationshipTest {
     void aMissingRelationshipIsRefusedWithoutProbingACallerSelectedCustomer() {
         AccountEntity account = account(ACCOUNT_ID);
         CustomerEntity customer = customer(CUSTOMER_ID);
-        when(crossReferences.findFirstByAccountIdOrderByCardNumberAsc(ACCOUNT_ID))
+        when(customerLinks.findByAccountId(ACCOUNT_ID))
                 .thenReturn(Optional.empty());
 
         EditResult result = service.updateAccount(account, customer, account, customer);
@@ -120,8 +120,8 @@ class AccountUpdateRelationshipTest {
         return customer;
     }
 
-    private static CardCrossReferenceEntity relationship(String customerId) {
-        CardCrossReferenceEntity relationship = mock(CardCrossReferenceEntity.class);
+    private static AccountCustomerLinkEntity relationship(String customerId) {
+        AccountCustomerLinkEntity relationship = mock(AccountCustomerLinkEntity.class);
         when(relationship.getCustomerId()).thenReturn(customerId);
         return relationship;
     }
@@ -165,7 +165,7 @@ class AccountUpdateRelationshipTest {
                 new AccountProperties.Outbox(new AccountProperties.Outbox.Relay(500L, 100,
                         "account-relay", java.time.Duration.ofMinutes(2L), 1_000L,
                         java.time.Duration.ofSeconds(10L)), 168L),
-                new AccountProperties.ProcessedEvent(168L),
+                new AccountProperties.ProcessedEvent(720L, 168L),
                 new AccountProperties.Retention(3_600_000L),
                 new AccountProperties.Write(3_000L));
     }

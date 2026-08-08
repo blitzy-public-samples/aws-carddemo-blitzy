@@ -12,7 +12,11 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -22,8 +26,10 @@ import com.carddemo.authorization.api.GlobalExceptionHandler.ApiErrorResponse;
 import com.carddemo.authorization.config.AuthorizationProperties;
 import com.carddemo.authorization.domain.AuthenticatedActor;
 import com.carddemo.authorization.domain.AuthorizationService;
+import com.carddemo.authorization.domain.CallerNotEntitledException;
+import com.carddemo.authorization.domain.CycleExposureReservation;
 import com.carddemo.authorization.domain.DeclineRule;
-import com.carddemo.authorization.domain.OriginTimestampWindow;
+import com.carddemo.authorization.domain.RequestCaller;
 import com.carddemo.authorization.domain.TransactionIdentifierSource;
 import com.carddemo.authorization.domain.rules.AccountExistsRule;
 import com.carddemo.authorization.domain.rules.AccountExpirationRule;
@@ -64,9 +70,14 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.dao.DataAccessResourceFailureException;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
+import org.springframework.test.web.servlet.RequestBuilder;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.transaction.support.SimpleTransactionStatus;
 import org.springframework.transaction.support.TransactionCallback;
@@ -110,22 +121,16 @@ import org.springframework.web.bind.annotation.RequestMapping;
 final class AuthorizationControllerTest {
 
     /**
-     * Card number at positions 263 through 278 of record 1 of {@code app/data/ASCII/dailytran.txt}.
-     * Row 21 of {@code app/data/ASCII/cardxref.txt} resolves it to account
-     * {@link #WORKED_EXAMPLE_ACCOUNT}.
+     * Card number sliced at positions 263 through 278 of record 1 of
+     * {@code app/data/ASCII/dailytran.txt}, filling {@code DALYTRAN-CARD-NUM PIC X(16)} at
+     * {@code app/cpy/CVTRA06Y.cpy:L15}.
      */
     private static final String WORKED_EXAMPLE_CARD = "4859452612877065";
 
-    /**
-     * Customer identifier row 21 of {@code app/data/ASCII/cardxref.txt} carries, sliced at the
-     * {@code XREF-CUST-ID PIC 9(09)} offset of {@code app/cpy/CVACT03Y.cpy:L6}.
-     */
+    /** Customer identifier at the {@code XREF-CUST-ID PIC 9(09)} offset of {@code app/cpy/CVACT03Y.cpy:L6}. */
     private static final String WORKED_EXAMPLE_CUSTOMER = "000000007";
 
-    /**
-     * Account identifier row 21 of {@code app/data/ASCII/cardxref.txt} carries, sliced at the
-     * {@code XREF-ACCT-ID PIC 9(11)} offset of {@code app/cpy/CVACT03Y.cpy:L7}.
-     */
+    /** Account identifier at the {@code XREF-ACCT-ID PIC 9(11)} offset of {@code app/cpy/CVACT03Y.cpy:L7}. */
     private static final String WORKED_EXAMPLE_ACCOUNT = "00000000007";
 
     /**
@@ -136,21 +141,21 @@ final class AuthorizationControllerTest {
     private static final String WORKED_EXAMPLE_AMOUNT = "504.77";
 
     /**
-     * Credit limit of account 7 in {@code app/data/ASCII/acctdata.txt}, from
+     * Credit limit of the worked example's account, from
      * {@code ACCT-CREDIT-LIMIT PIC S9(10)V99} at {@code app/cpy/CVACT01Y.cpy:L8}.
      */
     private static final BigDecimal WORKED_EXAMPLE_CREDIT_LIMIT = new BigDecimal("2065.00");
 
     /**
-     * Expiry date of account 7, from {@code ACCT-EXPIRAION-DATE PIC X(10)} at
+     * Expiry date of the worked example's account, from {@code ACCT-EXPIRAION-DATE PIC X(10)} at
      * {@code app/cpy/CVACT01Y.cpy:L11}. The source spells the field name that way.
      */
     private static final String WORKED_EXAMPLE_EXPIRY = "2024-12-13";
 
     /**
-     * Cycle accumulator value of account 7, held by both
-     * {@code ACCT-CURR-CYC-CREDIT} at {@code app/cpy/CVACT01Y.cpy:L13} and
-     * {@code ACCT-CURR-CYC-DEBIT} at {@code app/cpy/CVACT01Y.cpy:L14}.
+     * Cycle accumulator value held by both {@code ACCT-CURR-CYC-CREDIT} at
+     * {@code app/cpy/CVACT01Y.cpy:L13} and {@code ACCT-CURR-CYC-DEBIT} at
+     * {@code app/cpy/CVACT01Y.cpy:L14}.
      */
     private static final BigDecimal ZERO_CYCLE = new BigDecimal("0.00");
 
@@ -231,6 +236,19 @@ final class AuthorizationControllerTest {
     /** The identity a call carries into the audit column. */
     private static final String ACTOR = "user0001";
 
+    /**
+     * The caller every request through the real decision path presents.
+     *
+     * <p>It reaches every subject, and it is supplied as the default principal of that path because
+     * those requests measure statuses and bodies rather than entitlement: a caller owning nothing is
+     * refused 403 before the media type, the body ceiling or a reject code is ever reached.
+     * {@code CallerEntitlementTest} measures entitlement, and the nested class below measures the 403
+     * this endpoint answers with.
+     */
+    private static final Authentication ENTITLED_CALLER = new UsernamePasswordAuthenticationToken(
+            ACTOR, "n/a", List.of(new SimpleGrantedAuthority(
+                    RequestCaller.ADMINISTRATOR_AUTHORITY)));
+
     /** Transaction type code of record 1, at positions 17 and 18. */
     private static final String TYPE_CODE = "01";
 
@@ -257,10 +275,6 @@ final class AuthorizationControllerTest {
 
     /** Path of the one route this service publishes. */
     private static final String ROUTE = "/authorizations";
-
-    /** A window wide enough to hold the 2022 capture moments the fixtures carry. */
-    private static final OriginTimestampWindow FIXTURE_WINDOW =
-            new OriginTimestampWindow(Duration.ofDays(36500).toMinutes(), 5);
 
     /** A freshness ceiling wide enough that no observation below is ever too old. */
     private static final Duration TOLERANT_STALENESS = Duration.ofDays(36500);
@@ -293,8 +307,6 @@ final class AuthorizationControllerTest {
     }
 
     /**
-     * Builds a complete body carrying one changed member.
-     *
      * @param field name of the member to change
      * @param value the value to set, or {@code null} to send a JavaScript Object Notation null
      * @return the rendered body
@@ -306,8 +318,6 @@ final class AuthorizationControllerTest {
     }
 
     /**
-     * Builds a complete body with one member dropped.
-     *
      * @param field name of the member to drop
      * @return the rendered body
      */
@@ -359,8 +369,6 @@ final class AuthorizationControllerTest {
     }
 
     /**
-     * Runs a decision callback on the calling thread with no transaction manager.
-     *
      * @return a template that executes its callback directly
      */
     private static TransactionTemplate immediateTransactions() {
@@ -373,14 +381,14 @@ final class AuthorizationControllerTest {
     }
 
     /**
-     * Supplies the typed replica policy the decision service consumes.
-     *
      * @return configuration holding {@link #TOLERANT_STALENESS} and nothing else
      */
     private static AuthorizationProperties tolerantProperties() {
         AuthorizationProperties properties = mock(AuthorizationProperties.class);
         when(properties.replica())
                 .thenReturn(new AuthorizationProperties.Replica(TOLERANT_STALENESS));
+        when(properties.decision())
+                .thenReturn(new AuthorizationProperties.Decision(3_000L, Duration.ofMinutes(15)));
         return properties;
     }
 
@@ -492,27 +500,30 @@ final class AuthorizationControllerTest {
         when(cardCrossReferences.findByCardNumber(any())).thenReturn(Optional.empty());
         when(cardCrossReferences.findFirstByAccountIdOrderByCardNumberAsc(any()))
                 .thenReturn(Optional.empty());
-        when(accountSnapshots.findByAccountId(any())).thenReturn(Optional.empty());
+        when(accountSnapshots.findForUpdateByAccountId(any())).thenReturn(Optional.empty());
+        when(accountSnapshots.reserveCycleExposure(any(), any(), any(), any())).thenReturn(1);
 
+        CycleExposureReservation cycleExposure =
+                new CycleExposureReservation(accountSnapshots, tolerantProperties());
         List<DeclineRule> rules = List.of(new CardCrossReferenceRule(cardCrossReferences),
-                new AccountExistsRule(accountSnapshots), new CreditLimitRule(),
+                new AccountExistsRule(accountSnapshots), new CreditLimitRule(cycleExposure),
                 new AccountExpirationRule());
 
         AuthorizationService service = new AuthorizationService(rules, cardCrossReferences,
                 identifiers, new OutboxWriter(outboxEvents),
                 mock(UnresolvedCardAttemptRepository.class),
-                mock(AuthorizationDecisionRepository.class), FIXTURE_WINDOW,
-                Metrics.globalRegistry, immediateTransactions(), tolerantProperties());
+                mock(AuthorizationDecisionRepository.class),
+                Metrics.globalRegistry, immediateTransactions(), tolerantProperties(),
+                cycleExposure);
 
         decisionPath = MockMvcBuilders
                 .standaloneSetup(new AuthorizationController(service))
                 .setControllerAdvice(new GlobalExceptionHandler())
+                .defaultRequest(post(ROUTE).principal(ENTITLED_CALLER))
                 .build();
     }
 
     /**
-     * Supplies the cross-reference row a card number resolves to, on both read paths.
-     *
      * @param cardNumber the sixteen-character key
      * @param customerId the nine-digit customer identifier
      * @param accountId  the eleven-digit account identifier
@@ -525,14 +536,12 @@ final class AuthorizationControllerTest {
     }
 
     /**
-     * Supplies the credit projection row an account identifier resolves to.
-     *
      * @param accountId   the eleven-digit key
      * @param creditLimit the limit the credit test compares
      * @param expiry      the ten-character date the expiry test compares
      */
     private void resolveAccount(String accountId, BigDecimal creditLimit, String expiry) {
-        when(accountSnapshots.findByAccountId(accountId))
+        when(accountSnapshots.findForUpdateByAccountId(accountId))
                 .thenReturn(Optional.of(creditSnapshot(accountId, creditLimit, expiry)));
     }
 
@@ -559,7 +568,6 @@ final class AuthorizationControllerTest {
     @DisplayName("Status of one decision")
     final class DecisionStatus {
 
-        /** Asserts an approval answers 200 carrying the decision and no Location header. */
         @Test
         void anApprovalAnswersTwoHundredAndNamesNoCreatedResource() throws Exception {
             stubApproval(ALLOCATED_ID);
@@ -576,7 +584,6 @@ final class AuthorizationControllerTest {
                     .andExpect(jsonPath("$.declineReasonDescription").doesNotExist());
         }
 
-        /** Asserts each of the three declines that resolve an account answers 422. */
         @Test
         void eachResolvedDeclineAnswersFourTwentyTwo() throws Exception {
             for (DeclineReason reason : DeclineReason.values()) {
@@ -598,7 +605,7 @@ final class AuthorizationControllerTest {
         }
 
         /**
-         * Asserts the one decline that names no account answers 422 with an absent account
+         * The one decline that names no account answers 422 with an absent account
          * identifier.
          *
          * <p>{@code app/cbl/CBTRN02C.cbl:L385} assigns that reject code inside the invalid-key limb
@@ -622,7 +629,6 @@ final class AuthorizationControllerTest {
                     .andExpect(jsonPath("$.accountId").value(Matchers.nullValue()));
         }
 
-        /** Asserts no decline answers 500 and none answers 503. */
         @Test
         void noDeclineAnswersFiveHundredOrFiveHundredAndThree() throws Exception {
             for (DeclineReason reason : DeclineReason.values()) {
@@ -640,7 +646,7 @@ final class AuthorizationControllerTest {
         }
 
         /**
-         * Asserts a declined call produces no error body, so the advice never sees a decline.
+         * A declined call produces no error body, so the advice never sees a decline.
          *
          * <p>{@link AuthorizationController} returns a status and a value. It raises nothing for a
          * decline, so {@link GlobalExceptionHandler} has no part in that path.
@@ -672,7 +678,6 @@ final class AuthorizationControllerTest {
     @DisplayName("Wire form of one reject code")
     final class RejectCodeWireForm {
 
-        /** Asserts a reject code travels as four zero-padded characters and not as a number. */
         @Test
         void aRejectCodeTravelsAsFourZeroPaddedCharacters() throws Exception {
             for (DeclineReason reason : DeclineReason.values()) {
@@ -693,7 +698,6 @@ final class AuthorizationControllerTest {
             }
         }
 
-        /** Asserts each reject text fits the width of its record field. */
         @Test
         void eachRejectTextFitsSeventySixCharacters() {
             for (DeclineReason reason : DeclineReason.values()) {
@@ -707,7 +711,7 @@ final class AuthorizationControllerTest {
         }
 
         /**
-         * Asserts the served text is the one {@link DeclineReason} holds, with nothing added.
+         * The served text is the one {@link DeclineReason} holds, with nothing added.
          *
          * <p>{@code app/cbl/CBTRN02C.cbl:L417-L419} spells the longest of the four as
          * {@code TRANSACTION RECEIVED AFTER ACCT EXPIRATION}, with the account abbreviated.
@@ -728,7 +732,7 @@ final class AuthorizationControllerTest {
         }
 
         /**
-         * Asserts the served body carries five members and none of the values the source keeps
+         * The served body carries five members and none of the values the source keeps
          * elsewhere.
          *
          * <p>The three-hundred-and-fifty-byte payload beside the trailer,
@@ -818,7 +822,7 @@ final class AuthorizationControllerTest {
         }
 
         /**
-         * Asserts a body naming neither identifier reports the text of app/cbl/COTRN02C.cbl:L226.
+         * A body naming neither identifier reports the text of app/cbl/COTRN02C.cbl:L226.
          *
          * <p>That text belongs to the {@code WHEN OTHER} limb of the {@code EVALUATE TRUE} at
          * {@code app/cbl/COTRN02C.cbl:L195}, which closes at {@code app/cbl/COTRN02C.cbl:L230}.
@@ -854,7 +858,7 @@ final class AuthorizationControllerTest {
         }
 
         /**
-         * Asserts a misshapen processing moment reports the text of app/cbl/COTRN02C.cbl:L375.
+         * A misshapen processing moment reports the text of app/cbl/COTRN02C.cbl:L375.
          *
          * <p>That text carries no trailing ellipsis, and a copy that adds one is a defect.
          */
@@ -869,7 +873,7 @@ final class AuthorizationControllerTest {
         }
 
         /**
-         * Asserts a capture date the tolerant policy declines reports the text of
+         * A capture date the tolerant policy declines reports the text of
          * app/cbl/COTRN02C.cbl:L401.
          */
         @Test
@@ -882,7 +886,7 @@ final class AuthorizationControllerTest {
         }
 
         /**
-         * Asserts a processing date the tolerant policy declines reports the text of
+         * A processing date the tolerant policy declines reports the text of
          * app/cbl/COTRN02C.cbl:L421.
          */
         @Test
@@ -896,7 +900,7 @@ final class AuthorizationControllerTest {
         }
 
         /**
-         * Asserts a non-numeric merchant identifier reports the text of app/cbl/COTRN02C.cbl:L432.
+         * A non-numeric merchant identifier reports the text of app/cbl/COTRN02C.cbl:L432.
          */
         @Test
         void aNonNumericMerchantIdentifierReportsItsOwnText() throws Exception {
@@ -909,7 +913,7 @@ final class AuthorizationControllerTest {
         }
 
         /**
-         * Asserts three of the nine texts close without an ellipsis and six close with one.
+         * Three of the nine texts close without an ellipsis and six close with one.
          *
          * <p>Read first-hand, {@code app/cbl/COTRN02C.cbl:L345}, {@code :L360} and {@code :L375}
          * carry no trailing dots, while {@code :L199}, {@code :L213}, {@code :L226}, {@code :L401},
@@ -942,7 +946,7 @@ final class AuthorizationControllerTest {
         }
 
         /**
-         * Asserts a refused field and a decline share {@code 422} and differ in body shape.
+         * A refused field and a decline share {@code 422} and differ in body shape.
          *
          * <p>A refused field answers {@link ApiErrorResponse}. A decline answers
          * {@link AuthorizationResponse}. A caller reads the two apart by shape.
@@ -977,7 +981,6 @@ final class AuthorizationControllerTest {
     @DisplayName("Statuses replacing the abend")
     final class FailureStatuses {
 
-        /** Asserts a body the reader cannot parse answers 400 with one fixed text. */
         @Test
         void anUnreadableBodyAnswersFourHundred() throws Exception {
             mockMvc.perform(post(ROUTE).contentType(MediaType.APPLICATION_JSON)
@@ -988,6 +991,30 @@ final class AuthorizationControllerTest {
                     .andExpect(jsonPath("$.messages[0]")
                             .value(GlobalExceptionHandler.UNREADABLE_BODY_MESSAGE));
 
+            verify(authorizations, never()).authorize(any(), any());
+        }
+
+        /**
+         * Asserts a method this route does not serve answers 405 with an Allow header.
+         *
+         * <p>The catch-all arm claimed the checked exception the framework raises for an unsupported
+         * method before the protocol arm existed, so a read of this route answered {@code 500} and
+         * the fault text. A client cannot tell that answer from a fault of this service, and a retry
+         * of it repeats the mistake. {@code Allow} names the one method this route serves.
+         */
+        @Test
+        void aMethodThisRouteDoesNotServeAnswersFourOhFive() throws Exception {
+            for (RequestBuilder wrongMethod : List.of(get(ROUTE), put(ROUTE), patch(ROUTE),
+                    delete(ROUTE))) {
+
+                mockMvc.perform(wrongMethod)
+                        .andExpect(status().isMethodNotAllowed())
+                        .andExpect(header().string(HttpHeaders.ALLOW, "POST"))
+                        .andExpect(jsonPath("$.status").value(405))
+                        .andExpect(jsonPath("$.error").value(ApiErrorResponse.UNPROCESSABLE))
+                        .andExpect(jsonPath("$.messages[0]")
+                                .value(GlobalExceptionHandler.UNSUPPORTED_REQUEST_MESSAGE));
+            }
             verify(authorizations, never()).authorize(any(), any());
         }
 
@@ -1005,7 +1032,7 @@ final class AuthorizationControllerTest {
         }
 
         /**
-         * Asserts an unreachable datastore answers 503, which is the retryable signal.
+         * An unreachable datastore answers 503, which is the retryable signal.
          *
          * <p>{@code app/cbl/CBTRN02C.cbl:L707-L711} answers the same class of fault with an abend,
          * and the file-status formatter at {@code app/cbl/CBTRN02C.cbl:L714-L727} is all the
@@ -1033,7 +1060,7 @@ final class AuthorizationControllerTest {
         }
 
         /**
-         * Asserts a projection too old to authorize against answers 503.
+         * A projection too old to authorize against answers 503.
          *
          * <p>{@code app/cbl/CBTRN02C.cbl:L556} assigns a reject code inside the invalid-key limb of
          * the account rewrite, and nothing in that program reads the value before
@@ -1050,6 +1077,38 @@ final class AuthorizationControllerTest {
                             .content(json(completeBody())))
                     .andExpect(status().isServiceUnavailable())
                     .andExpect(jsonPath("$.error").value(ApiErrorResponse.INTERNAL_FAILURE));
+        }
+
+        /**
+         * Asserts a caller refused the subject it named answers 403, and that the body discloses
+         * nothing.
+         *
+         * <p>ADDITIVE, and not a decline. The four reject reasons at
+         * {@code app/cbl/CBTRN02C.cbl:L385-L420} are outcomes of the transaction, each published as an
+         * event. This is an outcome of the caller: no decision was taken, so the body carries no
+         * approved member and no reject code, and the detail names neither the account nor the card.
+         */
+        @Test
+        void anUnentitledCallerAnswersFourHundredAndThree() throws Exception {
+            when(authorizations.authorize(any(), any()))
+                    .thenThrow(new CallerNotEntitledException());
+
+            String body = mockMvc.perform(post(ROUTE).contentType(MediaType.APPLICATION_JSON)
+                            .content(json(completeBody())))
+                    .andExpect(status().isForbidden())
+                    .andExpect(jsonPath("$.error").value(ApiErrorResponse.FORBIDDEN))
+                    .andExpect(jsonPath("$.messages[0]")
+                            .value(CallerNotEntitledException.DETAIL))
+                    .andExpect(jsonPath("$.approved").doesNotExist())
+                    .andExpect(jsonPath("$.declineReasonCode").doesNotExist())
+                    .andReturn()
+                    .getResponse()
+                    .getContentAsString();
+
+            assertFalse(body.contains(WORKED_EXAMPLE_CARD),
+                    "the card number the caller sent reaches no response body");
+            assertFalse(body.contains(WORKED_EXAMPLE_ACCOUNT),
+                    "and neither does an account identifier it may not have");
         }
 
         /** Asserts a fault no handler claimed answers 500 and repeats no value from the request. */
@@ -1071,7 +1130,7 @@ final class AuthorizationControllerTest {
         }
 
         /**
-         * Asserts a request this service refused after binding answers 422 with one fixed text.
+         * A request this service refused after binding answers 422 with one fixed text.
          *
          * <p>{@code app/cbl/COTRN02C.cbl:L591-L592} answers the not-found limb of the account read
          * the same way, by re-sending the screen with a text and capturing nothing.
@@ -1089,7 +1148,6 @@ final class AuthorizationControllerTest {
                             .value(GlobalExceptionHandler.REFUSED_REQUEST_MESSAGE));
         }
 
-        /** Asserts a refused body reaches no served member, so a misplaced card number never returns. */
         @Test
         void aRefusedBodyRepeatsNoValueItCarried() throws Exception {
             Map<String, String> misplaced = completeBody();
@@ -1117,7 +1175,6 @@ final class AuthorizationControllerTest {
     @DisplayName("Surface of the endpoint")
     final class EndpointSurface {
 
-        /** Asserts the controller publishes one route and one method and nothing else. */
         @Test
         void theControllerPublishesOneRouteAndOneMethod() {
             List<Method> mapped = new ArrayList<>();
@@ -1149,7 +1206,7 @@ final class AuthorizationControllerTest {
         }
 
         /**
-         * Asserts the controller holds one collaborator, the decision service, and reaches no other
+         * The controller holds one collaborator, the decision service, and reaches no other
          * component.
          *
          * <p>The endpoint reads no table of its own and calls no other service over the network. The
@@ -1179,7 +1236,6 @@ final class AuthorizationControllerTest {
                     "the held collaborator is not readable from outside");
         }
 
-        /** Asserts two calls sharing one body leave no server-side state behind. */
         @Test
         void twoCallsShareNoServerSideState() throws Exception {
             stubApproval(ALLOCATED_ID);
@@ -1200,7 +1256,7 @@ final class AuthorizationControllerTest {
         }
 
         /**
-         * Asserts the identity behind a call reaches the decision service, and that a call carrying
+         * The identity behind a call reaches the decision service, and that a call carrying
          * none still names an actor.
          *
          * <p>{@code app/cbl/COMEN01C.cbl:L149-L150} holds two commented-out statements over the
@@ -1219,17 +1275,18 @@ final class AuthorizationControllerTest {
                             .content(json(completeBody())))
                     .andExpect(status().isOk());
 
-            ArgumentCaptor<String> actors = ArgumentCaptor.forClass(String.class);
-            verify(authorizations, times(2)).authorize(any(), actors.capture());
+            ArgumentCaptor<RequestCaller> callers = ArgumentCaptor.forClass(RequestCaller.class);
+            verify(authorizations, times(2)).authorize(any(), callers.capture());
 
-            assertEquals(ACTOR, actors.getAllValues().get(0),
+            assertEquals(ACTOR, callers.getAllValues().get(0).actor(),
                     "the resolved identity travels into the decision");
-            assertEquals(AuthenticatedActor.UNAUTHENTICATED_ACTOR, actors.getAllValues().get(1),
+            assertEquals(AuthenticatedActor.UNAUTHENTICATED_ACTOR,
+                    callers.getAllValues().get(1).actor(),
                     "a call carrying no identity still names an actor the audit column holds");
         }
 
         /**
-         * Asserts the advice answers failures alone and publishes nothing.
+         * The advice answers failures alone and publishes nothing.
          *
          * <p>The advice is a Representational State Transfer handler. It holds no producer, subscribes
          * to no stream and routes nothing to the dead-letter topic.
@@ -1258,7 +1315,7 @@ final class AuthorizationControllerTest {
             assertTrue(handled.containsAll(List.of("MethodArgumentNotValidException",
                             "HandlerMethodValidationException", "ConstraintViolationException",
                             "HttpMessageNotReadableException", "IllegalArgumentException",
-                            "StaleReplicaException", "Exception")),
+                            "CallerNotEntitledException", "StaleReplicaException", "Exception")),
                     "each class of failure this service can raise has one handler");
 
             for (Field field : GlobalExceptionHandler.class.getDeclaredFields()) {
@@ -1288,7 +1345,6 @@ final class AuthorizationControllerTest {
     @DisplayName("The three key-field limbs")
     final class KeyFieldLimbs {
 
-        /** Asserts a body naming a card number alone is accepted and reaches the decision. */
         @Test
         void aCardNumberAloneIsAccepted() throws Exception {
             stubApproval(ALLOCATED_ID);
@@ -1309,7 +1365,6 @@ final class AuthorizationControllerTest {
                     "the account identifier is derived from the row and not supplied");
         }
 
-        /** Asserts a body naming an account identifier alone is accepted and reaches the decision. */
         @Test
         void anAccountIdentifierAloneIsAccepted() throws Exception {
             stubApproval(ALLOCATED_ID);
@@ -1330,7 +1385,6 @@ final class AuthorizationControllerTest {
                     "the card number is derived from the row and not supplied");
         }
 
-        /** Asserts a body naming both identifiers is accepted, with the card number as the key. */
         @Test
         void bothIdentifiersTogetherAreAccepted() throws Exception {
             stubApproval(ALLOCATED_ID);
@@ -1350,7 +1404,7 @@ final class AuthorizationControllerTest {
         }
 
         /**
-         * Asserts an absent, an empty and an all-whitespace identifier read alike, for each of the
+         * An absent, an empty and an all-whitespace identifier read alike, for each of the
          * two fields.
          *
          * <p>{@code app/cbl/COTRN02C.cbl:L196} tests {@code NOT = SPACES AND LOW-VALUES}, so a field
@@ -1391,6 +1445,101 @@ final class AuthorizationControllerTest {
             }
 
             verify(authorizations, never()).authorize(any(), any());
+        }
+
+        /**
+         * Asserts a body failing several edits reports the one text the source would have reported.
+         *
+         * <p>Each edit of {@code app/cbl/COTRN02C.cbl} moves its text into {@code WS-MESSAGE} and
+         * performs {@code SEND-TRNADD-SCREEN}, which returns to the terminal, so the edits after it
+         * never run. The body below empties the source, the description and the merchant name, and
+         * {@code app/cbl/COTRN02C.cbl:L265} is the earliest of the three the source reaches.
+         */
+        @Test
+        void aBodyFailingSeveralEditsReportsOneSourceOrderedText() throws Exception {
+            Map<String, String> body = completeBody();
+            body.put("source", "");
+            body.put("description", "");
+            body.put("merchantName", "");
+
+            mockMvc.perform(post(ROUTE).contentType(MediaType.APPLICATION_JSON)
+                            .content(json(body)))
+                    .andExpect(status().isUnprocessableContent())
+                    .andExpect(jsonPath("$.messages", Matchers.hasSize(1)))
+                    .andExpect(jsonPath("$.messages[0]")
+                            .value(AuthorizationRequest.SOURCE_EMPTY_MESSAGE));
+
+            verify(authorizations, never()).authorize(any(), any());
+        }
+
+        /**
+         * Asserts the earliest edit reported is the earliest the source reaches, not the earliest
+         * alphabetically.
+         *
+         * <p>The two texts below are ordered one way by the source and the other way as text. The
+         * merchant city is empty and the type code is not all digits;
+         * {@code app/cbl/COTRN02C.cbl:L307} is reached before
+         * {@code app/cbl/COTRN02C.cbl:L324}, while "Merchant City can NOT be empty..." sorts after
+         * "Type CD must be Numeric...".
+         */
+        @Test
+        void theTextReportedFollowsTheSourceAndNotTheAlphabet() throws Exception {
+            Map<String, String> body = completeBody();
+            body.put("merchantCity", "");
+            body.put("transactionTypeCode", "AB");
+
+            mockMvc.perform(post(ROUTE).contentType(MediaType.APPLICATION_JSON)
+                            .content(json(body)))
+                    .andExpect(status().isUnprocessableContent())
+                    .andExpect(jsonPath("$.messages", Matchers.hasSize(1)))
+                    .andExpect(jsonPath("$.messages[0]")
+                            .value(AuthorizationRequest.MERCHANT_CITY_EMPTY_MESSAGE));
+        }
+
+        /**
+         * Asserts both timestamps are accepted at the ten-character width the source screen carries.
+         *
+         * <p>{@code TORIGDTI} and {@code TPROCDTI} are validated at
+         * {@code app/cbl/COTRN02C.cbl:L389-L423} as ten-character dates, and
+         * {@code app/cbl/COTRN02C.cbl:L360} states that shape. A caller of a synchronous surface has
+         * the same value the operator of the screen has.
+         */
+        @Test
+        void bothTimestampsAreAcceptedAtTheTenCharacterSourceWidth() throws Exception {
+            stubApproval(ALLOCATED_ID);
+            Map<String, String> body = completeBody();
+            body.put(ORIGIN_FIELD, "2022-06-10");
+            body.put(PROCESSING_FIELD, "2022-06-10");
+
+            mockMvc.perform(post(ROUTE).contentType(MediaType.APPLICATION_JSON)
+                            .content(json(body)))
+                    .andExpect(status().isOk());
+
+            verify(authorizations).authorize(any(), any());
+        }
+
+        /**
+         * Asserts a ten-character capture moment reaches the rules at the record width.
+         *
+         * <p>{@code app/cbl/COTRN02C.cbl:L469} moves the screen field into
+         * {@code TRAN-ORIG-TS PIC X(26)}, and reject reason {@code 0103} at
+         * {@code app/cbl/CBTRN02C.cbl:L414-L420} compares the first ten characters of that field, so
+         * the widened value carries the same decision the ten-character value names.
+         */
+        @Test
+        void aTenCharacterCaptureMomentReachesTheRulesAtTheRecordWidth() {
+            AuthorizationRequest request = new AuthorizationRequest(null, TYPE_CODE, CATEGORY_CODE,
+                    "POS TERM", "Purchase", WORKED_EXAMPLE_AMOUNT, MERCHANT_ID, "Abshire-Lowe",
+                    "North Enoshaven", "72112", WORKED_EXAMPLE_CARD, "2022-06-10", "2022-06-10",
+                    null);
+
+            assertEquals(PicClause.TRAN_ORIG_TS_WIDTH, request.recordOriginTimestamp().length(),
+                    "the capture moment reaches the rules at the width the record field holds");
+            assertEquals("2022-06-10", request.recordOriginTimestamp().substring(0, 10),
+                    "the ten characters reject reason 0103 compares are unchanged");
+            assertEquals(PicClause.TRAN_PROC_TS_WIDTH,
+                    request.recordProcessingTimestamp().length(),
+                    "the processing moment is recorded at the width the record field holds");
         }
 
         /**
@@ -1441,7 +1590,6 @@ final class AuthorizationControllerTest {
     @DisplayName("The two identifier boundaries")
     final class IdentifierBoundaries {
 
-        /** Asserts a card whose first digit is zero keeps that digit through the endpoint. */
         @Test
         void aCardOpeningWithZeroKeepsThatDigit() throws Exception {
             stubApproval(ALLOCATED_ID);
@@ -1463,7 +1611,7 @@ final class AuthorizationControllerTest {
         }
 
         /**
-         * Asserts a card of another width is refused ahead of the lookup, so no width problem is ever
+         * A card of another width is refused ahead of the lookup, so no width problem is ever
          * read as an unknown card.
          *
          * <p>{@code app/cbl/CBTRN02C.cbl:L385} assigns its reject code when the keyed read misses. A
@@ -1485,7 +1633,7 @@ final class AuthorizationControllerTest {
         }
 
         /**
-         * Asserts the served account identifier is eleven digits, filled from the left with zeros.
+         * The served account identifier is eleven digits, filled from the left with zeros.
          *
          * <p>The decision names the account as a scale-zero number, and this endpoint widens it to the
          * digits {@code XREF-ACCT-ID PIC 9(11)} holds.
@@ -1508,10 +1656,8 @@ final class AuthorizationControllerTest {
         }
 
         /**
-         * Asserts account seven and its eleven-digit form name one account at the numeric boundary.
-         *
-         * <p>The target column holds a number, so {@code 7} and {@code 00000000007} compare equal.
-         * The served form is text, and both decisions serve the same eleven digits.
+         * The target column holds a number, so a bare and a zero-padded form of one account
+         * identifier compare equal. The served form is text and always eleven digits wide.
          */
         @Test
         void bothFormsOfOneAccountNumberAnswerAlike() throws Exception {
@@ -1535,7 +1681,7 @@ final class AuthorizationControllerTest {
         }
 
         /**
-         * Asserts an account identifier of another width is refused, and that the numeric grammar
+         * An account identifier of another width is refused, and that the numeric grammar
          * reads the accepted width.
          *
          * <p>{@code app/cbl/COTRN02C.cbl:L204-L207} converts the field with {@code FUNCTION NUMVAL}
@@ -1555,7 +1701,7 @@ final class AuthorizationControllerTest {
         }
 
         /**
-         * Asserts a decision refuses an account identifier carrying a scale.
+         * A decision refuses an account identifier carrying a scale.
          *
          * <p>{@code XREF-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT03Y.cpy:L7} declares eleven digits
          * and no decimal position, so the numeric boundary holds whole digits alone. A scaled value
@@ -1574,7 +1720,7 @@ final class AuthorizationControllerTest {
         }
 
         /**
-         * Asserts the request carries the fourteen values the record declares and no filler.
+         * The request carries the fourteen values the record declares and no filler.
          *
          * <p>{@code app/cpy/CVTRA06Y.cpy:L5-L17} declares thirteen fields and
          * {@code app/cpy/CVTRA06Y.cpy:L18} closes the record with twenty unused bytes. The account
@@ -1635,7 +1781,6 @@ final class AuthorizationControllerTest {
             return sent.getValue();
         }
 
-        /** Asserts an amount opening with a currency sign is read and carries its value. */
         @Test
         void anAmountOpeningWithACurrencySignIsRead() throws Exception {
             AuthorizationRequest bound = boundRequestFor("$504.77");
@@ -1646,7 +1791,6 @@ final class AuthorizationControllerTest {
                     "DALYTRAN-AMT PIC S9(09)V99 at app/cpy/CVTRA06Y.cpy:L10 fixes the scale");
         }
 
-        /** Asserts an amount carrying grouping commas is read and carries its value. */
         @Test
         void anAmountCarryingGroupingCommasIsRead() throws Exception {
             AuthorizationRequest bound = boundRequestFor("$1,234.56");
@@ -1658,7 +1802,7 @@ final class AuthorizationControllerTest {
         }
 
         /**
-         * Asserts a negative amount is ordinary traffic.
+         * A negative amount is ordinary traffic.
          *
          * <p>The sign byte at position 143 of {@code app/data/ASCII/dailytran.txt} is positive in 250
          * records and negative in 50.
@@ -1673,7 +1817,7 @@ final class AuthorizationControllerTest {
         }
 
         /**
-         * Asserts the four positions {@code app/cbl/COTRN02C.cbl:L339-L351} tests each refuse a
+         * The four positions {@code app/cbl/COTRN02C.cbl:L339-L351} tests each refuse a
          * value.
          *
          * <p>Position 1 holds a sign at {@code app/cbl/COTRN02C.cbl:L340}, and positions 2 through 9
@@ -1704,7 +1848,7 @@ final class AuthorizationControllerTest {
         }
 
         /**
-         * Asserts an amount too wide for the record field is refused ahead of the decision.
+         * An amount too wide for the record field is refused ahead of the decision.
          *
          * <p>{@code DALYTRAN-AMT PIC S9(09)V99} holds nine digits ahead of the point. A wider value
          * would lose its high-order digit on the store.
@@ -1722,7 +1866,6 @@ final class AuthorizationControllerTest {
             verify(authorizations, never()).authorize(any(), any());
         }
 
-        /** Asserts the amount takes the currency-tolerant pair and the two keys take the plain pair. */
         @Test
         void theAmountTakesTheTolerantPairAndTheKeysTakeThePlainPair() {
             assertTrue(NumvalParser.isValidNumvalCurrency("$1,234.56"),
@@ -1754,7 +1897,7 @@ final class AuthorizationControllerTest {
     final class CaptureDates {
 
         /**
-         * Asserts a date the endpoint accepts only through the tolerated message number.
+         * A date the endpoint accepts only through the tolerated message number.
          *
          * <p>{@code app/cbl/COTRN02C.cbl:L397} accepts severity {@code '0000'}, and
          * {@code app/cbl/COTRN02C.cbl:L400} also accepts one message number, with no comment
@@ -1785,7 +1928,7 @@ final class AuthorizationControllerTest {
         }
 
         /**
-         * Asserts the endpoint tests ten characters against the ten-character mask.
+         * The endpoint tests ten characters against the ten-character mask.
          *
          * <p>The other mask holds eight characters, compares severity as a number and carries no
          * second condition, so it belongs to a different call site.
@@ -1804,7 +1947,7 @@ final class AuthorizationControllerTest {
         }
 
         /**
-         * Asserts the condition named for an invalid date reports success.
+         * The condition named for an invalid date reports success.
          *
          * <p>{@code app/cbl/CSUTLDTC.cbl:L62} declares {@code FC-INVALID-DATE} over the all-zero
          * feedback token, and {@code app/cbl/CSUTLDTC.cbl:L128-L130} moves {@code Date is valid}
@@ -1834,7 +1977,6 @@ final class AuthorizationControllerTest {
     @DisplayName("The two timestamp formats")
     final class TimestampFormats {
 
-        /** Asserts the two shapes differ and that each refuses the value of the other. */
         @Test
         void eachShapeRefusesTheValueOfTheOther() {
             assertFalse(AuthorizationRequest.ORIGIN_TIMESTAMP_PATTERN.equals(
@@ -1856,7 +1998,7 @@ final class AuthorizationControllerTest {
         }
 
         /**
-         * Asserts the processing value carries two significant fraction digits and four fixed zeros.
+         * The processing value carries two significant fraction digits and four fixed zeros.
          *
          * <p>{@code Z-GET-DB2-FORMAT-TIMESTAMP} at {@code app/cbl/CBTRN02C.cbl:L692-L705} takes two
          * hundredths characters at {@code app/cbl/CBTRN02C.cbl:L700} and writes four zeros at
@@ -1873,7 +2015,6 @@ final class AuthorizationControllerTest {
                     "DB2-MIL PIC 9(002) at app/cbl/CBTRN02C.cbl:L173 holds the two that count");
         }
 
-        /** Asserts the served body carries no timestamp, so no raw value is ever compared. */
         @Test
         void theServedBodyCarriesNoTimestamp() throws Exception {
             stubApproval(ALLOCATED_ID);
@@ -1906,20 +2047,15 @@ final class AuthorizationControllerTest {
     @DisplayName("Decisions the owned stores drive")
     final class StoreDrivenDecisions {
 
-        /** Builds the endpoint over the real chain ahead of each test. */
-        @BeforeEach
+            @BeforeEach
         void standUpChain() {
             standUpDecisionPath();
         }
 
         /**
-         * Asserts the worked example approves.
-         *
-         * <p>Record 1 of {@code app/data/ASCII/dailytran.txt} carries 504.77 on card
-         * {@code 4859452612877065}. Row 21 of {@code app/data/ASCII/cardxref.txt} resolves it to
-         * account 7, whose credit limit is 2065.00 and whose expiry date is 2024-12-13. Both cycle
-         * accumulators hold zero, so {@code app/cbl/CBTRN02C.cbl:L403-L405} computes 504.77 and
-         * {@code app/cbl/CBTRN02C.cbl:L407} accepts it.
+         * The worked example of record 1 of {@code app/data/ASCII/dailytran.txt} approves: both cycle
+         * accumulators hold zero, so {@code app/cbl/CBTRN02C.cbl:L403-L405} computes an amount below
+         * the credit limit and {@code :L407} accepts it.
          */
         @Test
         void theWorkedExampleApproves() throws Exception {
@@ -1940,7 +2076,7 @@ final class AuthorizationControllerTest {
         }
 
         /**
-         * Asserts the tightest credit limit of the fixtures declines with the credit code.
+         * The tightest credit limit of the fixtures declines with the credit code.
          *
          * <p>Account 30 of {@code app/data/ASCII/acctdata.txt} carries a limit of 120.00, and the
          * feed presents four amounts above it against that account.
@@ -1966,7 +2102,7 @@ final class AuthorizationControllerTest {
         }
 
         /**
-         * Asserts a card no row carries declines with the cross-reference code and names no account.
+         * A card no row carries declines with the cross-reference code and names no account.
          *
          * <p>{@code app/cbl/CBTRN02C.cbl:L385-L387} assigns that code inside the invalid-key limb of
          * the keyed read. The value is constructed, since the code is reached zero times over the
@@ -1987,7 +2123,7 @@ final class AuthorizationControllerTest {
         }
 
         /**
-         * Asserts a resolved card with no projection row declines with the account code.
+         * A resolved card with no projection row declines with the account code.
          *
          * <p>{@code app/cbl/CBTRN02C.cbl:L397-L399} assigns that code inside the invalid-key limb of
          * the account read. The rows are constructed, since the code is reached zero times over the
@@ -2008,7 +2144,7 @@ final class AuthorizationControllerTest {
         }
 
         /**
-         * Asserts the cross-reference code stops the chain ahead of the account code.
+         * The cross-reference code stops the chain ahead of the account code.
          *
          * <p>{@code app/cbl/CBTRN02C.cbl:L372} runs the account read only while the reject code holds
          * zero, so a card that resolves nothing reports the first code and the account read never
@@ -2026,11 +2162,11 @@ final class AuthorizationControllerTest {
                     .andExpect(jsonPath("$.declineReasonCode")
                             .value(Matchers.not(DeclineReason.ACCOUNT_NOT_FOUND.code())));
 
-            verify(accountSnapshots, never()).findByAccountId(any());
+            verify(accountSnapshots, never()).findForUpdateByAccountId(any());
         }
 
         /**
-         * Asserts the expiry code stands when the credit test and the expiry test both fail.
+         * The expiry code stands when the credit test and the expiry test both fail.
          *
          * <p>{@code app/cbl/CBTRN02C.cbl:L410} assigns the credit code and
          * {@code app/cbl/CBTRN02C.cbl:L417} assigns the expiry code, with no gate between them, so
@@ -2058,7 +2194,7 @@ final class AuthorizationControllerTest {
         }
 
         /**
-         * Asserts a body naming an account alone resolves its card and approves.
+         * A body naming an account alone resolves its card and approves.
          *
          * <p>{@code app/cbl/COTRN02C.cbl:L208-L209} reads the alternate index and takes the card
          * number the row carries.
@@ -2080,10 +2216,12 @@ final class AuthorizationControllerTest {
         }
 
         /**
-         * Asserts an account identifier resolving no card is refused with one fixed text.
+         * Asserts an account identifier resolving no card is refused with the source text.
          *
-         * <p>{@code app/cbl/COTRN02C.cbl:L591-L592} answers the not-found limb of that read by
-         * re-sending the screen, capturing nothing.
+         * <p>{@code app/cbl/COTRN02C.cbl:L591-L592} answers the not-found limb of that read by moving
+         * {@value AuthorizationRequest#ACCOUNT_ID_NOT_FOUND_MESSAGE} into {@code WS-MESSAGE} and
+         * re-sending the screen, capturing nothing. The text is a fixed constant and holds no value
+         * read from the request, so the refused identifier reaches no caller.
          */
         @Test
         void anAccountIdentifierResolvingNoCardIsRefused() throws Exception {
@@ -2092,13 +2230,16 @@ final class AuthorizationControllerTest {
                     .andExpect(status().isUnprocessableContent())
                     .andExpect(jsonPath("$.error").value(ApiErrorResponse.UNPROCESSABLE))
                     .andExpect(jsonPath("$.messages[0]")
-                            .value(GlobalExceptionHandler.REFUSED_REQUEST_MESSAGE));
+                            .value(AuthorizationRequest.ACCOUNT_ID_NOT_FOUND_MESSAGE))
+                    .andExpect(content().string(
+                            org.hamcrest.Matchers.not(
+                                    org.hamcrest.Matchers.containsString(WORKED_EXAMPLE_ACCOUNT))));
 
             verify(identifiers, never()).nextIdentifier();
         }
 
         /**
-         * Asserts the account finder answers with a list, since one account holds many cards.
+         * The account finder answers with a list, since one account holds many cards.
          *
          * <p>{@code app/jcl/XREFFILE.jcl:L75} declares the alternate index {@code NONUNIQUEKEY}, so a
          * single-valued answer would not hold the rows that key returns.
@@ -2116,7 +2257,7 @@ final class AuthorizationControllerTest {
         }
 
         /**
-         * Asserts a projection whose card resolves through the endpoint answers with a served
+         * A projection whose card resolves through the endpoint answers with a served
          * exchange, so the decision path reads the two stores and nothing else.
          */
         @Test
@@ -2129,7 +2270,7 @@ final class AuthorizationControllerTest {
                     "the two owned stores answer the whole decision");
 
             verify(cardCrossReferences).findByCardNumber(WORKED_EXAMPLE_CARD);
-            verify(accountSnapshots).findByAccountId(WORKED_EXAMPLE_ACCOUNT);
+            verify(accountSnapshots).findForUpdateByAccountId(WORKED_EXAMPLE_ACCOUNT);
         }
     }
 
@@ -2141,14 +2282,13 @@ final class AuthorizationControllerTest {
     @DisplayName("Checks deliberately not added")
     final class ChecksNotAdded {
 
-        /** Builds the endpoint over the real chain ahead of each test. */
         @BeforeEach
         void standUpChain() {
             standUpDecisionPath();
         }
 
         /**
-         * Asserts sixteen digits that fail a checksum still authorize.
+         * Sixteen digits that fail a checksum still authorize.
          *
          * <p>{@code app/cbl/COCRDUPC.cbl:L193-L194} names the one card test the source performs, and
          * that test reads a sixteen digit number and nothing else. All fifty cards of
@@ -2170,7 +2310,7 @@ final class AuthorizationControllerTest {
         }
 
         /**
-         * Asserts a closed account still authorizes, since no status reaches the decision.
+         * A closed account still authorizes, since no status reaches the decision.
          *
          * <p>{@code ACCT-ACTIVE-STATUS PIC X(01)} at {@code app/cpy/CVACT01Y.cpy:L6} exists, and no
          * program reads it ahead of posting. {@code CARD-ACTIVE-STATUS PIC X(01)} at
@@ -2204,7 +2344,7 @@ final class AuthorizationControllerTest {
         }
 
         /**
-         * Asserts the four published codes are the whole set, so no fifth code reaches a caller.
+         * The four published codes are the whole set, so no fifth code reaches a caller.
          *
          * <p>The reject code census over {@code app/cbl/} returns five assignments, at
          * {@code app/cbl/CBTRN02C.cbl:L385}, {@code :L397}, {@code :L410}, {@code :L417} and
@@ -2235,7 +2375,6 @@ final class AuthorizationControllerTest {
     @DisplayName("Invariants of the served body")
     final class ServedBodyInvariants {
 
-        /** Asserts an approved body carrying a reject code is refused, naming the member. */
         @Test
         void anApprovedBodyCarryingARejectCodeIsRefused() {
             IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
@@ -2248,7 +2387,6 @@ final class AuthorizationControllerTest {
                     "the refusal reports the four-digit code that arrived");
         }
 
-        /** Asserts a declined body carrying no reject code is refused, naming the member. */
         @Test
         void aDeclinedBodyCarryingNoRejectCodeIsRefused() {
             IllegalArgumentException refusal = assertThrows(IllegalArgumentException.class,
@@ -2259,7 +2397,6 @@ final class AuthorizationControllerTest {
                     "the refusal names the member that broke the invariant");
         }
 
-        /** Asserts the two factories build the two shapes the endpoint serves. */
         @Test
         void theTwoFactoriesBuildTheTwoServedShapes() {
             AuthorizationResponse approved =
@@ -2279,7 +2416,6 @@ final class AuthorizationControllerTest {
                     "the text is read from the code and not restated");
         }
 
-        /** Asserts the served body withholds the account identifier when it is rendered as text. */
         @Test
         void theRenderedBodyWithholdsTheAccountIdentifier() {
             String rendered =

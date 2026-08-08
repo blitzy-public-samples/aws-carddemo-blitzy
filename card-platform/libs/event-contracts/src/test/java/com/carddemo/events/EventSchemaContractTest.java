@@ -60,7 +60,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <p>Adding a consumer needs no producer change. The fixed required sets asserted here and the open
  * property set every document declares are what keeps that true. Versions in use: Java 25, Apache
  * Maven 3.9.16, junit-jupiter 6.0.3, spring-boot-starter-test 4.1.0, json-schema-validator 3.0.6,
- * jackson-databind 3.1.4, kafka-clients 4.2.1.
+ * jackson-databind 3.1.5, kafka-clients 4.2.1.
  */
 class EventSchemaContractTest {
 

@@ -3,9 +3,12 @@ package com.carddemo.card.messaging;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTimeout;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.atLeastOnce;
@@ -23,6 +26,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.TimeoutException;
 
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.KafkaException;
@@ -275,18 +281,17 @@ class KafkaEventPublisherTest {
     // Failure propagation. The failure must escape, not be swallowed.
 
     @Test
-    void publishPropagatesABrokerFailureWithItsCause() {
+    void publishReportsABrokerFailureOnTheStageWithItsCause() {
         KafkaException brokerFailure = new KafkaException("the broker is unreachable");
         template.fail(brokerFailure);
 
-        org.springframework.kafka.KafkaException thrown = assertThrows(
-                org.springframework.kafka.KafkaException.class,
-                () -> publisher.publish(TOPIC, ACCOUNT_KEY, PAYLOAD),
-                "a failed send must not return normally, or the outbox row would be marked "
-                        + "published while the event never reached the broker");
-        assertSame(brokerFailure, thrown.getCause(),
-                "the cause the broker reported reaches the caller unchanged");
-        assertEquals("the broker is unreachable", thrown.getCause().getMessage(),
+        Throwable reported = failureOf(publisher.publish(TOPIC, ACCOUNT_KEY, PAYLOAD));
+
+        assertSame(brokerFailure, reported,
+                "the cause the broker reported reaches the caller unchanged. A failed send must "
+                        + "not complete normally, or the outbox row would be marked published "
+                        + "while the event never reached the broker");
+        assertEquals("the broker is unreachable", reported.getMessage(),
                 "the cause keeps its message");
     }
 
@@ -294,37 +299,35 @@ class KafkaEventPublisherTest {
     void publishSwallowsNoFailureAndRetriesNothing() {
         template.fail(new KafkaException("the broker refused the record"));
 
-        assertThrows(org.springframework.kafka.KafkaException.class,
-                () -> publisher.publish(TOPIC, ACCOUNT_KEY, PAYLOAD),
-                "the failure escapes the publisher");
+        assertNotNull(failureOf(publisher.publish(TOPIC, ACCOUNT_KEY, PAYLOAD)),
+                "the failure reaches the caller on the stage rather than being swallowed");
 
         template.verifySentExactlyOnce();
     }
 
     @Test
-    void aBrokerThatNeverAnswersEndsTheWaitAtTheConfiguredBound() {
+    void aBrokerThatNeverAnswersFailsTheStageAtTheConfiguredBound() {
         KafkaTemplateStub silent = new KafkaTemplateStub();
         silent.neverAcknowledge();
         KafkaEventPublisher bounded =
                 new KafkaEventPublisher(silent.template(), TOPIC, BRIEF_TIMEOUT);
 
-        org.springframework.kafka.KafkaException thrown = assertThrows(
-                org.springframework.kafka.KafkaException.class,
+        CompletionStage<Void> pending = assertTimeout(RETURNS_PROMPTLY,
                 () -> bounded.publish(TOPIC, ACCOUNT_KEY, PAYLOAD),
-                "a send the broker never acknowledges ends the wait rather than holding the "
-                        + "relay sweep open for as long as the broker stays unreachable");
+                "the call itself does not wait for the broker, so a silent broker cannot hold the "
+                        + "relay sweep open for as long as it stays unreachable");
 
-        assertTrue(thrown.getMessage().contains(TOPIC),
-                "the thrown message names the topic that went unacknowledged");
-        assertTrue(thrown.getMessage().contains(BRIEF_TIMEOUT.toString()),
-                "the thrown message names the bound that lapsed");
-        assertFalse(thrown.getMessage().contains(FULL_CARD_NUMBER),
-                "the thrown message reads no field of the payload");
+        Throwable reported = failureOf(pending);
+
+        assertInstanceOf(TimeoutException.class, reported,
+                "the bound the publisher applies lapses on the stage rather than being waited out");
+        assertFalse(String.valueOf(reported.getMessage()).contains(FULL_CARD_NUMBER),
+                "the reported failure reads no field of the payload");
         silent.verifySentExactlyOnce();
     }
 
     @Test
-    void aFailureOfAnyCauseTypePropagatesAndTheAttemptedArgumentsStand() {
+    void aFailureOfAnyCauseTypeIsReportedAndTheAttemptedArgumentsStand() {
         List<RuntimeException> causes = List.of(
                 new KafkaException("a broker fault"),
                 new IllegalStateException("the producer is closed"),
@@ -336,13 +339,11 @@ class KafkaEventPublisherTest {
             KafkaEventPublisher failingPublisher =
                     new KafkaEventPublisher(failing.template(), TOPIC, PUBLISH_TIMEOUT);
 
-            org.springframework.kafka.KafkaException thrown = assertThrows(
-                    org.springframework.kafka.KafkaException.class,
-                    () -> failingPublisher.publish(TOPIC, ACCOUNT_KEY, PAYLOAD),
-                    "a failure of type " + cause.getClass().getSimpleName() + " escapes");
-            assertSame(cause, thrown.getCause(),
+            Throwable reported = failureOf(
+                    failingPublisher.publish(TOPIC, ACCOUNT_KEY, PAYLOAD));
+            assertSame(cause, reported,
                     "the cause of type " + cause.getClass().getSimpleName()
-                            + " reaches the caller unchanged");
+                            + " reaches the caller unchanged, whatever its type");
 
             failing.captureOneSend();
             assertEquals(TOPIC, failing.capturedTopic(),
@@ -545,6 +546,31 @@ class KafkaEventPublisherTest {
     }
 
     /**
+     * Longest the call itself may take, given it no longer waits for the broker.
+     *
+     * <p>Generous on purpose. The assertion is that the call returns without waiting out the send,
+     * not that it returns inside any particular number of milliseconds.
+     */
+    private static final java.time.Duration RETURNS_PROMPTLY = java.time.Duration.ofSeconds(5L);
+
+    /**
+     * Reads the failure one publish reported on its stage.
+     *
+     * <p>{@code publish} answers a stage rather than waiting, so a broker failure arrives here
+     * instead of at the call. {@code join} wraps it in a {@link CompletionException}, and this
+     * unwraps that one layer so a test asserts on the cause the broker actually reported.
+     *
+     * @param stage the stage one publish returned
+     * @return the failure it reported
+     */
+    private static Throwable failureOf(CompletionStage<Void> stage) {
+        CompletionException wrapper = assertThrows(CompletionException.class,
+                () -> stage.toCompletableFuture().join(),
+                "the stage completed normally, so no failure was reported");
+        return wrapper.getCause();
+    }
+
+    /**
      * A second implementation of {@link EventPublisherPort} that records what it received. It names
      * no Kafka type, which is the property {@link #aSecondImplementationOfThePortNeedsNoKafkaType}
      * asserts.
@@ -554,8 +580,9 @@ class KafkaEventPublisherTest {
         private final List<String> published = new ArrayList<>();
 
         @Override
-        public void publish(String topic, String key, String payload) {
+        public CompletionStage<Void> publish(String topic, String key, String payload) {
             published.add(topic + '|' + key + '|' + payload);
+            return CompletableFuture.completedFuture(null);
         }
     }
 }

@@ -33,7 +33,6 @@ import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -442,7 +441,7 @@ class EventRoundTripTest {
      */
     @Test
     void aNegativeBalanceKeepsItsSignAndItsScale() {
-        TransactionPosted written = TransactionPosted.from(
+        TransactionPosted written = TransactionPosted.forAuthorized(
                 anAuthorizedTransaction(new BigDecimal(NEGATIVE_AMOUNT)),
                 new BigDecimal(NEGATIVE_BALANCE), POSTED_AT);
 
@@ -734,7 +733,7 @@ class EventRoundTripTest {
     @Test
     void anAmountThatWouldPrintInScientificNotationTravelsInPlainNotation() {
         BigDecimal exponential = new BigDecimal("1.2E+3");
-        TransactionPosted written = TransactionPosted.from(
+        TransactionPosted written = TransactionPosted.forAuthorized(
                 anAuthorizedTransaction(new BigDecimal("5.0E+2")), exponential, POSTED_AT);
 
         JsonNode wire = wireFormOf(written);

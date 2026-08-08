@@ -50,6 +50,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
@@ -108,28 +110,26 @@ import tools.jackson.databind.json.JsonMapper;
 @DisplayName("The serialized form of each event the authorization service publishes")
 class EventSerializationTest {
 
-    /** Reads and writes each document these assertions measure. Jackson 3, as the platform uses. */
     private static final JsonMapper MAPPER = JsonMapper.builder().build();
 
-    /** Writes the log line the card-verification-value assertion reads back. */
     private static final Logger LOG = LoggerFactory.getLogger(EventSerializationTest.class);
 
     /**
-     * The full card number of record one of {@code app/data/ASCII/dailytran.txt}, at positions 263
-     * to 278, from {@code DALYTRAN-CARD-NUM PIC X(16)} at {@code app/cpy/CVTRA06Y.cpy:L15}.
+     * A card number sliced at positions 263 to 278 of record one of
+     * {@code app/data/ASCII/dailytran.txt}, filling {@code DALYTRAN-CARD-NUM PIC X(16)} at
+     * {@code app/cpy/CVTRA06Y.cpy:L15}.
      *
      * <p>The cross-reference read at {@code app/cbl/CBTRN02C.cbl:L382-L383} keys on all sixteen
-     * characters of this value.
+     * characters.
      */
     private static final String CARD_NUMBER = "4859452612877065";
 
     /**
-     * The card verification value of that card in {@code app/data/ASCII/carddata.txt}, from
-     * {@code CARD-CVV-CD PIC 9(03)} at {@code app/cpy/CVACT02Y.cpy:L7}.
+     * A card verification value shaped like {@code CARD-CVV-CD PIC 9(03)} at
+     * {@code app/cpy/CVACT02Y.cpy:L7}, which the source stores in the clear.
      *
-     * <p>The source stores three digits in the clear. No event, no log line and no response of this
-     * platform carries them, and the assertions of {@link MaskingAndTheCardVerificationValue} prove
-     * it.
+     * <p>No event, no log line and no response of this platform carries the value.
+     * {@link MaskingAndTheCardVerificationValue} holds that invariant.
      */
     private static final String CARD_VERIFICATION_VALUE = "321";
 
@@ -137,12 +137,11 @@ class EventSerializationTest {
     private static final String MASKED_CARD_NUMBER = PanMasker.maskCardNumber(CARD_NUMBER);
 
     /**
-     * The account identifier that card resolves to, at row 21 of
-     * {@code app/data/ASCII/cardxref.txt}, from {@code XREF-ACCT-ID PIC 9(11)} at
-     * {@code app/cpy/CVACT03Y.cpy:L7}.
+     * The account identifier the cross-reference resolves, filling
+     * {@code XREF-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT03Y.cpy:L7}.
      *
-     * <p>The row reads {@code 485945261287706500000000700000000007} and slices by the copybook
-     * offsets sixteen, nine and eleven. Its three leading zeros belong to the value.
+     * <p>The row slices by the copybook offsets sixteen, nine and eleven, and the leading zeros of
+     * each slice belong to the value.
      */
     private static final String ACCOUNT_ID = "00000000007";
 
@@ -281,7 +280,6 @@ class EventSerializationTest {
      */
     private static final Pattern LONG_DIGIT_RUN = Pattern.compile("[0-9]{12,}");
 
-    /** Reads the integer-digit bound of a monetary pattern, such as the nine of {@code {1,9}}. */
     private static final Pattern INTEGER_DIGIT_BOUND = Pattern.compile("\\{1,([0-9]+)\\}");
 
     /**
@@ -313,6 +311,10 @@ class EventSerializationTest {
      * <p>The seam takes three text arguments, so a stub of it needs no Kafka type and no running
      * broker. A call that never happens leaves {@link #topic}, {@link #key} and {@link #payload}
      * null, which is how the assertions below prove a refused event reached no topic.
+     *
+     * <p>The completed stage this returns is the contract of the seam rather than a convenience: the
+     * port hands the caller a stage it owns the wait on, so a stub that captured the call has already
+     * finished the send it is standing in for.
      */
     private static final class CapturingPublisher implements EventPublisherPort {
 
@@ -329,11 +331,12 @@ class EventSerializationTest {
         private int calls;
 
         @Override
-        public void publish(String topic, String aggregateId, String payload) {
+        public CompletionStage<Void> publish(String topic, String aggregateId, String payload) {
             this.topic = topic;
             this.key = aggregateId;
             this.payload = payload;
             this.calls++;
+            return CompletableFuture.completedStage(null);
         }
     }
 
@@ -356,8 +359,6 @@ class EventSerializationTest {
     }
 
     /**
-     * Builds the worked example with one amount replaced and no other value changed.
-     *
      * @param amount the amount the event carries, at any scale
      * @return the approval event carrying that amount
      */
@@ -370,8 +371,6 @@ class EventSerializationTest {
     }
 
     /**
-     * Builds the worked example with one card number replaced and no other value changed.
-     *
      * @param cardNumber the value the masked component carries
      * @return the approval event carrying that value
      */
@@ -399,7 +398,7 @@ class EventSerializationTest {
             return new TransactionDeclined(EVENT_ID, TransactionDeclined.EVENT_TYPE,
                     TransactionDeclined.UNRESOLVED_ACCOUNT_SCHEMA_VERSION, OCCURRED_AT,
                     TRANSACTION_ID, TRANSACTION_ID, null, reason, reason.description(), AMOUNT,
-                    MASKED_CARD_NUMBER);
+                    MASKED_CARD_NUMBER, null, null, null, null, null, null, null, null, null);
         }
         return TransactionDeclined.of(new EventEnvelope(EVENT_ID, TransactionDeclined.EVENT_TYPE,
                 EventEnvelope.SCHEMA_VERSION, OCCURRED_AT, ACCOUNT_ID), TRANSACTION_ID, reason,
@@ -487,11 +486,17 @@ class EventSerializationTest {
      * <p>{@code WS-VALIDATION-FAIL-REASON PIC 9(04)} at {@code app/cbl/CBTRN02C.cbl:L181} holds
      * four digits, so a code shorter than four is zero-padded.
      *
+     * <p>Formatted against {@link Locale#ROOT} rather than the default locale. The wire form carries
+     * ASCII digits, and a default locale with a non-Latin decimal script renders the same code in
+     * that script instead, so the expectation this builds would be compared against the wire form in
+     * digits the wire form never uses. The build pins no language and no country.
+     *
      * @param code the numeric reject code
      * @return the code at the four-digit width, as the wire form carries it
      */
     private static String padded(int code) {
-        return String.format("%0" + PicClause.VALIDATION_FAIL_REASON_WIDTH + "d", code);
+        return String.format(Locale.ROOT,
+                "%0" + PicClause.VALIDATION_FAIL_REASON_WIDTH + "d", code);
     }
 
     /**
@@ -973,6 +978,71 @@ class EventSerializationTest {
     @DisplayName("The decline code and its text")
     class TheDeclineCodeAndItsText {
 
+        /**
+         * A locale whose numbering system renders digits outside ASCII.
+         *
+         * <p>Verified on this runtime rather than assumed: {@code String.format} under this locale
+         * renders 102 as Arabic-Indic digits, so it is a real difference and not a hypothetical one.
+         * The build pins neither {@code user.language} nor {@code user.country} in either surefire or
+         * failsafe configuration, so the default locale is whatever the host supplies.
+         */
+        private static final Locale NON_ASCII_DIGIT_LOCALE = Locale.forLanguageTag("ar-EG");
+
+        /**
+         * Asserts the expected wire form is built in ASCII digits whatever the default locale is.
+         *
+         * <p>{@code WS-VALIDATION-FAIL-REASON PIC 9(04)} at {@code app/cbl/CBTRN02C.cbl:L181} holds
+         * four ASCII digits, and the wire form carries them unchanged. The expectation
+         * {@code padded} builds was formatted against the default locale, so on a host whose default
+         * locale carries a non-Latin numbering system the expectation itself came out in that script
+         * and the comparison tested a wire form the service never produces.
+         *
+         * <p>The default locale is changed for the duration of this test only and restored in a
+         * finally block. No parallelism is configured in either surefire or failsafe, so no other
+         * test observes the change.
+         *
+         * <p>First the locale is shown to make a difference, then the padding is shown not to depend
+         * on it. Without the first assertion the second would pass on a runtime where every locale
+         * renders ASCII, and would prove nothing.
+         */
+        @Test
+        @DisplayName("the padded expectation stays ASCII under a non-Latin default locale")
+        void thePaddedExpectationStaysAsciiUnderANonLatinDefaultLocale() {
+            Locale original = Locale.getDefault();
+            try {
+                Locale.setDefault(NON_ASCII_DIGIT_LOCALE);
+                String defaultLocaleRendering =
+                        String.format("%0" + PicClause.VALIDATION_FAIL_REASON_WIDTH + "d",
+                                DeclineReason.OVER_CREDIT_LIMIT.numericCode());
+
+                assertAll(
+                        () -> assertFalse(isAsciiDigits(defaultLocaleRendering),
+                                "this locale renders ASCII, so it cannot demonstrate the"
+                                        + " difference: " + defaultLocaleRendering),
+                        () -> assertTrue(isAsciiDigits(padded(DeclineReason.OVER_CREDIT_LIMIT
+                                .numericCode())), "the padded expectation left ASCII"),
+                        () -> assertEquals(DeclineReason.OVER_CREDIT_LIMIT.code(),
+                                padded(DeclineReason.OVER_CREDIT_LIMIT.numericCode()),
+                                "the padded expectation equals the code the enum publishes"),
+                        () -> assertTrue(isAsciiDigits(tree(DECLINED_TOPIC,
+                                        declined(DeclineReason.OVER_CREDIT_LIMIT))
+                                        .path("declineReasonCode").stringValue()),
+                                "the wire form itself left ASCII"));
+            } finally {
+                Locale.setDefault(original);
+            }
+        }
+
+        /**
+         * Answers whether every character is an ASCII digit.
+         *
+         * @param value the rendered value
+         * @return true when the value is non-empty and holds ASCII digits only
+         */
+        private static boolean isAsciiDigits(String value) {
+            return !value.isEmpty() && value.chars().allMatch(digit -> digit >= '0' && digit <= '9');
+        }
+
         @Test
         @DisplayName("each code travels as four zero-padded characters and never as a number")
         void eachCodeTravelsAsFourZeroPaddedCharacters() {
@@ -1399,10 +1469,16 @@ class EventSerializationTest {
         /**
          * The one asynchronous handoff of the source is the queue write at
          * {@code app/cbl/CORPT00C.cbl:L517-L518}, and this seam replaces it.
+         *
+         * <p>The stage this seam answers with is the contract that lets the caller own the wait. A
+         * seam returning nothing had to block inside itself, and the duration it blocked for was one
+         * it chose: {@code outbox/OutboxRelay} could then spend the whole of one pass on a single
+         * unreachable send, because it had no way to say how much of its pass remained. The stage
+         * moves that decision to the component that knows it.
          */
         @Test
-        @DisplayName("the seam declares one void publish of three text arguments")
-        void theSeamDeclaresOneVoidPublishOfThreeTextArguments() {
+        @DisplayName("the seam declares one publish of three text arguments answering a stage")
+        void theSeamDeclaresOnePublishOfThreeTextArgumentsAnsweringAStage() {
             Method[] declared = EventPublisherPort.class.getDeclaredMethods();
 
             assertEquals(1, declared.length,
@@ -1414,8 +1490,11 @@ class EventSerializationTest {
             assertAll(
                     () -> assertEquals("publish", publish.getName(),
                             "the one method publishes one payload"),
-                    () -> assertEquals(void.class, publish.getReturnType(),
-                            "the seam answers nothing, so no caller waits on a result"),
+                    () -> assertEquals(CompletionStage.class, publish.getReturnType(),
+                            "the seam answers a stage, so the caller owns how long it waits"),
+                    () -> assertEquals("java.util.concurrent.CompletionStage<java.lang.Void>",
+                            publish.getGenericReturnType().getTypeName(),
+                            "the stage carries no value, only the outcome of the send"),
                     () -> assertEquals(3, publish.getParameterCount(),
                             "a topic, a message key and a payload"),
                     () -> assertEquals(List.of(String.class, String.class, String.class),

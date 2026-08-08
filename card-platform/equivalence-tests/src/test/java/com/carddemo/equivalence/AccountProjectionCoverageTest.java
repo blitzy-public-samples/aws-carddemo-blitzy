@@ -18,6 +18,7 @@ import java.util.Set;
 import java.util.stream.Collectors;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.data.jpa.repository.Query;
 
 /**
  * Holds the correspondence between the account state-change event and the projection the
@@ -50,6 +51,24 @@ class AccountProjectionCoverageTest {
      */
     private static final Set<String> FRESHNESS_COLUMNS =
             Set.of("source_event_id", "source_occurred_at", "observed_at");
+
+    /**
+     * The columns holding exposure the authorization service reserved itself and this event has not
+     * reported back yet.
+     *
+     * <p>These three are not values the event supplies, so no component can cover them and listing
+     * them in {@link #COVERAGE} would assert a correspondence that does not exist. They exist because
+     * {@code app/cbl/CBTRN02C.cbl} rewrote the account at {@code :L545-L560} before it validated the
+     * next record, so {@code :L403-L405} always read accumulators carrying every earlier approval.
+     * Here the account service owns those accumulators, and an approval reserves its own amount until
+     * this event arrives.
+     *
+     * <p>The event still governs them, which is why {@link #theEventReleasesTheExposureItReports()}
+     * reads the statement that applies it. The event does not refresh a reserved figure: it releases
+     * one, by the advance it reports on the matching accumulator.
+     */
+    private static final Set<String> RESERVATION_COLUMNS =
+            Set.of("pending_cycle_credit", "pending_cycle_debit", "pending_expires_at");
 
     /**
      * Every value the projection holds, as the column name and the event component supplying it.
@@ -125,11 +144,61 @@ class AccountProjectionCoverageTest {
         assertTrue(mapped.containsAll(FRESHNESS_COLUMNS),
                 "the projection stopped recording when it was last refreshed, so a row that has "
                         + "gone stale can no longer be refused: " + mapped);
+        assertTrue(mapped.containsAll(RESERVATION_COLUMNS),
+                "the projection stopped holding the exposure of an approval this event has not "
+                        + "reported back yet, so two calls inside one propagation window can "
+                        + "together exceed the credit limit: " + mapped);
         mapped.removeAll(FRESHNESS_COLUMNS);
+        mapped.removeAll(RESERVATION_COLUMNS);
 
         assertEquals(mapped, listed,
                 "a business column was added to or removed from the projection without a matching "
                         + "event component");
+    }
+
+    /**
+     * The statement that applies this event also releases the exposure it reports.
+     *
+     * <p>Refreshing the two authoritative accumulators without releasing the reservation they now
+     * contain would count one approval twice, and every decision taken afterwards would decline
+     * against exposure that had already been posted. The release therefore belongs in the same
+     * statement as the refresh, and this reads it there. A cycle close is the one event that lowers a
+     * credit accumulator, because every other source statement adds, so an incoming figure that moved
+     * the wrong way clears the reservation outright.
+     */
+    @Test
+    @DisplayName("The statement applying the event releases the exposure the event reports")
+    void theEventReleasesTheExposureItReports() {
+        String statement = applyStateChangeStatement();
+
+        assertTrue(statement.contains("pending_cycle_credit") && statement.contains(
+                        "pending_cycle_debit"),
+                "the upsert that applies this event has to release the reservation it reports, or a "
+                        + "posted approval stays counted twice: " + statement);
+        assertTrue(statement.contains("GREATEST(0"),
+                "releasing more than was reserved would drive the reserved credit negative, which "
+                        + "its CHECK constraint refuses: " + statement);
+        assertTrue(statement.contains("LEAST(0"),
+                "the debit reservation is zero or negative, matching the sign convention at "
+                        + "app/cbl/CBTRN02C.cbl:L551: " + statement);
+    }
+
+    /**
+     * Reads the native upsert the account state-change consumer runs.
+     *
+     * @return the statement text declared on the repository method
+     */
+    private static String applyStateChangeStatement() {
+        Method applying = Arrays.stream(AccountCreditSnapshotRepository.class.getMethods())
+                .filter(method -> "applyStateChange".equals(method.getName()))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError(
+                        "the projection repository no longer applies an account state change"));
+        Query declared = applying.getAnnotation(Query.class);
+        assertNotNull(declared, "applyStateChange has to declare the statement it runs");
+        assertTrue(declared.nativeQuery(),
+                "the release arms are PostgreSQL expressions, so the statement stays native");
+        return declared.value();
     }
 
     @Test

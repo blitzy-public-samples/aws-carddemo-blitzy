@@ -45,6 +45,8 @@ import tools.jackson.databind.ser.std.ToStringSerializer;
  * @param accountId          the eleven-digit account identifier, from {@code ACCT-ID PIC 9(11)} at
  *                           {@code app/cpy/CVACT01Y.cpy:L5}. A leading zero belongs to the value
  * @param changeKind         which mutation produced the event. No source field carries it
+ * @param currentBalance     the account balance, from {@code ACCT-CURR-BAL PIC S9(10)V99} at
+ *                           {@code app/cpy/CVACT01Y.cpy:L7}
  * @param creditLimit        the credit limit, from {@code ACCT-CREDIT-LIMIT PIC S9(10)V99} at
  *                           {@code app/cpy/CVACT01Y.cpy:L8}
  * @param currentCycleCredit the cycle credit accumulator, from
@@ -187,11 +189,6 @@ public record AccountStateChanged(
     }
 
     /**
-     * Builds an event, stamping a fresh envelope for the account the change belongs to.
-     *
-     * <p>{@code accountId} supplies the envelope {@code aggregateId}, so the two components cannot
-     * name different accounts.
-     *
      * @param accountId          the eleven-digit account identifier
      * @param changeKind         which mutation produced the event
      * @param currentBalance     the account balance after the change
@@ -211,11 +208,6 @@ public record AccountStateChanged(
     }
 
     /**
-     * Builds an event on an envelope a caller already holds.
-     *
-     * <p>A replay of a stored event supplies the envelope it stored, so the replayed event keeps
-     * its original identifier and timestamp.
-     *
      * @param envelope           the five envelope components to carry
      * @param accountId          the eleven-digit account identifier, equal to the envelope
      *                           {@code aggregateId}
@@ -241,12 +233,6 @@ public record AccountStateChanged(
     }
 
     /**
-     * Returns the five envelope components as one {@link EventEnvelope}.
-     *
-     * <p>The returned envelope equals the one the canonical constructor checked. Serialization
-     * reads the twelve record components and never this method, so no {@code envelope} key reaches
-     * a topic.
-     *
      * @return the envelope this event carries
      */
     public EventEnvelope toEnvelope() {
@@ -329,11 +315,8 @@ public record AccountStateChanged(
      * The returned text is what a caller stores in the {@code payload} column of
      * {@code outbox_event} and what the relay later hands to the broker unchanged.
      *
-     * <p>This method exists so that no publisher of this event can reach a topic without passing
-     * that gate. Before it existed, this service serialized its own event with its own conventions,
-     * and the shared serializer governed only the five core events. A mutation event's payload was
-     * therefore never checked against the contract describing it. The closed property set that
-     * keeps an undeclared field out of a known event type never applied to it either.
+     * <p>This method is the only path from this event to a topic, so no publisher can reach one
+     * without passing that gate, and the closed property set keeps an undeclared field out.
      *
      * @return this event as validated JavaScript Object Notation text, in UTF-8
      * @throws org.apache.kafka.common.errors.SerializationException when this event breaks its

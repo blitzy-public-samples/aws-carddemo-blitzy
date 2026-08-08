@@ -23,7 +23,6 @@ import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.kafka.config.KafkaListenerEndpointRegistry;
 import org.springframework.kafka.core.KafkaAdmin;
-import org.springframework.kafka.listener.MessageListenerContainer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;

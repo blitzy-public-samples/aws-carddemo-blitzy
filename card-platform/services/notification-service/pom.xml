@@ -21,13 +21,14 @@
   <packaging>jar</packaging>
 
   <name>CardDemo Notification Service</name>
-  <description>The notification service consumes one topic under one consumer
-    group of its own. transaction.posted carries the new balance a posting
-    produced, and the service maintains a card-keyed read model and renders a
-    cardholder alert from it. That topic sits downstream of the authorization
-    event, which ledger posting and fraud detection consume directly. No listener
-    reads fraud.assessed. This service publishes no event and calls no other
-    service.</description>
+  <description>The notification service consumes four topics, each under a consumer
+    group of its own. transaction.posted carries the new balance a posting produced,
+    and the service maintains a card-keyed read model and renders a cardholder alert
+    from it. transaction.authorized makes this the third independent reader of the
+    authorization event, beside ledger posting and fraud detection. fraud.assessed
+    carries a risk outcome to the cardholder, and customer.context-changed keeps the
+    cardholder details an alert needs current. This service publishes no event and
+    calls no other service.</description>
 
   <!-- Language level. The build reads maven.compiler.release: the compiler plugin in
        card-platform/pom.xml configures its release from that property, and the aggregator's

@@ -48,12 +48,14 @@ class StreamNameReportTest {
                     .extracting(StreamNameReport.ReportedName::environmentKey)
                     .containsExactly("TOPIC_TRANSACTION_AUTHORIZED",
                             "TOPIC_FRAUD_ASSESSED",
-                            "TOPIC_DEAD_LETTER");
+                            "TOPIC_DEAD_LETTER",
+                            "TOPIC_DEAD_LETTER_SUFFIX");
             assertThat(report.reportedNames())
                     .extracting(StreamNameReport.ReportedName::value)
                     .containsExactly("transaction.authorized",
                             "fraud.assessed",
-                            "carddemo.dead-letter");
+                            "carddemo.dead-letter",
+                            ".DLT");
         });
     }
 

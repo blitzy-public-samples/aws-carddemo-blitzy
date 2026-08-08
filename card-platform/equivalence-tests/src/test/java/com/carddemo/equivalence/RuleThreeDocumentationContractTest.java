@@ -121,16 +121,23 @@ class RuleThreeDocumentationContractTest {
                 "Every surface below is unauthenticated",
                 "None answers yet",
                 "Seven listeners are present",
+                "Nine listeners are present",
+                "five source-specific dead-letter topics",
+                "Thirteen schema documents",
+                "no runtime consumer",
+                "182 Failsafe equivalence tests",
+                "cross-reference divergence metering",
                 "may publish a decline when its account projection is missing",
                 "| planned |")) {
             assertFalse(platform.contains(stale), "platform README retains stale text: " + stale);
         }
 
         for (String delivered : List.of(
-                "Nine listeners are present",
-                "Seven business topics, five source-specific dead-letter topics, and one shared fallback",
+                "Eleven listeners are present",
+                "Seven business topics, six source-specific dead-letter topics, and one shared"
+                        + " fallback",
                 "8 files, 17 mapsets, 18 programs, and 18 transactions",
-                "182 Failsafe equivalence tests",
+                "228 Failsafe equivalence tests",
                 "Every business route requires HTTP Basic authentication")) {
             assertTrue(platform.contains(delivered), "platform README must name " + delivered);
         }
@@ -243,13 +250,13 @@ class RuleThreeDocumentationContractTest {
                 "POST /authorizations",
                 "GET /balances/{accountId}",
                 "GET /fraud-assessments",
-                "GET /notifications/{cardToken}",
+                "GET /notifications/{cardNumber}",
                 "PUT /accounts/{accountId}",
                 "POST /accounts/{accountId}/cycle-close",
                 "GET /customers/{customerId}",
                 "GET /cards",
-                "POST /cards/detail",
-                "PUT /cards")) {
+                "GET /cards/{cardNumber}",
+                "PUT /cards/{cardNumber}")) {
             assertTrue(platform.contains("`" + route + "`"), "missing route " + route);
         }
         for (String topic : List.of(
@@ -272,7 +279,8 @@ class RuleThreeDocumentationContractTest {
                 "notification-fraud",
                 "notification-customer",
                 "authorization-account-state",
-                "authorization-card-updated")) {
+                "authorization-card-updated",
+                "account-posted")) {
             assertTrue(platform.contains("`" + group + "`"), "missing consumer group " + group);
         }
     }

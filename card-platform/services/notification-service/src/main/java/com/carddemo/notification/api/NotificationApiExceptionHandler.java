@@ -6,38 +6,37 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.MessageSourceResolvable;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.ResponseEntity.BodyBuilder;
 import org.springframework.validation.method.ParameterValidationResult;
+import org.springframework.web.ErrorResponse;
+import org.springframework.web.HttpMediaTypeException;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.HandlerMethodValidationException;
-import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.servlet.NoHandlerFoundException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 /**
  * Turns a failure of the notification endpoint into an {@link ApiErrorResponse}.
  *
  * <p>The framework's own problem detail carries the resolved request path in its {@code instance}
- * member. The path variable of this service's one route is a card token, so that member would copy
- * an identifier of one cardholder's card into the response body and into any log line built from it.
- * Every response this class returns carries the route template instead, and no value read from the
- * request.
+ * member. The path variable of this service's one route is a card number, so that member would copy a
+ * full Primary Account Number into the response body and into any log line built from it. Every
+ * response this class returns carries the route template instead, and no value read from the request.
  *
- * <p>Two outcomes. A request value the route cannot use answers {@code 400}, carrying the text of
- * the constraint that refused it so a caller reads which of the two values was wrong. Any other
- * fault answers {@code 500} with one fixed text.
+ * <p>Two outcomes. A request value the route cannot use answers {@code 400}, carrying the text of the
+ * constraint that refused it. Any other fault answers {@code 500} with one fixed text.
  *
- * <p>Three failures reach the {@code 400}. The path variable misses its shape, the page size falls
- * below its floor, and the page size is no whole number at all. The third arrives as a conversion
- * failure rather than as a constraint violation, because a query string is text and the page size is
- * the one value of this route that is not: it converts before any constraint runs, so a conversion
- * that fails reaches none. Without an arm of its own it fell to the {@code 500} below, which
- * answered a fault for a value a caller had simply mistyped.
+ * <p>One failure reaches the {@code 400}: the path variable misses its shape. The route reads that one
+ * value and converts nothing, so no conversion failure arises ahead of the constraints.
  *
  * <p>A refusal records one INFO line and no more. It names neither the value submitted nor the
- * constraint, because the response already tells the caller which value to change and a line naming
- * the value would put a card token in the log this class exists to keep one out of. The level is what
- * carries the meaning: a caller's mistake is traffic, so a mistyped page size leaves an INFO line
- * where it used to leave an ERROR line with a stack trace.
+ * constraint. The response already tells the caller which value to change, and a line naming the value
+ * would put a card number in the log this class exists to keep one out of. The level is what carries
+ * the meaning: a caller's mistake is traffic rather than a fault of this service.
  *
  * <p>The fixed text is what the caller reads, and it is deliberately the same text for every fault.
  * That leaves the log as the only place a fault can be diagnosed from, so the {@code 500} branch
@@ -67,19 +66,32 @@ public class NotificationApiExceptionHandler {
     /** Writes the one {@code ERROR} line a fault leaves behind. */
     private static final Logger LOGGER =
             LoggerFactory.getLogger(NotificationApiExceptionHandler.class);
+    /** Causes rendered into one failure line before the chain is cut. */
+    private static final int FAILURE_TYPE_DEPTH = 3;
 
     /**
      * Text a response carries when a request value carried no text of its own.
      *
      * <p>Every constraint of {@link NotificationHistoryController} declares its own message, so this
-     * text is reached only if a future constraint arrives without one. It names the two values the
+     * text is reached only if a future constraint arrives without one. It names the one value the
      * route reads and nothing a caller submitted.
      */
     static final String INVALID_REQUEST_MESSAGE =
-            "Card token and page size must each be a value this route admits";
+            "Card number must be a value this route admits";
 
     /** Text a response carries when the service faults. */
     static final String SERVICE_FAULT_MESSAGE = "The request could not be completed.";
+
+    /**
+     * Text a response carries when the protocol refused the call.
+     *
+     * <p>A method this route does not serve, a media type it does not read, a media type it cannot
+     * write and a path that matches no route all carry this text. The status separates them, and a
+     * {@code 405} also carries {@code Allow}. The text names neither the method nor the path
+     * submitted.
+     */
+    static final String UNSUPPORTED_REQUEST_MESSAGE =
+            "This route does not serve the method, path or media type the request named.";
 
     /**
      * Answers a request value one constraint refused.
@@ -112,29 +124,46 @@ public class NotificationApiExceptionHandler {
     }
 
     /**
-     * Answers a page size the framework could not read as a whole number.
+     * Answers a call the protocol refused, at the status and with the headers the framework named.
      *
-     * <p>The conversion runs ahead of every constraint, so this failure reaches no constraint and
-     * carries no text of its own. {@code abc}, {@code 7.5} and a value wider than the type all arrive
-     * here.
+     * <p>Four failures reach here, each raised before the route ran: a method this route does not
+     * serve, a media type it does not read, a media type it cannot write, and a path that matches no
+     * route. Each carries its own status and its own headers, and {@code Allow} on a {@code 405} is
+     * how a caller learns that the route serves {@code GET} alone. Answering {@code 500} instead
+     * would record a caller's mistake as a fault of this service and invite an unsafe retry.
      *
-     * @param mismatch the reported conversion failure, read for nothing but its type
-     * @return {@code 400} carrying the route template and the page-size text
+     * <p>The body carries the route template, as every body this class writes does, so no resolved
+     * path and therefore no card number reaches a caller through a refusal. A {@code 406} carries no
+     * body at all: a caller that accepts no type this route writes cannot be sent one.
+     *
+     * @param failure the protocol refusal, read for its status and its headers
+     * @return the status the framework named, carrying that status's headers
      */
-    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
-    public ResponseEntity<ApiErrorResponse> onParameterTypeMismatch(
-            MethodArgumentTypeMismatchException mismatch) {
-        LOGGER.info("A notification request carried a page size that is no whole number");
-        return badRequest(NotificationHistoryController.PAGE_SIZE_NOT_A_NUMBER_MESSAGE);
+    @ExceptionHandler({HttpRequestMethodNotSupportedException.class, HttpMediaTypeException.class,
+            NoResourceFoundException.class, NoHandlerFoundException.class})
+    public ResponseEntity<ApiErrorResponse> onUnsupportedRequest(ErrorResponse failure) {
+        HttpStatusCode status = failure.getStatusCode();
+        HttpStatus resolved = HttpStatus.valueOf(status.value());
+
+        LOGGER.info("Refusing a notification call on the protocol, answering {}", status.value());
+        BodyBuilder response = ResponseEntity.status(status).headers(failure.getHeaders());
+        if (resolved == HttpStatus.NOT_ACCEPTABLE) {
+            return response.build();
+        }
+        return response.body(new ApiErrorResponse(status.value(), UNSUPPORTED_REQUEST_MESSAGE,
+                NotificationHistoryController.ROUTE_TEMPLATE));
     }
 
     /**
      * Answers any other fault, and records it.
      *
      * <p>The response body carries the route template and one fixed text, so it names neither the
-     * fault nor any value read from the request. The {@code ERROR} line carries the fault itself,
-     * with its stack trace, and names the route by its template rather than by the resolved path.
-     * A reader therefore learns what failed from the log and the caller learns nothing from the
+     * fault nor any value read from the request. The {@code ERROR} line names the route by its
+     * template, the status, and the type of the fault with the types of its causes. It does not
+     * carry the fault itself: a stack trace renders the exception message, and a message quotes the
+     * value that caused the failure, which is how a constraint violation, a query timeout or a
+     * broken connection puts a row value, a statement or a data-source URL into an ordinary log.
+     * A reader therefore learns which failure class occurred and the caller learns nothing from the
      * response, which is the separation this class exists to hold.</p>
      *
      * @param fault the fault, logged and otherwise read for nothing but its type
@@ -142,11 +171,11 @@ public class NotificationApiExceptionHandler {
      */
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiErrorResponse> onFault(Exception fault) {
-        LOGGER.error("The route {} answered {} because a fault reached the handler. The response"
-                        + " carries one fixed text, so this line is the only record of what"
-                        + " failed.",
+        LOGGER.error("The route {} answered {} because a fault reached the handler. The failure"
+                        + " was {}. Its message is not recorded, because a message quotes the value"
+                        + " that caused it.",
                 NotificationHistoryController.ROUTE_TEMPLATE,
-                HttpStatus.INTERNAL_SERVER_ERROR.value(), fault);
+                HttpStatus.INTERNAL_SERVER_ERROR.value(), failureType(fault));
 
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                 .body(new ApiErrorResponse(HttpStatus.INTERNAL_SERVER_ERROR.value(),
@@ -172,10 +201,9 @@ public class NotificationApiExceptionHandler {
     /**
      * Reports the text of the first constraint a method validation refused on.
      *
-     * <p>The results arrive in the order the method declares its parameters, so a request wrong in
-     * both values reads the card-token text: the path variable is declared first, and a route whose
-     * path variable names no card has nothing to page through. Reading them in declaration order
-     * keeps that first-error-wins ordering the same on every run.
+     * <p>The results arrive in the order the method declares its parameters, and the route declares
+     * one. Reading them in declaration order keeps that first-error-wins ordering the same on every
+     * run.
      *
      * @param violation the reported violation
      * @return that constraint's text, or {@link #INVALID_REQUEST_MESSAGE} when none declared one
@@ -202,5 +230,34 @@ public class NotificationApiExceptionHandler {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST)
                 .body(new ApiErrorResponse(HttpStatus.BAD_REQUEST.value(), message,
                         NotificationHistoryController.ROUTE_TEMPLATE));
+    }
+
+    /**
+     * Renders one failure as its type and the types of its causes, and never as its message.
+     *
+     * <p>A type is code and safe to record. An exception message is not: a constraint violation
+     * quotes the value that violated it, a query timeout quotes the statement, and a connection
+     * failure quotes the data-source URL. Passing the throwable to the logger emits both, so this
+     * method emits the half that is code and drops the half that is data.
+     *
+     * <p>The chain is bounded because a wrapped failure can nest deeply and one log line is not the
+     * place to render all of it. Three levels reach the framework wrapper, the driver exception and
+     * the cause underneath it, which is what a reader needs to tell a timeout from a constraint from
+     * a broken connection.
+     *
+     * @param failure the failure that reached this handler
+     * @return the type chain as text, never null and never a message
+     */
+    private static String failureType(Throwable failure) {
+        StringBuilder types = new StringBuilder();
+        Throwable current = failure;
+        for (int depth = 0; current != null && depth < FAILURE_TYPE_DEPTH; depth++) {
+            if (depth > 0) {
+                types.append(" caused by ");
+            }
+            types.append(current.getClass().getName());
+            current = current.getCause() == current ? null : current.getCause();
+        }
+        return types.toString();
     }
 }

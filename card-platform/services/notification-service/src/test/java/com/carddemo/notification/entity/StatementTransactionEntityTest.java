@@ -1,7 +1,6 @@
 package com.carddemo.notification.entity;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.fail;
 
@@ -51,9 +50,11 @@ import org.junit.jupiter.api.function.Executable;
  * reflection. No Spring context starts, no container starts and no socket opens. {@code mvn test}
  * therefore runs the class on a machine with no database and no message broker.</p>
  *
- * <p>Thirteen columns map thirteen fields of {@code 01 TRNX-RECORD.} at {@code
- * app/cpy/COSTM01.CPY:L20}, a copybook of the Common Business Oriented Language (COBOL) source. Two
- * source constructs carry no column: the group {@code 05 TRNX-REST.} at {@code
+ * <p>Fourteen columns map the thirteen fields of {@code 01 TRNX-RECORD.} at {@code
+ * app/cpy/COSTM01.CPY:L20}, a copybook of the Common Business Oriented Language (COBOL) source. The
+ * count differs by one because {@code TRNX-CARD-NUM PIC X(16)} becomes two columns: a card token of
+ * {@code PanMasker.CARD_TOKEN_LENGTH} characters that keys a row, and a masked display value at the
+ * source width. Two source constructs carry no column: the group {@code 05 TRNX-REST.} at {@code
  * app/cpy/COSTM01.CPY:L24}, and the trailing {@code FILLER PIC X(20)} at {@code
  * app/cpy/COSTM01.CPY:L36}. The 350-byte record width comes from {@code RECORDSIZE(350 350)} at
  * {@code app/jcl/CREASTMT.JCL:L32}, a Job Control Language (JCL) member, since the copybook states
@@ -182,7 +183,6 @@ final class StatementTransactionEntityTest {
     private static final List<String> FILLER_FRAGMENTS =
             List.of("filler", "padding", "reserved", "unused");
 
-    /** Names no field and no column takes. Each one records when a row reached the table. */
     private static final List<String> ROW_LIFECYCLE_NAMES = List.of(
             "created_at", "createdat", "created", "inserted_at", "insertedat", "rowcreatedat",
             "updated_at", "updatedat", "modified_at", "modifiedat");
@@ -225,8 +225,6 @@ final class StatementTransactionEntityTest {
     }
 
     /**
-     * Names the member types the entity declares.
-     *
      * @return one simple name per member type
      */
     private static List<String> memberTypeNames() {
@@ -238,8 +236,6 @@ final class StatementTransactionEntityTest {
     }
 
     /**
-     * Returns the instance fields a type declares, with synthetic and static members dropped.
-     *
      * @param type the type to read
      * @return the instance fields, in the order reflection reports them
      */
@@ -255,8 +251,6 @@ final class StatementTransactionEntityTest {
     }
 
     /**
-     * Names a list of fields.
-     *
      * @param fields the fields to name
      * @return one name per field, in list order
      */
@@ -360,8 +354,6 @@ final class StatementTransactionEntityTest {
     }
 
     /**
-     * Returns the no-argument constructor the persistence provider calls.
-     *
      * @param type the type to read
      * @return the declared constructor that takes no argument
      */
@@ -385,8 +377,6 @@ final class StatementTransactionEntityTest {
     }
 
     /**
-     * Names a set of annotations for a failure message.
-     *
      * @param annotations the annotations to name
      * @return one simple name per annotation
      */
@@ -399,8 +389,6 @@ final class StatementTransactionEntityTest {
     }
 
     /**
-     * Names the annotation types a member carries, in full.
-     *
      * @param annotations the annotations to name
      * @return one fully qualified name per annotation
      */

@@ -28,12 +28,12 @@ import java.util.List;
  * {@code Throwable}. {@link #fromFailure(String, Throwable, String, String)} reads the failure type
  * and nothing else.
  *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
+ *
  * @param abendCode the four-character failure code
  * @param culprit   the failing component
  * @param reason    the failure classification
  * @param message   the failure detail
- *
- * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 public record DeadLetterMetadata(String abendCode, String culprit, String reason,
         String message) {
@@ -182,11 +182,8 @@ public record DeadLetterMetadata(String abendCode, String culprit, String reason
     /**
      * Renders this metadata as the one dead-letter contract the platform publishes.
      *
-     * <p>Five services declared a record of this name, each with its own component list and none
-     * with a schema. That is five wire formats on a topic a single operator has to read, and a
-     * consumer written against one of them cannot read the other four. It also meant nothing
-     * validated what reached a dead-letter topic, so the one place a rejected message is kept
-     * longest was the one place its contents were least controlled.
+     * <p>Six service modules declare a record of this name as their in-process carrier for the four
+     * diagnostic values, and every one of them reaches a topic only through this method.
      *
      * <p>{@link DeadLetterEnvelope} in {@code libs/event-contracts} is that contract now. It
      * carries a version, it validates against {@code schemas/dead-letter-v1.json} through the same

@@ -8,6 +8,8 @@ A reader needs to know what "equivalent" was measured against before reading any
 
 The comparison executes the Java implementations and independent source-rule references against the fixtures under `app/data/ASCII/`, checking them against expected results held in `card-platform/equivalence-tests/src/test/resources/expected/`. Those expected files are derived from documented source semantics and are checked in, one per fixture subject.
 
+Each expected file is loaded by the class its own provenance header names, and **every data row is compared against a value re-derived from the fixtures or the source text**. A summary count is never accepted in place of the rows it summarises. Two properties of the reader make that claim checkable rather than asserted. A row that no derivation covers fails the assertion, so an asset cannot be loaded and left partly unread. The declared row count is asserted before any comparison, so adding or removing a row fails the build until the count is restated. The [asset consumption](#asset-consumption) table below lists every file, its row count and the class that reads it.
+
 **The suite never calls the mainframe.** Two things make an offline basis the correct reading rather than a compromise. The user forbade the new services from calling into the mainframe at runtime. The user's own equivalence requirement permits comparison against the original COBOL "or its documented business rules", and that parenthetical is what the harness relies on.
 
 The user's wording fixes three subjects for identical results, and each maps to a source paragraph a reviewer can open:
@@ -34,23 +36,80 @@ mvn -B -ntp -pl equivalence-tests -am verify
 
 The suite is a first-class Maven module rather than a test directory bolted on at the end, because the user asked that equivalence testing not be deferred. `equivalence-tests` sits last of the ten reactor projects, since it depends on both shared libraries and all six services.
 
-The continuous-integration workflow runs equivalence as its own stage, `Run equivalence tests`, invoking the same `verify` goal. No stage in that workflow carries `continue-on-error`, and the container-build stage lists the equivalence stage among its prerequisites, so the suite cannot be skipped or allowed to fail quietly. `PostingEquivalenceTest` obtains PostgreSQL through Testcontainers; the other eight classes need no container. [Onboarding](onboarding.md) covers machine setup.
+The continuous-integration workflow runs equivalence as its own stage, `Run equivalence tests`, invoking the same `verify` goal. No stage in that workflow carries `continue-on-error`, and the container-build stage lists the equivalence stage among its prerequisites, so the suite cannot be skipped or allowed to fail quietly. `PostingEquivalenceTest` obtains PostgreSQL through Testcontainers, and `ThreeConsumerAuthorizationFlowIT` obtains PostgreSQL and Kafka the same way; the other eight classes need no container. [Onboarding](onboarding.md) covers machine setup.
 
 ## Observed run
 
-The command above completed successfully across all ten reactor projects.
+**What backs the figures below, and what does not.** They come from running the command named above against the tree this document is committed in. The repository retains no report artifact. `target/` is not committed, so there is no stored Surefire or Failsafe report a reader can open. No figure here should be read as quoting one. Two things are reproducible instead. The command reproduces the run on any machine set up per [onboarding](onboarding.md). The class census below is static, so it can be checked with `ls` and without running anything.
+
+Every count below comes from one run, and this is that run. Any other number published anywhere in this repository is either this run's or stale, so the run is identified before its results.
+
+| Run identity | Value |
+|---|---|
+| Date | 2026-08-08 |
+| Source tree | the delivered `card-platform/` tree this document is committed in, with nothing uncommitted and nothing under `app/`, `diagrams/` or `samples/` changed |
+| Command | `CI=true mvn -B -ntp clean verify` from `card-platform/` |
+| Runtime | Eclipse Temurin OpenJDK 25.0.4+7, Apache Maven 3.9.16 |
+| Container runtime | Docker Engine 29.7.0, images `postgres:18.4` and `apache/kafka:4.2.1` |
+| Duration | 9 minutes 9 seconds, all ten reactor projects reporting SUCCESS |
+| Counts read from | Every figure counts the `testcase` elements in `target/surefire-reports/TEST-*.xml` and `target/failsafe-reports/TEST-*.xml`, which is the number Maven prints in its own per-module summary. Counting the `tests` attribute instead would be wrong: a report for a class holding `@Nested` classes lists the nested cases but counts only its own, so the attribute sums to 5,755 Surefire and 541 Failsafe across the reactor against Maven's 5,768 and 547 |
+
+The command completed successfully across all ten reactor projects.
+
+The command was run again after the documentation changes, and every repeat reproduced every count below, so the numbers describe the delivered tree and not just the moment they were taken. Each repeat reported `BUILD SUCCESS`, in wall-clock times between nine and fourteen minutes. Those times differ from each other and from the row above because the runs shared the host differently; no count differs.
 
 | Measure | Observed result |
 |---|---:|
-| Failsafe equivalence tests | 214 passed |
-| Surefire unit and contract tests in the same module | 266 passed |
+| Failsafe equivalence tests | 228 passed across the nine `*EquivalenceTest` classes |
+| Failsafe end-to-end flow test in the same module | 6 passed in `ThreeConsumerAuthorizationFlowIT`, giving 234 for this module's whole Failsafe run |
+| Surefire unit and contract tests in the same module | 375 passed |
 | `*EquivalenceTest` classes executed | 9 |
 | Required named equivalence classes | 6 present and passing |
+| Checked-in expected-output files | 14, every one read by its declared consumer |
+| Expected-output rows compared | 11,142 |
 | Failures | 0 |
 | Errors | 0 |
 | Skipped tests | 0 |
 
-The module holds nine classes matching the Failsafe pattern: the six the specification names, plus three added during implementation. The six contribute 180 tests and the three contribute 34, which is the 214 above.
+The module holds nine classes matching `**/*EquivalenceTest.java`: the six the specification names, plus three added during implementation. The three added contribute 34 tests and the six named contribute the remaining 194, which is the 228 above. Failsafe here also selects `**/*IT.java`, and the one class that pattern matches contributes the remaining 6.
+
+Every one of the fourteen files under `src/test/resources/expected/` is now read row by row by the test its comment line declares, and each reader refuses to finish while any row is left unconsumed. `ExpectedOutputBindingContractTest` lists that directory from disk, so a new file is covered the moment it lands and a file whose declared consumer never opens it fails the build rather than sitting unread.
+
+| Expected-output file | Rows | Read by |
+|---|---:|---|
+| `dailytran-posting-results-model-b.csv` | 3,686 | `PostingEquivalenceTest` |
+| `dailytran-authorization-decisions-model-a.csv` | 3,035 | `AuthorizationDecisionEquivalenceTest` |
+| `dailytran-decimal-truncation-model-b.csv` | 743 | `DecimalTruncationEquivalenceTest` |
+| `dailytran-category-balances-model-b.csv` | 690 | `PostingEquivalenceTest` |
+| `tcatbal-interest-accrual.csv` | 616 | `InterestCalculationEquivalenceTest` |
+| `bill-payment-results.csv` | 532 | `BillPaymentEquivalenceTest` |
+| `acctdata-final-account-state-model-b.csv` | 492 | `PostingEquivalenceTest` |
+| `dailytran-reject-records-model-b.csv` | 388 | `PostingEquivalenceTest` |
+| `discgrp-interest-rates.csv` | 236 | `InterestCalculationEquivalenceTest` |
+| `synthetic-boundary-cases.csv` | 215 | `AuthorizationDecisionEquivalenceTest` |
+| `fixture-coverage.csv` | 190 | `FixtureCoverageEquivalenceTest` |
+| `cardxref-account-resolution.csv` | 163 | `AuthorizationDecisionEquivalenceTest` |
+| `validation-messages.csv` | 136 | `ValidationEquivalenceTest` |
+| `posting-summary.csv` | 20 | `PostingEquivalenceTest` and `AuthorizationDecisionEquivalenceTest` |
+
+The whole-feed comparison drives both ledger consumers rather than one. The 262 approvals reach `TransactionAuthorizedConsumer` and the 38 refusals reach `TransactionDeclinedConsumer`, so the reject rows of `app/cbl/CBTRN02C.cbl:L446-L465` are produced by the shipped consumer against a real database instead of being asserted from a hand-built fixture. Each consumer acknowledges on its own counter and records its own idempotency marker against its own consumed topic, which is what keeps the two counts independently checkable.
+
+The reject record itself is compared as bytes. `renderRejectRecord` copies the fixture's own 350 bytes verbatim, exactly as `app/cbl/CBTRN02C.cbl:L447` copies the daily record, and appends the 80-byte trailer the source builds. The masked card number this platform adds lives on the persisted row only, and a dedicated test asserts the two representations are different so neither can quietly replace the other.
+
+| Failsafe class | Tests |
+|---|---:|
+| `PostingEquivalenceTest` | 58 |
+| `ValidationEquivalenceTest` | 50 |
+| `DecimalTruncationEquivalenceTest` | 24 |
+| `InterestCalculationEquivalenceTest` | 23 |
+| `BillPaymentEquivalenceTest` | 22 |
+| `FixtureCoverageEquivalenceTest` | 18 |
+| `AuthorizationDecisionEquivalenceTest` | 17 |
+| `IdentifierFidelityEquivalenceTest` | 9 |
+| `CardSeedEquivalenceTest` | 7 |
+| `ThreeConsumerAuthorizationFlowIT` | 6 |
+
+The whole reactor ran 5,768 Surefire and 547 Failsafe tests in the same run, with zero failures, zero errors and zero skips. Those two figures belong here rather than in a service guide, because one run identity is easier to keep true than seven.
 
 ## Fixture inventory and results
 
@@ -84,12 +143,12 @@ All nine classes sit in `com.carddemo.equivalence`. The six the specification re
 
 | Test class | Subject | Assertion | Result |
 |---|---|---|---|
-| `PostingEquivalenceTest` | All 300 daily-transaction records | Final balances, category balances and reject reasons match the expected results record by record, with ordering, timestamp normalization and idempotency | PASS — 52 tests |
-| `AuthorizationDecisionEquivalenceTest` | Each of the four decline reasons | Correct code and verbatim description, correct short-circuit ordering, equality boundaries, missing rows, and the narrowed precision boundary | PASS — 14 tests |
-| `BillPaymentEquivalenceTest` | The online payment path | Balance reduced to zero and both cycle accumulators left untouched, unlike batch posting | PASS — 21 tests |
-| `InterestCalculationEquivalenceTest` | Rate rules and the default-group fallback | Rates resolve identically, one `DEFAULT` retry, failed retry, and the accumulator reset. Verified, not migrated | PASS — 21 tests |
-| `ValidationEquivalenceTest` | Field validation | The six card message texts and the credit-score range message reproduced character for character | PASS — 49 tests |
-| `DecimalTruncationEquivalenceTest` | All four money-moving arithmetic sites | Truncation produces the expected value, and half-up rounding produces a different one | PASS — 23 tests |
+| `PostingEquivalenceTest` | All 300 daily-transaction records | Final balances, category balances and reject reasons match the expected results record by record, with ordering, timestamp normalization and idempotency. Five checked-in assets read row by row, including the raw 350-character reject block | PASS — 58 tests |
+| `AuthorizationDecisionEquivalenceTest` | Each of the four decline reasons | Correct code and verbatim description, correct short-circuit ordering, equality boundaries, missing rows, and the narrowed precision boundary. Four checked-in assets read row by row | PASS — 17 tests |
+| `BillPaymentEquivalenceTest` | The online payment path | Balance reduced to zero and both cycle accumulators left untouched, unlike batch posting. Two checked-in assets read row by row | PASS — 22 tests |
+| `InterestCalculationEquivalenceTest` | Rate rules and the default-group fallback | Rates resolve identically, one `DEFAULT` retry, failed retry, and the accumulator reset. Verified, not migrated. Two checked-in assets read row by row | PASS — 23 tests |
+| `ValidationEquivalenceTest` | Field validation | The six card message texts and the credit-score range message reproduced character for character. Two checked-in assets read row by row | PASS — 50 tests |
+| `DecimalTruncationEquivalenceTest` | All four money-moving arithmetic sites | Truncation produces the expected value, and half-up rounding produces a different one. Three checked-in assets read row by row | PASS — 24 tests |
 
 Three supplementary classes cover fixture census, identifier fidelity and card seeding: `FixtureCoverageEquivalenceTest` 18 tests, `IdentifierFidelityEquivalenceTest` 9, and `CardSeedEquivalenceTest` 7. All pass.
 
@@ -108,7 +167,34 @@ The short-circuit assertion matters as much as the codes. Paragraph `1500-VALIDA
 
 No such gate separates reasons 102 and 103. The limit test closes at `:L413` and the expiry test opens at `:L414` unconditionally, so reason 103 overwrites reason 102 when both comparisons fail. The suite reproduces that ordering.
 
-Under the stateless authorization projection the 300 fixture records produced 13 declines and 287 approvals, and every fixture-reachable decline carried reason 102. Both cycle accumulators hold `0.00` across all 300 evaluations, so the tested value reduces to the transaction amount and only the limit comparison can fail. Constructed records cover reasons 100, 101 and 103.
+### Two evaluation models, and why both are published
+
+The same 300 fixture records give two different decline counts, and neither is wrong. The count depends on whether account state carries forward between records, which is a property of the path being compared rather than of the data. Publishing one figure alone invites a reader to treat the other as an error. Both are named below, each labelled with the identifier the expected-output file carries, and each stated with the assumption that produces it.
+
+| Model | Label in `posting-summary.csv` | Assumption | Records | Approved | Declined |
+| --- | --- | --- | ---: | ---: | ---: |
+| A | `A_STATELESS` | Each record is evaluated on its own against the seeded account state. Nothing a previous record did is visible, which is what a single synchronous authorization call sees | 300 | 287 | **13** |
+| B | `B_CUMULATIVE_DECLINES_SKIP` | Account state carries forward, matching the rewrite at `app/cbl/CBTRN02C.cbl:L554`, and a declined record skips it, matching the gate at `:L211`. This is what the batch posting run does | 300 | **262** | **38** |
+
+Model A is the authorization projection. Both cycle accumulators hold `0.00` across all 300 evaluations, so the tested value reduces to the transaction amount and only the limit comparison can fail. Every fixture-reachable decline therefore carries reason 102, and constructed records cover reasons 100, 101 and 103.
+
+Model B is the ledger run, and its extra 25 declines are the accumulators doing their work. Each approved posting adds its amount to a cycle accumulator, the credit-limit rule subtracts that accumulator, and a later record on the same account is tested against a tighter figure. That is the same coupling [register item 5](business-rule-flags.md) records, observed over 300 records instead of argued about.
+
+Model B carries nine further expected values, all checked in and all asserted:
+
+| Expected field | Value | Derived from |
+| --- | ---: | --- |
+| `record_count` | 300 | `app/cbl/CBTRN02C.cbl:L202-L219` |
+| `declined_event_count` | 38 | One `TransactionDeclined` per decline, never more |
+| `return_code` | 4 | `app/cbl/CBTRN02C.cbl:L229-L230`, the source's own answer to a run with rejects |
+| `transaction_row_count` | 262 | `app/cbl/CBTRN02C.cbl:L562-L579`. One row per approval and none per decline |
+| `processed_event_count` | 262 | One idempotency marker per applied event. Additive |
+| `posted_outbox_count` | 262 | One `TransactionPosted` per approval |
+| `ledger_rejected_transaction_count` | 0 | No fixture record fails the feed-level checks that write a reject row |
+| `category_balance` `row_count` | 100 | `app/cbl/CBTRN02C.cbl:L467-L542`, of which 99 are non-zero, 49 positive and 50 negative |
+| Four `sha256` digests | See `posting-summary.csv` | Approved identifiers, declined outcomes, account projection state, category balance state. The digests cover canonical rows and contain no card numbers |
+
+One figure deserves its own sentence, because a reader will look for it. `declined_event_count` equals `declined_count` exactly, at 38, which is what says no decline produced two events and none produced none.
 
 ### Bill-payment divergence
 
@@ -149,9 +235,45 @@ The card validation band is `app/cbl/COCRDUPC.cbl:L189-L202`. Seven condition na
 
 The credit-score range comes from `app/cbl/COACTUPC.cbl:L848-L849`, where `88 FICO-RANGE-IS-VALID VALUES 300 THROUGH 850` fixes both bounds. The suite reproduces the range and its message text, and it also checks the texts that sit outside the band so that a message cannot drift in unnoticed.
 
+## Asset consumption
+
+Every checked-in expected file and the class that reads it. The row count excludes the provenance comment on line one and the column header on line two. Each count is asserted by the reading class, so a changed file fails the build until the count is restated here and there.
+
+| Expected file | Rows | Read by |
+|---|---:|---|
+| `dailytran-posting-results-model-b.csv` | 3686 | `PostingEquivalenceTest` |
+| `dailytran-authorization-decisions-model-a.csv` | 3035 | `AuthorizationDecisionEquivalenceTest` |
+| `dailytran-decimal-truncation-model-b.csv` | 743 | `DecimalTruncationEquivalenceTest` |
+| `dailytran-category-balances-model-b.csv` | 690 | `PostingEquivalenceTest` |
+| `tcatbal-interest-accrual.csv` | 616 | `InterestCalculationEquivalenceTest` |
+| `bill-payment-results.csv` | 532 | `BillPaymentEquivalenceTest` |
+| `acctdata-final-account-state-model-b.csv` | 492 | `PostingEquivalenceTest` |
+| `dailytran-reject-records-model-b.csv` | 388 | `PostingEquivalenceTest` |
+| `discgrp-interest-rates.csv` | 236 | `InterestCalculationEquivalenceTest` |
+| `synthetic-boundary-cases.csv` | 215 | four classes, each filtering on `record_seq` |
+| `cardxref-account-resolution.csv` | 163 | `AuthorizationDecisionEquivalenceTest` and `PostingEquivalenceTest` |
+| `validation-messages.csv` | 136 | `ValidationEquivalenceTest` |
+| `fixture-coverage.csv` | 190 | `FixtureCoverageEquivalenceTest` |
+| `posting-summary.csv` | 18 | supplemental context only |
+
+`posting-summary.csv` is the one file no assertion depends on. It holds run totals that the detailed assets already carry row by row, so reading a total from it in place of those rows would weaken the comparison. `PostingEquivalenceTest` names it in commentary and derives nothing from it.
+
+### The synthetic slice partition
+
+`synthetic-boundary-cases.csv` is the only expected file with more than one reader, because it collects every constructed case the fixtures cannot reach. Its 215 rows partition across four classes with no row read twice and none left unread:
+
+| Reader | Rows | Cases |
+|---|---:|---|
+| `AuthorizationDecisionEquivalenceTest` | 133 | nine decline and narrowing cases, plus the coverage, setup, summary and prohibition topics |
+| `InterestCalculationEquivalenceTest` | 47 | five rate-resolution cases, including the double miss that abends |
+| `ValidationEquivalenceTest` | 22 | four credit-score bound cases at 299, 300, 850 and 851 |
+| `DecimalTruncationEquivalenceTest` | 13 | the negative-amount truncation case |
+
+The four counts sum to 215, and each class asserts its own slice size. The summary topic records nineteen constructed cases, and the six per-group counts in that topic are themselves asserted to sum to nineteen, so a case added to the file without a reader fails the build.
+
 ## The arithmetic sites
 
-The measured finding comes first: **the `ROUNDED` phrase appears zero times across all 28 programs in `app/cbl/`.** Every arithmetic store therefore truncates toward zero, which is the COBOL default when no rounding phrase is present.
+The measured finding comes first. **The `ROUNDED` phrase appears zero times across all 28 programs in `app/cbl/`.** Every arithmetic store therefore truncates toward zero, which is the COBOL default when no rounding phrase is present.
 
 The truncation claim rests on the sites below, and the set is small enough to enumerate in full. Four sites move money on the posting and payment paths, and the category balance is one of the four reached through two branches. Interest accrual appears as a fifth site because the suite verifies it, though the calculation is not migrated.
 

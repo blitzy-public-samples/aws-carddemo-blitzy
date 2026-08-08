@@ -9,12 +9,15 @@
 # Three properties of these routes are security decisions rather than style, and each is
 # stated on the operation it governs.
 #
-# No route carries a card number in its path or in its query string. A path and a query
-# string reach an access log, a reverse proxy log, a distributed trace and a browser
-# history, and none of those is a place for a full Primary Account Number (PAN). The two
-# routes that name one card take it in the request body, which is why the read is a POST
-# that changes nothing, and the paging cursor of the list route travels in a request
-# header as the irreversible card token of a row.
+# The two routes that name one card carry the full card number as a path variable. Each
+# reproduces one Customer Information Control System (CICS) transaction that addresses one
+# card: CCDL at app/csd/CARDDEMO.CSD:L347-L348 reads it and CCUP at
+# app/csd/CARDDEMO.CSD:L367-L369 updates it. A path reaches an access log, a reverse proxy
+# log, a distributed trace and a browser history, so a deployment carrying a full Primary
+# Account Number (PAN) there has the guidance in
+# card-platform/docs/suggested-next-tasks.md to follow. No route carries a card number in
+# a query string: the list route filters by account alone, and its paging cursor travels in
+# a request header as the irreversible card token of a row.
 #
 # Every card number that leaves this service is masked. api/dto/CardSummary and
 # api/dto/CardDetailResponse both refuse an unmasked value in their own constructors.
@@ -123,11 +126,23 @@ paths:
             and a shorter value is refused rather than answered with an empty
             page. The rule in config/SecurityConfig reads this parameter to
             decide whether the caller owns the account.
+
+
+            Eleven zero digits are refused. CC-ACCT-ID-N EQUAL ZEROS at
+            app/cbl/COCRDSLC.cbl:L653 is the third absence condition of the source
+            edit, so eleven zeros name no account, and
+            app/cbl/COCRDLIC.cbl:L1385-L1394 then applies no filter and walks every
+            account. This route requires the account, so a value naming none is
+            refused rather than accepted and dropped: a caller that named a filter
+            reads "Account number not provided" and never a page of every card in
+            the table.
           schema:
             type: string
             minLength: 11
             maxLength: 11
             pattern: '^[0-9]{11}$'
+            not:
+              const: '00000000000'
           examples:
             seeded:
               value: '00000000050'
@@ -155,6 +170,12 @@ paths:
             reproduces 9100-READ-BACKWARDS at app/cbl/COCRDLIC.cbl:L1264. The
             source carries the same choice as a function key, PF8 forward and PF7
             back.
+
+
+            Omit the parameter to walk forward. A parameter that arrives carrying
+            no characters is a value the caller sent, so it is refused rather than
+            read as absent, and it reads
+            "Direction must be forward or backward".
           schema:
             type: string
             default: forward
@@ -169,6 +190,12 @@ paths:
             Rows on the page. Omit it for seven, the count the source screen
             holds. The read side accepts 1 through 100 and refuses anything
             outside that range.
+
+
+            A parameter that arrives carrying no characters is a value the caller
+            sent, so it is refused rather than read as absent, and it reads
+            "Page size must be a whole number" as any other value that is no whole
+            number does.
           schema:
             type: integer
             minimum: 1
@@ -229,6 +256,14 @@ paths:
             app/cbl/COCRDLIC.cbl:L177-L178 and no operator could supply one.
 
 
+            A parameter naming an empty value is refused rather than read as
+            absent, for the direction and for the row count alike. An empty
+            direction reads the direction text and an empty row count reads
+            "Page size must be a whole number", so a caller learns that the value
+            it sent was not usable instead of reading a 200 that states nothing
+            about what it did.
+
+
             A well-formed cursor that resolves to no row reads
             "Card cursor names no card of this list". This is the one refusal of
             this route that no constraint can produce, because discovering it takes
@@ -284,6 +319,15 @@ paths:
             The request carried no usable credential. config/SecurityConfig
             refuses it before the handler runs, and the body names neither the
             account nor the route.
+          headers:
+            WWW-Authenticate:
+              description: >-
+                The challenge, naming the basic scheme and the realm.
+                config/SecurityConfig writes this exact value.
+              required: true
+              schema:
+                type: string
+                const: 'Basic realm="carddemo", charset="UTF-8"'
           content:
             application/problem+json:
               schema:
@@ -294,10 +338,45 @@ paths:
             The identity does not hold this account. config/SecurityConfig grants
             this route only to an identity carrying the SCOPE_ACCOUNT_ authority
             for the account in the query, or to an administrator.
+            A method this route does not serve is refused here too, since config/SecurityConfig
+            declares one rule per method and path and admits no request a rule does not name.
           content:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
+
+        '405':
+          description: >-
+            The route was called with a method it does not serve. The Allow header
+            names the methods it does. api/CardApiExceptionHandler keeps the status
+            and the headers the framework named, so a caller's mistake is not
+            recorded as a fault of this service.
+            config/SecurityConfig declares one rule per method and path, and a request whose method
+            carries no rule is refused with 403 before the dispatcher runs, so this answer is the
+            one a request the chain admits receives.
+          headers:
+            Allow:
+              description: The methods this route serves.
+              required: true
+              schema:
+                type: string
+                examples: ['GET']
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example:
+                status: 405
+                message: >-
+                  This route does not serve the method, path or media type the
+                  request named
+                route: '/cards'
+
+        '406':
+          description: >-
+            The Accept header of the request names no media type this route
+            writes. The response carries no body, because a caller that accepts
+            nothing this route writes cannot be sent one.
 
         '500':
           description: A fault inside this service. The body names no submitted value.
@@ -306,16 +385,329 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApiError'
 
+        '429':
+          description: >-
+            A rate ceiling refused this request. config/RequestRateCeilingFilter
+            runs ahead of the security chain and bounds requests from one source,
+            requests presenting one identity, state-changing requests from one
+            source, failed authentications from one source, and requests in
+            flight. Retry-After names whole seconds until the window rolls.
+
+
+            ADDITIVE: a CICS transaction arrived from a terminal an operator was
+            sitting at, so the source had no request rate to bound and holds no
+            matching condition. The detail is fixed and names no address, no
+            identity and no route.
+          headers:
+            Retry-After:
+              description: Whole seconds until the window rolls, one or more.
+              required: true
+              schema:
+                type: integer
+                minimum: 1
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+              example:
+                type: 'about:blank'
+                title: 'Too many requests'
+                status: 429
+                detail: >-
+                  This request exceeded a rate this service accepts. Retry after
+                  the interval the response names.
+        '503':
+          description: >-
+            The card table could not be reached. The request was well formed and
+            this service holds no defect, so the status names a condition a caller
+            may retry. api/CardApiExceptionHandler answers the connection it could
+            not open, the transaction it could not begin and the statement the
+            database gave up on.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example:
+                status: 503
+                message: >-
+                  The card store is not reachable, so this request may be retried
+                route: '/cards'
+
+  /cards/{cardNumber}:
+
+    parameters:
+
+      - name: cardNumber
+        in: path
+        required: true
+        description: >-
+          The card this route names: sixteen digits, from CARD-NUM PIC X(16) at
+          app/cpy/CVACT02Y.cpy:L5. app/cbl/COCRDSLC.cbl:L740 moves the same value
+          into the read key, and app/cbl/COCRDUPC.cbl:L784 applies the only rule
+          the source has for it, which is sixteen numeric digits and no checksum.
+
+
+          The value is the full number and never the masked form, because
+          app/cbl/COCRDSLC.cbl:L742-L750 reads the card file by it. A masked value
+          matches no row. Every card number this service writes back is masked.
+
+
+          A path reaches an access log, a proxy log, a trace and a browser
+          history. card-platform/docs/suggested-next-tasks.md carries the
+          deployment guidance that follows from that, and
+          card-platform/docs/decision-log.md records why the identifier sits here:
+          transaction CCDL at app/csd/CARDDEMO.CSD:L347-L348 and transaction CCUP
+          at app/csd/CARDDEMO.CSD:L367-L369 each address one card, so each is one
+          addressable resource.
+        schema:
+          type: string
+          minLength: 16
+          maxLength: 16
+          pattern: '^[0-9]{16}$'
+        examples:
+          placeholder:
+            summary: >-
+              A synthetic number standing in for a full sixteen-digit card number,
+              and the same value the authorization contract publishes. No row of
+              app/data/ASCII/carddata.txt and no row of app/data/ASCII/cardxref.txt
+              carries it, so this document publishes no number that names a stored
+              card, and a reader who pastes it is answered 404 rather than reaching
+              one. Read a real one from record 1 of app/data/ASCII/carddata.txt
+              with `cut -c1-16 app/data/ASCII/carddata.txt | sed -n '1p'`.
+            value: '4000000000000000'
+
+    get:
+      tags:
+        - Cards
+      operationId: readCard
+      summary: Read one card, named by the full card number in the path.
+      description: >-
+        Returns one card. Reproduces transaction CCDL at
+        app/csd/CARDDEMO.CSD:L347-L348, which runs app/cbl/COCRDSLC.cbl.
+
+
+        The read keys on the card number alone. 9100-GETCARD-BYACCTCARD at
+        app/cbl/COCRDSLC.cbl:L736 moves the card number into the read key at
+        app/cbl/COCRDSLC.cbl:L740 and reads the card file by it at
+        app/cbl/COCRDSLC.cbl:L742-L750. The account move above the key at
+        app/cbl/COCRDSLC.cbl:L739 is commented out, so the card number is the
+        whole key and this route reads by it alone. No account accompanies the
+        card and no relationship between the two is tested.
+
+
+        The not-found branch at app/cbl/COCRDSLC.cbl:L755-L761 sets
+        DID-NOT-FIND-ACCTCARD-COMBO at app/cbl/COCRDSLC.cbl:L760, whose text
+        app/cbl/COCRDUPC.cbl:L204 declares. The other candidate text at
+        app/cbl/COCRDUPC.cbl:L202 has one set site, inside 9150-GETCARD-BYACCT at
+        app/cbl/COCRDSLC.cbl:L779-L810, which no PERFORM reaches, so this route
+        never answers it.
+
+
+        Ownership is decided by the chain in config/SecurityConfig, which derives
+        the card token from the path value and requires the matching SCOPE_CARD_
+        authority. One entitlement admits one card and not every card ending in
+        the same four digits. A caller holding no such authority reads 403 whether
+        or not the row exists, so a refusal discloses nothing about which cards
+        this service holds.
+      responses:
+
+        '200':
+          description: >-
+            The card. The card number is masked, and the embossed name arrives at
+            the fifty-character width CARD-EMBOSSED-NAME PIC X(50) declares at
+            app/cpy/CVACT02Y.cpy:L8, which is the width the published event
+            carries too.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CardDetail'
+              examples:
+                seededCard:
+                  summary: >-
+                    The card record 1 of app/data/ASCII/carddata.txt holds. The
+                    path carries that card's full sixteen digits and the response
+                    carries the masked form, so the last four digits are all the
+                    response discloses. Record 1 supplies the account, the name
+                    padded to fifty characters, the expiry and the status.
+                  value:
+                    maskedCardNumber: '************5740'
+                    accountId: '00000000050'
+                    embossedName: 'Aniya Von                                         '
+                    expirationDate: '2023-03-09'
+                    activeStatus: 'Y'
+
+        '400':
+          description: >-
+            The path names a value that is not sixteen digits. The body carries one
+            text and the route template, and the submitted value reaches neither
+            member.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              examples:
+                cardNumberNotSixteenDigits:
+                  summary: >-
+                    The answer to a path segment of another width or holding a
+                    character that is no digit. The text is the one
+                    app/cbl/COCRDUPC.cbl:L789 declares, which
+                    app/cbl/COCRDSLC.cbl:L706 sets under the test at
+                    app/cbl/COCRDSLC.cbl:L706.
+                  value:
+                    status: 400
+                    message: 'CARD ID FILTER,IF SUPPLIED MUST BE A 16 DIGIT NUMBER'
+                    route: '/cards/{cardNumber}'
+
+        '401':
+          description: >-
+            The request carried no usable credential. config/SecurityConfig refuses
+            it before the handler runs.
+          headers:
+            WWW-Authenticate:
+              description: >-
+                The challenge, naming the basic scheme and the realm.
+                config/SecurityConfig writes this exact value.
+              required: true
+              schema:
+                type: string
+                const: 'Basic realm="carddemo", charset="UTF-8"'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+        '403':
+          description: >-
+            The identity holds no SCOPE_CARD_ authority for the card token of the
+            card named in the path, and is no administrator. The refusal is written
+            by config/SecurityConfig, so it carries the same four members and the
+            same media type as every other refusal of that chain, and it names
+            neither the card nor the route.
+            A method this route does not serve is refused here too, since config/SecurityConfig
+            declares one rule per method and path and admits no request a rule does not name.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+        '404':
+          description: >-
+            The table holds no card carrying that number. The text is
+            "Did not find cards for this search condition", the one
+            app/cbl/COCRDSLC.cbl:L760 sets.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              examples:
+                absentCard:
+                  summary: >-
+                    The answer to a card number no row carries. A caller that does
+                    not own the card reads 403 instead, and that answer carries a
+                    Problem rather than these three members.
+                  value:
+                    status: 404
+                    message: 'Did not find cards for this search condition'
+                    route: '/cards/{cardNumber}'
+
+        '405':
+          description: >-
+            The route was called with a method it does not serve. The Allow header
+            names the methods it does. api/CardApiExceptionHandler keeps the status
+            and the headers the framework named, so a caller's mistake is not
+            recorded as a fault of this service.
+            config/SecurityConfig declares one rule per method and path, and a request whose method
+            carries no rule is refused with 403 before the dispatcher runs, so this answer is the
+            one a request the chain admits receives.
+          headers:
+            Allow:
+              description: The methods this route serves.
+              required: true
+              schema:
+                type: string
+                examples: ['GET,PUT']
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example:
+                status: 405
+                message: >-
+                  This route does not serve the method, path or media type the
+                  request named
+                route: '/cards/{cardNumber}'
+
+        '406':
+          description: >-
+            The Accept header of the request names no media type this route
+            writes. The response carries no body, because a caller that accepts
+            nothing this route writes cannot be sent one.
+
+        '500':
+          description: A fault inside this service. The body names no submitted value.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+
+        '429':
+          description: >-
+            A rate ceiling refused this request. config/RequestRateCeilingFilter
+            runs ahead of the security chain and bounds requests from one source,
+            requests presenting one identity, state-changing requests from one
+            source, failed authentications from one source, and requests in
+            flight. Retry-After names whole seconds until the window rolls.
+
+
+            ADDITIVE: a CICS transaction arrived from a terminal an operator was
+            sitting at, so the source had no request rate to bound and holds no
+            matching condition. The detail is fixed and names no address, no
+            identity and no route.
+          headers:
+            Retry-After:
+              description: Whole seconds until the window rolls, one or more.
+              required: true
+              schema:
+                type: integer
+                minimum: 1
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+              example:
+                type: 'about:blank'
+                title: 'Too many requests'
+                status: 429
+                detail: >-
+                  This request exceeded a rate this service accepts. Retry after
+                  the interval the response names.
+        '503':
+          description: >-
+            The card table could not be reached. The request was well formed and
+            this service holds no defect, so the status names a condition a caller
+            may retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example:
+                status: 503
+                message: >-
+                  The card store is not reachable, so this request may be retried
+                route: '/cards/{cardNumber}'
+
     put:
       tags:
         - Cards
       operationId: updateCard
       summary: Update the name, the expiry date and the active status of one card.
       description: >-
-        Updates one card and publishes one CardUpdated event. The card row and
-        the event row commit together, which is ADDITIVE: every file definition
-        of app/csd/CARDDEMO.CSD carries RECOVERY(NONE) and JOURNAL(NO), so the
-        source offers no atomicity to reproduce.
+        Updates one card and publishes one CardUpdated event. Reproduces
+        transaction CCUP at app/csd/CARDDEMO.CSD:L367-L369, which runs
+        app/cbl/COCRDUPC.cbl. The card row and the event row commit together,
+        which is ADDITIVE: every file definition of app/csd/CARDDEMO.CSD carries
+        RECOVERY(NONE) and JOURNAL(NO), so the source offers no atomicity to
+        reproduce.
 
 
         Three values are written: the embossed name, the expiry date assembled
@@ -326,6 +718,12 @@ paths:
         touched either: every column of app/cpy/CVACT03Y.cpy is a card number, a
         customer identifier or an account identifier, and none of the three changes
         here.
+
+
+        The card the update names arrives in the path and is no property of the
+        body. CCUP-NEW-CARDID PIC X(16) at app/cbl/COCRDUPC.cbl:L305 names it in
+        the source, and CCUP-NEW-CARDDATA at app/cbl/COCRDUPC.cbl:L307-L313 holds
+        the five values the body carries.
 
 
         The checks run in the order app/cbl/COCRDUPC.cbl performs them, because
@@ -342,26 +740,68 @@ paths:
         app/cbl/COCRDUPC.cbl:L784 tests a card number for sixteen digits and
         nothing else, and adding a rule the source lacks would refuse an update
         the source applies.
+
+
+        Every property of the body is required and no other property is admitted.
+        config/RequestJsonStrictnessConfig refuses a body naming a property this
+        contract does not declare, and refuses a property declared as text that
+        arrives as a JSON number or a JSON boolean. Both refusals answer 400. A
+        reader left at its defaults bound a misspelled property to nothing and then
+        refused it as absent, and read 7 for an expiryMonth of 07.
+      parameters:
+        - name: X-CardDemo-Request
+          in: header
+          required: true
+          description: >-
+            Present on every state-changing request. config/CrossSiteRequestFilter
+            refuses a request that carries no value here, and refuses one whose
+            Sec-Fetch-Site or Origin names somewhere other than this service. An
+            HTML form can set no header at all, and a cross-origin script call that
+            set one would need a preflight no chain here grants, so this header is
+            what separates a first-party client from a browser replaying a cached
+            HTTP Basic credential from a page a cardholder was reading. The value is
+            not a secret and is not read: only its presence matters. The header name
+            is configurable through carddemo.api.cross-site.required-header, which
+            card-platform/.env.example documents.
+
+
+            ADDITIVE: the source reached this update from a terminal a signed-on
+            administrator held, so it had no cross-site vector and holds no matching
+            request value.
+          schema:
+            type: string
+            minLength: 1
+          example: '1'
       requestBody:
         required: true
         description: >-
-          The card number and the five values the update carries, in the order
-          CCUP-NEW-CARDDATA declares them at app/cbl/COCRDUPC.cbl:L305-L313.
+          The five values the update carries, in the order CCUP-NEW-CARDDATA
+          declares them at app/cbl/COCRDUPC.cbl:L307-L313.
         content:
           application/json:
             schema:
               $ref: '#/components/schemas/CardUpdateRequest'
             examples:
-              moveTheExpiryOnAYear:
+              moveTheExpiryForward:
                 summary: >-
-                  Move the expiry of seeded card 0683586198171516 from 2025-07-13
-                  to 2026-07-13, keeping the name and the status. Record 2 of
-                  app/data/ASCII/carddata.txt holds that card on account
-                  00000000027.
+                  Move the expiry of the card the path names from 2025-07-13 to
+                  2026-07-13, keeping the name and the status.
+
+
+                  A future year is used here only so the example does not read as
+                  though it set a card live today. The service applies no
+                  future-date rule and neither does the source:
+                  app/cbl/COCRDUPC.cbl:L1260 onward tests the year against
+                  88 VALID-YEAR VALUES 1950 THRU 2099 and the month and day
+                  against the calendar, and nothing tests the result against the
+                  current date. A past expiry is therefore accepted and stored,
+                  which is deliberate parity. It also costs nothing at
+                  authorization time: reason 0103 at
+                  app/cbl/CBTRN02C.cbl:L414-L420 compares the ACCOUNT expiry, and
+                  the posting program never opens the card file.
                 value:
-                  cardNumber: '0683586198171516'
                   embossedName: 'Ward Jones'
-                  expiryYear: '2026'
+                  expiryYear: '2031'
                   expiryMonth: '07'
                   expiryDay: '13'
                   activeStatus: 'Y'
@@ -370,19 +810,19 @@ paths:
 
         '200':
           description: >-
-            The card was rewritten. The outcome property is UPDATED and it
-            carries no message. A submission whose values matched the stored ones
-            writes nothing and answers 422, not this code.
+            The card was rewritten. The outcome property is UPDATED and both the
+            message and the refreshed card are null. A submission whose values
+            matched the stored ones writes nothing and answers 422, not this code.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/CardUpdateResponse'
+                $ref: '#/components/schemas/CardUpdated'
               examples:
                 rewritten:
                   summary: >-
-                    The answer to the request example above, which moves the
-                    expiry of seeded card 0683586198171516 on a year. Neither the
-                    message nor the refreshed card is present.
+                    The answer to the request example above, which moves the expiry
+                    on a year. Neither the message nor the refreshed card carries a
+                    value, and both are serialized as null.
                   value:
                     outcome: 'UPDATED'
                     message: null
@@ -390,15 +830,38 @@ paths:
 
         '400':
           description: >-
-            The request body could not be read as one card update. Nothing of the
-            unreadable body reaches the response.
+            The path names a value that is not sixteen digits, or the request body
+            could not be read as one card update. A body naming a property this
+            contract does not declare, and a property declared as text that arrives
+            as a JSON number or a JSON boolean, are both bodies this route could
+            not read. Nothing of the unreadable body reaches the response: a parser
+            message names the position it failed at and quotes the characters around
+            it, and those characters can be a cardholder name.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApiError'
+              examples:
+                unreadableBody:
+                  summary: The answer to a body that could not be read as one update.
+                  value:
+                    status: 400
+                    message: >-
+                      The request body holds one card in JavaScript Object Notation
+                      (JSON) and could not be read as one
+                    route: '/cards/{cardNumber}'
 
         '401':
           description: The request carried no usable credential.
+          headers:
+            WWW-Authenticate:
+              description: >-
+                The challenge, naming the basic scheme and the realm.
+                config/SecurityConfig writes this exact value.
+              required: true
+              schema:
+                type: string
+                const: 'Basic realm="carddemo", charset="UTF-8"'
           content:
             application/problem+json:
               schema:
@@ -409,6 +872,15 @@ paths:
             The identity is not an administrator. config/SecurityConfig grants
             this route to ROLE_ADMIN alone, because app/cbl/COCRDUPC.cbl is
             reached from the administrator path.
+
+
+            This status also answers a request config/CrossSiteRequestFilter
+            refused: one declaring a foreign Sec-Fetch-Site or Origin, or carrying
+            no X-CardDemo-Request header. Both reasons answer one body, because a
+            caller that may not do something learns nothing further from being told
+            which rule stopped it.
+            A method this route does not serve is refused here too, since config/SecurityConfig
+            declares one rule per method and path and admits no request a rule does not name.
           content:
             application/problem+json:
               schema:
@@ -419,11 +891,18 @@ paths:
             The table holds no card carrying that number. The outcome property
             reads CARD_NOT_FOUND and the message is
             "Did not find cards for this search condition", the text
-            app/cbl/COCRDUPC.cbl:L1400 sets.
+            app/cbl/COCRDUPC.cbl:L1400 sets. The refreshed card is null.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/CardUpdateResponse'
+                $ref: '#/components/schemas/CardUpdateNotFound'
+              examples:
+                absentCard:
+                  summary: The answer to a card number no row carries.
+                  value:
+                    outcome: 'CARD_NOT_FOUND'
+                    message: 'Did not find cards for this search condition'
+                    refreshedCard: null
 
         '409':
           description: >-
@@ -435,6 +914,7 @@ paths:
             app/cbl/COCRDUPC.cbl:L1446 sets, and the row could not be held for the
             rewrite. Both invite the same retry.
 
+
             LOCK_NOT_ACQUIRED covers every way the row does not come back held,
             because app/cbl/COCRDUPC.cbl:L1441 draws no distinction between them
             either: a row another writer has removed, a lock the wait ran out on, a
@@ -444,15 +924,14 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/CardUpdateResponse'
+                $ref: '#/components/schemas/CardUpdateConflict'
               examples:
                 changedBeforeUpdate:
                   summary: >-
-                    A caller submitted a new expiry year for seeded card
-                    0683586198171516 against a copy that had gone stale. The
-                    refreshed card carries the five values the row holds at the
-                    refusal, the expiry as three text slices, and no card
-                    verification value.
+                    A caller submitted a new expiry year against a copy that had
+                    gone stale. The refreshed card carries the five values the row
+                    holds at the refusal, the expiry as three text slices, and no
+                    card verification value.
                   value:
                     outcome: 'CHANGED_BEFORE_UPDATE'
                     message: 'Record changed by some one else. Please review'
@@ -491,15 +970,25 @@ paths:
             "Card name can only contain alphabets and spaces" for the name,
             "Card Active Status must be Y or N" for the status,
             "Card expiry month must be between 1 and 12" for the month and
-            "Invalid card expiry year" for the year. Two texts are additive,
-            because column expiration_date is a DATE where the source stored ten
-            characters of text:
+            "Invalid card expiry year" for the year.
+
+
+            Two texts are additive and both follow from the column type rather than
+            from a rule the source holds:
             "Card expiry day must be two digits" and
             "Card expiry year, month and day must name a day of the calendar".
+            Section 0.3.1 of the plan requires a DATE column for this one field,
+            citing the year, month and day slices the source itself takes at
+            app/cbl/COCRDUPC.cbl:L117-L121, and column expiration_date in
+            db/migration/V1__schema.sql is that DATE. The source stored ten
+            characters of text and accepted 2028-02-30; a DATE cannot hold it, so
+            the value is refused here. card-platform/docs/business-rule-flags.md
+            carries this divergence as D3 with the decision it asks of the project
+            owner.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/CardUpdateResponse'
+                $ref: '#/components/schemas/CardUpdateRejected'
               examples:
                 statusRefused:
                   summary: >-
@@ -519,197 +1008,128 @@ paths:
                     message: 'No change detected with respect to values fetched.'
                     refreshedCard: null
 
-        '500':
+        '405':
           description: >-
-            The rewrite failed after the row had been locked. The outcome property
-            reads UPDATE_FAILED_AFTER_LOCK, the message is
-            "Update of record failed", the text app/cbl/COCRDUPC.cbl:L1491 sets,
-            and nothing was written.
-          content:
-            application/json:
+            The route was called with a method it does not serve. The Allow header
+            names the methods it does. api/CardApiExceptionHandler keeps the status
+            and the headers the framework named, so a caller's mistake is not
+            recorded as a fault of this service.
+            config/SecurityConfig declares one rule per method and path, and a request whose method
+            carries no rule is refused with 403 before the dispatcher runs, so this answer is the
+            one a request the chain admits receives.
+          headers:
+            Allow:
+              description: The methods this route serves.
+              required: true
               schema:
-                $ref: '#/components/schemas/CardUpdateResponse'
-
-  /cards/detail:
-
-    post:
-      tags:
-        - Cards
-      operationId: readCard
-      summary: Read one card, named by the full card number in the request body.
-      description: >-
-        Returns one card. The route is a POST and changes nothing. The full card
-        number arrives in the body, because a path and a query string reach an
-        access log, a proxy log, a trace and a browser history.
-
-
-        Two edits run first, in the order 2200-EDIT-MAP-INPUTS performs them at
-        app/cbl/COCRDSLC.cbl:L630-L634, and each tests absence before it tests
-        the character class. One rule spans both fields: when neither value
-        arrived the answer is the text app/cbl/COCRDSLC.cbl:L637-L640 sets, which
-        runs under no guard and overwrites whichever text an edit had written.
-
-
-        The read keys on the card number alone.
-        app/cbl/COCRDSLC.cbl:L740 moves it into the read key and the account move
-        above it at app/cbl/COCRDSLC.cbl:L739 is commented out, so the source edits
-        the account and then keys on the card. The key is reproduced and the
-        account is compared after the read. A row belonging to another account is
-        answered as an absent row, with the same status and the same text. The
-        source needed no such comparison, because a 3270 signon granted every
-        signed-on user every card, and here the account is a caller-supplied key.
-
-
-        The handler decides ownership, and the chain does not: the identifier sits
-        in the body, and a chain that read the body would consume the stream the
-        handler needs. The predicate is the one config/SecurityConfig declares, so
-        the whole of the access control is still stated in that one file. It names
-        the authority by the card token derived from the full number, so one
-        entitlement admits one card and not every card ending in the same four
-        digits. A caller that does not own the card reads 403 with the text an
-        absent row returns. The two answers differ in status alone, and neither
-        discloses which cards this service holds.
-      requestBody:
-        required: true
-        description: The account identifier and the full card number.
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/CardDetailRequest'
-            examples:
-              seeded:
-                summary: >-
-                  Read seeded card 0500024453765740 on account 00000000050.
-                  Record 1 of app/data/ASCII/carddata.txt pairs those two, and
-                  V2__seed.sql loads the pair.
-                value:
-                  accountId: '00000000050'
-                  cardNumber: '0500024453765740'
-
-      responses:
-
-        '200':
-          description: >-
-            The card. The card number is masked, and the embossed name arrives at
-            the fifty-character width CARD-EMBOSSED-NAME PIC X(50) declares at
-            app/cpy/CVACT02Y.cpy:L8, which is the width the published event
-            carries too.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/CardDetail'
-              examples:
-                seededCard:
-                  summary: >-
-                    The answer to the request example above. Record 1 of
-                    app/data/ASCII/carddata.txt supplies every value: the last
-                    four digits behind the mask, the account, the name padded to
-                    fifty characters, the expiry and the status.
-                  value:
-                    maskedCardNumber: '************5740'
-                    accountId: '00000000050'
-                    embossedName: 'Aniya Von                                         '
-                    expirationDate: '2023-03-09'
-                    activeStatus: 'Y'
-
-        '400':
-          description: >-
-            The request body could not be read as one search condition. The body
-            carries one fixed text and the route template of this route. Nothing of
-            the unreadable body reaches the response: a parser message names the
-            position it failed at and quotes the characters around it, and those
-            characters are a card number.
+                type: string
+                examples: ['GET,PUT']
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApiError'
-              examples:
-                unreadableBody:
-                  summary: >-
-                    The answer to a body that is not JSON. The route member holds
-                    the template of the route that failed, which for this route is
-                    /cards/detail and not the collection above it.
-                  value:
-                    status: 400
-                    message: >-
-                      The request body holds one card in JavaScript Object Notation
-                      (JSON) and could not be read as one
-                    route: '/cards/detail'
+              example:
+                status: 405
+                message: >-
+                  This route does not serve the method, path or media type the
+                  request named
+                route: '/cards/{cardNumber}'
 
-        '401':
-          description: The request carried no usable credential.
+        '406':
+          description: >-
+            The Accept header of the request names no media type this route
+            writes. The response carries no body, because a caller that accepts
+            nothing this route writes cannot be sent one.
+
+        '415':
+          description: >-
+            The Content-Type header of the request names a media type this route
+            does not read. The route reads application/json alone.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example:
+                status: 415
+                message: >-
+                  This route does not serve the method, path or media type the
+                  request named
+                route: '/cards/{cardNumber}'
+
+        '500':
+          description: >-
+            A fault inside this service. The body names no submitted value, and it
+            carries the failure shape rather than an update outcome: a fault has no
+            outcome to report.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+
+        '429':
+          description: >-
+            A rate ceiling refused this request. config/RequestRateCeilingFilter
+            runs ahead of the security chain and bounds requests from one source,
+            requests presenting one identity, state-changing requests from one
+            source, failed authentications from one source, and requests in
+            flight. Retry-After names whole seconds until the window rolls.
+
+
+            ADDITIVE: a CICS transaction arrived from a terminal an operator was
+            sitting at, so the source had no request rate to bound and holds no
+            matching condition. The detail is fixed and names no address, no
+            identity and no route.
+          headers:
+            Retry-After:
+              description: Whole seconds until the window rolls, one or more.
+              required: true
+              schema:
+                type: integer
+                minimum: 1
           content:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
-
-        '403':
+              example:
+                type: 'about:blank'
+                title: 'Too many requests'
+                status: 429
+                detail: >-
+                  This request exceeded a rate this service accepts. Retry after
+                  the interval the response names.
+        '503':
           description: >-
-            Either the chain refused the role, or the handler found the caller
-            holds no SCOPE_CARD_ authority for the card token of the card it
-            named. The second case carries
-            "Did not find cards for this search condition", the same text as a
-            404, so a refusal discloses nothing about which cards are stored.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ApiError'
+            The rewrite failed after the row had been locked, or the card table
+            could not be reached at all. Neither is a defect of this service and
+            both invite a retry, which is what this status names and 500 does not.
 
-        '404':
-          description: >-
-            The table holds no card carrying that number, or the row it holds
-            belongs to another account. The text is
-            "Did not find cards for this search condition", the one
-            app/cbl/COCRDSLC.cbl:L760 sets, and the two cases are
-            indistinguishable to a caller by design.
+
+            The body carries the failure shape at both, so one status on this
+            operation carries one schema. The rewrite that failed after the lock
+            carries "Update of record failed", the text
+            app/cbl/COCRDUPC.cbl:L1491 sets, and nothing was written.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApiError'
               examples:
-                absentCard:
+                rewriteFailedAfterTheLock:
                   summary: >-
-                    The answer to a card number no row carries, and the answer to
-                    a card number whose row belongs to another account. The 403 of
-                    this route carries the same three members and the same text.
+                    The row was held and the rewrite failed. The message is the text
+                    app/cbl/COCRDUPC.cbl:L210 declares.
                   value:
-                    status: 404
-                    message: 'Did not find cards for this search condition'
-                    route: '/cards/detail'
-
-        '422':
-          description: >-
-            One of the four edits refused a submitted value. The message is that
-            edit's text, reproduced character for character. The four texts are
-            "No input received" when neither value arrived,
-            "Account number not provided" and
-            "ACCOUNT FILTER,IF SUPPLIED MUST BE A 11 DIGIT NUMBER" for the
-            account, and "Card number not provided" and
-            "CARD ID FILTER,IF SUPPLIED MUST BE A 16 DIGIT NUMBER" for the card.
-            api/CardController.firstSearchFailure applies them in the order
-            2200-EDIT-MAP-INPUTS performs them at
-            app/cbl/COCRDSLC.cbl:L630-L640.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ApiError'
-              examples:
-                cardNumberNotSixteenDigits:
+                    status: 503
+                    message: 'Update of record failed'
+                    route: '/cards/{cardNumber}'
+                cardStoreUnreachable:
                   summary: >-
-                    The answer to a card number of another width, submitted with a
-                    well formed account. A request whose account is also malformed
-                    reads the account text, which the order applies first.
+                    The connection could not be opened, the transaction could not be
+                    begun, or the database gave up on the statement.
                   value:
-                    status: 422
-                    message: 'CARD ID FILTER,IF SUPPLIED MUST BE A 16 DIGIT NUMBER'
-                    route: '/cards/detail'
-
-        '500':
-          description: A fault inside this service. The body names no submitted value.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ApiError'
+                    status: 503
+                    message: >-
+                      The card store is not reachable, so this request may be retried
+                    route: '/cards/{cardNumber}'
 
 components:
 
@@ -769,7 +1189,7 @@ components:
           maxLength: 200
           description: The route template of the failing endpoint.
           examples:
-            - '/cards/detail'
+            - '/cards/{cardNumber}'
 
     Problem:
       type: object
@@ -873,6 +1293,7 @@ components:
       required:
         - cards
         - nextPageExists
+        - nextCursor
       properties:
 
         cards:
@@ -899,10 +1320,18 @@ components:
           pattern: '^[0-9a-f]{64}$'
           description: >-
             The cursor to send back in the X-Card-Cursor header to continue in the
-            same direction. It is present exactly when nextPageExists is true, and
-            it is the irreversible card token of one row. A masked value names no
-            row and a full card number must not be published, so the read side
-            resolves this token to its internal browse position.
+            same direction. It is the irreversible card token of one row. A masked
+            value names no row and a full card number must not be published, so the
+            read side resolves this token to its internal browse position.
+
+
+            The member is always serialized and carries null on the last page,
+            which is why it is required and admits the null type. A caller reading
+            the absence of the member rather than its null value would treat a
+            missing key as a last page and a serializer configured to omit nulls as
+            a contract change.
+          examples:
+            - null
 
     CardDetail:
       type: object
@@ -971,74 +1400,31 @@ components:
           examples:
             - 'Y'
 
-    CardDetailRequest:
-      type: object
-      description: >-
-        The search condition of the read route. Both properties are required:
-        app/cbl/COCRDSLC.cbl:L651-L657 refuses a missing account and
-        app/cbl/COCRDSLC.cbl:L691-L697 refuses a missing card. An all-zero value
-        counts as absent rather than malformed, from the third condition of each
-        absence test at app/cbl/COCRDSLC.cbl:L653 and L693.
-      additionalProperties: false
-      required:
-        - accountId
-        - cardNumber
-      properties:
-
-        accountId:
-          type: string
-          minLength: 11
-          maxLength: 11
-          pattern: '^[0-9]{11}$'
-          description: >-
-            The account identifier. From CC-ACCT-ID PIC X(11) at
-            app/cpy/CVCRD01Y.cpy:L34. The test at app/cbl/COCRDSLC.cbl:L665 reads
-            IS NOT NUMERIC on an eleven-character alphanumeric field, so a shorter
-            value arrives space-padded and fails it.
-          examples:
-            - '00000000050'
-
-        cardNumber:
-          type: string
-          minLength: 16
-          maxLength: 16
-          pattern: '^[0-9]{16}$'
-          description: >-
-            The full card number, sixteen digits. From CC-CARD-NUM PIC X(16) at
-            app/cpy/CVCRD01Y.cpy:L37. app/cbl/COCRDSLC.cbl:L706 tests the width
-            and the character class and nothing else, so no checksum rule applies.
-          examples:
-            - '0500024453765740'
-
     CardUpdateRequest:
       type: object
       description: >-
-        The six values of the update route, in the order CCUP-NEW-CARDDATA
-        declares them at app/cbl/COCRDUPC.cbl:L305-L313. The card verification
+        The five values of the update route, in the order CCUP-NEW-CARDDATA
+        declares them at app/cbl/COCRDUPC.cbl:L307-L313. The card verification
         value of that source group is deliberately absent: app/bms/COCRDUP.bms
         declares no field for it and entity/CardEntity never writes it.
+
+
+        The card number is no property of this schema. It names the row the update
+        rewrites and arrives as the path variable of the operation.
+
+
+        Every property is required and no other property is admitted.
+        config/RequestJsonStrictnessConfig holds the request reader to both
+        promises, so a body naming an undeclared property and a property arriving
+        as a JSON number or a JSON boolean are refused rather than absorbed.
       additionalProperties: false
       required:
-        - cardNumber
         - embossedName
         - expiryYear
         - expiryMonth
         - expiryDay
         - activeStatus
       properties:
-
-        cardNumber:
-          type: string
-          minLength: 16
-          maxLength: 16
-          pattern: '^[0-9]{16}$'
-          description: >-
-            The full card number, which is the search key of the update. From
-            CCUP-NEW-CARDID PIC X(16) at app/cbl/COCRDUPC.cbl:L305. Sixteen zeros
-            count as absent, from CC-CARD-NUM-N EQUAL ZEROS at
-            app/cbl/COCRDUPC.cbl:L770.
-          examples:
-            - '0683586198171516'
 
         embossedName:
           type: string
@@ -1058,12 +1444,20 @@ components:
           type: string
           minLength: 4
           maxLength: 4
-          pattern: '^[0-9]{4}$'
+          pattern: '^(19[5-9][0-9]|20[0-9][0-9])$'
           description: >-
-            The four-digit expiry year, 1950 through 2099 from
-            88 VALID-YEAR VALUES 1950 THRU 2099 at app/cbl/COCRDUPC.cbl:L99.
+            The four-digit expiry year. The pattern admits 1950 through 2099 and
+            nothing else, which is the range
+            88 VALID-YEAR VALUES 1950 THRU 2099 at app/cbl/COCRDUPC.cbl:L99
+            declares and 1260-EDIT-EXPIRY-YEAR reads at
+            app/cbl/COCRDUPC.cbl:L934. A year outside it reads
+            "Invalid card expiry year", the text app/cbl/COCRDUPC.cbl:L192
+            declares.
+            The range is the whole rule: a year already past is inside it and is
+            accepted, because no source paragraph compares the result against the
+            current date.
           examples:
-            - '2026'
+            - '2031'
 
         expiryMonth:
           type: string
@@ -1165,54 +1559,148 @@ components:
           maxLength: 1
           description: The stored one-character active status.
 
-    CardUpdateResponse:
+    CardUpdated:
       type: object
       description: >-
-        The outcome of one update: seven outcomes, each mapped to a status code by
-        api/CardController. UPDATED carries no message.
-        VALIDATION_REJECTED carries the text of the failing edit. Each of the five
-        remaining outcomes carries one fixed text.
-        CHANGED_BEFORE_UPDATE is the one outcome that carries a refreshed
-        snapshot, and it always carries one.
+        The answer to an update that rewrote the row, which api/CardController
+        answers 200. The rewrite runs at app/cbl/COCRDUPC.cbl:L1477-L1483 and
+        app/cbl/COCRDUPC.cbl:L1488 tests it for success.
+
+
+        All three members are serialized and all three are therefore required. The
+        message and the refreshed card carry null: app/cbl/COCRDUPC.cbl:L1490 sets
+        the text of a successful rewrite into a field the program then leaves
+        unsent, and nothing is re-read.
       additionalProperties: false
       required:
         - outcome
+        - message
+        - refreshedCard
       properties:
 
         outcome:
           type: string
-          description: >-
-            Which of the seven answers this is, each named for the paragraph of
-            app/cbl/COCRDUPC.cbl that produces it. UPDATED is the rewrite at
-            L1477-L1483 and NO_CHANGE_DETECTED the comparison at L680-L682.
-            VALIDATION_REJECTED is the guarded edit chain from L730 to L1445 and
-            CARD_NOT_FOUND the read at L1394-L1400. CHANGED_BEFORE_UPDATE is the
-            comparison at L1503-L1511 and LOCK_NOT_ACQUIRED the read for update at
-            L1441-L1446. UPDATE_FAILED_AFTER_LOCK is the rewrite test at
-            L1488-L1491.
-          enum:
-            - UPDATED
-            - NO_CHANGE_DETECTED
-            - VALIDATION_REJECTED
-            - CARD_NOT_FOUND
-            - CHANGED_BEFORE_UPDATE
-            - LOCK_NOT_ACQUIRED
-            - UPDATE_FAILED_AFTER_LOCK
-          examples:
-            - 'UPDATED'
+          const: 'UPDATED'
+          description: The one outcome this status carries.
 
         message:
-          type: ['string', 'null']
-          maxLength: 200
+          type: 'null'
+          description: Always null. A rewritten row carries no text.
+
+        refreshedCard:
+          type: 'null'
+          description: Always null. Nothing was re-read.
+
+    CardUpdateNotFound:
+      type: object
+      description: >-
+        The answer to an update naming a card no row carries, which
+        api/CardController answers 404. The read runs at
+        app/cbl/COCRDUPC.cbl:L1394-L1400.
+      additionalProperties: false
+      required:
+        - outcome
+        - message
+        - refreshedCard
+      properties:
+
+        outcome:
+          type: string
+          const: 'CARD_NOT_FOUND'
+          description: The one outcome this status carries.
+
+        message:
+          type: string
+          const: 'Did not find cards for this search condition'
           description: >-
-            The one text the outcome carries, absent for UPDATED. Every value
-            comes from api/dto/CardValidationMessages, which records the source
-            line that writes it.
+            The fixed text app/cbl/COCRDUPC.cbl:L204 declares, which
+            app/cbl/COCRDUPC.cbl:L1400 sets.
+
+        refreshedCard:
+          type: 'null'
+          description: Always null. No row was found to re-read.
+
+    CardUpdateConflict:
+      type: object
+      description: >-
+        The answer to an update that lost a race, which api/CardController answers
+        409. Two outcomes reach it, and they differ in one member: a row another
+        writer changed carries the row as it now stands, and a row this service
+        could not hold carries null.
+      additionalProperties: false
+      required:
+        - outcome
+        - message
+        - refreshedCard
+      properties:
+
+        outcome:
+          type: string
+          enum:
+            - CHANGED_BEFORE_UPDATE
+            - LOCK_NOT_ACQUIRED
+          description: >-
+            CHANGED_BEFORE_UPDATE is the comparison at
+            app/cbl/COCRDUPC.cbl:L1503-L1511. LOCK_NOT_ACQUIRED is the read for
+            update at app/cbl/COCRDUPC.cbl:L1441-L1446.
+
+        message:
+          type: string
+          enum:
+            - 'Record changed by some one else. Please review'
+            - 'Could not lock record for update'
+          description: >-
+            The fixed text of the outcome: app/cbl/COCRDUPC.cbl:L208 for the first
+            and app/cbl/COCRDUPC.cbl:L206 for the second.
 
         refreshedCard:
           oneOf:
             - $ref: '#/components/schemas/RefreshedCard'
             - type: 'null'
           description: >-
-            The stored card as it now stands, present for CHANGED_BEFORE_UPDATE
-            and absent for every other outcome.
+            The stored card as it now stands, carried for CHANGED_BEFORE_UPDATE and
+            null for LOCK_NOT_ACQUIRED. app/cbl/COCRDUPC.cbl:L1512-L1517 refreshes
+            the saved values once the comparison fails, and the read for update
+            that came back empty read nothing to refresh.
+
+    CardUpdateRejected:
+      type: object
+      description: >-
+        The answer to an update that wrote nothing because a value was refused or
+        because nothing had changed, which api/CardController answers 422.
+      additionalProperties: false
+      required:
+        - outcome
+        - message
+        - refreshedCard
+      properties:
+
+        outcome:
+          type: string
+          enum:
+            - VALIDATION_REJECTED
+            - NO_CHANGE_DETECTED
+          description: >-
+            VALIDATION_REJECTED is the guarded edit chain from
+            app/cbl/COCRDUPC.cbl:L730 to app/cbl/COCRDUPC.cbl:L1445.
+            NO_CHANGE_DETECTED is the comparison at
+            app/cbl/COCRDUPC.cbl:L680-L682.
+
+        message:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: >-
+            One text, and never a list. Fifteen IF WS-RETURN-MSG-OFF guards in
+            app/cbl/COCRDUPC.cbl let every guarded edit run and keep the first
+            failing text. NO_CHANGE_DETECTED carries
+            "No change detected with respect to values fetched." from
+            app/cbl/COCRDUPC.cbl:L188, whose trailing full stop is part of the
+            text. Every other value comes from api/dto/CardValidationMessages,
+            which records the source line that writes it.
+          examples:
+            - 'Card Active Status must be Y or N'
+
+        refreshedCard:
+          type: 'null'
+          description: Always null. Nothing was written and nothing was re-read.

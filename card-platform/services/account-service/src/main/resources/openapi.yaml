@@ -22,10 +22,24 @@ info:
     the two accumulators those statements return to zero.
 
 
-    This service is queried and it does not query. It calls no other service. It publishes one
-    AccountStateChanged event per mutation, which keeps the authorization service's copy of the
-    credit
-    limit, both cycle accumulators and the expiry date current.
+    This service is queried and it does not query. It calls no other service and holds no web client.
+    It publishes one AccountStateChanged event per mutation, which keeps the authorization service's
+    copy of the credit limit, both cycle accumulators and the expiry date current, and one
+    CustomerContextChanged event, which keeps the notification service's cardholder context current.
+    It also consumes: one listener reads transaction.posted under the consumer group account-posted
+    and carries the posted amount back onto the account record, reproducing
+    app/cbl/CBTRN02C.cbl:L549-L551.
+
+
+    SYNTHETIC DATA ONLY. Every name, address, telephone number, Social Security part, government
+    identifier, date of birth, electronic funds transfer account and credit score in this document is
+    a value from the public repository fixtures app/data/ASCII/acctdata.txt and
+    app/data/ASCII/custdata.txt, or a deliberately marked specimen. None describes a real person.
+    They are shaped like real personally identifiable information because the source edits require
+    that shape — a Social Security number is refused unless it passes the three-part edit at
+    app/cbl/COACTUPC.cbl:L1265, so a conspicuously impossible value could not be used as an example
+    of an accepted one. Never send real personal data to this service: the demonstration binds its
+    published port to the loopback address and carries none of the controls personal data requires.
   license:
     name: Apache-2.0
 
@@ -118,10 +132,16 @@ paths:
                 title: Not found
                 status: 404
                 detail: 'Account:00000000050 not found in Acct Master file.Resp:404 Reas:Not Found'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '406':
+          $ref: '#/components/responses/NotAcceptable'
         '422':
           $ref: '#/components/responses/ValidationFailed'
         '500':
           $ref: '#/components/responses/InternalFailure'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
 
     put:
       tags: [account]
@@ -162,10 +182,12 @@ paths:
         arrive, which the cross-field check on the block also requires.
 
 
-        customerData is required and carries a required customerId. An account record names no
-        customer and this service owns no cross-reference table. The account identifier comes from
-        the
-        path alone, and the body carries none.
+        customerData is required and carries a required customerId, because an account record names
+        no customer: app/cpy/CVACT01Y.cpy declares no customer identifier among its twelve fields.
+        The private account_customer_link table this schema holds is not consulted to resolve one —
+        it is read after the fact, to confirm the pair the caller named — so the caller supplies the
+        customer identifier. The account identifier comes from the path alone, and the body carries
+        none.
 
 
         A seeded customer cannot be resubmitted unchanged. Every one of the fifty rows
@@ -200,6 +222,26 @@ paths:
         changes what the authorization service authorizes against.
       parameters:
         - $ref: '#/components/parameters/AccountId'
+        - name: X-CardDemo-Request
+          in: header
+          required: true
+          description: >-
+            Present on every state-changing request. config/CrossSiteRequestFilter refuses a
+            request that carries no value here, and refuses one whose Sec-Fetch-Site or Origin
+            names somewhere other than this service. An HTML form can set no header at all, and a
+            cross-origin script call that set one would need a preflight no chain here grants, so
+            this header is what separates a first-party client from a browser replaying a cached
+            HTTP Basic credential from a page a cardholder was reading. The value is not a secret
+            and is not read: only its presence matters. The header name is configurable through
+            carddemo.api.cross-site.required-header, which card-platform/.env.example documents.
+
+
+            ADDITIVE: the source reached a transaction from a terminal a signed-on operator held,
+            so it had no cross-site vector and holds no matching request value.
+          schema:
+            type: string
+            minLength: 1
+          example: '1'
       requestBody:
         required: true
         content:
@@ -209,7 +251,7 @@ paths:
             examples:
               customerOnly:
                 summary: >-
-                  Update the customer alone, leaving every account column as stored. The account
+                  SYNTHETIC FIXTURE DATA, NOT A REAL PERSON. Update the customer alone, leaving every account column as stored. The account
                   block
                   is omitted; the customer block carries all fourteen of its required components, as
                   a
@@ -219,6 +261,13 @@ paths:
                   band
                   does not hold. That is the seeded-row point the description above makes, and it
                   reaches an omitted component as readily as a submitted one.
+
+
+                  The three Social Security parts below carry a zero placeholder of the declared
+                  width and no customer's value. 1245-EDIT-NUM-REQD at
+                  app/cbl/COACTUPC.cbl:L2109 refuses a zero, so this body as printed answers 422
+                  with 'SSN: First 3 chars must not be zero.' A caller substitutes the three
+                  parts the customer's own row holds.
                 value:
                   customerData:
                     customerId: '000000050'
@@ -231,20 +280,30 @@ paths:
                     addressZip: '97201'
                     phoneNumber1: '(325)301-0827'
                     phoneNumber2: '(503)985-9283'
-                    socialSecurityPart1: '111'
-                    socialSecurityPart2: '11'
-                    socialSecurityPart3: '1111'
+                    socialSecurityPart1: '000'
+                    socialSecurityPart2: '00'
+                    socialSecurityPart3: '0000'
                     eftAccountId: '0074883577'
                     primaryCardHolderIndicator: 'Y'
                     ficoCreditScore: '623'
               wholeScreenSubmit:
                 summary: >-
-                  The whole pair, as the 3270 screen submitted it. Every value is the seeded row for
+                  SYNTHETIC FIXTURE DATA, NOT A REAL PERSON. The whole pair, as the 3270 screen
+                  submitted it. Every value is the seeded row for
                   account 00000000050 and customer 000000050, with the dates in the eight-character
-                  request form. Two values changed. addressZip 04257 becomes 97201, since OR97 is
+                  request form, except the four named below. Two values changed. addressZip 04257
+                  becomes 97201, since OR97 is
                   the
                   only Oregon prefix among the 240 combinations app/cpy/CSLKPCDY.cpy lists.
                   phoneNumber2 area code 493 becomes 503, which the general-purpose band holds.
+
+
+                  The three Social Security parts and governmentIssuedId carry zero placeholders of
+                  the declared widths, not the values the seeded row holds. 1245-EDIT-NUM-REQD at
+                  app/cbl/COACTUPC.cbl:L2109 refuses a zero part, so this body as printed answers
+                  422 with 'SSN: First 3 chars must not be zero.' A caller substitutes the parts the
+                  customer's own row holds. No edit of app/cbl/COACTUPC.cbl reads
+                  governmentIssuedId, so the placeholder there is written as sent.
 
 
                   expirationDate is the fixture value. A deployment that applies the
@@ -278,10 +337,10 @@ paths:
                     addressZip: '97201'
                     phoneNumber1: '(325)301-0827'
                     phoneNumber2: '(503)985-9283'
-                    socialSecurityPart1: '111'
-                    socialSecurityPart2: '11'
-                    socialSecurityPart3: '1111'
-                    governmentIssuedId: 'SPECIMEN-0000000001'
+                    socialSecurityPart1: '000'
+                    socialSecurityPart2: '00'
+                    socialSecurityPart3: '0000'
+                    governmentIssuedId: '00000000000000000000'
                     dateOfBirth: '19601201'
                     eftAccountId: '0074883577'
                     primaryCardHolderIndicator: 'Y'
@@ -298,7 +357,8 @@ paths:
               examples:
                 applied:
                   summary: >-
-                    Both rows and one event row were written. The account carries the stored row as
+                    SYNTHETIC FIXTURE DATA, NOT A REAL PERSON. Both rows and one event row were
+                    written. The account carries the stored row as
                     it
                     now stands, so a raised credit limit shows here.
                   value:
@@ -317,7 +377,8 @@ paths:
                       groupId: ''
                 noChange:
                   summary: >-
-                    The submitted pair equalled the fetched pair, from
+                    SYNTHETIC FIXTURE DATA, NOT A REAL PERSON. The submitted pair equalled the
+                    fetched pair, from
                     app/cbl/COACTUPC.cbl:L1463-L1467. Nothing was written and no event was produced.
                   value:
                     message: No change detected with respect to values fetched.
@@ -356,10 +417,18 @@ paths:
                 title: Conflict
                 status: 409
                 detail: Record changed by some one else. Please review
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '406':
+          $ref: '#/components/responses/NotAcceptable'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
         '422':
           $ref: '#/components/responses/ValidationFailed'
         '500':
           $ref: '#/components/responses/InternalFailure'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
 
   /accounts/{accountId}/cycle-close:
     post:
@@ -392,8 +461,50 @@ paths:
         Restricted to the administrator role. Clearing the accumulators is a decision about the
         whole
         account, not about one cardholder's own data.
+
+
+        This operation reads no body and still requires Content-Type: application/json. That is the
+        cross-site request forgery control, not a statement about a body. POST is one of the three
+        methods a browser sends cross-origin with no preflight, carrying whatever credential it has
+        cached for this origin, and the only content types available to such a request are
+        application/x-www-form-urlencoded, multipart/form-data and text/plain. Requiring
+        application/json forces a preflight, and this service answers none. A request naming any of
+        those three content types is refused with 403 before any route rule is consulted; a request
+        naming none at all reaches this route and reads 415.
       parameters:
         - $ref: '#/components/parameters/AccountId'
+        - name: X-CardDemo-Request
+          in: header
+          required: true
+          description: >-
+            Present on every state-changing request. config/CrossSiteRequestFilter refuses a
+            request that carries no value here, and refuses one whose Sec-Fetch-Site or Origin
+            names somewhere other than this service. An HTML form can set no header at all, and a
+            cross-origin script call that set one would need a preflight no chain here grants, so
+            this header is what separates a first-party client from a browser replaying a cached
+            HTTP Basic credential from a page a cardholder was reading. The value is not a secret
+            and is not read: only its presence matters. The header name is configurable through
+            carddemo.api.cross-site.required-header, which card-platform/.env.example documents.
+
+
+            ADDITIVE: the source reached a transaction from a terminal a signed-on operator held,
+            so it had no cross-site vector and holds no matching request value.
+          schema:
+            type: string
+            minLength: 1
+          example: '1'
+      requestBody:
+        required: false
+        description: >-
+          No body is read. The media type is the requirement; the body is empty. A caller sends
+          Content-Type: application/json and nothing after it.
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              description: Always empty. No property is read.
+            example: {}
       responses:
         '200':
           description: >-
@@ -413,10 +524,18 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '406':
+          $ref: '#/components/responses/NotAcceptable'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
         '422':
           $ref: '#/components/responses/ValidationFailed'
         '500':
           $ref: '#/components/responses/InternalFailure'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
 
   /customers/{customerId}:
     get:
@@ -496,10 +615,16 @@ paths:
                 title: Not found
                 status: 404
                 detail: 'CustId:000000001 not found in customer master.Resp: 404 REAS:Not Found'
+        '405':
+          $ref: '#/components/responses/MethodNotAllowed'
+        '406':
+          $ref: '#/components/responses/NotAcceptable'
         '422':
           $ref: '#/components/responses/ValidationFailed'
         '500':
           $ref: '#/components/responses/InternalFailure'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
 
 components:
 
@@ -544,8 +669,56 @@ components:
       example: '000000050'
 
   responses:
+
+    TooManyRequests:
+      description: >-
+        A rate ceiling refused this request. config/RequestRateCeilingFilter runs ahead of the
+        security chain and bounds requests from one source, requests presenting one identity,
+        state-changing requests from one source, failed authentications from one source, and
+        requests in flight. Retry-After names whole seconds until the window rolls.
+
+
+        ADDITIVE: a CICS transaction arrived from a terminal an operator was sitting at and the
+        nightly feed of app/jcl/POSTTRAN.jcl arrived once a day as a dataset, so the source had no
+        request rate to bound and holds no matching condition. The detail is fixed and names no
+        address, no identity and no route.
+      headers:
+        Retry-After:
+          description: Whole seconds until the window rolls, one or more.
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ApiProblem'
+          example:
+            type: 'about:blank'
+            title: 'Too many requests'
+            status: 429
+            detail: >-
+              This request exceeded a rate this service accepts. Retry after the interval the
+              response names.
     MalformedRequest:
-      description: The request body could not be read.
+      description: >-
+        The request body could not be read. Three conditions reach this status: the body is not
+        JavaScript Object Notation (JSON) at all, it carries a property one of the three request
+        schemas does not declare, or it sends a property declared as text with a JSON number or a
+        boolean in its place. config/RequestJsonStrictnessConfig is what makes the second and third
+        conditions refusals rather than silent repairs, so additionalProperties: false and
+        type: string are enforced and not merely documented. The money rule rests on the third: every
+        amount is a decimal string and never a JSON number.
+
+
+        ADDITIVE: a 3270 terminal sends fixed-width map fields, which can neither arrive unparseable,
+        nor name a field the mapset does not declare, nor carry a type other than the characters of
+        the field, so the source holds no matching condition.
+
+
+        The body carries one fixed text and no value read from the request. A parser message names the
+        position it stopped at and quotes the characters around it, and those characters can be a
+        Social Security Number or a date of birth.
       content:
         application/problem+json:
           schema:
@@ -561,6 +734,15 @@ components:
     Unauthorized:
       description: >-
         The request carried no usable credential. The WWW-Authenticate header names the realm.
+      headers:
+        WWW-Authenticate:
+          description: >-
+            The challenge, naming the basic scheme and the realm. config/SecurityConfig writes this
+            exact value.
+          required: true
+          schema:
+            type: string
+            const: 'Basic realm="carddemo", charset="UTF-8"'
       content:
         application/problem+json:
           schema:
@@ -577,6 +759,15 @@ components:
         names
         neither the operation nor the identifier, so a caller probing for another subject's rows
         learns only that it may not have them.
+        A method this route does not serve is refused here too, since config/SecurityConfig declares
+        one rule per method and path and admits no request a rule does not name.
+
+
+        A state-changing route answers this status for a second reason:
+        config/CrossSiteRequestFilter refused the request because it declared a foreign
+        Sec-Fetch-Site or Origin, or carried no X-CardDemo-Request header. Both reasons answer one
+        body, because a caller that may not do something learns nothing further from being told
+        which rule stopped it.
       content:
         application/problem+json:
           schema:
@@ -637,6 +828,56 @@ components:
             messages:
               - 'FICO Score: should be between 300 and 850'
               - Address Line 1 must be supplied.
+
+    NotAcceptable:
+      description: >-
+        The Accept header of the request names no media type this route writes. The response carries
+        no body, because a caller that accepts nothing this route writes cannot be sent a problem
+        document either. api/AccountApiExceptionHandler.onUnsupportedRequest returns the status alone
+        for this one outcome.
+
+    UnsupportedMediaType:
+      description: >-
+        The Content-Type header of the request names a media type this route does not read. The route
+        reads application/json alone. The update answers this status because it reads a body. The
+        billing-cycle close answers it too, because requiring application/json is its cross-site
+        request forgery control: the three content types a browser driven from another origin can
+        send are application/x-www-form-urlencoded, multipart/form-data and text/plain, and none of
+        them reaches the accumulators.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ApiProblem'
+          example:
+            type: about:blank
+            title: Unsupported Media Type
+            status: 415
+            detail: This route does not serve the method, path or media type the request named.
+
+    MethodNotAllowed:
+      description: >-
+        The route was called with a method it does not serve. The Allow header names the methods it
+        does. api/AccountApiExceptionHandler keeps the status and the headers the framework named, so
+        a caller's mistake is not recorded as a fault of this service.
+        config/SecurityConfig declares one rule per method and path, and a request whose method
+        carries no rule is refused with 403 before the dispatcher runs, so this answer is the one a
+        request the chain admits receives.
+      headers:
+        Allow:
+          description: The methods this route serves.
+          required: true
+          schema:
+            type: string
+            examples: ['GET,PUT']
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ApiProblem'
+          example:
+            type: about:blank
+            title: Method Not Allowed
+            status: 405
+            detail: This route does not serve the method, path or media type the request named.
 
     InternalFailure:
       description: >-
@@ -756,18 +997,28 @@ components:
         app/cpy/CUSTREC.cpy declares a second, divergent copy of this record, differing in one date
         field name and stamped one second apart. CVCUS01Y is the adopted layout, bound by six
         programs, and the register entry for that fork records it.
+
+
+        Every property is required. All eighteen columns of table customer are declared NOT NULL by
+        src/main/resources/db/migration/V1__schema.sql, api/AccountRecordMapper.viewOf reads each one
+        of the sixteen it carries, and a record serializes every component, so a read answers all
+        sixteen on every row.
       required:
         - customerId
         - ficoCreditScore
         - dateOfBirth
         - firstName
+        - middleName
         - lastName
         - addressLine1
+        - addressLine2
         - addressCity
         - addressStateCode
         - addressZip
         - addressCountryCode
         - phoneNumber1
+        - phoneNumber2
+        - eftAccountId
         - primaryCardHolderIndicator
       properties:
         customerId:
@@ -776,14 +1027,21 @@ components:
           description: CUST-ID PIC 9(09) at app/cpy/CVCUS01Y.cpy:L5.
         ficoCreditScore:
           type: integer
-          minimum: 300
-          maximum: 850
+          minimum: 0
+          maximum: 999
           description: >-
             CUST-FICO-CREDIT-SCORE PIC 9(03) at app/cpy/CVCUS01Y.cpy:L22, and column
-            fico_credit_score is NUMERIC(3,0). A whole number of three digits with no fraction. The
-            inclusive bounds are the values of 88 FICO-RANGE-IS-VALID VALUES 300 THROUGH 850 at
-            app/cbl/COACTUPC.cbl:L848-L849. Twenty-one of the fifty seeded rows hold a score outside
-            those bounds, which a read returns as stored.
+            fico_credit_score is NUMERIC(3,0). A whole number of three digits with no fraction, so
+            the bounds here are the bounds that picture holds. A read answers the stored value
+            unchanged.
+
+
+            88 FICO-RANGE-IS-VALID VALUES 300 THROUGH 850 at app/cbl/COACTUPC.cbl:L848-L849 is an
+            edit of the update path, reached from 1275-EDIT-FICO-SCORE, and
+            CustomerDataRequest.ficoCreditScore carries it. No paragraph of app/cbl/COACTVWC.cbl
+            applies it to a value being displayed. Columns 330 to 332 of
+            app/data/ASCII/custdata.txt hold scores from 1 to 793, and 21 of the 50 rows sit below
+            300.
         dateOfBirth:
           type: string
           maxLength: 10
@@ -849,7 +1107,7 @@ components:
         primaryCardHolderIndicator:
           type: string
           maxLength: 1
-          description: CUST-PRI-CARD-HOLDER-IND PIC X(01) at app/cpy/CVCUS01Y.cpy:L22.
+          description: CUST-PRI-CARD-HOLDER-IND PIC X(01) at app/cpy/CVCUS01Y.cpy:L21.
 
     AccountUpdateRequest:
       type: object
@@ -946,10 +1204,22 @@ components:
       type: object
       additionalProperties: false
       description: >-
-        The submitted customer values. The block is required: an account record names no customer
-        and
-        this service owns no cross-reference table to resolve one from. A present block has to be
-        complete: every component the required list names carries a mandatory-field edit that
+        The submitted customer values. The block is required, and the reason is the account record
+        rather than an absent table: app/cpy/CVACT01Y.cpy declares twelve fields and a 178-byte
+        filler, none of which is a customer identifier, so no account row can name the customer to
+        update. The caller supplies it.
+
+
+        This schema does hold a private account-to-customer relationship table —
+        src/main/resources/db/migration/V7__account_customer_link.sql creates account_customer_link
+        with 50 rows seeded from app/data/ASCII/cardxref.txt, and it drops the card-keyed card_xref
+        replica V4 had created — and it is not a substitute for this block. It is used the other way
+        round: after the caller names both identifiers, AccountUpdateService reads the one row keyed
+        on that account and checks that its customer_id equals both the proposed and the fetched
+        value, which is how the pair the source screen bound together is confirmed. Resolving the
+        identifier from it instead would make a seeded replica the authority for a value the caller
+        has to state, and nothing on this platform refreshes those rows, so the table can confirm the
+        pair but cannot name it. A present block has to be complete: every component the required list names carries a mandatory-field edit that
         refuses an
         absent value with the same text it refuses a blank one, and no absent component is filled
         from
@@ -977,10 +1247,14 @@ components:
         blank value, and omitting it hands the stored date to that edit rather than a blank.
 
 
-        customerId carries no edit either. app/cbl/COACTUPC.cbl:L1222 calls it 'actually not
-        editable'.
-        An absent one is refused with 'Customer Id must be supplied. An account record carries none',
-        and one that names a customer other than the row this account resolves to is refused as well.
+        customerId carries no edit of the source. app/cbl/COACTUPC.cbl:L1222 calls it 'actually not
+        editable'. An absent or blank one is refused with
+        'Customer Id must be supplied. An account record carries none', one that is not nine digits is
+        refused with 'Customer Id must be a 9 digit Number, zero padded on the left', and one that
+        names a customer other than the row this account resolves to is refused as well. All three
+        answer 422, and the first two are answered before any row is read, so a malformed identifier
+        is never reported as a row this service does not hold. The second text is ADDITIVE, since the
+        source emits none for this field.
       required:
         - customerId
         - firstName
@@ -1098,16 +1372,28 @@ components:
         while the slot at app/cbl/COACTUPC.cbl:L480 holds spaces and then leaves for its own exit,
         so
         one text survives a pass. A failed edit answers 422 with a problem document instead.
-      required: [message]
+
+
+        Both properties are required. A record serializes every component, so both members are on the
+        wire on every 200, and account is the one that can be null there.
+      required: [message, account]
       properties:
         message:
           type: string
+          minLength: 1
           description: >-
             'Changes committed to database' when both rows were written, or
             'No change detected with respect to values fetched.' from
             app/cbl/COACTUPC.cbl:L1463-L1467 when nothing was.
         account:
-          $ref: '#/components/schemas/AccountView'
+          description: >-
+            The account row read again after the write, so a caller reads it as it now stands. Null
+            when that second read found no row, which is another writer having removed it between the
+            write and the read. A caller that reads null re-reads GET /accounts/{accountId} to learn
+            whether the account still exists.
+          oneOf:
+            - $ref: '#/components/schemas/AccountView'
+            - type: 'null'
 
     CycleCloseResponse:
       type: object
@@ -1138,9 +1424,13 @@ components:
         parses one document and not two.
 
 
-        No member echoes a request value. Nothing carries the rejected value, the path, the query
-        string or a header. A Social Security Number sent in the wrong position therefore reaches
-        neither the caller nor an access log through this body.
+        No member echoes a submitted body value. Nothing carries the rejected value, the request path,
+        the query string or a header. A Social Security Number sent in the wrong position therefore
+        reaches neither the caller nor an access log through this body.
+
+
+        Two details name the identifier the caller put in the path, and both are read misses. See the
+        detail property below.
       required: [type, title, status, detail]
       properties:
         type:
@@ -1159,15 +1449,39 @@ components:
             - Internal failure
             - Unauthorized
             - Forbidden
+            - Method Not Allowed
+            - Unsupported Media Type
+            - Too many requests
           description: >-
             A short, fixed phrase. Every value comes from a constant of the code and never from
             caller-supplied text.
+
+
+            The first five are the constants api/ApiProblem declares and the next two are the ones
+            config/SecurityConfig writes. Method Not Allowed and Unsupported Media Type are the
+            reason phrases of their own status, which api/AccountApiExceptionHandler.onUnsupportedRequest
+            reads from the status the framework named rather than from a constant, so their
+            capitalization follows the reason phrase and not the house style of the first seven. Too
+            many requests is the constant config/RequestRateCeilingFilter writes, and that filter runs
+            ahead of the security chain, so this one phrase can arrive before any handler is reached.
         status:
           type: integer
           description: The status code of the response.
         detail:
           type: string
-          description: Fixed text, naming no identifier and no route.
+          description: >-
+            Fixed text on every failure but two, naming no identifier and no route. The fixed texts
+            are the constants api/ApiProblem declares, one per class of failure.
+
+
+            The two exceptions are the read misses. A missed GET /accounts/{accountId} answers the
+            text 9300-GETACCTDATA-BYACCT builds at app/cbl/COACTVWC.cbl:L796-L806, four literals
+            concatenated around the account identifier, such as
+            'Account:00000000099 not found in Acct Master file.Resp:404 Reas:Not Found'. A missed
+            GET /customers/{customerId} answers the text 9400-GETCUSTDATA-BYCUST builds at
+            app/cbl/COACTVWC.cbl:L846-L856, the same construction around the customer identifier. The
+            identifier in each is the path segment the caller sent, and neither text carries any
+            other request value.
         messages:
           type: array
           minItems: 1

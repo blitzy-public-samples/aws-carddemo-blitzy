@@ -38,7 +38,7 @@ import org.junit.jupiter.api.Test;
  * broker redelivering the same message for ever. An over-length component therefore keeps its
  * leading characters.</p>
  *
- * <p>This record is service-local. Five services each declare their own record of the same name.
+ * <p>This record is service-local. Six service modules each declare their own record of the same name.
  * The record stays inside this service's own package and carries no shared-library package
  * prefix.</p>
  */

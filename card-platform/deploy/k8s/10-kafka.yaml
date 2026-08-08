@@ -336,7 +336,7 @@ spec:
                   key: KAFKA_TOPIC_REPLICATION_FACTOR
             - name: KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS
               value: "0"
-            # The broker creates no topic on demand. The program below creates the eleven
+            # The broker creates no topic on demand. The program below creates the fourteen
             # topics this platform uses. A mistyped name then fails loudly instead of
             # quietly opening a stream nobody meant to open.
             - name: KAFKA_AUTO_CREATE_TOPICS_ENABLE
@@ -387,6 +387,11 @@ spec:
                 configMapKeyRef:
                   name: carddemo-config
                   key: GROUP_LEDGER_ACCOUNT
+            - name: GROUP_LEDGER_REJECT
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: GROUP_LEDGER_REJECT
             - name: GROUP_ACCOUNT_POSTED
               valueFrom:
                 configMapKeyRef:
@@ -467,17 +472,19 @@ spec:
                   key: TOPIC_DEAD_LETTER_SUFFIX
           # This container also provisions the broker. It writes a client properties file
           # for the administrator, waits for the loopback listener, creates the seven event
-          # topics, the four source-specific dead-letter topics and the shared fallback,
+          # topics, the six source-specific dead-letter topics and the shared fallback,
           # installs one access control entry set per service, records that it finished,
           # and hands the process to the broker entry point.
           #
-          # The four source topics with dead-letter routes are transaction.authorized,
-          # transaction.posted, fraud.assessed and customer.context-changed. Each has its
-          # own dead-letter stream, so one stream carries one
-          # source wire shape. The shared topic is only the configured fallback for a
-          # recovery record whose source topic is unavailable.
+          # The six source topics with dead-letter routes are transaction.authorized,
+          # transaction.declined, transaction.posted, fraud.assessed,
+          # account.state-changed and customer.context-changed. Each has its own
+          # dead-letter stream, so one stream carries one source wire shape. card.updated
+          # has none: its only consumer routes a spent record to the shared topic as a
+          # governed envelope. The shared topic is otherwise only the configured fallback
+          # for a recovery record whose source topic is unavailable.
           #
-          # These eleven names are the platform's topic inventory. The same eleven appear in
+          # These fourteen names are the platform's topic inventory. The same fourteen appear in
           # card-platform/docker-compose.yml, and card-platform/.env.example documents every
           # one. A name that exists in one path and not the other is a defect. This broker
           # admits no topic it was not told about, so a missing name reaches a service as
@@ -565,6 +572,7 @@ spec:
                              "${TOPIC_CUSTOMER_CONTEXT_CHANGED}" \
                              "${TOPIC_CARD_UPDATED}" \
                              "${TOPIC_TRANSACTION_AUTHORIZED}${TOPIC_DEAD_LETTER_SUFFIX}" \
+                             "${TOPIC_TRANSACTION_DECLINED}${TOPIC_DEAD_LETTER_SUFFIX}" \
                              "${TOPIC_ACCOUNT_STATE_CHANGED}${TOPIC_DEAD_LETTER_SUFFIX}" \
                              "${TOPIC_TRANSACTION_POSTED}${TOPIC_DEAD_LETTER_SUFFIX}" \
                              "${TOPIC_FRAUD_ASSESSED}${TOPIC_DEAD_LETTER_SUFFIX}" \
@@ -618,14 +626,20 @@ spec:
                   "${TOPIC_DEAD_LETTER}" || return 1
 
                 # Ledger posting: consumes the authorization event under its own group,
-                # consumes the account state-change stream under a second group of its own to
-                # keep account_balance_projection current, publishes the posted or rejected
-                # outcome, and routes what it cannot process to the source topic's dead-letter
-                # topic. Without the second consumer entry an account opened after deployment
-                # never gets a projection row, and a closed billing cycle never zeroes the two
-                # accumulators here.
+                # consumes the decline the authorization service published under a second
+                # group of its own so the 430-byte reject row of
+                # app/cbl/CBTRN02C.cbl:L446-L465 is written in production, consumes the
+                # account state-change stream under a third group to keep
+                # account_balance_projection current, publishes the posted outcome, and routes
+                # what it cannot process to the source topic's dead-letter topic. Without the
+                # third consumer entry an account opened after deployment never gets a
+                # projection row, and a closed billing cycle never zeroes the two accumulators
+                # here. This service holds NO producer entry on the declined topic: the
+                # authorization service is the sole writer of the decision.
                 grant_consumer "${LEDGER_KAFKA_USER}" "${TOPIC_TRANSACTION_AUTHORIZED}" \
                   "${GROUP_LEDGER_POSTING}" || return 1
+                grant_consumer "${LEDGER_KAFKA_USER}" "${TOPIC_TRANSACTION_DECLINED}" \
+                  "${GROUP_LEDGER_REJECT}" || return 1
                 grant_consumer "${LEDGER_KAFKA_USER}" "${TOPIC_ACCOUNT_STATE_CHANGED}" \
                   "${GROUP_LEDGER_ACCOUNT}" || return 1
                 grant_producer "${LEDGER_KAFKA_USER}" \
@@ -633,7 +647,7 @@ spec:
                 grant_producer "${LEDGER_KAFKA_USER}" \
                   "${TOPIC_TRANSACTION_POSTED}" || return 1
                 grant_producer "${LEDGER_KAFKA_USER}" \
-                  "${TOPIC_TRANSACTION_DECLINED}" || return 1
+                  "${TOPIC_TRANSACTION_DECLINED}${TOPIC_DEAD_LETTER_SUFFIX}" || return 1
                 grant_producer "${LEDGER_KAFKA_USER}" \
                   "${TOPIC_TRANSACTION_AUTHORIZED}${TOPIC_DEAD_LETTER_SUFFIX}" || return 1
                 grant_producer "${LEDGER_KAFKA_USER}" "${TOPIC_DEAD_LETTER}" || return 1

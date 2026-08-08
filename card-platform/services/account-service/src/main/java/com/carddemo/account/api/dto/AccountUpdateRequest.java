@@ -26,49 +26,25 @@ package com.carddemo.account.api.dto;
  * {@code PUT /accounts/{accountId}}, one route on the Representational State Transfer (REST) surface
  * of the account service.
  *
- * <h2>The path carries the identity, and the body carries none</h2>
+ * <p>The record declares two components and nothing else: no account identifier, no customer key,
+ * no foreign key, no version column, no status field and no card field.
+ * {@code ACUP-NEW-ACCT-ID-X PIC X(11)} at {@code app/cbl/COACTUPC.cbl:L759} opens the source group
+ * and reaches this surface as the path segment instead; the omission is recorded in
+ * {@code card-platform/docs/traceability-matrix.md}, and
+ * {@code AccountUpdateService.editSearchKey} applies the identifier edit of
+ * {@code app/cbl/COACTUPC.cbl:L1802-L1803} to the path value.
  *
- * <p>{@code ACUP-NEW-ACCT-ID-X PIC X(11)} at {@code app/cbl/COACTUPC.cbl:L759} opens the source
- * group, and this record declares no component for it. On a 3270 screen the identifier was an input
- * field the operator keyed beside the rest of the form; on this surface it is the path segment of the
- * resource being replaced. Carrying it in both places would raise a question no rule here answered:
- * which one wins when the two disagree. Declaring it once removes the question rather than answering
- * it.
+ * <p>The record also declares no constraint and no cascade marker.
+ * {@code AccountUpdateService.editMapInputs} is the single validator: it runs the field edits of
+ * {@code app/cbl/COACTUPC.cbl:L1205-L1280} in source order and stops at the first failure, yielding
+ * the one {@code domain/validation/EditResult} that {@code WS-RETURN-MSG PIC X(75)} at
+ * {@code app/cbl/COACTUPC.cbl:L479} models. {@link AccountDataRequest} and
+ * {@link CustomerDataRequest} keep their own component bounds as documentation of field shape and
+ * are not reached through this record.
  *
- * <p>{@code domain/validation/AccountIdValidator} still holds the rule for that identifier — eleven
- * digits, at least one of them not zero, from {@code app/cbl/COACTUPC.cbl:L1802-L1803} — and
- * {@code AccountUpdateService.editSearchKey} applies it to the value the path supplied. The omission
- * of the component is recorded in {@code card-platform/docs/traceability-matrix.md}.
- *
- * <h2>One message survives a validation pass, so one validator runs</h2>
- *
- * <p>This record declares no constraint and no cascade marker, and that absence is the contract
- * rather than an oversight. {@code AccountUpdateService.editMapInputs} is the single validator: it
- * runs the field edits of {@code app/cbl/COACTUPC.cbl:L1205-L1280} in source order and stops at the
- * first failure, yielding one {@code domain/validation/EditResult}.
- *
- * <p>A cascade marker on either component would run a second, competing pass. A bean validator
- * answers with a {@code Set} of violations in unspecified order, so a form with two bad fields would
- * produce two messages and no rule to say which the caller sees first. That contradicts the source
- * and it contradicts {@link AccountUpdateResponse}, which carries exactly one text.
- *
- * <p>{@code WS-RETURN-MSG PIC X(75)} at {@code app/cbl/COACTUPC.cbl:L479} carries that one text, and
- * the condition name {@code WS-RETURN-MSG-OFF VALUE SPACES} at {@code app/cbl/COACTUPC.cbl:L480}
- * guards every write to it, at {@code app/cbl/COACTUPC.cbl:L1791} and at
- * {@code app/cbl/COACTUPC.cbl:L1805}. So the first failure is the only failure reported, and
- * {@code EditResult} carries no violation list, no field-error map and no count.
- *
- * <p>{@link AccountDataRequest} and {@link CustomerDataRequest} keep their own component bounds.
- * Those bounds document the shape each field holds and a caller may validate either record directly.
- * They are not reached through this record, because reaching them would be the competing pass.
- *
- * <p>The record holds no customer key of its own.
- * {@code 10 ACUP-NEW-ACCT-DATA.} closes at {@code app/cbl/COACTUPC.cbl:L796} with
- * {@code ACUP-NEW-GROUP-ID PIC X(10)}, and {@code ACUP-NEW-CUST-ID-X PIC X(09)} at
- * {@code app/cbl/COACTUPC.cbl:L798} sits inside the customer group. The record also declares no
- * foreign key, no version column, no status check and no card field. Rationale for every choice above
- * sits in {@code card-platform/docs/decision-log.md}, the component-by-component field mapping in
- * {@code card-platform/docs/traceability-matrix.md}, and the source findings in
+ * <p>{@code toString()} names both components and withholds every value. Rationale for the identity,
+ * cascade and validation-order choices: {@code card-platform/docs/decision-log.md}. Field mapping:
+ * {@code card-platform/docs/traceability-matrix.md}. Source findings:
  * {@code card-platform/docs/business-rule-flags.md}.
  *
  * @param accountData  the account section of the request, from
@@ -86,15 +62,6 @@ public record AccountUpdateRequest(
         CustomerDataRequest customerData) {
 
     /**
-     * Names both components and withholds every value.
-     *
-     * <p>This override replaces the representation the compiler generates for a record. That
-     * generated form prints whatever the two composed records render.
-     *
-     * <p>Each component appears as {@link CustomerDataRequest#WITHHELD}, the redaction marker this
-     * package declares. A reader learns which record a log line belongs to and reads no value the
-     * record holds.
-     *
      * @return a rendering that names both components and discloses none, never {@code null}
      */
     @Override

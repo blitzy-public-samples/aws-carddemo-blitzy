@@ -30,7 +30,9 @@ package com.carddemo.account.api.dto;
  *                {@code WS-RETURN-MSG PIC X(75)} at {@code app/cbl/COACTUPC.cbl:L479}. An empty
  *                message marks the update accepted, matching
  *                {@code WS-RETURN-MSG-OFF VALUE SPACES} at {@code app/cbl/COACTUPC.cbl:L480}.
- *                Nullable.
+ *                {@code api/AccountController.answerOf} substitutes
+ *                {@code AccountController.UPDATE_APPLIED_MESSAGE} for that empty slot, so every
+ *                response this service writes carries a text of at least one character.
  * <p>Two properties of the components are worth stating, because both are decisions rather than
  * defaults. The one message is the whole error contract: {@link AccountUpdateRequest} declares no
  * constraint and no cascade so that the ordered pass in
@@ -40,7 +42,10 @@ package com.carddemo.account.api.dto;
  * rather than as a JavaScript Object Notation number, so a balance cannot lose its scale to a binary
  * floating-point type in a caller's parser.
  *
- * @param account the resulting account state, as {@link AccountView}. Populated on an accepted
- *                update. Nullable.
+ * @param account the account row read again after the write, as {@link AccountView}, so a caller
+ *                reads it as it now stands. Null when that second read found no row.
+ *                {@code src/main/resources/openapi.yaml} declares the component required and admits
+ *                the null, because a record serializes every component and this one reaches the wire
+ *                on every response.
  */
 public record AccountUpdateResponse(String message, AccountView account) {}

@@ -85,13 +85,13 @@ class DeadLetterRouteSerializerContractTest {
     private static LedgerProperties properties() {
         return new LedgerProperties(
                 new LedgerProperties.Kafka(new LedgerProperties.Kafka.Topics(SOURCE_TOPIC,
-                        "transaction.posted", "transaction.declined", SHARED_DEAD_LETTER_TOPIC,
-                        SUFFIX)),
+                        "transaction.declined", "account.state-changed", "transaction.posted",
+                        SHARED_DEAD_LETTER_TOPIC, SUFFIX)),
                 new LedgerProperties.Consumer(new LedgerProperties.Consumer.Retry(3, 10L)),
                 new LedgerProperties.Outbox(new LedgerProperties.Outbox.Relay(1000L, 100,
-                        "ledger-relay", Duration.ofMinutes(2L)), 168L),
-                new LedgerProperties.ProcessedEvent(168L),
-                new LedgerProperties.Retention(3_600_000L));
+                        "ledger-relay", Duration.ofMinutes(2L), 5_000L), 168L),
+                new LedgerProperties.ProcessedEvent(720L, 168L),
+                new LedgerProperties.Retention(3_600_000L, 90));
     }
 
     /** One record of the source topic, carrying nothing this route reads except its coordinates. */
@@ -382,13 +382,13 @@ class DeadLetterRouteSerializerContractTest {
         private LedgerProperties oneAttemptProperties() {
             return new LedgerProperties(
                     new LedgerProperties.Kafka(new LedgerProperties.Kafka.Topics(SOURCE_TOPIC,
-                            "transaction.posted", "transaction.declined", SHARED_DEAD_LETTER_TOPIC,
-                            SUFFIX)),
+                            "transaction.declined", "account.state-changed",
+                            "transaction.posted", SHARED_DEAD_LETTER_TOPIC, SUFFIX)),
                     new LedgerProperties.Consumer(new LedgerProperties.Consumer.Retry(1, 0L)),
                     new LedgerProperties.Outbox(new LedgerProperties.Outbox.Relay(1000L, 100,
-                            "ledger-relay", Duration.ofMinutes(2L)), 168L),
-                    new LedgerProperties.ProcessedEvent(168L),
-                    new LedgerProperties.Retention(3_600_000L));
+                            "ledger-relay", Duration.ofMinutes(2L), 5_000L), 168L),
+                    new LedgerProperties.ProcessedEvent(720L, 168L),
+                    new LedgerProperties.Retention(3_600_000L, 90));
         }
 
         /**

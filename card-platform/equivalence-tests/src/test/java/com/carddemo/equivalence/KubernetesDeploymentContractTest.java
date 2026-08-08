@@ -239,6 +239,81 @@ class KubernetesDeploymentContractTest {
         }
     }
 
+    /**
+     * Holds the two upstream images to a digest, which is the only reference a node verifies.
+     *
+     * <p>A security review found the six platform images named by a mutable tag. Six of the eight
+     * images here cannot carry a digest as this repository ships, because a locally built image has
+     * no manifest digest until it is pushed. The two that are pulled from a registry can, both
+     * already do, and this assertion is what keeps a later edit from replacing either with a bare
+     * tag. A digest is content-addressed: the pull yields exactly those bytes or it fails.
+     */
+    @Test
+    @DisplayName("both upstream images are pinned by digest and never by tag alone")
+    void bothUpstreamImagesArePinnedByDigest() {
+        Map<String, String> upstream = Map.of(
+                "10-kafka.yaml", "kafka",
+                "20-postgres.yaml", "postgres");
+        upstream.forEach((manifest, name) -> {
+            Map<String, Object> container =
+                    container(resource(manifest, "Deployment", name), name);
+            String image = String.valueOf(container.get("image"));
+            assertThat(image)
+                    .as("%s is pulled from a registry, so its bytes can be named", name)
+                    .matches("[^@]+:[^@:]+@sha256:[0-9a-f]{64}")
+                    .doesNotContain(":latest");
+            assertThat(container.get("imagePullPolicy"))
+                    .as("a digest that is never pulled is never verified")
+                    .isEqualTo("IfNotPresent");
+        });
+    }
+
+    /**
+     * Holds the six mutable references to one editable place, with the pinning procedure beside it.
+     *
+     * <p>This is the answer to the review's finding that is available without a registry. The tag
+     * stays mutable and the manifests now say so; what changes is that pinning the six by digest is
+     * one edit to {@code kustomization.yaml} rather than six edits spread across six Deployments,
+     * and that the trade-off is written down where an operator will read it. Signing and
+     * admission-time verification need a registry, a key and an admission controller, and section
+     * 0.2.2 of the plan places production hardening out of scope.
+     */
+    @Test
+    @DisplayName("the six mutable references live in one place with the digest procedure beside them")
+    void theSixMutableReferencesLiveInOnePlace() {
+        Path folder = repositoryRoot().resolve("card-platform/deploy/k8s");
+        String kustomization = read(folder.resolve("kustomization.yaml"));
+        String readme = read(folder.resolve("README.md"));
+
+        for (String manifest : SERVICE_MANIFESTS) {
+            String service = manifest.substring(3, manifest.length() - ".yaml".length());
+            assertThat(kustomization)
+                    .as("kustomization.yaml must name %s so its reference is editable there",
+                            service)
+                    .contains("- name: carddemo/" + service);
+            assertThat(kustomization)
+                    .as("and must list the manifest it rewrites")
+                    .contains("  - " + manifest);
+            assertThat(read(folder.resolve(manifest)))
+                    .as("%s must point a reader at the one place the reference can be pinned",
+                            service)
+                    .contains("deploy/k8s/kustomization.yaml");
+        }
+
+        assertThat(kustomization)
+                .as("the template of refused values must not be applied by the entry point")
+                .doesNotContain("  - 31-secret.example.yaml");
+        assertThat(kustomization)
+                .as("the pinning edit has to be recorded beside the values it changes")
+                .contains("kustomize edit set image")
+                .contains("@sha256:<digest>");
+        assertThat(readme)
+                .as("the residual risk is that the tag stays mutable, and a reader has to be "
+                        + "told rather than left to infer it")
+                .contains("MUTABLE")
+                .contains("kustomize edit set image");
+    }
+
     private static String manifestFor(String service) {
         return SERVICE_MANIFESTS.stream()
                 .filter(name -> name.contains(service))

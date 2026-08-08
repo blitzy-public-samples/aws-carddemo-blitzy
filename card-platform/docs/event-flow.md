@@ -8,7 +8,7 @@ Every event carries one flat envelope beside its payload. A consumer can route, 
 
 | Field | Purpose |
 | --- | --- |
-| `eventId` | Durable idempotency key recorded by each consumer |
+| `eventId` | Durable idempotency value each consumer records beside the topic it arrived on, and the two together are the key |
 | `eventType` | Routing discriminator and schema selector |
 | `schemaVersion` | Contract version used to select the exact JSON Schema document |
 | `occurredAt` | Producer timestamp |
@@ -33,14 +33,14 @@ The delivered runtime creates seven business topics, five source-specific dead-l
 | Topic | Events carried | Producer | Consumer groups |
 | --- | --- | --- | --- |
 | `transaction.authorized` | `TransactionAuthorized` | authorization-service | `ledger-posting`, `fraud-detection`, `notification-authorized` |
-| `transaction.declined` | `TransactionDeclined` versions 1 and 2 | authorization-service and the ledger feed-validation reject path | None in the demo |
+| `transaction.declined` | `TransactionDeclined` versions 1, 2 and 3 | authorization-service | `ledger-reject` |
 | `transaction.posted` | `TransactionPosted` versions 1 and 2 | ledger-posting-service | `account-posted`, `notification-posted` |
 | `fraud.assessed` | `FraudFlagged`, `FraudCleared` | fraud-detection-service | `notification-fraud` |
 | `account.state-changed` | `AccountStateChanged` | account-service | `authorization-account-state`, `ledger-account-state` |
 | `customer.context-changed` | `CustomerContextChanged` | account-service | `notification-customer` |
 | `card.updated` | `CardUpdated` versions 1 and 2 | card-service | `authorization-card-updated` |
 | `<source>.DLT` | 134-character fixed-width abend diagnostic | Ledger, fraud, and notification listener error handlers | Human inspection and replay tooling |
-| `carddemo.dead-letter` | `DeadLetterEnvelope` | Authorization and account listener error handlers, the four business-event relays on abandonment, and any handler whose source topic cannot be resolved | Human inspection and replay tooling |
+| `carddemo.dead-letter` | `DeadLetterEnvelope` | Authorization and account listener error handlers, the five business-event relays on abandonment, and any handler whose source topic cannot be resolved | Human inspection and replay tooling |
 
 The five source-specific dead-letter topics are `transaction.authorized.DLT`, `account.state-changed.DLT`, `transaction.posted.DLT`, `fraud.assessed.DLT`, and `customer.context-changed.DLT`. `card.updated` needs none, because its one consumer routes a spent record to the shared fallback as a governed envelope.
 
@@ -83,9 +83,13 @@ A declined request is expected traffic, not an infrastructure error. `app/cbl/CB
 | `0102` | `OVERLIMIT TRANSACTION` | `app/cbl/CBTRN02C.cbl:L410-L412` |
 | `0103` | `TRANSACTION RECEIVED AFTER ACCT EXPIRATION` | `app/cbl/CBTRN02C.cbl:L417-L419` |
 
-Version 1 carries the resolved account identifier. Version 2 represents reason 0100 and omits an account that the platform never resolved.
+Version 1 carries the resolved account identifier. Version 2 represents reason 0100 and omits an account that the platform never resolved. Version 3 carries version 1's properties plus the nine descriptive values of the daily transaction record, at the same widths `transaction-posted-v2` uses, so one parser reads both.
 
-The topic has no demo consumer. It exists so another consumer can subscribe without changing the authorization producer.
+Version 3 exists because of what the source writes on this path. `2500-WRITE-REJECT-REC` at `app/cbl/CBTRN02C.cbl:L446-L465` writes 430 bytes: `REJECT-TRAN-DATA PIC X(350)`, which is the whole daily record, followed by an 80-byte trailer holding the reason code and its text. A consumer reading only the reason code cannot reproduce those 350 bytes, and the values are not recoverable from any table, because a refused transaction posted nowhere.
+
+`ledger-reject` is the consumer group that turns each refusal into one row of `rejected_transaction`. That row and the marker recording the event commit in one local transaction, so neither can exist without the other. The ledger publishes nothing on this topic: the authorization service is the sole writer of the decision, and a second decline for one refusal would put two differently shaped events for it on a topic the ledger reads.
+
+A decline arriving at version 1 or 2 is acknowledged with no row written, because neither version carries the nine values the 350 bytes need and inventing them would break equivalence. All 38 reject records the fixture `app/data/ASCII/dailytran.txt` produces carry reason `0102`, which resolves an account and travels at version 3.
 
 Reason 109 at `app/cbl/CBTRN02C.cbl:L556` is not a decline event. The source never checks it, while the target treats the condition as a processing failure; [business-rule flag 9](business-rule-flags.md) records the change.
 
@@ -119,7 +123,7 @@ The account listener applies the amount and never the event's `newBalance`. A ba
 
 `FraudFlagged` is additive in full, because the repository holds no fraud module of any kind: no scoring, no pattern analysis, no velocity checking, and no rules engine. It carries transaction and account identifiers, a score, triggered rule identifiers, and assessment time.
 
-The notification fraud listener renders an alert with its private cardholder projection. It also writes one metadata-only `notification_log` row with masked card, transaction, channel, and attempt time.
+The notification fraud listener renders an alert with its private cardholder projection. It writes no `notification_log` row: that table keys a row by card token and masked card number, and a fraud assessment carries neither. The rendered text is returned to the listener, which discards it, because this service reaches no mail, message, webhook or push gateway.
 
 ### `FraudCleared`
 
@@ -144,6 +148,8 @@ A posting is a state change to `ACCTDAT` in the source too, where `app/cbl/CBTRN
 | Envelope `eventId` and `occurredAt` | `source_event_id`, `source_occurred_at` | `source_event_id`, `source_occurred_at` |
 
 Both groups apply the snapshot monotonically: a change whose `occurredAt` is not after the stored value discards itself rather than moving a cycle balance backwards. Each stores its event marker in the same transaction as the projection write.
+
+The authorization group does one thing more. Its statement releases the exposure that decision reserved, by the advance this event reports on the matching accumulator, and clears the reservation outright when an accumulator moves the other way, which only a cycle close does. That is why an approval taken before this event arrives is counted once rather than twice: the decision reserved it, and this event replaces the reservation with the authoritative figure that now contains it.
 
 Authorization then reads its local projection and calls no account service during a decision. The ledger consumes the same event for a different reason. `V2__seed.sql` loaded a projection row per fixture account, and nothing else told that table when the account service moved the original. So without this consumer, an account opened after deployment had no row at all, and a billing cycle closed at `app/cbl/CBACT04C.cbl:L353-L354` never reached the ledger's copy of the two accumulators.
 
@@ -195,7 +201,7 @@ sequenceDiagram
     participant AccountRelay as Account relay
 
     Client->>Authorization: POST /authorizations
-    Authorization->>AuthDB: Write decision and one outbox row
+    Authorization->>AuthDB: Lock the account row, then write the decision, one outbox row and the reserved exposure of an approval
     AuthDB-->>Authorization: Commit
     Authorization-->>Client: Approved or declined response
 
@@ -237,7 +243,7 @@ sequenceDiagram
 - Solid request arrows before the client response are synchronous.
 - Arrows through Kafka are asynchronous and occur after the authorization response.
 - Each database response marked `Commit` closes one local transaction.
-- A declined authorization publishes only `TransactionDeclined`; no consumer receives an authorized event.
+- A declined authorization publishes only `TransactionDeclined`; no consumer receives an authorized event. The ledger consumes that decline under `ledger-reject` and writes one reject row.
 - Ledger, fraud, notification, and account share no direct call edge.
 - Three arrows carry `TransactionAuthorized` out of Kafka, one per independent consumer group.
 - Two arrows carry `TransactionPosted` out of Kafka, to notification and to account.
@@ -300,7 +306,7 @@ graph LR
 - Thick arrows cross Kafka.
 - `account.state-changed` has two consumer groups, `authorization-account-state` and `ledger-account-state`, so each replica advances on its own offsets.
 - `transaction.posted` reaches the account service under `account-posted`, its own group, so the notification service reading the same topic still receives every record.
-- The account row has two writers and they write different things: a request writes the submitted values, and the posted-transaction consumer adds an amount to the balance and to one of the two accumulators. Both queue one outbox row, so both reach the authorization snapshot by the same path.
+- The account row has two writers and they write different things. A request writes the submitted values. The posted-transaction consumer adds an amount to the balance and to one of the two accumulators. Both queue one outbox row, so both reach the authorization snapshot by the same path.
 - `card.updated` has the `authorization-card-updated` consumer group.
 - `customer.context-changed` has the `notification-customer` consumer group.
 - Every replica applies a snapshot monotonically against the producer timestamp, so an older or replayed event cannot move a projection backwards.
@@ -315,25 +321,40 @@ The demo relay checks every 500 milliseconds and claims at most 100 rows. Produc
 
 Kafka delivery is at least once. Rebalances, restarts, or a crash after side effects but before offset commit can deliver the same event again.
 
-**Publication is also at least once, and the producer window bounds how often a duplicate occurs.** The database marks a relay row published one time only, because `published` and `published_at` move after the broker acknowledges the send. A topic can still carry a second copy of one `eventId`.
+**Publication is also at least once, and the producer window bounds how often a duplicate occurs.** The database marks a relay row published one time only. `published` and `published_at` move after the broker acknowledges the send. A topic can still carry a second copy of one `eventId`.
 
-A relay tick bounds itself, so a broker that accepts a connection and never answers cannot hold the scheduled thread. A tick that gave up on a send the producer still held left that record to arrive up to two minutes later, while the tick's retry published another copy. The fraud relay closes that window. `max.block.ms` plus `delivery.timeout.ms` stays below `carddemo.outbox.relay.max-duration-ms`, and the relay waits out a send it has already issued.
+A relay tick bounds itself, so a broker that accepts a connection and never answers cannot hold the scheduled thread. A tick that gave up on a send the producer still held left that record to arrive up to two minutes later, while the tick's retry published another copy. The fraud and authorization relays close that window. `max.block.ms` plus `delivery.timeout.ms` stays below `carddemo.outbox.relay.max-duration-ms`, and the relay waits out a send it has already issued.
+
+The authorization relay divides one pass into several transactions, and the division is the guarantee rather than a detail. One transaction claims the due rows and commits; the sends run under no transaction at all; each result is written in a short transaction of its own. A single transaction spanning the pass held a connection and every row lock of the batch for the sum of its broker waits, and it rolled its own claim back when the process died — which is precisely the case the stranded-claim recovery was written for, and which it could therefore never observe. Its claim query returns the due head row of each account, so recording results separately cannot reorder one account's events, and one unpublishable row delays its own account rather than the whole table.
 
 One duplicate path is not a platform choice. A broker that has already appended a record can lose the acknowledgement. The producer then reports a failure the log does not share, and the next attempt appends a second copy. No producer setting removes that, and `enable.idempotence` does not either, because the two copies come from two `send` calls carrying their own sequence numbers. Both copies carry the same `eventId`, so every consumer's `processed_event` marker suppresses the second one.
 
 A test asserts the timing relationship, so moving one value without the other fails the build. The [decision log](decision-log.md) records the choice with its measurements, and [suggested next tasks](suggested-next-tasks.md) carries the same relationship for the account service.
 
-Each consumer checks or claims `processed_event` by `eventId`, performs its work, and commits the marker with the effect. A second delivery of the same `eventId` finds that marker and changes nothing.
+Each consumer claims `processed_event` by the pair `(event_id, consumed_topic)`, performs its work, and commits the marker with the effect. A second delivery of that event on the same topic finds the marker and changes nothing.
+
+The consumed topic is part of the key in all six services, and `V*__processed_event_topic_key.sql` is the migration that put it there. The reason is that each producing service assigns event identifiers independently. One identifier can therefore arrive on two topics carrying two unrelated events. Keyed on the identifier alone, the second event loses the claim to the first and is dropped in silence. A marker written before that migration carries the sentinel `(no topic header)`, which no Kafka topic name can equal.
 
 Auto-commit is disabled. Manual acknowledgement occurs only after the database transaction commits. Without that ordering the duplicate guard is decorative, because an offset committed early lets a crash skip work that never happened.
 
+A record no attempt can apply is the one case that ordering does not cover, and every error handler commits its offset once the diagnostic is published. The listener method threw, so it acknowledged nothing, and an uncommitted offset means the next assignment reads the same record, retries it to exhaustion again, and publishes a second diagnostic for one set of coordinates — indefinitely, because nothing about the record changes between passes.
+The acknowledgement mode is `MANUAL_IMMEDIATE` in all five consuming services, and each one refuses to start under any other mode. Only that mode commits the offset at the acknowledgement a listener issues, and only that mode commits the offset of a record the dead-letter route has published: under `MANUAL` the framework reports the recovered-offset setting as ignored, so a spent record would be dead-lettered again after every restart or rebalance. `spring.kafka.listener.ack-mode` is bindable from the environment, so the requirement is a start-up check rather than a comment.
+
 The demo permits three processing attempts with a one-second backoff. Two terminal routes exist, and which one a failure takes depends on what failed.
 
-A spent consumer record takes the listener route. Ledger, fraud, and notification send a 134-character fixed-width abend diagnostic to the source topic name plus the `.DLT` suffix, short for dead-letter topic. Each falls back to `carddemo.dead-letter` when the source topic cannot be resolved. Authorization sends a governed `DeadLetterEnvelope` to `carddemo.dead-letter` directly.
+A spent consumer record takes the listener route, and the five listening services take it in two different forms. Ledger, fraud, and notification send a 134-character fixed-width abend diagnostic to the source topic name plus the `.DLT` suffix, short for dead-letter topic. Each falls back to `carddemo.dead-letter` when the source topic cannot be resolved. Authorization and account each send a governed `DeadLetterEnvelope` to `carddemo.dead-letter` directly.
+
+The account listener is worth naming on its own, because its recovery semantics differ from authorization's. `TransactionPostedConsumer` on group `account-posted` retries a failure under the shared retry policy, then hands the record to a sanitizing recoverer that publishes one `DeadLetterEnvelope` and nothing the record carried. Its error handler sets `commitRecovered(true)`, so the offset advances once the diagnostic is away and the same poison record is not redelivered forever. Four of the five listening services do that: account, fraud, ledger and notification. Authorization leaves the flag at its default, so a recovered replica record is redelivered until it succeeds.
+
+A spent outbox row takes the producer route, and all five relays now take it. Each publishes one governed `DeadLetterEnvelope` naming the row it gave up on, so an event no consumer will ever see is a message on the dead-letter topic rather than one more warning line. The diagnostic is published inside the sweep that abandons the row and waited for, so a broker that refuses it rolls the abandonment back and a later sweep offers the row again. One row cannot be named this way: a decline whose card resolved to no cross-reference row is keyed on its sixteen-character transaction identifier, and `schemas/dead-letter-v1.json` keys a diagnostic on an eleven-digit account. That row is still abandoned, reported at `ERROR` with its identifier, and counted on `carddemo.authorization.dead.letters` under `outcome=failed`.
 
 Neither form republishes the failed payload, the failed key, or any inbound header outside a fixed allowlist. A poison record therefore cannot carry a card number or a card verification value onto a dead-letter topic. Malformed schema input reaches the same sanitized route without unsafe business processing.
 
-An abandoned outbox row takes the relay route. Four relays publish business events: authorization, ledger, account, and card. Each sends a governed `DeadLetterEnvelope` to `carddemo.dead-letter` once a row is spent. A change that can never be published therefore still leaves a durable diagnostic, naming the row, the event type, the attempt count, and the reason.
+An abandoned outbox row takes the relay route. Five relays publish business events: authorization, ledger, fraud, account, and card. Notification has none, because it publishes nothing. Each sends a governed `DeadLetterEnvelope` to `carddemo.dead-letter` once a row is spent. A change that can never be published therefore still leaves a durable diagnostic, naming the row, the event type, the attempt count, and the reason.
+
+The authorization and account relays record that diagnostic as an obligation rather than attempting it once. Abandoning a row writes `dead_letter_state = 'REQUIRED'` in the same transaction that abandons it, and the state moves to `PUBLISHED` only once the broker has acknowledged the diagnostic. This matters because an abandoned row is terminal: the claim query never returns it again, so a diagnostic dispatched at the moment of abandonment and not awaited leaves an unreachable broker looking exactly like a healthy one. A refused diagnostic is offered again at the head of every later pass, for as long as it takes.
+
+A diagnostic for a row keyed by a transaction identifier — a decline whose card resolved no account — travels under the aggregate identifier `00000000000`, because `schemas/dead-letter-v1.json` accepts eleven digits and the real key holds sixteen characters. `failedEventId` still names the row exactly.
 
 Each terminal outcome increments a counter distinct from the per-attempt failure counter, so retries and permanently spent work are never summed together.
 
@@ -350,7 +371,7 @@ graph LR
     RELAY["Outbox relay"]
     TOPIC{{"Kafka topic"}}
     POLL["Consumer poll"]
-    CHECK{"eventId already processed"}
+    CHECK{"eventId plus consumed topic<br/>already in processed_event"}
     WORK["Apply business effect"]
     CDB[("business effect and processed_event")]
     ACK["Acknowledge offset"]
@@ -372,7 +393,7 @@ graph LR
 **Legend**
 
 - Each cylinder naming two tables represents one local database transaction.
-- The diamond is the durable duplicate check that makes redelivery harmless.
+- The diamond is the durable duplicate check that makes redelivery harmless. It is keyed on the event identifier together with the topic the delivery arrived on, which is the primary key of `processed_event`.
 - Acknowledgement follows the consumer transaction and never precedes it.
 - The dotted arrows are the two terminal dead-letter routes: a spent consumer record, and an abandoned outbox row.
 
@@ -385,9 +406,11 @@ Every service separates a per-attempt failure count from a per-record or per-row
 | notification | `carddemo.notification.failures`, tagged `failure.kind`: `schema_validation`, `deserialization`, `persistence`, `rendering`, `unknown` | `carddemo.notification.records.dead.lettered`, tagged `failure.kind` with the same values |
 | ledger | `carddemo.ledger.failures`, tagged `stage`: `deserialize`, `process`, `publish`, `abandon` | `carddemo.ledger.dead.letters`, tagged `outcome`: `published`, `failed` |
 | fraud | `carddemo.fraud.failures`, tagged `stage`: `deserialize`, `process`, `publish` | `carddemo.fraud.dead.letters`, tagged `outcome`: `published`, `failed` |
-| authorization | `carddemo.authorization.failures`, tagged `stage`: `persist`, `publish`, `replica` | The `replica` stage carries both readings, because a refused projection record is the only record this service dead-letters |
+| authorization | `carddemo.authorization.failures`, tagged `stage`: `persist`, `publish`, `replica` | `carddemo.authorization.outbox.abandoned` counts a row given up on, and `carddemo.authorization.dead.letters`, tagged `outcome`: `published`, `failed`, counts what became of the diagnostic naming it. `carddemo.authorization.events.consumed`, `carddemo.authorization.duplicates.skipped` and `carddemo.authorization.processing.latency`, each tagged `eventType`, report what arrived on the two replica streams |
 | account | `carddemo.account.transaction.failures`, tagged `operation`: `update`, `cycle-close`, and `carddemo.account.publish.failed` | `carddemo.account.outbox.abandoned`, with `carddemo.account.dead.letters.published` and `carddemo.account.dead.letters.failed` naming what became of the diagnostic |
 | card | `carddemo.card.failures` | `carddemo.card.outbox.abandoned`, with `carddemo.card.dead.letters.failed` counting a diagnostic the broker refused |
+
+`carddemo.account.publish.failed` is a separate counter rather than a value of that tag. It is owned by the relay's publish path alone, and the producer configuration deliberately leaves the send callback out of it, so one refused publish is counted once. A reader who looks for a `publish` operation tag will not find one, and should read this series instead.
 
 Notification tags by what failed, because it validates, persists, and renders. The ledger and fraud tag by the stage that failed, because an operator reasons about their stages separately. Card and account discriminate by series name rather than by tag, because each terminal outcome has one meaning. Every series is registered at start-up and carries a bounded tag set, so a value outside the set falls back rather than creating a series. The [decision log](decision-log.md) records why the three schemes were left as they are, and [suggested next tasks](suggested-next-tasks.md) carries the unification.
 
@@ -395,7 +418,9 @@ Notification tags by what failed, because it validates, persists, and renders. T
 
 Publishing validates the exact pair of `eventType` and `schemaVersion`, so malformed output never reaches a business topic. Consumption validates before domain code changes a table.
 
-The contract library governs eight business event types and the dead-letter envelope across thirteen schema documents. `TransactionAuthorized`, `TransactionDeclined`, `TransactionPosted`, and `CardUpdated` each retain versions 1 and 2. Every schema is a JSON Schema Draft 2020-12 document whose version sits in its filename, as in `transaction-authorized-v2.json`.
+The contract library governs eight business event types and the dead-letter envelope across fourteen schema documents. `TransactionAuthorized`, `TransactionPosted`, and `CardUpdated` each retain versions 1 and 2, and `TransactionDeclined` retains versions 1, 2 and 3. Every schema is a JSON Schema Draft 2020-12 document whose version sits in its filename, as in `transaction-authorized-v2.json`.
+
+One caution about that numbering. For `TransactionDeclined` the version axis carries two orthogonal facts rather than one: version 2 is the unresolved-account variant and is not a superset of version 1, while version 3 is version 1 plus the nine descriptive values. A reader who assumes each version enriches the last will be wrong about version 2, and each document's own `$comment` says which fact it carries.
 
 Compatibility tests enforce additive evolution, and they fail the build rather than warn. An older payload stays valid under the document that first governed it, so a new consumer can be added without breaking an existing one.
 

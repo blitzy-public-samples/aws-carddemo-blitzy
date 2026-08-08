@@ -4,13 +4,14 @@ import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
-
 import com.carddemo.account.api.dto.CycleCloseResponse;
 import com.carddemo.account.domain.BillingCycleService;
 import com.carddemo.account.entity.AccountEntity;
@@ -25,6 +26,8 @@ import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
@@ -132,13 +135,11 @@ class BillingCycleControllerTest {
     /** Package prefix every metric instrument carries. */
     private static final String METRIC_PACKAGE = "io.micrometer";
 
-    /** Reads each answer back off the wire. */
     private static final ObjectMapper JSON = new ObjectMapper();
 
     private BillingCycleService billingCycles;
     private MockMvc mockMvc;
 
-    /** Builds the dispatcher over a stubbed service and the real error handler. */
     @BeforeEach
     void buildSlice() {
         billingCycles = mock(BillingCycleService.class);
@@ -150,7 +151,7 @@ class BillingCycleControllerTest {
     }
 
     /**
-     * Asserts a close answers exactly three properties, in the order the response record declares
+     * A close answers exactly three properties, in the order the response record declares
      * them.
      *
      * <p>The three are {@code ACCT-ID} at {@code app/cpy/CVACT01Y.cpy:L5},
@@ -180,7 +181,7 @@ class BillingCycleControllerTest {
     }
 
     /**
-     * Asserts both accumulators arrive at zero, each at the scale its source field declares.
+     * Both accumulators arrive at zero, each at the scale its source field declares.
      *
      * <p>{@code MOVE 0 TO ACCT-CURR-CYC-CREDIT} at {@code app/cbl/CBACT04C.cbl:L353} zeroes the
      * first of the two. {@code MOVE 0 TO ACCT-CURR-CYC-DEBIT} at
@@ -204,7 +205,7 @@ class BillingCycleControllerTest {
     }
 
     /**
-     * Asserts an answer carries no balance, no interest figure, no customer identifier, no message
+     * An answer carries no balance, no interest figure, no customer identifier, no message
      * slot and no card field.
      *
      * <p>The balance add at {@code app/cbl/CBACT04C.cbl:L352} has no counterpart in this module. No
@@ -229,11 +230,9 @@ class BillingCycleControllerTest {
     }
 
     /**
-     * Asserts a close delegates exactly once to the service that owns the write.
-     *
-     * <p>{@link BillingCycleService} opens the transaction the account row and its one outbox row
-     * commit in. One delegation stands for one outbox row, and for
-     * {@code REWRITE FD-ACCTFILE-REC FROM ACCOUNT-RECORD} at {@code app/cbl/CBACT04C.cbl:L356}.
+     * One request reaches {@link BillingCycleService} exactly once. The service is stubbed here, so
+     * this measures the delegation and not the transaction or the outbox row that
+     * {@code BillingCycleServiceTest} covers.
      */
     @Test
     void aCloseDelegatesExactlyOnceToTheServiceThatOwnsTheWrite() throws Exception {
@@ -246,7 +245,7 @@ class BillingCycleControllerTest {
     }
 
     /**
-     * Asserts a close on an identifier no row carries answers 404 and no payload property.
+     * A close on an identifier no row carries answers 404 and no payload property.
      *
      * <p>The service answers an empty {@link Optional}, which stands for the file-status test at
      * {@code app/cbl/CBACT04C.cbl:L357}. The answer names none of the three properties a close
@@ -271,7 +270,7 @@ class BillingCycleControllerTest {
     }
 
     /**
-     * Asserts no declared field of the controller could publish an event.
+     * No declared field of the controller could publish an event.
      *
      * <p>Request handling reaches no publisher, no outbox writer and no event type.
      * {@link BillingCycleService} writes the one outbox row a close produces, inside the transaction
@@ -288,7 +287,7 @@ class BillingCycleControllerTest {
     }
 
     /**
-     * Asserts the controller declares no error-handler method and no metric instrument, and holds
+     * The controller declares no error-handler method and no metric instrument, and holds
      * one collaborator.
      *
      * <p>{@link AccountApiExceptionHandler} carries the error path of the whole module, and
@@ -314,7 +313,7 @@ class BillingCycleControllerTest {
     }
 
     /**
-     * Asserts both routes carrying an account identifier pin one width.
+     * Both routes carrying an account identifier pin one width.
      *
      * <p>{@code ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT01Y.cpy:L5} fixes that width, and
      * {@code api/AccountRouteWiringTest} holds the pattern itself. An identifier of another width
@@ -341,11 +340,67 @@ class BillingCycleControllerTest {
     /**
      * Closes the billing cycle of {@link #ACCOUNT_ID} over the dispatcher.
      *
+     * <p>The media type is required even though no body is sent. It is the cross-site request
+     * forgery control of this route: {@code application/json} is not one of the three content types
+     * a browser can send cross-origin without a preflight, so requiring it forces one, and this
+     * service answers no preflight. A call omitting it reads 415, which
+     * {@link #aFormEncodedCloseIsRefusedWithoutReachingTheService()} and
+     * {@link #aCloseNamingNoMediaTypeReadsUnsupportedMediaType()} both assert.
+     *
      * @return the result, carrying the answer
      * @throws Exception when the request fails
      */
     private MvcResult closeCycle() throws Exception {
-        return mockMvc.perform(post("/accounts/{accountId}/cycle-close", ACCOUNT_ID)).andReturn();
+        return mockMvc.perform(post("/accounts/{accountId}/cycle-close", ACCOUNT_ID)
+                        .contentType(MediaType.APPLICATION_JSON))
+                .andReturn();
+    }
+
+    /**
+     * A close naming no media type is refused by the route rather than performed.
+     *
+     * <p>This is the standalone half of the control. The security chain is not in this setup, so a
+     * form-encoded call is refused here by the route's own {@code consumes}; the chain's 403 for the
+     * same call is asserted in the security integration test.
+     *
+     * @throws Exception when the request fails
+     */
+    @Test
+    @DisplayName("a close naming no media type reads 415 and reaches no service")
+    void aCloseNamingNoMediaTypeReadsUnsupportedMediaType() throws Exception {
+        stubClose(Optional.of(closedAccount()));
+
+        MvcResult result = mockMvc
+                .perform(post("/accounts/{accountId}/cycle-close", ACCOUNT_ID))
+                .andReturn();
+
+        assertEquals(HttpStatus.UNSUPPORTED_MEDIA_TYPE.value(), result.getResponse().getStatus(),
+                "a bodyless POST still has to name the media type this route accepts");
+        verify(billingCycles, never()).closeBillingCycle(anyString());
+    }
+
+    /**
+     * A form-encoded close is refused without the accumulators being touched.
+     *
+     * <p>The forged shape. A browser driven from another origin can send exactly this, carrying the
+     * credential it holds for this origin, and the accumulators it would zero are what the
+     * credit-limit rule tests.
+     *
+     * @throws Exception when the request fails
+     */
+    @Test
+    @DisplayName("a form-encoded close is refused and the accumulators are not touched")
+    void aFormEncodedCloseIsRefusedWithoutReachingTheService() throws Exception {
+        stubClose(Optional.of(closedAccount()));
+
+        MvcResult result = mockMvc
+                .perform(post("/accounts/{accountId}/cycle-close", ACCOUNT_ID)
+                        .contentType(MediaType.APPLICATION_FORM_URLENCODED))
+                .andReturn();
+
+        assertEquals(HttpStatus.UNSUPPORTED_MEDIA_TYPE.value(), result.getResponse().getStatus(),
+                "a form-encoded POST must not reach the service that zeroes the accumulators");
+        verify(billingCycles, never()).closeBillingCycle(anyString());
     }
 
     /**
@@ -386,9 +441,6 @@ class BillingCycleControllerTest {
     }
 
     /**
-     * Builds the account as it stands after a close, with both accumulators at the scale
-     * {@link PicClause} declares.
-     *
      * @return the stored row a close answers with
      */
     private static AccountEntity closedAccount() {

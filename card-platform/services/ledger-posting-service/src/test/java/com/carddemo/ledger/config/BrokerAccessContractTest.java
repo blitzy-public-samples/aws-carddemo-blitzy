@@ -32,16 +32,16 @@ import org.yaml.snakeyaml.constructor.SafeConstructor;
  * inside one transaction and returns at its first failure, so a single row bound for an ungranted
  * topic is refused on every sweep and every later row of every account stays behind it for ever.
  *
- * <p>Reviewing the two matrices by eye is what let that happen once already: the relay maps
+ * <p>Reviewing the two matrices by eye is what let that happen once already: the relay mapped
  * {@code TransactionDeclined} onto its own topic, and neither matrix granted it. This test is the
  * replacement for that review. It reads the topic names out of the shipped
  * {@code src/main/resources/application.yml} rather than restating them, so adding a topic to the
  * configuration fails the build until both {@code card-platform/docker-compose.yml} and
  * {@code card-platform/deploy/k8s/10-kafka.yaml} grant it.
  *
- * <p>Direction is derived from the key, not asserted from a list. {@code transaction-authorized} is
- * the one topic this service reads, and it must carry a consumer entry naming this service's own
- * group. Every other topic under {@code carddemo.kafka.topics} is a destination this service
+ * <p>Direction is derived from the key, not asserted from a list. Each key of {@code CONSUMED_KEYS}
+ * is a topic this service reads, and each must carry a consumer entry naming the group that listener
+ * reads under. Every other topic under {@code carddemo.kafka.topics} is a destination this service
  * writes. {@code dead-letter-suffix} is not itself a topic: the error handler appends it to the
  * consumed topic, so both matrices must grant that composed destination.
  *
@@ -71,13 +71,23 @@ class BrokerAccessContractTest {
     /** The consumer group of the second listener, which keeps the balance projection current. */
     private static final String ACCOUNT_STATE_GROUP = "GROUP_LEDGER_ACCOUNT";
 
+    /** The consumer group placeholder both matrices name this service's reject listener by. */
+    private static final String REJECT_GROUP = "GROUP_LEDGER_REJECT";
+
     /**
      * Each key under {@code carddemo.kafka.topics} this service reads, mapped to the group it reads
      * under.
      *
-     * <p>Two listeners, two groups. The posting listener reads the authorization event, and the
-     * account-state listener keeps {@code account_balance_projection} current so an account opened
-     * after deployment gets a row and a closed billing cycle zeroes the two accumulators here.
+     * <p>Three listeners, three groups. The posting listener reads the authorization event, the
+     * reject listener reads the decline the authorization service published and writes the 430-byte
+     * reject row of {@code app/cbl/CBTRN02C.cbl:L446-L465}, and the account-state listener keeps
+     * {@code account_balance_projection} current so an account opened after deployment gets a row
+     * and a closed billing cycle zeroes the two accumulators here.
+     *
+     * <p>{@code transaction-declined} is consumed and not published. The authorization service is
+     * the sole writer of the decision under AAP 0.1.1, so a producer entry here would grant this
+     * service a permission nothing uses and would let a second decline for one decision reach the
+     * topic this listener reads.
      *
      * <p>Every other key under that block is a destination this service writes. Each consumed key
      * needs three entries between the two matrices: a consumer entry naming its own group, and a
@@ -85,6 +95,7 @@ class BrokerAccessContractTest {
      */
     private static final Map<String, String> CONSUMED_KEYS = Map.of(
             "transaction-authorized", GROUP,
+            "transaction-declined", REJECT_GROUP,
             "account-state-changed", ACCOUNT_STATE_GROUP);
 
     /** A suffix composed with each of {@link #CONSUMED_KEYS}, not an addressable topic itself. */
@@ -222,9 +233,15 @@ class BrokerAccessContractTest {
         }
 
         @Test
-        @DisplayName("names the declined topic, which the relay maps and the matrices missed once")
+        @DisplayName("names the declined topic as consumed and never as a destination")
         void namesTheDeclinedTopic() {
-            assertThat(destinations()).containsKey("transaction-declined");
+            assertThat(topics()).as("the reject listener reads this topic, so it must be named")
+                    .containsKey("transaction-declined");
+            assertThat(destinations())
+                    .as("the authorization service is the sole writer of the decision, so a "
+                            + "producer entry here would let a second decline for one decision "
+                            + "reach the topic this service reads")
+                    .doesNotContainKey("transaction-declined");
         }
     }
 

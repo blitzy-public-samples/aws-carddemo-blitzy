@@ -28,8 +28,10 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Asserts that {@link NumvalParser} accepts and rejects what the four CardDemo COBOL numeric
- * functions accept and reject, no stricter and no looser.
+ * Holds {@link NumvalParser} against the four CardDemo COBOL numeric functions over the arguments
+ * every call site in {@code app/cbl} passes, the boundary values around each declared field width,
+ * and the currency and grouping forms the source functions differ on. The census below fixes the
+ * call sites; nothing here claims coverage of an argument no call site can build.
  *
  * <p>{@code FUNCTION NUMVAL-C} reads a currency sign and grouping commas. {@code FUNCTION NUMVAL}
  * reads neither, and {@code new BigDecimal(String)} reads neither. The first two tests hold one
@@ -222,8 +224,8 @@ class NumvalParserTest {
 
     /**
      * A synthetic token at {@link #CARD_NUMBER_WIDTH}, the width of the field converted at
-     * {@code app/cbl/COTRN02C.cbl:L218}. Twelve zeros and four trailing digits, and no card
-     * number begins with a zero.
+     * {@code app/cbl/COTRN02C.cbl:L218}: twelve zeros and four trailing digits, which no record of
+     * {@code app/data/ASCII/carddata.txt} carries.
      */
     private static final String CARD_NUMBER_FIELD = "0".repeat(12) + "4444";
 
@@ -290,7 +292,7 @@ class NumvalParserTest {
     };
 
     /**
-     * Proves the currency-tolerant conversion reads a currency sign and the plain conversion
+     * The currency-tolerant conversion reads a currency sign and the plain conversion
      * refuses one. {@code app/cbl/COACTUPC.cbl:L1080} through {@code app/cbl/COACTUPC.cbl:L1136}
      * send five account money fields through the tolerant conversion.
      */
@@ -318,7 +320,7 @@ class NumvalParserTest {
     }
 
     /**
-     * Proves the currency-tolerant conversion reads a grouping comma and the plain conversion
+     * The currency-tolerant conversion reads a grouping comma and the plain conversion
      * refuses one. One grammar covers all thirteen tolerant call sites, among them
      * {@code app/cbl/COACTUPC.cbl:L1080} and {@code app/cbl/COTRN02C.cbl:L383}. Groups of an
      * uneven width convert to the same value, since COBOL fixes no group width.
@@ -350,7 +352,7 @@ class NumvalParserTest {
     }
 
     /**
-     * Proves the currency-tolerant conversion reads a bare two-digit and a bare four-digit
+     * The currency-tolerant conversion reads a bare two-digit and a bare four-digit
      * argument. {@code app/cbl/CORPT00C.cbl:L305} through {@code app/cbl/CORPT00C.cbl:L325} send
      * six date components through it, a month and a day into {@code WS-NUM-99 PIC 99} and a year
      * into {@code WS-NUM-9999 PIC 9999}. None of the six carries a currency sign or a comma.
@@ -376,7 +378,7 @@ class NumvalParserTest {
     }
 
     /**
-     * Proves two conversions of one argument return one value and leave no state behind.
+     * Two conversions of one argument return one value and leave no state behind.
      * {@code app/cbl/COTRN02C.cbl:L383} converts {@code TRNAMTI} for the screen echo, and
      * {@code app/cbl/COTRN02C.cbl:L456} converts the same field again for the stored transaction
      * amount. A gate call between the two conversions changes neither result.
@@ -401,7 +403,7 @@ class NumvalParserTest {
     }
 
     /**
-     * Proves the plain conversion reads the two identifier fields
+     * The plain conversion reads the two identifier fields
      * {@code app/cbl/COTRN02C.cbl} converts. L204 fills {@code WS-ACCT-ID-N PIC 9(11)} and L218
      * fills {@code WS-CARD-NUM-N PIC 9(16)}. Leading zeros carry no weight in the value.
      */
@@ -423,7 +425,7 @@ class NumvalParserTest {
     }
 
     /**
-     * Proves the plain conversion returns zero for a slice of zero digits and returns the value of
+     * The plain conversion returns zero for a slice of zero digits and returns the value of
      * a slice that holds a digit above zero. {@code app/cbl/COACTUPC.cbl:L2156} tests
      * {@code FUNCTION NUMVAL(WS-EDIT-ALPHANUM-ONLY(1: WS-EDIT-ALPHANUM-LENGTH)) = 0} against a
      * slice, never against the whole field. The numeric class test at
@@ -449,7 +451,7 @@ class NumvalParserTest {
     }
 
     /**
-     * Proves the plain gate reports valid for a two-digit month and reports invalid for a month
+     * The plain gate reports valid for a two-digit month and reports invalid for a month
      * carrying a letter. {@code app/cpy/CSUTLDPY.cpy:L126} reads valid as
      * {@code FUNCTION TEST-NUMVAL (WS-EDIT-DATE-MM) = 0} and converts at L128. The day at L170
      * and L172 follows the same pair.
@@ -471,7 +473,7 @@ class NumvalParserTest {
     }
 
     /**
-     * Proves the currency-tolerant gate reports valid for a money argument and reports invalid for
+     * The currency-tolerant gate reports valid for a money argument and reports invalid for
      * a malformed one. {@code app/cbl/COACTUPC.cbl:L2201} reads valid as {@code FUNCTION
      * TEST-NUMVAL-C(WS-EDIT-SIGNED-NUMBER-9V2-X) = 0} and answers with {@code CONTINUE} at L2202.
      */
@@ -495,7 +497,7 @@ class NumvalParserTest {
     }
 
     /**
-     * Proves both gates report invalid for {@code null} and for an empty argument, and that
+     * Both gates report invalid for {@code null} and for an empty argument, and that
      * neither conversion turns either one into zero. {@code app/cbl/COACTUPC.cbl:L2181} enters
      * {@code 1250-EDIT-SIGNED-9V2} with {@code FLG-SIGNED-NUMBER-NOT-OK} already set.
      */
@@ -519,7 +521,7 @@ class NumvalParserTest {
     }
 
     /**
-     * Proves both gates report invalid for a field of spaces and for a field of {@code LOW-VALUES}.
+     * Both gates report invalid for a field of spaces and for a field of {@code LOW-VALUES}.
      * {@code app/cbl/COACTUPC.cbl:L1074} screens {@code SPACES} and L1075 moves {@code LOW-VALUES}
      * into the target field. {@code app/cbl/COACTUPC.cbl:L2184} reads both as not supplied.
      */
@@ -546,7 +548,7 @@ class NumvalParserTest {
     }
 
     /**
-     * Proves a gate reports an invalid argument and throws nothing. All five pairs in
+     * A gate reports an invalid argument and throws nothing. All five pairs in
      * {@code app/cbl/COACTUPC.cbl} answer a rejected argument with {@code CONTINUE}, at L1082,
      * L1096, L1110, L1124 and L1138.
      */
@@ -580,7 +582,7 @@ class NumvalParserTest {
     }
 
     /**
-     * Proves both conversions read every negative marker as a negative value. Two source fields
+     * Both conversions read every negative marker as a negative value. Two source fields
      * hold a sign: {@code WS-TRAN-AMT-N PIC S9(9)V99} at {@code app/cbl/COTRN02C.cbl:L58}, and
      * the argument of {@code 1250-EDIT-SIGNED-9V2} at {@code app/cbl/COACTUPC.cbl:L2180}.
      */
@@ -605,7 +607,7 @@ class NumvalParserTest {
     }
 
     /**
-     * Proves both gates accept an argument of eighteen digits and reject one of nineteen. The
+     * Both gates accept an argument of eighteen digits and reject one of nineteen. The
      * widest field any call site converts is {@code WS-CARD-NUM-N PIC 9(16)} at
      * {@code app/cbl/COTRN02C.cbl:L56}, which sits below eighteen digits.
      */
@@ -634,13 +636,13 @@ class NumvalParserTest {
     }
 
     /**
-     * Proves both gates and both conversions stop at {@link NumvalParser#MAXIMUM_ARGUMENT_LENGTH}
+     * Both gates and both conversions stop at {@link NumvalParser#MAXIMUM_ARGUMENT_LENGTH}
      * characters, and that an argument at exactly that length still converts.
      *
      * <p>The ceiling is the width of the widest field a call site passes,
-     * {@code WS-EDIT-ALPHANUM-ONLY PIC X(256)} at {@code app/cbl/COACTUPC.cbl:L61}. Every other
-     * call site passes a narrower field, so no argument a COBOL program could build reaches the
-     * ceiling and no accepted value changes.
+     * {@code WS-EDIT-ALPHANUM-ONLY PIC X(256)} at {@code app/cbl/COACTUPC.cbl:L61}. An argument
+     * from that field sits at the ceiling exactly and still converts; every other call site passes
+     * a narrower field, so no argument a COBOL program builds passes the ceiling.
      */
     @Test
     void bothGatesStopAtTheWidestFieldWidthAnyCallSitePasses() {
@@ -671,7 +673,7 @@ class NumvalParserTest {
     }
 
     /**
-     * Proves {@link NumvalParser} declares four public operations and no public constructor. The
+     * {@link NumvalParser} declares four public operations and no public constructor. The
      * four cover {@code FUNCTION NUMVAL} at {@code app/cbl/COTRN02C.cbl:L204}, {@code FUNCTION
      * NUMVAL-C} at {@code app/cbl/COTRN02C.cbl:L383}, {@code FUNCTION TEST-NUMVAL} at
      * {@code app/cpy/CSUTLDPY.cpy:L126}, and {@code FUNCTION TEST-NUMVAL-C} at
@@ -705,7 +707,6 @@ class NumvalParserTest {
         }
     }
 
-    // The source census, read from app/cbl and app/cpy rather than narrated.
 
     @Test
     void everyCobolNumericFunctionCallSiteIsCounted() {
@@ -735,7 +736,7 @@ class NumvalParserTest {
     }
 
     /**
-     * Asserts that a rejection names the COBOL function and the length of the argument, and
+     * A rejection names the COBOL function and the length of the argument, and
      * nothing else.
      *
      * <p>{@code app/cbl/COACTUPC.cbl:L2201} gates a fifteen-character signed money field, and a
@@ -818,8 +819,6 @@ class NumvalParserTest {
     }
 
     /**
-     * Names every member of {@code app/cbl} or {@code app/cpy} that holds at least one call site.
-     *
      * @return the file names, without their directory
      */
     private static Set<String> callingSourceMembers() {

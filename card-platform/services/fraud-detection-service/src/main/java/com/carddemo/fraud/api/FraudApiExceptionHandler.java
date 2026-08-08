@@ -4,13 +4,20 @@ import jakarta.validation.ConstraintViolationException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpStatusCode;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.ResponseEntity.BodyBuilder;
+import org.springframework.web.ErrorResponse;
+import org.springframework.web.HttpMediaTypeException;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MissingRequestValueException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.HandlerMethodValidationException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.servlet.NoHandlerFoundException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 /**
  * Turns a failure of a fraud-assessment route into the problem document this service publishes.
@@ -33,6 +40,11 @@ import org.springframework.web.method.annotation.MethodArgumentTypeMismatchExcep
  * has something to say — the order is a property of the repository finder and not a choice a caller
  * makes. {@link FraudAssessmentController.UnsupportedSortException} holds that text, and it names the
  * parameter and the order this route applies, never a value.
+ *
+ * <p>A call the protocol refused keeps the status the framework named — {@code 404}, {@code 405},
+ * {@code 406} or {@code 415} — together with the headers that status requires, and carries
+ * {@link ApiProblem#UNSUPPORTED_REQUEST}. {@code Allow} on a {@code 405} is the header a caller reads
+ * to learn which methods a route serves.
  *
  * <p>Any other fault answers {@code 500} carrying {@link ApiProblem#ASSESSMENT_NOT_READ}. The log
  * line names the exception type and the response says nothing, which is the separation this class
@@ -61,6 +73,8 @@ public class FraudApiExceptionHandler {
 
     /** Records one line per refusal, naming no account and no transaction identifier. */
     private static final Logger log = LoggerFactory.getLogger(FraudApiExceptionHandler.class);
+    /** Causes rendered into one failure line before the chain is cut. */
+    private static final int FAILURE_TYPE_DEPTH = 3;
 
     /**
      * Answers a request value that missed the constraint declared for it.
@@ -98,6 +112,56 @@ public class FraudApiExceptionHandler {
     }
 
     /**
+     * Answers a paging parameter the collection route could not read as a page.
+     *
+     * <p>The refusal reaches this arm rather than the status its own annotation names. An
+     * {@code @ExceptionHandler} of this advice claims a failure before the framework reads a
+     * {@code @ResponseStatus} off it, and the last arm of this class claims every remaining failure
+     * with {@code 500}, so a paging refusal needs an arm of its own to answer {@code 400}.
+     *
+     * @param failure the refusal, whose text names the parameter and the bounds the route reads
+     * @return {@code 400} carrying that text
+     */
+    @ExceptionHandler(FraudAssessmentController.UnreadablePagingValueException.class)
+    public ResponseEntity<ApiProblem> onUnreadablePagingValue(
+            FraudAssessmentController.UnreadablePagingValueException failure) {
+
+        log.info("Refusing a fraud-assessment request whose paging value could not be read");
+        return problem(HttpStatus.BAD_REQUEST, ApiProblem.BAD_REQUEST, failure.getMessage());
+    }
+
+    /**
+     * Answers a call the protocol refused, at the status and with the headers the framework named.
+     *
+     * <p>Four failures reach here, each raised before a route ran: a method no route serves, a media
+     * type this service does not read, a media type it cannot write, and a path that matches no
+     * route. Each carries its own status and its own headers, and {@code Allow} on a {@code 405} is
+     * how a caller learns which methods a route does serve. Answering {@code 500} instead would
+     * record a caller's mistake as a fault of this service.
+     *
+     * <p>A {@code 406} carries no body: a caller that accepts no type this service writes cannot be
+     * sent a problem document either.
+     *
+     * @param failure the protocol refusal, read for its status and its headers
+     * @return the status the framework named, carrying that status's headers
+     */
+    @ExceptionHandler({HttpRequestMethodNotSupportedException.class, HttpMediaTypeException.class,
+            NoResourceFoundException.class, NoHandlerFoundException.class})
+    public ResponseEntity<ApiProblem> onUnsupportedRequest(ErrorResponse failure) {
+        HttpStatusCode status = failure.getStatusCode();
+        HttpStatus resolved = HttpStatus.valueOf(status.value());
+
+        log.info("Refusing a fraud-assessment call on the protocol, answering {}", status.value());
+        BodyBuilder response = ResponseEntity.status(status).headers(failure.getHeaders());
+        if (resolved == HttpStatus.NOT_ACCEPTABLE) {
+            return response.build();
+        }
+        return response.contentType(MediaType.APPLICATION_PROBLEM_JSON)
+                .body(ApiProblem.of(resolved.getReasonPhrase(), status.value(),
+                        ApiProblem.UNSUPPORTED_REQUEST));
+    }
+
+    /**
      * Answers any other fault, and records it.
      *
      * @param failure the fault, logged and otherwise read for nothing but its type
@@ -105,7 +169,7 @@ public class FraudApiExceptionHandler {
      */
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiProblem> onFault(Exception failure) {
-        log.error("A fraud-assessment read failed inside this service", failure);
+        log.error("A fraud-assessment read failed inside this service. The failure was {}. Its message is not recorded, because a message quotes the value that caused it.", failureType(failure));
         return problem(HttpStatus.INTERNAL_SERVER_ERROR, ApiProblem.INTERNAL_SERVER_ERROR,
                 ApiProblem.ASSESSMENT_NOT_READ);
     }
@@ -123,5 +187,34 @@ public class FraudApiExceptionHandler {
         return ResponseEntity.status(status)
                 .contentType(MediaType.APPLICATION_PROBLEM_JSON)
                 .body(ApiProblem.of(title, status.value(), detail));
+    }
+
+    /**
+     * Renders one failure as its type and the types of its causes, and never as its message.
+     *
+     * <p>A type is code and safe to record. An exception message is not: a constraint violation
+     * quotes the value that violated it, a query timeout quotes the statement, and a connection
+     * failure quotes the data-source URL. Passing the throwable to the logger emits both, so this
+     * method emits the half that is code and drops the half that is data.
+     *
+     * <p>The chain is bounded because a wrapped failure can nest deeply and one log line is not the
+     * place to render all of it. Three levels reach the framework wrapper, the driver exception and
+     * the cause underneath it, which is what a reader needs to tell a timeout from a constraint from
+     * a broken connection.
+     *
+     * @param failure the failure that reached this handler
+     * @return the type chain as text, never null and never a message
+     */
+    private static String failureType(Throwable failure) {
+        StringBuilder types = new StringBuilder();
+        Throwable current = failure;
+        for (int depth = 0; current != null && depth < FAILURE_TYPE_DEPTH; depth++) {
+            if (depth > 0) {
+                types.append(" caused by ");
+            }
+            types.append(current.getClass().getName());
+            current = current.getCause() == current ? null : current.getCause();
+        }
+        return types.toString();
     }
 }

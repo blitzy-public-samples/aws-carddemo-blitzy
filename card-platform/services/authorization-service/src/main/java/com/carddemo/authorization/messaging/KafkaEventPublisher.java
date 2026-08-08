@@ -5,14 +5,12 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.concurrent.ExecutionException;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.kafka.KafkaException;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Component;
 import tools.jackson.databind.JsonNode;
@@ -76,30 +74,45 @@ public class KafkaEventPublisher implements EventPublisherPort {
     private final ObjectMapper objectMapper = JsonMapper.builder().build();
 
     /**
-     * Takes the producer template and the two configured topic names.
+     * Takes the producer template and the three configured topic names.
+     *
+     * <p>The dead-letter topic belongs in this map for the same reason the other two do: the relay
+     * names an abandoned row on it, and {@link #requireBoundToTopic} refuses any event type whose
+     * destination this map does not confirm. Leaving it out would refuse every diagnostic and lose the
+     * one record of an event the relay gave up on.
      *
      * @param kafkaTemplate   the template that sends every event to the broker
      * @param authorizedTopic topic configured for the approval event, from
      *                        {@code carddemo.kafka.topics.transaction-authorized}
      * @param declinedTopic   topic configured for the decline event, from
      *                        {@code carddemo.kafka.topics.transaction-declined}
+     * @param deadLetterTopic topic configured for the terminal diagnostic of an abandoned outbox row,
+     *                        from {@code carddemo.kafka.topics.dead-letter}
      * @param publishTimeout  longest one send waits for the broker, from
      *                        {@code carddemo.outbox.relay.publish-timeout}
      */
     public KafkaEventPublisher(KafkaTemplate<String, String> kafkaTemplate,
             @Value("${carddemo.kafka.topics.transaction-authorized:}") String authorizedTopic,
             @Value("${carddemo.kafka.topics.transaction-declined:}") String declinedTopic,
+            @Value("${carddemo.kafka.topics.dead-letter:}") String deadLetterTopic,
             @Value("${carddemo.outbox.relay.publish-timeout}") Duration publishTimeout) {
         this.kafkaTemplate = kafkaTemplate;
         this.configuredTopics = Map.of(EventContracts.TRANSACTION_AUTHORIZED, authorizedTopic,
-                EventContracts.TRANSACTION_DECLINED, declinedTopic);
+                EventContracts.TRANSACTION_DECLINED, declinedTopic,
+                EventContracts.DEAD_LETTER, deadLetterTopic);
         this.publishTimeout =
                 Objects.requireNonNull(publishTimeout, "publishTimeout must be present");
     }
 
     /**
-     * Sends {@code payload} to {@code topic} unchanged, keyed on {@code aggregateId}, and waits for
-     * the broker acknowledgement.
+     * Sends {@code payload} to {@code topic} unchanged, keyed on {@code aggregateId}, and answers with
+     * the stage the broker acknowledgement completes.
+     *
+     * <p>Every check below runs before the send starts, so a payload this service must not publish is
+     * reported by throwing and never by a failed stage. Once the send has started, its outcome travels
+     * on the stage, and the caller decides how long to wait: {@code outbox/OutboxRelay} waits against
+     * one deadline shared by the whole pass, which is what keeps a batch of sends inside one pass
+     * rather than letting each of them consume the producer window in turn.
      *
      * <p>The log record names the event type, the topic and the payload length. It carries no message
      * key, no account identifier and no part of the payload.
@@ -111,7 +124,7 @@ public class KafkaEventPublisher implements EventPublisherPort {
      *         payload fails the document its event type names
      */
     @Override
-    public void publish(String topic, String aggregateId, String payload) {
+    public CompletionStage<Void> publish(String topic, String aggregateId, String payload) {
         if (topic == null || payload == null) {
             throw new IllegalArgumentException("topic and payload are both required");
         }
@@ -129,39 +142,32 @@ public class KafkaEventPublisher implements EventPublisherPort {
 
         log.debug("Publishing authorization event {} to topic {}, payload length {}", eventType,
                 topic, payload.length());
-        sendAndWait(topic, aggregateId, payload);
+        return send(topic, aggregateId, payload);
     }
 
     /**
-     * Sends one payload and waits no longer than the configured publish timeout for the broker.
+     * Starts one send and bounds the stage it answers with.
      *
-     * <p>An unbounded wait holds this thread, and with it the relay sweep that called it, for as long
-     * as the broker is unreachable, and every later event of every account waits behind it. The
-     * bounded wait turns that condition into one thrown failure the caller records against the row.
+     * <p>The bound is {@code carddemo.outbox.relay.publish-timeout}, and it is the last line rather
+     * than the first: the producer's own window closes a send inside
+     * {@code max.block.ms + delivery.timeout.ms}, and the relay's pass deadline closes it earlier
+     * still. What this bound removes is the one case neither of those covers, a stage that is never
+     * completed at all, which would leave a caller waiting on it for as long as the process runs.
      *
-     * <p>The thrown message names the topic and the bound and reads no field of the payload, so a
-     * caller that logs it records no card number and no account identifier.
+     * <p>Nothing here waits. A wait inside this method would hold the caller's thread and its
+     * database locks for a duration this class chose, and the caller is the one component that knows
+     * how much of its pass remains.
      *
      * @param topic       the destination topic
      * @param aggregateId the message key
      * @param payload     the event text
-     * @throws KafkaException when the broker does not acknowledge inside the bound, when the send
-     *         fails, or when the waiting thread is interrupted
+     * @return the stage the broker acknowledgement completes, failing with a {@code TimeoutException}
+     *         once the configured bound elapses
      */
-    private void sendAndWait(String topic, String aggregateId, String payload) {
-        try {
-            kafkaTemplate.send(topic, aggregateId, payload)
-                    .get(publishTimeout.toMillis(), TimeUnit.MILLISECONDS);
-        } catch (TimeoutException lapsed) {
-            throw new KafkaException("the broker did not acknowledge a send to topic " + topic
-                    + " within " + publishTimeout, lapsed);
-        } catch (InterruptedException interrupted) {
-            Thread.currentThread().interrupt();
-            throw new KafkaException("the wait on a send to topic " + topic + " was interrupted",
-                    interrupted);
-        } catch (ExecutionException failed) {
-            throw new KafkaException("a send to topic " + topic + " failed", failed.getCause());
-        }
+    private CompletionStage<Void> send(String topic, String aggregateId, String payload) {
+        return kafkaTemplate.send(topic, aggregateId, payload)
+                .thenApply(acknowledged -> (Void) null)
+                .orTimeout(publishTimeout.toMillis(), TimeUnit.MILLISECONDS);
     }
 
     /**

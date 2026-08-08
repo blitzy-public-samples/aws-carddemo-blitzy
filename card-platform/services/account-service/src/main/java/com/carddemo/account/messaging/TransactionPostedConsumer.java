@@ -118,6 +118,12 @@ public class TransactionPostedConsumer {
      * <p>The message key is checked against the aggregate the payload names before any side effect
      * runs. {@link #requireKeyNamesPayloadAggregate(String, TransactionPosted)} states why.
      *
+     * <p>The check runs inside the measured block rather than ahead of it, and the delivery is
+     * counted before it. A refused key is a delivery this service consumed and could not apply, so
+     * counting it anywhere else left the one record that reaches retry and then the dead-letter topic
+     * invisible on the consumed counter, the failure counter and the latency timer at once: the meters
+     * reported a quiet service while the dead-letter topic filled.
+     *
      * <p>A failure leaves the offset uncommitted and reaches the container, which decides between
      * another attempt and the dead-letter topic. The acknowledgement below is unreachable on that
      * path, so the delivery arrives again and the marker keeps the repeat harmless.
@@ -138,11 +144,11 @@ public class TransactionPostedConsumer {
 
         Objects.requireNonNull(event, "event must be present");
         Objects.requireNonNull(acknowledgment, "acknowledgment must be present");
-        requireKeyNamesPayloadAggregate(messageKey, event);
 
         meters.recordEventConsumed();
         long startedAt = System.nanoTime();
         try {
+            requireKeyNamesPayloadAggregate(messageKey, event);
             transactionTemplate.executeWithoutResult(status -> applyOneEvent(event, consumedTopic));
         } catch (RuntimeException failure) {
             meters.recordPostingFailure();

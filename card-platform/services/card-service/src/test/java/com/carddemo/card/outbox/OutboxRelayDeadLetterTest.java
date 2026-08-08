@@ -25,6 +25,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.BeforeEach;
@@ -111,7 +112,10 @@ class OutboxRelayDeadLetterTest {
         doAnswer(call -> {
             publications.add(new Publication(call.getArgument(0), call.getArgument(1),
                     call.getArgument(2)));
-            return null;
+            // The port answers the stage the acknowledgement completes, and outbox/OutboxRelay
+            // waits on it. A stub answering null would fail the relay before it ever reached the
+            // wait, which is not what any assertion here is about.
+            return CompletableFuture.completedFuture(null);
         }).when(publisher).publish(anyString(), anyString(), anyString());
 
         when(transactionTemplate.execute(any())).thenAnswer(call -> {
@@ -364,8 +368,8 @@ class OutboxRelayDeadLetterTest {
                 new CardProperties.Api(65536L),
                 new CardProperties.Kafka(new CardProperties.Kafka.Topics(TOPIC, deadLetterTopic)),
                 new CardProperties.Outbox(new CardProperties.Outbox.Relay(
-                        500L, 100, "card-relay", Duration.ofMinutes(2L)), 168L),
-                new CardProperties.ProcessedEvent(168L),
+                        500L, 100, "card-relay", Duration.ofMinutes(2L), 5_000L), 168L),
+                new CardProperties.ProcessedEvent(720L, 168L),
                 new CardProperties.Retention(3_600_000L),
                 new CardProperties.Write(3_000L));
     }

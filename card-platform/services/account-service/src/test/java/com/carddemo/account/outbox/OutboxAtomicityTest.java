@@ -95,7 +95,7 @@ class OutboxAtomicityTest extends AbstractAccountPostgresTest {
     private static final String ACCOUNT_ID = "00000000001";
 
     /**
-     * Customer of {@link #ACCOUNT_ID}. One {@code card_xref} row joins the two, seeded by
+     * Customer of {@link #ACCOUNT_ID}. One {@code account_customer_link} row joins the two, seeded by
      * {@code src/main/resources/db/migration/V4__card_cross_reference_replica.sql}.
      */
     private static final String CUSTOMER_ID = "000000001";

@@ -4,8 +4,12 @@ import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import com.carddemo.authorization.api.GlobalExceptionHandler.ApiErrorResponse;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -32,7 +36,9 @@ import org.springframework.web.filter.OncePerRequestFilter;
  * {@link JsonReadCeilingConfig} sets on the parser, so both shapes are covered.
  *
  * <p>The refusal is {@code 413} carrying one fixed text. It names no route and no value, for the
- * reason {@code config/SecurityConfig} gives for its own answers.
+ * reason {@code config/SecurityConfig} gives for its own answers. The four members it writes are the
+ * members of {@link ApiErrorResponse}, so one schema describes every refusal this service writes from
+ * a handler or from a filter.
  *
  * <p>An instance holds no mutable state, so request threads share one.
  *
@@ -42,9 +48,17 @@ import org.springframework.web.filter.OncePerRequestFilter;
 public class RequestBodyCeilingFilter extends OncePerRequestFilter {
 
     /** The one text a refusal carries. It names no route, no header and no value. */
-    static final String REFUSAL_BODY = """
-            {"status":413,"error":"Payload too large",\
-            "messages":["This request declares a body larger than this service reads."]}""";
+    static final String REFUSAL_MESSAGE =
+            "This request declares a body larger than this service reads.";
+
+    /**
+     * Renders the moment the body was built, at the shape {@link ApiErrorResponse} declares.
+     *
+     * <p>Seconds and three fraction digits are always written. {@code Instant#toString()} drops
+     * seconds when they are zero, which the published pattern refuses.
+     */
+    private static final DateTimeFormatter TIMESTAMP_SHAPE =
+            DateTimeFormatter.ofPattern("uuuu-MM-dd'T'HH:mm:ss.SSS'Z'").withZone(ZoneOffset.UTC);
 
     /** Largest body this service reads, in bytes. */
     private final long ceilingBytes;
@@ -83,9 +97,24 @@ public class RequestBodyCeilingFilter extends OncePerRequestFilter {
             response.setContentType(MediaType.APPLICATION_JSON_VALUE);
             response.setCharacterEncoding(StandardCharsets.UTF_8.name());
             response.setHeader(HttpHeaders.CONNECTION, "close");
-            response.getWriter().write(REFUSAL_BODY);
+            response.getWriter().write(refusalBody());
             return;
         }
         chain.doFilter(request, response);
+    }
+
+    /**
+     * Builds the refusal body, carrying the four members {@link ApiErrorResponse} declares.
+     *
+     * <p>The members are written by hand rather than through an object mapper, so a refusal raised
+     * before the parser ran depends on no serializer configuration.
+     *
+     * @return the body, holding no route, no header and no value read from the request
+     */
+    private static String refusalBody() {
+        return "{\"status\":" + HttpStatus.CONTENT_TOO_LARGE.value()
+                + ",\"error\":\"" + ApiErrorResponse.UNPROCESSABLE
+                + "\",\"messages\":[\"" + REFUSAL_MESSAGE
+                + "\"],\"timestamp\":\"" + TIMESTAMP_SHAPE.format(Instant.now()) + "\"}";
     }
 }

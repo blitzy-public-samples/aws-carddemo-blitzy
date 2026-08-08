@@ -597,8 +597,13 @@ class ObservabilityConfigTest {
     }
 
     /**
-     * Asserts the root logger resolves to {@code INFO} and the platform logger to {@code DEBUG}
-     * with no environment variable set. Both keys read a variable and fall back to that level.
+     * Asserts both the root logger and the platform logger resolve to {@code INFO} with no
+     * environment variable set. Both keys read a variable and fall back to that level.
+     *
+     * <p>The platform default was {@code DEBUG} and is now {@code INFO}. Compose and the
+     * manifests both set {@code INFO}, so the old default was reached only by starting a
+     * service directly, which is the path with no log policy behind it, and a {@code DEBUG}
+     * line there carries identifiers into whatever collects logs.</p>
      */
     @Test
     @DisplayName("the root and platform log levels resolve with no environment variable set")
@@ -611,7 +616,8 @@ class ObservabilityConfigTest {
                     .isEqualTo("INFO");
             assertThat(environment.getProperty(PLATFORM_LEVEL_KEY))
                     .as("%s with no environment variable set", PLATFORM_LEVEL_KEY)
-                    .isEqualTo(DEBUG_LEVEL);
+                    .isEqualTo("INFO")
+                    .isNotIn(DEBUG_LEVEL, TRACE_LEVEL);
         });
     }
 

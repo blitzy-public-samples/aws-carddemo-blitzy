@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.carddemo.authorization.api.GlobalExceptionHandler.ApiErrorResponse;
 import jakarta.servlet.FilterChain;
 import java.io.IOException;
 import org.junit.jupiter.api.DisplayName;
@@ -54,10 +55,19 @@ class RequestBodyCeilingFilterTest {
 
         assertEquals(HttpStatus.CONTENT_TOO_LARGE.value(), response.getStatus(),
                 "an oversized body reached the parser");
-        assertEquals(RequestBodyCeilingFilter.REFUSAL_BODY, response.getContentAsString(),
+        String body = response.getContentAsString();
+
+        assertTrue(body.contains("\"status\":" + HttpStatus.CONTENT_TOO_LARGE.value()),
+                "the body repeats the status of the response");
+        assertTrue(body.contains("\"error\":\"" + ApiErrorResponse.UNPROCESSABLE + "\""),
+                "the body carries one of the three phrases api/GlobalExceptionHandler declares, so "
+                        + "one schema describes every refusal this service writes");
+        assertTrue(body.contains(RequestBodyCeilingFilter.REFUSAL_MESSAGE),
                 "the refusal carries the one fixed text");
-        assertFalse(response.getContentAsString().contains("/authorizations"),
-                "the refusal names no route");
+        assertTrue(body.matches(
+                        ".*\"timestamp\":\"\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z\".*"),
+                "the body carries the fourth member at the shape the published schema declares");
+        assertFalse(body.contains("/authorizations"), "the refusal names no route");
     }
 
     @Test

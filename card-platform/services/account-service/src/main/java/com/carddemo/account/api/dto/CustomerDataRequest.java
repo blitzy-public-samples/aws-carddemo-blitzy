@@ -53,7 +53,12 @@ import jakarta.validation.constraints.Size;
  * @param customerId                 customer identifier, from
  *                                   {@code ACUP-NEW-CUST-ID-X PIC X(09)} at
  *                                   {@code app/cbl/COACTUPC.cbl:L798}, redefined as
- *                                   {@code PIC 9(09)} at {@code app/cbl/COACTUPC.cbl:L799-L800}
+ *                                   {@code PIC 9(09)} at {@code app/cbl/COACTUPC.cbl:L799-L800}.
+ *                                   Nine digits, zero padded on the left, bounded by
+ *                                   {@link #CUSTOMER_ID_PATTERN}.
+ *                                   {@code app/cbl/COACTUPC.cbl:L1222} applies no edit to it, so
+ *                                   {@code api/AccountController.updateAccount} is what refuses a
+ *                                   value of another shape
  * @param firstName                  customer first name, from
  *                                   {@code ACUP-NEW-CUST-FIRST-NAME PIC X(25)} at
  *                                   {@code app/cbl/COACTUPC.cbl:L801}. Label
@@ -203,7 +208,7 @@ import jakarta.validation.constraints.Size;
 public record CustomerDataRequest(
 
         @Size(max = CUSTOMER_ID_MAX_LENGTH)
-        @Pattern(regexp = PRINTABLE_TEXT_PATTERN, message = CONTROL_CHARACTER_MESSAGE)
+        @Pattern(regexp = CUSTOMER_ID_PATTERN, message = CUSTOMER_ID_MESSAGE)
         String customerId,
 
         @Size(max = FIRST_NAME_MAX_LENGTH)
@@ -301,6 +306,33 @@ public record CustomerDataRequest(
      * {@code ACUP-NEW-CUST-ID-X PIC X(09)} at {@code app/cbl/COACTUPC.cbl:L798}.
      */
     public static final int CUSTOMER_ID_MAX_LENGTH = 9;
+
+    /**
+     * The width and the alphabet of {@code customerId}.
+     *
+     * <p>{@code ACUP-NEW-CUST-ID-X PIC X(09)} at {@code app/cbl/COACTUPC.cbl:L798} is redefined as
+     * {@code ACUP-NEW-CUST-ID PIC 9(09)} at {@code app/cbl/COACTUPC.cbl:L799-L800}, and
+     * {@code CUST-ID PIC 9(09)} at {@code app/cpy/CVCUS01Y.cpy:L5} is the column it keys. Nine
+     * digits, and the leading zeros belong to the value, so customer one is {@code 000000001} and
+     * not {@code 1}. Table {@code customer} carries the same rule as
+     * {@code ck_customer_customer_id_digits} in
+     * {@code src/main/resources/db/migration/V1__schema.sql}.
+     *
+     * <p>{@code api/CustomerController} applies this pattern to the path variable of
+     * {@code GET /customers/{customerId}} and {@code api/AccountController.updateAccount} applies
+     * it to the value the body carries.
+     */
+    public static final String CUSTOMER_ID_PATTERN = "^[0-9]{9}$";
+
+    /**
+     * Message a caller reads when {@code customerId} is not nine digits.
+     *
+     * <p>ADDITIVE. {@code app/cbl/COACTUPC.cbl:L1222} calls the field 'actually not editable' and
+     * the program applies no edit to it, so the source emits no text for it. This text follows the
+     * spelling of the account identifier text at {@code api/AccountController.ACCOUNT_ID_MESSAGE}.
+     */
+    public static final String CUSTOMER_ID_MESSAGE =
+            "Customer Id must be a 9 digit Number, zero padded on the left";
 
     /**
      * Widest {@code firstName} this record holds, from

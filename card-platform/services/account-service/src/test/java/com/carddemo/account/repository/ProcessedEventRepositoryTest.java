@@ -185,7 +185,7 @@ class ProcessedEventRepositoryTest extends AbstractAccountPostgresTest {
 
         assertThat(declared).containsExactly(
                 "claimEvent(java.util.UUID,java.time.Instant,java.lang.String):int",
-                "deleteMarkersProcessedBefore(java.time.Instant):int",
+                "deleteMarkersProcessedBefore(java.time.Instant,int):int",
                 "existsById(com.carddemo.account.entity.ProcessedEventEntity$ProcessedEventId)"
                         + ":boolean",
                 "save(com.carddemo.account.entity.ProcessedEventEntity)"
@@ -381,12 +381,44 @@ class ProcessedEventRepositoryTest extends AbstractAccountPostgresTest {
                 new ProcessedEventEntity(NEWER_EVENT_ID, NEWER_PROCESSED_AT, POSTED_TOPIC));
         entityManager.flush();
 
-        int removed = repository.deleteMarkersProcessedBefore(PURGE_HORIZON);
+        int removed = repository.deleteMarkersProcessedBefore(PURGE_HORIZON, 500);
         entityManager.clear();
 
         assertThat(removed).isEqualTo(1);
         assertThat(markersCarrying(OLDER_EVENT_ID)).isZero();
         assertThat(markersCarrying(NEWER_EVENT_ID)).isEqualTo(1L);
+    }
+
+    @Test
+    @Transactional
+    @DisplayName("the marker purge removes at most the row ceiling it is given, oldest first")
+    void markerPurgeRemovesAtMostItsCeilingOldestFirst() {
+        repository.save(
+                new ProcessedEventEntity(OLDER_EVENT_ID, OLDER_PROCESSED_AT, POSTED_TOPIC));
+        repository.save(
+                new ProcessedEventEntity(NEWER_EVENT_ID, NEWER_PROCESSED_AT, POSTED_TOPIC));
+        entityManager.flush();
+
+        int firstBatch = repository.deleteMarkersProcessedBefore(NEWER_PROCESSED_AT.plusSeconds(1L),
+                1);
+        entityManager.clear();
+
+        assertThat(firstBatch)
+                .as("a bound of one removes one marker and leaves the other for the next batch")
+                .isEqualTo(1);
+        assertThat(markersCarrying(OLDER_EVENT_ID))
+                .as("the ordering removes the oldest marker first")
+                .isZero();
+        assertThat(markersCarrying(NEWER_EVENT_ID)).isEqualTo(1L);
+
+        int secondBatch = repository.deleteMarkersProcessedBefore(
+                NEWER_PROCESSED_AT.plusSeconds(1L), 1);
+        entityManager.clear();
+
+        assertThat(secondBatch)
+                .as("the second batch removes the remaining marker")
+                .isEqualTo(1);
+        assertThat(markersCarrying(NEWER_EVENT_ID)).isZero();
     }
 
     /**

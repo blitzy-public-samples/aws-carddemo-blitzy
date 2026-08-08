@@ -15,17 +15,13 @@ import java.util.Set;
  *
  * <p>{@code app/cbl/COACTUPC.cbl} tests the condition name once, at line 2495 in
  * paragraph {@code 1270-EDIT-US-STATE-CD}.
-
  */
 public final class UsStateCodes {
 
-    /** Literal count the copybook declares at lines 1014 through 1069. */
     private static final int DECLARED_CODE_COUNT = 56;
 
-    /** Width of the host field {@code 01 US-STATE-CODE-TO-EDIT PIC X(2).} at line 1012. */
     private static final int CODE_LENGTH = 2;
 
-    /** The 56 codes, in the order the copybook declares them. */
     private static final Set<String> VALID_STATE_CODES;
 
     static {
@@ -74,9 +70,8 @@ public final class UsStateCodes {
     }
 
     /**
-     * Returns an unmodifiable view of the 56 codes, in the order
-     * {@code app/cpy/CSLKPCDY.cpy} declares them at lines 1014 through 1069. Adding to the
-     * returned set throws {@link UnsupportedOperationException}.
+     * The 56 codes in the order {@code app/cpy/CSLKPCDY.cpy} declares them at lines 1014 through
+     * 1069. Adding to the returned set throws {@link UnsupportedOperationException}.
      *
      * @return the 56 state and territory codes in copybook declaration order
      */

@@ -35,6 +35,7 @@ import org.springframework.kafka.core.DefaultKafkaProducerFactory;
 import org.springframework.kafka.core.KafkaOperations;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.listener.ConsumerRecordRecoverer;
+import org.springframework.kafka.listener.ContainerProperties;
 import org.springframework.kafka.listener.DeadLetterPublishingRecoverer;
 import org.springframework.kafka.listener.DeadLetterPublishingRecoverer.HeaderNames.HeadersToAdd;
 import org.springframework.kafka.listener.DefaultErrorHandler;
@@ -176,7 +177,13 @@ public class KafkaConsumerConfig {
         settings.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
         settings.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class);
 
-        return new KafkaTemplate<>(new DefaultKafkaProducerFactory<>(settings));
+        KafkaTemplate<String, byte[]> template =
+                new KafkaTemplate<>(new DefaultKafkaProducerFactory<>(settings));
+        // A failed send records its destination and failure type only.
+        // SafeProducerListener displaces LoggingProducerListener, which would write the
+        // key and the first hundred characters of the payload into the log line.
+        template.setProducerListener(new SafeProducerListener<>());
+        return template;
     }
 
     /**
@@ -290,10 +297,19 @@ public class KafkaConsumerConfig {
      * the one the shipped configuration names, and a listener overrides it by placeholder, which
      * lets more than one consumer group run behind this one factory.
      *
+     * <p>The mode that configurer produced is then read back and held at
+     * {@code MANUAL_IMMEDIATE}. That is the one mode which commits the offset at the acknowledgement
+     * each of these four listeners issues after its own writes commit, and the one mode under which
+     * the framework applies {@link DefaultErrorHandler#setCommitRecovered(boolean)} to a
+     * dead-lettered record. A deployment naming {@code MANUAL} or an automatic mode would take both
+     * away without a word, so the context stops instead.
+     *
      * @param consumerFactory the auto-configured consumer factory
      * @param configurer      the auto-configured container-factory configurer
      * @param notificationConsumerErrorHandler the delivery-attempt policy and the dead-letter route
      * @return the container factory every listener of this service runs in
+     * @throws IllegalStateException when the effective acknowledgement mode is not
+     *                               {@code MANUAL_IMMEDIATE}
      */
     @Bean
     @Lazy
@@ -308,8 +324,31 @@ public class KafkaConsumerConfig {
         configurer.configure(factory, consumerFactory);
         factory.setCommonErrorHandler(notificationConsumerErrorHandler);
         factory.getContainerProperties().setDeliveryAttemptHeader(true);
+        requireImmediateManualAcknowledgement(factory.getContainerProperties().getAckMode());
 
         return factory;
+    }
+
+    /**
+     * Holds the effective acknowledgement mode at {@code MANUAL_IMMEDIATE}, naming the property that
+     * moved it when it is anything else.
+     *
+     * @param ackMode the mode the configurer left on the container properties
+     * @return the same mode, once it is the one this service supports
+     * @throws IllegalStateException when the mode is absent or names another mode
+     */
+    static ContainerProperties.AckMode requireImmediateManualAcknowledgement(
+            ContainerProperties.AckMode ackMode) {
+
+        if (ackMode != ContainerProperties.AckMode.MANUAL_IMMEDIATE) {
+            throw new IllegalStateException("The property spring.kafka.listener.ack-mode must name "
+                    + ContainerProperties.AckMode.MANUAL_IMMEDIATE
+                    + ", because that is the one mode which commits the offset at the"
+                    + " acknowledgement a listener issues after its own writes commit and the one"
+                    + " mode under which a dead-lettered record's offset is committed. The effective"
+                    + " mode is " + ackMode + ".");
+        }
+        return ackMode;
     }
 
     /**
@@ -530,9 +569,9 @@ public class KafkaConsumerConfig {
      * coordinates. One shape reaches a dead-letter topic, from every failure path, so a reader
      * parses it without inspecting it first.
      *
-     * <p>{@link #resolveDestination(ConsumerRecord, String, String)} picks the topic, and the four
-     * sanitized components come from headers this class attached. An instance holds no mutable state,
-     * so consumer threads may share one.
+     * <p>{@link #resolveDeadLetterDestination(ConsumerRecord, String, String)} picks the topic, and
+     * the four sanitized components come from headers this class attached. An instance holds no
+     * mutable state, so consumer threads may share one.
      */
     private static final class ByteValuedRecoverer extends DeadLetterPublishingRecoverer {
 
@@ -585,14 +624,22 @@ public class KafkaConsumerConfig {
         public void accept(ConsumerRecord<?, ?> failedRecord, Exception failure) {
             DeadLetterMetadata metadata = metadataOf(failure);
 
-            this.metrics.deadLettered(failureKindOf(failure)).increment();
             LOG.error("Routing one record to the dead-letter topic."
                     + " topic={} partition={} offset={} code={} culprit={} reason={} message={}",
                     failedRecord.topic(), failedRecord.partition(), failedRecord.offset(),
                     metadata.abendCode(), metadata.culprit(), metadata.reason(),
                     metadata.message());
 
+            // The count follows the publication, and the ordering is the whole point. An increment
+            // ahead of this call counted a diagnostic the broker then refused, so the series read
+            // one higher than the number of records actually on the dead-letter topic, and an
+            // operator reconciling the series against the topic found a record that was never
+            // there. The ledger and fraud recoverers already count after their delegate returns;
+            // this line makes the notification series mean the same thing. A refusal propagates
+            // from route.accept as it always did, and the ERROR line above is emitted either way,
+            // so nothing is lost when the count does not happen.
             this.route.accept(failedRecord, failure);
+            this.metrics.deadLettered(failureKindOf(failure)).increment();
         }
     }
 }

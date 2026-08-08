@@ -63,13 +63,44 @@ final class OpenApiContractTest {
         List<Map<String, Object>> parameters =
                 asList(asMap(asMap(paths().get("/fraud-assessments")).get("get")),
                         "parameters");
-        assertEquals(List.of("accountId", "page", "size"),
-                parameters.stream().map(parameter -> parameter.get("name")).toList());
+        assertEquals(List.of("accountId", "page", "size", "sort"),
+                parameters.stream().map(parameter -> parameter.get("name")).toList(),
+                "the document names every parameter the one handler reads, sort included");
         assertEquals(Boolean.TRUE, parameters.get(0).get("required"));
         assertEquals("^[0-9]{11}$",
                 asMap(parameters.get(0).get("schema")).get("pattern"));
-        assertEquals(0, asMap(parameters.get(1).get("schema")).get("minimum"));
-        assertEquals(1, asMap(parameters.get(2).get("schema")).get("minimum"));
+
+        for (int at = 1; at < parameters.size(); at++) {
+            Map<String, Object> parameter = parameters.get(at);
+            assertEquals(Boolean.FALSE, parameter.get("required"),
+                    parameter.get("name") + " is optional");
+            assertEquals("string", asMap(parameter.get("schema")).get("type"),
+                    parameter.get("name") + " travels as text, so a present-empty value is a value "
+                            + "the caller sent and not an omitted parameter");
+            assertFalse(asMap(parameter.get("schema")).containsKey("default"),
+                    parameter.get("name") + " declares no schema default, which would describe a "
+                            + "present-empty value as taking one");
+        }
+        assertEquals("^[0-9]{1,7}$", asMap(parameters.get(1).get("schema")).get("pattern"),
+                "the published page shape admits the numbers the handler reads");
+        assertEquals("^[0-9]{1,3}$", asMap(parameters.get(2).get("schema")).get("pattern"),
+                "the published size shape admits the numbers the handler reads");
+    }
+
+    @Test
+    void everyReadMappingOfTheControllerIsDescribedByAnOperation() {
+        long conditionalMappings = java.util.Arrays.stream(
+                        FraudAssessmentController.class.getDeclaredMethods())
+                .map(method -> method.getAnnotation(
+                        org.springframework.web.bind.annotation.GetMapping.class))
+                .filter(java.util.Objects::nonNull)
+                .filter(mapping -> mapping.params().length > 0)
+                .count();
+
+        assertEquals(0, conditionalMappings,
+                "a mapping selected by a query parameter answers requests no operation of this "
+                        + "document describes");
+        assertEquals(2, operationIds().size(), "one operation per read mapping");
     }
 
     @Test
@@ -87,9 +118,9 @@ final class OpenApiContractTest {
 
     @Test
     void responseStatusSetsMatchTheDeliveredSurface() {
-        assertEquals(Set.of("200", "400", "401", "403", "500"),
+        assertEquals(Set.of("200", "400", "401", "403", "405", "406", "429", "500"),
                 responseKeys("/fraud-assessments"));
-        assertEquals(Set.of("200", "400", "401", "403", "404", "500"),
+        assertEquals(Set.of("200", "400", "401", "403", "404", "405", "406", "429", "500"),
                 responseKeys("/fraud-assessments/{transactionId}"));
     }
 

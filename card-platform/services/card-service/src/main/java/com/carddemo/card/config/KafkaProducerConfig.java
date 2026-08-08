@@ -123,6 +123,11 @@ public class KafkaProducerConfig {
     @Bean
     public KafkaTemplate<String, String> cardEventKafkaTemplate(
             ProducerFactory<String, String> producerFactory) {
-        return new KafkaTemplate<>(producerFactory);
+        KafkaTemplate<String, String> template = new KafkaTemplate<>(producerFactory);
+        // A failed send records its destination and failure type only.
+        // SafeProducerListener displaces LoggingProducerListener, which would write the
+        // key and the first hundred characters of the payload into the log line.
+        template.setProducerListener(new SafeProducerListener<>());
+        return template;
     }
 }

@@ -49,7 +49,10 @@ import static org.mockito.Mockito.when;
 class RetentionSweepTest {
 
     /** Marker horizon the shipped configuration names, in hours. */
-    private static final int MARKER_RETENTION_HOURS = 168;
+    private static final int MARKER_RETENTION_HOURS = 720;
+
+    /** Broker log retention the shipped configuration names, which the marker horizon outlasts. */
+    private static final int BROKER_RETENTION_HOURS = 168;
 
     /** Read-model horizon the shipped configuration names, in days. */
     private static final int STATEMENT_RETENTION_DAYS = 400;
@@ -86,13 +89,14 @@ class RetentionSweepTest {
                     .thenReturn(4);
             when(statementTransactions.deleteProcessedBefore(Mockito.anyString(), Mockito.anyInt()))
                     .thenReturn(11);
-            when(notificationLog.deleteAttemptsBefore(Mockito.any())).thenReturn(2);
+            when(notificationLog.deleteRenderedBefore(Mockito.any(), Mockito.anyInt()))
+                    .thenReturn(2);
 
             sweep.sweepExpiredRows();
 
             verify(processedEvents).deleteMarkersProcessedBefore(Mockito.any(), Mockito.anyInt());
             verify(statementTransactions).deleteProcessedBefore(Mockito.anyString(), Mockito.anyInt());
-            verify(notificationLog).deleteAttemptsBefore(Mockito.any());
+            verify(notificationLog).deleteRenderedBefore(Mockito.any(), Mockito.anyInt());
             assertThat(transactions.opened())
                     .as("transactions opened, one per delete")
                     .isEqualTo(3);
@@ -118,8 +122,8 @@ class RetentionSweepTest {
             assertThat(annotationNamesOn("sweepReadModelRows"))
                     .as("annotations on sweepReadModelRows")
                     .doesNotContain("Transactional");
-            assertThat(annotationNamesOn("sweepAttemptRows"))
-                    .as("annotations on sweepAttemptRows")
+            assertThat(annotationNamesOn("sweepRenderedAlertRows"))
+                    .as("annotations on sweepRenderedAlertRows")
                     .doesNotContain("Transactional");
         }
 
@@ -159,9 +163,9 @@ class RetentionSweepTest {
         void measuresTheAttemptHorizonBackByTheConfiguredDays() {
             ArgumentCaptor<Instant> horizon = ArgumentCaptor.forClass(Instant.class);
 
-            sweep.sweepAttemptRows();
+            sweep.sweepRenderedAlertRows();
 
-            verify(notificationLog).deleteAttemptsBefore(horizon.capture());
+            verify(notificationLog).deleteRenderedBefore(horizon.capture(), Mockito.anyInt());
             assertThat(horizon.getValue())
                     .as("the attempt horizon, %d days back", LOG_RETENTION_DAYS)
                     .isCloseTo(Instant.now().minus(Duration.ofDays(LOG_RETENTION_DAYS)),
@@ -213,7 +217,7 @@ class RetentionSweepTest {
                     .doesNotThrowAnyException();
 
             verify(statementTransactions).deleteProcessedBefore(Mockito.anyString(), Mockito.anyInt());
-            verify(notificationLog).deleteAttemptsBefore(Mockito.any());
+            verify(notificationLog).deleteRenderedBefore(Mockito.any(), Mockito.anyInt());
         }
 
         /**
@@ -223,10 +227,10 @@ class RetentionSweepTest {
         @Test
         @DisplayName("lets a fault that is not a data-access fault leave the method")
         void letsAFaultThatIsNotADataAccessFaultLeaveTheMethod() {
-            when(notificationLog.deleteAttemptsBefore(Mockito.any()))
+            when(notificationLog.deleteRenderedBefore(Mockito.any(), Mockito.anyInt()))
                     .thenThrow(new IllegalStateException("the entity manager is closed"));
 
-            assertThatThrownBy(sweep::sweepAttemptRows)
+            assertThatThrownBy(sweep::sweepRenderedAlertRows)
                     .isInstanceOf(IllegalStateException.class);
         }
     }
@@ -242,8 +246,115 @@ class RetentionSweepTest {
 
             verify(processedEvents).deleteMarkersProcessedBefore(Mockito.any(), Mockito.anyInt());
             verify(statementTransactions).deleteProcessedBefore(Mockito.anyString(), Mockito.anyInt());
-            verify(notificationLog).deleteAttemptsBefore(Mockito.any());
+            verify(notificationLog).deleteRenderedBefore(Mockito.any(), Mockito.anyInt());
             verifyNoMoreInteractions(processedEvents, statementTransactions, notificationLog);
+        }
+    }
+
+    @Nested
+    @DisplayName("The bounded drain")
+    class BoundedDrain {
+
+        @Test
+        @DisplayName("asks for no more than the batch ceiling in one statement")
+        void asksForNoMoreThanTheBatchCeilingInOneStatement() {
+            ArgumentCaptor<Integer> markerLimit = ArgumentCaptor.forClass(Integer.class);
+            ArgumentCaptor<Integer> rowLimit = ArgumentCaptor.forClass(Integer.class);
+            ArgumentCaptor<Integer> attemptLimit = ArgumentCaptor.forClass(Integer.class);
+
+            sweep.sweepExpiredRows();
+
+            verify(processedEvents)
+                    .deleteMarkersProcessedBefore(Mockito.any(), markerLimit.capture());
+            verify(statementTransactions)
+                    .deleteProcessedBefore(Mockito.anyString(), rowLimit.capture());
+            verify(notificationLog).deleteRenderedBefore(Mockito.any(), attemptLimit.capture());
+
+            assertThat(markerLimit.getValue()).isEqualTo(RetentionSweep.PURGE_BATCH_SIZE);
+            assertThat(rowLimit.getValue()).isEqualTo(RetentionSweep.PURGE_BATCH_SIZE);
+            assertThat(attemptLimit.getValue()).isEqualTo(RetentionSweep.PURGE_BATCH_SIZE);
+        }
+
+        /**
+         * The defect this test exists to prevent. A bound without a drain leaves the surplus behind
+         * on every pass as soon as rows arrive faster than one batch a pass, so the table grows
+         * without limit even though every statement against it was short. A full batch means more
+         * rows remain, so the sweep has to come back for them inside the same pass.
+         */
+        @Test
+        @DisplayName("takes further batches while a table keeps answering a full one")
+        void takesFurtherBatchesWhileATableKeepsAnsweringAFullOne() {
+            when(notificationLog.deleteRenderedBefore(Mockito.any(), Mockito.anyInt()))
+                    .thenReturn(RetentionSweep.PURGE_BATCH_SIZE, RetentionSweep.PURGE_BATCH_SIZE, 7);
+
+            sweep.sweepRenderedAlertRows();
+
+            verify(notificationLog, Mockito.times(3))
+                    .deleteRenderedBefore(Mockito.any(), Mockito.anyInt());
+            assertThat(transactions.opened())
+                    .as("transactions opened, one per batch")
+                    .isEqualTo(3);
+        }
+
+        @Test
+        @DisplayName("stops at the first short batch rather than issuing one that removes nothing")
+        void stopsAtTheFirstShortBatchRatherThanIssuingOneThatRemovesNothing() {
+            when(notificationLog.deleteRenderedBefore(Mockito.any(), Mockito.anyInt()))
+                    .thenReturn(RetentionSweep.PURGE_BATCH_SIZE - 1);
+
+            sweep.sweepRenderedAlertRows();
+
+            verify(notificationLog, Mockito.times(1))
+                    .deleteRenderedBefore(Mockito.any(), Mockito.anyInt());
+        }
+
+        /**
+         * A backlog no drain can clear must not hold the scheduled thread for as long as the backlog
+         * takes to remove, because the two tables swept after this one would then never be reached.
+         * An exhausted ceiling is a deliberate return, not a failure: the remainder is removed on the
+         * next pass.
+         */
+        @Test
+        @DisplayName("returns at its wall-clock ceiling when a table never answers a short batch")
+        void returnsAtItsWallClockCeilingWhenATableNeverAnswersAShortBatch() {
+            RetentionSweep ceilinged = new RetentionSweep(statementTransactions, notificationLog,
+                    processedEvents, shippedProperties(), transactions, Duration.ZERO);
+            when(notificationLog.deleteRenderedBefore(Mockito.any(), Mockito.anyInt()))
+                    .thenReturn(RetentionSweep.PURGE_BATCH_SIZE);
+
+            assertThatCode(ceilinged::sweepRenderedAlertRows)
+                    .as("a drain against an inexhaustible backlog")
+                    .doesNotThrowAnyException();
+
+            verify(notificationLog, Mockito.times(1))
+                    .deleteRenderedBefore(Mockito.any(), Mockito.anyInt());
+        }
+
+        @Test
+        @DisplayName("keeps what earlier batches removed when a later one fails, and sweeps on")
+        void keepsWhatEarlierBatchesRemovedWhenALaterOneFailsAndSweepsOn() {
+            when(processedEvents.deleteMarkersProcessedBefore(Mockito.any(), Mockito.anyInt()))
+                    .thenReturn(RetentionSweep.PURGE_BATCH_SIZE)
+                    .thenThrow(new InvalidDataAccessApiUsageException("no permission"));
+
+            assertThatCode(sweep::sweepExpiredRows)
+                    .as("a pass whose first table fails on its second batch")
+                    .doesNotThrowAnyException();
+
+            verify(processedEvents, Mockito.times(2))
+                    .deleteMarkersProcessedBefore(Mockito.any(), Mockito.anyInt());
+            verify(statementTransactions)
+                    .deleteProcessedBefore(Mockito.anyString(), Mockito.anyInt());
+            verify(notificationLog).deleteRenderedBefore(Mockito.any(), Mockito.anyInt());
+        }
+
+        @Test
+        @DisplayName("carries a ceiling in production that is finite")
+        void carriesACeilingInProductionThatIsFinite() {
+            assertThat(RetentionSweep.MAX_TABLE_DURATION)
+                    .as("the production drain ceiling for one table")
+                    .isPositive()
+                    .isLessThanOrEqualTo(Duration.ofMinutes(1));
         }
     }
 
@@ -259,9 +370,10 @@ class RetentionSweepTest {
                                 "customer.context-changed", "carddemo.dead-letter", ".DLT")),
                 new NotificationProperties.Consumer(
                         new NotificationProperties.Consumer.Retry(3, 1000L)),
-                new NotificationProperties.ProcessedEvent(MARKER_RETENTION_HOURS),
+                new NotificationProperties.ProcessedEvent(MARKER_RETENTION_HOURS,
+                        BROKER_RETENTION_HOURS),
                 new NotificationProperties.History(STATEMENT_RETENTION_DAYS, LOG_RETENTION_DAYS,
-                        3_600_000L, 50, 200));
+                        3_600_000L));
     }
 
     /** The simple names of the annotations one declared method of the sweep carries. */

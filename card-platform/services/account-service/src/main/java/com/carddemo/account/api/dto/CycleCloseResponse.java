@@ -31,20 +31,18 @@ import tools.jackson.databind.ser.std.ToStringSerializer;
  *
  * @param accountId          the eleven-digit identifier of the account whose billing cycle closed,
  *                           carried as text. {@code ACCT-ID PIC 9(11)} at
- *                           {@code app/cpy/CVACT01Y.cpy:L5} is numeric display, so row 1 of
- *                           {@code app/data/ASCII/acctdata.txt} holds {@code 00000000001} at
- *                           columns 1 through 11. Text keeps those ten leading zeros through
- *                           serialization.
+ *                           {@code app/cpy/CVACT01Y.cpy:L5} is numeric display and occupies columns
+ *                           1 through 11 of {@code app/data/ASCII/acctdata.txt}, so a value there
+ *                           is eleven characters wide however few of them are significant. Text
+ *                           keeps every leading zero through serialization.
  * @param currentCycleCredit the billing-cycle credit accumulator, zero once the operation succeeds.
  *                           {@code ACCT-CURR-CYC-CREDIT PIC S9(10)V99} at
  *                           {@code app/cpy/CVACT01Y.cpy:L13} holds twelve digits at scale 2, and
- *                           {@code app/cbl/CBACT04C.cbl:L353} moves zero into it. The component
- *                           name matches the field of {@code entity/AccountEntity}.
+ *                           {@code app/cbl/CBACT04C.cbl:L353} moves zero into it.
  * @param currentCycleDebit  the billing-cycle debit accumulator, zero once the operation succeeds.
  *                           {@code ACCT-CURR-CYC-DEBIT PIC S9(10)V99} at
  *                           {@code app/cpy/CVACT01Y.cpy:L14} holds twelve digits at scale 2, and
- *                           {@code app/cbl/CBACT04C.cbl:L354} moves zero into it. The component
- *                           name matches the field of {@code entity/AccountEntity}.
+ *                           {@code app/cbl/CBACT04C.cbl:L354} moves zero into it.
  */
 public record CycleCloseResponse(String accountId,
         @JsonSerialize(using = ToStringSerializer.class) BigDecimal currentCycleCredit,
@@ -112,11 +110,6 @@ public record CycleCloseResponse(String accountId,
         }
     }
     /**
-     * Stores one accumulator at its declared scale and checks the shape it serializes as.
-     *
-     * <p>No message this method raises carries the component value: a refusal reports the stored
-     * width, precision and scale.</p>
-     *
      * @param value     the accumulator as the caller supplied it, at any scale
      * @param scale     the scale the source field declares, from {@link PicClause}
      * @param component the component name a refusal reports
@@ -141,13 +134,6 @@ public record CycleCloseResponse(String accountId,
     }
 
     /**
-     * Names all three components and withholds every value.
-     *
-     * <p>This override replaces the representation the compiler generates for a record. That
-     * generated form prints the account identifier and both cycle accumulators.
-     *
-     * <p>Each appears as {@link EventEnvelope#WITHHELD}, the platform-wide redaction marker.
-     *
      * @return a rendering that names all three components and discloses none, never {@code null}
      */
     @Override

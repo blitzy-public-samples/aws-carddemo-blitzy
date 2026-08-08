@@ -47,29 +47,15 @@ import tools.jackson.databind.ObjectMapper;
  * {@code :L826-L834} and builds one miss text at {@code :L846-L856}. These tests assert the shape
  * of each answer: which properties arrive, in what order, and in what form.
  *
- * <p>The dispatcher is built over the controller and the real {@link AccountApiExceptionHandler}.
- * Request mapping, path-variable binding, method validation and serialization are all the running
- * ones. No application context, no database, no broker and no container takes part. One command
- * runs this class on a clean machine.
+ * <p>The dispatcher is built over the controller and the real {@link AccountApiExceptionHandler}, so
+ * mapping, path-variable binding, method validation and serialization are the running ones. No
+ * application context, database, broker or container takes part.
  *
- * <p>Each test supplies one stored row, built inline, every value at the width its Picture clause
- * declares. Nothing here re-tests a stored column value, a column type or a field edit.
- * {@code repository/CustomerRepositoryTest}, {@code repository/SchemaColumnTypeTest} and
- * {@code domain/validation/} own those three.
- *
- * <p>Rationale for the two deviations asserted here, the two omitted identity documents and the
- * resolution by customer identifier alone against the three hops {@code 9000-READ-ACCT} performs at
- * {@code app/cbl/COACTVWC.cbl:L687-L720}: {@code card-platform/docs/decision-log.md}.
- *
- * <p>Three flagged findings sit around the paragraph this route reproduces. The guard at
- * {@code app/cbl/COACTVWC.cbl:L713} has its only setter commented out at {@code :L842}, and the two
- * sibling guards at {@code :L696} and {@code :L792} sit in the same state. The response and reason
- * moves at {@code :L843-L844} sit outside the message guard at {@code :L845}, where {@code :L744}
- * and {@code :L793} keep theirs inside it. Both records live in
- * {@code card-platform/docs/business-rule-flags.md}.
- *
- * <p>Field mapping from {@code app/cpy/CVCUS01Y.cpy} to each property:
- * {@code card-platform/docs/traceability-matrix.md}.
+ * <p>The Social Security Number and the government-issued identifier are withheld from every
+ * answer, and these tests hold that. Rationale for the two omissions and for resolution by customer
+ * identifier alone: {@code card-platform/docs/decision-log.md}. Flagged findings around the source
+ * paragraph: {@code card-platform/docs/business-rule-flags.md}. Field mapping from
+ * {@code app/cpy/CVCUS01Y.cpy}: {@code card-platform/docs/traceability-matrix.md}.
  */
 @DisplayName("the customer read surface")
 class CustomerControllerTest {
@@ -204,13 +190,11 @@ class CustomerControllerTest {
      */
     private static final BigDecimal STORED_CREDIT_SCORE = new BigDecimal("274");
 
-    /** Reads each answer back off the wire. */
     private static final ObjectMapper JSON = new ObjectMapper();
 
     private CustomerRepository customers;
     private MockMvc mockMvc;
 
-    /** Builds the dispatcher over a stubbed store and the real error handler. */
     @BeforeEach
     void buildSlice() {
         customers = mock(CustomerRepository.class);
@@ -244,7 +228,7 @@ class CustomerControllerTest {
     class TheSixteenCustomerViewProperties {
 
         /**
-         * Asserts a read answers exactly sixteen properties and no seventeenth.
+         * A read answers exactly sixteen properties and no seventeenth.
          *
          * <p>The customer block moves sixteen values a caller reads, at
          * {@code app/cbl/COACTVWC.cbl:L494} and {@code :L505-L522}.
@@ -266,7 +250,7 @@ class CustomerControllerTest {
         }
 
         /**
-         * Asserts the sixteen properties arrive in the order the source block moves them.
+         * The sixteen properties arrive in the order the source block moves them.
          *
          * <p>The order runs from {@code app/cbl/COACTVWC.cbl:L494} to {@code :L522}. Each name is
          * located in the raw answer, and the positions strictly increase.
@@ -287,7 +271,7 @@ class CustomerControllerTest {
         }
 
         /**
-         * Asserts the third address line arrives as the city.
+         * The third address line arrives as the city.
          *
          * <p>{@code CUST-ADDR-LINE-3 PIC X(50)} at {@code app/cpy/CVCUS01Y.cpy:L11} is moved to the
          * city output field {@code ACSCITYO} at {@code app/cbl/COACTVWC.cbl:L513}. The account
@@ -315,7 +299,7 @@ class CustomerControllerTest {
         }
 
         /**
-         * Asserts the date of birth arrives as ten characters of text.
+         * The date of birth arrives as ten characters of text.
          *
          * <p>{@code CUST-DOB-YYYY-MM-DD PIC X(10)} at {@code app/cpy/CVCUS01Y.cpy:L19} is moved
          * whole at {@code app/cbl/COACTVWC.cbl:L507}. The text keeps the year, month and day order
@@ -337,7 +321,7 @@ class CustomerControllerTest {
         }
 
         /**
-         * Asserts the credit score arrives as a whole number.
+         * The credit score arrives as a whole number.
          *
          * <p>{@code CUST-FICO-CREDIT-SCORE PIC 9(03)} at {@code app/cpy/CVCUS01Y.cpy:L22} holds
          * three digits and no fraction, and {@code app/cbl/COACTVWC.cbl:L505-L506} moves it as a
@@ -359,7 +343,7 @@ class CustomerControllerTest {
         }
 
         /**
-         * Asserts a row carrying no credit score answers a property carrying none.
+         * A row carrying no credit score answers a property carrying none.
          *
          * <p>Sixteen properties arrive whatever the row holds, so a reader counts the same
          * sixteen the block moves at {@code app/cbl/COACTVWC.cbl:L494-L522} on every answer.
@@ -380,7 +364,7 @@ class CustomerControllerTest {
         }
 
         /**
-         * Asserts each of the fifteen text properties arrives as the row holds it.
+         * Each of the fifteen text properties arrives as the row holds it.
          *
          * <p>The fifteen values are moved at {@code app/cbl/COACTVWC.cbl:L494},
          * {@code :L507-L518} and {@code :L520-L522}. Trailing spaces belong to the stored value, so
@@ -407,7 +391,7 @@ class CustomerControllerTest {
     class TheTwoOmittedIdentityDocuments {
 
         /**
-         * Asserts the view declares neither identity document.
+         * The view declares neither identity document.
          *
          * <p>{@code 01 CUSTOMER-RECORD} declares eighteen fields at
          * {@code app/cpy/CVCUS01Y.cpy:L5-L22} and a 168-character filler at {@code :L23}. Eighteen
@@ -426,7 +410,7 @@ class CustomerControllerTest {
         }
 
         /**
-         * Asserts neither stored value and neither name reaches a read answer.
+         * Neither stored value and neither name reaches a read answer.
          *
          * <p>The source displays both. {@code CUST-SSN} at {@code app/cpy/CVCUS01Y.cpy:L17} reaches
          * a screen through the hyphenating {@code STRING} at
@@ -451,7 +435,7 @@ class CustomerControllerTest {
         }
 
         /**
-         * Asserts the property that follows the two telephone numbers is the transfer identifier.
+         * The property that follows the two telephone numbers is the transfer identifier.
          *
          * <p>{@code CUST-GOVT-ISSUED-ID} is moved at {@code app/cbl/COACTVWC.cbl:L519}, between the
          * second telephone number at {@code :L518} and the electronic funds transfer identifier at
@@ -474,7 +458,7 @@ class CustomerControllerTest {
     class TheSingleMessageSlot {
 
         /**
-         * Asserts a read that missed answers the text the source builds, byte for byte.
+         * A read that missed answers the text the source builds, byte for byte.
          *
          * <p>{@code app/cbl/COACTVWC.cbl:L846-L856} concatenates four literals around the
          * identifier, a response code and a reason code. The spacing and the spelling of each
@@ -514,7 +498,7 @@ class CustomerControllerTest {
         }
 
         /**
-         * Asserts the four literals the controller holds carry the bytes of the source.
+         * The four literals the controller holds carry the bytes of the source.
          *
          * <p>Each constant is compared against the literal read from
          * {@code app/cbl/COACTVWC.cbl}, so a change on either side fails here.
@@ -536,7 +520,7 @@ class CustomerControllerTest {
         }
 
         /**
-         * Asserts a miss answer carries one text, no list of field texts and no stack trace.
+         * A miss answer carries one text, no list of field texts and no stack trace.
          *
          * <p>The guard at {@code app/cbl/COACTVWC.cbl:L845} lets one text stand per read, so one
          * text is the whole answer.
@@ -560,7 +544,7 @@ class CustomerControllerTest {
         }
 
         /**
-         * Asserts no answer carries card data and no answer carries a card verification value.
+         * No answer carries card data and no answer carries a card verification value.
          *
          * <p>{@code 01 CUSTOMER-RECORD} at {@code app/cpy/CVCUS01Y.cpy:L4-L23} declares neither.
          * The one name in it that mentions a card is the flag at {@code :L21}, moved at
@@ -600,7 +584,7 @@ class CustomerControllerTest {
     class TheResolutionPath {
 
         /**
-         * Asserts a read resolves by customer identifier alone.
+         * A read resolves by customer identifier alone.
          *
          * <p>{@code 9000-READ-ACCT} at {@code app/cbl/COACTVWC.cbl:L687-L720} performs three hops:
          * the cross-reference read at {@code :L723}, which lands {@code XREF-CUST-ID} at
@@ -627,7 +611,7 @@ class CustomerControllerTest {
         }
 
         /**
-         * Asserts the route reaches no cross-reference store.
+         * The route reaches no cross-reference store.
          *
          * <p>The first hop of {@code 9000-READ-ACCT} reads the cross-reference file at
          * {@code app/cbl/COACTVWC.cbl:L723} through its alternate index. The authorization service
@@ -646,7 +630,7 @@ class CustomerControllerTest {
         }
 
         /**
-         * Asserts a path of the wrong width is refused before the store is read.
+         * A path of the wrong width is refused before the store is read.
          *
          * <p>{@code CUST-ID PIC 9(09)} at {@code app/cpy/CVCUS01Y.cpy:L5} fixes the width, and
          * {@code MOVE CDEMO-CUST-ID TO WS-CARD-RID-CUST-ID} at {@code app/cbl/COACTVWC.cbl:L708}
@@ -663,7 +647,7 @@ class CustomerControllerTest {
         }
 
         /**
-         * Asserts the path pattern pins nine digits.
+         * The path pattern pins nine digits.
          *
          * <p>{@code WS-CARD-RID-CUST-ID-X PIC X(09)} at {@code app/cbl/COACTVWC.cbl:L76-L77} keys
          * the read as nine characters of text, so a shorter value matches no row.
@@ -688,7 +672,7 @@ class CustomerControllerTest {
     class PublicationBehaviour {
 
         /**
-         * Asserts no declared field of the controller could publish an event.
+         * No declared field of the controller could publish an event.
          *
          * <p>A read is a supporting query, so no outbox row and no event follows one.
          * {@code app/cbl/COACTVWC.cbl} carries three {@code EXEC CICS READ} operations and no
@@ -708,7 +692,7 @@ class CustomerControllerTest {
         }
 
         /**
-         * Asserts a read writes through no store.
+         * A read writes through no store.
          *
          * <p>The keyed read of {@code 9400-GETCUSTDATA-BYCUST} at
          * {@code app/cbl/COACTVWC.cbl:L826-L834} is the whole paragraph, and it changes nothing a
@@ -766,8 +750,6 @@ class CustomerControllerTest {
     }
 
     /**
-     * Names the record components of one type, in declaration order.
-     *
      * @param type the record type
      * @return the component names, in the order the record declares them
      */
@@ -776,8 +758,6 @@ class CustomerControllerTest {
     }
 
     /**
-     * Names the types of the collaborators one class holds, leaving its constants out.
-     *
      * @param type the class to inspect
      * @return the type names of its instance fields, in declaration order
      */

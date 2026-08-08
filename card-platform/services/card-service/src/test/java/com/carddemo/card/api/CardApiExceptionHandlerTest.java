@@ -3,8 +3,13 @@ package com.carddemo.card.api;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.LoggerContext;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.carddemo.card.api.dto.ApiErrorResponse;
 import com.carddemo.card.api.dto.CardValidationMessages;
 import com.carddemo.card.domain.CardQueryService;
@@ -22,11 +27,13 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.core.MethodParameter;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.mock.web.MockHttpServletRequest;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
@@ -87,9 +94,9 @@ class CardApiExceptionHandlerTest {
         return requestOn(CardController.COLLECTION_ROUTE);
     }
 
-    /** @return a request the dispatcher matched to the card read below the collection */
-    private static MockHttpServletRequest onTheDetailRoute() {
-        return requestOn(CardController.DETAIL_ROUTE);
+    /** @return a request the dispatcher matched to the card-numbered route below the collection */
+    private static MockHttpServletRequest onTheCardRoute() {
+        return requestOn(CardController.CARD_ROUTE);
     }
 
     /** A value that missed its constraint. */
@@ -298,7 +305,7 @@ class CardApiExceptionHandlerTest {
                     new HttpMessageNotReadableException(
                             "Unexpected character at [Source: {\"cardNumber\":\"" + CARD_NUMBER
                                     + "\"}; line: 1]", (org.springframework.http.HttpInputMessage) null),
-                    onTheDetailRoute());
+                    onTheCardRoute());
 
             assertEquals(HttpStatus.BAD_REQUEST, response.getStatusCode(), "400");
             assertEquals(CardApiExceptionHandler.UNREADABLE_BODY_MESSAGE,
@@ -311,6 +318,66 @@ class CardApiExceptionHandlerTest {
     }
 
     /** Any other fault. */
+    /** A call the protocol refused. */
+    @Nested
+    @DisplayName("a call the protocol refused")
+    class ProtocolRefusals {
+
+        /**
+         * Asserts a method a route does not serve answers 405 carrying the Allow header.
+         *
+         * <p>The catch-all arm claimed this checked exception before the protocol arm existed, so a
+         * caller sending a write method to a read route read {@code 500} and the fixed fault text. A
+         * client cannot tell that answer from a real fault and may retry a call that cannot succeed.
+         * {@code Allow} is the header that names the methods the route does serve.
+         */
+        @Test
+        void aMethodTheRouteDoesNotServeAnswersFourOhFiveWithAllow() {
+            ResponseEntity<ApiErrorResponse> response = handler.onUnsupportedRequest(
+                    new HttpRequestMethodNotSupportedException("DELETE",
+                            java.util.List.of("GET", "PUT")),
+                    onTheCollection());
+
+            assertEquals(HttpStatus.METHOD_NOT_ALLOWED, response.getStatusCode(),
+                    "a method the route does not serve answers 405");
+            assertEquals(java.util.List.of("GET", "PUT"), response.getHeaders().getAllow().stream()
+                    .map(HttpMethod::name).toList(),
+                    "the answer names the methods the route does serve");
+            assertEquals(CardApiExceptionHandler.UNSUPPORTED_REQUEST_MESSAGE,
+                    response.getBody().message(), "one fixed text answers");
+            assertEquals(CardController.COLLECTION_ROUTE, response.getBody().route(),
+                    "the body carries a route template");
+        }
+
+        /** Asserts a media type the route does not read answers 415 rather than 500. */
+        @Test
+        void aMediaTypeTheRouteDoesNotReadAnswersFourFifteen() {
+            ResponseEntity<ApiErrorResponse> response = handler.onUnsupportedRequest(
+                    new org.springframework.web.HttpMediaTypeNotSupportedException(
+                            MediaType.TEXT_PLAIN, java.util.List.of(MediaType.APPLICATION_JSON)),
+                    onTheCardRoute());
+
+            assertEquals(HttpStatus.UNSUPPORTED_MEDIA_TYPE, response.getStatusCode(),
+                    "a media type the route does not read answers 415");
+            assertEquals(CardApiExceptionHandler.UNSUPPORTED_REQUEST_MESSAGE,
+                    response.getBody().message(), "one fixed text answers");
+        }
+
+        /** Asserts a caller accepting nothing this service writes is sent no body. */
+        @Test
+        void aMediaTypeTheRouteCannotWriteAnswersFourOhSixWithNoBody() {
+            ResponseEntity<ApiErrorResponse> response = handler.onUnsupportedRequest(
+                    new org.springframework.web.HttpMediaTypeNotAcceptableException(
+                            java.util.List.of(MediaType.APPLICATION_JSON)),
+                    onTheCollection());
+
+            assertEquals(HttpStatus.NOT_ACCEPTABLE, response.getStatusCode(),
+                    "a media type the route cannot write answers 406");
+            assertNull(response.getBody(),
+                    "a caller accepting nothing this service writes is sent no body");
+        }
+    }
+
     @Nested
     @DisplayName("any other fault")
     class OtherFaults {
@@ -343,7 +410,7 @@ class CardApiExceptionHandlerTest {
                             .getBody().route(),
                     handler.onUnreadableBody(new HttpMessageNotReadableException("x",
                             (org.springframework.http.HttpInputMessage) null),
-                            onTheDetailRoute()).getBody().route(),
+                            onTheCardRoute()).getBody().route(),
                     handler.onMissingRequestValue(new MissingServletRequestParameterException(
                             "accountId", "String"), onTheCollection())
                             .getBody().route())) {
@@ -364,18 +431,19 @@ class CardApiExceptionHandlerTest {
          * Asserts a failure of the read route reports the read route.
          *
          * <p>The handler reported the collection template for every failure, so a caller sending an
-         * unreadable body to {@code POST /cards/detail} was told {@code /cards} had failed. Two routes
-         * sit under one collection and a caller cannot tell which one it reached from a body naming the
-         * prefix of both. The published examples of that route carry {@code /cards/detail}.
+         * unreadable body to {@code PUT /cards/{cardNumber}} was told {@code /cards} had failed. Two
+         * routes sit under one collection and a caller cannot tell which one it reached from a body
+         * naming the prefix of both. The published example of the member carries the template of the
+         * two routes that name one card.
          */
         @Test
         void aFailureOfTheReadRouteReportsTheReadRoute() {
             ResponseEntity<ApiErrorResponse> response = handler.onUnreadableBody(
                     new HttpMessageNotReadableException("{bad",
                             (org.springframework.http.HttpInputMessage) null),
-                    onTheDetailRoute());
+                    onTheCardRoute());
 
-            assertEquals(CardController.DETAIL_ROUTE, response.getBody().route(),
+            assertEquals(CardController.CARD_ROUTE, response.getBody().route(),
                     "the route the dispatcher matched is the route the body names");
         }
 
@@ -438,10 +506,10 @@ class CardApiExceptionHandlerTest {
         @Test
         void theFaultAnswerResolvesItsRouteTheSameWay() {
             ResponseEntity<ApiErrorResponse> response =
-                    handler.onFault(new IllegalStateException("x"), onTheDetailRoute());
+                    handler.onFault(new IllegalStateException("x"), onTheCardRoute());
 
             assertEquals(HttpStatus.INTERNAL_SERVER_ERROR, response.getStatusCode(), "500");
-            assertEquals(CardController.DETAIL_ROUTE, response.getBody().route(),
+            assertEquals(CardController.CARD_ROUTE, response.getBody().route(),
                     "a fault of the read route names the read route");
         }
     }
@@ -504,5 +572,57 @@ class CardApiExceptionHandlerTest {
                 .getDeclaredMethod("pageSizeTarget", Integer.class), 0);
         return new MethodArgumentTypeMismatchException(value, Integer.class, name, parameter,
                 new NumberFormatException("For input string: \"" + value + "\""));
+    }
+
+    /**
+     * The line written for a fault names the failure type and never the failure's message.
+     *
+     * <p>The message below is what a real one carries: a constraint name and the value that
+     * violated it. Passing the throwable to the logger renders exactly that, which is how a card
+     * number reaches a log collector without any code ever formatting one.
+     */
+    @Test
+    @DisplayName("A fault is recorded by type, and its message reaches no log line")
+    void aFaultIsRecordedByTypeAndItsMessageReachesNoLogLine() {
+        String sentinel = "4111111111111111";
+        Exception fault = new IllegalStateException(
+                "duplicate key value violates unique constraint pk_card: (card_number)=("
+                        + sentinel + ")",
+                new IllegalArgumentException("inner " + sentinel));
+
+        java.util.List<ILoggingEvent> lines = recordedLines(() ->
+                new CardApiExceptionHandler().onFault(fault, new MockHttpServletRequest()));
+
+        assertEquals(1, lines.size(), "one fault writes one line");
+        ILoggingEvent line = lines.getFirst();
+        assertTrue(line.getFormattedMessage().contains(IllegalStateException.class.getName()),
+                "the line names the failure type: " + line.getFormattedMessage());
+        assertTrue(line.getFormattedMessage().contains(IllegalArgumentException.class.getName()),
+                "the line names the cause type too");
+        assertFalse(line.getFormattedMessage().contains(sentinel),
+                "the failure message reached the log: " + line.getFormattedMessage());
+        assertNull(line.getThrowableProxy(),
+                "no throwable is attached, so the appender renders no message and no stack trace");
+    }
+
+    /**
+     * Runs one call with a recorder attached to the package every service logs under.
+     *
+     * @param call the call whose log lines are wanted
+     * @return every line written during it, in order
+     */
+    private static java.util.List<ILoggingEvent> recordedLines(Runnable call) {
+        ListAppender<ILoggingEvent> recorder = new ListAppender<>();
+        recorder.setContext((LoggerContext) org.slf4j.LoggerFactory.getILoggerFactory());
+        recorder.start();
+        Logger serviceLogger = (Logger) org.slf4j.LoggerFactory.getLogger("com.carddemo");
+        serviceLogger.addAppender(recorder);
+        try {
+            call.run();
+        } finally {
+            serviceLogger.detachAppender(recorder);
+            recorder.stop();
+        }
+        return java.util.List.copyOf(recorder.list);
     }
 }

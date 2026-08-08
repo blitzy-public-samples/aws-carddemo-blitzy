@@ -352,6 +352,7 @@ final class CardSummaryTest {
     /**
      * Returns the declared type of one component of {@link CardSummary}.
      *
+     * @param componentName the name of the component to look up
      * @return the declared type, or {@code null} when no component carries that name
      */
     private static Class<?> typeOf(String componentName) {

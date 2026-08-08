@@ -6,15 +6,13 @@ import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ExecutionException;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 import java.util.regex.Pattern;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.kafka.KafkaException;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Component;
 import tools.jackson.databind.JsonNode;
@@ -155,8 +153,13 @@ public class KafkaEventPublisher implements EventPublisherPort {
     }
 
     /**
-     * Sends {@code payload} to {@code topic} unchanged and waits for the broker acknowledgement. A
-     * broker failure arrives as an unchecked {@code java.util.concurrent.CompletionException}.
+     * Sends {@code payload} to {@code topic} unchanged and answers the stage the broker
+     * acknowledgement completes. This method does not wait: the caller decides how long to, and
+     * {@code outbox/OutboxRelay} waits under its own whole-sweep deadline. A broker failure arrives
+     * on that stage as an unchecked {@code java.util.concurrent.CompletionException}.
+     *
+     * <p>Every check below runs before any send is started, so a refused call publishes nothing and
+     * throws rather than failing a stage.
      *
      * <p>The message key is {@code aggregateId} itself, so Kafka partitions on the account and
      * every event for one account stays in order.
@@ -172,9 +175,11 @@ public class KafkaEventPublisher implements EventPublisherPort {
      *         {@code aggregateId} differs from the payload's {@code aggregateId} or from its
      *         {@code accountId} where the document declares one.
      *         The shared gate refuses the payload
+     * @return the stage the broker acknowledgement completes, failing when the broker refuses the
+     *         send or does not answer inside {@code carddemo.outbox.relay.publish-timeout}
      */
     @Override
-    public void publish(String topic, String aggregateId, String payload) {
+    public CompletionStage<Void> publish(String topic, String aggregateId, String payload) {
         if (topic == null || payload == null) {
             throw new IllegalArgumentException("topic and payload are both required");
         }
@@ -190,39 +195,33 @@ public class KafkaEventPublisher implements EventPublisherPort {
         requireValidAgainstSchema(payload);
         log.debug("Publishing card event {} to topic {}, payload length {}",
                 eventType, topic, payload.length());
-        sendAndWait(topic, aggregateId, payload);
+        return send(topic, aggregateId, payload);
     }
 
     /**
-     * Sends one payload and waits no longer than the configured publish timeout for the broker.
+     * Starts one send and answers the stage its acknowledgement completes.
      *
-     * <p>An unbounded wait holds this thread, and with it the relay sweep that called it, for as
-     * long as the broker is unreachable. The bounded wait turns that into one thrown failure the
-     * caller records against the row.
+     * <p>This method does not block. It used to wait on the send here, and the wait was the defect:
+     * the bound it applied was ten seconds while the producer was configured to keep trying for
+     * two minutes, so a wait that ran out left a send the producer still held. Nothing cancelled
+     * it and nothing observed it, the row stayed unpublished, and the next sweep published the
+     * same event a second time. The two windows are now one budget, declared together in
+     * {@code src/main/resources/application.yml}.
      *
-     * <p>The thrown message names the topic and the bound and reads no field of the payload, so a
-     * caller that logs it records no card number and no account identifier.
+     * <p>{@code orTimeout} fails the returned stage rather than the send, so the caller learns the
+     * outcome without holding a thread. {@code outbox/OutboxRelay} waits on the stage under its own
+     * whole-sweep deadline and cancels what it gave up on.
      *
      * @param topic       the destination topic
      * @param aggregateId the message key
      * @param payload     the event text
-     * @throws KafkaException when the broker does not acknowledge inside the bound, when the send
-     *         fails, or when the waiting thread is interrupted
+     * @return the stage the acknowledgement completes, failing when the broker refuses the send or
+     *         does not answer inside {@code carddemo.outbox.relay.publish-timeout}
      */
-    private void sendAndWait(String topic, String aggregateId, String payload) {
-        try {
-            kafkaTemplate.send(topic, aggregateId, payload)
-                    .get(publishTimeout.toMillis(), TimeUnit.MILLISECONDS);
-        } catch (TimeoutException lapsed) {
-            throw new KafkaException("the broker did not acknowledge a send to topic " + topic
-                    + " within " + publishTimeout, lapsed);
-        } catch (InterruptedException interrupted) {
-            Thread.currentThread().interrupt();
-            throw new KafkaException("the wait on a send to topic " + topic + " was interrupted",
-                    interrupted);
-        } catch (ExecutionException failed) {
-            throw new KafkaException("a send to topic " + topic + " failed", failed.getCause());
-        }
+    private CompletionStage<Void> send(String topic, String aggregateId, String payload) {
+        return kafkaTemplate.send(topic, aggregateId, payload)
+                .thenApply(acknowledged -> (Void) null)
+                .orTimeout(publishTimeout.toMillis(), TimeUnit.MILLISECONDS);
     }
 
     /**

@@ -43,8 +43,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * into the 75 of app/cbl/CBSTM03A.CBL:L91 and lose the last three.</p>
  *
  * <p>No Spring context, no broker and no database take part, so {@code mvn test} passes on a clean
- * machine. The two render operations belong to their own implementations, and no assertion here
- * reads the content of a rendered alert.</p>
+ * machine. The tests read the interface operations. One exception drives both real
+ * implementations end to end and reads the rendered alert, to prove each honours the escaping
+ * obligation the interface declares.</p>
  *
  * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
@@ -118,7 +119,7 @@ class NotificationRendererTest {
     // Declared widths, each against the Picture clause it reproduces.
 
     /**
-     * Asserts every width the interface declares against the field it reproduces at
+     * Every width the interface declares against the field it reproduces at
      * app/cbl/CBSTM03A.CBL:L91-L142. Each expected number is typed here from the source and read
      * from no constant of the interface.
      */
@@ -159,7 +160,7 @@ class NotificationRendererTest {
     }
 
     /**
-     * Asserts the loss the {@code MOVE TRNX-DESC TO ST-TRANDT} at app/cbl/CBSTM03A.CBL:L677
+     * The loss the {@code MOVE TRNX-DESC TO ST-TRANDT} at app/cbl/CBSTM03A.CBL:L677
      * accepts. {@code TRNX-DESC PIC X(100)} at app/cpy/COSTM01.CPY:L28 is 51 characters wider than
      * the field that renders it.
      */
@@ -174,7 +175,7 @@ class NotificationRendererTest {
     // pic. Reproduces a COBOL MOVE into a PIC X(n) field.
 
     /**
-     * Asserts that a value shorter than the field gains trailing spaces. The
+     * A value shorter than the field gains trailing spaces. The
      * {@code MOVE CUST-FICO-CREDIT-SCORE TO ST-FICO-SCORE} at app/cbl/CBSTM03A.CBL:L485 carries
      * three digits into a field of 20.
      */
@@ -199,7 +200,7 @@ class NotificationRendererTest {
     }
 
     /**
-     * Asserts that a value longer than the field loses its tail. The
+     * A value longer than the field loses its tail. The
      * {@code MOVE ST-NAME TO L23-NAME} at app/cbl/CBSTM03A.CBL:L560 carries
      * {@code ST-NAME PIC X(75)} into {@code L23-NAME PIC X(50)}.
      */
@@ -227,7 +228,7 @@ class NotificationRendererTest {
     }
 
     /**
-     * Asserts that a value already at the field width passes through unchanged. Nine of the
+     * A value already at the field width passes through unchanged. Nine of the
      * statement fields of app/cbl/CBSTM03A.CBL:L91-L142 receive a value already at their width.
      */
     @Test
@@ -248,7 +249,7 @@ class NotificationRendererTest {
     }
 
     /**
-     * Asserts that an eleven-digit account identifier keeps its leading zeros. {@code ACCT-ID} is
+     * An eleven-digit account identifier keeps its leading zeros. {@code ACCT-ID} is
      * {@code PIC 9(11)} at app/cpy/CVACT01Y.cpy:L5, and the {@code MOVE} at
      * app/cbl/CBSTM03A.CBL:L483 carries it into an alphanumeric field of 20.
      */
@@ -274,7 +275,7 @@ class NotificationRendererTest {
     }
 
     /**
-     * Asserts the width invariant across every field width of app/cbl/CBSTM03A.CBL:L91-L142, for a
+     * The width invariant across every field width of app/cbl/CBSTM03A.CBL:L91-L142, for a
      * short value, a long value and a null.
      */
     @Test
@@ -297,7 +298,7 @@ class NotificationRendererTest {
     }
 
     /**
-     * Asserts that a negative width is refused. No field of app/cbl/CBSTM03A.CBL:L91-L142 declares
+     * A negative width is refused. No field of app/cbl/CBSTM03A.CBL:L91-L142 declares
      * one.
      */
     @Test
@@ -315,7 +316,7 @@ class NotificationRendererTest {
     // editTrailingSign9. Reproduces ST-CURR-BAL PIC 9(9).99- at app/cbl/CBSTM03A.CBL:L113.
 
     /**
-     * Asserts the width invariant of the zero-filled edit. Every result matches
+     * The width invariant of the zero-filled edit. Every result matches
      * {@code ST-CURR-BAL PIC 9(9).99-} at app/cbl/CBSTM03A.CBL:L113, and the decimal point sits at
      * one fixed index.
      */
@@ -338,7 +339,7 @@ class NotificationRendererTest {
     }
 
     /**
-     * Asserts that every digit position renders a digit. The {@code 9} symbol of
+     * Every digit position renders a digit. The {@code 9} symbol of
      * {@code ST-CURR-BAL PIC 9(9).99-} at app/cbl/CBSTM03A.CBL:L113 keeps a leading zero as a
      * zero.
      */
@@ -366,7 +367,7 @@ class NotificationRendererTest {
     }
 
     /**
-     * Asserts that a negative amount carries a minus in the trailing position of
+     * A negative amount carries a minus in the trailing position of
      * {@code ST-CURR-BAL PIC 9(9).99-} at app/cbl/CBSTM03A.CBL:L113, after both decimal digits.
      */
     @Test
@@ -392,7 +393,7 @@ class NotificationRendererTest {
     }
 
     /**
-     * Asserts that a positive amount leaves the trailing sign position of
+     * A positive amount leaves the trailing sign position of
      * app/cbl/CBSTM03A.CBL:L113 blank.
      */
     @Test
@@ -412,7 +413,7 @@ class NotificationRendererTest {
     }
 
     /**
-     * Asserts that zero renders every digit position, the decimal point and both decimal digits.
+     * Zero renders every digit position, the decimal point and both decimal digits.
      * The declaration at app/cbl/CBSTM03A.CBL:L113 carries no {@code BLANK WHEN ZERO} clause, so
      * the field is not blanked.
      */
@@ -439,7 +440,7 @@ class NotificationRendererTest {
     }
 
     /**
-     * Asserts that the third decimal digit and beyond fall away toward zero. The
+     * The third decimal digit and beyond fall away toward zero. The
      * {@code MOVE ACCT-CURR-BAL TO ST-CURR-BAL} at app/cbl/CBSTM03A.CBL:L484 carries no
      * {@code ROUNDED} phrase, and no program of the source names one.
      */
@@ -464,7 +465,7 @@ class NotificationRendererTest {
     }
 
     /**
-     * Asserts the high-order digit loss the two field widths produce.
+     * The high-order digit loss the two field widths produce.
      * {@code ACCT-CURR-BAL PIC S9(10)V99} at app/cpy/CVACT01Y.cpy:L7 carries ten integer digits and
      * {@code ST-CURR-BAL PIC 9(9).99-} at app/cbl/CBSTM03A.CBL:L113 carries nine, so a balance at or
      * above one billion loses its high-order digit in both rendered outputs.
@@ -495,7 +496,7 @@ class NotificationRendererTest {
     }
 
     /**
-     * Asserts that a null amount is refused. Every call site of app/cbl/CBSTM03A.CBL:L484 supplies
+     * A null amount is refused. Every call site of app/cbl/CBSTM03A.CBL:L484 supplies
      * a numeric field, which holds no absent value.
      */
     @Test
@@ -510,7 +511,7 @@ class NotificationRendererTest {
     // at app/cbl/CBSTM03A.CBL:L142, both PIC Z(9).99-.
 
     /**
-     * Asserts the width invariant of the suppressed edit. Every result matches
+     * The width invariant of the suppressed edit. Every result matches
      * {@code ST-TRANAMT PIC Z(9).99-} at app/cbl/CBSTM03A.CBL:L137, which
      * {@code ST-TOTAL-TRAMT} at app/cbl/CBSTM03A.CBL:L142 repeats.
      */
@@ -533,7 +534,7 @@ class NotificationRendererTest {
     }
 
     /**
-     * Asserts that the {@code Z} symbol of {@code ST-TRANAMT PIC Z(9).99-} at
+     * The {@code Z} symbol of {@code ST-TRANAMT PIC Z(9).99-} at
      * app/cbl/CBSTM03A.CBL:L137 renders a leading zero as a space, and that suppression stops at
      * the first digit above zero.
      */
@@ -560,7 +561,7 @@ class NotificationRendererTest {
     }
 
     /**
-     * Asserts that the two edits disagree on one amount. {@code ST-CURR-BAL PIC 9(9).99-} at
+     * The two edits disagree on one amount. {@code ST-CURR-BAL PIC 9(9).99-} at
      * app/cbl/CBSTM03A.CBL:L113 renders a leading zero as a zero and
      * {@code ST-TRANAMT PIC Z(9).99-} at app/cbl/CBSTM03A.CBL:L137 renders it as a space, and the
      * two renderings of one amount differ.
@@ -596,7 +597,7 @@ class NotificationRendererTest {
     }
 
     /**
-     * Asserts that the suppressed edit carries a negative amount's minus in the trailing position
+     * The suppressed edit carries a negative amount's minus in the trailing position
      * of app/cbl/CBSTM03A.CBL:L137, after both decimal digits.
      */
     @Test
@@ -622,7 +623,7 @@ class NotificationRendererTest {
     }
 
     /**
-     * Asserts that zero blanks all nine digit positions and keeps the point and both decimal
+     * Zero blanks all nine digit positions and keeps the point and both decimal
      * digits. Neither app/cbl/CBSTM03A.CBL:L137 nor app/cbl/CBSTM03A.CBL:L142 carries a
      * {@code BLANK WHEN ZERO} clause.
      */
@@ -655,7 +656,7 @@ class NotificationRendererTest {
     }
 
     /**
-     * Asserts that the suppressed edit meets the same nine-digit ceiling as
+     * The suppressed edit meets the same nine-digit ceiling as
      * {@code ST-CURR-BAL} at app/cbl/CBSTM03A.CBL:L113. {@code ST-TRANAMT PIC Z(9).99-} at
      * app/cbl/CBSTM03A.CBL:L137 holds nine digit positions too.
      */
@@ -682,7 +683,7 @@ class NotificationRendererTest {
     }
 
     /**
-     * Asserts that neither edit follows a locale convention. The fields at
+     * Neither edit follows a locale convention. The fields at
      * app/cbl/CBSTM03A.CBL:L113 and app/cbl/CBSTM03A.CBL:L137 fix a point as the decimal
      * separator, no grouping separator and a trailing sign, whatever locale the Java virtual
      * machine (JVM) runs under.
@@ -739,7 +740,7 @@ class NotificationRendererTest {
     }
 
     /**
-     * Asserts that the suppressed edit refuses a null amount. The
+     * The suppressed edit refuses a null amount. The
      * {@code MOVE TRNX-AMT TO ST-TRANAMT} at app/cbl/CBSTM03A.CBL:L678 supplies a numeric field.
      */
     @Test
@@ -754,7 +755,7 @@ class NotificationRendererTest {
     // assembleName. Reproduces the STRING at app/cbl/CBSTM03A.CBL:L462-L469.
 
     /**
-     * Asserts the three-part join. The {@code STRING} at app/cbl/CBSTM03A.CBL:L462-L469 follows each
+     * The three-part join. The {@code STRING} at app/cbl/CBSTM03A.CBL:L462-L469 follows each
      * component with one space through the {@code ' ' DELIMITED BY SIZE} inserts at
      * app/cbl/CBSTM03A.CBL:L463, app/cbl/CBSTM03A.CBL:L465 and app/cbl/CBSTM03A.CBL:L467, so a
      * space follows the last component too.
@@ -787,7 +788,7 @@ class NotificationRendererTest {
     }
 
     /**
-     * Asserts the width invariant of the assembled name against
+     * The width invariant of the assembled name against
      * {@code ST-NAME PIC X(75)} at app/cbl/CBSTM03A.CBL:L91.
      */
     @Test
@@ -814,7 +815,7 @@ class NotificationRendererTest {
     }
 
     /**
-     * Asserts that {@code DELIMITED BY ' '} stops each component at its first internal space. The
+     * {@code DELIMITED BY ' '} stops each component at its first internal space. The
      * three operands at app/cbl/CBSTM03A.CBL:L462, app/cbl/CBSTM03A.CBL:L464 and
      * app/cbl/CBSTM03A.CBL:L466 each carry that phrase.
      */
@@ -840,7 +841,7 @@ class NotificationRendererTest {
     }
 
     /**
-     * Asserts that an all-spaces component contributes no characters while its insert still fires,
+     * An all-spaces component contributes no characters while its insert still fires,
      * leaving two adjacent spaces. The insert at app/cbl/CBSTM03A.CBL:L465 follows
      * {@code CUST-MIDDLE-NAME PIC X(25)} at app/cpy/CUSTREC.cpy:L7 whatever that field holds.
      */
@@ -869,7 +870,7 @@ class NotificationRendererTest {
     }
 
     /**
-     * Asserts the overflow the two widths produce. Three components of
+     * The overflow the two widths produce. Three components of
      * {@code PIC X(25)} at app/cpy/CUSTREC.cpy:L6-L8 emit 78 characters with their three inserts,
      * and {@code ST-NAME PIC X(75)} at app/cbl/CBSTM03A.CBL:L91 holds 75, so the last three
      * characters fall away.
@@ -906,7 +907,7 @@ class NotificationRendererTest {
     // assembleAddress3. Reproduces the STRING at app/cbl/CBSTM03A.CBL:L472-L481.
 
     /**
-     * Asserts the four-part join. The {@code STRING} at app/cbl/CBSTM03A.CBL:L472-L481 follows each
+     * The four-part join. The {@code STRING} at app/cbl/CBSTM03A.CBL:L472-L481 follows each
      * of its four components with one space through the inserts at app/cbl/CBSTM03A.CBL:L473,
      * app/cbl/CBSTM03A.CBL:L475, app/cbl/CBSTM03A.CBL:L477 and app/cbl/CBSTM03A.CBL:L479.
      */
@@ -931,7 +932,7 @@ class NotificationRendererTest {
     }
 
     /**
-     * Asserts the width invariant of the assembled address line against
+     * The width invariant of the assembled address line against
      * {@code ST-ADD3 PIC X(80)} at app/cbl/CBSTM03A.CBL:L100.
      */
     @Test
@@ -958,7 +959,7 @@ class NotificationRendererTest {
     }
 
     /**
-     * Asserts that the widest input survives whole. The four components at
+     * The widest input survives whole. The four components at
      * app/cpy/CUSTREC.cpy:L11-L14 measure 50, 2, 3 and 10, and their four inserts bring the
      * emission to 69 against the 80 of {@code ST-ADD3} at app/cbl/CBSTM03A.CBL:L100.
      */
@@ -995,7 +996,7 @@ class NotificationRendererTest {
     }
 
     /**
-     * Asserts that each of the four operands at app/cbl/CBSTM03A.CBL:L472,
+     * Each of the four operands at app/cbl/CBSTM03A.CBL:L472,
      * app/cbl/CBSTM03A.CBL:L474, app/cbl/CBSTM03A.CBL:L476 and app/cbl/CBSTM03A.CBL:L478 stops at
      * its first internal space, and that an all-spaces component leaves two adjacent spaces.
      */
@@ -1037,7 +1038,7 @@ class NotificationRendererTest {
     // escapeHtmlText. Guards the markup records of app/cbl/CBSTM03A.CBL:L560 and L622.
 
     /**
-     * Asserts the five replacements. The markup path of app/cbl/CBSTM03A.CBL:L560 and
+     * The five replacements. The markup path of app/cbl/CBSTM03A.CBL:L560 and
      * app/cbl/CBSTM03A.CBL:L622 carries cardholder values into markup records, and a normal field
      * of letters, digits and spaces passes through at its own width.
      */
@@ -1074,7 +1075,7 @@ class NotificationRendererTest {
     }
 
     /**
-     * Asserts that each implementation honours the escaping obligation of this interface through its
+     * Each implementation honours the escaping obligation of this interface through its
      * real render operations, not only through the helper above.
      *
      * <p>The implementation reporting {@code HTML} routes every value-bearing field through
@@ -1119,7 +1120,7 @@ class NotificationRendererTest {
     // The nested types: the format enumeration and the two payload records.
 
     /**
-     * Asserts that the enumeration carries one constant for each output file
+     * The enumeration carries one constant for each output file
      * app/cbl/CBSTM03A.CBL:L44-L47 declares, and no third.
      */
     @Test
@@ -1147,7 +1148,7 @@ class NotificationRendererTest {
     }
 
     /**
-     * Asserts the seven components of the cardholder payload, each at the width its source field
+     * The seven components of the cardholder payload, each at the width its source field
      * declares. Paragraph {@code 5000-CREATE-STATEMENT} at app/cbl/CBSTM03A.CBL:L458-L504 fills all
      * seven once, and both output paths read them back.
      */
@@ -1194,7 +1195,7 @@ class NotificationRendererTest {
     }
 
     /**
-     * Asserts that the cardholder payload permits no mutation. Both output paths read the fields
+     * The cardholder payload permits no mutation. Both output paths read the fields
      * app/cbl/CBSTM03A.CBL:L458-L504 assembles, and neither writes one back.
      */
     @Test
@@ -1229,7 +1230,7 @@ class NotificationRendererTest {
     }
 
     /**
-     * Asserts the three components of one detail row at the widths the source fixes.
+     * The three components of one detail row at the widths the source fixes.
      * {@code TRNX-ID PIC X(16)} sits at app/cpy/COSTM01.CPY:L23, the
      * {@code MOVE TRNX-DESC TO ST-TRANDT} at app/cbl/CBSTM03A.CBL:L677 renders 49 characters, and
      * {@code ST-TRANAMT PIC Z(9).99-} at app/cbl/CBSTM03A.CBL:L137 renders 13.
@@ -1274,7 +1275,7 @@ class NotificationRendererTest {
     }
 
     /**
-     * Asserts that a diagnostic rendering of either payload carries no cardholder value. Paragraph
+     * A diagnostic rendering of either payload carries no cardholder value. Paragraph
      * app/cbl/CBSTM03A.CBL:L458-L504 assembles a name, an address, a balance and a credit score,
      * and each stays inside the rendered statement.
      */
@@ -1303,7 +1304,7 @@ class NotificationRendererTest {
     }
 
     /**
-     * Asserts that two implementations report distinct formats. app/cbl/CBSTM03A.CBL:L44-L47
+     * Two implementations report distinct formats. app/cbl/CBSTM03A.CBL:L44-L47
      * declares one output file for each, and the reported format is what a caller holding both
      * compares. No assertion here reads the content of a rendered alert.
      */

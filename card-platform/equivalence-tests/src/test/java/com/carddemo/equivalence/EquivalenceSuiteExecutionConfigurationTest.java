@@ -36,14 +36,20 @@ import org.xml.sax.SAXException;
  * identifier. The other is an include placed at plugin level, which merges into every execution of
  * the plugin.</p>
  *
- * <p>This class reads both build files as text and holds three properties:</p>
+ * <p>This class reads both build files as text and holds four properties:</p>
  * <ul>
  *   <li>the module declares one integration-test execution</li>
  *   <li>that execution reuses the identifier the parent declares</li>
- *   <li>the include selecting the equivalence classes sits inside that execution alone</li>
+ *   <li>the includes selecting the equivalence classes and this module's cross-service integration
+ *       classes sit inside that execution alone</li>
+ *   <li>neither selected pattern can also be selected by the unit-test plugin</li>
  * </ul>
  *
- * <p>It also enumerates the equivalence classes on disk and holds that each is selected once.</p>
+ * <p>It also enumerates the equivalence classes on disk and holds that each is selected once, and
+ * enumerates the integration classes on disk and holds that the include list reaches them. That
+ * second enumeration exists because the include list replaces the default selection of the
+ * integration-test plugin: while it named the equivalence pattern alone, a class named {@code *IT}
+ * in this module compiled, reported nothing and never ran.</p>
  *
  * <p>The class name ends in {@code ConfigurationTest} rather than {@code EquivalenceTest}, so the
  * unit-test plugin collects it and the integration-test plugin does not. Running at the unit-test
@@ -61,6 +67,19 @@ class EquivalenceSuiteExecutionConfigurationTest {
     /** Pattern that selects the equivalence classes. */
     private static final String EQUIVALENCE_PATTERN = "**/*EquivalenceTest.java";
 
+    /** Pattern that selects the cross-service integration classes of this module. */
+    private static final String INTEGRATION_PATTERN = "**/*IT.java";
+
+    /**
+     * Patterns the unit-test plugin selects when no include list overrides them.
+     *
+     * <p>These are the defaults of the plugin rather than a choice of this module, and they are named
+     * here because the reason no exclude is needed for {@link #INTEGRATION_PATTERN} is that none of
+     * them matches it.
+     */
+    private static final List<String> UNIT_TEST_DEFAULT_SUFFIXES =
+            List.of("Test.java", "Tests.java", "TestCase.java");
+
     /** Identifier the parent declares for its integration-test execution. */
     private static final String INHERITED_EXECUTION_ID = "integration-test";
 
@@ -69,6 +88,9 @@ class EquivalenceSuiteExecutionConfigurationTest {
 
     /** Suffix every equivalence class carries. */
     private static final String EQUIVALENCE_CLASS_SUFFIX = "EquivalenceTest.java";
+
+    /** Suffix every cross-service integration class of this module carries. */
+    private static final String INTEGRATION_SUFFIX = "IT.java";
 
     /**
      * The six equivalence classes the plan names for this module.
@@ -127,8 +149,9 @@ class EquivalenceSuiteExecutionConfigurationTest {
 
         List<String> executionIncludes =
                 textOfChildren(configurationOf(executions.get(0)), "includes", "include");
-        assertEquals(List.of(EQUIVALENCE_PATTERN), executionIncludes,
-                "the execution selects the equivalence classes and nothing else");
+        assertEquals(List.of(EQUIVALENCE_PATTERN, INTEGRATION_PATTERN), executionIncludes,
+                "the execution selects the equivalence classes and this module's cross-service "
+                        + "integration classes, and nothing else");
 
         Element pluginLevelConfiguration = directChild(plugin, "configuration");
         List<String> pluginLevelIncludes =
@@ -138,8 +161,17 @@ class EquivalenceSuiteExecutionConfigurationTest {
                         + "every execution and would select the same class again");
     }
 
+    /**
+     * Holds that no class this module declares runs under both plugins.
+     *
+     * <p>The two selected patterns reach that property by different routes. The equivalence suffix
+     * ends in {@code Test.java}, which the unit-test plugin selects by default, so it has to be
+     * excluded by name. The integration suffix matches none of
+     * {@link #UNIT_TEST_DEFAULT_SUFFIXES}, so it needs no exclude at all, and adding one would say
+     * something untrue about why it is safe.
+     */
     @Test
-    void theUnitTestPluginExcludesExactlyWhatTheIntegrationTestPluginIncludes() {
+    void noClassRunsUnderBothPlugins() {
         Element unitPlugin = pluginOf(moduleBuildFile(), UNIT_TEST_PLUGIN);
         assertNotNull(unitPlugin, "this module declares " + UNIT_TEST_PLUGIN);
 
@@ -148,6 +180,43 @@ class EquivalenceSuiteExecutionConfigurationTest {
         assertEquals(List.of(EQUIVALENCE_PATTERN), excludes,
                 "the unit-test plugin leaves the equivalence classes to the integration-test "
                         + "plugin, so no class runs under both");
+
+        assertTrue(textOfChildren(directChild(unitPlugin, "configuration"), "includes", "include")
+                        .isEmpty(),
+                "the unit-test plugin overrides no include, so its defaults decide what it selects");
+        String integrationSuffix = INTEGRATION_PATTERN.substring("**/*".length());
+        assertEquals(List.of(), UNIT_TEST_DEFAULT_SUFFIXES.stream()
+                        .filter(integrationSuffix::endsWith).toList(),
+                "no default suffix of the unit-test plugin matches " + integrationSuffix
+                        + ", which is why that pattern needs no exclude");
+    }
+
+    /**
+     * Holds that every cross-service integration class on disk is selected, and that one exists.
+     *
+     * <p>This is the assertion that closes a real footgun. Failsafe replaces its default selection
+     * when an include list is given, so while the list named the equivalence pattern alone, a class
+     * named {@code *IT} in this module compiled, reported nothing and never ran. A test that cannot
+     * fail is worse than an absent one, so the pattern and at least one class carrying it are both
+     * held here.
+     */
+    @Test
+    void everyCrossServiceIntegrationClassOnDiskIsSelectedExactlyOnce() {
+        List<String> executionIncludes = textOfChildren(
+                configurationOf(executionsOf(moduleBuildFile(), INTEGRATION_TEST_PLUGIN).get(0)),
+                "includes", "include");
+        assertTrue(executionIncludes.contains(INTEGRATION_PATTERN),
+                "the one execution selects " + INTEGRATION_PATTERN);
+
+        List<String> onDisk = testClassFileNamesEndingIn(INTEGRATION_SUFFIX);
+        assertFalse(onDisk.isEmpty(), "this module declares at least one class ending in "
+                + INTEGRATION_SUFFIX + ", so the pattern above selects something");
+
+        List<String> unreachable = onDisk.stream()
+                .filter(name -> UNIT_TEST_DEFAULT_SUFFIXES.stream().anyMatch(name::endsWith))
+                .toList();
+        assertEquals(List.of(), unreachable,
+                "no integration class also carries a unit-test suffix, which would run it twice");
     }
 
     @Test
@@ -274,6 +343,16 @@ class EquivalenceSuiteExecutionConfigurationTest {
 
     /** Returns the file name of every equivalence class in this module, sorted. */
     private static List<String> equivalenceClassFileNames() {
+        return testClassFileNamesEndingIn(EQUIVALENCE_CLASS_SUFFIX);
+    }
+
+    /**
+     * Returns the names of this module's test source files carrying one suffix.
+     *
+     * @param suffix the file-name suffix to collect, such as {@value #INTEGRATION_SUFFIX}
+     * @return the matching file names, sorted
+     */
+    private static List<String> testClassFileNamesEndingIn(String suffix) {
         Path sources = moduleDirectory().resolve(Path.of("src", "test", "java", "com", "carddemo",
                 "equivalence"));
         assertTrue(Files.isDirectory(sources), "the module holds its test sources at " + sources);
@@ -281,7 +360,7 @@ class EquivalenceSuiteExecutionConfigurationTest {
         try (Stream<Path> walk = Files.walk(sources)) {
             return walk.filter(Files::isRegularFile)
                     .map(path -> path.getFileName().toString())
-                    .filter(name -> name.endsWith(EQUIVALENCE_CLASS_SUFFIX))
+                    .filter(name -> name.endsWith(suffix))
                     .sorted()
                     .toList();
         } catch (IOException unreadable) {

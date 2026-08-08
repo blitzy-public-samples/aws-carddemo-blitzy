@@ -20,6 +20,7 @@ import com.carddemo.authorization.config.AuthorizationProperties;
 import com.carddemo.authorization.entity.AccountCreditSnapshotEntity;
 import com.carddemo.authorization.entity.CardCrossReferenceEntity;
 import com.carddemo.authorization.outbox.OutboxWriter;
+import com.carddemo.authorization.repository.AccountCreditSnapshotRepository;
 import com.carddemo.authorization.repository.AuthorizationDecisionRepository;
 import com.carddemo.authorization.repository.CardCrossReferenceRepository;
 import com.carddemo.authorization.repository.UnresolvedCardAttemptRepository;
@@ -31,6 +32,7 @@ import java.lang.reflect.Method;
 import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.RecordComponent;
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
@@ -142,6 +144,16 @@ final class AuthorizationChainCompositionTest {
     private static final String ACTOR = "user0001";
 
     /**
+     * The caller every request below presents.
+     *
+     * <p>It reaches every subject. These tests compose stub rules to measure the order the chain runs
+     * in, and every one of them resolves whatever account its stub chose, so an entitlement refusal
+     * would stop the chain before the thing under test ran. {@code CallerEntitlementTest} measures the
+     * refusal on its own.
+     */
+    private static final RequestCaller CALLER = RequestCaller.administrator(ACTOR);
+
+    /**
      * The amount every call carries, from positions 133 to 143 of record one of
      * {@code app/data/ASCII/dailytran.txt}, which read {@code 0000005047G} where the trailing
      * overpunch carries a positive seven. Scale from {@code DALYTRAN-AMT PIC S9(09)V99} at
@@ -157,16 +169,6 @@ final class AuthorizationChainCompositionTest {
 
     /** Trailing digits the written card form keeps. */
     private static final int RETAINED_DIGITS = 4;
-
-    /**
-     * How far behind the service clock a capture moment may sit, in minutes. Wide enough to hold
-     * the 2022 moment of {@code app/data/ASCII/dailytran.txt}, so these tests measure the chain and
-     * not the window.
-     */
-    private static final long ACCEPTED_AGE_MINUTES = 52_560_000L;
-
-    /** How far ahead of the service clock a capture moment may sit, in minutes. */
-    private static final long ACCEPTED_FUTURE_MINUTES = 5L;
 
     /** Zero at the scale the two cycle accumulators hold. */
     private static final BigDecimal ZERO_MONEY = new BigDecimal("0.00");
@@ -219,6 +221,8 @@ final class AuthorizationChainCompositionTest {
         when(accountRow.getAccountExpirationDate()).thenReturn(EXPIRY_AFTER_CAPTURE);
         when(accountRow.getCurrentCycleCredit()).thenReturn(ZERO_MONEY);
         when(accountRow.getCurrentCycleDebit()).thenReturn(ZERO_MONEY);
+        when(accountRow.effectivePendingCycleCredit(any())).thenReturn(ZERO_MONEY);
+        when(accountRow.effectivePendingCycleDebit(any())).thenReturn(ZERO_MONEY);
         when(accountRow.isFreshAt(any(), any())).thenReturn(true);
     }
 
@@ -240,7 +244,7 @@ final class AuthorizationChainCompositionTest {
 
             AuthorizationService.Outcome outcome = serviceOver(
                     List.of(unresolvedCard, secondStopping, firstOverwriting, secondOverwriting))
-                    .authorize(request(FIXTURE_AMOUNT), ACTOR);
+                    .authorize(request(FIXTURE_AMOUNT), CALLER);
 
             assertEquals(Optional.of(DeclineReason.INVALID_CARD_NUMBER), outcome.declineReason(),
                     "app/cbl/CBTRN02C.cbl:L385 assigns this reject reason");
@@ -262,7 +266,7 @@ final class AuthorizationChainCompositionTest {
 
             AuthorizationService.Outcome outcome = serviceOver(
                     List.of(resolveCard, missingAccount, firstOverwriting, secondOverwriting))
-                    .authorize(request(FIXTURE_AMOUNT), ACTOR);
+                    .authorize(request(FIXTURE_AMOUNT), CALLER);
 
             assertEquals(Optional.of(DeclineReason.ACCOUNT_NOT_FOUND), outcome.declineReason(),
                     "app/cbl/CBTRN02C.cbl:L397 assigns this reject reason");
@@ -292,7 +296,7 @@ final class AuthorizationChainCompositionTest {
 
             AuthorizationService.Outcome outcome =
                     serviceOver(List.of(resolvingCard(), overLimit, expired))
-                            .authorize(request(FIXTURE_AMOUNT), ACTOR);
+                            .authorize(request(FIXTURE_AMOUNT), CALLER);
 
             assertEquals(Optional.of(DeclineReason.ACCOUNT_EXPIRED), outcome.declineReason(),
                     "app/cbl/CBTRN02C.cbl:L417 assigns the reject reason that stands");
@@ -312,7 +316,7 @@ final class AuthorizationChainCompositionTest {
 
             AuthorizationService.Outcome outcome =
                     serviceOver(List.of(resolvingCard(), expired, overLimit))
-                            .authorize(request(FIXTURE_AMOUNT), ACTOR);
+                            .authorize(request(FIXTURE_AMOUNT), CALLER);
 
             assertEquals(Optional.of(DeclineReason.OVER_CREDIT_LIMIT), outcome.declineReason(),
                     "the last decline in collection order stands, and 0103 does not survive");
@@ -335,7 +339,7 @@ final class AuthorizationChainCompositionTest {
 
             AuthorizationService.Outcome outcome =
                     serviceOver(List.of(resolvingCardAndAccount(), mirroringCreditTest()))
-                            .authorize(request("500.00"), ACTOR);
+                            .authorize(request("500.00"), CALLER);
 
             assertTrue(outcome.approved(),
                     "app/cbl/CBTRN02C.cbl:L407 accepts on greater-or-equal, not on greater");
@@ -350,7 +354,7 @@ final class AuthorizationChainCompositionTest {
 
             AuthorizationService.Outcome outcome =
                     serviceOver(List.of(resolvingCardAndAccount(), mirroringExpiryTest()))
-                            .authorize(request(FIXTURE_AMOUNT), ACTOR);
+                            .authorize(request(FIXTURE_AMOUNT), CALLER);
 
             assertTrue(outcome.approved(),
                     "app/cbl/CBTRN02C.cbl:L414 accepts on greater-or-equal, not on greater");
@@ -381,7 +385,7 @@ final class AuthorizationChainCompositionTest {
             chain.add(fifth);
 
             AuthorizationService.Outcome outcome =
-                    serviceOver(chain).authorize(request(FIXTURE_AMOUNT), ACTOR);
+                    serviceOver(chain).authorize(request(FIXTURE_AMOUNT), CALLER);
 
             assertEquals(Optional.of(DeclineReason.ACCOUNT_EXPIRED), outcome.declineReason(),
                     "the added rule ran last and its answer stands");
@@ -394,7 +398,7 @@ final class AuthorizationChainCompositionTest {
         @DisplayName("an empty chain is accepted and answers with a value")
         void anEmptyChainIsAcceptedAndAnswersWithAValue() {
             AuthorizationService.Outcome outcome =
-                    serviceOver(List.of()).authorize(request(FIXTURE_AMOUNT), ACTOR);
+                    serviceOver(List.of()).authorize(request(FIXTURE_AMOUNT), CALLER);
 
             assertNotNull(outcome, "the service assumes no fixed number of rules");
             assertFalse(outcome.approved(), "no rule seated a cross-reference row");
@@ -404,8 +408,8 @@ final class AuthorizationChainCompositionTest {
         @Test
         @DisplayName("one accepting rule is enough for an approval")
         void oneAcceptingRuleIsEnoughForAnApproval() {
-            AuthorizationService.Outcome outcome = serviceOver(List.of(resolvingCard()))
-                    .authorize(request(FIXTURE_AMOUNT), ACTOR);
+            AuthorizationService.Outcome outcome = serviceOver(List.of(resolvingCardAndAccount()))
+                    .authorize(request(FIXTURE_AMOUNT), CALLER);
 
             assertTrue(outcome.approved(), "the single rule accepted");
             assertEquals(Optional.empty(), outcome.declineReason(), "so no reject reason stands");
@@ -417,8 +421,8 @@ final class AuthorizationChainCompositionTest {
             StubRule stopping = accepting(DeclineRule.Segment.STOP_ON_FIRST_DECLINE);
             StubRule overwriting = accepting(DeclineRule.Segment.LAST_DECLINE_WINS);
 
-            serviceOver(List.of(resolvingCard(), stopping, overwriting))
-                    .authorize(request(FIXTURE_AMOUNT), ACTOR);
+            serviceOver(List.of(resolvingCardAndAccount(), stopping, overwriting))
+                    .authorize(request(FIXTURE_AMOUNT), CALLER);
 
             assertEquals(CARD_NUMBER, stopping.observedCardNumber(),
                     "the stopping rule read the card number the caller presented");
@@ -478,8 +482,8 @@ final class AuthorizationChainCompositionTest {
         @Test
         @DisplayName("the account identifier carries no scale and equals the seated row")
         void theAccountIdentifierCarriesNoScale() {
-            AuthorizationService.Outcome outcome = serviceOver(List.of(resolvingCard()))
-                    .authorize(request(FIXTURE_AMOUNT), ACTOR);
+            AuthorizationService.Outcome outcome = serviceOver(List.of(resolvingCardAndAccount()))
+                    .authorize(request(FIXTURE_AMOUNT), CALLER);
 
             assertEquals(0, outcome.accountId().scale(),
                     "XREF-ACCT-ID PIC 9(11) at app/cpy/CVACT03Y.cpy:L7 carries no scale");
@@ -525,7 +529,7 @@ final class AuthorizationChainCompositionTest {
             AuthorizationService.Outcome outcome = serviceOver(List.of(resolvingCard(),
                     declining(DeclineRule.Segment.LAST_DECLINE_WINS,
                             DeclineReason.OVER_CREDIT_LIMIT)))
-                    .authorize(request(FIXTURE_AMOUNT), ACTOR);
+                    .authorize(request(FIXTURE_AMOUNT), CALLER);
 
             assertFalse(outcome.approved(), "one rule assigned a reject reason");
             assertEquals(DeclineReason.OVER_CREDIT_LIMIT.description(), rejectTextOf(outcome),
@@ -535,7 +539,7 @@ final class AuthorizationChainCompositionTest {
         @Test
         @DisplayName("an approval writes one event, and no decline event")
         void anApprovalWritesOneEvent() {
-            serviceOver(List.of(resolvingCard())).authorize(request(FIXTURE_AMOUNT), ACTOR);
+            serviceOver(List.of(resolvingCardAndAccount())).authorize(request(FIXTURE_AMOUNT), CALLER);
 
             verify(outboxWriter, times(1)).writeAuthorized(any());
             verify(outboxWriter, never()).writeDeclined(any());
@@ -551,7 +555,7 @@ final class AuthorizationChainCompositionTest {
             serviceOver(List.of(resolvingCard(),
                     declining(DeclineRule.Segment.LAST_DECLINE_WINS,
                             DeclineReason.ACCOUNT_EXPIRED)))
-                    .authorize(request(FIXTURE_AMOUNT), ACTOR);
+                    .authorize(request(FIXTURE_AMOUNT), CALLER);
 
             verify(outboxWriter, times(1)).writeDeclined(written.capture());
             verify(outboxWriter, never()).writeAuthorized(any());
@@ -563,11 +567,11 @@ final class AuthorizationChainCompositionTest {
         @Test
         @DisplayName("the chain reads the full card number, and the event carries none of it")
         void theChainReadsTheFullCardNumber() {
-            StubRule resolveCard = resolvingCard();
+            StubRule resolveCard = resolvingCardAndAccount();
             ArgumentCaptor<TransactionAuthorized> written =
                     ArgumentCaptor.forClass(TransactionAuthorized.class);
 
-            serviceOver(List.of(resolveCard)).authorize(request(FIXTURE_AMOUNT), ACTOR);
+            serviceOver(List.of(resolveCard)).authorize(request(FIXTURE_AMOUNT), CALLER);
 
             assertEquals(CARD_NUMBER, resolveCard.observedCardNumber(),
                     "the lookup at app/cbl/CBTRN02C.cbl:L382 keys on all sixteen characters");
@@ -594,7 +598,7 @@ final class AuthorizationChainCompositionTest {
         void anApprovalCarriesNoRejectReason() {
             AuthorizationService.Outcome outcome = serviceOver(List.of(resolvingCardAndAccount(),
                     mirroringCreditTest(), mirroringExpiryTest()))
-                    .authorize(request(FIXTURE_AMOUNT), ACTOR);
+                    .authorize(request(FIXTURE_AMOUNT), CALLER);
 
             assertTrue(outcome.approved(), "every rule accepted");
             assertEquals(Optional.empty(), outcome.declineReason(),
@@ -610,7 +614,7 @@ final class AuthorizationChainCompositionTest {
 
             AuthorizationService.Outcome outcome = serviceOver(List.of(resolvingCardAndAccount(),
                     mirroringCreditTest(), mirroringExpiryTest()))
-                    .authorize(request("100.01"), ACTOR);
+                    .authorize(request("100.01"), CALLER);
 
             assertTrue(outcome.declineReason().isPresent(), "a decline names a reject reason");
             assertEquals(DeclineReason.ACCOUNT_EXPIRED, outcome.declineReason().orElseThrow(),
@@ -643,10 +647,10 @@ final class AuthorizationChainCompositionTest {
         @Test
         @DisplayName("a card number failing the industry check-digit rule is approved")
         void aCardNumberFailingTheCheckDigitRuleIsApproved() {
-            StubRule resolveCard = resolvingCard();
+            StubRule resolveCard = resolvingCardAndAccount();
 
             AuthorizationService.Outcome outcome = serviceOver(List.of(resolveCard))
-                    .authorize(request(CARD_NUMBER_WITH_BAD_CHECK_DIGIT, FIXTURE_AMOUNT), ACTOR);
+                    .authorize(request(CARD_NUMBER_WITH_BAD_CHECK_DIGIT, FIXTURE_AMOUNT), CALLER);
 
             assertTrue(outcome.approved(),
                     "app/cbl/COCRDUPC.cbl:L193-L194 tests sixteen digits and nothing more");
@@ -665,7 +669,7 @@ final class AuthorizationChainCompositionTest {
 
             AuthorizationService.Outcome outcome = serviceOver(List.of(resolvingCardAndAccount(),
                     mirroringCreditTest(), mirroringExpiryTest()))
-                    .authorize(request(FIXTURE_AMOUNT), ACTOR);
+                    .authorize(request(FIXTURE_AMOUNT), CALLER);
 
             assertTrue(outcome.approved(),
                     "the six datasets at app/cbl/CBTRN02C.cbl:L28-L61 omit the card file, and no"
@@ -678,7 +682,7 @@ final class AuthorizationChainCompositionTest {
             when(accountRow.getAccountExpirationDate()).thenReturn("2020-01-31");
 
             AuthorizationService.Outcome outcome = serviceOver(List.of(resolvingCardAndAccount(),
-                    mirroringExpiryTest())).authorize(request(FIXTURE_AMOUNT), ACTOR);
+                    mirroringExpiryTest())).authorize(request(FIXTURE_AMOUNT), CALLER);
 
             assertEquals(Optional.of(DeclineReason.ACCOUNT_EXPIRED), outcome.declineReason(),
                     "app/cbl/CBTRN02C.cbl:L414 reads DALYTRAN-ORIG-TS (1:10) and no current time");
@@ -695,9 +699,8 @@ final class AuthorizationChainCompositionTest {
      */
     private AuthorizationService serviceOver(List<DeclineRule> rules) {
         return new AuthorizationService(rules, cardCrossReferences, identifiers, outboxWriter,
-                unresolvedCardAttempts, authorizationDecisions,
-                new OriginTimestampWindow(ACCEPTED_AGE_MINUTES, ACCEPTED_FUTURE_MINUTES),
-                new SimpleMeterRegistry(), immediateTransactions(), replicaPolicy());
+                unresolvedCardAttempts, authorizationDecisions, new SimpleMeterRegistry(),
+                immediateTransactions(), replicaPolicy(), cycleExposure());
     }
 
     /**
@@ -725,6 +728,25 @@ final class AuthorizationChainCompositionTest {
      */
     private static AuthorizationProperties replicaPolicy() {
         return mock(AuthorizationProperties.class, RETURNS_DEEP_STUBS);
+    }
+
+    /**
+     * Supplies a reservation over a store no stub rule below reads.
+     *
+     * <p>Every rule in these tests is a stub that resolves whatever it was told to resolve, so none
+     * reaches the credit-limit rule and none reserves anything. The collaborator still has to exist,
+     * because the service holds it and bounds its lock wait on every call. The configured block is built
+     * rather than deep-stubbed, so the lifetime it carries is a value this file states.
+     *
+     * @return the reservation the service under test holds
+     */
+    private static CycleExposureReservation cycleExposure() {
+        AuthorizationProperties properties = mock(AuthorizationProperties.class);
+        when(properties.decision()).thenReturn(
+                new AuthorizationProperties.Decision(3_000L, Duration.ofMinutes(15)));
+        AccountCreditSnapshotRepository snapshots = mock(AccountCreditSnapshotRepository.class);
+        when(snapshots.reserveCycleExposure(any(), any(), any(), any())).thenReturn(1);
+        return new CycleExposureReservation(snapshots, properties);
     }
 
     /**

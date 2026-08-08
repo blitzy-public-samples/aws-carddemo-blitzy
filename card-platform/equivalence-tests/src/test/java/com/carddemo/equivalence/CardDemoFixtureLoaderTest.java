@@ -6,11 +6,20 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
+import java.util.stream.Stream;
 
 import org.junit.jupiter.api.Test;
 
@@ -47,6 +56,33 @@ class CardDemoFixtureLoaderTest {
 
     /** Records {@code app/data/ASCII/cardxref.txt} holds. */
     private static final int CROSS_REFERENCE_RECORD_COUNT = 50;
+
+    /** Build directory of this module, which holds the copied fixtures a refusal test mutates. */
+    private static final String BUILD_DIRECTORY = "target";
+
+    /** Prefix of a copied fixture directory, so a leftover is recognisable. */
+    private static final String COPY_PREFIX = "blitzy_adhoc_test_fixture_copy_";
+
+    /** The nine fixtures the loader requires a fixture directory to hold. */
+    private static final List<String> FIXTURE_FILE_NAMES = List.of(
+            CardDemoFixtureLoader.ACCTDATA_FIXTURE_FILE_NAME,
+            CardDemoFixtureLoader.CARDDATA_FIXTURE_FILE_NAME,
+            CardDemoFixtureLoader.CARDXREF_FIXTURE_FILE_NAME,
+            CardDemoFixtureLoader.CUSTDATA_FIXTURE_FILE_NAME,
+            CardDemoFixtureLoader.DAILYTRAN_FIXTURE_FILE_NAME,
+            CardDemoFixtureLoader.DISCGRP_FIXTURE_FILE_NAME,
+            CardDemoFixtureLoader.TCATBAL_FIXTURE_FILE_NAME,
+            CardDemoFixtureLoader.TRANCATG_FIXTURE_FILE_NAME,
+            CardDemoFixtureLoader.TRANTYPE_FIXTURE_FILE_NAME);
+
+    /** The separator the loader splits records on. */
+    private static final String RECORD_SEPARATOR = "\n";
+
+    /** A character that is not a digit, used to pad a record a refusal test adds. */
+    private static final String PAD_CHARACTER = " ";
+
+    /** One-based position of the record a refusal test shortens. */
+    private static final int SHORTENED_RECORD_ORDINAL = 3;
 
     /** A card number of exactly the key width, chosen here and not read from a fixture. */
     private static final String KEY_WIDTH_CARD_NUMBER = "4111222233334444";
@@ -398,4 +434,262 @@ class CardDemoFixtureLoaderTest {
         assertTrue(directory.endsWith(java.nio.file.Path.of("app", "data", "ASCII")),
                 "the resolved fixture path ends in app/data/ASCII");
     }
+
+    // Fixture shape refusals. Every fixture arrives through readRecords, so its three refusals and
+    // the directory check above it are the whole of the loader's protection against a fixture that
+    // is absent, substituted, truncated or padded. Each is driven here through
+    // CardDemoFixtureLoader.FIXTURE_DIRECTORY_PROPERTY over a copy of the nine files, so no test
+    // touches app/data/ASCII.
+
+    @Test
+    void anAbsentFixtureIsRefusedNamingTheFileAndTheNineTheLoaderReads() {
+        String refusal = refusalMessage(
+                directory -> delete(directory.resolve(
+                        CardDemoFixtureLoader.CARDXREF_FIXTURE_FILE_NAME)),
+                CardDemoFixtureLoader::fixtureDirectory);
+
+        assertTrue(refusal.contains(CardDemoFixtureLoader.CARDXREF_FIXTURE_FILE_NAME),
+                "the refusal names the fixture that is missing: " + refusal);
+        assertTrue(refusal.contains("is not the CardDemo fixture directory"),
+                "the refusal says what the directory failed to be: " + refusal);
+        assertTrue(refusal.contains(CardDemoFixtureLoader.DAILYTRAN_FIXTURE_FILE_NAME),
+                "the refusal lists the fixtures the loader reads, so a reader can see what a "
+                        + "fixture directory has to hold: " + refusal);
+    }
+
+    @Test
+    void aFixtureThatIsNotARegularFileIsRefusedWithoutFollowingTheLink() {
+        String refusal = refusalMessage(
+                directory -> replaceWithLinkToTheRealFixture(directory,
+                        CardDemoFixtureLoader.CARDXREF_FIXTURE_FILE_NAME),
+                () -> CardDemoFixtureLoader.readRecords(
+                        CardDemoFixtureLoader.CARDXREF_FIXTURE_FILE_NAME,
+                        CROSS_REFERENCE_DELIVERED_WIDTH, CROSS_REFERENCE_RECORD_COUNT));
+
+        assertTrue(refusal.contains("is not a regular file"),
+                "the refusal says the fixture did not resolve to a regular file: " + refusal);
+        assertTrue(refusal.contains("symbolic link is refused"),
+                "the refusal says a link standing in for a fixture is refused, which is what "
+                        + "keeps a redirected fixture out of an equivalence run: " + refusal);
+    }
+
+    @Test
+    void aFixtureLargerThanItsDeclaredShapeIsRefusedBeforeItsRecordsAreRead() {
+        int permitted = CROSS_REFERENCE_RECORD_COUNT * (CROSS_REFERENCE_DELIVERED_WIDTH + 1);
+        String refusal = refusalMessage(
+                directory -> append(directory.resolve(
+                                CardDemoFixtureLoader.CARDXREF_FIXTURE_FILE_NAME),
+                        PAD_CHARACTER.repeat(CROSS_REFERENCE_DELIVERED_WIDTH) + RECORD_SEPARATOR),
+                () -> CardDemoFixtureLoader.readRecords(
+                        CardDemoFixtureLoader.CARDXREF_FIXTURE_FILE_NAME,
+                        CROSS_REFERENCE_DELIVERED_WIDTH, CROSS_REFERENCE_RECORD_COUNT));
+
+        assertTrue(refusal.contains(Integer.toString(permitted)),
+                "the refusal states the largest byte count " + CROSS_REFERENCE_RECORD_COUNT
+                        + " records of " + CROSS_REFERENCE_DELIVERED_WIDTH
+                        + " characters can occupy, which is " + permitted + ": " + refusal);
+        assertTrue(refusal.contains("is the most"),
+                "the refusal says the file exceeded that bound rather than that a record was the "
+                        + "wrong width, because nothing was read: " + refusal);
+    }
+
+    @Test
+    void aFixtureHoldingAnotherRecordCountIsRefused() {
+        String refusal = refusalMessage(
+                directory -> writeRecords(directory, withoutTheLastRecord(directory)),
+                () -> CardDemoFixtureLoader.readRecords(
+                        CardDemoFixtureLoader.CARDXREF_FIXTURE_FILE_NAME,
+                        CROSS_REFERENCE_DELIVERED_WIDTH, CROSS_REFERENCE_RECORD_COUNT));
+
+        assertTrue(refusal.contains("holds " + (CROSS_REFERENCE_RECORD_COUNT - 1) + " records"),
+                "the refusal states how many records arrived: " + refusal);
+        assertTrue(refusal.contains("the inventory names " + CROSS_REFERENCE_RECORD_COUNT),
+                "the refusal states how many the inventory names, so the two numbers can be "
+                        + "compared without opening the file: " + refusal);
+    }
+
+    @Test
+    void aRecordOfAnotherWidthIsRefusedNamingItsOrdinal() {
+        String refusal = refusalMessage(
+                directory -> writeRecords(directory, withARecordOneCharacterShort(directory)),
+                () -> CardDemoFixtureLoader.readRecords(
+                        CardDemoFixtureLoader.CARDXREF_FIXTURE_FILE_NAME,
+                        CROSS_REFERENCE_DELIVERED_WIDTH, CROSS_REFERENCE_RECORD_COUNT));
+
+        assertTrue(refusal.contains("record " + SHORTENED_RECORD_ORDINAL),
+                "the refusal names the one-based position of the record that is the wrong width: "
+                        + refusal);
+        assertTrue(refusal.contains("holds " + (CROSS_REFERENCE_DELIVERED_WIDTH - 1)
+                        + " characters and the layout reads " + CROSS_REFERENCE_DELIVERED_WIDTH),
+                "the refusal states the width that arrived and the width the layout reads: "
+                        + refusal);
+    }
+
+    @Test
+    void noFixtureShapeRefusalCarriesAFixtureValue() {
+        CopybookRecordParser.CardCrossReferenceRecord first =
+                CardDemoFixtureLoader.loadCardCrossReferences().getFirst();
+        List<String> refusals = List.of(
+                refusalMessage(directory -> append(directory.resolve(
+                                CardDemoFixtureLoader.CARDXREF_FIXTURE_FILE_NAME),
+                                PAD_CHARACTER.repeat(CROSS_REFERENCE_DELIVERED_WIDTH)
+                                        + RECORD_SEPARATOR),
+                        () -> CardDemoFixtureLoader.readRecords(
+                                CardDemoFixtureLoader.CARDXREF_FIXTURE_FILE_NAME,
+                                CROSS_REFERENCE_DELIVERED_WIDTH, CROSS_REFERENCE_RECORD_COUNT)),
+                refusalMessage(directory -> writeRecords(directory, withoutTheLastRecord(directory)),
+                        () -> CardDemoFixtureLoader.readRecords(
+                                CardDemoFixtureLoader.CARDXREF_FIXTURE_FILE_NAME,
+                                CROSS_REFERENCE_DELIVERED_WIDTH, CROSS_REFERENCE_RECORD_COUNT)),
+                refusalMessage(directory -> writeRecords(directory,
+                                withARecordOneCharacterShort(directory)),
+                        () -> CardDemoFixtureLoader.readRecords(
+                                CardDemoFixtureLoader.CARDXREF_FIXTURE_FILE_NAME,
+                                CROSS_REFERENCE_DELIVERED_WIDTH, CROSS_REFERENCE_RECORD_COUNT)));
+
+        for (String refusal : refusals) {
+            assertFalse(refusal.contains(first.cardNumber()),
+                    "a shape refusal carries a card number: " + refusal);
+            assertFalse(refusal.contains(first.accountId()),
+                    "a shape refusal carries an account identifier: " + refusal);
+            assertFalse(refusal.contains(first.customerId()),
+                    "a shape refusal carries a customer identifier: " + refusal);
+        }
+    }
+
+    /**
+     * Provokes one refusal over a copy of the nine fixtures.
+     *
+     * <p>The copy is made under the module's build directory, the loader is pointed at it through
+     * {@link CardDemoFixtureLoader#FIXTURE_DIRECTORY_PROPERTY}, the mutation is applied, and the
+     * property and the copy are both removed before the method returns. {@code app/data/ASCII} is
+     * only ever read.</p>
+     *
+     * @param mutation applied to the copied directory
+     * @param action   the loader call expected to refuse
+     * @return the refusal message
+     */
+    private static String refusalMessage(Consumer<Path> mutation, Runnable action) {
+        String previous = System.getProperty(CardDemoFixtureLoader.FIXTURE_DIRECTORY_PROPERTY);
+        Path directory = copyOfTheFixtures();
+        try {
+            mutation.accept(directory);
+            System.setProperty(CardDemoFixtureLoader.FIXTURE_DIRECTORY_PROPERTY,
+                    directory.toString());
+            IllegalStateException refusal =
+                    assertThrows(IllegalStateException.class, action::run,
+                            "the loader accepted a fixture directory it should have refused");
+            assertNotNull(refusal.getMessage(), "the refusal carries a message");
+            return refusal.getMessage();
+        } finally {
+            if (previous == null) {
+                System.clearProperty(CardDemoFixtureLoader.FIXTURE_DIRECTORY_PROPERTY);
+            } else {
+                System.setProperty(CardDemoFixtureLoader.FIXTURE_DIRECTORY_PROPERTY, previous);
+            }
+            deleteRecursively(directory);
+        }
+    }
+
+    /** @return a new directory under the build directory holding a copy of the nine fixtures */
+    private static Path copyOfTheFixtures() {
+        Path source = CardDemoFixtureLoader.fixtureDirectory();
+        try {
+            Path buildDirectory = Files.createDirectories(Path.of(BUILD_DIRECTORY));
+            Path directory = Files.createTempDirectory(buildDirectory, COPY_PREFIX);
+            for (String fileName : FIXTURE_FILE_NAMES) {
+                Files.copy(source.resolve(fileName), directory.resolve(fileName));
+            }
+            return directory;
+        } catch (IOException unwritable) {
+            throw new UncheckedIOException("the fixture copy did not write", unwritable);
+        }
+    }
+
+    /** @return the records of the copied cross-reference fixture, less its last record */
+    private static List<String> withoutTheLastRecord(Path directory) {
+        List<String> records = new ArrayList<>(recordsOf(directory));
+        records.removeLast();
+        return records;
+    }
+
+    /** @return the records of the copied cross-reference fixture, one of them a character short */
+    private static List<String> withARecordOneCharacterShort(Path directory) {
+        List<String> records = new ArrayList<>(recordsOf(directory));
+        String shortened = records.get(SHORTENED_RECORD_ORDINAL - 1);
+        records.set(SHORTENED_RECORD_ORDINAL - 1,
+                shortened.substring(0, shortened.length() - 1));
+        return records;
+    }
+
+    /** @return the records the copied cross-reference fixture holds */
+    private static List<String> recordsOf(Path directory) {
+        try {
+            return Files.readAllLines(
+                    directory.resolve(CardDemoFixtureLoader.CARDXREF_FIXTURE_FILE_NAME),
+                    StandardCharsets.ISO_8859_1);
+        } catch (IOException unreadable) {
+            throw new UncheckedIOException("the copied fixture did not read", unreadable);
+        }
+    }
+
+    /** Writes records back over the copied cross-reference fixture, one separator after each. */
+    private static void writeRecords(Path directory, List<String> records) {
+        StringBuilder content = new StringBuilder();
+        for (String record : records) {
+            content.append(record).append(RECORD_SEPARATOR);
+        }
+        try {
+            Files.writeString(
+                    directory.resolve(CardDemoFixtureLoader.CARDXREF_FIXTURE_FILE_NAME),
+                    content.toString(), StandardCharsets.ISO_8859_1);
+        } catch (IOException unwritable) {
+            throw new UncheckedIOException("the copied fixture did not write", unwritable);
+        }
+    }
+
+    /** Appends text to one copied fixture. */
+    private static void append(Path file, String text) {
+        try {
+            Files.writeString(file, text, StandardCharsets.ISO_8859_1, StandardOpenOption.APPEND);
+        } catch (IOException unwritable) {
+            throw new UncheckedIOException("the copied fixture did not write", unwritable);
+        }
+    }
+
+    /** Removes one copied fixture. */
+    private static void delete(Path file) {
+        try {
+            Files.delete(file);
+        } catch (IOException undeletable) {
+            throw new UncheckedIOException("the copied fixture did not delete", undeletable);
+        }
+    }
+
+    /** Replaces one copied fixture with a symbolic link to the fixture it was copied from. */
+    private static void replaceWithLinkToTheRealFixture(Path directory, String fileName) {
+        Path target = CardDemoFixtureLoader.fixtureDirectory().resolve(fileName);
+        delete(directory.resolve(fileName));
+        try {
+            Files.createSymbolicLink(directory.resolve(fileName), target);
+        } catch (IOException unlinkable) {
+            throw new UncheckedIOException("the copied fixture did not link", unlinkable);
+        }
+    }
+
+    /** Removes the copied directory and everything in it. */
+    private static void deleteRecursively(Path directory) {
+        try (Stream<Path> entries = Files.walk(directory)) {
+            entries.sorted(Comparator.reverseOrder()).forEach(entry -> {
+                try {
+                    Files.deleteIfExists(entry);
+                } catch (IOException undeletable) {
+                    throw new UncheckedIOException("the fixture copy did not delete", undeletable);
+                }
+            });
+        } catch (IOException unwalkable) {
+            throw new UncheckedIOException("the fixture copy did not delete", unwalkable);
+        }
+    }
+
 }

@@ -17,20 +17,20 @@ import java.util.regex.Pattern;
  * {@code CARD-ACTIVE-STATUS PIC X(01)} at L10. That copybook ends with a 59-byte trailing
  * {@code FILLER} at L11, which this record drops.
  *
+ * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
+ *
  * @param cardNumber   the card number in its masked form: twelve mask characters then the last four
  *                     digits. The controller masks with
  *                     {@code com.carddemo.cobol.PanMasker.maskCardNumber} when it builds the row,
  *                     so no full Primary Account Number (PAN) reaches a response. Lookups and
  *                     filters run on the full sixteen characters, before the row is built.
  * @param accountId    the eleven-digit identifier of the account the card belongs to, carried as
- *                     text. {@code CARD-ACCT-ID PIC 9(11)} is numeric display, so
- *                     {@code 00000000050} holds three significant digits behind eight leading
- *                     zeros. Text keeps those zeros through serialization, and the same
- *                     eleven-character form appears in the {@code accountId} of every event schema
- *                     and in the Kafka message key.
- * @param activeStatus the one-character active status, carried through with no interpretation.
- *
- * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
+ *                     text. {@code CARD-ACCT-ID PIC 9(11)} is numeric display, so text keeps every
+ *                     leading zero through serialization. The same eleven-character form is the
+ *                     {@code accountId} of every account-keyed event schema and the Kafka message
+ *                     key of those events; {@code TransactionDeclined} version 2 is keyed on a
+ *                     transaction identifier instead.
+ * @param activeStatus the one-character active status, carried through with no interpretation
  */
 public record CardSummary(String cardNumber, String accountId, String activeStatus) {
 
@@ -45,19 +45,20 @@ public record CardSummary(String cardNumber, String accountId, String activeStat
      *
      * <p>The same expression governs the published event at
      * {@code com.carddemo.card.messaging.CardUpdated.MASKED_CARD_NUMBER_PATTERN} and the stored
-     * reject row, whose column carries a matching check constraint. Enforcing it here is what makes
-     * {@link #toString()} safe to print in full: no complete Primary Account Number can reach this
-     * record, so the rendering has no component to withhold.
+     * reject row, whose column carries a matching check constraint. Enforcing it here is what lets
+     * {@link #toString()} print the card number: no complete Primary Account Number can reach this
+     * record.
      */
     private static final Pattern MASKED_CARD_NUMBER =
             Pattern.compile(MASKED_CARD_NUMBER_PATTERN);
 
     /**
-     * Checks that the account identifier holds exactly eleven digits.
+     * Checks that the card number is masked and the account identifier holds eleven digits.
      *
-     * @throws NullPointerException     when {@code accountId} is null
-     * @throws IllegalArgumentException when {@code accountId} is any other width, or holds a
-     *                                  character other than an ASCII digit
+     * @throws NullPointerException     when {@code cardNumber} or {@code accountId} is null
+     * @throws IllegalArgumentException when {@code cardNumber} is not twelve mask characters
+     *                                  followed by four digits, or when {@code accountId} is any
+     *                                  other width or holds a character other than an ASCII digit
      */
     public CardSummary {
         if (cardNumber == null) {
@@ -85,17 +86,9 @@ public record CardSummary(String cardNumber, String accountId, String activeStat
     }
 
     /**
-     * Returns a rendering that carries every component, because no component of this record is
-     * sensitive.
-     *
-     * <p>The override is not decoration. The canonical constructor admits only twelve mask
-     * characters followed by four digits, the account identifier is an internal key, and the status
-     * is a single flag. The rendering a record carries by default would therefore already be safe.
-     * Writing
-     * it out states that conclusion where a reader will find it, and makes a component added later a
-     * visible decision rather than a silent disclosure through an inherited default.
-     *
-     * @return one line naming the class and each of the three components
+     * @return one line naming the class, the already-masked card number, the withheld account
+     *         identifier and the status. Writing the override out rather than inheriting it makes a
+     *         component added later a visible decision instead of a silent disclosure
      */
     @Override
     public String toString() {

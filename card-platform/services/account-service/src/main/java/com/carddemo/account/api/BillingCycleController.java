@@ -43,6 +43,14 @@ import org.springframework.web.bind.annotation.RestController;
  * {@code app/cpy/CVACT01Y.cpy:L6} for nothing. {@code domain/BillingCycleService} holds the lock,
  * the transaction boundary and the write.
  *
+ * <p>This route takes no request body, which once made it the one operation on this platform
+ * an HTML form could submit on its own. A browser attaches a cached HTTP Basic credential to
+ * a request a foreign page caused, so a page anywhere could have zeroed both accumulators of
+ * any account whose identifier it guessed. {@code config/CrossSiteRequestFilter} closes that:
+ * this method answers only a request declaring a first-party {@code Sec-Fetch-Site}, naming
+ * this origin if it names one, and carrying a request header no form can set. The body stays
+ * absent, because what made the route reachable was the credential rather than the shape.
+ *
  * <p>{@code src/main/resources/openapi.yaml} describes this route, and no generator reconciles that
  * description against this class.
  *
@@ -87,11 +95,34 @@ public class BillingCycleController {
      * <p>The response carries the account identifier and both accumulators as they stand after the
      * close, each at the two fractional digits {@code PIC S9(10)V99} holds.
      *
+     * <h2>Why a bodyless route still names a media type</h2>
+     *
+     * <p>{@code consumes} is the cross-site request forgery control on this route, not a statement
+     * about a body it does not read. A POST is one of the three methods a browser will send
+     * cross-origin with no preflight, and it carries whatever credential the browser has cached for
+     * this origin. The three content types available to such a request are
+     * {@code application/x-www-form-urlencoded}, {@code multipart/form-data} and
+     * {@code text/plain}; {@code application/json} is not among them, so requiring it forces a
+     * preflight, and this service declares no cross-origin configuration for a preflight to
+     * succeed against.
+     *
+     * <p>That control matters more here than on any other route of this service. This endpoint
+     * zeroes both billing-cycle accumulators, reproducing {@code app/cbl/CBACT04C.cbl:L353-L354},
+     * and those accumulators are exactly what the credit-limit rule at
+     * {@code app/cbl/CBTRN02C.cbl:L403-L413} tests. A forged call clears the caller's own overlimit
+     * condition, so the finding is a financial one and not only a protocol one.
+     *
+     * <p>{@code config/SecurityConfig} refuses the three browser-simple content types on every
+     * state-changing request as well, so the protection does not rest on this one annotation.
+     *
      * @param accountId the account whose cycle to close, eleven decimal digits
-     * @return {@code 200} carrying both accumulators at zero, or {@code 404} when this service
-     *         holds no row for that identifier
+     * @return {@code 200} carrying both accumulators at zero, {@code 404} when this service holds
+     *         no row for that identifier, or {@code 415} when the request names no media type this
+     *         route accepts
      */
-    @PostMapping("/{accountId}/cycle-close")
+    @PostMapping(path = "/{accountId}/cycle-close",
+            consumes = MediaType.APPLICATION_JSON_VALUE,
+            produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<?> closeBillingCycle(
             @PathVariable
             @Pattern(regexp = ACCOUNT_ID_PATTERN, message = AccountController.ACCOUNT_ID_MESSAGE)

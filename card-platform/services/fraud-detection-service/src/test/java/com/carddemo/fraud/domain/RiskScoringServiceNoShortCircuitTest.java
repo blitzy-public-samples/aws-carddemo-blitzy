@@ -233,19 +233,16 @@ class RiskScoringServiceNoShortCircuitTest {
         }
     }
 
-    /** Builds a scorer over the given doubles, at the shipped threshold, with a counting window. */
     private static RiskScoringService scorer(RiskRule... rules) {
         return new RiskScoringService(List.of(rules), countingWindow(), settings());
     }
 
-    /** Builds a window store whose statement reports the one row it writes. */
     private static VelocityWindowRepository countingWindow() {
         VelocityWindowRepository windows = mock(VelocityWindowRepository.class);
         when(windows.addAuthorization(eq(ACCOUNT_ID), any(), any(), any())).thenReturn(ONE_ROW);
         return windows;
     }
 
-    /** Builds a double that triggers for {@code points} and reports {@code identifier}. */
     private static RiskRule triggering(String identifier, int points) {
         RiskRule rule = mock(RiskRule.class);
         when(rule.evaluate(any())).thenReturn(RiskRule.Contribution.triggeredWith(points));
@@ -253,7 +250,6 @@ class RiskScoringServiceNoShortCircuitTest {
         return rule;
     }
 
-    /** Builds a double that does not trigger and reports {@code identifier}. */
     private static RiskRule silent(String identifier) {
         RiskRule rule = mock(RiskRule.class);
         when(rule.evaluate(any())).thenReturn(RiskRule.Contribution.notTriggered());
@@ -261,10 +257,6 @@ class RiskScoringServiceNoShortCircuitTest {
         return rule;
     }
 
-    /**
-     * Builds record 1 of the daily transaction fixture as one authorized transaction. Version 1 of
-     * the event contract carries no card token, so that component is absent.
-     */
     private static TransactionAuthorized authorization() {
         return new TransactionAuthorized(UUID.fromString(EVENT_ID),
                 TransactionAuthorized.EVENT_TYPE, EventEnvelope.SCHEMA_VERSION, OCCURRED_AT,
@@ -274,10 +266,6 @@ class RiskScoringServiceNoShortCircuitTest {
                 TransactionAuthorized.CURRENCY);
     }
 
-    /**
-     * Builds the bound settings carrying the shipped flag threshold. The scorer reads one risk
-     * threshold and no other property, so only the risk block holds values.
-     */
     private static FraudProperties settings() {
         return new FraudProperties(null, null, null, null, null,
                 new FraudProperties.Fraud(new FraudProperties.Fraud.Risk(SHIPPED_THRESHOLD,

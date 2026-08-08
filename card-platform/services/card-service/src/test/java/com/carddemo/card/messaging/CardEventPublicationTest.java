@@ -12,10 +12,13 @@ import ch.qos.logback.classic.LoggerContext;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import com.carddemo.card.CardApplication;
+import com.carddemo.card.TestIdentityPasswords;
 import com.carddemo.card.api.CardController;
 import com.carddemo.card.api.dto.CardUpdateRequest;
-import com.carddemo.card.api.dto.CardUpdateResponse;
 import com.carddemo.card.api.dto.CardUpdateResponse.UpdateOutcome;
+import com.carddemo.card.ScheduledWorkShutdown;
+import com.carddemo.card.api.dto.CardUpdateResponse;
+import com.carddemo.card.config.CrossSiteRequestFilter;
 import com.carddemo.card.config.KafkaProducerConfig;
 import com.carddemo.card.domain.CardUpdateService;
 import com.carddemo.card.entity.CardEntity;
@@ -56,6 +59,7 @@ import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.errors.TopicExistsException;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.awaitility.Awaitility;
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -63,6 +67,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.ApplicationContext;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
@@ -78,6 +83,7 @@ import org.testcontainers.kafka.KafkaContainer;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.node.ObjectNode;
 
 /**
  * Drives the card service over its own Representational State Transfer (REST) routes and reads
@@ -116,9 +122,9 @@ import tools.jackson.databind.ObjectMapper;
         properties = {
                 "KAFKA_SASL_PASSWORD=not-a-real-broker-password",
                 "ADMIN_USERNAME=" + CardEventPublicationTest.ADMIN_NAME,
-                "ADMIN_PASSWORD_HASH={noop}" + CardEventPublicationTest.ADMIN_SECRET,
-                "USER_PASSWORD_HASH={noop}not-a-real-user-password",
-                "MONITORING_PASSWORD_HASH={noop}not-a-real-monitoring-password"
+                "ADMIN_PASSWORD_HASH=" + TestIdentityPasswords.ADMIN_PASSWORD_HASH,
+                "USER_PASSWORD_HASH=" + TestIdentityPasswords.USER_PASSWORD_HASH,
+                "MONITORING_PASSWORD_HASH=" + TestIdentityPasswords.MONITORING_PASSWORD_HASH
         })
 @Testcontainers
 @DisplayName("Card event publication: one event per mutation, keyed, masked, and free of the card"
@@ -134,13 +140,13 @@ class CardEventPublicationTest {
     static final String ADMIN_NAME = "admin001";
 
     /**
-     * Password of that identity, in the clear because the configured value carries the
-     * {@code noop} prefix.
+     * Password of that identity. The property above configures its bcrypt hash, and this value is
+     * what a request presents.
      *
      * <p>The value matches no provider credential pattern and authenticates against this test
      * context alone.
      */
-    static final String ADMIN_SECRET = "not-a-real-admin-password";
+    static final String ADMIN_SECRET = TestIdentityPasswords.ADMIN_PASSWORD;
 
     /** The image tag {@code card-platform/docker-compose.yml} also names for the database. */
     private static final String POSTGRES_IMAGE = "postgres:18.4";
@@ -394,6 +400,34 @@ class CardEventPublicationTest {
     @Autowired
     private JdbcTemplate jdbc;
 
+    /** The started context, so the scheduled sweep can be stopped before the containers are. */
+    @Autowired
+    private ApplicationContext context;
+
+    /** The context of the most recent test instance, for {@link #stopBackgroundWork()}. */
+    private static ApplicationContext startedContext;
+
+    /**
+     * Stops the relay tick and the listeners while the containers are still up.
+     *
+     * <p>This class is the one container-owning class of this service that cannot stand the schedule
+     * down through a property, because {@link #awaitRecords(int)} waits for the scheduled sweep to
+     * place an event on the topic. The tick is what it asserts on, so it has to keep running.
+     *
+     * <p>An {@code @AfterAll} method runs before the extension callback that stops the containers,
+     * which is the only window in which this can be done. Without it the relay keeps ticking every
+     * half second into a database that has gone, and the build log carries a closed-connection stack
+     * trace under {@code Unexpected error occurred in scheduled task} on a run where every assertion
+     * passed.
+     *
+     * <p>The injected field is an instance field because Spring injects into instances, so the
+     * context is captured from the last test instance rather than read statically.
+     */
+    @AfterAll
+    static void stopBackgroundWork() {
+        ScheduledWorkShutdown.stopBefore(startedContext);
+    }
+
     /** Sends every request. Built once per test, and closed with the test. */
     private HttpClient httpClient;
 
@@ -407,6 +441,12 @@ class CardEventPublicationTest {
      * seeking to the end afterwards drops anything an earlier test left on the topic. A test that
      * then counts records counts only its own.
      */
+    /** Records the context so the static teardown above can reach it. */
+    @BeforeEach
+    void captureContext() {
+        startedContext = context;
+    }
+
     @BeforeEach
     void restoreTheSeededCardAndPositionTheReader() {
         prepareTopics();
@@ -530,16 +570,20 @@ class CardEventPublicationTest {
      * proves nothing about a publish still in flight. Each poll blocks for at most
      * {@link #POLL_TIMEOUT}, so the window passes without a sleep.
      *
+     * <p>{@link QuietWindow} owns the deadline and reads {@link System#nanoTime()} for it. The
+     * deadline was a wall-clock instant, and an adjustment that moved the clock forward during the
+     * window closed the watch early, so a duplicate arriving afterwards was never polled for and the
+     * assertion passed having seen nothing. {@link QuietWindowTest} measures what that costs.
+     *
      * @param window how long to watch
      * @return every record seen inside the window, which is empty when nothing was published
      */
     private List<ConsumerRecord<String, String>> recordsDuring(Duration window) {
-        List<ConsumerRecord<String, String>> collected = new ArrayList<>();
-        Instant deadline = Instant.now().plus(window);
-        while (Instant.now().isBefore(deadline)) {
-            cardEvents.poll(POLL_TIMEOUT).forEach(collected::add);
-        }
-        return collected;
+        return QuietWindow.collectDuring(window, () -> {
+            List<ConsumerRecord<String, String>> polled = new ArrayList<>();
+            cardEvents.poll(POLL_TIMEOUT).forEach(polled::add);
+            return polled;
+        });
     }
 
     /**
@@ -652,24 +696,22 @@ class CardEventPublicationTest {
     }
 
     /**
-     * Reads one card over the real route, naming the full Primary Account Number in the body.
+     * Reads one card over the real route, naming the full Primary Account Number in the path.
      *
-     * <p>{@code POST /cards/detail} takes the sixteen characters the read keys on.
+     * <p>{@code GET /cards/{cardNumber}} takes the sixteen characters the read keys on, which is the
+     * value {@code app/cbl/COCRDSLC.cbl:L740} moves into the read key.
      * {@code app/bms/COCRDSL.bms:L99} declares the source screen field at the same sixteen, and no
      * source program masks the value.
      *
-     * @param accountId  the eleven-digit account the card belongs to
      * @param cardNumber the full sixteen-digit card number
      * @return the status and the body the service answered with
      */
-    private HttpResponse<String> readCard(String accountId, String cardNumber) {
-        String body = "{\"accountId\":\"" + accountId + "\",\"cardNumber\":\"" + cardNumber + "\"}";
-        return send(authorized(CardController.DETAIL_ROUTE)
-                .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8)).build());
+    private HttpResponse<String> readCard(String cardNumber) {
+        return send(authorized(CardController.BASE_PATH + "/" + cardNumber).GET().build());
     }
 
     /**
-     * Updates one card over the real route, naming the full Primary Account Number in the body.
+     * Updates one card over the real route, naming the full Primary Account Number in the path.
      *
      * @param cardNumber   the full sixteen-digit card number
      * @param embossedName the cardholder name to write
@@ -681,13 +723,12 @@ class CardEventPublicationTest {
      */
     private HttpResponse<String> updateCard(String cardNumber, String embossedName,
             String expiryYear, String expiryMonth, String expiryDay, String activeStatus) {
-        String body = "{\"cardNumber\":\"" + cardNumber
-                + "\",\"embossedName\":\"" + embossedName
+        String body = "{\"embossedName\":\"" + embossedName
                 + "\",\"expiryYear\":\"" + expiryYear
                 + "\",\"expiryMonth\":\"" + expiryMonth
                 + "\",\"expiryDay\":\"" + expiryDay
                 + "\",\"activeStatus\":\"" + activeStatus + "\"}";
-        return send(authorized(CardController.BASE_PATH)
+        return send(authorized(CardController.BASE_PATH + "/" + cardNumber)
                 .PUT(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8)).build());
     }
 
@@ -716,7 +757,11 @@ class CardEventPublicationTest {
                 .timeout(REQUEST_TIMEOUT)
                 .header("Authorization", "Basic " + credential)
                 .header("Content-Type", "application/json")
-                .header("Accept", "application/json");
+                .header("Accept", "application/json")
+                // config/CrossSiteRequestFilter requires this on every state-changing request. A
+                // first-party client sets it on all of them, and an HTML form can set no header at
+                // all, which is what separates the two.
+                .header(CrossSiteRequestFilter.DEFAULT_REQUIRED_HEADER, "1");
     }
 
     /**
@@ -936,7 +981,7 @@ class CardEventPublicationTest {
                     "the row the full card number resolved was rewritten");
 
             JsonNode published = MAPPER.readTree(theOneRecordPublished().value());
-            HttpResponse<String> read = readCard(SEEDED_ACCOUNT_ID, SEEDED_CARD_NUMBER);
+            HttpResponse<String> read = readCard(SEEDED_CARD_NUMBER);
 
             assertAll(
                     () -> assertEquals(MASKED_CARD_NUMBER,
@@ -1019,19 +1064,24 @@ class CardEventPublicationTest {
             HttpResponse<String> updated = renameTheSeededCard();
             assertEquals(200, updated.statusCode(), "the seeded card accepts a rename");
             String payload = theOneRecordPublished().value();
-            HttpResponse<String> read = readCard(SEEDED_ACCOUNT_ID, SEEDED_CARD_NUMBER);
+            HttpResponse<String> read = readCard(SEEDED_CARD_NUMBER);
             HttpResponse<String> listed = listCardsOfAccount(SEEDED_ACCOUNT_ID);
 
             assertAll(
                     () -> assertEquals(200, read.statusCode(), "the read answered one card"),
                     () -> assertEquals(200, listed.statusCode(), "the list answered one page"),
-                    () -> assertFalse(payload.contains(SEEDED_VERIFICATION_VALUE),
-                            "the published payload holds no card verification value"),
-                    () -> assertFalse(updated.body().contains(SEEDED_VERIFICATION_VALUE),
+                    () -> assertFalse(
+                            withoutOpaqueIdentifiers(scannableMembersOf(payload))
+                                    .contains(SEEDED_VERIFICATION_VALUE),
+                            "the published payload holds no card verification value: " + payload),
+                    () -> assertFalse(withoutOpaqueIdentifiers(updated.body())
+                                    .contains(SEEDED_VERIFICATION_VALUE),
                             "the update answer holds no card verification value"),
-                    () -> assertFalse(read.body().contains(SEEDED_VERIFICATION_VALUE),
+                    () -> assertFalse(withoutOpaqueIdentifiers(read.body())
+                                    .contains(SEEDED_VERIFICATION_VALUE),
                             "the read answer holds no card verification value"),
-                    () -> assertFalse(listed.body().contains(SEEDED_VERIFICATION_VALUE),
+                    () -> assertFalse(withoutOpaqueIdentifiers(listed.body())
+                                    .contains(SEEDED_VERIFICATION_VALUE),
                             "the one-row page holds no card verification value"));
         }
 
@@ -1051,7 +1101,7 @@ class CardEventPublicationTest {
                 assertEquals(200, renameTheSeededCard().statusCode(),
                         "the seeded card accepts a rename");
                 theOneRecordPublished();
-                assertEquals(200, readCard(SEEDED_ACCOUNT_ID, SEEDED_CARD_NUMBER).statusCode(),
+                assertEquals(200, readCard(SEEDED_CARD_NUMBER).statusCode(),
                         "the read answered one card");
                 assertEquals(200, listCardsOfAccount(SEEDED_ACCOUNT_ID).statusCode(),
                         "the list answered one page");
@@ -1076,30 +1126,53 @@ class CardEventPublicationTest {
         }
 
         /**
-         * Removes the two opaque identifiers this service logs on purpose.
+         * Removes the three machine-generated shapes this service emits on purpose.
          *
          * <p>A card verification value is three decimal digits, and three digits land inside a
-         * randomly generated identifier often. {@code outbox/OutboxWriter} logs the event
+         * freshly generated identifier often. {@code outbox/OutboxWriter} logs the event
          * identifier, and one run of this method read
          * {@code Stored card event 034996bf-df74-4017-b255-115782747004 of type CardUpdated}, whose
-         * last group ends in the three digits the seeded row holds. That is a coincidence of
-         * randomness and not a leak, and left in the text it fails this assertion on roughly one
-         * run in five.
+         * last group ends in the three digits the seeded row holds. A second run published an event
+         * whose identifier was {@code d747a7d4-5464-4d0e-8ef4-492d7f7fd6bb}, and the payload
+         * assertion read those digits out of the identifier. Both are coincidences of randomness
+         * rather than leaks, and left in the text either one fails an assertion on roughly one run
+         * in five.
          *
-         * <p>Two shapes come out: the identifier as a Universally Unique Identifier (UUID), and the
-         * sixty-four hexadecimal characters of a card token. Both are values this service is
-         * documented to log and neither is a place a card verification value could hide, because a
-         * leak reaches a log line as a field of the row rather than as a run of an identifier. A run
-         * of decimal digits is left where it is, so a line carrying a whole record still fails.
+         * <p>Three shapes come out: the identifier as a Universally Unique Identifier (UUID), the
+         * sixty-four hexadecimal characters of a card token, and an instant, whose sub-second digits
+         * are as good as random. Each is a value this platform emits by design, and none is a place
+         * a card verification value could hide, because a leak reaches a payload or a log line as a
+         * field of the row rather than as a run inside an identifier or a clock reading. Every other
+         * run of decimal digits is left where it is, so a shape carrying a whole record still fails.
          *
-         * @param line one formatted log line
-         * @return the line with those two shapes removed
+         * @param text one formatted log line, one published payload, or one response body
+         * @return the text with those three shapes removed
          */
-        private String withoutOpaqueIdentifiers(String line) {
-            return line.replaceAll(
+        private String withoutOpaqueIdentifiers(String text) {
+            return text.replaceAll(
                             "\\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\b",
                             "<event-id>")
-                    .replaceAll("\\b[0-9a-f]{64}\\b", "<card-token>");
+                    .replaceAll("\\b[0-9a-f]{64}\\b", "<card-token>")
+                    .replaceAll("\\d{4}-\\d{2}-\\d{2}[T ]\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z?",
+                            "<instant>");
+        }
+
+        /**
+         * Renders one payload without the two members a run generates.
+         *
+         * <p>{@code eventId} is a random Universally Unique Identifier (UUID) and
+         * {@code occurredAt} is the moment of the publication, and neither is read from the card row.
+         * A random identifier and a wall-clock moment each carry a three-character run roughly once
+         * in a hundred renderings, and a scan that read one would report a leak no code performed.
+         *
+         * @param payload the published payload
+         * @return the same payload without those two members
+         */
+        private String scannableMembersOf(String payload) {
+            ObjectNode scanned = (ObjectNode) MAPPER.readTree(payload);
+            scanned.remove(List.of("eventId", "occurredAt"));
+            assertFalse(scanned.isEmpty(), "the payload carries members beyond the generated two");
+            return scanned.toString();
         }
 
         /**
@@ -1158,7 +1231,7 @@ class CardEventPublicationTest {
         @Test
         @DisplayName("a card read publishes nothing")
         void aCardReadPublishesNothing() {
-            assertEquals(200, readCard(SEEDED_ACCOUNT_ID, SEEDED_CARD_NUMBER).statusCode(),
+            assertEquals(200, readCard(SEEDED_CARD_NUMBER).statusCode(),
                     "the read answered one card");
             sweepTheOutboxNow();
 
@@ -1214,9 +1287,9 @@ class CardEventPublicationTest {
             List<UUID> written = new ArrayList<>();
 
             newTransaction().executeWithoutResult(status -> {
-                CardUpdateResponse answer = cardUpdateService.updateCard(new CardUpdateRequest(
-                        SEEDED_CARD_NUMBER, UPDATED_EMBOSSED_NAME, SEEDED_EXPIRY_YEAR,
-                        SEEDED_EXPIRY_MONTH, SEEDED_EXPIRY_DAY, SEEDED_ACTIVE_STATUS));
+                CardUpdateResponse answer = cardUpdateService.updateCard(SEEDED_CARD_NUMBER,
+                        new CardUpdateRequest(UPDATED_EMBOSSED_NAME, SEEDED_EXPIRY_YEAR,
+                                SEEDED_EXPIRY_MONTH, SEEDED_EXPIRY_DAY, SEEDED_ACTIVE_STATUS));
                 assertEquals(UpdateOutcome.UPDATED, answer.outcome(),
                         "the update inside the open transaction rewrote the row");
 

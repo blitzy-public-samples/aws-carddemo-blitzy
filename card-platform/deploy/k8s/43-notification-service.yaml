@@ -1,13 +1,14 @@
 # Deployment, Service and NetworkPolicy for the notification service.
 #
-# Consumes transaction.posted, fraud.assessed and customer.context-changed under
-# three independent consumer groups. The service publishes no business event.
+# Consumes transaction.authorized, transaction.posted, fraud.assessed and
+# customer.context-changed under four independent consumer groups. The service publishes
+# no business event.
 #
 # Rendering and totalling come from app/cbl/CBSTM03A.CBL:L86-L159. The
 # card-keyed read model comes from app/cpy/COSTM01.CPY:L20-L36, and its key
 # comes from the sort step of app/jcl/CREASTMT.JCL.
 #
-# The container starts all three consumers, serves GET /notifications/{cardToken}
+# The container starts all four consumers, serves GET /notifications/{cardNumber}
 # and answers /actuator.
 #
 # Rationale for every choice in this folder: card-platform/docs/decision-log.md
@@ -66,6 +67,12 @@ spec:
           #   docker build -f card-platform/services/notification-service/Dockerfile \
           #     -t "carddemo/notification-service:${version}" \
           #     card-platform/services/notification-service
+          # THE TAG IS MUTABLE, AND THAT IS THE RESIDUAL RISK. Bytes tagged
+          # carddemo/notification-service:1.0.0-SNAPSHOT on one node are whatever an operator
+          # loaded there, and no manifest in this folder would notice a different build under the
+          # same name. The six references therefore live in one place, deploy/k8s/kustomization.yaml,
+          # so pinning them by digest is one edit rather than six. deploy/k8s/README.md gives the
+          # procedure and states plainly what a node verifies about each kind of image.
           image: carddemo/notification-service:1.0.0-SNAPSHOT
           imagePullPolicy: Never
           securityContext:
@@ -79,7 +86,7 @@ spec:
             # their work directories there. The one writable path is the volume below.
             readOnlyRootFilesystem: true
           ports:
-            # 8080 carries GET /notifications/{cardToken}, and the Service below
+            # 8080 carries GET /notifications/{cardNumber}, and the Service below
             # targets it. 9080 carries /actuator and matches MANAGEMENT_PORT in
             # 30-configmap.yaml. No Service exposes 9080, and the NetworkPolicy below
             # admits it from monitoring pods alone. Both ports are encrypted, because
@@ -168,14 +175,14 @@ spec:
                 configMapKeyRef:
                   name: carddemo-config
                   key: NOTIFICATION_KAFKA_USER
-            # Three consumer groups, one Deployment. Each group name below is bound from
-            # its own ConfigMap key, and the three resolved values differ.
+            # Four consumer groups, one Deployment. Each group name below is bound from
+            # its own ConfigMap key, and the four resolved values differ.
             #
             # 10-kafka.yaml grants this service's broker identity one consumer entry for
-            # each of those three pairs and no other. It grants producer entries on
-            # transaction.posted.DLT, fraud.assessed.DLT and customer.context-changed.DLT,
-            # plus the configured fallback used only when a recovery record has no source
-            # topic.
+            # each of those four pairs and no other. It grants producer entries on
+            # transaction.authorized.DLT, transaction.posted.DLT, fraud.assessed.DLT and
+            # customer.context-changed.DLT, plus the configured fallback used only when a
+            # recovery record has no source topic.
             #
             # The group below is the one a listener joins when it names none. The listener
             # container factory reads it, and the module application.yml falls back to the
@@ -329,7 +336,7 @@ spec:
 # management surfaces. Egress admits only Domain Name System (DNS), PostgreSQL
 # and Kafka.
 #
-# 8080 carries GET /notifications/{cardToken}, and the module
+# 8080 carries GET /notifications/{cardNumber}, and the module
 # config/SecurityConfig authenticates every request that arrives. 9080 carries
 # /actuator, where health answers with no credential so a probe can read it, and
 # every other endpoint requires ROLE_MONITORING. This policy closes the same gap

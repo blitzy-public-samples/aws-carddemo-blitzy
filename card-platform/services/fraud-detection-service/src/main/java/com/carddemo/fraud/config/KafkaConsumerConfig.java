@@ -67,7 +67,9 @@ import org.springframework.util.backoff.FixedBackOff;
  * {@code app/cpy/CVACT03Y.cpy:L7} (shape only, no logic) and travels as text, so a leading zero
  * survives. Automatic commit is off and the acknowledgement mode is {@link
  * ContainerProperties.AckMode#MANUAL_IMMEDIATE}, so a listener commits its offset once its own
- * writes commit. One record reaches the listener per call, and no batch listener is registered.
+ * writes commit. That mode is pinned on the container factory rather than read from configuration,
+ * and a {@code spring.kafka.listener.ack-mode} naming any other mode stops start-up instead of being
+ * silently overruled. One record reaches the listener per call, and no batch listener is registered.
  *
  * <p>A listener names {@link #LISTENER_CONTAINER_FACTORY_BEAN} in
  * {@code @KafkaListener(containerFactory = ...)}, and that one bean also answers to
@@ -267,6 +269,10 @@ public class KafkaConsumerConfig {
 
         KafkaTemplate<String, byte[]> template = new KafkaTemplate<>(producerFactory);
         template.setDefaultTopic(deadLetterTopic);
+        // A failed send records its destination and failure type only.
+        // SafeProducerListener displaces LoggingProducerListener, which would write the
+        // key and the first hundred characters of the payload into the log line.
+        template.setProducerListener(new SafeProducerListener<>());
         return template;
     }
 
@@ -365,8 +371,41 @@ public class KafkaConsumerConfig {
             factory.setConcurrency(concurrency);
         }
 
-        factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.MANUAL_IMMEDIATE);
+        factory.getContainerProperties()
+                .setAckMode(requireImmediateManualAcknowledgementOrUnset(
+                        kafkaProperties.getListener().getAckMode()));
         return factory;
+    }
+
+    /**
+     * Answers with the one acknowledgement mode this service runs under, refusing a bound mode that
+     * names another.
+     *
+     * <p>The mode is pinned here rather than taken from configuration, because every guarantee this
+     * service documents holds under {@code MANUAL_IMMEDIATE} alone: it is the one mode that commits
+     * the offset at the acknowledgement the listener issues after its own writes commit, and the one
+     * mode under which the framework applies
+     * {@link DefaultErrorHandler#setCommitRecovered(boolean)} to a dead-lettered record. A bound
+     * value that names something else is refused rather than overwritten, so a deployment learns its
+     * setting cannot be honoured instead of watching it disappear.
+     *
+     * @param boundAckMode the mode bound from {@code spring.kafka.listener.ack-mode}, absent when the
+     *                     property carries no value
+     * @return {@code MANUAL_IMMEDIATE}
+     * @throws IllegalStateException when a bound mode names anything else
+     */
+    private static ContainerProperties.AckMode requireImmediateManualAcknowledgementOrUnset(
+            ContainerProperties.AckMode boundAckMode) {
+
+        if (boundAckMode != null && boundAckMode != ContainerProperties.AckMode.MANUAL_IMMEDIATE) {
+            throw new IllegalStateException("The property spring.kafka.listener.ack-mode must name "
+                    + ContainerProperties.AckMode.MANUAL_IMMEDIATE + " or carry no value at all,"
+                    + " because that is the one mode which commits the offset at the acknowledgement"
+                    + " this listener issues after its own writes commit and the one mode under which"
+                    + " a dead-lettered record's offset is committed. The bound mode is "
+                    + boundAckMode + ".");
+        }
+        return ContainerProperties.AckMode.MANUAL_IMMEDIATE;
     }
 
     /**

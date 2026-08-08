@@ -1,23 +1,18 @@
 package com.carddemo.card.api;
 
 import com.carddemo.card.api.dto.ApiErrorResponse;
-import com.carddemo.card.api.dto.CardDetailRequest;
 import com.carddemo.card.api.dto.CardDetailResponse;
 import com.carddemo.card.api.dto.CardListResponse;
 import com.carddemo.card.api.dto.CardSummary;
 import com.carddemo.card.api.dto.CardUpdateRequest;
 import com.carddemo.card.api.dto.CardUpdateResponse;
 import com.carddemo.card.api.dto.CardValidationMessages;
-import com.carddemo.card.config.SecurityConfig;
 import com.carddemo.card.domain.CardQueryService;
 import com.carddemo.card.domain.CardQueryService.CardListRow;
 import com.carddemo.card.domain.CardQueryService.CardPage;
 import com.carddemo.card.domain.CardUpdateService;
 import com.carddemo.card.entity.CardEntity;
 import com.carddemo.cobol.PanMasker;
-import com.carddemo.cobol.PicClause;
-import jakarta.validation.constraints.Max;
-import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Pattern;
 import java.util.ArrayList;
@@ -31,7 +26,7 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
@@ -51,9 +46,14 @@ import org.springframework.web.bind.annotation.RestController;
  *
  * <h2>Where an identifier may appear</h2>
  *
- * <p>No route here carries a card number in its path or in its query string. The two routes that
- * name one card take it in the request body, so the read is a {@code POST} that changes nothing.
- * The paging cursor of the list route travels in the {@value #CURSOR_HEADER} request header. That
+ * <p>The two routes that name one card carry the full card number as a path variable, which is the
+ * key {@code app/cbl/COCRDSLC.cbl:L740} reads by. Transaction {@code CCDL} at
+ * {@code app/csd/CARDDEMO.CSD:L347-L348} is the read and transaction {@code CCUP} at
+ * {@code app/csd/CARDDEMO.CSD:L367-L369} is the update. A path reaches an access log, a proxy log, a
+ * trace and a browser history, and {@code card-platform/docs/suggested-next-tasks.md} carries the
+ * deployment guidance that follows.
+ *
+ * <p>The paging cursor of the list route travels in the {@value #CURSOR_HEADER} request header. That
  * cursor is the irreversible card token of a row. {@link CardQueryService} resolves the token to
  * the browse key that {@code app/cbl/COCRDLIC.cbl:L488-L489} reads back.
  *
@@ -71,9 +71,12 @@ import org.springframework.web.bind.annotation.RestController;
  * <p>The list route answers {@code 200} with an empty page when nothing matches.
  * {@code app/cbl/COCRDLIC.cbl:L1235} clears the next-page flag and the screen shows no row.
  *
- * <p>The read route answers {@code 200} with the card, {@code 404} when the table holds no such
- * row, and {@code 422} when an edit refuses a submitted value. The update route answers one of
- * seven outcomes. {@link #statusOf(CardUpdateResponse)} maps each onto a status code.
+ * <p>The read route answers {@code 200} with the card and {@code 404} when the table holds no such
+ * row. The update route answers one of seven outcomes. {@link #statusOf(CardUpdateResponse)} maps
+ * each onto a status code.
+ *
+ * <p>Ownership is decided by the filter chain of {@code config/SecurityConfig} on all three routes.
+ * No handler here carries an authority rule.
  *
  * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
@@ -88,14 +91,26 @@ public class CardController {
     /** The collection all three routes sit under. */
     public static final String BASE_PATH = "/cards";
 
-    /** Path of the read route, below {@link #BASE_PATH}. */
-    public static final String DETAIL_PATH = "/detail";
+    /** Path of the two card-numbered routes, below {@link #BASE_PATH}. */
+    public static final String CARD_PATH = "/{cardNumber}";
 
-    /** Route template the list route and the update route report in a failing response. */
+    /** Name of the path variable the two card-numbered routes capture. */
+    public static final String CARD_NUMBER_VARIABLE = "cardNumber";
+
+    /** Route template the list route reports in a failing response. */
     public static final String COLLECTION_ROUTE = BASE_PATH;
 
-    /** Route template the read route reports in a failing response. */
-    public static final String DETAIL_ROUTE = BASE_PATH + DETAIL_PATH;
+    /** Route template the two card-numbered routes report in a failing response. */
+    public static final String CARD_ROUTE = BASE_PATH + CARD_PATH;
+
+    /**
+     * Shape of the card number a path carries, from {@code CARD-NUM PIC X(16)} at
+     * {@code app/cpy/CVACT02Y.cpy:L5}.
+     *
+     * <p>All sixteen digits are required. {@code app/cbl/COCRDUPC.cbl:L194} applies the only rule
+     * the source has for a card number, which is sixteen numeric digits.
+     */
+    public static final String CARD_NUMBER_PATTERN = "^[0-9]{16}$";
 
     /**
      * Query parameter carrying the account whose cards a caller lists.
@@ -133,6 +148,17 @@ public class CardController {
      * not an empty page.
      */
     public static final String ACCOUNT_ID_PATTERN = "^[0-9]{11}$";
+
+    /**
+     * Shape that refuses an account filter of eleven zero digits.
+     *
+     * <p>{@code CC-ACCT-ID-N EQUAL ZEROS} is the third absence condition of the source edit, at
+     * {@code app/cbl/COCRDSLC.cbl:L653}, so eleven zeros name no account.
+     * {@code app/cbl/COCRDLIC.cbl:L1385-L1394} then applies no filter and the browse walks every
+     * account. The list route requires the account, so it refuses the value here rather than
+     * answering a page of every card in the table.
+     */
+    public static final String ACCOUNT_ID_PRESENT_PATTERN = "^(?!0{11}$).*$";
 
     /** Shape of the irreversible paging token the card read side issues. */
     public static final String CURSOR_PATTERN = PanMasker.CARD_TOKEN_PATTERN;
@@ -193,28 +219,26 @@ public class CardController {
     public static final String PAGE_SIZE_MESSAGE =
             CardValidationMessages.ADDITIVE_PAGE_SIZE_OUT_OF_RANGE;
 
+    /** Text a caller reads when the row count is no whole number, an empty value included. */
+    public static final String PAGE_SIZE_NOT_A_NUMBER_MESSAGE =
+            CardValidationMessages.ADDITIVE_PAGE_SIZE_NOT_A_NUMBER;
+
     /** Reads pages and single cards. */
     private final CardQueryService cardQueries;
 
     /** Runs the ordered edit chain and the write. */
     private final CardUpdateService cardUpdates;
 
-    /** Decides whether the caller of the read route owns the card it named. */
-    private final SecurityConfig.CardOwnership cardOwnership;
-
     /**
-     * Takes the read side, the update side and the ownership predicate.
+     * Takes the read side and the update side.
      *
-     * @param cardQueries   the read side over table {@code card}
-     * @param cardUpdates   the update side, which owns the edit order and the write
-     * @param cardOwnership the predicate {@code config/SecurityConfig} declares
+     * @param cardQueries the read side over table {@code card}
+     * @param cardUpdates the update side, which owns the edit order and the write
      * @throws NullPointerException if any argument is {@code null}
      */
-    public CardController(CardQueryService cardQueries, CardUpdateService cardUpdates,
-            SecurityConfig.CardOwnership cardOwnership) {
+    public CardController(CardQueryService cardQueries, CardUpdateService cardUpdates) {
         this.cardQueries = Objects.requireNonNull(cardQueries, "cardQueries is required");
         this.cardUpdates = Objects.requireNonNull(cardUpdates, "cardUpdates is required");
-        this.cardOwnership = Objects.requireNonNull(cardOwnership, "cardOwnership is required");
     }
 
     /**
@@ -237,16 +261,21 @@ public class CardController {
      *
      * <p>All four request values are constrained here, so a value that misses its constraint is
      * refused by the framework and answered {@code 400} by {@code api/CardApiExceptionHandler}. The
-     * row count carries {@value #MIN_PAGE_SIZE} through {@value #MAX_PAGE_SIZE}, the range
-     * {@link CardQueryService} reads with. That range is held in both places on purpose: a range
-     * enforced only in the read leaves the framework nothing to refuse, and the read's own refusal
-     * then reaches a caller as a fault of this service rather than as the bad request it is.
+     * row count carries {@value #MIN_PAGE_SIZE} through {@value #MAX_PAGE_SIZE}, the same range
+     * {@link CardQueryService} reads with, and holding it in both places keeps a bad request a bad
+     * request rather than a fault of this service.
+     *
+     * <p>Three of the four values are read as text, so a value a caller sent carrying no characters
+     * is refused rather than read as absent. A parameter declared with a default takes that default
+     * for {@code ?direction=} as readily as for an omitted {@code direction}, and a parameter
+     * declared as a number binds {@code ?pageSize=} to {@code null}, which the read then fills with
+     * seven. Either way a caller receives a {@code 200} that states nothing about what it did.
      *
      * @param accountId the eleven-digit account whose cards to list
      * @param cursor    the paging position from a previous response, or {@code null} for the first
      *                  or last page
-     * @param direction {@value #FORWARD_DIRECTION} or {@value #BACKWARD_DIRECTION}, defaulting to
-     *                  forward
+     * @param direction {@value #FORWARD_DIRECTION} or {@value #BACKWARD_DIRECTION}, or {@code null}
+     *                  for forward
      * @param pageSize  rows on the page, {@value #MIN_PAGE_SIZE} through {@value #MAX_PAGE_SIZE}, or
      *                  {@code null} for the seven the source screen holds
      * @return the page, empty when the account has no card
@@ -256,26 +285,25 @@ public class CardController {
             @RequestParam(name = ACCOUNT_ID_PARAMETER)
             @NotBlank(message = ACCOUNT_ID_ABSENT_MESSAGE)
             @Pattern(regexp = ACCOUNT_ID_PATTERN, message = ACCOUNT_ID_MALFORMED_MESSAGE)
+            @Pattern(regexp = ACCOUNT_ID_PRESENT_PATTERN, message = ACCOUNT_ID_ABSENT_MESSAGE)
             String accountId,
 
             @RequestHeader(name = CURSOR_HEADER, required = false)
             @Pattern(regexp = CURSOR_PATTERN, message = CURSOR_MESSAGE)
             String cursor,
 
-            @RequestParam(name = DIRECTION_PARAMETER, required = false,
-                    defaultValue = FORWARD_DIRECTION)
+            @RequestParam(name = DIRECTION_PARAMETER, required = false)
             @Pattern(regexp = DIRECTION_PATTERN, message = DIRECTION_MESSAGE)
             String direction,
 
             @RequestParam(name = PAGE_SIZE_PARAMETER, required = false)
-            @Min(value = MIN_PAGE_SIZE, message = PAGE_SIZE_MESSAGE)
-            @Max(value = MAX_PAGE_SIZE, message = PAGE_SIZE_MESSAGE)
-            Integer pageSize) {
+            String pageSize) {
 
         boolean backward = BACKWARD_DIRECTION.equals(direction);
+        Integer rows = rowCountOf(pageSize);
         CardPage page = backward
-                ? cardQueries.listBackward(cursor, pageSize, accountId, null)
-                : cardQueries.listForward(cursor, pageSize, accountId, null);
+                ? cardQueries.listBackward(cursor, rows, accountId, null)
+                : cardQueries.listForward(cursor, rows, accountId, null);
 
         log.info("A card list answered {} rows, further page {}", page.rows().size(),
                 page.nextPageExists());
@@ -283,67 +311,43 @@ public class CardController {
     }
 
     /**
-     * Reads one card, named by the full card number in the request body.
+     * Reads one card, named by the full card number in the path.
      *
-     * <p>Reproduces {@code app/cbl/COCRDSLC.cbl}. Two edits run first, in the order
-     * {@code 2200-EDIT-MAP-INPUTS} performs them at {@code app/cbl/COCRDSLC.cbl:L630-L634}, and the
-     * cross-field rule at {@code app/cbl/COCRDSLC.cbl:L637-L640} overrides both when neither value
-     * arrived. {@link CardDetailRequest} carries the two field constraints and this method carries
-     * the two rules that span fields.
+     * <p>Reproduces {@code app/cbl/COCRDSLC.cbl}, transaction {@code CCDL} at
+     * {@code app/csd/CARDDEMO.CSD:L347-L348}. {@code 9100-GETCARD-BYACCTCARD} at
+     * {@code app/cbl/COCRDSLC.cbl:L736} moves the card number into the read key at
+     * {@code app/cbl/COCRDSLC.cbl:L740} and reads the card file by card number at
+     * {@code app/cbl/COCRDSLC.cbl:L742-L750}. The account move above the key at
+     * {@code app/cbl/COCRDSLC.cbl:L739} is commented out, so the card number is the whole key and
+     * this method reads by it alone.
      *
-     * <p>The read keys on the card number alone.
-     * {@code app/cbl/COCRDSLC.cbl:L740} moves the card number into the read key. The account move
-     * above it at {@code app/cbl/COCRDSLC.cbl:L739} is commented out, so the source edits the
-     * account and then keys on the card. This method keeps that key and compares the account after
-     * the read. A row whose stored account differs from the supplied account answers as an absent
-     * row, with the same status and the same text.
+     * <p>The not-found branch at {@code app/cbl/COCRDSLC.cbl:L755-L761} sets
+     * {@code DID-NOT-FIND-ACCTCARD-COMBO} at {@code app/cbl/COCRDSLC.cbl:L760}, whose text
+     * {@code app/cbl/COCRDUPC.cbl:L204} declares. The other candidate text at
+     * {@code app/cbl/COCRDUPC.cbl:L202} has one set site, inside {@code 9150-GETCARD-BYACCT} at
+     * {@code app/cbl/COCRDSLC.cbl:L779-L810}, which no {@code PERFORM} reaches, so it is
+     * unreachable and this route never answers it.
      *
-     * <p>That account comparison departs from the commented-out line at
-     * {@code app/cbl/COCRDSLC.cbl:L739}. The source paragraph {@code 9100-GETCARD-BYACCTCARD} and
-     * the text {@code app/cbl/COCRDUPC.cbl:L204} declares both name a combination read. The
-     * register of flagged rules carries the departure with these citations.
+     * <p>Ownership is decided by the filter chain of {@code config/SecurityConfig}, which derives
+     * the card token from this path value. A caller holding no matching authority reads {@code 403}
+     * whether or not the row exists.
      *
-     * <p>This method decides ownership, and the filter chain of {@code config/SecurityConfig} does
-     * not. The identifier sits in the body, and a chain reading the body consumes the stream this
-     * method needs. The predicate is {@link SecurityConfig#cardOwnership()}, which names the
-     * authority by the card token derived from the full number. An entitlement admits one card and
-     * not every card ending in the same four digits.
-     *
-     * <p>A caller holding no matching scope reads {@code 403} whether or not the row exists. The
-     * refusal carries the same text as an absent row, so the two answers differ in status alone.
-     *
-     * <p>No {@code @Valid} sits on this body. The source tests each field for absence before it
-     * tests its character class, then applies one rule across both fields. An unordered violation
-     * set answers the wrong one of four texts.
-     * {@link #firstSearchFailure(CardDetailRequest)} applies all four in source order, and
-     * {@link CardDetailRequest} declares the same constraints. A test holds the two to agreement.
-     *
-     * @param request the account identifier and the full card number
-     * @return {@code 200} with the card. An edit that refuses a value answers {@code 422}. A caller
-     *         that does not own the card reads {@code 403}. An absent row, or one belonging to
-     *         another account, answers {@code 404}
+     * @param cardNumber the full sixteen-digit card number
+     * @return {@code 200} with the card, or {@code 404} carrying the text of
+     *         {@code app/cbl/COCRDUPC.cbl:L204}
      */
-    @PostMapping(path = DETAIL_PATH, consumes = MediaType.APPLICATION_JSON_VALUE,
-            produces = MediaType.APPLICATION_JSON_VALUE)
-    public ResponseEntity<?> readCard(@RequestBody CardDetailRequest request) {
-        String searchFailure = firstSearchFailure(request);
-        if (searchFailure != null) {
-            log.info("A card read supplied a search condition an edit refused");
-            return failure(HttpStatus.UNPROCESSABLE_CONTENT, searchFailure, DETAIL_ROUTE);
-        }
-
-        String cardNumber = request.cardNumber();
-        if (!cardOwnership.ownsCard(cardNumber)) {
-            log.info("A card read named a card the caller does not own");
-            return failure(HttpStatus.FORBIDDEN,
-                    CardValidationMessages.DID_NOT_FIND_ACCTCARD_COMBO, DETAIL_ROUTE);
-        }
+    @GetMapping(path = CARD_PATH, produces = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<?> readCard(
+            @PathVariable(name = CARD_NUMBER_VARIABLE)
+            @Pattern(regexp = CARD_NUMBER_PATTERN,
+                    message = CardValidationMessages.CARD_FILTER_NOT_NUMERIC)
+            String cardNumber) {
 
         Optional<CardEntity> card = cardQueries.findByCardNumber(cardNumber);
-        if (card.isEmpty() || !namesTheSameAccount(card.get(), request.accountId())) {
-            log.info("A card read named no stored card of that account");
+        if (card.isEmpty()) {
+            log.info("A card read named no stored card");
             return failure(HttpStatus.NOT_FOUND,
-                    CardValidationMessages.DID_NOT_FIND_ACCTCARD_COMBO, DETAIL_ROUTE);
+                    CardValidationMessages.DID_NOT_FIND_ACCTCARD_COMBO, CARD_ROUTE);
         }
 
         log.info("A card read answered one card");
@@ -351,7 +355,7 @@ public class CardController {
     }
 
     /**
-     * Updates one card, named by the full card number in the request body.
+     * Updates one card, named by the full card number in the request path.
      *
      * <p>Reproduces {@code app/cbl/COCRDUPC.cbl}. {@link CardUpdateService} owns the order of the
      * checks, and the order decides which of seven answers a caller receives. This method owns only
@@ -363,16 +367,69 @@ public class CardController {
      * {@link CardUpdateService} applies the same constraints one property at a time, in source edit
      * order.
      *
-     * @param request the card number and the five values the update carries
+     * <p>Six of the seven outcomes answer with the update body. The seventh is a write that failed
+     * once the row was held, which answers {@code 503} with the failure body every other refusal of
+     * this service carries, so one status on one operation carries one schema and one media type.
+     * The text {@code app/cbl/COCRDUPC.cbl:L210} declares travels in the message member of that
+     * body.
+     *
+     * @param cardNumber the full sixteen-digit card number, from the path
+     * @param request    the five values the update carries
      * @return the outcome, with the status {@link #statusOf(CardUpdateResponse)} names
      */
-    @PutMapping(consumes = MediaType.APPLICATION_JSON_VALUE,
+    @PutMapping(path = CARD_PATH, consumes = MediaType.APPLICATION_JSON_VALUE,
             produces = MediaType.APPLICATION_JSON_VALUE)
-    public ResponseEntity<CardUpdateResponse> updateCard(
+    public ResponseEntity<?> updateCard(
+            @PathVariable(name = CARD_NUMBER_VARIABLE)
+            @Pattern(regexp = CARD_NUMBER_PATTERN,
+                    message = CardValidationMessages.CARD_FILTER_NOT_NUMERIC)
+            String cardNumber,
             @RequestBody CardUpdateRequest request) {
-        CardUpdateResponse outcome = cardUpdates.updateCard(request);
+        CardUpdateResponse outcome = cardUpdates.updateCard(cardNumber, request);
         log.info("A card update answered outcome {}", outcome.outcome());
-        return ResponseEntity.status(statusOf(outcome)).body(outcome);
+
+        HttpStatus status = statusOf(outcome);
+        if (status == HttpStatus.SERVICE_UNAVAILABLE) {
+            return failure(status, outcome.message(), CARD_ROUTE);
+        }
+        return ResponseEntity.status(status).body(outcome);
+    }
+
+    /**
+     * Reads the row count, keeping an absent value apart from an empty one.
+     *
+     * <p>Three cases. A parameter that did not arrive answers {@code null}, which the read fills
+     * with the seven {@code WS-MAX-SCREEN-LINES} declares at
+     * {@code app/cbl/COCRDLIC.cbl:L177-L178}. A parameter that arrived carrying no characters is a
+     * value the caller sent, so it is refused. Any other value has to read as a whole number inside
+     * {@value #MIN_PAGE_SIZE} through {@value #MAX_PAGE_SIZE}.
+     *
+     * <p>Refusing an empty value is why the count is read as text. A count declared as a number
+     * binds {@code ?pageSize=} to {@code null}, so an empty value took the default and the caller
+     * read a {@code 200} that stated nothing about what it did.
+     *
+     * <p>The submitted value reaches neither text. A count of six figures would put a run of digits
+     * into a body whose route member exists to keep runs of digits out of it.
+     *
+     * @param pageSize the parameter as it arrived, or {@code null} where it did not arrive
+     * @return the row count, or {@code null} to take the default the read holds
+     * @throws CardQueryService.UnusableListRequest when the value is empty, reads as no whole
+     *                                              number, or lies outside the range
+     */
+    private static Integer rowCountOf(String pageSize) {
+        if (pageSize == null) {
+            return null;
+        }
+        int rows;
+        try {
+            rows = Integer.parseInt(pageSize.strip());
+        } catch (NumberFormatException notANumber) {
+            throw new CardQueryService.UnusableListRequest(PAGE_SIZE_NOT_A_NUMBER_MESSAGE);
+        }
+        if (rows < MIN_PAGE_SIZE || rows > MAX_PAGE_SIZE) {
+            throw new CardQueryService.UnusableListRequest(PAGE_SIZE_MESSAGE);
+        }
+        return rows;
     }
 
     /**
@@ -384,8 +441,14 @@ public class CardController {
      * text {@code app/cbl/COCRDUPC.cbl:L188} declares.
      *
      * <p>Two races carry {@code 409}: a row another writer changed first, and a row this service
-     * could not lock. An absent row carries {@code 404}. A fault inside this service carries
-     * {@code 500}, which a caller may retry.
+     * could not lock. An absent row carries {@code 404}.
+     *
+     * <p>A write that failed after the lock was taken carries {@code 503}. The source reaches that
+     * outcome from a file status other than normal on the {@code REWRITE} at
+     * {@code app/cbl/COCRDUPC.cbl:L1483-L1491}, which is the datastore refusing the write rather
+     * than this service holding a defect. The status names a condition a caller may retry, and
+     * {@code 500} names one it may not. The outcome carries no {@code Retry-After}, since the
+     * source measures no interval.
      *
      * @param outcome the outcome the update produced
      * @return the status code to send
@@ -396,122 +459,8 @@ public class CardController {
             case NO_CHANGE_DETECTED, VALIDATION_REJECTED -> HttpStatus.UNPROCESSABLE_CONTENT;
             case CARD_NOT_FOUND -> HttpStatus.NOT_FOUND;
             case CHANGED_BEFORE_UPDATE, LOCK_NOT_ACQUIRED -> HttpStatus.CONFLICT;
-            case UPDATE_FAILED_AFTER_LOCK -> HttpStatus.INTERNAL_SERVER_ERROR;
+            case UPDATE_FAILED_AFTER_LOCK -> HttpStatus.SERVICE_UNAVAILABLE;
         };
-    }
-
-    /**
-     * Applies the four edits of the read route in the order the source performs them.
-     *
-     * <p>{@code 2200-EDIT-MAP-INPUTS} performs {@code 2210-EDIT-ACCOUNT} at
-     * {@code app/cbl/COCRDSLC.cbl:L630-L631} and {@code 2220-EDIT-CARD} at
-     * {@code app/cbl/COCRDSLC.cbl:L633-L634}. Each of those two tests absence before it tests the
-     * character class: {@code app/cbl/COCRDSLC.cbl:L651} then {@code L665} for the account, and
-     * {@code app/cbl/COCRDSLC.cbl:L691} then {@code L706} for the card. Every write to
-     * {@code WS-RETURN-MSG} after the first sits behind the {@code WS-RETURN-MSG-OFF} guard, so the
-     * first failing edit owns the answer.
-     *
-     * <p>One rule spans both fields. {@code app/cbl/COCRDSLC.cbl:L637-L640} tests both blank flags
-     * after both edits have run and under no guard, so it overwrites whichever text an edit had
-     * written. This method applies that rule first, which reaches the same answer with one
-     * comparison.
-     *
-     * <p>An all-zero value counts as no value, from the third condition of each absence test:
-     * {@code CC-ACCT-ID-N EQUAL ZEROS} at {@code app/cbl/COCRDSLC.cbl:L653} and
-     * {@code CC-CARD-NUM-N EQUAL ZEROS} at {@code app/cbl/COCRDSLC.cbl:L693}.
-     *
-     * <p>Visible beyond this class so that {@code api/dto/CardDetailRequestTest} can hold this chain
-     * and the constraints {@link CardDetailRequest} declares to the same four texts. A validator
-     * reports an unordered set, and one of the rules spans both fields, so a test states that the
-     * two agree.
-     *
-     * @param request the submitted search condition
-     * @return the text of the first edit that refused the request, or {@code null} when all four
-     *         pass
-     */
-    public static String firstSearchFailure(CardDetailRequest request) {
-        boolean accountAbsent = isAbsent(request.accountId(), PicClause.CARD_ACCT_ID_WIDTH);
-        boolean cardAbsent = isAbsent(request.cardNumber(), PicClause.CARD_NUM_WIDTH);
-
-        if (accountAbsent && cardAbsent) {
-            return CardValidationMessages.NO_SEARCH_CRITERIA_RECEIVED;
-        }
-        if (accountAbsent) {
-            return CardValidationMessages.PROMPT_FOR_ACCT;
-        }
-        if (!isDigits(request.accountId(), PicClause.CARD_ACCT_ID_WIDTH)) {
-            return CardValidationMessages.ACCOUNT_FILTER_NOT_NUMERIC;
-        }
-        if (cardAbsent) {
-            return CardValidationMessages.PROMPT_FOR_CARD;
-        }
-        if (!isDigits(request.cardNumber(), PicClause.CARD_NUM_WIDTH)) {
-            return CardValidationMessages.CARD_FILTER_NOT_NUMERIC;
-        }
-        return null;
-    }
-
-    /**
-     * Reports whether one stored card belongs to the account the caller named.
-     *
-     * <p>Both values are the eleven digits {@code CARD-ACCT-ID PIC 9(11)} at
-     * {@code app/cpy/CVACT02Y.cpy:L6} declares. The stored one arrives from a {@code CHAR(11)}
-     * column and can carry padding a caller's value does not. Both are stripped before the
-     * comparison and neither is widened. {@link #firstSearchFailure(CardDetailRequest)} has already
-     * refused a caller's value of another width.
-     *
-     * <p>The stored account is the authoritative one. The comparison keeps a request field from
-     * deciding which row a caller reaches.
-     *
-     * @param card             the row the read found
-     * @param suppliedAccountId the account identifier the caller sent
-     * @return {@code true} when the two name one account
-     */
-    private static boolean namesTheSameAccount(CardEntity card, String suppliedAccountId) {
-        String stored = card.getAccountId();
-        if (stored == null || suppliedAccountId == null) {
-            return false;
-        }
-        return stored.strip().equals(suppliedAccountId.strip());
-    }
-
-    /**
-     * Reports whether a numeric display field carries no value at all.
-     *
-     * @param value the submitted value, which may be {@code null}
-     * @param width the width the Picture clause declares
-     * @return {@code true} when the value is missing, blank, or the digit zero repeated to width
-     */
-    private static boolean isAbsent(String value, int width) {
-        if (value == null || value.isBlank()) {
-            return true;
-        }
-        return value.strip().equals("0".repeat(width));
-    }
-
-    /**
-     * Reports whether a value carries exactly the declared width in digits.
-     *
-     * <p>{@code IS NOT NUMERIC} on a fixed-width alphanumeric field fails for a shorter value, as
-     * the field arrives space-padded. The width and the character class are one test in the source
-     * and one test here.
-     *
-     * @param value the submitted value, already known to carry a character
-     * @param width the width the Picture clause declares
-     * @return {@code true} when every character is a digit and the count is exactly {@code width}
-     */
-    private static boolean isDigits(String value, int width) {
-        String present = value.strip();
-        if (present.length() != width) {
-            return false;
-        }
-        for (int position = 0; position < present.length(); position++) {
-            char character = present.charAt(position);
-            if (character < '0' || character > '9') {
-                return false;
-            }
-        }
-        return true;
     }
 
     /**

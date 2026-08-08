@@ -28,15 +28,9 @@ import java.util.UUID;
  * inside the same local transaction as its side effects, and acknowledges the delivery only once
  * that transaction commits. A redelivery finds the row present and does nothing.
  *
- * <p><b>Why the topic is part of the identity.</b> This service reads one topic today, so no
- * delivery here can currently collide with another topic's. The key names the topic anyway, because
- * an event identifier is assigned by the service that publishes the event and different producing
- * services assign them independently: the identifier alone stops identifying a delivery the moment a
- * second listener is added, and it stops silently. Keyed on the identifier alone, the second of two
- * same-identifier events on two topics would lose its claim to the first and its listener would
- * write nothing, which is right for a redelivery and a dropped assessment for a different event.
- * The account service is the evidence that a second listener does get added: it declared this table
- * with no listener at all, then acquired one.
+ * <p>The key names the consumed topic as well as the event identifier, so a delivery is identified
+ * by the event and the stream it arrived on. This service reads one topic today and carries the
+ * wider key anyway. Rationale: {@code card-platform/docs/decision-log.md}.
  *
  * <p>Columns come from {@code src/main/resources/db/migration/V1__schema.sql} and
  * {@code src/main/resources/db/migration/V4__processed_event_topic_key.sql}, which Flyway 12.4.0
@@ -180,12 +174,10 @@ public class ProcessedEventEntity {
      * The composite key: the event identifier then the topic the delivery arrived on.
      *
      * <p>The identifier half comes from {@code EventEnvelope.eventId} of the consumed event. The
-     * topic half comes from the {@code RECEIVED_TOPIC} header of the delivery itself, so a listener
-     * records what it observed rather than what it was configured as; a key built from a consumer
-     * group name would change identity whenever a group was renamed.</p>
-     *
-     * <p>{@code src/main/resources/db/migration/V4__processed_event_topic_key.sql}
-     * is authoritative for both columns and carries the reasoning at length.</p>
+     * topic half comes from the {@code RECEIVED_TOPIC} header of the delivery, so a listener records
+     * what it observed rather than what it was configured as.
+     * {@code src/main/resources/db/migration/V4__processed_event_topic_key.sql} is authoritative for
+     * both columns.</p>
      */
     @Embeddable
     public static class ProcessedEventId implements Serializable {
@@ -204,10 +196,9 @@ public class ProcessedEventEntity {
         /**
          * Which topic the delivery that handled this event arrived on.
          *
-         * <p>Maps to {@code consumed_topic VARCHAR(128) NOT NULL}. A marker naming only the event
-         * says it was handled and nothing about where it came from, which is not enough to
-         * investigate a replay: the same identifier can be redelivered on the topic it came from, or
-         * arrive on a dead-letter topic during a recovery, and those are different situations.</p>
+         * <p>Maps to {@code consumed_topic VARCHAR(128) NOT NULL}. A redelivery on the topic an
+         * event came from and an arrival on a dead-letter topic during a recovery are different
+         * situations, and this column is what tells them apart.</p>
          */
         @Column(name = "consumed_topic", nullable = false, updatable = false,
                 length = CONSUMED_TOPIC_MAX_LENGTH)

@@ -500,12 +500,44 @@ class OutboxEventRepositoryTest extends AbstractAccountPostgresTest {
         outboxEvents.saveAll(List.of(old, recent));
         flushAndDetach();
 
-        int removed = outboxEvents.deletePublishedBefore(CLAIM_NOW.minusSeconds(50));
+        int removed = outboxEvents.deletePublishedBefore(CLAIM_NOW.minusSeconds(50), 500);
         entityManager.clear();
 
         assertThat(removed).isEqualTo(1);
         assertThat(outboxEvents.findById(old.getEventId())).isEmpty();
         assertThat(outboxEvents.findById(recent.getEventId())).isPresent();
+    }
+
+    @Test
+    @Transactional
+    @DisplayName("the published purge removes at most the row ceiling it is given, oldest first")
+    void publishedRowPurgeRemovesAtMostItsCeilingOldestFirst() {
+        OutboxEventEntity oldest = publishedRow("b1", CLAIM_NOW.minusSeconds(300));
+        OutboxEventEntity middle = publishedRow("b2", CLAIM_NOW.minusSeconds(200));
+        OutboxEventEntity newest = publishedRow("b3", CLAIM_NOW.minusSeconds(100));
+        outboxEvents.saveAll(List.of(oldest, middle, newest));
+        flushAndDetach();
+
+        int firstBatch = outboxEvents.deletePublishedBefore(CLAIM_NOW, 2);
+        entityManager.clear();
+
+        assertThat(firstBatch)
+                .as("a bound of two removes two rows and leaves the third for the next batch")
+                .isEqualTo(2);
+        assertThat(outboxEvents.findById(oldest.getEventId()))
+                .as("the ordering removes the oldest first")
+                .isEmpty();
+        assertThat(outboxEvents.findById(middle.getEventId())).isEmpty();
+        assertThat(outboxEvents.findById(newest.getEventId()))
+                .as("the newest row survives a bound of two")
+                .isPresent();
+
+        int secondBatch = outboxEvents.deletePublishedBefore(CLAIM_NOW, 2);
+        entityManager.clear();
+
+        assertThat(secondBatch)
+                .as("the drain stops when a batch comes back short of its ceiling")
+                .isEqualTo(1);
     }
 
     @Test

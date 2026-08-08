@@ -1,36 +1,42 @@
 # card-platform notification-service — the Representational State Transfer (REST)
 # interface this module serves.
 #
-# The document describes one read-only endpoint, the alert history for one account.
+# The document describes one read-only endpoint, the alert history for one card.
 # It is hand-written and checked in. api/NotificationHistoryController serves the
 # path below, and no documentation generator joins the classpath, so the tests
 # under src/test/java are what keep this file and that controller in step.
 #
-# Two properties of that endpoint are security decisions rather than style, and both are
+# Three properties of that endpoint are security decisions rather than style, and each is
 # stated in the operation below.
 #
-# The path key is a CARD TOKEN and never a card number of either form. A path reaches an
-# access log, a reverse proxy log, a trace, a browser history and the instance member of
-# a default error document, so a full Primary Account Number (PAN) belongs in none of
-# them. A masked card number is no substitute for a key: twelve of its sixteen characters
-# are mask characters, so two cards sharing their last four digits mask to one value, and
-# a route keyed on that value would answer with their merged history. The token that
-# PanMasker.cardToken derives names one card, and it is the key
-# src/main/resources/db/migration/V1__schema.sql stores, so the route key and the row key
-# are the same value. The derivation is one-way and keyed under a deployment-supplied key,
-# so the token discloses no card number and a reader holding one cannot recompute it over
-# the sixteen-digit card-number space.
+# The path carries the CARD NUMBER, which is TRNX-CARD-NUM PIC X(16) at
+# app/cpy/COSTM01.CPY:L22, the first part of the key KEYS(32 0) at
+# app/jcl/CREASTMT.JCL:L30 declares. The stored key is not that value: column card_token
+# CHAR(64) in src/main/resources/db/migration/V1__schema.sql holds the token
+# PanMasker.cardToken derives, and the route derives it from the path value on every
+# request. The derivation is the HMAC-SHA-256 code over a fixed label, the key version and
+# the full card number, taken under a deployment-supplied key, rendered as sixty-four
+# lower-case hexadecimal characters. It is KEYED and not a bare digest, which is the
+# property that matters: a card number is sixteen digits, so an unkeyed digest could be
+# recomputed for every candidate number by anyone holding one token. A consumer must derive
+# it the same way, with the same key, or it derives a different value. So the stored key
+# discloses no card number and a reader holding one cannot recompute it over the
+# sixteen-digit card-number space.
+#
+# No card number leaves the service. Every response body carries the masked form, every
+# refusal names the shape it required, and no log line of this module writes the path
+# value. A path does reach an access log, a reverse proxy log, a trace and a browser
+# history, so a deployment terminating traffic in front of this service holds those
+# records to the same handling as the card data itself.
 #
 # Authentication is required and the response is scoped to the cards the caller owns. The
-# ownership rule in config/SecurityConfig compares the token in the path against the
-# SCOPE_CARD_ authorities the identity carries, and it refuses with 403 rather than
-# revealing whether the other card exists.
-#
-# The masked card number is still returned, as display data on the response envelope. It
-# keys nothing, no ownership rule reads it, and no request carries it.
+# ownership rule in config/SecurityConfig derives the token from the card number in the
+# path and compares it against the SCOPE_CARD_ authorities the identity carries, so no
+# card number reaches a configured authority. It refuses with 403 rather than revealing
+# whether the other card exists.
 #
 # The traceability matrix and the decision log this platform still owes are to carry the
-# field-by-field source mapping, every omitted field, and why the route key is a token.
+# field-by-field source mapping and every omitted field.
 ---
 openapi: 3.1.0
 
@@ -38,15 +44,14 @@ info:
   title: CardDemo Notification Service
   description: >-
     Returns the alert history for one card. Each entry describes one transaction
-    the read model holds for that card, and the response carries the card token,
-    the masked card number, the entry count and the total of the entries it
-    returns. Field names and widths follow TRNX-RECORD at
-    app/cpy/COSTM01.CPY:L20-L36.
+    the read model holds for that card, and the response carries the masked card
+    number, the entry count, the total of the entries and the entries themselves.
+    Field names and widths follow TRNX-RECORD at app/cpy/COSTM01.CPY:L20-L36.
 
 
     Every request carries an identity. The scheme is the basicIdentity below,
     the chain in config/SecurityConfig denies by default, and the route admits
-    only a caller holding the ownership authority for the account it names. The demo
+    only a caller holding the ownership authority for the card it names. The demo
     stack binds the published port to the loopback address and seeds only
     synthetic fixture data, so nothing real is exposed either way.
   version: 1.0.0
@@ -60,97 +65,83 @@ servers:
 
 tags:
   - name: notification-history
-    description: Read access to the account-keyed alert history.
+    description: Read access to the card-keyed alert history.
 
 security:
   - basicIdentity: []
 
 paths:
 
-  /notifications/{cardToken}:
+  /notifications/{cardNumber}:
 
     get:
       tags:
         - notification-history
       operationId: getNotificationHistory
-      summary: Return one bounded page of the alert history for one account.
+      summary: Return the whole alert history for one card.
       description: >-
         Returns one entry per transaction the read model holds for the card, in
-        transaction identifier order, up to the ceiling the renderer declares. A
-        card with no entries returns 200 with an empty array, an entry count of 0
-        and a total of "0.00".
+        transaction identifier order. A card with no entry returns 200 with an
+        empty array, an entry count of 0 and a total of "0.00".
 
 
-        The response is bounded by a row ceiling rather than paged. An offset
-        would let an insert concurrent with a read shift a page the caller has
-        already seen, and the ceiling bounds the body without that hazard:
-        NotificationRenderer.MAXIMUM_STATEMENT_ROWS fixes it, and
-        StatementRowCapTest holds the two to the same number.
+        The response covers the whole history and carries no paging parameter of
+        any kind. app/cbl/CBSTM03A.CBL reads every row of one card between two key
+        breaks and app/cbl/CBSTM03A.CBL:L429 totals all of them, so a count and a
+        total over part of a history would describe a statement the source never
+        produced. NotificationRenderer.MAXIMUM_STATEMENT_ROWS bounds one rendered
+        alert and not this body.
 
 
-        The path carries a card token and never a card number. A full Primary
-        Account Number in a route would reach every access log and proxy that
-        sees the request, and a masked one names no single card: two cards
-        sharing their last four digits mask to one value, so the route would
-        answer with their merged history and the ownership rule would admit a
-        caller to a card it does not hold. A caller obtains the token from the
-        cardToken property of any response that names the card.
+        The path carries the card number. The service derives the stored card
+        token from it through PanMasker.cardToken, and both the ownership rule and
+        the read model use that token, so no card number is stored, logged or
+        returned. The response names the card by its masked form alone.
       parameters:
 
-        - name: cardToken
+        - name: cardNumber
           in: path
           required: true
           description: >-
-            The card token: 64 lower-case hexadecimal characters, the rendering
-            of a SHA-256 digest over a labelled card number that
-            PanMasker.cardToken in card-platform/libs/cobol-compat derives. It
-            stands in for TRNX-CARD-NUM PIC X(16) at app/cpy/COSTM01.CPY:L22,
-            whose value was a full card number. Column card_token CHAR(64) in
-            src/main/resources/db/migration/V1__schema.sql holds the same value.
-            The derivation is one-way and keyed under a deployment-supplied
-            key, so this value discloses no card number and a reader holding one
-            cannot recompute it over the card-number space.
+            The card number: exactly sixteen digits. From TRNX-CARD-NUM PIC X(16)
+            at app/cpy/COSTM01.CPY:L22, the first part of the key KEYS(32 0) at
+            app/jcl/CREASTMT.JCL:L30 declares. The service derives the stored
+            token from it through PanMasker.cardToken in
+            card-platform/libs/cobol-compat, so column card_token CHAR(64) in
+            src/main/resources/db/migration/V1__schema.sql holds no value a
+            request carried. A value of any other shape is refused with 400 and
+            reaches no lookup.
           schema:
             type: string
-            minLength: 64
-            maxLength: 64
-            pattern: '^[0-9a-f]{64}$'
+            minLength: 16
+            maxLength: 16
+            pattern: '^[0-9]{16}$'
           examples:
-            token:
-              value: '3c9c1b1f4e8a2d7b6f0e5a4c3d2b1a09f8e7d6c5b4a39281706f5e4d3c2b1a09'
-
-        - name: pageSize
-          in: query
-          required: false
-          description: >-
-            Entries this response carries at most. Absent, the response carries
-            carddemo.history.default-page-size entries. Above
-            carddemo.history.maximum-page-size, the maximum applies. Below one,
-            the request is refused with 400. The bound reaches the database as a
-            LIMIT, and the maximum equals
-            NotificationRenderer.MAXIMUM_STATEMENT_ROWS, so a caller cannot ask
-            for more rows than a rendered alert would carry.
-          schema:
-            type: integer
-            minimum: 1
-            maximum: 200
-          examples:
-            page:
-              value: 25
+            number:
+              summary: >-
+                A placeholder rather than a value. No card of the seeded fixtures
+                carries it, so this document publishes no card number that exists.
+              value: '0000000000000000'
 
       responses:
 
         '200':
           description: >-
-            One bounded page of the alert history for the account. Cache-Control
-            is no-store: the body carries what a cardholder bought, where and for
-            how much.
+            The whole alert history for the card. Cache-Control is the compound
+            no-store value Spring Security writes: the body carries what a
+            cardholder bought, where and for how much.
           headers:
             Cache-Control:
-              description: Always no-store for this response.
+              description: >-
+                The value config/SecurityConfig installs through
+                headers().cacheControl(), written by the Spring Security class
+                CacheControlHeadersWriter. It carries no-store among its four
+                directives, so no cache holds this body. The same writer sets two
+                companion headers for a cache that predates this one.
+              required: true
               schema:
                 type: string
-                enum: ['no-store']
+                const: 'no-cache, no-store, max-age=0, must-revalidate'
           content:
             application/json:
               schema:
@@ -158,71 +149,177 @@ paths:
 
         '400':
           description: >-
-            A request value this route cannot use. Three refusals answer here, and
-            each carries its own text so a caller reads which value was wrong.
+            The path value is no card number of sixteen digits:
+            "Card number must be sixteen digits". That is the one refusal this
+            route answers, and it reaches no lookup.
 
-            The path value did not match a card token of 64 lower-case
-            hexadecimal characters:
-            "Card token must be sixty-four lower-case hexadecimal characters".
 
-            pageSize named a value below one:
-            "Page size must be at least one". Above the maximum nothing is
-            refused, because the maximum applies instead.
-
-            pageSize named a value that is no whole number, whether text such as
-            abc, a fractional value, or a value wider than the type it converts
-            to: "Page size must be a whole number". This one reaches no
-            constraint, because a query string is text and pageSize is the one
-            value of this route that is not, so it converts first. card-service
-            answers the same text for the same failure on GET /cards.
-
-            No text names a value the caller submitted, so nothing a caller sends
-            is copied back into a response body or into a log line built from one.
+            The text names the shape and never the value submitted, so nothing a
+            caller sends is copied back into a response body or into a log line
+            built from one.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApiError'
               examples:
-                cardToken:
-                  summary: The path value is no card token.
+                cardNumber:
+                  summary: The path value is no card number.
                   value:
                     status: 400
-                    message: 'Card token must be sixty-four lower-case hexadecimal characters'
-                    route: '/notifications/{cardToken}'
-                pageSizeBelowFloor:
-                  summary: pageSize named zero or a negative value.
-                  value:
-                    status: 400
-                    message: 'Page size must be at least one'
-                    route: '/notifications/{cardToken}'
-                pageSizeNotANumber:
-                  summary: pageSize named a value that is no whole number.
-                  value:
-                    status: 400
-                    message: 'Page size must be a whole number'
-                    route: '/notifications/{cardToken}'
+                    message: 'Card number must be sixteen digits'
+                    route: '/notifications/{cardNumber}'
 
         '401':
           description: >-
             The request carried no usable credential. config/SecurityConfig
             refuses it before the handler runs, and the body names neither the
-            account nor the route.
-          content:
-            application/json:
+            card nor the route. The filter chain writes a problem document rather
+            than the ApiError shape an endpoint writes, so the media type of this
+            response is application/problem+json.
+          headers:
+            WWW-Authenticate:
+              description: >-
+                The challenge, naming the basic scheme and the realm.
+                config/SecurityConfig writes this exact value.
+              required: true
               schema:
-                $ref: '#/components/schemas/ApiError'
+                type: string
+                const: 'Basic realm="carddemo", charset="UTF-8"'
+            Cache-Control:
+              description: >-
+                config/SecurityConfig writes no-store on a refusal, so no cache
+                serves one to a later caller.
+              required: true
+              schema:
+                type: string
+                const: 'no-store'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+              example:
+                type: 'about:blank'
+                title: 'Unauthorized'
+                status: 401
+                detail: 'This request carried no usable credential.'
 
         '403':
           description: >-
-            The identity does not hold this card. config/SecurityConfig grants
-            the route only to an identity carrying the SCOPE_CARD_ authority for
-            the card token in the path, or to an administrator. No 404
-            distinguishes a card that exists from one that does not: either
-            answer would disclose a card the caller may not have.
+            The identity does not hold this card. config/SecurityConfig derives
+            the card token from the card number in the path and grants the route
+            only to an identity carrying the SCOPE_CARD_ authority for that token,
+            or to an administrator. No 404 distinguishes a card that exists from
+            one that does not: either answer would disclose a card the caller may
+            not have. The filter chain writes this body, so its media type is
+            application/problem+json and it carries no WWW-Authenticate header.
+            A method this route does not serve is refused here too, since config/SecurityConfig
+            declares one rule per method and path and admits no request a rule does not name.
+          headers:
+            Cache-Control:
+              description: >-
+                config/SecurityConfig writes no-store on a refusal, so no cache
+                serves one to a later caller.
+              required: true
+              schema:
+                type: string
+                const: 'no-store'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+              example:
+                type: 'about:blank'
+                title: 'Forbidden'
+                status: 403
+                detail: 'This identity may not use this operation.'
+
+        '405':
+          description: >-
+            The route was called with a method it does not serve. This route
+            serves GET alone, and the Allow header names it.
+            api/NotificationApiExceptionHandler keeps the status and the headers
+            the framework named, so a caller's mistake is not recorded as a fault
+            of this service.
+            config/SecurityConfig declares one rule per method and path, and a request whose method
+            carries no rule is refused with 403 before the dispatcher runs, so this answer is the
+            one a request the chain admits receives.
+          headers:
+            Allow:
+              description: The methods this route serves.
+              required: true
+              schema:
+                type: string
+                examples: ['GET']
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApiError'
+              example:
+                status: 405
+                message: >-
+                  This route does not serve the method, path or media type the
+                  request named.
+                route: '/notifications/{cardNumber}'
+
+        '406':
+          description: >-
+            The Accept header of the request names no media type this route
+            writes. The response carries no body, because a caller that accepts
+            nothing this route writes cannot be sent one.
+
+        '429':
+          description: >-
+            A rate ceiling refused this request. config/RequestRateCeilingFilter
+            runs ahead of the security chain and bounds requests from one source,
+            requests presenting one identity, state-changing requests from one
+            source, failed authentications from one source, and requests in
+            flight. Retry-After names whole seconds until the window rolls.
+
+
+            ADDITIVE: a CICS transaction arrived from a terminal an operator was
+            sitting at, so the source had no request rate to bound and holds no
+            matching condition. The detail is fixed and names no address, no
+            identity and no route.
+          headers:
+            Retry-After:
+              description: Whole seconds until the window rolls, one or more.
+              required: true
+              schema:
+                type: integer
+                minimum: 1
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+              example:
+                type: 'about:blank'
+                title: 'Too many requests'
+                status: 429
+                detail: >-
+                  This request exceeded a rate this service accepts. Retry after
+                  the interval the response names.
+
+        '500':
+          description: >-
+            The service could not complete the request.
+            api/NotificationApiExceptionHandler answers every fault that is
+            neither a refused request value nor a protocol refusal here, and the
+            body carries one fixed text for all of them: a datastore that cannot
+            be reached and a defect of this service read alike to a caller. The
+            handler writes one ERROR line carrying the fault and its stack trace,
+            so the log is where a fault is diagnosed from.
+
+
+            The body names no value read from the request, and route holds the
+            route template, so no card number reaches a caller through a fault.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example:
+                status: 500
+                message: 'The request could not be completed.'
+                route: '/notifications/{cardNumber}'
 
 components:
 
@@ -233,14 +330,59 @@ components:
       scheme: basic
       description: >-
         An identity configured under carddemo.security.users, carrying one of the
-        roles ADMIN or USER and, for USER, one SCOPE_ACCOUNT_ authority per
-        account it holds. The password is stored already encoded, so no plaintext password
-        is compared: config/SecurityConfig declines to reproduce the plaintext
-        comparison at app/cbl/COSGN00C.cbl:L223. Basic sends a credential as
-        base-64 text, which is encoding and not encryption, so this scheme
-        requires an encrypted transport.
+        roles ADMIN or USER and, for USER, one SCOPE_CARD_ authority per card it
+        holds. A SCOPE_CARD_ authority names a card token, so no card number
+        reaches a configured authority, and the route derives the token from the
+        card number in the path before it compares the two. The password is stored
+        already encoded, so no plaintext password is compared:
+        config/SecurityConfig declines to reproduce the plaintext comparison at
+        app/cbl/COSGN00C.cbl:L223. Basic sends a credential as base-64 text, which
+        is encoding and not encryption, so this scheme requires an encrypted
+        transport.
 
   schemas:
+
+    Problem:
+      type: object
+      description: >-
+        A refusal written by the filter chain rather than by an endpoint, as RFC
+        9457 describes it. config/SecurityConfig writes the four members by hand,
+        so the body of a security failure depends on no serializer configuration.
+        The detail names no card and not the route.
+      additionalProperties: false
+      required:
+        - type
+        - title
+        - status
+        - detail
+      properties:
+
+        type:
+          type: string
+          description: Always about:blank. The status code carries the meaning.
+          examples:
+            - 'about:blank'
+
+        title:
+          type: string
+          description: A short, fixed phrase naming the class of failure.
+          examples:
+            - 'Unauthorized'
+
+        status:
+          type: integer
+          minimum: 400
+          maximum: 599
+          description: The status code of the response.
+          examples:
+            - 401
+
+        detail:
+          type: string
+          minLength: 1
+          description: Fixed text. It names no card and no route.
+          examples:
+            - 'This request carried no usable credential.'
 
     ApiError:
       type: object
@@ -272,7 +414,7 @@ components:
             One text describing the failure. It names no value read from the
             request.
           examples:
-            - 'Card token must be 64 lower-case hexadecimal characters.'
+            - 'Card number must be sixteen digits'
 
         route:
           type: string
@@ -280,40 +422,24 @@ components:
           maxLength: 200
           description: The route template of the failing endpoint.
           examples:
-            - '/notifications/{cardToken}'
+            - '/notifications/{cardNumber}'
 
     NotificationHistory:
       type: object
       description: >-
-        The alert history for one card, bounded by the row ceiling the renderer
-        declares. cardToken identifies the card and cardNumber displays it, and
-        the total covers every entry the response carries and no entry it does
-        not.
+        The whole alert history for one card. cardNumber displays the card and the
+        total covers every entry the response carries, which is every entry the
+        read model holds for that card.
       additionalProperties: false
       required:
-        - cardToken
+        - cardNumber
         - transactionCount
         - totalAmount
         - transactions
       properties:
 
-        cardToken:
-          type: string
-          minLength: 64
-          maxLength: 64
-          pattern: '^[0-9a-f]{64}$'
-          description: >-
-            The card token, and the card identity this response is keyed on. It
-            is the value the path carried, the key column card_token CHAR(64)
-            holds, and the value to use as the path of the next request. It
-            stands in for TRNX-CARD-NUM PIC X(16) at app/cpy/COSTM01.CPY:L22 and
-            discloses no card number.
-          examples:
-            - '3c9c1b1f4e8a2d7b6f0e5a4c3d2b1a09f8e7d6c5b4a39281706f5e4d3c2b1a09'
-
         cardNumber:
           type: string
-          nullable: true
           minLength: 16
           maxLength: 16
           pattern: '^\*{12}[0-9]{4}$'
@@ -321,20 +447,19 @@ components:
             Masked card number. Twelve asterisks then the last four digits.
             Width from TRNX-CARD-NUM PIC X(16) at app/cpy/COSTM01.CPY:L22.
             Display data alone: it identifies no single card, so no key, index or
-            ownership rule reads it. Absent when the read model holds no entry
-            for the card, because the masked form is read from the entries and
-            none is invented.
+            ownership rule reads it. Always present, including for a card with no
+            entry, because it is the mask of the value the path carried rather
+            than a value read from an entry.
           examples:
-            - '************7065'
+            - '************0000'
 
         transactionCount:
           type: integer
           minimum: 0
-          maximum: 200
           description: >-
-            Entries this response carries, never more than the maxItems of
-            transactions. NotificationRenderer.MAXIMUM_STATEMENT_ROWS fixes the
-            ceiling and StatementRowCapTest holds the two to the same number.
+            Entries this response carries, always the number of items in
+            transactions. No maximum: the response covers the whole history of
+            the card.
           examples:
             - 3
 
@@ -344,19 +469,20 @@ components:
           description: >-
             Sum of the amounts of every entry, as a decimal string at the two
             fractional digits TRAN-AMT PIC S9(09)V99 declares. A string keeps the
-            scale a JSON number would lose to binary floating point.
+            scale a JSON number would lose to binary floating point. From
+            WS-TOTAL-AMT PIC S9(9)V99 at app/cbl/CBSTM03A.CBL:L65, accumulated one
+            row at a time at app/cbl/CBSTM03A.CBL:L429.
           examples:
             - '1250.75'
 
         transactions:
           type: array
-          maxItems: 200
           description: >-
-            One entry per transaction, in transaction identifier order, at most
-            maxItems of them. The read names that limit and the database applies
-            it, so a card holding more entries costs one page rather than a whole
-            history. NotificationRenderer.MAXIMUM_STATEMENT_ROWS fixes the number
-            and StatementRowCapTest holds the two together.
+            One entry per transaction of the card, in the transaction identifier
+            order SORT FIELDS=(263,16,CH,A,1,16,CH,A) at
+            app/jcl/CREASTMT.JCL:L53 produces. No maxItems: the array covers the
+            whole history, matching app/cbl/CBSTM03A.CBL, which reads every row of
+            one card between two key breaks.
           items:
             $ref: '#/components/schemas/StatementTransaction'
 
@@ -364,9 +490,8 @@ components:
       type: object
       description: >-
         One transaction from the token-keyed read model. Every field comes from
-        TRNX-RECORD at app/cpy/COSTM01.CPY:L20-L36. The card token sits on the
-        response envelope; the masked display value appears on the envelope and
-        on each item. The trailing FILLER PIC X(20) at
+        TRNX-RECORD at app/cpy/COSTM01.CPY:L20-L36. The card is named once, on the
+        response envelope, so no item repeats it. The trailing FILLER PIC X(20) at
         app/cpy/COSTM01.CPY:L36 carries no field.
 
 
@@ -383,7 +508,6 @@ components:
       additionalProperties: false
       required:
         - transactionId
-        - maskedCardNumber
         - typeCode
         - categoryCode
         - source
@@ -411,20 +535,6 @@ components:
             leaving a shorter value describable. No pattern is declared: a
             sixteen-digit shape in this document would read as a card number, and
             the entity constrains width alone.
-
-        maskedCardNumber:
-          type: string
-          minLength: 16
-          maxLength: 16
-          pattern: '^\*{12}[0-9]{4}$'
-          description: >-
-            The card this transaction was made on, masked: twelve asterisks then
-            the last four digits. Width from TRNX-CARD-NUM PIC X(16) at
-            app/cpy/COSTM01.CPY:L22. Display only. It identifies no card, because
-            every card ending in the same four digits masks to this same value,
-            so nothing keys or authorizes on it.
-          examples:
-            - '************7065'
 
         typeCode:
           type: string

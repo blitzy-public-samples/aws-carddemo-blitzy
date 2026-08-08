@@ -7,7 +7,6 @@ import java.util.List;
 import java.util.Map;
 
 import com.carddemo.events.DeclineReason;
-import com.carddemo.events.EventEnvelope;
 import com.carddemo.events.FraudCleared;
 import com.carddemo.events.FraudFlagged;
 import com.carddemo.events.TransactionAuthorized;
@@ -37,7 +36,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * dereferenced and no Kafka broker starts.
  *
  * <p>Versions in use: Java 25, Apache Maven 3.9.16, junit-jupiter 6.0.3,
- * spring-boot-starter-test 4.1.0, json-schema-validator 3.0.6, jackson-databind 3.1.4 and
+ * spring-boot-starter-test 4.1.0, json-schema-validator 3.0.6, jackson-databind 3.1.5 and
  * kafka-clients 4.2.1.
  */
 class EventPublicationGuardTest {

@@ -1,23 +1,15 @@
 package com.carddemo.ledger.entity;
 
-import static com.carddemo.cobol.PicClause.DALYTRAN_AMT_PRECISION;
-import static com.carddemo.cobol.PicClause.DALYTRAN_AMT_SCALE;
-import static com.carddemo.cobol.PicClause.DALYTRAN_CARD_NUM_WIDTH;
-import static com.carddemo.cobol.PicClause.DALYTRAN_CAT_CD_WIDTH;
 import static com.carddemo.cobol.PicClause.DALYTRAN_ID_WIDTH;
-import static com.carddemo.cobol.PicClause.DALYTRAN_MERCHANT_ID_WIDTH;
-import static com.carddemo.cobol.PicClause.DALYTRAN_ORIG_TS_WIDTH;
-import static com.carddemo.cobol.PicClause.DALYTRAN_TYPE_CD_WIDTH;
+import static com.carddemo.cobol.PicClause.REJECT_TRAN_DATA_WIDTH;
 import static com.carddemo.cobol.PicClause.VALIDATION_FAIL_REASON_DESC_WIDTH;
 import static com.carddemo.cobol.PicClause.VALIDATION_FAIL_REASON_WIDTH;
 
-import com.carddemo.cobol.PanMasker;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Index;
 import jakarta.persistence.Table;
-import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.Objects;
 import java.util.UUID;
@@ -36,18 +28,10 @@ import java.util.regex.Pattern;
  * {@code 2500-WRITE-REJECT-REC} at L446 fills both halves and writes them as one 430-byte record,
  * a total that appears again as {@code LRECL=430} at {@code app/jcl/POSTTRAN.jcl:L36}.</p>
  *
- * <p>The 350 characters do NOT stay whole. {@code REJECT-TRAN-DATA} is a copy of the daily
- * transaction record laid out by {@code 01 DALYTRAN-RECORD} at {@code app/cpy/CVTRA06Y.cpy:L4}, and
- * {@code DALYTRAN-CARD-NUM PIC X(16)} at {@code app/cpy/CVTRA06Y.cpy:L15} sits inside it. This
- * class holds the nine source-derived fields a reader needs to diagnose or replay a refusal, beside
- * an assigned identifier and the instant of the refusal. The card number is masked on the way in by
- * {@link PanMasker#maskCardNumber(String)}, and the column check constraint {@code
- * ck_rejected_transaction_masked_card_number} refuses any value whose first twelve positions hold a
- * digit.</p>
- *
- * <p>The four free-text fields of the source record, the merchant name, the merchant city, the
- * merchant postal code and the transaction description, are dropped.
- * {@code reject_reason_description} names the failure.</p>
+ * <p>The 350 characters stay whole. {@code rejected_transaction_data} holds them verbatim,
+ * trailing spaces included, in the {@code 01 DALYTRAN-RECORD} order of
+ * {@code app/cpy/CVTRA06Y.cpy:L5-L18}. The card number at
+ * {@code app/cpy/CVTRA06Y.cpy:L15} arrives masked, and {@code toString} leaves the block out.</p>
  *
  * <pre>
  * COBOL field                     Column
@@ -55,15 +39,7 @@ import java.util.regex.Pattern;
  * DALYTRAN-ID                     transaction_id
  * WS-VALIDATION-FAIL-REASON       reject_reason_code
  * WS-VALIDATION-FAIL-REASON-DESC  reject_reason_description
- * DALYTRAN-CARD-NUM (masked)      masked_card_number
- * DALYTRAN-AMT                    transaction_amount
- * DALYTRAN-TYPE-CD                transaction_type_code
- * DALYTRAN-CAT-CD                 transaction_category_code
- * DALYTRAN-MERCHANT-ID            merchant_id
- * DALYTRAN-ORIG-TS                origin_timestamp
- * (dropped)                       DALYTRAN-DESC, DALYTRAN-MERCHANT-NAME,
- *                                 DALYTRAN-MERCHANT-CITY, DALYTRAN-MERCHANT-ZIP,
- *                                 DALYTRAN-SOURCE
+ * REJECT-TRAN-DATA                rejected_transaction_data
  * (additive)                      rejected_at
  * </pre>
  *
@@ -84,20 +60,7 @@ public class RejectedTransactionEntity {
      */
     private static final Pattern REJECT_REASON_CODE_PATTERN = Pattern.compile("^[0-9]{4}$");
 
-    /**
-     * Shape every {@code masked_card_number} matches: twelve asterisks, then either the last four
-     * digits of the card number or four more asterisks.
-     *
-     * <p>{@link PanMasker#maskCardNumber(String)} returns the first form for a readable card number
-     * and the second for one it cannot read, and a refused transaction is exactly where an
-     * unreadable one turns up. The pattern is the same test the column check constraint
-     * {@code ck_rejected_transaction_masked_card_number} applies, so a value this class accepts is a
-     * value the database accepts.</p>
-     */
-    private static final Pattern MASKED_CARD_NUMBER_PATTERN =
-            Pattern.compile("^\\*{12}(?:[0-9]{4}|\\*{4})$");
-
-    // Each fixed-width column below states its type inline as bpchar(n), which is how PostgreSQL
+    // The fixed-width column below states its type inline as bpchar(n), which is how PostgreSQL
     // reports CHAR(n) through Java Database Connectivity metadata and what the start-up check
     // compares against. An annotation value has to be a compile-time constant, so no helper
     // method can assemble it.
@@ -137,59 +100,15 @@ public class RejectedTransactionEntity {
     private String rejectReasonDescription;
 
     /**
-     * Masked form of {@code DALYTRAN-CARD-NUM PIC X(16)} at {@code app/cpy/CVTRA06Y.cpy:L15}:
-     * twelve asterisks then the last four digits. The unmasked value never reaches this column, and
-     * the constructor applies the mask rather than trusting its caller.
+     * The refused transaction exactly as it arrived, {@code REJECT-TRAN-DATA PIC X(350)} at
+     * {@code app/cbl/CBTRN02C.cbl:L177}. The 350 characters follow
+     * {@code app/cpy/CVTRA06Y.cpy:L5-L18} field order and keep every trailing space, so a reader
+     * slices a field out at its copybook offset. The card number at
+     * {@code app/cpy/CVTRA06Y.cpy:L15} is masked before it reaches this service.
      */
-    @Column(name = "masked_card_number", nullable = false, length = DALYTRAN_CARD_NUM_WIDTH,
-            columnDefinition = "bpchar(" + DALYTRAN_CARD_NUM_WIDTH + ")")
-    private String maskedCardNumber;
-
-    /**
-     * Amount of the refused transaction, {@code DALYTRAN-AMT PIC S9(09)V99} at
-     * {@code app/cpy/CVTRA06Y.cpy:L10}. Reason code 0102 at {@code app/cbl/CBTRN02C.cbl:L403-L413}
-     * turns on this value, so a reader diagnosing an overlimit refusal needs it.
-     */
-    @Column(name = "transaction_amount", nullable = false,
-            precision = DALYTRAN_AMT_PRECISION, scale = DALYTRAN_AMT_SCALE)
-    private BigDecimal transactionAmount;
-
-    /**
-     * Type code of the refused transaction, {@code DALYTRAN-TYPE-CD PIC X(02)} at
-     * {@code app/cpy/CVTRA06Y.cpy:L6}. The first half of the categorisation key.
-     */
-    @Column(name = "transaction_type_code", nullable = false, length = DALYTRAN_TYPE_CD_WIDTH,
-            columnDefinition = "bpchar(" + DALYTRAN_TYPE_CD_WIDTH + ")")
-    private String transactionTypeCode;
-
-    /**
-     * Category code of the refused transaction, {@code DALYTRAN-CAT-CD PIC 9(04)} at
-     * {@code app/cpy/CVTRA06Y.cpy:L7}, held as text so {@code 0001} stays four characters and
-     * compares equal to {@code transaction.category_code}.
-     */
-    @Column(name = "transaction_category_code", nullable = false, length = DALYTRAN_CAT_CD_WIDTH,
-            columnDefinition = "bpchar(" + DALYTRAN_CAT_CD_WIDTH + ")")
-    private String transactionCategoryCode;
-
-    /**
-     * Merchant of the refused transaction, {@code DALYTRAN-MERCHANT-ID PIC 9(09)} at
-     * {@code app/cpy/CVTRA06Y.cpy:L11}, held as text for the same reason. Enough to notice that
-     * one merchant accounts for a run of refusals, and it names no cardholder.
-     */
-    @Column(name = "merchant_id", nullable = false, length = DALYTRAN_MERCHANT_ID_WIDTH,
-            columnDefinition = "bpchar(" + DALYTRAN_MERCHANT_ID_WIDTH + ")")
-    private String merchantId;
-
-    /**
-     * Origin timestamp of the refused transaction, {@code DALYTRAN-ORIG-TS PIC X(26)} at
-     * {@code app/cpy/CVTRA06Y.cpy:L16}. Reason code 0103 at
-     * {@code app/cbl/CBTRN02C.cbl:L414-L420} compares its first ten characters against the account
-     * expiry. A reader diagnosing that refusal needs it, and it stays text for the same reason the
-     * comparison does.
-     */
-    @Column(name = "origin_timestamp", nullable = false, length = DALYTRAN_ORIG_TS_WIDTH,
-            columnDefinition = "bpchar(" + DALYTRAN_ORIG_TS_WIDTH + ")")
-    private String originTimestamp;
+    @Column(name = "rejected_transaction_data", nullable = false, length = REJECT_TRAN_DATA_WIDTH,
+            columnDefinition = "bpchar(" + REJECT_TRAN_DATA_WIDTH + ")")
+    private String rejectedTransactionData;
 
     /**
      * Point in time the ledger recorded the refusal. The caller supplies the value, and no field
@@ -202,93 +121,33 @@ public class RejectedTransactionEntity {
     }
 
     /**
-     * Holds the values of one reject row, masking the card number on the way in.
-     *
-     * <p>{@code cardNumber} is the only argument this constructor changes.
-     * {@code domain.RejectRecorder}, the one caller, passes the {@code maskedCardNumber} the
-     * consumed event already carries, and {@link PanMasker#maskCardNumber(String)} is applied again
-     * here. That call keeps the last four characters and replaces the first twelve, so masking an
-     * already-masked value yields the same value: the mask is enforced whichever form arrives, and
-     * the assertion after the call proves the result matches what the column accepts.</p>
+     * Holds the six values of one reject row.
      *
      * @param id                        identifier of the row
      * @param transactionId             identifier of the refused transaction, at most 16 characters
      * @param rejectReasonCode          four decimal digits identifying the validation failure
      * @param rejectReasonDescription   text of the validation failure, at most 76 characters
-     * @param cardNumber                the card number of the refused transaction, masked here
-     *                                  before it is stored
-     * @param transactionAmount         amount of the refused transaction, scale
-     *                                  {@value com.carddemo.cobol.PicClause#DALYTRAN_AMT_SCALE}
-     * @param transactionTypeCode       type code of the refused transaction, two characters
-     * @param transactionCategoryCode   category code of the refused transaction, four digits
-     * @param merchantId                merchant identifier, nine digits
-     * @param originTimestamp           origin timestamp, twenty-six characters
+     * @param rejectedTransactionData   the refused transaction record, exactly
+     *                                  {@value com.carddemo.cobol.PicClause#REJECT_TRAN_DATA_WIDTH}
+     *                                  characters
      * @param rejectedAt                point in time the ledger recorded the refusal
      * @throws NullPointerException     when any argument is {@code null}
-     * @throws IllegalArgumentException on any of four conditions.
+     * @throws IllegalArgumentException on any of three conditions.
      *                                  {@code rejectReasonCode} is not four decimal digits.
      *                                  {@code transactionId} or
      *                                  {@code rejectReasonDescription} exceeds its width.
-     *                                  A fixed-width field is the wrong width.
-     *                                  The amount carries the wrong scale
+     *                                  {@code rejectedTransactionData} misses its fixed width
      */
     public RejectedTransactionEntity(UUID id, String transactionId, String rejectReasonCode,
-            String rejectReasonDescription, String cardNumber, BigDecimal transactionAmount,
-            String transactionTypeCode, String transactionCategoryCode, String merchantId,
-            String originTimestamp, Instant rejectedAt) {
+            String rejectReasonDescription, String rejectedTransactionData, Instant rejectedAt) {
         this.id = Objects.requireNonNull(id, "id is required");
         this.transactionId = requireAtMost("transactionId", transactionId, DALYTRAN_ID_WIDTH);
         this.rejectReasonCode = requireFourDigits(rejectReasonCode);
         this.rejectReasonDescription = requireAtMost("rejectReasonDescription",
                 rejectReasonDescription, VALIDATION_FAIL_REASON_DESC_WIDTH);
-        this.maskedCardNumber = requireMasked(
-                PanMasker.maskCardNumber(Objects.requireNonNull(cardNumber,
-                        "cardNumber is required")));
-        this.transactionAmount = requireScale(transactionAmount);
-        this.transactionTypeCode = requireExactly("transactionTypeCode", transactionTypeCode,
-                DALYTRAN_TYPE_CD_WIDTH);
-        this.transactionCategoryCode = requireExactly("transactionCategoryCode",
-                transactionCategoryCode, DALYTRAN_CAT_CD_WIDTH);
-        this.merchantId = requireExactly("merchantId", merchantId, DALYTRAN_MERCHANT_ID_WIDTH);
-        this.originTimestamp = requireExactly("originTimestamp", originTimestamp,
-                DALYTRAN_ORIG_TS_WIDTH);
+        this.rejectedTransactionData = requireExactly("rejectedTransactionData",
+                rejectedTransactionData, REJECT_TRAN_DATA_WIDTH);
         this.rejectedAt = Objects.requireNonNull(rejectedAt, "rejectedAt is required");
-    }
-
-    /**
-     * Checks that a masked card number matches {@link #MASKED_CARD_NUMBER_PATTERN}.
-     *
-     * <p>The constructor applies the mask itself, so a failure here reports that the masking
-     * helper changed shape. The failure names the shape and never the value.</p>
-     *
-     * @param value the masked card number
-     * @return {@code value} unchanged
-     */
-    private static String requireMasked(String value) {
-        if (!MASKED_CARD_NUMBER_PATTERN.matcher(value).matches()) {
-            throw new IllegalArgumentException(
-                    "maskedCardNumber matches " + MASKED_CARD_NUMBER_PATTERN.pattern());
-        }
-        return value;
-    }
-
-    /**
-     * Checks the amount against the scale {@code DALYTRAN-AMT PIC S9(09)V99} declares.
-     *
-     * <p>The check reads {@link BigDecimal#scale()} and adjusts nothing:
-     * {@code com.carddemo.cobol.CobolDecimal} owns every scale change on this platform. The
-     * failure reports the two scales and never the amount.</p>
-     *
-     * @param value the amount the caller supplied
-     * @return {@code value} unchanged
-     */
-    private static BigDecimal requireScale(BigDecimal value) {
-        Objects.requireNonNull(value, "transactionAmount is required");
-        if (value.scale() != DALYTRAN_AMT_SCALE) {
-            throw new IllegalArgumentException("transactionAmount carries scale "
-                    + DALYTRAN_AMT_SCALE + ", not " + value.scale());
-        }
-        return value;
     }
 
     /**
@@ -310,6 +169,9 @@ public class RejectedTransactionEntity {
 
     /**
      * Checks one argument against the fixed width of its column.
+     *
+     * <p>The failure names the field and the two widths. No failure repeats the value the caller
+     * supplied, so a card number that arrived unmasked cannot reach a log.</p>
      *
      * @param field name of the field, reported in every failure
      * @param value the text the caller supplied
@@ -360,57 +222,13 @@ public class RejectedTransactionEntity {
     }
 
     /**
-     * Reads the masked card number of the refused transaction.
+     * Reads the refused transaction record.
      *
-     * @return twelve asterisks then either the last four digits or four more asterisks
+     * @return exactly {@value com.carddemo.cobol.PicClause#REJECT_TRAN_DATA_WIDTH} characters in
+     *         {@code app/cpy/CVTRA06Y.cpy:L5-L18} field order
      */
-    public String getMaskedCardNumber() {
-        return maskedCardNumber;
-    }
-
-    /**
-     * Reads the amount of the refused transaction.
-     *
-     * @return the amount at scale {@value com.carddemo.cobol.PicClause#DALYTRAN_AMT_SCALE}
-     */
-    public BigDecimal getTransactionAmount() {
-        return transactionAmount;
-    }
-
-    /**
-     * Reads the type code of the refused transaction.
-     *
-     * @return two characters
-     */
-    public String getTransactionTypeCode() {
-        return transactionTypeCode;
-    }
-
-    /**
-     * Reads the category code of the refused transaction.
-     *
-     * @return four digit characters
-     */
-    public String getTransactionCategoryCode() {
-        return transactionCategoryCode;
-    }
-
-    /**
-     * Reads the merchant identifier of the refused transaction.
-     *
-     * @return nine digit characters
-     */
-    public String getMerchantId() {
-        return merchantId;
-    }
-
-    /**
-     * Reads the origin timestamp of the refused transaction.
-     *
-     * @return twenty-six characters
-     */
-    public String getOriginTimestamp() {
-        return originTimestamp;
+    public String getRejectedTransactionData() {
+        return rejectedTransactionData;
     }
 
     public Instant getRejectedAt() {
@@ -446,11 +264,10 @@ public class RejectedTransactionEntity {
     }
 
     /**
-     * Renders the routing and reason columns of this row.
+     * Renders the identifier and reason columns of this row.
      *
-     * <p>The card number appears in its masked form, which is the only form this row holds. The
-     * amount is left out: a refusal reaches a log line, and the amount of one cardholder's refused
-     * transaction is that cardholder's business. A reader who needs it reads the column.</p>
+     * <p>{@code rejected_transaction_data} and {@code transaction_id} are left out. A reader who
+     * needs either one reads the column.</p>
      *
      * @return the rendered values
      */
@@ -459,11 +276,7 @@ public class RejectedTransactionEntity {
         return "RejectedTransactionEntity{id=" + id
                 + ", rejectReasonCode=" + rejectReasonCode
                 + ", rejectReasonDescription=" + rejectReasonDescription
-                + ", maskedCardNumber=" + maskedCardNumber
-                + ", transactionTypeCode=" + transactionTypeCode
-                + ", transactionCategoryCode=" + transactionCategoryCode
-                + ", merchantId=" + merchantId
                 + ", rejectedAt=" + rejectedAt
-                + ", transactionId redacted}";
+                + ", transactionId redacted, rejectedTransactionData redacted}";
     }
 }

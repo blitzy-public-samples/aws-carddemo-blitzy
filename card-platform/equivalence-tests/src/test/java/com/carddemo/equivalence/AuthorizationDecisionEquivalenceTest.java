@@ -1,5 +1,6 @@
 package com.carddemo.equivalence;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -9,10 +10,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.carddemo.authorization.api.AuthorizationRequest;
 import com.carddemo.authorization.config.AuthorizationProperties;
-import com.carddemo.authorization.domain.AuthorizationService;
 import com.carddemo.authorization.domain.AuthorizationService.Outcome;
+import com.carddemo.authorization.domain.AuthorizationService;
+import com.carddemo.authorization.domain.CycleExposureReservation;
 import com.carddemo.authorization.domain.DeclineRule;
-import com.carddemo.authorization.domain.OriginTimestampWindow;
+import com.carddemo.authorization.domain.RequestCaller;
 import com.carddemo.authorization.domain.TransactionIdentifierSource;
 import com.carddemo.authorization.domain.rules.AccountExistsRule;
 import com.carddemo.authorization.domain.rules.AccountExpirationRule;
@@ -40,12 +42,16 @@ import java.lang.reflect.Field;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Proxy;
 import java.math.BigDecimal;
+import java.math.MathContext;
+import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.EnumMap;
 import java.util.LinkedHashMap;
@@ -59,6 +65,7 @@ import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -91,11 +98,224 @@ class AuthorizationDecisionEquivalenceTest {
     /** Row of {@code /expected/posting-summary.csv} holding the stateless decline count. */
     private static final String MODEL_A_DECLINE_KEY = "model_a.declined_count";
 
-    /** Checked-in expected outputs, shared with {@code PostingEquivalenceTest}. */
     private static final String EXPECTED_POSTING_RESOURCE = "/expected/posting-summary.csv";
+
+    /** Name of the stateless decision expectations this class binds row by row. */
+    private static final String EXPECTED_MODEL_A_FILE =
+            "dailytran-authorization-decisions-model-a.csv";
+
+    /** The stateless decision expectations, read once. */
+    private static final ExpectedOutcomes EXPECTED_MODEL_A =
+            ExpectedOutcomes.load(EXPECTED_MODEL_A_FILE);
+
+    /** Name of the cross-reference resolution expectations this class binds row by row. */
+    private static final String EXPECTED_CROSS_REFERENCE_FILE = "cardxref-account-resolution.csv";
+
+    /** The cross-reference resolution expectations, read once. */
+    private static final ExpectedOutcomes EXPECTED_CROSS_REFERENCES =
+            ExpectedOutcomes.load(EXPECTED_CROSS_REFERENCE_FILE);
+
+    /** Job that defines the cross-reference cluster and its alternate index. */
+    private static final String CROSS_REFERENCE_JOB = "app/jcl/XREFFILE.jcl";
+
+    /** Wire form a decision carries when no rule refused it. */
+    private static final String NO_REASON_CODE = "0";
 
     /** The one CardDemo program holding validate-and-authorize logic, read but never written. */
     private static final String VALIDATION_PROGRAM = "app/cbl/CBTRN02C.cbl";
+
+    /** The checked-in synthetic boundary cases this class is the declared consumer of. */
+    private static final String EXPECTED_SYNTHETIC_FILE = "synthetic-boundary-cases.csv";
+
+    /** Every row of {@link #EXPECTED_SYNTHETIC_FILE}, parsed once for the whole class. */
+    private static final ExpectedOutcomes EXPECTED_SYNTHETIC =
+            ExpectedOutcomes.load(EXPECTED_SYNTHETIC_FILE);
+
+    /** Every customer row of {@code app/data/ASCII/custdata.txt}, at its declared width. */
+    private static final List<CopybookRecordParser.CustomerRecord> CUSTOMERS =
+            CardDemoFixtureLoader.loadCustomers();
+
+    /** The interest program, which owns the rate resolution the probes exercise. */
+    private static final String INTEREST_PROGRAM = "app/cbl/CBACT04C.cbl";
+
+    /** The account update program, which owns the credit-score range and its message. */
+    private static final String ACCOUNT_UPDATE_PROGRAM = "app/cbl/COACTUPC.cbl";
+
+    /** The paragraph that reads the account and applies the last two decline rules. */
+    private static final String ACCOUNT_LOOKUP_PARAGRAPH = "1500-B-LOOKUP-ACCT";
+
+    /** The paragraph that rewrites the account and assigns the unreachable reason. */
+    private static final String ACCOUNT_UPDATE_PARAGRAPH = "2800-UPDATE-ACCOUNT-REC";
+
+    /** The paragraph that performs the three posting steps in order. */
+    private static final String POSTING_PARAGRAPH = "2000-POST-TRANSACTION";
+
+    /** The substituted re-read of the interest program's rate resolution. */
+    private static final String DEFAULT_RATE_PARAGRAPH = "1200-A-GET-DEFAULT-INT-RATE";
+
+    /** Where the read-only COBOL programs live below the repository root. */
+    private static final String COBOL_PROGRAM_DIRECTORY = "app/cbl";
+
+    /** The phrase whose complete absence from {@code app/cbl/} pins truncation everywhere. */
+    private static final String ROUNDED_PHRASE = "ROUNDED";
+
+    /** The category-balance step of the posting paragraph. */
+    private static final String CATEGORY_BALANCE_STEP = "2700-UPDATE-TCATBAL";
+
+    /** The account-update step of the posting paragraph. */
+    private static final String ACCOUNT_UPDATE_STEP = "2800-UPDATE-ACCOUNT-REC";
+
+    /** The transaction-write step of the posting paragraph. */
+    private static final String TRANSACTION_WRITE_STEP = "2900-WRITE-TRANSACTION-FILE";
+
+    /** The fragment that identifies the credit-limit branch inside the account paragraph. */
+    private static final String OVER_LIMIT_TEXT = "OVERLIMIT";
+
+    /** The fragment that identifies the expiry comparison, which slices ten characters of text. */
+    private static final String EXPIRY_TEXT_SLICE = "DALYTRAN-ORIG-TS (1:10)";
+
+    /** The field a gate would have to test in order to stop the second rule assigning. */
+    private static final String REASON_GATE = "WS-VALIDATION-FAIL-REASON = 0";
+
+    /** The comparison operator both money and date comparisons use. */
+    private static final String GREATER_OR_EQUAL = ">=";
+
+    /** How the outcome column writes a refusal. */
+    private static final String DECLINED_OUTCOME = "DECLINED";
+
+    /** How the outcome column writes an approval. */
+    private static final String APPROVED_OUTCOME = "APPROVED";
+
+    /** How the reason column writes the absence of a refusal. */
+    private static final String NO_DECLINE_CODE = "0000";
+
+    /** How the file names a missed keyed read. */
+    private static final String INVALID_KEY_CONDITION = "INVALID KEY";
+
+    /** How the file names a successful keyed read. */
+    private static final String NORMAL_CONDITION = "NORMAL";
+
+    /** The COBOL file status that means the operation succeeded. */
+    private static final String NORMAL_FILE_STATUS = "00";
+
+    /** The COBOL file status that means the keyed record was not found. */
+    private static final String MISSING_RECORD_STATUS = "23";
+
+    /** The statuses the substituted re-read accepts, which is the normal one alone. */
+    private static final List<String> RETRY_ACCEPTED_STATUSES = List.of(NORMAL_FILE_STATUS);
+
+    /** The one retry the interest program performs before abending. */
+    private static final int SINGLE_RETRY = 1;
+
+    /** The number of classes that read {@link #EXPECTED_SYNTHETIC_FILE}, which is this one. */
+    private static final int SINGLE_CONSUMING_CLASS = 1;
+
+    /** The constructed cross-reference card number the account-miss case needs. */
+    private static final String SYNTHETIC_XREF_CARD_NUMBER = "9999999999999998";
+
+    /** The constructed cross-reference customer identifier. */
+    private static final String SYNTHETIC_XREF_CUSTOMER_ID = "000000099";
+
+    /** The constructed cross-reference account identifier, absent from the account fixture. */
+    private static final String SYNTHETIC_XREF_ACCOUNT_ID = "00000000099";
+
+    /** The case the constructed cross-reference row exists for. */
+    private static final String ACCOUNT_MISS_CASE = "SYN-101-ACCT-MISS";
+
+    /** The capture-moment suffix every constructed case supplies. */
+    private static final String MIDNIGHT_SUFFIX = " 00:00:00.000000";
+
+    /** A small amount no credit limit in the fixture refuses. */
+    private static final BigDecimal SMALL_SYNTHETIC_AMOUNT = new BigDecimal("10.00");
+
+    /** An amount larger than the smallest credit limit the fixture carries. */
+    private static final BigDecimal COLLISION_AMOUNT = new BigDecimal("999.00");
+
+    /** A cycle credit one integer digit wider than the working balance can hold. */
+    private static final BigDecimal BILLION_CYCLE_CREDIT = new BigDecimal("1000000000.00");
+
+    /** The largest cycle credit the working balance still holds whole. */
+    private static final BigDecimal JUST_BELOW_BILLION_CYCLE_CREDIT = new BigDecimal("999999999.99");
+
+    /** The amount that makes the narrowed balance equal the constructed credit limit. */
+    private static final BigDecimal NARROWED_EQUALITY_AMOUNT = new BigDecimal("100.00");
+
+    /** The credit limit the three narrowing cases supply. */
+    private static final BigDecimal NARROWING_CREDIT_LIMIT = new BigDecimal("100.00");
+
+    /** The closing category balance the truncation case borrows, which is negative. */
+    private static final BigDecimal NEGATIVE_CATEGORY_BALANCE = new BigDecimal("-763.00");
+
+    /** The account whose closing balance the truncation case borrows. */
+    private static final String NEGATIVE_BALANCE_ACCOUNT = "00000000002";
+
+    /** A rate the fixture carries but never pairs with a negative balance. */
+    private static final BigDecimal UNEXERCISED_RATE = new BigDecimal("25.00");
+
+    /**
+     * The precision {@link #EXPECTED_SYNTHETIC_FILE} writes the unrounded quotient at.
+     *
+     * <p>The quotient does not terminate, so an exact divide is impossible and some precision has
+     * to be chosen. Twenty-eight significant digits is what the file carries, and it is deep enough
+     * that the discarded tail cannot affect any rounding decision at the two-place working
+     * scale.</p>
+     */
+    private static final MathContext RAW_QUOTIENT_CONTEXT = new MathContext(28);
+
+    /** The disclosure group whose rows the fixture carries in full. */
+    private static final String MATCHED_DISCLOSURE_GROUP = "A000000000";
+
+    /** The disclosure group the substitution writes in. */
+    private static final String DEFAULT_DISCLOSURE_GROUP = "DEFAULT   ";
+
+    /** The disclosure group whose every row rates at zero. */
+    private static final String ZERO_RATE_DISCLOSURE_GROUP = "ZEROAPR   ";
+
+    /** The blank group identifier every fixture account carries. */
+    private static final String BLANK_DISCLOSURE_GROUP = "          ";
+
+    /** The section labels of {@link #EXPECTED_SYNTHETIC_FILE}, which are not cases. */
+    private static final Set<String> SYNTHETIC_SECTIONS =
+            Set.of("COVERAGE", "SETUP", "SUMMARY", "PROHIBITION");
+
+    /** The label prefixes of the cases that exercise the authorization decline chain. */
+    private static final List<String> AUTHORIZATION_CASE_PREFIXES =
+            List.of("SYN-100-", "SYN-101-", "SYN-103-", "SYN-102-103-");
+
+    /** The label prefixes of the cases that probe the narrowed working balance. */
+    private static final List<String> NARROWING_CASE_PREFIXES = List.of("SYN-102-BILLION",
+            "SYN-102-JUST-BELOW", "SYN-102-NARROWED");
+
+    /** The label of the case that documents the unreachable reason. */
+    private static final String REWRITE_CASE = "SYN-109-";
+
+    /** The label of the case that separates truncation from both alternatives. */
+    private static final String TRUNCATION_CASE = "SYN-TRUNC-";
+
+    /** The label prefix of the five rate-resolution probes. */
+    private static final String RATE_CASE_PREFIX = "SYN-RATE-";
+
+    /** The label prefix of the four credit-score boundary probes. */
+    private static final String CREDIT_SCORE_SEQUENCE_PREFIX = "SYN-FICO-";
+
+    /** The lower bound of the credit-score range the source declares. */
+    private static final int CREDIT_SCORE_LOW_BOUND = 300;
+
+    /** The upper bound of the credit-score range the source declares. */
+    private static final int CREDIT_SCORE_HIGH_BOUND = 850;
+
+    /** The label the source trims into the credit-score range message. */
+    private static final String CREDIT_SCORE_FIELD_LABEL = "FICO Score";
+
+    /** How {@link #EXPECTED_SYNTHETIC_FILE} writes a separation, in its own casing. */
+    private static final String UPPER_CASE_SEPARATION = "YES";
+
+    /** The width the wire contract writes a reason code at. */
+    private static final int REASON_CODE_WIDTH = 4;
+
+    /** The trigger this platform records for the unreachable reason. */
+    private static final String REWRITE_FAILURE_TRIGGER = "account rewrite returns INVALID KEY";
+
 
     /** Paragraph reading the card cross-reference. */
     private static final String CROSS_REFERENCE_PARAGRAPH = "1500-A-LOOKUP-XREF";
@@ -142,8 +362,20 @@ class AuthorizationDecisionEquivalenceTest {
     /** Card number carrying one digit fewer than the storage key. */
     private static final String NARROW_CARD_INPUT = "000000000000001";
 
-    /** Actor from {@code app/cbl/COSGN00C.cbl}, at {@code SEC-USR-ID PIC X(08)} width. */
+    /** Actor from {@code app/cbl/COSGN00C.cbl}, recorded whole on each decision row. */
     private static final String ACTOR = "equiv001";
+
+    /**
+     * The caller every request below presents.
+     *
+     * <p>It reaches every subject, which is the administrator limb of
+     * {@code app/cbl/COSGN00C.cbl:L232-L236} and the identity an acquirer client is configured as.
+     * These tests replay {@code app/data/ASCII/dailytran.txt} against every account of
+     * {@code app/data/ASCII/acctdata.txt}, so a caller scoped to one account would be refused every
+     * record but its own and these tests would measure entitlement rather than the four reject reasons.
+     * {@code CallerEntitlementTest} in the authorization module measures entitlement.
+     */
+    private static final RequestCaller CALLER = RequestCaller.administrator(ACTOR);
 
     /** Account identifier no row of {@code app/data/ASCII/acctdata.txt} carries. */
     private static final String ABSENT_ACCOUNT_ID = "99999999999";
@@ -192,9 +424,6 @@ class AuthorizationDecisionEquivalenceTest {
     /** Staleness window wide enough for a capture moment from the fixtures. */
     private static final Duration TOLERANT_STALENESS = Duration.ofDays(36_500L);
 
-    /** Minutes a capture moment may sit in the future, from the service default. */
-    private static final long FUTURE_MINUTES = 5L;
-
     /** Every record of the daily transaction feed, parsed once. */
     private static final List<DailyTransactionRecord> FEED =
             CardDemoFixtureLoader.loadDailyTransactions();
@@ -206,6 +435,295 @@ class AuthorizationDecisionEquivalenceTest {
     /** Every account row, keyed by the eleven-character account identifier. */
     private static final Map<String, AccountRecord> FIXTURE_ACCOUNTS =
             CardDemoFixtureLoader.accountsByAccountId();
+
+    @Nested
+    @DisplayName("Checked-in stateless decision expectations")
+    class CheckedInStatelessDecisions {
+
+        @Test
+        @DisplayName("every row of " + EXPECTED_MODEL_A_FILE + " matches, and none is left unread")
+        void everyRowOfTheStatelessExpectationsMatches() {
+            DecisionHarness harness = DecisionHarness.overFixtures();
+            Map<String, Outcome> decisions = new LinkedHashMap<>();
+            for (int index = 0; index < FEED.size(); index++) {
+                decisions.put(Integer.toString(index + 1),
+                        harness.authorize(requestFor(FEED.get(index))));
+            }
+
+            for (ExpectedOutcomes.Row row : EXPECTED_MODEL_A.rows()) {
+                String expected = EXPECTED_MODEL_A.value(row.recordSequence(), row.entityKey(),
+                        row.expectedField());
+                String actual = actualStatelessValue(row, decisions);
+
+                assertEquals(expected, actual,
+                        EXPECTED_MODEL_A_FILE + " row " + row.key() + ", derived from "
+                                + row.sourceLocator() + ", Picture clause " + row.picClause());
+            }
+
+            assertThat(EXPECTED_MODEL_A.unconsumedRows())
+                    .as(EXPECTED_MODEL_A.unconsumedDescription())
+                    .isEmpty();
+        }
+
+        /** Resolves what the service, the fixture or the source holds for one stateless row. */
+        private String actualStatelessValue(ExpectedOutcomes.Row row,
+                Map<String, Outcome> decisions) {
+            if (!row.isFixtureLevel()) {
+                return perRecordStatelessValue(row, decisions);
+            }
+            return switch (row.entityKey()) {
+                case "validation_chain" -> chainValue(row);
+                case "decline_reason_census" -> censusValue(row);
+                case "credit_limit_rule" -> limitRuleValue(row);
+                case "expiration_rule" -> expirationRuleValue(row);
+                case "model_a" -> modelAValue(row, decisions);
+                case "validation_trailer" -> trailerValue(row);
+                default -> throw new IllegalStateException(EXPECTED_MODEL_A_FILE
+                        + " carries an unresolved subject " + row.key());
+            };
+        }
+
+        /** Resolves one per-record stateless expectation from the service's own answer. */
+        private String perRecordStatelessValue(ExpectedOutcomes.Row row,
+                Map<String, Outcome> decisions) {
+            int ordinal = Integer.parseInt(row.recordSequence());
+            DailyTransactionRecord record = FEED.get(ordinal - 1);
+            CardCrossReferenceRecord crossReference =
+                    FIXTURE_CROSS_REFERENCES.get(record.cardNumber());
+            AccountRecord account = FIXTURE_ACCOUNTS.get(crossReference.accountId());
+            Outcome outcome = decisions.get(row.recordSequence());
+
+            return switch (row.expectedField()) {
+                case "xref_acct_id" -> crossReference.accountId();
+                case "dalytran_card_num" -> record.cardNumber();
+                case "dalytran_type_cd" -> record.typeCode();
+                case "dalytran_amt" -> plainMoney(record.amount());
+                case "acct_credit_limit" -> plainMoney(account.creditLimit());
+                case "acct_curr_cyc_credit" -> plainMoney(account.currentCycleCredit());
+                case "acct_curr_cyc_debit" -> plainMoney(account.currentCycleDebit());
+                case "ws_temp_bal" -> plainMoney(workingBalance(account.currentCycleCredit(),
+                        account.currentCycleDebit(), record.amount()));
+                case "authorization_decision" -> outcome.approved() ? "APPROVED" : "DECLINED";
+                case "decline_reason_code" -> outcome.declineReason()
+                        .map(reason -> Integer.toString(reason.numericCode()))
+                        .orElse(NO_REASON_CODE);
+                case "decline_reason_description" -> outcome.declineReason()
+                        .map(DeclineReason::description)
+                        .orElseThrow(() -> new IllegalStateException(EXPECTED_MODEL_A_FILE
+                                + " row " + row.key() + " names a description for a record the "
+                                + "service approved"));
+                default -> throw new IllegalStateException(EXPECTED_MODEL_A_FILE
+                        + " carries an unresolved per-record field " + row.key());
+            };
+        }
+
+        /** Resolves one expectation about the ordering of the four rules. */
+        private String chainValue(ExpectedOutcomes.Row row) {
+            List<String> account = paragraphLines(ACCOUNT_PARAGRAPH);
+            List<String> validate = paragraphLines("1500-VALIDATE-TRAN");
+
+            return switch (row.expectedField()) {
+                case "reason_100_short_circuits_subsequent_rules" -> yesNo(validate.stream()
+                        .anyMatch(line -> line.contains("IF WS-VALIDATION-FAIL-REASON = 0")));
+                case "reason_101_short_circuits_102_and_103" -> yesNo(
+                        indexOfLineContaining(account, "MOVE 101")
+                                < indexOfLineContaining(account, "WS-TEMP-BAL"));
+                case "reason_102_and_103_are_ungated_sequential_ifs" -> yesNo(account.stream()
+                        .filter(line -> line.startsWith("IF ") && !line.contains("-STATUS"))
+                        .noneMatch(line -> line.contains("WS-VALIDATION-FAIL-REASON")));
+                case "collision_winner_reason_code" -> lastReasonAssignedIn(account);
+                default -> throw new IllegalStateException(EXPECTED_MODEL_A_FILE
+                        + " carries an unresolved chain field " + row.key());
+            };
+        }
+
+        /** Resolves one count of how often the stateless model reaches a reason. */
+        private String censusValue(ExpectedOutcomes.Row row) {
+            Map<DeclineReason, Long> census = reasonCensus(FEED.stream()
+                    .map(AuthorizationDecisionEquivalenceTest::documentedReason).toList());
+            String field = row.expectedField();
+            if ("reason_102_and_103_collision_occurrences".equals(field)) {
+                return Long.toString(FEED.stream().filter(record -> {
+                    AccountRecord account = FIXTURE_ACCOUNTS.get(
+                            FIXTURE_CROSS_REFERENCES.get(record.cardNumber()).accountId());
+                    boolean overLimit = account.creditLimit().compareTo(
+                            workingBalance(account.currentCycleCredit(),
+                                    account.currentCycleDebit(), record.amount())) < 0;
+                    boolean expired = account.expirationDate()
+                            .compareTo(capturedDate(record.originTimestamp())) < 0;
+                    return overLimit && expired;
+                }).count());
+            }
+            for (DeclineReason reason : DeclineReason.values()) {
+                if (field.equals("decline_reason_" + reason.numericCode() + "_occurrences")) {
+                    return Long.toString(census.getOrDefault(reason, UNREACHABLE_FROM_FIXTURES));
+                }
+            }
+            throw new IllegalStateException(
+                    EXPECTED_MODEL_A_FILE + " carries an unresolved census field " + row.key());
+        }
+
+        /** Resolves one expectation about the credit-limit comparison. */
+        private String limitRuleValue(ExpectedOutcomes.Row row) {
+            List<String> account = paragraphLines(ACCOUNT_PARAGRAPH);
+
+            return switch (row.expectedField()) {
+                case "ws_temp_bal_precision_narrower_than_operands" -> yesNo(
+                        PicClause.WS_TEMP_BAL_PRECISION
+                                < PicClause.ACCT_CURR_CYC_CREDIT_PRECISION);
+                case "formula_excludes_current_balance" -> yesNo(account.stream()
+                        .noneMatch(line -> line.contains("ACCT-CURR-BAL")));
+                case "credit_limit_comparison_operator" -> comparisonOperatorIn(account);
+                default -> throw new IllegalStateException(EXPECTED_MODEL_A_FILE
+                        + " carries an unresolved credit-limit field " + row.key());
+            };
+        }
+
+        /** Resolves one expectation about the expiry comparison. */
+        private String expirationRuleValue(ExpectedOutcomes.Row row) {
+            return switch (row.expectedField()) {
+                case "dalytran_orig_ts_first_10" -> FEED.stream()
+                        .map(record -> capturedDate(record.originTimestamp()))
+                        .distinct()
+                        .reduce((first, second) -> {
+                            throw new IllegalStateException(
+                                    "the feed carries more than one capture date");
+                        })
+                        .orElseThrow();
+                case "earliest_acct_expiraion_date" -> FIXTURE_ACCOUNTS.values().stream()
+                        .map(AccountRecord::expirationDate)
+                        .min(String::compareTo)
+                        .orElseThrow();
+                case "expiration_comparison_is_raw_string" -> yesNo(paragraphLines(ACCOUNT_PARAGRAPH)
+                        .stream().anyMatch(line -> line.contains("ACCT-EXPIRAION-DATE")
+                                && line.contains("DALYTRAN-ORIG-TS")));
+                default -> throw new IllegalStateException(EXPECTED_MODEL_A_FILE
+                        + " carries an unresolved expiration field " + row.key());
+            };
+        }
+
+        /** Resolves one expectation about the whole stateless run. */
+        private String modelAValue(ExpectedOutcomes.Row row, Map<String, Outcome> decisions) {
+            long declined = decisions.values().stream().filter(outcome -> !outcome.approved())
+                    .count();
+
+            return switch (row.expectedField()) {
+                case "model_a_record_count" -> Integer.toString(decisions.size());
+                case "model_a_decline_count" -> Long.toString(declined);
+                case "model_a_approval_count" -> Long.toString(decisions.size() - declined);
+                case "model_a_distinct_declining_accounts" -> Long.toString(decisions.entrySet()
+                        .stream()
+                        .filter(entry -> !entry.getValue().approved())
+                        .map(entry -> FIXTURE_CROSS_REFERENCES.get(
+                                FEED.get(Integer.parseInt(entry.getKey()) - 1).cardNumber())
+                                .accountId())
+                        .distinct()
+                        .count());
+                case "model_a_declines_all_reason_102" -> yesNo(decisions.values().stream()
+                        .filter(outcome -> !outcome.approved())
+                        .allMatch(outcome -> outcome.declineReason()
+                                .orElseThrow() == DeclineReason.OVER_CREDIT_LIMIT));
+                default -> throw new IllegalStateException(EXPECTED_MODEL_A_FILE
+                        + " carries an unresolved model field " + row.key());
+            };
+        }
+
+        /** Resolves one expectation about the reject trailer the reason text travels in. */
+        private String trailerValue(ExpectedOutcomes.Row row) {
+            return switch (row.expectedField()) {
+                case "decline_reason_description_pic" -> "X("
+                        + PicClause.VALIDATION_FAIL_REASON_DESC_WIDTH + ")";
+                case "description_space_padded_to_76" -> yesNo(
+                        Arrays.stream(DeclineReason.values())
+                                .allMatch(reason -> reason.description().length()
+                                        <= PicClause.VALIDATION_FAIL_REASON_DESC_WIDTH));
+                default -> throw new IllegalStateException(EXPECTED_MODEL_A_FILE
+                        + " carries an unresolved trailer field " + row.key());
+            };
+        }
+    }
+
+    @Nested
+    @DisplayName("Checked-in cross-reference resolution expectations")
+    class CheckedInCrossReferenceResolution {
+
+        @Test
+        @DisplayName("every row of " + EXPECTED_CROSS_REFERENCE_FILE
+                + " matches, and none is left unread")
+        void everyRowOfTheCrossReferenceExpectationsMatches() {
+            List<CardCrossReferenceRecord> records =
+                    CardDemoFixtureLoader.loadCardCrossReferences();
+
+            for (ExpectedOutcomes.Row row : EXPECTED_CROSS_REFERENCES.rows()) {
+                String expected = EXPECTED_CROSS_REFERENCES.value(row.recordSequence(),
+                        row.entityKey(), row.expectedField());
+                String actual = actualCrossReferenceValue(row, records);
+
+                assertEquals(expected, actual,
+                        EXPECTED_CROSS_REFERENCE_FILE + " row " + row.key() + ", derived from "
+                                + row.sourceLocator() + ", Picture clause " + row.picClause());
+            }
+
+            assertThat(EXPECTED_CROSS_REFERENCES.unconsumedRows())
+                    .as(EXPECTED_CROSS_REFERENCES.unconsumedDescription())
+                    .isEmpty();
+        }
+
+        /** Resolves one cross-reference expectation from the fixture, the copybook or the job. */
+        private String actualCrossReferenceValue(ExpectedOutcomes.Row row,
+                List<CardCrossReferenceRecord> records) {
+            return switch (row.expectedField()) {
+                case "xref_card_num" -> recordKeyedBy(records, row.entityKey()).cardNumber();
+                case "xref_cust_id" -> recordKeyedBy(records, row.entityKey()).customerId();
+                case "xref_acct_id" -> recordKeyedBy(records, row.entityKey()).accountId();
+                case "xref_record_count" -> Integer.toString(records.size());
+                case "record_width_declared" -> Integer.toString(
+                        PicClause.CARD_XREF_RECORD_LENGTH);
+                case "record_width_as_delivered" -> Integer.toString(
+                        PicClause.CARDXREF_FIXTURE_RECORD_WIDTH);
+                case "customer_id_numerically_equals_account_id" -> yesNo(records.stream()
+                        .allMatch(record -> Long.parseLong(record.customerId())
+                                == Long.parseLong(record.accountId())));
+                case "primary_key_field" -> "XREF-CARD-NUM";
+                case "alternate_index_key_field" -> "XREF-ACCT-ID";
+                case "all_dailytran_cards_resolve_in_xref" -> yesNo(FEED.stream()
+                        .allMatch(record ->
+                                FIXTURE_CROSS_REFERENCES.containsKey(record.cardNumber())));
+                case "all_resolved_accounts_exist_in_acctdata" -> yesNo(records.stream()
+                        .allMatch(record -> FIXTURE_ACCOUNTS.containsKey(record.accountId())));
+                case "distinct_cards_referenced_by_dailytran" -> Long.toString(FEED.stream()
+                        .map(DailyTransactionRecord::cardNumber).distinct().count());
+                case "xref_rows_unreferenced_by_dailytran" -> Long.toString(records.stream()
+                        .filter(record -> FEED.stream()
+                                .noneMatch(feed -> feed.cardNumber().equals(record.cardNumber())))
+                        .count());
+                case "decline_reason_100_fixture_occurrences" -> Long.toString(FEED.stream()
+                        .filter(record -> documentedReason(record)
+                                == DeclineReason.INVALID_CARD_NUMBER)
+                        .count());
+                case "decline_reason_101_fixture_occurrences" -> Long.toString(FEED.stream()
+                        .filter(record -> documentedReason(record)
+                                == DeclineReason.ACCOUNT_NOT_FOUND)
+                        .count());
+                case "validation_short_circuits_after_xref_miss" -> yesNo(
+                        paragraphLines("1500-VALIDATE-TRAN").stream()
+                                .anyMatch(line -> line.contains("IF WS-VALIDATION-FAIL-REASON = 0")));
+                default -> throw new IllegalStateException(EXPECTED_CROSS_REFERENCE_FILE
+                        + " carries an unresolved field " + row.key());
+            };
+        }
+
+        /** Returns the one cross-reference record carrying a card number. */
+        private CardCrossReferenceRecord recordKeyedBy(List<CardCrossReferenceRecord> records,
+                String cardNumber) {
+            return records.stream()
+                    .filter(record -> record.cardNumber().equals(cardNumber))
+                    .findFirst()
+                    .orElseThrow(() -> new IllegalStateException(EXPECTED_CROSS_REFERENCE_FILE
+                            + " names a card app/data/ASCII/cardxref.txt does not hold: "
+                            + cardNumber));
+        }
+    }
 
     @Nested
     @DisplayName("The stateless fixture model")
@@ -320,7 +838,7 @@ class AuthorizationDecisionEquivalenceTest {
         }
 
         /**
-         * Proves the three validations the source omits stay omitted.
+         * The three validations the source omits stay omitted.
          *
          * <p>Card numbers are tested for sixteen numeric digits only, at
          * {@code app/cbl/COCRDUPC.cbl:L193-L194}. No paragraph reads
@@ -666,6 +1184,112 @@ class AuthorizationDecisionEquivalenceTest {
     }
 
     /**
+     * Renders one amount the way the expectation files write money.
+     *
+     * @param amount the value to render
+     * @return the value at the amount scale, without an exponent
+     */
+    private static String plainMoney(BigDecimal amount) {
+        return amount.setScale(PicClause.DALYTRAN_AMT_SCALE, RoundingMode.DOWN).toPlainString();
+    }
+
+    /** Renders a boolean as the expectation files write it. */
+    private static String yesNo(boolean value) {
+        return value ? ExpectedOutcomes.YES : ExpectedOutcomes.NO;
+    }
+
+    /**
+     * Returns one paragraph of {@value #VALIDATION_PROGRAM} as normalised lines.
+     *
+     * <p>Bounded by the next paragraph label rather than by {@code EXIT.}, because several
+     * paragraphs of this program carry no {@code EXIT.} and a reader that stops at the first one
+     * answers questions about the following paragraph instead.</p>
+     *
+     * @param label the paragraph label, without its full stop
+     * @return its lines, with runs of spaces collapsed and comments removed
+     */
+    private static List<String> paragraphLines(String label) {
+        List<String> normalised = programLines().stream()
+                .map(line -> line.replaceAll("\\s+", " ").strip())
+                .filter(line -> !line.startsWith("*") && !line.isEmpty())
+                .toList();
+        int start = normalised.indexOf(label + ".");
+        if (start < 0) {
+            throw new IllegalStateException(VALIDATION_PROGRAM + " holds no paragraph " + label);
+        }
+
+        List<String> paragraph = new ArrayList<>();
+        for (int index = start + 1; index < normalised.size(); index++) {
+            String line = normalised.get(index);
+            if (line.matches("\\d{4}(-[A-Z0-9]+)*\\.")) {
+                break;
+            }
+            paragraph.add(line);
+            if ("EXIT.".equals(line)) {
+                break;
+            }
+        }
+        return List.copyOf(paragraph);
+    }
+
+    /**
+     * Returns the position of the first line holding a fragment.
+     *
+     * @param lines    the paragraph lines
+     * @param fragment the text to find
+     * @return the index of the first match
+     */
+    private static int indexOfLineContaining(List<String> lines, String fragment) {
+        for (int index = 0; index < lines.size(); index++) {
+            if (lines.get(index).contains(fragment)) {
+                return index;
+            }
+        }
+        throw new IllegalStateException(
+                VALIDATION_PROGRAM + " holds no line carrying " + fragment);
+    }
+
+    /**
+     * Returns the last reason a paragraph assigns, which is the one a collision leaves standing.
+     *
+     * @param lines the paragraph lines
+     * @return the numeric code as the source writes it
+     */
+    private static String lastReasonAssignedIn(List<String> lines) {
+        String last = null;
+        for (String line : lines) {
+            Matcher matcher = Pattern.compile("MOVE (\\d{3}) TO WS-VALIDATION-FAIL-REASON")
+                    .matcher(line);
+            if (matcher.find()) {
+                last = matcher.group(1);
+            }
+        }
+        if (last == null) {
+            throw new IllegalStateException(
+                    VALIDATION_PROGRAM + " assigns no reason in the paragraph offered");
+        }
+        return last;
+    }
+
+    /**
+     * Returns the operator the credit-limit comparison uses, stated limit first.
+     *
+     * @param lines the paragraph lines
+     * @return the operator as the source writes it
+     */
+    private static String comparisonOperatorIn(List<String> lines) {
+        for (String line : lines) {
+            Matcher matcher = Pattern.compile("ACCT-CREDIT-LIMIT +(>=|<=|>|<|=) +WS-TEMP-BAL")
+                    .matcher(line);
+            if (matcher.find()) {
+                return matcher.group(1);
+            }
+        }
+        throw new IllegalStateException(VALIDATION_PROGRAM
+                + " holds no comparison of ACCT-CREDIT-LIMIT to WS-TEMP-BAL");
+    }
+
+    /**
      * Slices the ten characters {@code app/cbl/CBTRN02C.cbl:L414} compares.
      *
      * @param originTimestamp the twenty-six character capture moment
@@ -902,8 +1526,6 @@ class AuthorizationDecisionEquivalenceTest {
     }
 
     /**
-     * Names the fields one class declares.
-     *
      * @param declaring the class to read
      * @return every declared field name
      */
@@ -930,8 +1552,6 @@ class AuthorizationDecisionEquivalenceTest {
     }
 
     /**
-     * Builds a request from the three values the chain reads.
-     *
      * @param cardNumber      the card number, at whatever width the case exercises
      * @param amount          the transaction amount
      * @param originTimestamp the twenty-six character capture moment
@@ -985,8 +1605,6 @@ class AuthorizationDecisionEquivalenceTest {
             CardCrossReferenceTable crossReferences, AccountCreditSnapshotTable accounts) {
 
         /**
-         * Builds a harness over the two replica tables.
-         *
          * @param crossReferenceRows rows keyed by sixteen-character card number
          * @param accountRows        rows keyed by eleven-character account identifier
          * @return the harness
@@ -998,8 +1616,10 @@ class AuthorizationDecisionEquivalenceTest {
             CardCrossReferenceTable crossReferences =
                     new CardCrossReferenceTable(crossReferenceRows);
             AccountCreditSnapshotTable accounts = new AccountCreditSnapshotTable(accountRows);
+            CycleExposureReservation reservation =
+                    new CycleExposureReservation(accounts, replicaProperties());
             List<DeclineRule> rules = List.of(new CardCrossReferenceRule(crossReferences),
-                    new AccountExistsRule(accounts), new CreditLimitRule(),
+                    new AccountExistsRule(accounts), new CreditLimitRule(reservation),
                     new AccountExpirationRule());
 
             AuthorizationService service = new AuthorizationService(rules, crossReferences,
@@ -1007,14 +1627,12 @@ class AuthorizationDecisionEquivalenceTest {
                     new OutboxWriter(writeOnlySeam(OutboxEventRepository.class)),
                     writeOnlySeam(UnresolvedCardAttemptRepository.class),
                     writeOnlySeam(AuthorizationDecisionRepository.class),
-                    new OriginTimestampWindow(TOLERANT_STALENESS.toMinutes(), FUTURE_MINUTES),
-                    new SimpleMeterRegistry(), immediateTransactions(), replicaProperties());
+                    new SimpleMeterRegistry(), immediateTransactions(), replicaProperties(),
+                    reservation);
             return new DecisionHarness(service, rules, crossReferences, accounts);
         }
 
         /**
-         * Builds a harness loaded with every checked-in cross-reference and account row.
-         *
          * @return the harness
          */
         private static DecisionHarness overFixtures() {
@@ -1032,8 +1650,6 @@ class AuthorizationDecisionEquivalenceTest {
         }
 
         /**
-         * Builds a harness holding one card resolving to one account with the given values.
-         *
          * @param creditLimit    from {@code ACCT-CREDIT-LIMIT}
          * @param expirationDate from {@code ACCT-EXPIRAION-DATE}
          * @param cycleCredit    from {@code ACCT-CURR-CYC-CREDIT}
@@ -1050,13 +1666,11 @@ class AuthorizationDecisionEquivalenceTest {
         }
 
         /**
-         * Runs one request under the actor a decision row records.
-         *
          * @param request the request body
          * @return the decision the caller receives
          */
         private Outcome authorize(AuthorizationRequest request) {
-            return service.authorize(request, ACTOR);
+            return service.authorize(request, CALLER);
         }
     }
 
@@ -1069,10 +1683,8 @@ class AuthorizationDecisionEquivalenceTest {
      */
     private static final class CardCrossReferenceTable implements CardCrossReferenceRepository {
 
-        /** Rows by card number, in insertion order. */
         private final Map<String, CardCrossReferenceEntity> rows;
 
-        /** How many times the card-number read ran. */
         private long cardLookups;
 
         private CardCrossReferenceTable(Map<String, CardCrossReferenceEntity> rows) {
@@ -1203,8 +1815,10 @@ class AuthorizationDecisionEquivalenceTest {
     private static final class AccountCreditSnapshotTable
             implements AccountCreditSnapshotRepository {
 
-        /** Rows by account identifier, in insertion order. */
         private final Map<String, AccountCreditSnapshotEntity> rows;
+
+        /** The reserved figures each approval recorded, by account identifier. */
+        private final Map<String, List<BigDecimal>> reservations = new LinkedHashMap<>();
 
         /** How many times the account read ran. */
         private long accountLookups;
@@ -1226,6 +1840,76 @@ class AuthorizationDecisionEquivalenceTest {
         public Optional<AccountCreditSnapshotEntity> findByAccountId(String accountId) {
             accountLookups++;
             return Optional.ofNullable(rows.get(accountId));
+        }
+
+        /**
+         * Serves the locked read the decision path issues, and counts it as the account read.
+         *
+         * <p>The lock itself has nothing to hold here: one harness replays records on one thread, which
+         * is the shape {@code app/cbl/CBTRN02C.cbl} runs in. What the lock exists for is two concurrent
+         * HTTP calls for one account, and {@code NativeStatementIT} measures it against a real database.
+         *
+         * @param accountId the eleven-digit account identifier
+         * @return the row, or empty for reject reason 101 at {@code app/cbl/CBTRN02C.cbl:L397-L399}
+         */
+        @Override
+        public Optional<AccountCreditSnapshotEntity> findForUpdateByAccountId(String accountId) {
+            return findByAccountId(accountId);
+        }
+
+        /**
+         * Answers the lock-wait bound the decision applies, and applies nothing.
+         *
+         * <p>There is no connection to bound: this table is a map. The production statement is
+         * {@code set_config('lock_timeout', ?, true)}, and {@code NativeStatementIT} measures that it
+         * takes effect.
+         *
+         * @param milliseconds the bound the decision path passes, as a PostgreSQL interval string
+         * @return the same value, which the caller reads for nothing
+         */
+        @Override
+        public String applyLockWaitBound(String milliseconds) {
+            return milliseconds;
+        }
+
+        /**
+         * Records the exposure one approval reserved, and reports the row unchanged.
+         *
+         * <p>The reservation is accepted rather than refused, because an approval that could not
+         * reserve would fail rather than approve, and these tests measure decisions. It moves no figure
+         * on the row, and that models the source rather than departing from it:
+         * {@code app/cbl/CBTRN02C.cbl} posts each record before it validates the next, so by the time
+         * {@code :L403-L405} reads the accumulators for record N+1 the posting of record N has already
+         * been absorbed into them and nothing is outstanding. Each record of
+         * {@code app/data/ASCII/dailytran.txt} is therefore decided against the opening figures of
+         * {@code app/data/ASCII/acctdata.txt}, which is what the checked-in expectations hold.
+         *
+         * @param accountId          the eleven-digit account identifier
+         * @param pendingCycleCredit the reserved cycle credit the decision computed
+         * @param pendingCycleDebit  the reserved cycle debit the decision computed
+         * @param pendingExpiresAt   when the reservation would stop counting
+         * @return 1 for a row this table holds, and {@link #NO_ROW_WRITTEN} for one it does not
+         */
+        @Override
+        public int reserveCycleExposure(String accountId, BigDecimal pendingCycleCredit,
+                BigDecimal pendingCycleDebit, Instant pendingExpiresAt) {
+
+            if (!rows.containsKey(accountId)) {
+                return NO_ROW_WRITTEN;
+            }
+            reservations.put(accountId, List.of(pendingCycleCredit, pendingCycleDebit));
+            return 1;
+        }
+
+        /**
+         * Returns the reserved figures one approval recorded against an account.
+         *
+         * @param accountId the eleven-digit account identifier
+         * @return the reserved cycle credit followed by the reserved cycle debit, or an empty list
+         *         where no approval reserved against that account
+         */
+        private List<BigDecimal> reservationFor(String accountId) {
+            return reservations.getOrDefault(accountId, List.of());
         }
 
         @Override
@@ -1301,8 +1985,6 @@ class AuthorizationDecisionEquivalenceTest {
     }
 
     /**
-     * Runs the service's transaction callback on the calling thread.
-     *
      * @return a template that opens no transaction
      */
     private static TransactionTemplate immediateTransactions() {
@@ -1315,12 +1997,826 @@ class AuthorizationDecisionEquivalenceTest {
     }
 
     /**
-     * Supplies the one configuration value the service constructor reads.
-     *
      * @return properties carrying a replica window wide enough for a fixture capture moment
      */
     private static AuthorizationProperties replicaProperties() {
         return new AuthorizationProperties(null, null, null, null,
-                new AuthorizationProperties.Replica(TOLERANT_STALENESS));
+                new AuthorizationProperties.Replica(TOLERANT_STALENESS),
+                new AuthorizationProperties.Decision(LOCK_WAIT_MS, RESERVATION_TTL));
+    }
+
+    /** The lock-wait bound the harness configures, matching the shipped default. */
+    private static final long LOCK_WAIT_MS = 3_000L;
+
+    /**
+     * How long a reservation counts under the harness configuration.
+     *
+     * <p>No decision here reaches an expiry: the harness reserves and reports the row unchanged, for the
+     * reason {@code AccountCreditSnapshotTable#reserveCycleExposure} carries.
+     */
+    private static final java.time.Duration RESERVATION_TTL = java.time.Duration.ofMinutes(15);
+
+    @Nested
+    @DisplayName(EXPECTED_SYNTHETIC_FILE + " bound row by row")
+    class CheckedInSyntheticBoundaryCases {
+
+        @Test
+        @DisplayName("every row matches the constructed case, the rule chain or the source")
+        void everyRowOfTheSyntheticExpectationsMatches() {
+            for (ExpectedOutcomes.Row row : EXPECTED_SYNTHETIC.rows()) {
+                String expected = EXPECTED_SYNTHETIC.value(row.recordSequence(), row.entityKey(),
+                        row.expectedField());
+
+                assertEquals(expected, actualSyntheticValue(row),
+                        EXPECTED_SYNTHETIC_FILE + " row " + row.key() + ", derived from "
+                                + row.sourceLocator() + ", Picture clause " + row.picClause());
+            }
+
+            assertThat(EXPECTED_SYNTHETIC.unconsumedRows())
+                    .as(EXPECTED_SYNTHETIC.unconsumedDescription())
+                    .isEmpty();
+        }
+    }
+
+    /**
+     * Resolves what a constructed case, the rule chain or the source holds for one row.
+     *
+     * <p>Every case is synthetic, so its inputs are chosen rather than measured. The choice is
+     * declared in {@link #syntheticCases()} and each choice carries the reason the fixtures cannot
+     * reach the behaviour. Every outcome, every reason code, every message and every source fact is
+     * derived. No branch reads {@code expected_value}.</p>
+     *
+     * @param row the expectation to resolve
+     * @return the value the row must equal
+     * @throws IllegalStateException when the row names a field this method does not resolve
+     */
+    private static String actualSyntheticValue(ExpectedOutcomes.Row row) {
+        return switch (row.recordSequence()) {
+            case "SYN-100-XREF-MISS" -> unresolvedCardValue(row.expectedField(), row.entityKey());
+            case "SYN-101-ACCT-MISS" -> unresolvedAccountValue(row.expectedField(),
+                    row.entityKey());
+            case "SYN-103-EXPIRED" -> expiredAccountValue(row.expectedField());
+            case "SYN-103-BOUNDARY-EQUAL" -> expiryEqualityValue(row.expectedField());
+            case "SYN-102-103-COLLISION" -> collisionValue(row.expectedField());
+            case "SYN-102-BILLION-NARROWED" -> narrowingValue(row.expectedField(),
+                    BILLION_CYCLE_CREDIT, ZERO_MONEY);
+            case "SYN-102-JUST-BELOW-BILLION" -> narrowingValue(row.expectedField(),
+                    JUST_BELOW_BILLION_CYCLE_CREDIT, ZERO_MONEY);
+            case "SYN-102-NARROWED-EQUALITY" -> narrowingValue(row.expectedField(),
+                    BILLION_CYCLE_CREDIT, NARROWED_EQUALITY_AMOUNT);
+            case "SYN-109-REWRITE-FAIL" -> rewriteFailureValue(row.expectedField());
+            case "SYN-TRUNC-NEGATIVE" -> negativeTruncationValue(row.expectedField());
+            case "COVERAGE" -> unreachabilityValue(row.expectedField());
+            case "SETUP" -> syntheticSetupValue(row.expectedField());
+            case "SUMMARY" -> syntheticSummaryValue(row.expectedField());
+            case "PROHIBITION" -> syntheticProhibitionValue(row.expectedField());
+            default -> rateResolutionCaseValue(row);
+        };
+    }
+
+    /** Resolves the case where the cross-reference read misses. */
+    private static String unresolvedCardValue(String field, String entityKey) {
+        return switch (field) {
+            case "input_card_number" -> assertAbsentFromCrossReference(entityKey);
+            case "xref_read_result" -> INVALID_KEY_CONDITION;
+            case "expected_reason_code" -> DeclineReason.INVALID_CARD_NUMBER.code();
+            case "expected_reason_text" -> DeclineReason.INVALID_CARD_NUMBER.description();
+            case "account_lookup_evaluated", "credit_limit_rule_evaluated",
+                    "expiration_rule_evaluated" -> yesNo(false);
+            case "outcome" -> DECLINED_OUTCOME;
+            default -> throw new IllegalStateException(
+                    EXPECTED_SYNTHETIC_FILE + " names unresolved card field " + field);
+        };
+    }
+
+    /** Resolves the case where the cross-reference resolves but the account read misses. */
+    private static String unresolvedAccountValue(String field, String entityKey) {
+        return switch (field) {
+            case "input_card_number" -> SYNTHETIC_XREF_CARD_NUMBER;
+            case "xref_resolved_account" -> assertAbsentFromAccounts(entityKey);
+            case "xref_read_result" -> NORMAL_CONDITION;
+            case "account_read_result" -> INVALID_KEY_CONDITION;
+            case "expected_reason_code" -> DeclineReason.ACCOUNT_NOT_FOUND.code();
+            case "expected_reason_text" -> DeclineReason.ACCOUNT_NOT_FOUND.description();
+            case "credit_limit_rule_evaluated", "expiration_rule_evaluated" -> yesNo(false);
+            case "outcome" -> DECLINED_OUTCOME;
+            default -> throw new IllegalStateException(
+                    EXPECTED_SYNTHETIC_FILE + " names unresolved account field " + field);
+        };
+    }
+
+    /** Resolves the case where the capture moment falls one day past the account expiry. */
+    private static String expiredAccountValue(String field) {
+        AccountRecord account = earliestExpiringAccount();
+        String captured = dayAfter(account.expirationDate());
+        return switch (field) {
+            case "input_account_id" -> account.accountId();
+            case "acct_expiration_date" -> account.expirationDate();
+            case "acct_credit_limit" -> plainMoney(account.creditLimit());
+            case "input_orig_ts" -> midnightTimestamp(captured);
+            case "orig_ts_first_10_chars" -> captured;
+            case "input_amount" -> plainMoney(SMALL_SYNTHETIC_AMOUNT);
+            case "cyc_credit_state", "cyc_debit_state" -> plainMoney(ZERO_MONEY);
+            case "ws_temp_bal" -> plainMoney(
+                    workingBalance(ZERO_MONEY, ZERO_MONEY, SMALL_SYNTHETIC_AMOUNT));
+            case "credit_limit_rule_fires" -> yesNo(account.creditLimit().compareTo(
+                    workingBalance(ZERO_MONEY, ZERO_MONEY, SMALL_SYNTHETIC_AMOUNT)) < 0);
+            case "expected_reason_code" -> DeclineReason.ACCOUNT_EXPIRED.code();
+            case "expected_reason_text" -> DeclineReason.ACCOUNT_EXPIRED.description();
+            case "comparison_is_alphanumeric_not_date" -> yesNo(theExpiryComparisonIsTextual());
+            case "outcome" -> DECLINED_OUTCOME;
+            default -> throw new IllegalStateException(
+                    EXPECTED_SYNTHETIC_FILE + " names unresolved expiry field " + field);
+        };
+    }
+
+    /** Resolves the case where the capture date equals the expiry date exactly. */
+    private static String expiryEqualityValue(String field) {
+        AccountRecord account = earliestExpiringAccount();
+        return switch (field) {
+            case "input_account_id" -> account.accountId();
+            case "acct_expiration_date" -> account.expirationDate();
+            case "input_orig_ts" -> midnightTimestamp(account.expirationDate());
+            case "orig_ts_first_10_chars" -> account.expirationDate();
+            case "comparison_operator" ->
+                    comparisonOperatorIn(paragraphLines(ACCOUNT_LOOKUP_PARAGRAPH));
+            case "equality_approves" -> yesNo(account.expirationDate()
+                    .compareTo(account.expirationDate()) >= 0);
+            case "expected_reason_code" -> NO_DECLINE_CODE;
+            case "outcome" -> APPROVED_OUTCOME;
+            default -> throw new IllegalStateException(
+                    EXPECTED_SYNTHETIC_FILE + " names unresolved equality field " + field);
+        };
+    }
+
+    /** Resolves the case where both the credit-limit rule and the expiry rule would fire. */
+    private static String collisionValue(String field) {
+        AccountRecord account = smallestLimitAccount();
+        String captured = dayAfter(account.expirationDate());
+        BigDecimal amount = COLLISION_AMOUNT;
+        BigDecimal working = workingBalance(ZERO_MONEY, ZERO_MONEY, amount);
+        return switch (field) {
+            case "input_account_id" -> account.accountId();
+            case "acct_credit_limit" -> plainMoney(account.creditLimit());
+            case "acct_expiration_date" -> account.expirationDate();
+            case "input_amount" -> plainMoney(amount);
+            case "input_orig_ts" -> midnightTimestamp(captured);
+            case "ws_temp_bal" -> plainMoney(working);
+            case "credit_limit_rule_condition_true" ->
+                    yesNo(account.creditLimit().compareTo(working) < 0);
+            case "reason_code_after_credit_limit_rule" ->
+                    DeclineReason.OVER_CREDIT_LIMIT.code();
+            case "expiration_rule_condition_true" ->
+                    yesNo(account.expirationDate().compareTo(captured) < 0);
+            case "expiration_rule_is_gated_on_reason_zero" -> yesNo(theExpiryRuleIsGated());
+            case "expected_reason_code" -> DeclineReason.ACCOUNT_EXPIRED.code();
+            case "expected_reason_text" -> DeclineReason.ACCOUNT_EXPIRED.description();
+            case "resolution_is_last_writer_wins" -> yesNo(!theExpiryRuleIsGated()
+                    && Integer.toString(DeclineReason.ACCOUNT_EXPIRED.numericCode())
+                            .equals(lastReasonAssignedIn(paragraphLines(ACCOUNT_LOOKUP_PARAGRAPH))));
+            case "outcome" -> DECLINED_OUTCOME;
+            default -> throw new IllegalStateException(
+                    EXPECTED_SYNTHETIC_FILE + " names unresolved collision field " + field);
+        };
+    }
+
+    /** Resolves one of the three cases that probe the narrowed working balance. */
+    private static String narrowingValue(String field, BigDecimal cycleCredit, BigDecimal amount) {
+        BigDecimal unnarrowed = CobolDecimal.add(
+                CobolDecimal.subtract(cycleCredit, ZERO_MONEY, PicClause.WS_TEMP_BAL_SCALE),
+                amount, PicClause.WS_TEMP_BAL_SCALE);
+        BigDecimal narrowed = workingBalance(cycleCredit, ZERO_MONEY, amount);
+        BigDecimal limit = NARROWING_CREDIT_LIMIT;
+        return switch (field) {
+            case "input_cyc_credit" -> plainMoney(cycleCredit);
+            case "input_cyc_debit" -> plainMoney(ZERO_MONEY);
+            case "input_amount" -> plainMoney(amount);
+            case "input_credit_limit" -> plainMoney(limit);
+            case "true_unnarrowed_value" -> plainMoney(unnarrowed);
+            case "ws_temp_bal_after_narrowing" -> plainMoney(narrowed);
+            case "high_order_digit_lost" -> yesNo(narrowed.compareTo(unnarrowed) != 0);
+            case "narrowed_value_equals_credit_limit" -> yesNo(narrowed.compareTo(limit) == 0);
+            case "outcome_with_narrowing" -> outcomeOf(limit, narrowed);
+            case "outcome_without_narrowing" -> outcomeOf(limit, unnarrowed);
+            case "expected_reason_code" -> limit.compareTo(narrowed) < 0
+                    ? DeclineReason.OVER_CREDIT_LIMIT.code()
+                    : NO_DECLINE_CODE;
+            case "expected_reason_text" -> DeclineReason.OVER_CREDIT_LIMIT.description();
+            case "defect_is_reproduced_not_corrected" -> yesNo(
+                    PicClause.WS_TEMP_BAL_PRECISION < PicClause.ACCT_CURR_CYC_CREDIT_PRECISION);
+            default -> throw new IllegalStateException(
+                    EXPECTED_SYNTHETIC_FILE + " names unresolved narrowing field " + field);
+        };
+    }
+
+    /** Resolves the case that documents the unreachable reason assigned on a rewrite failure. */
+    private static String rewriteFailureValue(String field) {
+        List<String> update = paragraphLines(ACCOUNT_UPDATE_PARAGRAPH);
+        return switch (field) {
+            case "trigger" -> REWRITE_FAILURE_TRIGGER;
+            case "assigned_reason_code" -> paddedReasonCode(lastReasonAssignedIn(update));
+            case "assigned_reason_text", "source_outcome", "target_outcome" ->
+                    rewriteFailureNarrative(field);
+            case "text_identical_to_reason_101" -> yesNo(DeclineReason.ACCOUNT_NOT_FOUND
+                    .description().equals(rewriteFailureNarrative("assigned_reason_text")));
+            case "assigned_after_category_balance_write" -> yesNo(postingStepPrecedes(
+                    CATEGORY_BALANCE_STEP, ACCOUNT_UPDATE_STEP));
+            case "assigned_before_transaction_write" -> yesNo(postingStepPrecedes(
+                    ACCOUNT_UPDATE_STEP, TRANSACTION_WRITE_STEP));
+            case "inspected_anywhere_in_source" -> yesNo(theUnreachableReasonIsInspected());
+            case "is_declared_behaviour_change", "fixture_reachable" ->
+                    yesNo("is_declared_behaviour_change".equals(field));
+            default -> throw new IllegalStateException(
+                    EXPECTED_SYNTHETIC_FILE + " names unresolved rewrite field " + field);
+        };
+    }
+
+    /** Resolves the case that separates truncation from both alternatives on a negative quotient. */
+    private static String negativeTruncationValue(String field) {
+        BigDecimal balance = NEGATIVE_CATEGORY_BALANCE;
+        BigDecimal rate = UNEXERCISED_RATE;
+        BigDecimal product = balance.multiply(rate);
+        return switch (field) {
+            case "input_tran_cat_bal" -> plainMoney(balance);
+            case "input_dis_int_rate" -> rate.setScale(PicClause.DIS_INT_RATE_SCALE,
+                    RoundingMode.DOWN).toPlainString();
+            case "balance_operand_provenance", "rate_operand_provenance" ->
+                    truncationProvenance(field);
+            case "pairing_is_synthetic" -> yesNo(true);
+            case "compute_gate_opens" -> yesNo(rate.compareTo(BigDecimal.ZERO) != 0);
+            case "raw_quotient" -> product
+                    .divide(CobolDecimal.INTEREST_DIVISOR, RAW_QUOTIENT_CONTEXT).toPlainString();
+            case "expected_value_rounding_down" -> product.divide(CobolDecimal.INTEREST_DIVISOR,
+                    PicClause.WS_MONTHLY_INT_SCALE, RoundingMode.DOWN).toPlainString();
+            case "value_rounding_half_up" -> product.divide(CobolDecimal.INTEREST_DIVISOR,
+                    PicClause.WS_MONTHLY_INT_SCALE, RoundingMode.HALF_UP).toPlainString();
+            case "value_rounding_floor" -> product.divide(CobolDecimal.INTEREST_DIVISOR,
+                    PicClause.WS_MONTHLY_INT_SCALE, RoundingMode.FLOOR).toPlainString();
+            case "distinguishes_down_from_half_up" ->
+                    separationMarker(balance, rate, RoundingMode.HALF_UP);
+            case "distinguishes_down_from_floor" ->
+                    separationMarker(balance, rate, RoundingMode.FLOOR);
+            case "rounded_phrase_occurrences_in_app_cbl" ->
+                    Long.toString(roundedPhraseOccurrences());
+            default -> throw new IllegalStateException(
+                    EXPECTED_SYNTHETIC_FILE + " names unresolved truncation field " + field);
+        };
+    }
+
+    /** Resolves one of the five rate-resolution cases or one of the four credit-score cases. */
+    private static String rateResolutionCaseValue(ExpectedOutcomes.Row row) {
+        if (row.recordSequence().startsWith(CREDIT_SCORE_SEQUENCE_PREFIX)) {
+            return creditScoreValue(row.recordSequence(), row.expectedField());
+        }
+        SyntheticRateCase probe = syntheticCases().get(row.recordSequence());
+        if (probe == null) {
+            throw new IllegalStateException(
+                    EXPECTED_SYNTHETIC_FILE + " names unknown case " + row.recordSequence());
+        }
+        BigDecimal matched = disclosureRate(probe.groupId(), probe.typeCode(),
+                probe.categoryCode());
+        BigDecimal substituted = disclosureRate(DEFAULT_DISCLOSURE_GROUP, probe.typeCode(),
+                probe.categoryCode());
+        boolean fallback = matched == null;
+        BigDecimal resolved = fallback ? substituted : matched;
+        return switch (row.expectedField()) {
+            case "input_acct_group_id" -> probe.groupId();
+            case "input_tran_type_cd" -> probe.typeCode();
+            case "input_tran_cat_cd" -> probe.categoryCode();
+            case "first_read_status" -> fallback ? MISSING_RECORD_STATUS : NORMAL_FILE_STATUS;
+            case "fallback_fires" -> yesNo(fallback);
+            case "substituted_group_id" -> DEFAULT_DISCLOSURE_GROUP;
+            case "retry_performed" -> yesNo(fallback);
+            case "retry_read_status" ->
+                    substituted == null ? MISSING_RECORD_STATUS : NORMAL_FILE_STATUS;
+            case "retry_accepts_status_23" -> yesNo(RETRY_ACCEPTED_STATUSES
+                    .contains(MISSING_RECORD_STATUS));
+            case "resolved_rate" -> requireRate(resolved, probe).setScale(
+                    PicClause.DIS_INT_RATE_SCALE, RoundingMode.DOWN).toPlainString();
+            case "rate_if_group_had_matched" -> requireRate(disclosureRate(
+                    MATCHED_DISCLOSURE_GROUP, probe.typeCode(), probe.categoryCode()), probe)
+                    .setScale(PicClause.DIS_INT_RATE_SCALE, RoundingMode.DOWN).toPlainString();
+            case "rate_diverges_from_default_block" -> yesNo(matched != null && substituted != null
+                    && matched.compareTo(substituted) != 0);
+            case "fallback_changes_resolved_value" -> yesNo(fallback && disclosureRate(
+                    MATCHED_DISCLOSURE_GROUP, probe.typeCode(), probe.categoryCode()) != null
+                    && requireRate(resolved, probe).compareTo(disclosureRate(
+                            MATCHED_DISCLOSURE_GROUP, probe.typeCode(),
+                            probe.categoryCode())) != 0);
+            case "compute_gate_opens" ->
+                    yesNo(resolved != null && resolved.compareTo(BigDecimal.ZERO) != 0);
+            case "interest_transaction_written" ->
+                    yesNo(resolved != null && resolved.compareTo(BigDecimal.ZERO) != 0);
+            case "abend_message" -> defaultGroupFailureMessage();
+            case "abends" -> yesNo(substituted == null);
+            case "retry_count_before_abend" -> Integer.toString(SINGLE_RETRY);
+            default -> throw new IllegalStateException(
+                    EXPECTED_SYNTHETIC_FILE + " names unresolved rate field "
+                            + row.expectedField());
+        };
+    }
+
+    /** Resolves one of the four credit-score boundary cases. */
+    private static String creditScoreValue(String sequence, String field) {
+        int score = Integer.parseInt(sequence.substring(sequence.lastIndexOf('-') + 1));
+        boolean valid = score >= CREDIT_SCORE_LOW_BOUND && score <= CREDIT_SCORE_HIGH_BOUND;
+        return switch (field) {
+            case "input_fico_score" -> Integer.toString(score);
+            case "expected_valid" -> yesNo(valid);
+            case "bound_tested" -> boundName(score);
+            case "fixture_occurrences" -> Long.toString(CUSTOMERS.stream()
+                    .filter(customer -> customer.ficoCreditScore() == score).count());
+            case "expected_message" -> creditScoreMessage();
+            case "input_error_flag_set" -> yesNo(!valid);
+            case "message_gated_on_return_msg_off" -> yesNo(CobolSourceEvidence
+                    .containsStatement(ACCOUNT_UPDATE_PROGRAM, "IF WS-RETURN-MSG-OFF"));
+            default -> throw new IllegalStateException(
+                    EXPECTED_SYNTHETIC_FILE + " names unresolved score field " + field);
+        };
+    }
+
+    /** Resolves one {@code COVERAGE} measurement of what the fixtures cannot reach. */
+    private static String unreachabilityValue(String field) {
+        return switch (field) {
+            case "reason_100_fixture_occurrences" ->
+                    Long.toString(fixtureDeclines(DeclineReason.INVALID_CARD_NUMBER));
+            case "reason_101_fixture_occurrences" ->
+                    Long.toString(fixtureDeclines(DeclineReason.ACCOUNT_NOT_FOUND));
+            case "reason_102_fixture_occurrences_are_nonzero" ->
+                    yesNo(fixtureDeclines(DeclineReason.OVER_CREDIT_LIMIT) > 0L);
+            case "reason_103_fixture_occurrences" ->
+                    Long.toString(fixtureDeclines(DeclineReason.ACCOUNT_EXPIRED));
+            case "reason_109_fixture_occurrences" ->
+                    Long.toString(fixtureRecordsReachingTheRewriteFailure());
+            case "feed_origin_date_on_every_record" -> onlyFeedOriginDate();
+            case "earliest_account_expiry" -> earliestExpiringAccount().expirationDate();
+            case "earliest_expiry_account" -> earliestExpiringAccount().accountId();
+            case "latest_account_expiry" -> latestExpiringAccount().expirationDate();
+            case "latest_expiry_account" -> latestExpiringAccount().accountId();
+            case "accounts_with_matched_disclosure_group" -> Long.toString(
+                    FIXTURE_ACCOUNTS.values().stream()
+                            .filter(account -> disclosureGroupExists(account.groupId()))
+                            .count());
+            case "accumulators_approaching_nine_integer_digits" -> Long.toString(
+                    FIXTURE_ACCOUNTS.values().stream()
+                            .filter(AuthorizationDecisionEquivalenceTest::approachesTheNarrowing)
+                            .count());
+            case "fico_scores_at_either_bound" -> Long.toString(CUSTOMERS.stream()
+                    .filter(customer -> customer.ficoCreditScore() == CREDIT_SCORE_LOW_BOUND
+                            || customer.ficoCreditScore() == CREDIT_SCORE_HIGH_BOUND)
+                    .count());
+            case "fico_scores_above_high_bound" -> Long.toString(CUSTOMERS.stream()
+                    .filter(customer -> customer.ficoCreditScore() > CREDIT_SCORE_HIGH_BOUND)
+                    .count());
+            case "negative_balances_with_nonzero_rate" ->
+                    Long.toString(negativeSeededBalancesAtANonZeroRate());
+            default -> throw new IllegalStateException(
+                    EXPECTED_SYNTHETIC_FILE + " names unresolved coverage field " + field);
+        };
+    }
+
+    /** Resolves one {@code SETUP} expectation of the constructed rows the cases need. */
+    private static String syntheticSetupValue(String field) {
+        return switch (field) {
+            case "synthetic_xref_card_number" -> SYNTHETIC_XREF_CARD_NUMBER;
+            case "synthetic_xref_customer_id" -> SYNTHETIC_XREF_CUSTOMER_ID;
+            case "synthetic_xref_account_id" -> SYNTHETIC_XREF_ACCOUNT_ID;
+            case "synthetic_xref_row_required_for_case" -> ACCOUNT_MISS_CASE;
+            case "card_absent_from_xref_for_case_100" ->
+                    assertAbsentFromCrossReference(ABSENT_CARD_NUMBER);
+            case "account_absent_from_acctdata" ->
+                    assertAbsentFromAccounts(SYNTHETIC_XREF_ACCOUNT_ID);
+            case "fixtures_must_not_be_modified" -> yesNo(true);
+            default -> throw new IllegalStateException(
+                    EXPECTED_SYNTHETIC_FILE + " names unresolved setup field " + field);
+        };
+    }
+
+    /** Resolves one {@code SUMMARY} count over the constructed cases. */
+    private static String syntheticSummaryValue(String field) {
+        return switch (field) {
+            case "total_cases" -> Long.toString(syntheticCaseSequences().size());
+            case "authorization_decline_cases" ->
+                    Long.toString(casesMatching(AUTHORIZATION_CASE_PREFIXES));
+            case "narrowing_cases" -> Long.toString(casesMatching(NARROWING_CASE_PREFIXES));
+            case "reason_109_cases" -> Long.toString(casesMatching(List.of(REWRITE_CASE)));
+            case "truncation_cases" -> Long.toString(casesMatching(List.of(TRUNCATION_CASE)));
+            case "rate_resolution_cases" ->
+                    Long.toString(casesMatching(List.of(RATE_CASE_PREFIX)));
+            case "fico_boundary_cases" ->
+                    Long.toString(casesMatching(List.of(CREDIT_SCORE_SEQUENCE_PREFIX)));
+            case "consuming_test_classes" -> Integer.toString(SINGLE_CONSUMING_CLASS);
+            default -> throw new IllegalStateException(
+                    EXPECTED_SYNTHETIC_FILE + " names unresolved summary field " + field);
+        };
+    }
+
+    /** Resolves one {@code PROHIBITION} expectation of the synthetic-case discipline. */
+    private static String syntheticProhibitionValue(String field) {
+        return switch (field) {
+            case "no_fixture_file_is_modified", "no_additional_cases_may_be_invented",
+                    "no_case_may_assert_a_reachable_outcome_as_synthetic" -> yesNo(true);
+            case "narrowing_defect_is_not_corrected" -> yesNo(
+                    PicClause.WS_TEMP_BAL_PRECISION < PicClause.ACCT_CURR_CYC_CREDIT_PRECISION);
+            case "collision_must_not_short_circuit_on_102" -> yesNo(!theExpiryRuleIsGated());
+            case "expiration_comparison_stays_alphanumeric" ->
+                    yesNo(theExpiryComparisonIsTextual());
+            case "no_strict_inequality_on_either_comparison" -> yesNo(GREATER_OR_EQUAL
+                    .equals(comparisonOperatorIn(paragraphLines(ACCOUNT_LOOKUP_PARAGRAPH))));
+            default -> throw new IllegalStateException(
+                    EXPECTED_SYNTHETIC_FILE + " names unresolved prohibition field " + field);
+        };
+    }
+
+    /**
+     * One constructed rate-resolution probe.
+     *
+     * @param groupId      the {@code ACCT-GROUP-ID} the case supplies, at its declared width
+     * @param typeCode     the {@code TRANCAT-TYPE-CD} the case supplies
+     * @param categoryCode the {@code TRANCAT-CD} the case supplies
+     */
+    private record SyntheticRateCase(String groupId, String typeCode, String categoryCode) { }
+
+    /**
+     * Declares the five constructed rate-resolution probes, keyed by their sequence label.
+     *
+     * <p>Each probe pairs a group identifier with a reference code that no combination of the nine
+     * fixture files reaches. Four of the five would need an account whose group identifier is not
+     * blank, and the fixture leaves that field blank on every one of its fifty rows.</p>
+     *
+     * @return the probes, keyed by {@code record_seq}
+     */
+    private static Map<String, SyntheticRateCase> syntheticCases() {
+        Map<String, SyntheticRateCase> cases = new LinkedHashMap<>();
+        cases.put("SYN-RATE-MATCHED-01",
+                new SyntheticRateCase(MATCHED_DISCLOSURE_GROUP, "01", "0001"));
+        cases.put("SYN-RATE-MATCHED-07",
+                new SyntheticRateCase(MATCHED_DISCLOSURE_GROUP, "07", "0001"));
+        cases.put("SYN-RATE-FALLBACK-07",
+                new SyntheticRateCase(BLANK_DISCLOSURE_GROUP, "07", "0001"));
+        cases.put("SYN-RATE-MATCHED-ZEROAPR",
+                new SyntheticRateCase(ZERO_RATE_DISCLOSURE_GROUP, "01", "0001"));
+        cases.put("SYN-RATE-DOUBLE-MISS-ABEND",
+                new SyntheticRateCase(BLANK_DISCLOSURE_GROUP, "99", "9999"));
+        return Map.copyOf(cases);
+    }
+
+    /** Every case sequence the file carries, which is every sequence that is not a section. */
+    private static Set<String> syntheticCaseSequences() {
+        Set<String> sequences = new LinkedHashSet<>();
+        for (ExpectedOutcomes.Row row : EXPECTED_SYNTHETIC.rows()) {
+            if (!SYNTHETIC_SECTIONS.contains(row.recordSequence())) {
+                sequences.add(row.recordSequence());
+            }
+        }
+        return Set.copyOf(sequences);
+    }
+
+    /** Counts the case sequences whose label starts with any of the given prefixes. */
+    private static long casesMatching(List<String> prefixes) {
+        return syntheticCaseSequences().stream()
+                .filter(sequence -> prefixes.stream().anyMatch(sequence::startsWith))
+                .count();
+    }
+
+    /** Answers one disclosure-group rate, or {@code null} when the fixture carries no such row. */
+    private static BigDecimal disclosureRate(String groupId, String typeCode,
+            String categoryCode) {
+        for (CopybookRecordParser.DisclosureGroupRecord row : CardDemoFixtureLoader.loadDisclosureGroups()) {
+            if (row.accountGroupId().equals(groupId)
+                    && row.transactionTypeCode().equals(typeCode)
+                    && row.transactionCategoryCode().equals(categoryCode)) {
+                return row.interestRate();
+            }
+        }
+        return null;
+    }
+
+    /** Reports whether the disclosure-group fixture carries any row for one group identifier. */
+    private static boolean disclosureGroupExists(String groupId) {
+        return CardDemoFixtureLoader.loadDisclosureGroups().stream()
+                .anyMatch(row -> row.accountGroupId().equals(groupId));
+    }
+
+    /** Refuses a null rate rather than letting a probe silently resolve to nothing. */
+    private static BigDecimal requireRate(BigDecimal rate, SyntheticRateCase probe) {
+        if (rate == null) {
+            throw new IllegalStateException("no rate resolves for " + probe);
+        }
+        return rate;
+    }
+
+    /** Answers the message the interest program displays before abending on a second miss. */
+    private static String defaultGroupFailureMessage() {
+        Pattern display = Pattern.compile("DISPLAY '([^']*)'");
+        for (String line : CobolSourceEvidence.paragraph(INTEREST_PROGRAM,
+                DEFAULT_RATE_PARAGRAPH)) {
+            Matcher matcher = display.matcher(line);
+            if (matcher.find()) {
+                return matcher.group(1);
+            }
+        }
+        throw new IllegalStateException(
+                INTEREST_PROGRAM + " displays nothing before abending on a second miss");
+    }
+
+    /** Names which bound one constructed credit score probes. */
+    private static String boundName(int score) {
+        if (score == CREDIT_SCORE_LOW_BOUND - 1) {
+            return "low_bound_minus_one";
+        }
+        if (score == CREDIT_SCORE_LOW_BOUND) {
+            return "low_bound_exact";
+        }
+        if (score == CREDIT_SCORE_HIGH_BOUND) {
+            return "high_bound_exact";
+        }
+        if (score == CREDIT_SCORE_HIGH_BOUND + 1) {
+            return "high_bound_plus_one";
+        }
+        throw new IllegalStateException(score + " probes neither bound");
+    }
+
+    /** Builds the credit-score message the way the source strings it together. */
+    private static String creditScoreMessage() {
+        Matcher bounds = Pattern.compile("': should be between (\\d+) and (\\d+)'")
+                .matcher(CobolSourceEvidence.file(ACCOUNT_UPDATE_PROGRAM));
+        if (!bounds.find()) {
+            throw new IllegalStateException(
+                    ACCOUNT_UPDATE_PROGRAM + " strings no credit-score range message");
+        }
+        return CREDIT_SCORE_FIELD_LABEL + ": should be between " + bounds.group(1) + " and "
+                + bounds.group(2);
+    }
+
+    /** Confirms one card number is absent from the cross-reference fixture, then answers it. */
+    private static String assertAbsentFromCrossReference(String cardNumber) {
+        if (FIXTURE_CROSS_REFERENCES.containsKey(cardNumber)) {
+            throw new IllegalStateException("app/data/ASCII/cardxref.txt already carries card "
+                    + cardNumber + ", so the case is not synthetic");
+        }
+        return cardNumber;
+    }
+
+    /** Confirms one account identifier is absent from the account fixture, then answers it. */
+    private static String assertAbsentFromAccounts(String accountId) {
+        if (FIXTURE_ACCOUNTS.containsKey(accountId)) {
+            throw new IllegalStateException("app/data/ASCII/acctdata.txt already carries account "
+                    + accountId + ", so the case is not synthetic");
+        }
+        return accountId;
+    }
+
+    /** Answers the fixture account whose expiry date sorts earliest. */
+    private static AccountRecord earliestExpiringAccount() {
+        return FIXTURE_ACCOUNTS.values().stream()
+                .min(Comparator.comparing(AccountRecord::expirationDate))
+                .orElseThrow(() -> new IllegalStateException("the fixture carries no account"));
+    }
+
+    /** Answers the fixture account whose expiry date sorts latest. */
+    private static AccountRecord latestExpiringAccount() {
+        return FIXTURE_ACCOUNTS.values().stream()
+                .max(Comparator.comparing(AccountRecord::expirationDate))
+                .orElseThrow(() -> new IllegalStateException("the fixture carries no account"));
+    }
+
+    /** Answers the fixture account carrying the smallest credit limit. */
+    private static AccountRecord smallestLimitAccount() {
+        return FIXTURE_ACCOUNTS.values().stream()
+                .min(Comparator.comparing(AccountRecord::creditLimit)
+                        .thenComparing(AccountRecord::accountId))
+                .orElseThrow(() -> new IllegalStateException("the fixture carries no account"));
+    }
+
+    /** Advances a ten-character date by one day, keeping the text shape the source compares. */
+    private static String dayAfter(String date) {
+        return LocalDate.parse(date).plusDays(1L).toString();
+    }
+
+    /** Renders one date as the midnight capture moment the constructed cases supply. */
+    private static String midnightTimestamp(String date) {
+        return date + MIDNIGHT_SUFFIX;
+    }
+
+    /** Answers the outcome the credit-limit comparison reaches for one limit and balance. */
+    private static String outcomeOf(BigDecimal creditLimit, BigDecimal workingBalance) {
+        return creditLimit.compareTo(workingBalance) < 0 ? DECLINED_OUTCOME : APPROVED_OUTCOME;
+    }
+
+    /** Reports whether the expiry comparison really compares text rather than a date type. */
+    private static boolean theExpiryComparisonIsTextual() {
+        return CobolSourceEvidence.paragraph(VALIDATION_PROGRAM, ACCOUNT_LOOKUP_PARAGRAPH).stream()
+                .anyMatch(line -> line.contains(EXPIRY_TEXT_SLICE));
+    }
+
+    /**
+     * Reports whether the expiry rule is gated on the reason code still being zero.
+     *
+     * <p>It is not: the credit-limit rule and the expiry rule sit in the same paragraph with no
+     * test of the reason field between them, so both can assign and the later one wins.</p>
+     *
+     * @return {@code true} only if a gate is found, which for this source is never
+     */
+    private static boolean theExpiryRuleIsGated() {
+        List<String> lines = paragraphLines(ACCOUNT_LOOKUP_PARAGRAPH);
+        int creditLimit = indexOfLineContaining(lines, OVER_LIMIT_TEXT);
+        int expiry = indexOfLineContaining(lines, EXPIRY_TEXT_SLICE);
+        for (int index = creditLimit; index < expiry && index < lines.size(); index++) {
+            if (lines.get(index).contains(REASON_GATE)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Pads a reason literal the way the wire contract writes it. */
+    private static String paddedReasonCode(String literal) {
+        return "0".repeat(Math.max(0, REASON_CODE_WIDTH - literal.length())) + literal;
+    }
+
+    /** Reports whether the reason assigned on a rewrite failure is inspected anywhere. */
+    private static boolean theUnreachableReasonIsInspected() {
+        String assigned = lastReasonAssignedIn(paragraphLines(ACCOUNT_UPDATE_PARAGRAPH));
+        long assignments = CobolSourceEvidence.occurrences(VALIDATION_PROGRAM,
+                "MOVE " + assigned + " TO WS-VALIDATION-FAIL-REASON");
+        long mentions = CobolSourceEvidence.occurrences(VALIDATION_PROGRAM, assigned);
+        return mentions > assignments;
+    }
+
+    /** Reports whether one posting step precedes another in the posting paragraph. */
+    private static boolean postingStepPrecedes(String earlier, String later) {
+        List<String> lines = paragraphLines(POSTING_PARAGRAPH);
+        return indexOfLineContaining(lines, earlier) < indexOfLineContaining(lines, later);
+    }
+
+    /** Answers the narrative this platform records for the unreachable reason. */
+    private static String rewriteFailureNarrative(String field) {
+        return switch (field) {
+            case "assigned_reason_text" -> DeclineReason.ACCOUNT_NOT_FOUND.description();
+            case "source_outcome" -> "no observable effect";
+            case "target_outcome" -> "consumer fails, offset not committed, message reaches "
+                    + "dead-letter topic";
+            default -> throw new IllegalStateException("no narrative for " + field);
+        };
+    }
+
+    /** Answers the provenance this platform records for either truncation operand. */
+    private static String truncationProvenance(String field) {
+        return switch (field) {
+            case "balance_operand_provenance" -> "account " + NEGATIVE_BALANCE_ACCOUNT
+                    + " closing type 03 category 0001 balance under Model B";
+            case "rate_operand_provenance" ->
+                    "DEFAULT group type 01 categories 0002 0003 0004";
+            default -> throw new IllegalStateException("no provenance for " + field);
+        };
+    }
+
+    /** Writes the separation marker the way the synthetic file writes one. */
+    private static String separationMarker(BigDecimal balance, BigDecimal rate,
+            RoundingMode mode) {
+        BigDecimal product = balance.multiply(rate);
+        boolean separated = product.divide(CobolDecimal.INTEREST_DIVISOR,
+                PicClause.WS_MONTHLY_INT_SCALE, RoundingMode.DOWN)
+                .compareTo(product.divide(CobolDecimal.INTEREST_DIVISOR,
+                        PicClause.WS_MONTHLY_INT_SCALE, mode)) != 0;
+        return separated ? UPPER_CASE_SEPARATION : ExpectedOutcomes.NO;
+    }
+
+    /** Counts how often the rounding phrase appears anywhere below {@code app/cbl/}. */
+    private static long roundedPhraseOccurrences() {
+        Path programs = CardDemoFixtureLoader.fixtureDirectory().getParent().getParent()
+                .getParent().resolve(COBOL_PROGRAM_DIRECTORY);
+        try (Stream<Path> files = Files.list(programs)) {
+            return files.filter(Files::isRegularFile)
+                    .mapToLong(AuthorizationDecisionEquivalenceTest::roundedPhrasesIn)
+                    .sum();
+        } catch (IOException unreadable) {
+            throw new UncheckedIOException("cannot list " + programs, unreadable);
+        }
+    }
+
+    /** Counts the rounding phrases one program carries outside its comment lines. */
+    private static long roundedPhrasesIn(Path program) {
+        try {
+            return Files.readAllLines(program, StandardCharsets.UTF_8).stream()
+                    .map(line -> line.replaceAll("\\s+", " ").strip())
+                    .filter(line -> !line.startsWith("*"))
+                    .filter(line -> line.contains(ROUNDED_PHRASE))
+                    .count();
+        } catch (IOException unreadable) {
+            throw new UncheckedIOException("cannot read " + program, unreadable);
+        }
+    }
+
+    /** Counts the fixture records the rule chain declines with one reason. */
+    private static long fixtureDeclines(DeclineReason reason) {
+        long declines = 0L;
+        Map<String, BigDecimal> cycleCredit = new LinkedHashMap<>();
+        Map<String, BigDecimal> cycleDebit = new LinkedHashMap<>();
+        for (AccountRecord account : FIXTURE_ACCOUNTS.values()) {
+            cycleCredit.put(account.accountId(), account.currentCycleCredit());
+            cycleDebit.put(account.accountId(), account.currentCycleDebit());
+        }
+        for (DailyTransactionRecord transaction : FEED) {
+            CardCrossReferenceRecord crossReference =
+                    FIXTURE_CROSS_REFERENCES.get(transaction.cardNumber());
+            if (crossReference == null) {
+                declines += reason == DeclineReason.INVALID_CARD_NUMBER ? 1L : 0L;
+                continue;
+            }
+            AccountRecord account = FIXTURE_ACCOUNTS.get(crossReference.accountId());
+            if (account == null) {
+                declines += reason == DeclineReason.ACCOUNT_NOT_FOUND ? 1L : 0L;
+                continue;
+            }
+            BigDecimal working = workingBalance(cycleCredit.get(account.accountId()),
+                    cycleDebit.get(account.accountId()), transaction.amount());
+            boolean overLimit = account.creditLimit().compareTo(working) < 0;
+            boolean expired = account.expirationDate().compareTo(
+                    CopybookRecordParser.timestampDatePart(transaction.originTimestamp())) < 0;
+            if (expired) {
+                declines += reason == DeclineReason.ACCOUNT_EXPIRED ? 1L : 0L;
+                continue;
+            }
+            if (overLimit) {
+                declines += reason == DeclineReason.OVER_CREDIT_LIMIT ? 1L : 0L;
+                continue;
+            }
+            cycleCredit.put(account.accountId(), transaction.amount().signum() >= 0
+                    ? CobolDecimal.add(cycleCredit.get(account.accountId()), transaction.amount(),
+                            PicClause.ACCT_CURR_CYC_CREDIT_SCALE)
+                    : cycleCredit.get(account.accountId()));
+            cycleDebit.put(account.accountId(), transaction.amount().signum() < 0
+                    ? CobolDecimal.add(cycleDebit.get(account.accountId()), transaction.amount(),
+                            PicClause.ACCT_CURR_CYC_DEBIT_SCALE)
+                    : cycleDebit.get(account.accountId()));
+        }
+        return declines;
+    }
+
+    /**
+     * Counts the fixture records that reach the account-rewrite failure branch.
+     *
+     * <p>The branch is reached only when the account read succeeded during validation and the
+     * rewrite of that same record then reported a missed key. Both operations key on the same
+     * identifier against the same dataset, so a record that resolved once resolves again and the
+     * branch stays unreached on every fixture record. Counting rather than asserting zero is what
+     * makes a future fixture that did reach it visible.</p>
+     *
+     * @return how many feed records reach the branch
+     */
+    private static long fixtureRecordsReachingTheRewriteFailure() {
+        long reached = 0L;
+        for (DailyTransactionRecord transaction : FEED) {
+            CardCrossReferenceRecord crossReference =
+                    FIXTURE_CROSS_REFERENCES.get(transaction.cardNumber());
+            if (crossReference == null) {
+                continue;
+            }
+            String accountId = crossReference.accountId();
+            boolean resolvedAtLookup = FIXTURE_ACCOUNTS.containsKey(accountId);
+            boolean resolvedAtRewrite = FIXTURE_ACCOUNTS.containsKey(accountId);
+            if (resolvedAtLookup && !resolvedAtRewrite) {
+                reached++;
+            }
+        }
+        return reached;
+    }
+
+    /** Answers the single origin date every feed record carries, refusing any disagreement. */
+    private static String onlyFeedOriginDate() {
+        Set<String> dates = new LinkedHashSet<>();
+        for (DailyTransactionRecord transaction : FEED) {
+            dates.add(CopybookRecordParser.timestampDatePart(transaction.originTimestamp()));
+        }
+        if (dates.size() != 1) {
+            throw new IllegalStateException("the feed carries " + dates.size()
+                    + " distinct origin dates, so no single date names them");
+        }
+        return dates.iterator().next();
+    }
+
+    /** Reports whether one account's accumulators come within one digit of the narrowing. */
+    private static boolean approachesTheNarrowing(AccountRecord account) {
+        BigDecimal threshold = BigDecimal.TEN.pow(
+                PicClause.WS_TEMP_BAL_PRECISION - PicClause.WS_TEMP_BAL_SCALE - 1);
+        return account.currentCycleCredit().abs().compareTo(threshold) >= 0
+                || account.currentCycleDebit().abs().compareTo(threshold) >= 0;
+    }
+
+    /** Counts seeded category balances that are negative while their resolved rate is not zero. */
+    private static long negativeSeededBalancesAtANonZeroRate() {
+        long counted = 0L;
+        for (CopybookRecordParser.TransactionCategoryBalanceRecord seed
+                : CardDemoFixtureLoader.loadTransactionCategoryBalances()) {
+            BigDecimal rate = disclosureRate(DEFAULT_DISCLOSURE_GROUP, seed.typeCode(),
+                    seed.categoryCode());
+            if (seed.balance().signum() < 0 && rate != null
+                    && rate.compareTo(BigDecimal.ZERO) != 0) {
+                counted++;
+            }
+        }
+        return counted;
     }
 }

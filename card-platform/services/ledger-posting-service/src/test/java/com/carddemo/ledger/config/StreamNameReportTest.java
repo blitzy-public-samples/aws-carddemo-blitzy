@@ -47,17 +47,40 @@ class StreamNameReportTest {
             assertThat(report.reportedNames())
                     .extracting(StreamNameReport.ReportedName::environmentKey)
                     .containsExactly("TOPIC_TRANSACTION_AUTHORIZED",
-                            "TOPIC_TRANSACTION_POSTED",
                             "TOPIC_TRANSACTION_DECLINED",
+                            "TOPIC_ACCOUNT_STATE_CHANGED",
+                            "TOPIC_TRANSACTION_POSTED",
                             "TOPIC_DEAD_LETTER",
                             "TOPIC_DEAD_LETTER_SUFFIX");
             assertThat(report.reportedNames())
                     .extracting(StreamNameReport.ReportedName::value)
                     .containsExactly("transaction.authorized",
-                            "transaction.posted",
                             "transaction.declined",
+                            "account.state-changed",
+                            "transaction.posted",
                             "carddemo.dead-letter",
                             ".DLT");
+        });
+    }
+
+    @Test
+    @DisplayName("every topic the shipped configuration binds is reported, none left silent")
+    void everyBoundTopicIsReported() {
+        shipped.run(context -> {
+            LedgerProperties properties = context.getBean(LedgerProperties.class);
+            StreamNameReport report = new StreamNameReport(new MockEnvironment(), properties);
+            LedgerProperties.Kafka.Topics topics = properties.kafka().topics();
+
+            assertThat(report.reportedNames())
+                    .extracting(StreamNameReport.ReportedName::value)
+                    .as("a bound topic this report leaves out is a stream whose resolution is "
+                            + "unreported, which is the defect this class exists to prevent")
+                    .contains(topics.transactionAuthorized(), topics.transactionDeclined(),
+                            topics.accountStateChanged(), topics.transactionPosted(),
+                            topics.deadLetter(), topics.deadLetterSuffix());
+            assertThat(report.reportedNames())
+                    .as("six bound names, six entries")
+                    .hasSize(6);
         });
     }
 

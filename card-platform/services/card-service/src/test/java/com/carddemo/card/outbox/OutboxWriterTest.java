@@ -1,12 +1,15 @@
 package com.carddemo.card.outbox;
 
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.carddemo.card.CardApplication;
+import com.carddemo.card.TestIdentityPasswords;
 import com.carddemo.card.api.dto.CardUpdateRequest;
-import com.carddemo.card.api.dto.CardUpdateResponse;
 import com.carddemo.card.api.dto.CardUpdateResponse.UpdateOutcome;
+import com.carddemo.card.api.dto.CardUpdateResponse;
 import com.carddemo.card.domain.CardUpdateService;
 import com.carddemo.card.entity.CardEntity;
 import com.carddemo.card.entity.OutboxEventEntity;
@@ -104,9 +107,9 @@ import tools.jackson.databind.ObjectMapper;
         webEnvironment = SpringBootTest.WebEnvironment.NONE,
         properties = {
                 "KAFKA_SASL_PASSWORD=not-a-real-broker-password",
-                "ADMIN_PASSWORD_HASH={noop}not-a-real-admin-password",
-                "USER_PASSWORD_HASH={noop}not-a-real-user-password",
-                "MONITORING_PASSWORD_HASH={noop}not-a-real-monitoring-password",
+                "ADMIN_PASSWORD_HASH=" + TestIdentityPasswords.ADMIN_PASSWORD_HASH,
+                "USER_PASSWORD_HASH=" + TestIdentityPasswords.USER_PASSWORD_HASH,
+                "MONITORING_PASSWORD_HASH=" + TestIdentityPasswords.MONITORING_PASSWORD_HASH,
                 "carddemo.outbox.relay.fixed-delay-ms=" + OutboxWriterTest.STOOD_DOWN_SWEEP_MS,
                 "carddemo.retention.sweep-interval-ms=" + OutboxWriterTest.STOOD_DOWN_SWEEP_MS
         })
@@ -362,7 +365,7 @@ class OutboxWriterTest {
         @Test
         @DisplayName("a committed card update leaves the changed card and one unpublished event")
         void aCommittedCardUpdateLeavesBothRows() {
-            CardUpdateResponse response = cardUpdateService.updateCard(committedUpdateRequest());
+            CardUpdateResponse response = cardUpdateService.updateCard(INSERTED_CARD_NUMBER, committedUpdateRequest());
 
             assertThat(response.outcome()).isEqualTo(UpdateOutcome.UPDATED);
 
@@ -439,7 +442,7 @@ class OutboxWriterTest {
         @Test
         @DisplayName("a committed card update calls the publisher no times")
         void aCommittedCardUpdateCallsThePublisherNoTimes() {
-            CardUpdateResponse response = cardUpdateService.updateCard(committedUpdateRequest());
+            CardUpdateResponse response = cardUpdateService.updateCard(INSERTED_CARD_NUMBER, committedUpdateRequest());
 
             assertThat(response.outcome()).isEqualTo(UpdateOutcome.UPDATED);
             assertThat(publisher.recorded())
@@ -674,7 +677,7 @@ class OutboxWriterTest {
         @Test
         @DisplayName("submitting the stored values leaves the outbox empty")
         void submittingTheStoredValuesLeavesTheOutboxEmpty() {
-            CardUpdateResponse response = cardUpdateService.updateCard(unchangedUpdateRequest());
+            CardUpdateResponse response = cardUpdateService.updateCard(INSERTED_CARD_NUMBER, unchangedUpdateRequest());
 
             assertThat(response.outcome()).isEqualTo(UpdateOutcome.NO_CHANGE_DETECTED);
             assertThat(storedEventCount())
@@ -796,9 +799,8 @@ class OutboxWriterTest {
      * @return a request every field edit accepts
      */
     private static CardUpdateRequest committedUpdateRequest() {
-        return new CardUpdateRequest(INSERTED_CARD_NUMBER, UPDATED_EMBOSSED_NAME,
-                UPDATED_EXPIRY_YEAR, UPDATED_EXPIRY_MONTH, INSERTED_EXPIRY_DAY,
-                CardUpdated.ACTIVE_STATUS_INACTIVE);
+        return new CardUpdateRequest(UPDATED_EMBOSSED_NAME, UPDATED_EXPIRY_YEAR,
+                       UPDATED_EXPIRY_MONTH, INSERTED_EXPIRY_DAY, CardUpdated.ACTIVE_STATUS_INACTIVE);
     }
 
     /**
@@ -807,9 +809,8 @@ class OutboxWriterTest {
      * @return a request naming the stored name, expiry and status
      */
     private static CardUpdateRequest unchangedUpdateRequest() {
-        return new CardUpdateRequest(INSERTED_CARD_NUMBER, INSERTED_EMBOSSED_NAME,
-                INSERTED_EXPIRY_YEAR, INSERTED_EXPIRY_MONTH, INSERTED_EXPIRY_DAY,
-                CardUpdated.ACTIVE_STATUS_ACTIVE);
+        return new CardUpdateRequest(INSERTED_EMBOSSED_NAME, INSERTED_EXPIRY_YEAR,
+                       INSERTED_EXPIRY_MONTH, INSERTED_EXPIRY_DAY, CardUpdated.ACTIVE_STATUS_ACTIVE);
     }
 
     /**
@@ -866,8 +867,9 @@ class OutboxWriterTest {
         private final List<PublishedMessage> calls = new CopyOnWriteArrayList<>();
 
         @Override
-        public void publish(String topic, String aggregateId, String payload) {
+        public CompletionStage<Void> publish(String topic, String aggregateId, String payload) {
             calls.add(new PublishedMessage(topic, aggregateId, payload));
+            return CompletableFuture.completedFuture(null);
         }
 
         /**

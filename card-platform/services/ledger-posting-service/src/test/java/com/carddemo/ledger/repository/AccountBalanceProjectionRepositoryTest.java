@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.carddemo.ledger.TestIdentityPasswords;
 import com.carddemo.ledger.entity.AccountBalanceProjectionEntity;
 import com.carddemo.ledger.outbox.OutboxRelay;
 import java.math.BigDecimal;
@@ -54,13 +55,14 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
     // The two listeners of this service must not retry an absent broker.
     "spring.kafka.listener.auto-startup=false",
     "TOPIC_DEAD_LETTER_SUFFIX=.DLT",
-    // The four credentials application.yml leaves without a default. Each value below is a
-    // generated fake this repository states nowhere else, and config/SecurityConfig refuses a
-    // blank, published or unprefixed one at start-up.
+    // One of the four credentials application.yml leaves without a default. The value below is a
+    // generated fake this repository states nowhere else, and config/SecurityConfig refuses a blank
+    // or published one at start-up. The three identity hashes arrive from card-platform/pom.xml,
+    // because a password that is not adaptively encoded is refused.
     "KAFKA_SASL_PASSWORD=a-generated-broker-value-for-the-projection-test",
-    "ADMIN_PASSWORD_HASH={noop}a-generated-admin-value-for-the-projection-test",
-    "USER_PASSWORD_HASH={noop}a-generated-user-value-for-the-projection-test",
-    "MONITORING_PASSWORD_HASH={noop}a-generated-monitoring-value-for-the-projection-test",
+    "ADMIN_PASSWORD_HASH=" + TestIdentityPasswords.ADMIN_PASSWORD_HASH,
+    "USER_PASSWORD_HASH=" + TestIdentityPasswords.USER_PASSWORD_HASH,
+    "MONITORING_PASSWORD_HASH=" + TestIdentityPasswords.MONITORING_PASSWORD_HASH,
 })
 @DisplayName("The projection upsert of AccountBalanceProjectionRepository, on a real database")
 class AccountBalanceProjectionRepositoryTest {

@@ -13,6 +13,12 @@
 /.env.*
 !/.env.example
 
+# The three demo login passwords scripts/generate-env.sh writes. .env keeps only
+# their bcrypt hashes, and a hash cannot be sent to a service as a password, so the
+# plaintext is written here instead. Every value is disposable and belongs to one
+# local container stack, and none of them may enter history.
+/.demo-credentials
+
 # A rendered Kubernetes Secret. 31-secret.example.yaml is the template and stays
 # tracked; a copy edited with a real value must not follow it into history.
 /deploy/k8s/31-secret.yaml

@@ -19,38 +19,54 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 /**
- * Holds the one card-token key to one value across the build, the Compose stack, the Kubernetes
- * manifests and every token already written down.
+ * Proves that no path into a deployment carries a usable card-token key, and that the tokens this
+ * repository does check in are re-derived under the deployment's own key before anything reads them.
  *
  * <p>A card token is the key of {@code statement_transaction} and {@code notification_log}, the
  * identifier a card history route and a list cursor carry, and the subject of a {@code SCOPE_CARD}
- * authority. {@code com.carddemo.cobol.PanMasker} derives it as a keyed code, so a token belongs to
- * one key and one version. Two places deriving under different keys would key the same card two
- * ways and split every read model that joins on it, and a granted authority derived under a retired
- * key names no card at all.
+ * authority. {@code com.carddemo.cobol.PanMasker} derives it as a keyed code over a sixteen-digit
+ * card number, so the key is the whole of what makes a token more than a rename: with the key, one
+ * token is enough to recompute the token of every candidate card number offline.
  *
- * <p>Four artifacts therefore have to agree, and none of the four can be checked by a compiler:
- * {@code card-platform/pom.xml} supplies the key to every test run, {@code card-platform/.env.example}
- * declares it for the Compose stack, {@code deploy/k8s/31-secret.example.yaml} supplies it in the
- * cluster, and the fifty {@code card_token} literals in the card service seed plus the
- * {@code SCOPE_CARD} authority in {@code .env.example} and {@code deploy/k8s/30-configmap.yaml} were
- * derived under it. This class compares all of them, so a key changed in one place fails the build
- * rather than emptying an entitlement or orphaning a read model at run time.
+ * <p>Two kinds of key therefore exist here, and keeping them apart is what this class is for. The
+ * BUILD-SCOPE key in {@code card-platform/pom.xml} travels one way, as a JVM system property to
+ * Surefire and Failsafe, and the fifty {@code card_token} literals in the card service seed are
+ * derived under it so that a checked-in literal can be compared against the derivation. A DEPLOYMENT
+ * key is generated for one deployment: {@code card-platform/.env.example} and
+ * {@code deploy/k8s/31-secret.example.yaml} both ship a placeholder, the Compose stack supplies no
+ * default, and the two services that derive a token refuse to start without a real value.
  *
- * <p>The derivation itself is proved by {@code com.carddemo.cobol.PanMaskerTest}, and the seeded
- * literals are also compared against a live database by
- * {@code CardRepositoryIT.everySeededTokenMatchesTheJavaDerivation}. This class adds the part
- * neither of those can see: that the configuration those tokens were derived under is the
- * configuration a deployment applies.
+ * <p>The seeded literals are a bootstrap rather than a live identity, which is what makes shipping
+ * them safe. {@code com.carddemo.card.domain.CardTokenReconciler} re-derives every one of them under
+ * the deployment's key as the card service starts, before the readiness probe accepts traffic.
  *
- * <p>No failure message here quotes the key or a card number. A divergence is reported by artifact
- * and by the one-based ordinal of the seeded row.
+ * <p>Five properties are asserted here, and none of the five can be checked by a compiler: that no
+ * deployment artifact carries a usable key, that the build-scope key reaches no deployment artifact,
+ * that the version still agrees across the three places that declare it, that every seeded literal
+ * belongs to the build-scope key and is re-derived at start-up, and that every published contract
+ * naming the token names the keyed primitive the code applies.
+ *
+ * <p>The derivation itself is proved by {@code com.carddemo.cobol.PanMaskerTest}, the seeded literals
+ * are compared against a live database by {@code CardRepositoryIT}, and the reconciliation is
+ * exercised there too. This class adds what none of those can see, which is the shape of the
+ * configuration around them.
+ *
+ * <p>No failure message here quotes a key or a card number. A divergence is reported by artifact and
+ * by the one-based ordinal of the seeded row.
  */
-@DisplayName("Card-token key agreement across the build, Compose and Kubernetes")
+@DisplayName("Card-token key handling across the build, Compose and Kubernetes")
 class CardTokenKeyContractTest {
 
     /** Rows the card fixture holds, and therefore tokens the card seed carries. */
     private static final int FIXTURE_ROW_COUNT = 50;
+
+    /** Environment variable by which a deployment states that its key is the published one. */
+    private static final String ACKNOWLEDGEMENT_VARIABLE =
+            PanMasker.CARD_TOKEN_ALLOW_PUBLISHED_KEY_VARIABLE;
+
+    /** The same statement as the build property Surefire and Failsafe carry. */
+    private static final String ACKNOWLEDGEMENT_PROPERTY =
+            PanMasker.CARD_TOKEN_ALLOW_PUBLISHED_KEY_PROPERTY;
 
     /** Matches the key the parent build supplies to Surefire and Failsafe. */
     private static final Pattern POM_KEY = Pattern.compile(
@@ -77,47 +93,164 @@ class CardTokenKeyContractTest {
             Pattern.compile("SCOPE_CARD_([0-9a-f]{64})");
 
     @Test
-    @DisplayName("the build, Compose and Kubernetes all name one key and one version")
-    void theBuildComposeAndKubernetesAllNameOneKeyAndOneVersion() {
-        String pom = read(platformDirectory().resolve("pom.xml"));
-        String secretTemplate =
-                read(platformDirectory().resolve("deploy/k8s/31-secret.example.yaml"));
-        String configMap = read(platformDirectory().resolve("deploy/k8s/30-configmap.yaml"));
+    @DisplayName("no deployment path carries a usable card-token key")
+    void noDeploymentPathCarriesAUsableCardTokenKey() {
+        String dotenvKey = dotenvValue("CARD_TOKEN_SECRET");
+        String secretKey = captured(SECRET_KEY,
+                read(platformDirectory().resolve("deploy/k8s/31-secret.example.yaml")),
+                "31-secret.example.yaml");
         String compose = read(platformDirectory().resolve("docker-compose.yml"));
 
-        String buildKey = captured(POM_KEY, pom, "card-platform/pom.xml");
-        String dotenvKey = dotenvValue("CARD_TOKEN_SECRET");
-        String secretKey = captured(SECRET_KEY, secretTemplate, "31-secret.example.yaml");
+        assertTrue(dotenvKey.contains(PLACEHOLDER_MARKER),
+                ".env.example ships a card-token key rather than a placeholder. A key checked in"
+                        + " here is a key every reader of this repository holds, and one token"
+                        + " derived under it names its card to any of them");
+        assertTrue(secretKey.contains(PLACEHOLDER_MARKER),
+                "deploy/k8s/31-secret.example.yaml ships a card-token key rather than a"
+                        + " placeholder, so applying the template unedited deploys a published key");
+        assertFalse(compose.contains("CARD_TOKEN_SECRET: ${CARD_TOKEN_SECRET:-"),
+                "docker-compose.yml gives CARD_TOKEN_SECRET a default, so the stack starts on a"
+                        + " key nobody chose. The variable has to be required, not defaulted");
+        assertTrue(compose.contains("CARD_TOKEN_SECRET: ${CARD_TOKEN_SECRET:?"),
+                "docker-compose.yml must require CARD_TOKEN_SECRET, so an unset value stops the"
+                        + " stack with the variable named rather than starting on a fallback");
+    }
 
-        assertEquals(dotenvKey, buildKey,
-                "card-platform/pom.xml supplies a different card-token key to the build than"
-                        + " .env.example supplies to the Compose stack, so a token derived by a"
-                        + " test would not be the token a running service derives");
-        assertEquals(dotenvKey, secretKey,
-                "deploy/k8s/31-secret.example.yaml supplies a different card-token key than"
-                        + " .env.example, so the same card is keyed two ways across the two paths");
+    /**
+     * Holds the statement that keeps the published key usable to the one path that means it.
+     *
+     * <p>{@code PanMasker.PUBLISHED_DEMO_CARD_TOKEN_SECRET} is written down in this repository, so a
+     * token taken under it is recomputable by anyone holding the repository. Both deriving services
+     * refuse that key at start-up unless the configuration states that it means to use it, through
+     * {@value com.carddemo.cobol.PanMasker#CARD_TOKEN_ALLOW_PUBLISHED_KEY_VARIABLE} or the matching
+     * property.
+     *
+     * <p>No shipped path carries the published key any more. {@code .env.example} and
+     * {@code deploy/k8s/31-secret.example.yaml} both carry a placeholder,
+     * {@code scripts/generate-env.sh} fills the placeholder with a key generated for the install,
+     * and {@code CardTokenReconciler} re-derives the seeded literals under whatever key arrives. The
+     * statement therefore belongs nowhere except the build, which does supply a key of its own and
+     * needs the property only so a context refresh under it is not refused. A configuration that
+     * names its own key must not carry the statement: a statement about a key nobody published says
+     * nothing, and it would survive a rotation as a lie.
+     */
+    @Test
+    @DisplayName("no shipped path claims to run under the published card-token key")
+    void noShippedPathClaimsToRunUnderThePublishedKey() {
+        String pom = read(platformDirectory().resolve("pom.xml"));
+        assertTrue(pom.contains("<" + ACKNOWLEDGEMENT_PROPERTY + ">true</"
+                        + ACKNOWLEDGEMENT_PROPERTY + ">"),
+                "the build is the fixture environment and states it once, as a property");
+        assertEquals(2, occurrences(pom, "<" + ACKNOWLEDGEMENT_PROPERTY + ">${"
+                        + ACKNOWLEDGEMENT_PROPERTY + "}</" + ACKNOWLEDGEMENT_PROPERTY + ">"),
+                "and passes it to Surefire and to Failsafe, because a context refresh in either"
+                        + " phase runs the same refusal");
 
-        String buildVersion = captured(POM_VERSION, pom, "card-platform/pom.xml");
-        assertEquals(dotenvValue("CARD_TOKEN_VERSION"), buildVersion,
-                "the build and .env.example name different card-token versions");
-        assertEquals(dotenvValue("CARD_TOKEN_VERSION"),
-                captured(CONFIGMAP_VERSION, configMap, "30-configmap.yaml"),
-                "the ConfigMap and .env.example name different card-token versions");
+        for (String artifact : DEPLOYMENT_ARTIFACTS) {
+            String text = read(repositoryRoot().resolve(artifact));
+            assertFalse(text.contains(ACKNOWLEDGEMENT_VARIABLE + ": \"true\"")
+                            || text.contains(ACKNOWLEDGEMENT_VARIABLE + "=true")
+                            || text.contains(ACKNOWLEDGEMENT_VARIABLE + ": ${"
+                                    + ACKNOWLEDGEMENT_VARIABLE + ":-true}"),
+                    artifact + " states that it runs under the card-token key this repository"
+                            + " publishes, while it names a placeholder rather than that key. A"
+                            + " statement about a key nobody supplied says nothing and survives a"
+                            + " rotation as a lie");
+        }
 
-        assertTrue(compose.contains("CARD_TOKEN_SECRET: ${CARD_TOKEN_SECRET:-" + dotenvKey + "}"),
-                "docker-compose.yml must pass the documented card-token key to every service");
-        assertTrue(compose.contains("CARD_TOKEN_VERSION: ${CARD_TOKEN_VERSION:-"
-                        + dotenvValue("CARD_TOKEN_VERSION") + "}"),
-                "docker-compose.yml must pass the documented card-token version to every service");
+        assertTrue(dotenvValue("CARD_TOKEN_SECRET").contains(PLACEHOLDER_MARKER),
+                ".env.example must keep a placeholder here, which is what makes the statement"
+                        + " above unnecessary rather than merely absent");
 
-        assertTrue(buildKey.length() >= PanMasker.CARD_TOKEN_SECRET_MIN_LENGTH,
-                "the configured card-token key is shorter than the minimum PanMasker accepts, so"
-                        + " every derivation would be refused");
+        assertFalse(PanMasker.requireCardTokenSecretFitForUse(),
+                "this test run holds the build-scope key card-platform/pom.xml declares, not the"
+                        + " published one, so the guard must report that the key is not published."
+                        + " A true answer here would mean the build had picked up"
+                        + " PanMaskerTest.PUBLISHED_DEMO_CARD_TOKEN_SECRET, and every token this"
+                        + " suite compares would be recomputable by any reader of this repository");
     }
 
     @Test
-    @DisplayName("this build derives tokens under the key the configuration names")
-    void thisBuildDerivesTokensUnderTheKeyTheConfigurationNames() {
+    @DisplayName("the card-token key reaches the two services that derive a token and no others")
+    void theCardTokenKeyReachesTheTwoServicesThatDeriveATokenAndNoOthers() {
+        String compose = read(platformDirectory().resolve("docker-compose.yml"));
+        String secretTemplate =
+                read(platformDirectory().resolve("deploy/k8s/31-secret.example.yaml"));
+
+        assertEquals(DERIVING_SERVICE_COUNT, occurrences(compose, "      CARD_TOKEN_SECRET:"),
+                "docker-compose.yml must name the card-token key inside the two deriving service"
+                        + " blocks and nowhere else. The shared environment block reaches all six,"
+                        + " and four of the six derive nothing");
+        assertTrue(secretTemplate.contains("name: " + CARD_TOKEN_SECRET_NAME),
+                "deploy/k8s/31-secret.example.yaml must declare a Secret of its own for the key, so"
+                        + " a Deployment can pull the key without pulling the identity hashes");
+
+        List<String> pulling = new ArrayList<>();
+        for (String manifest : SERVICE_MANIFESTS) {
+            if (read(platformDirectory().resolve("deploy/k8s/" + manifest))
+                    .contains("name: " + CARD_TOKEN_SECRET_NAME)) {
+                pulling.add(manifest);
+            }
+        }
+        assertEquals(DERIVING_SERVICE_MANIFESTS, pulling,
+                "exactly the two Deployments that derive a card token may pull the key. These"
+                        + " pulled it: " + pulling);
+
+        String identitySecret = secretTemplate.substring(
+                secretTemplate.indexOf("name: carddemo-identity-secret"),
+                secretTemplate.indexOf("name: " + CARD_TOKEN_SECRET_NAME));
+        assertFalse(identitySecret.contains("CARD_TOKEN_SECRET:"),
+                "the shared identity Secret still carries the card-token key, and all six"
+                        + " Deployments pull that Secret whole");
+    }
+
+    @Test
+    @DisplayName("the build-scope key reaches no deployment artifact")
+    void theBuildScopeKeyReachesNoDeploymentArtifact() {
+        String buildKey = captured(POM_KEY, read(platformDirectory().resolve("pom.xml")),
+                "card-platform/pom.xml");
+
+        assertTrue(buildKey.length() >= PanMasker.CARD_TOKEN_SECRET_MIN_LENGTH,
+                "the build-scope card-token key is shorter than the minimum PanMasker accepts, so"
+                        + " every derivation in this build would be refused");
+        assertFalse(buildKey.contains(PLACEHOLDER_MARKER),
+                "the build-scope key is a real value rather than a placeholder, because a build has"
+                        + " to derive a token to compare a seeded literal against");
+
+        for (String artifact : DEPLOYMENT_ARTIFACTS) {
+            String text = read(repositoryRoot().resolve(artifact));
+            assertFalse(text.contains(buildKey), artifact + " carries the build-scope card-token"
+                    + " key this repository publishes in pom.xml. A deployment reading it would run"
+                    + " on a key every reader of this repository holds");
+            assertFalse(text.contains(PUBLISHED_CARD_TOKEN_KEY), artifact + " carries the"
+                    + " card-token key this repository once published as a default. The two"
+                    + " deriving services refuse it at start-up, so this artifact deploys a service"
+                    + " that will not start");
+        }
+    }
+
+    @Test
+    @DisplayName("the build, Compose and Kubernetes all name one card-token version")
+    void theBuildComposeAndKubernetesAllNameOneCardTokenVersion() {
+        String pom = read(platformDirectory().resolve("pom.xml"));
+        String configMap = read(platformDirectory().resolve("deploy/k8s/30-configmap.yaml"));
+        String compose = read(platformDirectory().resolve("docker-compose.yml"));
+        String dotenvVersion = dotenvValue("CARD_TOKEN_VERSION");
+
+        assertEquals(dotenvVersion, captured(POM_VERSION, pom, "card-platform/pom.xml"),
+                "the build and .env.example name different card-token versions, so a token a test"
+                        + " derives is not the token a running service derives");
+        assertEquals(dotenvVersion, captured(CONFIGMAP_VERSION, configMap, "30-configmap.yaml"),
+                "the ConfigMap and .env.example name different card-token versions");
+        assertEquals(DERIVING_SERVICE_COUNT,
+                occurrences(compose, "CARD_TOKEN_VERSION: ${CARD_TOKEN_VERSION:-"
+                        + dotenvVersion + "}"),
+                "docker-compose.yml must pass the documented version to the two deriving services");
+    }
+
+    @Test
+    @DisplayName("this build derives tokens under the build-scope key")
+    void thisBuildDerivesTokensUnderTheBuildScopeKey() {
         String buildKey = captured(POM_KEY, read(platformDirectory().resolve("pom.xml")),
                 "card-platform/pom.xml");
 
@@ -129,8 +262,8 @@ class CardTokenKeyContractTest {
     }
 
     @Test
-    @DisplayName("every seeded token and the granted authority belong to the configured key")
-    void everySeededTokenAndTheGrantedAuthorityBelongToTheConfiguredKey() {
+    @DisplayName("every seeded token belongs to the build-scope key and is re-derived at start-up")
+    void everySeededTokenBelongsToTheBuildScopeKeyAndIsReDerivedAtStartUp() {
         String seed = read(platformDirectory()
                 .resolve("services/card-service/src/main/resources/db/migration/V2__seed.sql"));
 
@@ -148,21 +281,33 @@ class CardTokenKeyContractTest {
                 "the card seed must carry one token per fixture card");
         assertEquals(List.of(), divergent,
                 "these seeded rows, by one-based ordinal, carry a token that is not the token the"
-                        + " configured key derives, so the row and the running service disagree"
-                        + " about which card it is: " + divergent);
+                        + " build-scope key derives, so a literal and the derivation disagree about"
+                        + " which card the row is: " + divergent);
 
-        String grantedInDotenv = captured(GRANTED_CARD_SCOPE, dotenvValue("USER_SCOPES"),
-                ".env.example USER_SCOPES");
-        assertTrue(seedTokens(seed).contains(grantedInDotenv),
-                "the SCOPE_CARD authority .env.example grants names a token no seeded card carries,"
-                        + " so the ordinary identity owns no card and POST /cards/detail answers"
-                        + " 403 for every card");
-        assertEquals(grantedInDotenv,
-                captured(GRANTED_CARD_SCOPE,
-                        read(platformDirectory().resolve("deploy/k8s/30-configmap.yaml")),
-                        "30-configmap.yaml USER_SCOPES"),
-                "the two paths grant different card authorities, so a demo scripted on one answers"
-                        + " 403 on the other");
+        String reconciler = read(platformDirectory().resolve("services/card-service/src/main/java/"
+                + "com/carddemo/card/domain/CardTokenReconciler.java"));
+        assertTrue(reconciler.contains("implements ApplicationRunner"),
+                "the card service must re-derive these literals before it accepts traffic, and an"
+                        + " application runner is what Spring Boot invokes in that window. Without"
+                        + " it every seeded row would keep a token derived under a key this"
+                        + " repository publishes");
+        assertTrue(reconciler.contains("PanMasker.cardToken("),
+                "the reconciliation must derive through the one helper this platform holds, or a"
+                        + " row it rewrites carries a value nothing else agrees with");
+    }
+
+    @Test
+    @DisplayName("neither path grants a card authority derived under a key it does not have")
+    void neitherPathGrantsACardAuthorityDerivedUnderAKeyItDoesNotHave() {
+        for (String artifact : List.of(".env.example", "deploy/k8s/30-configmap.yaml")) {
+            String text = read(platformDirectory().resolve(artifact));
+            Matcher granted = GRANTED_CARD_SCOPE.matcher(text);
+            boolean grantsACardAuthority = granted.find();
+            assertFalse(grantsACardAuthority, artifact + " grants a SCOPE_CARD authority. A card"
+                    + " token is derived under a key each deployment generates for itself, so an"
+                    + " authority written down here names a card under a key no deployment holds,"
+                    + " and the route it was meant to open answers 403 anyway");
+        }
     }
 
     @Test
@@ -176,9 +321,78 @@ class CardTokenKeyContractTest {
             assertFalse(text.contains(RETIRED_TOKEN_OF_THE_SEEDED_DEMO_CARD),
                     artifact + " still carries the token the retired unkeyed digest produced for"
                             + " the seeded demo card, so a keyed deployment would not recognise it");
-            assertFalse(text.contains("SHA-256 digest of the label"),
-                    artifact + " still describes the retired unkeyed derivation");
+            assertFalse(text.contains(TOKEN_OF_THE_DEMO_CARD_UNDER_THE_PUBLISHED_KEY),
+                    artifact + " still carries the token the published demo key produced for that"
+                            + " card. Nothing derives that value now, so an artifact holding it is"
+                            + " a stale copy rather than a working one");
         }
+    }
+
+    /**
+     * Every published contract that carries a card token, and the member each one carries it as.
+     *
+     * <p>A consumer implements the derivation from the description in one of these documents and
+     * from nothing else, so a description naming the wrong primitive is a specification for an
+     * incompatible token. Two of the three name the token in a property description and the third
+     * in a path-parameter description, so the scan reads whole documents rather than parsed nodes:
+     * the two forms have no common structure, and the text is what a reader reads.
+     */
+    private static final List<String> TOKEN_BEARING_CONTRACTS = List.of(
+            "libs/event-contracts/src/main/resources/schemas/transaction-authorized-v2.json",
+            "libs/event-contracts/src/main/resources/schemas/transaction-posted-v2.json",
+            "services/notification-service/src/main/resources/openapi.yaml");
+
+    /**
+     * Matches a description of an unkeyed digest, whatever words surround the primitive.
+     *
+     * <p>The earlier form of this check compared one exact phrase, and the two schemas spelled the
+     * claim slightly differently, so both went on describing an unkeyed digest while the check
+     * passed. The pattern therefore looks for the primitive with no {@code HMAC} in front of it,
+     * which is the property that matters: an unkeyed digest over a sixteen-digit space can be
+     * recomputed card number by card number.
+     */
+    private static final Pattern UNKEYED_DIGEST_CLAIM = Pattern.compile(
+            "(?<!HMAC.)(?<!HMAC-)\\bSHA-?256\\b(?![^.]{0,40}\\bkey)", Pattern.CASE_INSENSITIVE);
+
+    @Test
+    @DisplayName("every token-bearing contract names the keyed primitive the code applies")
+    void everyTokenBearingContractNamesTheKeyedPrimitiveTheCodeApplies() {
+        for (String contract : TOKEN_BEARING_CONTRACTS) {
+            String text = read(platformDirectory().resolve(contract));
+            String folded = text.replaceAll("\\s+", " ");
+
+            assertTrue(folded.contains("HMAC-SHA-256"),
+                    contract + " describes the card token without naming HMAC-SHA-256, which is the"
+                            + " primitive PanMasker applies. A consumer coding from this document"
+                            + " would derive a different token");
+            assertTrue(folded.contains("under a deployment-supplied key"),
+                    contract + " does not say the derivation is keyed, so a consumer may implement"
+                            + " an unkeyed digest that any reader can invert over the card-number"
+                            + " space");
+
+            Matcher unkeyed = UNKEYED_DIGEST_CLAIM.matcher(folded);
+            boolean describesAnUnkeyedDigest = unkeyed.find();
+            assertFalse(describesAnUnkeyedDigest,
+                    contract + " still describes an unkeyed digest: "
+                            + (describesAnUnkeyedDigest
+                                    ? folded.substring(Math.max(0, unkeyed.start() - 60),
+                                            Math.min(folded.length(), unkeyed.end() + 60))
+                                    : ""));
+        }
+    }
+
+    @Test
+    @DisplayName("the primitive the contracts name is the primitive the code applies")
+    void thePrimitiveTheContractsNameIsThePrimitiveTheCodeApplies() {
+        String masker = read(platformDirectory()
+                .resolve("libs/cobol-compat/src/main/java/com/carddemo/cobol/PanMasker.java"));
+
+        assertTrue(masker.contains("CARD_TOKEN_ALGORITHM = \"HmacSHA256\""),
+                "PanMasker no longer derives under HmacSHA256, so the three published contracts now"
+                        + " describe a primitive the code does not apply. Change both together");
+        assertTrue(masker.contains("Mac.getInstance(CARD_TOKEN_ALGORITHM)"),
+                "PanMasker no longer takes a message authentication code, so the derivation may be"
+                        + " unkeyed however the constant is named");
     }
 
     /**
@@ -190,14 +404,79 @@ class CardTokenKeyContractTest {
     private static final String RETIRED_TOKEN_OF_THE_SEEDED_DEMO_CARD =
             "1134636222d1a2485d20203d0e970c72124893eb01be73a5fde5fdcccc2c4ac9";
 
-    /** Every token literal the card seed carries. */
-    private static List<String> seedTokens(String seed) {
-        List<String> tokens = new ArrayList<>();
-        Matcher rows = SEEDED_CARD.matcher(seed);
-        while (rows.find()) {
-            tokens.add(rows.group(2));
+    /**
+     * The token the published demo key produced for the card the demo authority used to name.
+     *
+     * <p>It is a token and not a card number, so writing it down discloses nothing, and no key this
+     * platform now uses derives it. An artifact still carrying it is a copy nobody re-derived when
+     * the published key was withdrawn.
+     */
+    private static final String TOKEN_OF_THE_DEMO_CARD_UNDER_THE_PUBLISHED_KEY =
+            "98433fc178365d966539a9156365078b3b382bbb8d75143e37e49a18290d58c0";
+
+    /** Marks a value this repository publishes as an example rather than as a credential. */
+    private static final String PLACEHOLDER_MARKER = "REPLACE";
+
+    /**
+     * The card-token key this repository published as the effective default of every deployment
+     * path, and which both deriving services now refuse at start-up.
+     */
+    private static final String PUBLISHED_CARD_TOKEN_KEY =
+            "carddemo-demo-card-token-key-not-for-production";
+
+    /** Name of the Kubernetes Secret carrying the card-token key. */
+    private static final String CARD_TOKEN_SECRET_NAME = "carddemo-card-token-secret";
+
+    /** Services that derive a card token: the authorization service and the card service. */
+    private static final int DERIVING_SERVICE_COUNT = 2;
+
+    /** Every service Deployment manifest, in apply order. */
+    private static final List<String> SERVICE_MANIFESTS = List.of(
+            "40-authorization-service.yaml", "41-ledger-posting-service.yaml",
+            "42-fraud-detection-service.yaml", "43-notification-service.yaml",
+            "44-account-service.yaml", "45-card-service.yaml");
+
+    /** The two manifests permitted to pull {@link #CARD_TOKEN_SECRET_NAME}. */
+    private static final List<String> DERIVING_SERVICE_MANIFESTS =
+            List.of("40-authorization-service.yaml", "45-card-service.yaml");
+
+    /**
+     * Every artifact that supplies configuration to a running deployment.
+     *
+     * <p>The build file is absent on purpose: it is the one place the build-scope key belongs, and
+     * the scan below asserts that value appears in none of these.
+     */
+    private static final List<String> DEPLOYMENT_ARTIFACTS = List.of(
+            "card-platform/.env.example",
+            "card-platform/docker-compose.yml",
+            "card-platform/deploy/k8s/30-configmap.yaml",
+            "card-platform/deploy/k8s/31-secret.example.yaml",
+            ".github/workflows/ci.yml");
+
+    /**
+     * Counts non-overlapping occurrences of one token.
+     *
+     * @param text  the text to read
+     * @param token the token to count
+     * @return how many times it occurs
+     */
+    private static int occurrences(String text, String token) {
+        int count = 0;
+        int offset = 0;
+        while ((offset = text.indexOf(token, offset)) >= 0) {
+            count++;
+            offset += token.length();
         }
-        return List.copyOf(tokens);
+        return count;
+    }
+
+    /**
+     * Returns the repository root, being the parent of the {@code card-platform} directory.
+     *
+     * @return that directory
+     */
+    private static Path repositoryRoot() {
+        return CardDemoFixtureLoader.fixtureDirectory().getParent().getParent().getParent();
     }
 
     /** Returns the first capture of one pattern, and fails when the artifact carries none. */

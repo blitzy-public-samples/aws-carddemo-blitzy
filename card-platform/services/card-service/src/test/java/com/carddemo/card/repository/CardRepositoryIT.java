@@ -1,8 +1,17 @@
 package com.carddemo.card.repository;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import com.carddemo.card.TestIdentityPasswords;
 import com.carddemo.card.api.dto.CardValidationMessages;
 import com.carddemo.card.domain.CardQueryService.CardListRow;
 import com.carddemo.card.domain.CardQueryService;
+import com.carddemo.card.domain.CardTokenReconciler;
 import com.carddemo.card.entity.CardEntity;
 import com.carddemo.card.entity.OutboxEventEntity;
 import com.carddemo.card.entity.ProcessedEventEntity;
@@ -35,6 +44,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.ApplicationRunner;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.dao.CannotAcquireLockException;
 import org.springframework.dao.DataAccessException;
@@ -50,13 +60,6 @@ import org.springframework.transaction.support.TransactionTemplate;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
-
-import static org.junit.jupiter.api.Assertions.assertAll;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertInstanceOf;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Container-backed integration test for {@link CardRepository} over the migrated {@code card}
@@ -127,9 +130,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
         webEnvironment = SpringBootTest.WebEnvironment.NONE,
         properties = {
                 "KAFKA_SASL_PASSWORD=not-a-real-broker-password",
-                "ADMIN_PASSWORD_HASH={noop}not-a-real-admin-password",
-                "USER_PASSWORD_HASH={noop}not-a-real-user-password",
-                "MONITORING_PASSWORD_HASH={noop}not-a-real-monitoring-password"
+                "carddemo.outbox.relay.fixed-delay-ms=3600000",
+                "carddemo.retention.sweep-interval-ms=3600000",
+                "ADMIN_PASSWORD_HASH=" + TestIdentityPasswords.ADMIN_PASSWORD_HASH,
+                "USER_PASSWORD_HASH=" + TestIdentityPasswords.USER_PASSWORD_HASH,
+                "MONITORING_PASSWORD_HASH=" + TestIdentityPasswords.MONITORING_PASSWORD_HASH
         })
 @Testcontainers
 @DisplayName("CardRepository over the migrated card schema: keys, the account index, and paging")
@@ -173,9 +178,15 @@ class CardRepositoryIT {
      * The migration versions Flyway applies, in the order it applies them.
      *
      * <p>Version 3 is {@code V3__processed_event_topic_key.sql}, which re-keys
-     * {@code processed_event} on the event and the topic together.
+     * {@code processed_event} on the event and the topic together. Version 4 is
+     * {@code V4__subject_request_posture.sql} and carries no data-definition statement: it re-issues
+     * the {@code card_xref} table comment, which used to say an erasure request had to reach the
+     * row while no export or erasure workflow exists anywhere on this platform to send one. The
+     * correction is a migration rather than an edit to {@code V1} because {@code V1} has run, and a
+     * comment-only migration adds a history row and changes no table, so every other assertion in
+     * this class reads exactly as it did at version 3.
      */
-    private static final List<String> MIGRATION_VERSIONS = List.of("1", "2", "3");
+    private static final List<String> MIGRATION_VERSIONS = List.of("1", "2", "3", "4");
 
     /**
      * Card number of the row a test inserts to place a second card on one account.
@@ -340,6 +351,10 @@ class CardRepositoryIT {
     /** Opens the two independent transactions the bounded-wait test contends between. */
     @Autowired
     private PlatformTransactionManager transactionManager;
+
+    /** The start-up runner that brings a stored card token onto the configured key. */
+    @Autowired
+    private CardTokenReconciler cardTokenReconciler;
 
     /**
      * The schema Flyway created and Hibernate qualifies with, from
@@ -706,14 +721,16 @@ class CardRepositoryIT {
      * Proves the card token is one value, derived the same way in SQL and in Java, and unique.
      *
      * <p>{@code card_token} is an addition with no field in {@code app/cpy/CVACT02Y.cpy} behind it.
-     * Two pieces of code derive it: {@code V2__seed.sql} in SQL for the fifty seeded rows, and
-     * {@link com.carddemo.card.entity.CardEntity} in Java through
-     * {@link PanMasker#cardToken(String)} for every row this service writes. Two derivations of one
-     * value can drift, and a drift would split the identity: a cursor issued for a seeded row would
-     * resolve, one issued for an inserted row would not, or the reverse.
+     * One piece of code derives it, {@link PanMasker#cardToken(String)}, and it reaches a row by two
+     * routes: {@link com.carddemo.card.entity.CardEntity} applies it in its constructor to every row
+     * this service writes, and {@code V2__seed.sql} carries the result as a checked-in literal on
+     * each of its fifty rows. A literal and a derivation can drift, and a drift would split the
+     * identity: a cursor issued for a seeded row would resolve, one issued for an inserted row would
+     * not, or the reverse.
      *
-     * <p>This group is the only place the two derivations meet, so it is the only place the
-     * agreement can be proven. It runs against a real PostgreSQL because the SQL side needs one.
+     * <p>This group is the only place the literal and the derivation meet, so it is the only place
+     * the agreement can be proven. It runs against a real PostgreSQL because the literal is loaded by
+     * a migration.
      */
     @Nested
     @Transactional
@@ -754,6 +771,69 @@ class CardRepositoryIT {
          * derivation, and the flush drives it to the database before the lookup runs. The lookup is
          * the translation a paging cursor depends on.
          */
+        /**
+         * Asserts the reconciler rewrites a stored token that belongs to another key, and only that
+         * row.
+         *
+         * <p>The condition is the one a deployment starts in. A seeded literal is derived under the
+         * build-scope key {@code card-platform/pom.xml} supplies, and a deployment generates a key of
+         * its own, so every seeded row arrives carrying a token the running service would not derive.
+         * This test creates that condition by writing a token-shaped value no key produces, then runs
+         * the reconciliation the start-up runner runs.
+         *
+         * <p>The second run is the point of the second assertion. A reconciliation that rewrote rows
+         * it had already corrected would rewrite fifty rows on every start-up of every instance.
+         */
+        @Test
+        @DisplayName("the reconciler rewrites a token from another key, and rewrites nothing twice")
+        void theReconcilerRewritesATokenFromAnotherKey() {
+            String cardNumber = seededCardNumbers().get(0);
+            String derived = PanMasker.cardToken(cardNumber);
+            String foreign = "0".repeat(PanMasker.CARD_TOKEN_LENGTH);
+            jdbcTemplate.update("UPDATE card SET card_token = ? WHERE card_number = ?",
+                    foreign, cardNumber);
+            entityManager.clear();
+
+            int firstRun = cardTokenReconciler.reconcile();
+            entityManager.clear();
+            int secondRun = cardTokenReconciler.reconcile();
+            entityManager.clear();
+
+            assertAll(
+                    () -> assertEquals(1, firstRun,
+                            "one row carried a token from another key, so one row is rewritten"),
+                    () -> assertEquals(0, secondRun,
+                            "a second run finds every token already derived and writes nothing"),
+                    () -> assertEquals(derived, jdbcTemplate.queryForObject(
+                                    "SELECT card_token FROM card WHERE card_number = ?",
+                                    String.class, cardNumber),
+                            "the rewritten row carries the token the configured key derives"),
+                    () -> assertEquals(SEEDED_ROW_COUNT, cardRepository.count(),
+                            "the reconciliation rewrites rows and inserts or deletes none"));
+        }
+
+        /**
+         * Asserts the reconciliation is wired to run at start-up rather than on demand.
+         *
+         * <p>Spring Boot invokes every {@link ApplicationRunner} after the context has refreshed,
+         * which is after Flyway has loaded the seed, and before it publishes the ready event that
+         * turns the readiness probe to accepting traffic. That ordering is what stops a request
+         * reading a token the reconciliation is about to change, and the bean's type is what puts it
+         * in that position.
+         */
+        @Test
+        @DisplayName("the reconciliation runs as a start-up runner and not on request")
+        void theReconciliationRunsAsAStartUpRunner() {
+            assertInstanceOf(ApplicationRunner.class, cardTokenReconciler,
+                    "the reconciliation has to run before the service accepts traffic, and an"
+                            + " application runner is what Spring Boot invokes in that window");
+        }
+
+        /** The card numbers the seed loaded, in primary-key order. */
+        private List<String> seededCardNumbers() {
+            return cardRepository.findAll().stream().map(CardEntity::getCardNumber).sorted().toList();
+        }
+
         @Test
         @DisplayName("an inserted row carries the derived token and findByCardToken reaches it")
         void anInsertedRowIsReachableByItsToken() {
@@ -1491,7 +1571,7 @@ class CardRepositoryIT {
          * Runs the bounded retention delete and reads the result back.
          *
          * <p>{@code ddl-auto: validate} reads no {@code @Query} text, so a native statement is
-         * unchecked until it runs. {@code outbox/RetentionSweeper} owns this call.
+         * unchecked until it runs. {@code domain/RetentionSweep} owns this call.
          */
         @Test
         @DisplayName("the retention delete takes a published row past the horizon and never an "

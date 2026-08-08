@@ -1,7 +1,8 @@
 package com.carddemo.authorization.api;
 
-import com.carddemo.authorization.domain.AuthenticatedActor;
+import com.carddemo.authorization.config.SecurityConfig;
 import com.carddemo.authorization.domain.AuthorizationService;
+import com.carddemo.authorization.domain.RequestCaller;
 import com.carddemo.cobol.PicClause;
 import com.carddemo.events.DeclineReason;
 import jakarta.validation.Valid;
@@ -76,12 +77,23 @@ public class AuthorizationController {
      * reject count, and {@code app/cbl/CBTRN02C.cbl:L230} moves 4 into the return code of a batch
      * run that rejected records.
      *
-     * <p>{@link AuthorizationService#authorize(AuthorizationRequest, String)} answers a decline
+     * <p>{@link AuthorizationService#authorize(AuthorizationRequest, RequestCaller)} answers a decline
      * as a value and raises nothing for it, so this method reads the decision and maps it to a
      * status.
      *
-     * <p>The identity the container resolved travels into the service, which records it beside the
-     * decision. That identity reaches no response body.
+     * <p>A caller that owns neither the account nor the card its request resolved to is refused
+     * {@code 403} by {@code api/GlobalExceptionHandler}, and no decision is recorded for it. That
+     * refusal is not a decline: it is an answer about the caller rather than about the transaction, and
+     * {@code domain/CallerNotEntitledException} carries why it publishes no event.
+     *
+     * <p>The identity the container resolved travels into the service, which records its name beside
+     * the decision and reads its entitlements to decide whether the resolved subject may be authorized
+     * against at all. Neither the name nor an entitlement reaches a response body.
+     *
+     * <p>{@code config/SecurityConfig} turns the principal into that record, because reading an
+     * authority is access-control work and that file is the one place per service which declares any.
+     * A principal carrying no authority becomes a caller entitled to nothing, which the decision
+     * refuses with 403 rather than treating as unrestricted.
      *
      * @param request the transaction to authorize, validated before this method runs
      * @param caller  the authenticated identity the container resolved, or {@code null} on a call
@@ -95,7 +107,7 @@ public class AuthorizationController {
             @Valid @RequestBody AuthorizationRequest request, Principal caller) {
 
         AuthorizationService.Outcome outcome =
-                authorizations.authorize(request, AuthenticatedActor.actorOf(caller));
+                authorizations.authorize(request, SecurityConfig.callerOf(caller));
 
         return ResponseEntity.status(statusOf(outcome)).body(bodyOf(outcome));
     }

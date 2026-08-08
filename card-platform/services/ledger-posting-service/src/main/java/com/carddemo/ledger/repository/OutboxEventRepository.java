@@ -43,34 +43,14 @@ public interface OutboxEventRepository extends ListCrudRepository<OutboxEventEnt
     String SKIP_LOCKED_TIMEOUT = "-2";
 
     /**
-     * Deletes published rows whose publication is older than the given instant, and returns how
-     * many it removed.
-     *
-     * <p>A published row has done its work and stays only for diagnosis. Nothing reads it again, so
-     * past the retention horizon it is dead weight on a table every event passes through.
-     * {@code carddemo.outbox.published-retention-hours} in
-     * {@code src/main/resources/application.yml} supplies the horizon, and the partial index
-     * {@code ix_outbox_event_published_at} serves this delete.
-     *
-     * <p>The condition names {@code published} as well as {@code published_at} so the delete matches
-     * the partial index exactly and can never touch a row the relay has not published.
-     *
-     * @param horizon the instant before which a published row is removed
-     * @return the number of rows removed
-     */
-    @Modifying
-    @Query("""
-            DELETE FROM OutboxEventEntity row
-            WHERE row.published = TRUE AND row.publishedAt < :horizon
-            """)
-    int deletePublishedBefore(@Param("horizon") Instant horizon);
-
-    /**
      * Deletes at most {@code limit} published rows older than the horizon, and returns how many it
      * removed.
      *
      * <p>The bound keeps one retention pass from producing a single very large statement on a schema
-     * that has been idle for a long time. A caller repeats the call until it returns zero.
+     * that has been idle for a long time. An unbounded delete holds every row it removes under one
+     * lock for the whole statement, which blocks the relay sweeping this same table. A caller repeats
+     * this call until it removes fewer rows than the limit, which drains the same backlog in short
+     * transactions that each release their locks.
      *
      * @param horizon the instant before which a published row is removed
      * @param limit   the largest number of rows one statement removes

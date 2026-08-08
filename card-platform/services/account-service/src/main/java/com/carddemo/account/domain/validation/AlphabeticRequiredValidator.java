@@ -70,11 +70,8 @@ public final class AlphabeticRequiredValidator {
     private static final String CAN_HAVE_ALPHABETS_ONLY = " can have alphabets only.";
 
     /**
-     * No COBOL ancestor. Opens the message text for a value wider than the edited field. No source
-     * literal carries this text.
-     *
-     * <p>The edit refuses a value wider than {@code WS-EDIT-ALPHANUM-LENGTH} at
-     * {@code app/cbl/COACTUPC.cbl:L62} and inspects none of its characters.</p>
+     * ADDITIVE. Opens the message text for a value wider than the edited field; no source literal
+     * carries this text. Rationale: {@code card-platform/docs/decision-log.md}.
      */
     private static final String ADDITIVE_NO_LONGER_THAN = " must be no longer than ";
 
@@ -149,13 +146,9 @@ public final class AlphabeticRequiredValidator {
     /**
      * Reports whether the value carries a character other than a space past the edited width.
      *
-     * <p>No COBOL ancestor. The source moves a fixed-width screen field into its edit field, so the
-     * {@code MOVE} drops nothing but padding. A Representational State Transfer (REST) caller can
-     * supply a wider value. Trailing spaces past the width are the padding the source itself holds.
-     * Any other character past the width is content the edit does not inspect.</p>
-     *
-     * <p>A width of zero or less inspects nothing, and this test reports false for it, leaving the
-     * not-supplied arm to answer.</p>
+     * <p>ADDITIVE. Trailing spaces past the width are the padding the source field itself holds;
+     * any other character past it is content. A width of zero or less inspects nothing and this
+     * test reports false, leaving the not-supplied arm to answer.</p>
      *
      * @param value  submitted value, which may be null
      * @param length count of characters the edit inspects

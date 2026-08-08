@@ -10,6 +10,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.carddemo.events.EventEnvelope;
 import com.carddemo.events.TransactionAuthorized;
 import com.carddemo.ledger.LedgerApplication;
+import com.carddemo.ledger.TestIdentityPasswords;
 import com.carddemo.ledger.entity.AccountBalanceProjectionEntity;
 import com.carddemo.ledger.entity.ProcessedEventEntity.ProcessedEventId;
 import com.carddemo.ledger.repository.AccountBalanceProjectionRepository;
@@ -69,8 +70,8 @@ import org.springframework.kafka.listener.MessageListenerContainer;
 import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
-import org.springframework.test.context.NestedTestConfiguration;
 import org.springframework.test.context.NestedTestConfiguration.EnclosingConfiguration;
+import org.springframework.test.context.NestedTestConfiguration;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.kafka.KafkaContainer;
@@ -91,9 +92,9 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 @Testcontainers
 @SpringBootTest(classes = LedgerApplication.class, properties = {
         "KAFKA_SASL_PASSWORD=inert-test-broker-value",
-        "ADMIN_PASSWORD_HASH={noop}inert-test-admin-value",
-        "USER_PASSWORD_HASH={noop}inert-test-user-value",
-        "MONITORING_PASSWORD_HASH={noop}inert-test-monitoring-value",
+        "ADMIN_PASSWORD_HASH=" + TestIdentityPasswords.ADMIN_PASSWORD_HASH,
+        "USER_PASSWORD_HASH=" + TestIdentityPasswords.USER_PASSWORD_HASH,
+        "MONITORING_PASSWORD_HASH=" + TestIdentityPasswords.MONITORING_PASSWORD_HASH,
         "spring.jpa.hibernate.ddl-auto=validate"
 })
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
@@ -572,9 +573,9 @@ public class TransactionAuthorizedConsumerIT {
             webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
             properties = {
                     "KAFKA_SASL_PASSWORD=inert-test-broker-value",
-                    "ADMIN_PASSWORD_HASH={noop}inert-test-admin-value",
-                    "USER_PASSWORD_HASH={noop}inert-test-user-value",
-                    "MONITORING_PASSWORD_HASH={noop}inert-test-monitoring-value",
+                    "ADMIN_PASSWORD_HASH=" + TestIdentityPasswords.ADMIN_PASSWORD_HASH,
+                    "USER_PASSWORD_HASH=" + TestIdentityPasswords.USER_PASSWORD_HASH,
+                    "MONITORING_PASSWORD_HASH=" + TestIdentityPasswords.MONITORING_PASSWORD_HASH,
                     "spring.kafka.security.protocol=PLAINTEXT",
                     "spring.jpa.hibernate.ddl-auto=validate",
                     "management.server.port=${server.port}"

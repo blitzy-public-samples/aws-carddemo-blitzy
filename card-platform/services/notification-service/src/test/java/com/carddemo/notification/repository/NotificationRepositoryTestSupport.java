@@ -5,7 +5,7 @@ import org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabas
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Import;
+import org.springframework.test.context.ContextConfiguration;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 
 /**
@@ -28,12 +28,21 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
  * {@code app/cbl/CBSTM03B.CBL}. Its parameter area {@code 01 LK-M03B-AREA.} at line 100 routes
  * every read and write, carrying an operation code at line 102 and a key at line 110.
  *
+ * <p>The class annotation names {@link PostgresContainerConfiguration} outright. A subclass
+ * declares no configuration of its own, and a test class that names none leaves Spring to detect
+ * the configuration nested in its hierarchy. Spring Framework 7.0 detects this one, ignores it, and
+ * warns that 7.1 will stop ignoring it; naming it here registers it the same way under both lines.
+ * The bean definitions of the module arrive alongside it, from the class annotated
+ * {@code SpringBootConfiguration}, because a class annotated {@code TestConfiguration} never
+ * replaces them.
+ *
  * <p>Agent Action Plan section 0.5.1 pins each version named here: {@code postgres:18.4},
  * Testcontainers 2.0.5 and Java 25.
  */
 @DataJpaTest
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
-@Import(NotificationRepositoryTestSupport.PostgresContainerConfiguration.class)
+@ContextConfiguration(
+        classes = NotificationRepositoryTestSupport.PostgresContainerConfiguration.class)
 abstract class NotificationRepositoryTestSupport {
 
     /** Database image the container runs, pinned by Agent Action Plan section 0.5.1. */

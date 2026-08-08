@@ -1,6 +1,7 @@
 package com.carddemo.ledger.config;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -28,6 +29,8 @@ import org.apache.kafka.common.header.Headers;
 import org.apache.kafka.common.header.internals.RecordHeaders;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.listener.ContainerProperties;
 import org.springframework.kafka.listener.DefaultErrorHandler;
@@ -211,13 +214,13 @@ class KafkaConsumerConfigTest {
     private static DefaultErrorHandler terminalOnFirstFailureErrorHandler() {
         LedgerProperties properties = new LedgerProperties(
                 new LedgerProperties.Kafka(new LedgerProperties.Kafka.Topics(SOURCE_TOPIC,
-                        "transaction.posted", "transaction.declined", "carddemo.dead-letter",
-                        ".DLT")),
+                        "transaction.declined", "account.state-changed", "transaction.posted",
+                        "carddemo.dead-letter", ".DLT")),
                 new LedgerProperties.Consumer(new LedgerProperties.Consumer.Retry(1, 0L)),
                 new LedgerProperties.Outbox(new LedgerProperties.Outbox.Relay(1000L, 100,
-                        "ledger-relay", Duration.ofMinutes(2L)), 168L),
-                new LedgerProperties.ProcessedEvent(168L),
-                new LedgerProperties.Retention(3_600_000L));
+                        "ledger-relay", Duration.ofMinutes(2L), 5_000L), 168L),
+                new LedgerProperties.ProcessedEvent(720L, 168L),
+                new LedgerProperties.Retention(3_600_000L, 90));
 
         return new KafkaConsumerConfig().ledgerConsumerErrorHandler(mock(KafkaTemplate.class),
                 properties, new ObservabilityConfig().ledgerMeters(new SimpleMeterRegistry()));
@@ -251,6 +254,46 @@ class KafkaConsumerConfigTest {
 
     private static byte[] longBytes(long value) {
         return java.nio.ByteBuffer.allocate(Long.BYTES).putLong(value).array();
+    }
+
+    /**
+     * Asserts the bound acknowledgement mode has to be the immediate manual one, not merely a manual
+     * one.
+     *
+     * <p>{@code MANUAL} was admitted here until this contract tightened. Both manual modes leave the
+     * acknowledgement to the listener, but the framework commits a recovered offset and honours
+     * {@code setCommitRecovered(true)} under {@code MANUAL_IMMEDIATE} alone: under {@code MANUAL} it
+     * reports the setting as ignored, so a dead-lettered record keeps its offset and is published
+     * again after the next restart or rebalance. Admitting the weaker mode therefore admitted a
+     * deployment in which this service's terminal dead-letter route is not terminal.
+     */
+    @Test
+    @DisplayName("the immediate manual acknowledgement mode is accepted and answered with")
+    void theImmediateManualModeIsAccepted() {
+        assertEquals(ContainerProperties.AckMode.MANUAL_IMMEDIATE,
+                KafkaConsumerConfig.requireImmediateManualAcknowledgement(
+                        ContainerProperties.AckMode.MANUAL_IMMEDIATE));
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = ContainerProperties.AckMode.class,
+            names = "MANUAL_IMMEDIATE", mode = EnumSource.Mode.EXCLUDE)
+    @DisplayName("every other mode stops start-up, MANUAL among them")
+    void everyOtherModeStopsStartUp(ContainerProperties.AckMode mode) {
+        IllegalStateException refused = assertThrows(IllegalStateException.class,
+                () -> KafkaConsumerConfig.requireImmediateManualAcknowledgement(mode));
+
+        assertTrue(refused.getMessage().contains("spring.kafka.listener.ack-mode"),
+                "the refusal names the property a deployment has to change: " + refused.getMessage());
+        assertTrue(refused.getMessage().contains(mode.name()),
+                "the refusal names the mode it found: " + refused.getMessage());
+    }
+
+    @Test
+    @DisplayName("an absent mode stops start-up, because the framework default acknowledges in batches")
+    void anAbsentModeStopsStartUp() {
+        assertThrows(IllegalStateException.class,
+                () -> KafkaConsumerConfig.requireImmediateManualAcknowledgement(null));
     }
 
     private static String text(Header header) {

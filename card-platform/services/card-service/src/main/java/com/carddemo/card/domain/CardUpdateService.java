@@ -31,9 +31,11 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.dao.PessimisticLockingFailureException;
-import org.springframework.orm.jpa.JpaSystemException;
+import org.springframework.dao.QueryTimeoutException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 /**
  * Updates one card and writes the event that update produces.
@@ -78,7 +80,7 @@ import org.springframework.transaction.annotation.Transactional;
  *
  * <h2>The transaction boundary</h2>
  *
- * <p>{@link #updateCard(CardUpdateRequest)} opens no transaction. It reads the stored card through
+ * <p>{@link #updateCard(String, CardUpdateRequest)} opens no transaction. It reads the stored card through
  * {@link CardQueryService}, which opens a read-only transaction of its own. It then calls
  * {@link #applyUpdate} through {@link #self}, so that call crosses the proxy and opens the writing
  * transaction. Two transactions leave a window between the read and the lock, which is the window
@@ -121,12 +123,19 @@ public class CardUpdateService {
 
     /** Records one line per outcome, carrying a masked card number and no cardholder value. */
     private static final Logger log = LoggerFactory.getLogger(CardUpdateService.class);
+    /** Causes rendered into one failure line before the chain is cut. */
+    private static final int FAILURE_TYPE_DEPTH = 3;
 
     /**
-     * The one property step one validates, from {@code 1220-EDIT-CARD.} at
+     * Shape step one requires of the card number, from {@code 1220-EDIT-CARD.} at
      * {@code app/cbl/COCRDUPC.cbl:L762-L800}.
+     *
+     * <p>{@code app/cbl/COCRDUPC.cbl:L784} tests the value for sixteen numeric digits and nothing
+     * more. The card number arrives from the request path and is therefore not a component of
+     * {@link CardUpdateRequest}, so step one reads this shape rather than a constraint on a bean.
      */
-    static final List<String> SEARCH_KEY_PROPERTIES = List.of("cardNumber");
+    static final java.util.regex.Pattern SEARCH_KEY_SHAPE =
+            java.util.regex.Pattern.compile("^[0-9]{" + PicClause.CARD_NUM_WIDTH + "}$");
 
     /**
      * The properties step four validates, in the order the source performs their edits.
@@ -345,16 +354,18 @@ public class CardUpdateService {
      * <p>Every one of the seven outcomes is timed, so a refused update is measured alongside an
      * applied one.
      *
-     * @param request the submitted update, as it arrived
+     * @param cardNumber the card the update names, which arrives in the request path
+     * @param request    the submitted update, as it arrived
      * @return the outcome, never {@code null}
-     * @throws NullPointerException if {@code request} is {@code null}
+     * @throws NullPointerException if {@code cardNumber} or {@code request} is {@code null}
      */
-    public CardUpdateResponse updateCard(CardUpdateRequest request) {
+    public CardUpdateResponse updateCard(String cardNumber, CardUpdateRequest request) {
+        Objects.requireNonNull(cardNumber, "cardNumber is required");
         Objects.requireNonNull(request, "request is required");
 
         long startedAt = System.nanoTime();
         try {
-            return decide(request);
+            return decide(cardNumber, request);
         } finally {
             updateLatency.record(System.nanoTime() - startedAt, TimeUnit.NANOSECONDS);
         }
@@ -367,24 +378,24 @@ public class CardUpdateService {
      * {@code app/cbl/COCRDUPC.cbl:L641-L714}. Steps five through seven run in
      * {@link #applyUpdate}.
      *
-     * @param request the submitted update
+     * @param cardNumber the card the update names
+     * @param request    the submitted update
      * @return the outcome
      */
-    private CardUpdateResponse decide(CardUpdateRequest request) {
-        String masked = PanMasker.maskCardNumber(request.cardNumber());
-
-        if (isAbsent(request.cardNumber(), CARD_NUMBER_WIDTH)) {
+    private CardUpdateResponse decide(String cardNumber, CardUpdateRequest request) {
+        if (isAbsent(cardNumber, CARD_NUMBER_WIDTH)) {
             log.info("A card update supplied no card number");
             return CardUpdateResponse.validationRejected(CardValidationMessages.PROMPT_FOR_CARD);
         }
-        String searchKeyFailure = firstFailingMessage(request, SEARCH_KEY_PROPERTIES);
-        if (searchKeyFailure != null) {
-            log.info("A card update supplied a card number the search-key edit refused, {}",
-                    masked);
-            return CardUpdateResponse.validationRejected(searchKeyFailure);
+
+        String masked = PanMasker.maskCardNumber(cardNumber);
+        if (!SEARCH_KEY_SHAPE.matcher(cardNumber.strip()).matches()) {
+            log.info("A card update supplied a card number the search-key edit refused");
+            return CardUpdateResponse.validationRejected(
+                    CardValidationMessages.CARD_FILTER_NOT_NUMERIC);
         }
 
-        Optional<CardEntity> stored = cardQueries.findByCardNumber(padKey(request.cardNumber()));
+        Optional<CardEntity> stored = cardQueries.findByCardNumber(padKey(cardNumber));
         if (stored.isEmpty()) {
             log.info("A card update named no stored card, {}", masked);
             return CardUpdateResponse.cardNotFound();
@@ -411,14 +422,18 @@ public class CardUpdateService {
         }
 
         try {
-            return self.getObject().applyUpdate(request, fetched, expiration);
+            return self.getObject().applyUpdate(cardNumber, request, fetched, expiration);
         } catch (LockNotTaken notTaken) {
             updateConflicts.increment();
-            log.warn("A card update could not take the row for update, {}", masked, notTaken);
+            log.warn("A card update could not take the row for update, {}. The failure was {}."
+                    + " Its message is not recorded, because a message quotes the row or the"
+                    + " statement.", masked, failureType(notTaken));
             return CardUpdateResponse.lockNotAcquired();
         } catch (UpdateFailedAfterLock failed) {
             infrastructureFailures.increment();
-            log.warn("A card update failed after its row was locked, {}", masked, failed);
+            log.warn("A card update failed after its row was locked, {}. The failure was {}."
+                    + " Its message is not recorded, because a message quotes the row or the"
+                    + " statement.", masked, failureType(failed));
             return CardUpdateResponse.updateFailedAfterLock();
         }
     }
@@ -432,8 +447,8 @@ public class CardUpdateService {
      * rewrite is the {@code REWRITE} at {@code app/cbl/COCRDUPC.cbl:L1477-L1483}.
      *
      * <p>{@code @Transactional} carries the default propagation and the default read-write mode, so
-     * this method opens the writing transaction when {@link #updateCard} calls it through
-     * {@link #self}. The card row and the event row commit inside it.
+     * this method opens the writing transaction when {@link #updateCard(String, CardUpdateRequest)}
+     * calls it through {@link #self}. The card row and the event row commit inside it.
      *
      * <p>{@code app/cbl/COCRDUPC.cbl:L1461-L1475} rewrites all six fields of the record. Here the
      * persistence layer issues the full-row statement and {@link CardEntity#applyUpdate} moves the
@@ -447,25 +462,30 @@ public class CardUpdateService {
      * <p>{@link EntityManager#flush()} closes the guarded block, so the statements of the row write
      * and the event write reach the database while this method can still see a refusal of either one.
      *
+     * @param cardNumber the card the update names, which arrives in the request path
      * @param request    the submitted update, whose components have passed every edit
      * @param fetched    the five values the caller last saw, read before this transaction opened
      * @param expiration the expiry date the three submitted parts name
      * @return the outcome: applied, refused for a concurrent change, or refused for a lock this
      *         method could not take
      * @throws NullPointerException  if any argument is {@code null}
-     * @throws LockNotTaken          when the database refuses the locking statement, which leaves
-     *                               this transaction unusable and rolls it back
+     * @throws LockNotTaken          when the locking statement ends in a lock the database will
+     *                               not grant, or in a wait that ran out. Either leaves this
+     *                               transaction unusable and rolls it back. A fault that is
+     *                               neither is left unhandled, so a broken dependency is not
+     *                               reported as a conflict
      * @throws UpdateFailedAfterLock when the rewrite or the event row fails once the row is held,
      *                               which rolls this transaction back
      */
     @Transactional
-    public CardUpdateResponse applyUpdate(CardUpdateRequest request, RefreshedCard fetched,
-            LocalDate expiration) {
+    public CardUpdateResponse applyUpdate(String cardNumber, CardUpdateRequest request,
+            RefreshedCard fetched, LocalDate expiration) {
+        Objects.requireNonNull(cardNumber, "cardNumber is required");
         Objects.requireNonNull(request, "request is required");
         Objects.requireNonNull(fetched, "fetched is required");
         Objects.requireNonNull(expiration, "expiration is required");
 
-        String masked = PanMasker.maskCardNumber(request.cardNumber());
+        String masked = PanMasker.maskCardNumber(cardNumber);
         // Bound the wait before the locked read runs. PostgreSQL waits forever by default, so a row
         // another writer held kept this request open for as long as that writer held it, and the
         // outcome below was unreachable through contention: the wait ended in a lock or it did not
@@ -474,14 +494,22 @@ public class CardUpdateService {
 
         Optional<CardEntity> locked;
         try {
-            locked = cards.findForUpdateByCardNumber(padKey(request.cardNumber()));
-        } catch (PessimisticLockingFailureException | JpaSystemException notTaken) {
-            // A row the database will not hand over for update is the same outcome to a caller as a
-            // row that is no longer there: the lock was not taken. PostgreSQL raises here on a lock
-            // it cannot grant, on a deadlock it breaks, and on a SELECT ... FOR NO KEY UPDATE it
-            // refuses outright, which is what a revoked UPDATE privilege produces. Reaching the
-            // database at all fails elsewhere and stays a dependency failure, so this catch is the
-            // two families above and no wider.
+            locked = cards.findForUpdateByCardNumber(padKey(cardNumber));
+        } catch (PessimisticLockingFailureException | QueryTimeoutException notTaken) {
+            // A row the database will not hand over inside the wait it was given is the same
+            // outcome to a caller as a row that is no longer there: the lock was not taken. Both
+            // families caught here say that and nothing else. A lock_timeout expiry arrives as
+            // CannotAcquireLockException and a broken deadlock as DeadlockLoserDataAccessException,
+            // both PessimisticLockingFailureException; a statement_timeout expiry arrives as
+            // QueryTimeoutException. repository/CardRepositoryIT contends two real transactions and
+            // asserts the first of those types, so the mapping is measured rather than assumed.
+            //
+            // Nothing wider belongs here. A fault that is not a lock or a timeout is a dependency
+            // failure, and JpaSystemException is where the persistence layer puts every Hibernate
+            // error it has no specific translation for: a revoked privilege, a driver fault, a
+            // mapping error. Reporting one of those as a lock tells the caller to retry a request
+            // that will never succeed, and counts a broken database as a user conflict. Such a
+            // fault leaves this method unhandled and api/CardApiExceptionHandler answers 500.
             throw new LockNotTaken(notTaken);
         }
         if (locked.isEmpty()) {
@@ -515,9 +543,46 @@ public class CardUpdateService {
             throw new UpdateFailedAfterLock(failure);
         }
 
-        updatesApplied.increment();
-        log.info("A card update committed and produced one event, {}", masked);
+        recordAppliedAfterCommit(masked);
         return CardUpdateResponse.updated();
+    }
+
+    /**
+     * Counts one applied update and says so, once the transaction this method runs in has
+     * committed.
+     *
+     * <p>The count and the sentence both claim a commit, and this method is called before one. The
+     * transactional proxy commits after {@link #applyUpdate} returns, so a counter incremented here
+     * would move for an update that a deferred constraint, a lost connection or a rollback-only
+     * marker then discarded, and the log line would report a commit that never happened.
+     * {@link EntityManager#flush()} above does not close that gap: it sends the statements and
+     * leaves the commit where it was.
+     *
+     * <p>{@link TransactionSynchronization#afterCommit()} runs only on the successful path, so the
+     * count and the sentence follow the commit rather than predicting it. A failed transaction
+     * reaches {@link TransactionSynchronization#afterCompletion(int)} instead, which is not
+     * registered here, so nothing is counted.
+     *
+     * <p>The guard covers the caller that reaches this class directly rather than through the
+     * proxy, which is how the unit tests exercise {@link #applyUpdate}. Registering a
+     * synchronization without an active one raises, so with no transaction in progress there is
+     * no commit to wait for and the count is taken in place.
+     *
+     * @param masked the card number as it may be logged, from {@link PanMasker}
+     */
+    private void recordAppliedAfterCommit(String masked) {
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            updatesApplied.increment();
+            log.info("A card update applied and produced one event, {}", masked);
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                updatesApplied.increment();
+                log.info("A card update committed and produced one event, {}", masked);
+            }
+        });
     }
 
     /**
@@ -631,7 +696,7 @@ public class CardUpdateService {
      * race reads what the row holds, so that resubmitting the body it is given is a body the
      * comparison accepts. {@code app/data/ASCII/carddata.txt} carries mixed-case names such as
      * {@code Aniya Von}, and answering {@code ANIYA VON} told a caller the row held a value it did
-     * not: {@code POST /cards/detail} returns the mixed-case name for the same row, so two routes of
+     * not: {@code GET /cards/{cardNumber}} returns the mixed-case name for the same row, so two routes of
      * one service disagreed about one column.
      *
      * <p>The fold belongs to the comparison alone. {@code 9300-CHECK-CHANGE-IN-REC.} at
@@ -849,5 +914,34 @@ public class CardUpdateService {
         UpdateFailedAfterLock(Throwable cause) {
             super("the card rewrite failed after its row was locked", cause);
         }
+    }
+
+    /**
+     * Renders one failure as its type and the types of its causes, and never as its message.
+     *
+     * <p>A type is code and safe to record. An exception message is not: a constraint violation
+     * quotes the value that violated it, a query timeout quotes the statement, and a connection
+     * failure quotes the data-source URL. Passing the throwable to the logger emits both, so this
+     * method emits the half that is code and drops the half that is data.
+     *
+     * <p>The chain is bounded because a wrapped failure can nest deeply and one log line is not the
+     * place to render all of it. Three levels reach the framework wrapper, the driver exception and
+     * the cause underneath it, which is what a reader needs to tell a timeout from a constraint from
+     * a broken connection.
+     *
+     * @param failure the failure that reached this handler
+     * @return the type chain as text, never null and never a message
+     */
+    private static String failureType(Throwable failure) {
+        StringBuilder types = new StringBuilder();
+        Throwable current = failure;
+        for (int depth = 0; current != null && depth < FAILURE_TYPE_DEPTH; depth++) {
+            if (depth > 0) {
+                types.append(" caused by ");
+            }
+            types.append(current.getClass().getName());
+            current = current.getCause() == current ? null : current.getCause();
+        }
+        return types.toString();
     }
 }

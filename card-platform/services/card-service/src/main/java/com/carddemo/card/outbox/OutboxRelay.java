@@ -16,6 +16,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -185,6 +189,15 @@ public class OutboxRelay {
     private final String instanceId;
 
     /**
+     * Wall time one sweep may spend waiting for broker acknowledgements, in nanoseconds.
+     *
+     * <p>Nanoseconds because the deadline is measured from {@link System#nanoTime()}, which is
+     * monotonic. A wall clock stepped backwards by an adjustment would extend a sweep that was
+     * already over its bound.
+     */
+    private final long maxDurationNanos;
+
+    /**
      * Takes the store, the publish port, the five meters and the configured values.
      *
      * <p>No property below carries a default here. An absent {@code carddemo} block stops start-up
@@ -233,6 +246,7 @@ public class OutboxRelay {
         this.sweepDelay = Duration.ofMillis(relay.fixedDelayMs());
         this.claimTimeout = relay.claimTimeout();
         this.instanceId = relay.instanceId();
+        this.maxDurationNanos = Duration.ofMillis(relay.maxDurationMs()).toNanos();
     }
 
     /**
@@ -259,9 +273,15 @@ public class OutboxRelay {
      */
     @Scheduled(fixedDelayString = "${carddemo.outbox.relay.fixed-delay-ms}")
     public void publishPendingEvents() {
+        long deadline = System.nanoTime() + maxDurationNanos;
         SweepResult result;
         try {
-            result = transactionTemplate.execute(status -> sweepOnce());
+            result = transactionTemplate.execute(status -> sweepOnce(deadline));
+        } catch (RelayDeadlineExceededException lapsed) {
+            log.warn("The outbox sweep reached its {} deadline before it finished, so it rolled "
+                            + "back and the rows it claimed are offered to the next sweep.",
+                    Duration.ofNanos(maxDurationNanos));
+            return;
         } catch (DeadLetterRefusedException refused) {
             deadLettersFailed.increment();
             log.error("The dead letter naming card event {} did not reach {} after a {}. The sweep "
@@ -302,9 +322,9 @@ public class OutboxRelay {
      * @throws RuntimeException           when the store cannot be read or a mark cannot be written
      * @throws DeadLetterRefusedException when the broker refused the diagnostic of an abandoned row
      */
-    private SweepResult sweepOnce() {
+    private SweepResult sweepOnce(long deadline) {
         Instant now = Instant.now();
-        Recovery recovery = recoverStrandedClaims(now);
+        Recovery recovery = recoverStrandedClaims(now, deadline);
         int failures = recovery.attempts();
         int abandoned = recovery.abandoned();
         List<Timer.Sample> publishAttempts = new ArrayList<>();
@@ -317,7 +337,7 @@ public class OutboxRelay {
 
             if (!CardUpdated.EVENT_TYPE.equals(row.getEventType())) {
                 if (recordUnpublishable(row, "no configured topic for the stored event type",
-                        "stored event type reaches no topic of this service", now)) {
+                        "stored event type reaches no topic of this service", now, deadline)) {
                     abandoned = abandoned + 1;
                 }
                 failures = failures + 1;
@@ -326,20 +346,20 @@ public class OutboxRelay {
 
             Timer.Sample publishAttempt = Timer.start();
             try {
-                publishAndMark(row);
+                publishAndMark(row, deadline);
                 publishAttempts.add(publishAttempt);
                 published = published + 1;
             } catch (IllegalArgumentException refused) {
                 publishAttempts.add(publishAttempt);
                 if (recordUnpublishable(row,
                         "publish port refused: " + refused.getClass().getSimpleName(),
-                        "payload refused for topic " + cardUpdatedTopic, now)) {
+                        "payload refused for topic " + cardUpdatedTopic, now, deadline)) {
                     abandoned = abandoned + 1;
                 }
                 failures = failures + 1;
             } catch (RuntimeException failure) {
                 publishAttempts.add(publishAttempt);
-                if (recordRefusedRow(row, failure, now)) {
+                if (recordRefusedRow(row, failure, now, deadline)) {
                     abandoned = abandoned + 1;
                 }
                 return new SweepResult(published, failures + 1, abandoned, publishAttempts);
@@ -360,7 +380,7 @@ public class OutboxRelay {
      * @return how many rows were recovered and how many of them were abandoned
      * @throws DeadLetterRefusedException when the broker refused the diagnostic of an abandoned row
      */
-    private Recovery recoverStrandedClaims(Instant now) {
+    private Recovery recoverStrandedClaims(Instant now, long deadline) {
         List<OutboxEventEntity> stranded =
                 outboxEvents.findByRelayStateAndClaimedAtBeforeOrderByClaimedAtAsc(
                         OutboxEventEntity.RelayState.CLAIMED, now.minus(claimTimeout),
@@ -375,7 +395,7 @@ public class OutboxRelay {
                     OutboxEventEntity.MAX_DELIVERY_ATTEMPTS);
             if (deadLetterIfAbandoned(row, DeadLetterMetadata.of(ABEND_CODE, CULPRIT,
                     "claim expired on every attempt", "outbox row stranded by a relay instance "
-                            + "that did not finish"))) {
+                            + "that did not finish"), deadline)) {
                 abandoned = abandoned + 1;
             }
         }
@@ -408,7 +428,8 @@ public class OutboxRelay {
      * @return {@code true} when this failure abandoned the row and its diagnostic was acknowledged
      * @throws DeadLetterRefusedException when the broker refused that diagnostic
      */
-    private boolean recordRefusedRow(OutboxEventEntity row, RuntimeException failure, Instant now) {
+    private boolean recordRefusedRow(OutboxEventEntity row, RuntimeException failure,
+            Instant now, long deadline) {
         String failureClass = failure.getClass().getSimpleName();
         row.recordFailure(failureClass, now, now.plus(backoffAfter(row.getAttemptCount())));
         outboxEvents.save(row);
@@ -419,7 +440,7 @@ public class OutboxRelay {
                 OutboxEventEntity.MAX_DELIVERY_ATTEMPTS);
 
         return deadLetterIfAbandoned(row, DeadLetterMetadata.fromFailure(ABEND_CODE, failure,
-                REFUSED_REASON, REFUSED_MESSAGE));
+                REFUSED_REASON, REFUSED_MESSAGE), deadline);
     }
 
     /**
@@ -492,8 +513,9 @@ public class OutboxRelay {
      * @throws IllegalArgumentException when the publish port refuses the key or the payload
      * @throws RuntimeException         when the send fails
      */
-    void publishAndMark(OutboxEventEntity row) {
-        publisher.publish(cardUpdatedTopic, row.getAggregateId(), row.getPayload());
+    void publishAndMark(OutboxEventEntity row, long deadline) {
+        await(publisher.publish(cardUpdatedTopic, row.getAggregateId(), row.getPayload())
+                .toCompletableFuture(), deadline);
         row.markPublished(Instant.now());
         outboxEvents.save(row);
     }
@@ -522,7 +544,7 @@ public class OutboxRelay {
      * @throws DeadLetterRefusedException when the broker refused that diagnostic
      */
     private boolean recordUnpublishable(OutboxEventEntity row, String reason, String message,
-            Instant now) {
+            Instant now, long deadline) {
 
         DeadLetterMetadata diagnostics = DeadLetterMetadata.of(ABEND_CODE, CULPRIT, reason, message);
         String diagnostic = describe(diagnostics);
@@ -532,7 +554,7 @@ public class OutboxRelay {
 
         log.error("Card event {} carries no publishable form: {}", row.getEventId(), diagnostic);
 
-        return deadLetterIfAbandoned(row, diagnostics);
+        return deadLetterIfAbandoned(row, diagnostics, deadline);
     }
 
     /**
@@ -565,7 +587,8 @@ public class OutboxRelay {
      *         {@code false} when the row is still in flight
      * @throws DeadLetterRefusedException when the broker refused the diagnostic
      */
-    private boolean deadLetterIfAbandoned(OutboxEventEntity row, DeadLetterMetadata diagnostics) {
+    private boolean deadLetterIfAbandoned(OutboxEventEntity row,
+            DeadLetterMetadata diagnostics, long deadline) {
         if (row.getRelayState() != OutboxEventEntity.RelayState.ABANDONED) {
             return false;
         }
@@ -576,8 +599,10 @@ public class OutboxRelay {
                 row.getAttemptCount());
 
         try {
-            publisher.publish(deadLetterTopic, row.getAggregateId(),
-                    objectMapper.writeValueAsString(envelope));
+            await(publisher.publish(deadLetterTopic, row.getAggregateId(),
+                    objectMapper.writeValueAsString(envelope)).toCompletableFuture(), deadline);
+        } catch (RelayDeadlineExceededException lapsed) {
+            throw lapsed;
         } catch (RuntimeException refused) {
             throw new DeadLetterRefusedException(row.getEventId(), refused);
         }
@@ -586,6 +611,69 @@ public class OutboxRelay {
                         + "{}. No consumer will see that update.",
                 row.getEventId(), row.getAttemptCount(), deadLetterTopic);
         return true;
+    }
+
+    /**
+     * Waits for one acknowledgement, no longer than the sweep has left.
+     *
+     * <p>The wait is what makes the publish observed. Without it the sweep would mark a row
+     * published on the strength of a send having been started, and a send the broker refused would
+     * leave a row marked for a message no consumer ever sees.
+     *
+     * <p>The bound is the sweep's, not the send's. {@code messaging/KafkaEventPublisher} already
+     * fails its stage at {@code carddemo.outbox.relay.publish-timeout}, but that bound applies to
+     * each send separately, so a sweep of {@code batch-size} rows could spend it once per row. This
+     * deadline is taken once for the whole sweep, from {@link System#nanoTime()}, and every send
+     * shares it.
+     *
+     * <p>A wait that runs out cancels what it gave up on. Cancelling does not recall a record the
+     * producer already placed, which is why the producer window in
+     * {@code src/main/resources/application.yml} expires first: by the time this deadline is
+     * reached the producer has stopped trying too, so the retry on a later sweep cannot race a
+     * send still in flight.
+     *
+     * @param publication the stage the acknowledgement completes
+     * @param deadline    the monotonic instant this sweep must not publish beyond
+     * @throws RelayDeadlineExceededException when the sweep has no time left, or the wait runs out
+     * @throws RuntimeException               when the send itself failed
+     */
+    private static void await(CompletableFuture<?> publication, long deadline) {
+        Objects.requireNonNull(publication, "the producer returned no acknowledgement");
+        long remaining = deadline - System.nanoTime();
+        if (remaining <= 0L) {
+            throw new RelayDeadlineExceededException();
+        }
+        try {
+            publication.get(remaining, TimeUnit.NANOSECONDS);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("the card outbox relay was interrupted", interrupted);
+        } catch (ExecutionException failed) {
+            Throwable cause = failed.getCause();
+            if (cause instanceof RuntimeException runtime) {
+                throw runtime;
+            }
+            throw new IllegalStateException("a card outbox publication failed", cause);
+        } catch (TimeoutException timedOut) {
+            publication.cancel(true);
+            throw new RelayDeadlineExceededException();
+        }
+    }
+
+    /**
+     * Reports that one sweep reached its configured deadline.
+     *
+     * <p>Carried out through the transaction boundary, so the sweep rolls back and every row it
+     * claimed becomes claimable again. No row is left marked published on a send that was
+     * abandoned.
+     */
+    private static final class RelayDeadlineExceededException extends RuntimeException {
+
+        private static final long serialVersionUID = 1L;
+
+        RelayDeadlineExceededException() {
+            super("the card outbox relay reached its configured sweep deadline");
+        }
     }
 
     /**

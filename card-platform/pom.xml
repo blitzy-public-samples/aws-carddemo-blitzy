@@ -43,12 +43,11 @@
   </modules>
 
   <properties>
-    <!-- Language level. Every module compiles at release 25. maven.compiler.release is
-         the property the compiler plugin reads, the enforcer rule below requires it to be
-         25 in every module, and every module descriptor repeats it. java.version
-         carries the framework's conventional name for the same level; no plugin resolves
-         it, because this aggregator imports the Spring Boot bill of materials rather than
-         inheriting the Spring Boot parent. -->
+    <!-- Language level. Every module compiles at release 25: maven.compiler.release is the
+         property the compiler plugin reads, the enforcer rule below requires 25 in every module,
+         and every module descriptor repeats it. java.version carries the framework's conventional
+         name for the same level and no plugin resolves it. Why release 25 and a bill-of-materials
+         import rather than the Spring Boot parent: card-platform/docs/decision-log.md. -->
     <java.version>25</java.version>
     <maven.compiler.release>25</maven.compiler.release>
     <maven.compiler.source>25</maven.compiler.source>
@@ -60,23 +59,33 @@
     <!-- Dependency versions. Every other version comes from the imported bill of materials. -->
     <spring-boot.version>4.1.0</spring-boot.version>
     <json-schema-validator.version>3.0.6</json-schema-validator.version>
-    <logstash-logback-encoder.version>9.0</logstash-logback-encoder.version>
 
     <!--
-      Security floors. Each version below is higher than the version
+      Version floors. Each version below is higher than the version
       spring-boot-dependencies:4.1.0 manages, and the dependencyManagement block
       re-declares every affected artifact. A property alone changes nothing here,
       because a bill of materials imported with scope import ignores the importing
       project's properties.
         tomcat.version    4.1.0 resolves 11.0.22
         postgresql        4.1.0 resolves 42.7.11
-        jackson-databind  4.1.0 resolves 3.1.4
+        jackson.version   4.1.0 resolves 3.1.4        (tools.jackson.core, Jackson 3)
+        jackson2.version  spring-kafka-test:4.1.0 resolves 2.21.4
+                                                      (com.fasterxml.jackson.core, Jackson 2)
         lz4-java          kafka-clients:4.2.1 resolves 1.10.1
-      Remove an entry once the bill of materials manages that version or higher.
+      Every floor except tomcat.version answers a published advisory, and the
+      dependencyManagement entry for each names the advisory it answers.
+      tomcat.version is precautionary rather than advisory-driven: no advisory
+      affecting the 11.0.22 the bill of materials manages was identified, and
+      11.0.24 is the release this build has been exercised against.
+      enforce-transitive-security-floors in the build section below checks every
+      floor against the resolved graph of each module, so a floor that stops
+      taking effect fails the build instead of going quiet. Remove an entry, and
+      its rule, once the bill of materials manages that version or higher.
     -->
     <tomcat.version>11.0.24</tomcat.version>
     <postgresql.version>42.7.13</postgresql.version>
     <jackson.version>3.1.5</jackson.version>
+    <jackson2.version>2.21.5</jackson2.version>
     <lz4-java.version>1.11.1</lz4-java.version>
 
     <!-- Plugin versions. -->
@@ -91,18 +100,53 @@
       code and supplies no default key, so a build that named none would fail
       every test that tokenizes a card number.
 
-      The two values below are the demo values card-platform/.env.example
-      declares as CARD_TOKEN_SECRET and CARD_TOKEN_VERSION, and the fifty
-      card_token literals in
-      services/card-service/src/main/resources/db/migration/V2__seed.sql and the
-      SCOPE_CARD authority in .env.example are derived under them. The three
-      places therefore have to carry one value, and
-      com.carddemo.equivalence.CardTokenKeyContractTest fails the build when they
-      diverge. Change the key for a real deployment through the environment, not
-      here, and re-derive the seeded tokens and granted authorities with it.
+      The key below is BUILD SCOPE. It is not the demo key and it is not a
+      deployment key: card-platform/.env.example and
+      deploy/k8s/31-secret.example.yaml both carry a placeholder, and a
+      deployment supplies a key generated for itself. This value travels one way
+      only, as a JVM system property to Surefire and Failsafe below, and
+      com.carddemo.equivalence.CardTokenKeyContractTest fails the build if it
+      reaches any deployment artifact. The authorization and card services also
+      refuse to start when this value arrives through CARD_TOKEN_SECRET, which is
+      the variable a deployment sets.
+
+      The fifty card_token literals in
+      services/card-service/src/main/resources/db/migration/V2__seed.sql are
+      derived under this key and this version, which is what lets a checked-in
+      literal be compared against the derivation. They are a bootstrap:
+      com.carddemo.card.domain.CardTokenReconciler re-derives every one of them
+      under the deployment's own key on first start-up.
     -->
-    <carddemo.card-token.secret>carddemo-demo-card-token-key-not-for-production</carddemo.card-token.secret>
+    <carddemo.card-token.secret>carddemo-build-scope-card-token-key-tests-only</carddemo.card-token.secret>
     <carddemo.card-token.version>1</carddemo.card-token.version>
+
+    <!--
+      The three identity password hashes every Spring context in this build
+      starts with. config/SecurityConfig refuses an identity password that is
+      not the output of an adaptive one-way encoder, so a test cannot supply a
+      {noop} value and no test needs to carry a hash of its own.
+
+      Each value below is bcrypt at cost 10 over the plaintext named beside it,
+      and the plaintext is what a test sends in an Authorization header:
+        admin001   not-a-real-admin-password
+        user0001   not-a-real-user-password
+        monitor01  not-a-real-monitoring-password
+      None is a credential. They authenticate nothing outside this build, where
+      the three identities exist only in a test context, and
+      card-platform/.env.example carries the command that generates real ones.
+    -->
+    <carddemo.test.admin-password-hash>{bcrypt}$2a$10$BV1JAZjiDakIHpoH2jCwDOrbbkXjlNjMECO8X4aADL69.SbRaCK1m</carddemo.test.admin-password-hash>
+    <carddemo.test.user-password-hash>{bcrypt}$2a$10$KB41bIzjQInPoMa5jeUQL.ZqftG4g53HCPcSPz0FjMh9.1QWL9M/q</carddemo.test.user-password-hash>
+    <carddemo.test.monitoring-password-hash>{bcrypt}$2a$10$TrlV8d05JTGXymVO1n65JuYdCnQl94BlIVXKovwSleI/UcothAZjC</carddemo.test.monitoring-password-hash>
+
+    <!--
+      States, for any context that starts under the published demo key, that it
+      means to. PanMasker.requireCardTokenSecretFitForUse refuses that key without
+      the statement. This build configures the build-scope key above instead, so
+      the statement is inert here and is carried only so a context refreshed with
+      a deployment .env still starts.
+    -->
+    <carddemo.card-token.allow-published-key>true</carddemo.card-token.allow-published-key>
   </properties>
 
   <dependencyManagement>
@@ -117,23 +161,23 @@
       </dependency>
 
       <!--
-        The two artifacts the bill of materials does not manage. Each carries a
-        version here and no module repeats one. json-schema-validator reads JSON
-        Schema Draft 2020-12 in event-contracts. logstash-logback-encoder is pinned
-        and available to any module that declares it. The six services take their
-        structured log output from the Spring Boot logging starter instead, through
-        the logging.structured.format.console property of application.yml, and none
-        of them ships a Logback configuration file.
+        The one artifact the bill of materials does not manage. It carries a version
+        here and no module repeats it. json-schema-validator reads JSON Schema
+        Draft 2020-12 in event-contracts.
+
+        net.logstash.logback:logstash-logback-encoder was pinned here and no module
+        ever declared it, so the pin governed nothing and named a library that never
+        reached a classpath. Structured JSON log output comes from the framework
+        instead: every service sets logging.structured.format.console to logstash in
+        its application.yml, which selects the Logstash format Spring Boot itself
+        implements, and no module ships a Logback configuration file. The pin is
+        withdrawn rather than kept as a claim about a dependency that is absent.
+        card-platform/docs/decision-log.md records the removal.
       -->
       <dependency>
         <groupId>com.networknt</groupId>
         <artifactId>json-schema-validator</artifactId>
         <version>${json-schema-validator.version}</version>
-      </dependency>
-      <dependency>
-        <groupId>net.logstash.logback</groupId>
-        <artifactId>logstash-logback-encoder</artifactId>
-        <version>${logstash-logback-encoder.version}</version>
       </dependency>
 
       <!--
@@ -141,6 +185,13 @@
         artifacts, and every service module declares that starter. The three
         entries below raise all three from the version the bill of materials
         manages to ${tomcat.version}.
+
+        This raise is precautionary and not the answer to an advisory. No advisory
+        affecting tomcat-embed 11.0.22, the version the bill of materials manages,
+        was identified. 11.0.24 is the release this build has been exercised
+        against, and holding all three artifacts at one version keeps the
+        container's own compatibility contract intact. Treat it as compatibility
+        hardening when reading the floors above.
       -->
       <dependency>
         <groupId>org.apache.tomcat.embed</groupId>
@@ -171,8 +222,12 @@
         fixed in 3.1.5. This platform serializes every event through
         libs/event-contracts, whose records use @JsonUnwrapped, one half of the
         affected combination, so the floor is raised rather than argued away.
-        Both entries move together: jackson-core and jackson-databind ship as one
-        release train, and a mixed pair is unsupported.
+        All three entries move together, because Jackson ships one release train
+        and a mixed set is unsupported. The third is the YAML backend, reached from
+        spring-boot-starter-web through the configuration reader rather than from
+        the event path, and it resolved 3.1.4 while the pair above resolved 3.1.5.
+        No advisory names it. It is raised so the train carries one version, which
+        is the same reason the Jackson 2 siblings below are raised.
       -->
       <dependency>
         <groupId>tools.jackson.core</groupId>
@@ -184,10 +239,87 @@
         <artifactId>jackson-core</artifactId>
         <version>${jackson.version}</version>
       </dependency>
+      <dependency>
+        <groupId>tools.jackson.dataformat</groupId>
+        <artifactId>jackson-dataformat-yaml</artifactId>
+        <version>${jackson.version}</version>
+      </dependency>
+
+      <!--
+        The OTHER Jackson. This build serializes through Jackson 3, whose
+        coordinates are tools.jackson.core above, and it also carries Jackson 2 on
+        the test classpath of every module that declares spring-kafka-test. The
+        resolved path is:
+
+          org.springframework.kafka:spring-kafka-test:4.1.0
+            -> org.apache.kafka:kafka-server:4.2.1
+              -> com.fasterxml.jackson.core:jackson-databind:2.21.4 (test)
+                -> com.fasterxml.jackson.core:jackson-core:2.21.4 (test)
+
+        Seven modules resolve it: the six services and equivalence-tests. Nothing
+        managed 2.x before these two entries, so the version arrived from
+        kafka-server and stayed there. 2.21.4 carries three advisories, all fixed
+        in 2.21.5: GHSA-5gvw-p9qm-jgwh / CVE-2026-59889,
+        GHSA-5jmj-h7xm-6q6v / CVE-2026-54515, and GHSA-mhm7-754m-9p8w.
+
+        Test scope is not a reason to leave it. An embedded broker deserializes
+        whatever a test hands it, the same jar is on the classpath of every
+        contract test in this build, and a floor that only covers the classpath a
+        deployment ships is a floor with a hole in it.
+
+        Every entry below moves together, because Jackson ships one release train
+        and a mixed set is unsupported. The five are the whole of Jackson 2 in the
+        resolved graph apart from one artifact:
+        com.fasterxml.jackson.core:jackson-annotations is deliberately absent. Its
+        2.x line stops at 2.21, there is no 2.21.5 to raise it to, and no advisory
+        above names it.
+
+        The three siblings after the core pair reach the graph the same way, and
+        raising only the pair left them at 2.21.4:
+
+          org.springframework.kafka:spring-kafka-test:4.1.0
+            -> org.apache.kafka:kafka-server:4.2.1
+              -> com.fasterxml.jackson.dataformat:jackson-dataformat-csv (test)
+              -> com.fasterxml.jackson.dataformat:jackson-dataformat-yaml (test)
+              -> com.fasterxml.jackson.datatype:jackson-datatype-jdk8 (test)
+
+        Each is a format or type adapter over the core pair rather than a
+        deserialization surface of its own, so no advisory above names one
+        directly. They are raised anyway for two reasons. A graph holding
+        2.21.4 alongside 2.21.5 makes the claim that the vulnerable version was
+        removed untrue, and a reader auditing the classpath has to re-derive which
+        artifact the advisories actually covered. Holding one train version instead
+        answers both.
+      -->
+      <dependency>
+        <groupId>com.fasterxml.jackson.core</groupId>
+        <artifactId>jackson-databind</artifactId>
+        <version>${jackson2.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.fasterxml.jackson.core</groupId>
+        <artifactId>jackson-core</artifactId>
+        <version>${jackson2.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.fasterxml.jackson.dataformat</groupId>
+        <artifactId>jackson-dataformat-csv</artifactId>
+        <version>${jackson2.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.fasterxml.jackson.dataformat</groupId>
+        <artifactId>jackson-dataformat-yaml</artifactId>
+        <version>${jackson2.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.fasterxml.jackson.datatype</groupId>
+        <artifactId>jackson-datatype-jdk8</artifactId>
+        <version>${jackson2.version}</version>
+      </dependency>
 
       <!--
         Native LZ4 codec, reached only through org.apache.kafka:kafka-clients.
-        GHSA-xx22-p4ch-683r, recorded as CVE-2026-7053, is an out-of-bounds read
+        GHSA-xx22-p4ch-683r, recorded as CVE-2026-59949, is an out-of-bounds read
         in the native XXHash routine of lz4-java 1.10.1, fixed in 1.11.1. Kafka
         calls XXHashFactory.fastestInstance() on every compressed frame it reads,
         so the library sits on a broker input path and the floor is raised even
@@ -254,9 +386,10 @@
           </configuration>
         </plugin>
 
-        <!-- Unit tests. The default patterns cover the Test suffix. The two
-             system properties supply the card-token key every module derives
-             tokens under; PanMasker supplies no default. -->
+        <!-- Unit tests. The default patterns cover the Test suffix. The system
+             properties supply the card-token key every module derives tokens
+             under, its acknowledgement, and the three identity hashes every
+             Spring context starts with; none of the five has a default. -->
         <plugin>
           <groupId>org.apache.maven.plugins</groupId>
           <artifactId>maven-surefire-plugin</artifactId>
@@ -265,12 +398,19 @@
             <systemPropertyVariables>
               <carddemo.card-token.secret>${carddemo.card-token.secret}</carddemo.card-token.secret>
               <carddemo.card-token.version>${carddemo.card-token.version}</carddemo.card-token.version>
+              <carddemo.card-token.allow-published-key>${carddemo.card-token.allow-published-key}</carddemo.card-token.allow-published-key>
+              <ADMIN_PASSWORD_HASH>${carddemo.test.admin-password-hash}</ADMIN_PASSWORD_HASH>
+              <USER_PASSWORD_HASH>${carddemo.test.user-password-hash}</USER_PASSWORD_HASH>
+              <MONITORING_PASSWORD_HASH>${carddemo.test.monitoring-password-hash}</MONITORING_PASSWORD_HASH>
             </systemPropertyVariables>
           </configuration>
         </plugin>
 
-        <!-- Integration and equivalence tests, bound to integration-test and
-             verify. Tests run against the classes directory. -->
+        <!-- Integration and equivalence tests. This block sits in pluginManagement, so it binds
+             nothing here: it supplies the version, the configuration and one execution to any
+             module that declares the plugin, and only there do integration-test and verify run.
+             equivalence-tests/pom.xml and each service pom.xml declare it. Tests run against the
+             classes directory. -->
         <plugin>
           <groupId>org.apache.maven.plugins</groupId>
           <artifactId>maven-failsafe-plugin</artifactId>
@@ -280,6 +420,10 @@
             <systemPropertyVariables>
               <carddemo.card-token.secret>${carddemo.card-token.secret}</carddemo.card-token.secret>
               <carddemo.card-token.version>${carddemo.card-token.version}</carddemo.card-token.version>
+              <carddemo.card-token.allow-published-key>${carddemo.card-token.allow-published-key}</carddemo.card-token.allow-published-key>
+              <ADMIN_PASSWORD_HASH>${carddemo.test.admin-password-hash}</ADMIN_PASSWORD_HASH>
+              <USER_PASSWORD_HASH>${carddemo.test.user-password-hash}</USER_PASSWORD_HASH>
+              <MONITORING_PASSWORD_HASH>${carddemo.test.monitoring-password-hash}</MONITORING_PASSWORD_HASH>
             </systemPropertyVariables>
           </configuration>
           <executions>
@@ -364,6 +508,56 @@
                     <exclude>com.github.ben-manes.caffeine:*</exclude>
                     <exclude>org.ehcache:*</exclude>
                     <exclude>net.sf.ehcache:*</exclude>
+                  </excludes>
+                </bannedDependencies>
+              </rules>
+            </configuration>
+          </execution>
+          <execution>
+            <!--
+              The version floors of the properties block, checked against the graph each
+              module really resolves rather than against what this file declares.
+
+              dependencyManagement and this rule answer different questions.
+              dependencyManagement sets the version a coordinate resolves to; this rule
+              asks whether anything still resolves below the floor. The two come apart in
+              the case this build already met: nothing managed
+              com.fasterxml.jackson.core, so spring-kafka-test brought
+              jackson-databind 2.21.4 onto seven test classpaths and no file said so. A
+              floor with a hole in it reads exactly like a floor without one, which is why
+              the check is a build failure and not a comment.
+
+              searchTransitive is true because none of these artifacts is declared by any
+              module: every one arrives through a starter, a driver declaration or a test
+              dependency. This execution stays bound in equivalence-tests, which unbinds
+              enforce-service-independence below and is one of the seven modules the
+              Jackson 2 path reaches.
+            -->
+            <id>enforce-transitive-security-floors</id>
+            <phase>validate</phase>
+            <goals>
+              <goal>enforce</goal>
+            </goals>
+            <configuration>
+              <fail>true</fail>
+              <rules>
+                <bannedDependencies>
+                  <searchTransitive>true</searchTransitive>
+                  <message>A dependency resolved below a version floor this build declares. Each range below ends at the floor in the properties block of card-platform/pom.xml, and the dependencyManagement entry beside it names the advisory the floor answers. Raise the floor, or add the missing dependencyManagement entry for the coordinate that now resolves under it.</message>
+                  <excludes>
+                    <exclude>com.fasterxml.jackson.core:jackson-databind:[,${jackson2.version})</exclude>
+                    <exclude>com.fasterxml.jackson.core:jackson-core:[,${jackson2.version})</exclude>
+                    <exclude>com.fasterxml.jackson.dataformat:jackson-dataformat-csv:[,${jackson2.version})</exclude>
+                    <exclude>com.fasterxml.jackson.dataformat:jackson-dataformat-yaml:[,${jackson2.version})</exclude>
+                    <exclude>com.fasterxml.jackson.datatype:jackson-datatype-jdk8:[,${jackson2.version})</exclude>
+                    <exclude>tools.jackson.core:jackson-databind:[,${jackson.version})</exclude>
+                    <exclude>tools.jackson.core:jackson-core:[,${jackson.version})</exclude>
+                    <exclude>tools.jackson.dataformat:jackson-dataformat-yaml:[,${jackson.version})</exclude>
+                    <exclude>org.postgresql:postgresql:[,${postgresql.version})</exclude>
+                    <exclude>at.yawk.lz4:lz4-java:[,${lz4-java.version})</exclude>
+                    <exclude>org.apache.tomcat.embed:tomcat-embed-core:[,${tomcat.version})</exclude>
+                    <exclude>org.apache.tomcat.embed:tomcat-embed-el:[,${tomcat.version})</exclude>
+                    <exclude>org.apache.tomcat.embed:tomcat-embed-websocket:[,${tomcat.version})</exclude>
                   </excludes>
                 </bannedDependencies>
               </rules>

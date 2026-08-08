@@ -2,21 +2,24 @@ package com.carddemo.authorization.domain.rules;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
-import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
+import com.carddemo.authorization.config.AuthorizationProperties;
+import com.carddemo.authorization.domain.CycleExposureReservation;
 import com.carddemo.authorization.domain.DeclineRule;
 import com.carddemo.authorization.entity.AccountCreditSnapshotEntity;
+import com.carddemo.authorization.repository.AccountCreditSnapshotRepository;
 import com.carddemo.cobol.CobolDecimal;
 import com.carddemo.cobol.PicClause;
 import com.carddemo.events.DeclineReason;
@@ -27,6 +30,7 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.Duration;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
@@ -272,12 +276,43 @@ final class CreditLimitRuleTest {
     /** The step between declared chain positions, which leaves room between any two of them. */
     private static final int CHAIN_POSITION_STRIDE = 10;
 
-    /** The rule under test, which takes no collaborator. */
+    /**
+     * The reservation every row below carries, which is none.
+     *
+     * <p>These tests measure the comparison at {@code app/cbl/CBTRN02C.cbl:L407} over the two
+     * accumulators, and a row carrying no approval this service has yet to have reported back is the
+     * case the source always presents: paragraph {@code 2700-UPDATE-ACCOUNT} at {@code :L545-L560} has
+     * already moved the accumulators themselves for every earlier record of the run. One nested class
+     * carries a reservation and measures what the rule then reads.
+     */
+    private static final BigDecimal NO_RESERVED_EXPOSURE = new BigDecimal("0.00");
+
+    /** The rule under test, holding the reserved exposure it reads. */
     private CreditLimitRule rule;
+
+    /** Store the reservation reads. No test below reserves, so no row is written through it. */
+    private AccountCreditSnapshotRepository snapshots;
+
+    /**
+     * Supplies the reservation lifetime the collaborator requires.
+     *
+     * <p>Every snapshot these tests build carries no reservation, so the lifetime governs nothing here.
+     * It is stated rather than deep-stubbed because the collaborator refuses a lifetime that is absent
+     * or not positive.
+     *
+     * @return configuration carrying a lifetime the collaborator accepts
+     */
+    private static AuthorizationProperties reservationPolicy() {
+        AuthorizationProperties properties = mock(AuthorizationProperties.class);
+        when(properties.decision()).thenReturn(
+                new AuthorizationProperties.Decision(3_000L, Duration.ofMinutes(15)));
+        return properties;
+    }
 
     @BeforeEach
     void prepareRule() {
-        rule = new CreditLimitRule();
+        snapshots = mock(AccountCreditSnapshotRepository.class);
+        rule = new CreditLimitRule(new CycleExposureReservation(snapshots, reservationPolicy()));
     }
 
     /** The comparison at {@code app/cbl/CBTRN02C.cbl:L407}. */
@@ -430,11 +465,20 @@ final class CreditLimitRuleTest {
         }
 
         /**
-         * Counts the reads {@code app/cbl/CBTRN02C.cbl:L403-L405} performs against the account
-         * record, and refuses a fourth.
+         * Counts what the rule reads off the account row, and refuses anything more.
+         *
+         * <p>{@code app/cbl/CBTRN02C.cbl:L403-L405} reads three fields: the two accumulators and the
+         * credit limit. This rule reads those three and the exposure reserved against each accumulator,
+         * because the accumulators it reads are a replica the account service refreshes four
+         * asynchronous hops after a decision, while the accumulators the source reads were rewritten by
+         * paragraph {@code 2700-UPDATE-ACCOUNT} at {@code :L545-L560} in the same loop. The two reserved
+         * figures are what closes that gap and nothing else may join them.
+         *
+         * <p>{@code ACCT-CURR-BAL} is the value being refused here. The formula omits it, and this
+         * assertion is what stops a future edit from folding the current balance into the comparison.
          */
         @Test
-        @DisplayName("is one of three values the rule reads off the row and no fourth")
+        @DisplayName("is one of five values the rule reads off the row and no sixth")
         void leavesTheRowWithThreeReads() {
             AccountCreditSnapshotEntity row =
                     snapshotOf(ACCOUNT_7_CREDIT_LIMIT, ZERO_ACCUMULATOR, ZERO_ACCUMULATOR);
@@ -444,6 +488,8 @@ final class CreditLimitRuleTest {
             verify(row).getCurrentCycleCredit();
             verify(row).getCurrentCycleDebit();
             verify(row).getCreditLimit();
+            verify(row).effectivePendingCycleCredit(any());
+            verify(row).effectivePendingCycleDebit(any());
             verifyNoMoreInteractions(row);
         }
     }
@@ -785,9 +831,21 @@ final class CreditLimitRuleTest {
                             + " boundary sits here");
         }
 
+        /**
+         * Asserts the rule takes exactly one collaborator and opens no store of its own.
+         *
+         * <p>The collaborator is the reserved exposure, and it is the only one the rule may hold.
+         * {@code app/cbl/CBTRN02C.cbl:L403-L407} opens no dataset: it reads two accumulators that
+         * paragraph {@code 2700-UPDATE-ACCOUNT} at {@code :L545-L560} has already moved for every
+         * earlier record of the run. This service does not own those accumulators, so the figures the
+         * source reads are the replica figures plus whatever this service has approved and not yet had
+         * reported back. {@link CycleExposureReservation} supplies that second part, and nothing else
+         * reaches this rule: no repository, no port and no clock.
+         */
         @Test
-        @DisplayName("takes no collaborator through one unannotated constructor")
-        void takesNoCollaborator() {
+        @DisplayName("takes the reserved exposure and nothing else, through one unannotated"
+                + " constructor")
+        void takesTheReservedExposureAndNothingElse() {
             Constructor<?>[] constructors = CreditLimitRule.class.getConstructors();
             Set<String> fields = new TreeSet<>();
             for (Field field : CreditLimitRule.class.getDeclaredFields()) {
@@ -799,15 +857,20 @@ final class CreditLimitRuleTest {
             assertAll(
                     () -> assertEquals(1, constructors.length,
                             "the rule must offer one way to build it"),
-                    () -> assertArrayEquals(new Class<?>[] {}, constructors[0].getParameterTypes(),
-                            "app/cbl/CBTRN02C.cbl:L403-L407 opens no dataset of its own, so no"
-                                    + " repository, collaborator or port reaches this rule"),
+                    () -> assertArrayEquals(new Class<?>[] {CycleExposureReservation.class},
+                            constructors[0].getParameterTypes(),
+                            "app/cbl/CBTRN02C.cbl:L403-L407 opens no dataset of its own, so the"
+                                    + " reserved exposure is the one collaborator that may reach this"
+                                    + " rule and no repository or port may join it"),
                     () -> assertEquals(0, constructors[0].getAnnotations().length,
                             "a sole constructor needs no injection annotation"),
-                    () -> assertEquals(Set.of(), fields,
-                            "a rule that reads its three values off the context holds no state"),
-                    () -> assertNotNull(assertDoesNotThrow(CreditLimitRule::new),
-                            "building the rule takes no argument"));
+                    () -> assertEquals(Set.of("reservation"), fields,
+                            "the rule holds its one collaborator and no decision state"),
+                    () -> assertThrows(NullPointerException.class,
+                            () -> new CreditLimitRule(null),
+                            "a rule built without the reserved exposure would read the replica"
+                                    + " figures alone and approve against exposure already"
+                                    + " committed"));
         }
 
         @Test
@@ -1007,6 +1070,8 @@ final class CreditLimitRuleTest {
         when(row.getCreditLimit()).thenReturn(creditLimit);
         when(row.getCurrentCycleCredit()).thenReturn(cycleCredit);
         when(row.getCurrentCycleDebit()).thenReturn(cycleDebit);
+        when(row.effectivePendingCycleCredit(any())).thenReturn(NO_RESERVED_EXPOSURE);
+        when(row.effectivePendingCycleDebit(any())).thenReturn(NO_RESERVED_EXPOSURE);
         return row;
     }
 

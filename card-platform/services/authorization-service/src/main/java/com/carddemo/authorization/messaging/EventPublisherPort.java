@@ -1,6 +1,7 @@
 package com.carddemo.authorization.messaging;
 
 import com.carddemo.events.EventEnvelope;
+import java.util.concurrent.CompletionStage;
 
 /**
  * Publishes one serialized event payload to one topic on the event bus.
@@ -31,15 +32,22 @@ public interface EventPublisherPort {
     String AGGREGATE_ID_PATTERN = MESSAGE_KEY_PATTERN;
 
     /**
-     * Publishes one payload to one topic, keyed on the aggregate the payload belongs to.
+     * Publishes one payload to one topic, keyed on the aggregate the payload belongs to, and answers
+     * with the stage the broker acknowledgement completes.
      *
      * <p>A broker keeps message order inside a single partition, and the message key selects the
      * partition. The implementation derives that key from {@code aggregateId} and takes no
      * separate key argument, so the key and the payload cannot name different aggregates.
      *
      * <p>An implementation checks {@code aggregateId} against {@link #MESSAGE_KEY_PATTERN} and
-     * rejects any other value. An implementation reports a failed publish with an unchecked
-     * exception.
+     * rejects any other value. Every check an implementation performs runs before any send starts and
+     * reports its refusal by throwing, so a caller can tell a payload it must not retry from a broker
+     * that did not answer.
+     *
+     * <p>A send that started reports its outcome through the returned stage and never by throwing.
+     * The caller owns the wait, because the caller is the one holding the database locks and the
+     * scheduled thread while the broker thinks. An implementation still bounds the stage itself, so a
+     * broker that never answers cannot leave one caller waiting for ever.
      *
      * <p>Every implementation binds the payload to {@code topic} before it sends. It reads
      * {@code eventType} from the payload envelope, looks that type up in
@@ -60,9 +68,11 @@ public interface EventPublisherPort {
      *                    of an unresolved-card decline
      * @param payload     one event, serialized as JavaScript Object Notation (JSON) before the
      *                    call
+     * @return the stage the broker acknowledgement completes, which fails when the broker refuses the
+     *         send or does not answer inside the bound the implementation applies
      * @throws IllegalArgumentException when an argument is absent, when {@code aggregateId} misses
      *         {@link #MESSAGE_KEY_PATTERN}, when the payload declares an event type that does not
      *         belong on {@code topic}, or when the payload fails the document that type names
      */
-    void publish(String topic, String aggregateId, String payload);
+    CompletionStage<Void> publish(String topic, String aggregateId, String payload);
 }

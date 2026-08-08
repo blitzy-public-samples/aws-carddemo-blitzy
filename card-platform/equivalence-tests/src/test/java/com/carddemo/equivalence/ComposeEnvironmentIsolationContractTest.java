@@ -69,7 +69,7 @@ class ComposeEnvironmentIsolationContractTest {
             Pattern.compile("(?m)^ {6}([A-Z][A-Z0-9_]*):");
 
     private static final Pattern QUOTED_BCRYPT = Pattern.compile(
-            "(?m)^(ADMIN|USER|MONITORING)_PASSWORD_HASH="
+            "(?m)^(ADMIN|ACQUIRER|USER|MONITORING)_PASSWORD_HASH="
                     + "'(\\{bcrypt}\\$2a\\$10\\$REPLACE-[^']+)'$");
 
     @Test
@@ -121,7 +121,7 @@ class ComposeEnvironmentIsolationContractTest {
             assertThat(hashes.group(2)).contains("REPLACE-THIS-PLACEHOLDER");
         }
 
-        assertThat(identities).containsExactly("ADMIN", "USER", "MONITORING");
+        assertThat(identities).containsExactly("ADMIN", "ACQUIRER", "USER", "MONITORING");
     }
 
     @Test

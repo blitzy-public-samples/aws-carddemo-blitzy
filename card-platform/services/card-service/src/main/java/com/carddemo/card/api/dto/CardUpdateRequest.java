@@ -7,19 +7,19 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Pattern;
 
 /**
- * Inbound payload for {@code PUT /cards}.
+ * Inbound payload for {@code PUT /cards/{cardNumber}}.
  *
- * <p>Six components carry the update. They appear in the order the source payload group declares
+ * <p>Five components carry the update. They appear in the order the source payload group declares
  * them. That group is {@code CCUP-NEW-CARDDATA}, opened at {@code app/cbl/COCRDUPC.cbl:L307}, and
- * the {@code CCUP-NEW-EXPIRAION-DATE} subgroup opened at L309 holds the three expiry parts.
+ * the {@code CCUP-NEW-EXPIRAION-DATE} subgroup opened at L309 holds the three expiry parts. The
+ * group holds exactly these five items, at L308, L310, L311, L312 and L313.
  *
- * <p>The card number arrives here, in the body, and not as a path variable. A path reaches an
- * access log, a reverse proxy log, a distributed trace, a browser history and the instance member
- * of a default error document. A full Primary Account Number (PAN) belongs in none of them, and a
- * request body reaches none of them by default. The route is therefore {@code PUT /cards} with the
- * key inside the payload. That also matches the source, where
- * {@code CCUP-NEW-CARDID PIC X(16)} at {@code app/cbl/COCRDUPC.cbl:L305} is part of the same
- * payload group as the five fields below.
+ * <p>The card number is not a component of this record. It names the row the update rewrites, and it
+ * arrives as the path variable of transaction {@code CCUP} at
+ * {@code app/csd/CARDDEMO.CSD:L367-L369}. {@code api/CardController} carries the width and character
+ * class the source tests, and {@code domain/CardUpdateService} runs step one of the edit chain over
+ * that path value. {@code card-platform/docs/suggested-next-tasks.md} carries the deployment
+ * guidance for a path that carries a Primary Account Number (PAN).
  *
  * <p>The three expiry parts stay separate. The card update program joins year, month and day with
  * hyphens into one ten-character date at {@code app/cbl/COCRDUPC.cbl:L1467-L1474}, and the caller
@@ -27,16 +27,13 @@ import jakarta.validation.constraints.Pattern;
  *
  * <p>This record declares the shape and the constraints, and the caller holds the edit order and
  * surfaces the first failing message. Every constraint below names a constant from
- * {@link CardValidationMessages}, so a new edit costs one annotation here and one constant there.
+ * {@link CardValidationMessages}. Rationale for the body-carried identity and for the caller
+ * holding the edit order: {@code card-platform/docs/decision-log.md}.
  *
  * <p>One field of the source payload stays absent. The source declares a card verification value
  * at {@code app/cbl/COCRDUPC.cbl:L306} and this record accepts no component for it. The card
  * update map {@code app/bms/COCRDUP.bms} declares no field for it either, and
  * {@code entity/CardEntity#applyUpdate} changes it never.
- *
- * <p>The card-number component carries the width and character class the source tests and nothing
- * more. {@code app/cbl/COCRDUPC.cbl:L784} tests a card number for sixteen digits only, so no
- * checksum rule appears here: adding one would refuse a card the source accepts.
  *
  * <p>The expiry day carries the width of its source field and no calendar rule. The source edits
  * the name, the active status, the expiry month and the expiry year, and it edits no day, so this
@@ -44,16 +41,6 @@ import jakarta.validation.constraints.Pattern;
  * {@code CCUP-NEW-EXPDAY PIC X(2)} holds, because a 3270 field two characters wide cannot deliver a
  * third character and a Representational State Transfer request can.
  *
- * @param cardNumber the sixteen-digit card number this update names, from
- *        {@code CCUP-NEW-CARDID PIC X(16)} at {@code app/cbl/COCRDUPC.cbl:L305} and held as
- *        {@code CARD-NUM PIC X(16)} at {@code app/cpy/CVACT02Y.cpy:L5}. A missing value takes
- *        {@link CardValidationMessages#PROMPT_FOR_CARD}, the text at
- *        {@code app/cbl/COCRDUPC.cbl:L180} set at L774. A value that is not sixteen digits takes
- *        {@link CardValidationMessages#CARD_FILTER_NOT_NUMERIC}, the text at L789 set at L790
- *        under the test at L784. The value reaches no response body and no log line. A response
- *        carries the masked form, which {@link CardDetailResponse} and {@link CardSummary} enforce
- *        in their canonical constructors, and {@link ApiErrorResponse} refuses a route that holds
- *        a resolved identifier.
  * @param embossedName cardholder name embossed on the card, from
  *        {@code CCUP-NEW-CRDNAME PIC X(50)} at {@code app/cbl/COCRDUPC.cbl:L308} and held as
  *        {@code CARD-EMBOSSED-NAME PIC X(50)} at {@code app/cpy/CVACT02Y.cpy:L8}, which fixes the
@@ -93,15 +80,8 @@ import jakarta.validation.constraints.Pattern;
  *        {@code FLG-YES-NO-CHECK PIC X(1)} on L861 and tests that condition name on L863, and it
  *        folds no case. A missing value and any other character both take
  *        {@link CardValidationMessages#CARD_STATUS_MUST_BE_YES_NO}, set at L856 and at L869.
- *
- * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 public record CardUpdateRequest(
-
-        @NotBlank(message = CardValidationMessages.PROMPT_FOR_CARD)
-        @Pattern(regexp = "[0-9]{16}",
-                message = CardValidationMessages.CARD_FILTER_NOT_NUMERIC)
-        String cardNumber,
 
         @NotBlank(message = CardValidationMessages.PROMPT_FOR_NAME)
         @Pattern(regexp = "[A-Za-z ]{0,50}",
@@ -135,12 +115,12 @@ public record CardUpdateRequest(
     /**
      * Returns a rendering that names which components arrived and withholds every value.
      *
-     * <p>The rendering a record carries by default prints all six components. The first is the
-     * full sixteen-digit Primary Account Number, and beside it sit the cardholder's embossed name
-     * and the expiry date in three parts. A number, a name and an expiry date together are what a
-     * card-not-present authorization asks for, so the default rendering of this one record is
-     * enough to use the card. A log line, an assertion failure, a debugger view or the message of
-     * an exception that interpolated the request would persist all of it.
+     * <p>The rendering a record carries by default prints all five components. Among them sit the
+     * cardholder's embossed name and the expiry date in three parts. A name and an expiry date are
+     * two of the three values a card-not-present authorization asks for, so the default rendering of
+     * this one record carries most of what it takes to use the card. A log line, an assertion
+     * failure, a debugger view or the message of an exception that interpolated the request would
+     * persist all of it.
      *
      * <p>Nothing is masked here; every value is withheld. Masking needs a value of the declared
      * width, and this record carries values that have not yet passed their constraints. What is
@@ -152,13 +132,13 @@ public record CardUpdateRequest(
     @Override
     public String toString() {
         int supplied = 0;
-        for (String value : new String[] {cardNumber, embossedName, expiryYear, expiryMonth,
-                expiryDay, activeStatus}) {
+        for (String value : new String[] {embossedName, expiryYear, expiryMonth, expiryDay,
+                activeStatus}) {
             if (value != null && !value.isBlank()) {
                 supplied++;
             }
         }
-        return "CardUpdateRequest[" + supplied + " of 6 components supplied, every value "
+        return "CardUpdateRequest[" + supplied + " of 5 components supplied, every value "
                 + EventEnvelope.WITHHELD + "]";
     }
 }

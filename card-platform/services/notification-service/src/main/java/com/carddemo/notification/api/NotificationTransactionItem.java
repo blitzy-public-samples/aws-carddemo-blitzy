@@ -56,8 +56,7 @@ import java.util.Objects;
  * @param processingTimestamp when the platform recorded the transaction. From
  *        {@code TRNX-PROC-TS PIC X(26)} at {@code app/cpy/COSTM01.CPY:L35}
  */
-public record NotificationTransactionItem(String transactionId, String maskedCardNumber,
-        String typeCode,
+public record NotificationTransactionItem(String transactionId, String typeCode,
         String categoryCode, String source, String description, String amount, String merchantId,
         String merchantName, String merchantCity, String merchantZip, String originTimestamp,
         String processingTimestamp) {
@@ -75,7 +74,6 @@ public record NotificationTransactionItem(String transactionId, String maskedCar
      */
     public NotificationTransactionItem {
         Objects.requireNonNull(transactionId, "transactionId is required");
-        Objects.requireNonNull(maskedCardNumber, "maskedCardNumber is required");
         Objects.requireNonNull(typeCode, "typeCode is required");
         Objects.requireNonNull(categoryCode, "categoryCode is required");
         Objects.requireNonNull(source, "source is required");
@@ -92,9 +90,8 @@ public record NotificationTransactionItem(String transactionId, String maskedCar
     /**
      * Maps one {@link StatementTransactionEntity} row onto one item of the alert history.
      *
-     * <p>The transaction identifier comes from the embedded key. The masked card number comes from
-     * the display column of the row, already masked when the row was written, so this method masks
-     * nothing.</p>
+     * <p>The transaction identifier comes from the embedded key. No card number is read from the
+     * row: the card is named once, by {@link NotificationHistoryResponse#cardNumber()}.</p>
      *
      * @param row the read-model row
      * @return the item built from {@code row}
@@ -106,7 +103,6 @@ public record NotificationTransactionItem(String transactionId, String maskedCar
         Objects.requireNonNull(row, "row is required");
         return new NotificationTransactionItem(
                 Objects.requireNonNull(row.getId(), "row key is required").getTransactionId(),
-                row.getMaskedCardNumber(),
                 decoded(row.getTypeCode(), "typeCode"),
                 digits(row.getCategoryCode(), PicClause.TRAN_CAT_CD_WIDTH, "categoryCode"),
                 decoded(row.getSource(), "source"),
@@ -159,11 +155,12 @@ public record NotificationTransactionItem(String transactionId, String maskedCar
     /**
      * Renders the transaction identifier and the type and category codes, and no other component.
      *
-     * <p>Six components describe what a cardholder bought, where and for how much: the description,
-     * the amount, the merchant identifier, name and city, and the merchant mail code. The two
-     * timestamps place the purchase in time. The rendering a record generates carries all twelve,
-     * and reaches any log line or exception message naming this record, so nine are withheld here
-     * and a caller reads them through their accessors.</p>
+     * <p>The record declares thirteen components. Six describe what a cardholder bought, where and
+     * for how much: the description, the amount, the merchant identifier, name and city, and the
+     * merchant mail code. The two timestamps place the purchase in time, and
+     * {@code maskedCardNumber} names the card. A generated record rendering would carry all
+     * thirteen and reach any log line or exception message naming this record, so ten are withheld
+     * here and a caller reads them through their accessors.</p>
      *
      * @return the transaction identifier, the type code and the category code
      */
@@ -172,7 +169,7 @@ public record NotificationTransactionItem(String transactionId, String maskedCar
         return "NotificationTransactionItem[transactionId=" + transactionId
                 + ", typeCode=" + typeCode
                 + ", categoryCode=" + categoryCode
-                + ", 9 transaction fields withheld]";
+                + ", 10 transaction fields withheld]";
     }
 
     /**

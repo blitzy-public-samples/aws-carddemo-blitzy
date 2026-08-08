@@ -1,11 +1,21 @@
 package com.carddemo.authorization.config;
 
+import com.carddemo.authorization.domain.AuthenticatedActor;
+import com.carddemo.authorization.domain.CallerNotEntitledException;
+import com.carddemo.authorization.domain.RequestCaller;
+import com.carddemo.authorization.entity.AuthorizationDecisionEntity;
+import com.carddemo.cobol.PanMasker;
 import jakarta.servlet.DispatcherType;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.security.Principal;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 import org.springframework.beans.factory.config.BeanFactoryPostProcessor;
 import org.springframework.beans.factory.config.ConfigurableListableBeanFactory;
@@ -33,8 +43,10 @@ import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.userdetails.User;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.core.userdetails.UserDetailsService;
-import org.springframework.security.crypto.factory.PasswordEncoderFactories;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+import org.springframework.security.crypto.password.DelegatingPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.crypto.password.Pbkdf2PasswordEncoder;
 import org.springframework.security.provisioning.InMemoryUserDetailsManager;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.access.AccessDeniedHandler;
@@ -58,13 +70,22 @@ import org.springframework.security.web.access.intercept.RequestAuthorizationCon
  * {@code ROLE_MONITORING} is additive: it carries no API access and exists only so a metrics
  * scrape can authenticate without holding a business role.
  *
+ * <p>{@code ROLE_ACQUIRER} is additive too, and it is the only role that reaches
+ * {@code POST /authorizations}. The route accepts a card in the request body and authorizes
+ * against whichever account the cross-reference resolves it to, so it grants its caller reach
+ * over every card the platform holds. A cardholder identity must therefore not hold it: an
+ * ordinary {@code ROLE_USER} carries ownership scopes over its own account, customer and card,
+ * and this route consults none of them. The acquirer is a machine identity a point-of-sale
+ * network presents, it owns no row, and it is configured separately from every cardholder.
+ *
  * <p>DEVIATION, deliberate: the source comparison at {@code app/cbl/COSGN00C.cbl:L223} is a
  * plaintext comparison of two eight-character fields. This class does not reproduce it. Each
- * configured identity carries an already-encoded password, {@link PasswordEncoderFactories}
- * supplies the delegating encoder that reads its {@code {bcrypt}} prefix, and no plaintext password
- * is stored, compared or logged anywhere on this platform.
+ * configured identity carries an already-encoded password, {@link #approvedPasswordEncoder()}
+ * verifies it against an allowlist of adaptive encodings, and no plaintext password is stored,
+ * compared or logged anywhere on this platform. {@code {noop}} names the plaintext encoding, and it
+ * is refused at start-up, so the source comparison cannot return through configuration either.
  *
- * <h2>The four properties this class holds</h2>
+ * <h2>The five properties this class holds</h2>
  *
  * <ol>
  * <li><b>Default deny.</b> The last rule of the API chain is {@code denyAll()}, not
@@ -79,17 +100,24 @@ import org.springframework.security.web.access.intercept.RequestAuthorizationCon
  * the request path against the authorities the identity carries, so a caller reaches its own rows
  * and receives 403 for anyone else's. The check runs in the filter chain, ahead of every handler,
  * so no handler can forget it.</li>
- * <li><b>No session and no cross-site request forgery token.</b> The session policy is
- * {@code STATELESS} and the surface is a JavaScript Object Notation (JSON) API reached by a
- * program, so no cookie carries authentication and the forgery a token defends against cannot
- * occur. Disabling the token while keeping a cookie session would be the mistake; both are absent
- * here.</li>
+ * <li><b>No session, no forgery token, and a compensating cross-site check.</b> The session policy
+ * is {@code STATELESS}, so no cookie carries authentication and a forgery token has no session to
+ * live in. The token protection is therefore off, and that on its own is not a defence: a browser
+ * attaches a cached HTTP Basic credential to a request a foreign page caused, without asking the
+ * person reading that page. {@link CrossSiteRequestFilter} is the control that closes it. Every
+ * state-changing request has to declare a first-party {@code Sec-Fetch-Site}, name this origin if
+ * it names an origin at all, and carry a non-simple request header no HTML form can set.</li>
  * <li><b>No caching of a response.</b> Spring Security writes
  * {@code Cache-Control: no-cache, no-store, max-age=0, must-revalidate} together with
  * {@code Pragma: no-cache} and {@code Expires: 0} on every response, and
  * {@link #apiSecurity(HttpSecurity)} names that writer rather than relying on the default, so a
  * reader can see it. Financial and personal data therefore reach no shared cache and no browser
  * store.</li>
+ * <li><b>A bounded request rate.</b> {@link RequestRateCeilingFilter} runs ahead of this chain and
+ * bounds requests from one source, requests presenting one identity, state-changing requests from
+ * one source, failed authentications from one source, and requests in flight. It runs ahead rather
+ * than behind because the expensive part of a refused credential is the bcrypt verification, so a
+ * caller nobody bounded would otherwise spend this service's processor on guesses.</li>
  * </ol>
  *
  * <h2>The management port</h2>
@@ -132,6 +160,14 @@ public class SecurityConfig {
     /** Additive role a metrics scrape carries. It reaches no business route. */
     static final String ROLE_MONITORING = "MONITORING";
 
+    /**
+     * Additive role the acquiring workload carries, and the only role that authorizes a card.
+     *
+     * <p>It reaches {@code POST /authorizations} and nothing else. No cardholder identity carries
+     * it, because the route reaches every card the platform holds rather than the caller's own.
+     */
+    static final String ROLE_ACQUIRER = "ACQUIRER";
+
     /** Prefix Spring Security expects on a role authority. */
     static final String ROLE_PREFIX = "ROLE_";
 
@@ -151,18 +187,86 @@ public class SecurityConfig {
     private static final String REALM = "carddemo";
 
     /**
+     * Encoding identifier of the adaptive hash this platform encodes with, and the identifier a
+     * configured password carries in braces ahead of the hash itself.
+     */
+    static final String BCRYPT_ENCODING_ID = "bcrypt";
+
+    /**
+     * Encoding identifier of the second accepted adaptive hash.
+     *
+     * <p>The suffix is part of the identifier. {@code pbkdf2} alone names the weaker parameter set
+     * Spring Security shipped before 5.8, and a password carrying that identifier is refused here.
+     */
+    static final String PBKDF2_ENCODING_ID = "pbkdf2@SpringSecurity_v5_8";
+
+    /**
+     * Lowest bcrypt cost a configured password may carry, and the cost this class encodes with.
+     *
+     * <p>Cost is logarithmic, so ten means 2^10 key-derivation rounds. Ten is also what the
+     * generation recipes in {@code card-platform/.env.example} and
+     * {@code .github/workflows/ci.yml} produce, so a hash either recipe generates is accepted and a
+     * hash carrying a smaller cost is not.
+     */
+    static final int BCRYPT_MINIMUM_COST = 10;
+
+    /**
+     * Every encoding a configured password may declare, in the order the encoder tries them.
+     *
+     * <p>This is an allowlist rather than a preference, and the encodings it leaves out are the
+     * point of it. Spring Security's stock delegating encoder also maps {@code noop},
+     * {@code MD4}, {@code MD5}, {@code SHA-1}, {@code SHA-256}, {@code sha256} and {@code ldap}.
+     * Those mappings exist so that a deployment holding legacy hashes can migrate off them. This
+     * platform holds none, so mapping them would only mean that a plaintext or unsalted-digest
+     * password verifies successfully.
+     *
+     * <p>{@code argon2} and {@code scrypt} are left out for a different reason. Both
+     * implementations call Bouncy Castle, which is not a dependency of this platform, so a password
+     * carrying either identifier would fail at the first authentication rather than at start-up.
+     * Refusing them here reports the gap while an operator is still reading the message.
+     */
+    static final List<String> APPROVED_PASSWORD_ENCODINGS =
+            List.of(BCRYPT_ENCODING_ID, PBKDF2_ENCODING_ID);
+
+    /**
+     * Matches a bcrypt hash and captures its two cost digits.
+     *
+     * <p>The three version markers are the ones bcrypt implementations write: {@code $2a$} is the
+     * original, {@code $2b$} the corrected form, and {@code $2y$} a variant of it. Fifty-three
+     * characters follow the cost: twenty-two of salt and thirty-one of hash, in the radix-64
+     * alphabet bcrypt uses.
+     */
+    private static final Pattern BCRYPT_HASH =
+            Pattern.compile("^\\$2[aby]\\$([0-9]{2})\\$[./A-Za-z0-9]{53}$");
+
+    /**
      * Supplies the encoder that reads the prefix of a configured password.
      *
-     * <p>{@link PasswordEncoderFactories#createDelegatingPasswordEncoder()} encodes with bcrypt
-     * and verifies against any prefix it knows, so an identity configured today keeps working when
-     * a deployment re-encodes it under a newer algorithm. Nothing here encodes a plaintext password
-     * at run time: a configured value is already encoded.
+     * <p>Nothing here encodes a plaintext password at run time: a configured value arrives already
+     * encoded. The encode side exists so that a hash generated with this class carries the
+     * parameters the verify side accepts.
      *
      * @return the delegating encoder every identity below is verified against
      */
     @Bean
     public PasswordEncoder passwordEncoder() {
-        return PasswordEncoderFactories.createDelegatingPasswordEncoder();
+        return approvedPasswordEncoder();
+    }
+
+    /**
+     * Builds the delegating encoder over {@link #APPROVED_PASSWORD_ENCODINGS} and nothing else.
+     *
+     * <p>An identifier the map does not carry reaches the unmapped-identifier encoder Spring
+     * Security installs by default, which throws rather than answering false. A refused encoding
+     * therefore cannot authenticate anybody, and it cannot be mistaken for a wrong password either.
+     *
+     * @return an encoder that verifies an approved encoding and refuses every other
+     */
+    static DelegatingPasswordEncoder approvedPasswordEncoder() {
+        Map<String, PasswordEncoder> approved = new LinkedHashMap<>();
+        approved.put(BCRYPT_ENCODING_ID, new BCryptPasswordEncoder(BCRYPT_MINIMUM_COST));
+        approved.put(PBKDF2_ENCODING_ID, Pbkdf2PasswordEncoder.defaultsForSpringSecurity_v5_8());
+        return new DelegatingPasswordEncoder(BCRYPT_ENCODING_ID, approved);
     }
 
     /**
@@ -216,6 +320,7 @@ public class SecurityConfig {
      */
     private static UserDetails toUserDetails(SecurityIdentities.Identity identity) {
         require(identity.username(), "username");
+        requireRecordableUsername(identity.username());
         require(identity.password(), "password");
         requireUsableSecret(identity.password(), IDENTITY_PASSWORD_PROPERTY);
         require(identity.role(), "role");
@@ -226,6 +331,35 @@ public class SecurityConfig {
                                 scopes.stream())
                         .toArray(String[]::new))
                 .build();
+    }
+
+    /**
+     * Rejects a configured username the decision audit column cannot record whole.
+     *
+     * <p>Every decision this service takes records the name of the identity that asked for it, and
+     * {@code authorization_decision.actor} is
+     * {@value AuthorizationDecisionEntity#ACTOR_MAX_LENGTH} characters wide. A wider name used to be
+     * shortened to fit, which made two identities agreeing in their leading characters share one
+     * recorded actor: the shipped nine-character monitoring identity reached the column as
+     * {@code monitor0} while the column was eight characters wide. An audit row that cannot name one
+     * identity does not audit.
+     *
+     * <p>Refusing at start-up is the point. The alternative is a service that starts and then fails, or
+     * silently mis-attributes, at its first decision. A username is not a credential, so the message
+     * reports the configured value: an operator correcting the configuration needs to know which entry
+     * to correct.
+     *
+     * @param username the configured username, already known to be present and non-blank
+     * @throws IllegalStateException when the name is wider than the audit column records
+     */
+    private static void requireRecordableUsername(String username) {
+        if (username.length() > AuthorizationDecisionEntity.ACTOR_MAX_LENGTH) {
+            throw new IllegalStateException("carddemo.security.users[].username '" + username
+                    + "' holds " + username.length() + " characters, and every decision records the "
+                    + "requesting identity in a column of "
+                    + AuthorizationDecisionEntity.ACTOR_MAX_LENGTH
+                    + ". Shorten it, so two identities cannot share one recorded actor.");
+        }
     }
 
     /**
@@ -277,6 +411,10 @@ public class SecurityConfig {
                         .accessDeniedHandler(forbidden()))
                 .sessionManagement(session -> session
                         .sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+                // Forgery-token protection needs a session to hold the token, and this chain
+                // admits none. The exposure list of src/main/resources/application.yml names
+                // health, metrics and the Prometheus scrape, and all three are reads, so this
+                // chain answers no state-changing request for a token to protect.
                 .csrf(csrf -> csrf.disable())
                 .headers(headers -> headers.cacheControl(Customizer.withDefaults()))
                 .build();
@@ -285,12 +423,29 @@ public class SecurityConfig {
     /**
      * Secures the authorization service API.
      *
-     * <p>{@code POST /authorizations} admits an ordinary identity and an administrator alike. The
-     * caller is a point-of-sale terminal or an acquirer rather than a cardholder, and it presents
-     * a card in the request body, so no ownership scope applies to the route: an acquirer
-     * legitimately authorizes any card the platform holds. The decision rules themselves refuse a
-     * card the cross-reference does not carry, with reason 0100 from
-     * {@code app/cbl/CBTRN02C.cbl:L385-L387}.
+     * <p>{@code POST /authorizations} admits {@code ROLE_ACQUIRER} and {@code ROLE_ADMIN}, and
+     * refuses every other identity including {@code ROLE_USER}. The caller is a point-of-sale
+     * terminal or an acquirer rather than a cardholder, and it presents a card in the request body,
+     * so no path variable carries an identifier an ownership scope could be compared against. That
+     * makes the role itself the whole authorization decision, and it is why a cardholder identity
+     * is refused here: a route that reaches every card the platform holds must not be reachable by
+     * an identity entitled to one card. The decision rules themselves refuse a card the
+     * cross-reference does not carry, with reason 0100 from
+     * {@code app/cbl/CBTRN02C.cbl:L385-L387}, but a refusal is still a durable decision and a
+     * published event, so the rules are not a substitute for the role check.
+     *
+     * <p>{@code ROLE_ADMIN} keeps the route because {@code app/cbl/COSGN00C.cbl:L232-L236} forks an
+     * administrator onto every function the region offers, and this platform expresses that fork as
+     * an entitlement rather than a menu.
+     *
+     * <p>The role rule here is the first of two gates. This route names its subject in the request
+     * body, and it may name an account instead of a card, so neither identifier is known until the
+     * decision path has resolved it and no path variable exists for
+     * {@link #ownsPathVariable(String, String)} to read. The ownership comparison therefore runs
+     * where the resolution happens, in {@code domain/CallerEntitlement}, applied by
+     * {@code domain/AuthorizationService} after the card and the account are resolved and before a
+     * transaction identifier is allocated. A refused caller receives the same 403
+     * {@link #forbidden()} writes, and no decision row, attempt row or event is produced for it.
      *
      * <p>Nothing else is reachable. This service exposes no query surface: a caller that wants a
      * balance reads the ledger service and a caller that wants a card reads the card service.
@@ -314,7 +469,7 @@ public class SecurityConfig {
                         .dispatcherTypeMatchers(DispatcherType.ERROR, DispatcherType.ASYNC)
                             .permitAll()
                         .requestMatchers(HttpMethod.POST, "/authorizations")
-                            .hasAnyRole(ROLE_USER, ROLE_ADMIN)
+                            .hasAnyRole(ROLE_ACQUIRER, ROLE_ADMIN)
                         // Default deny. A route named by no rule above is refused.
                         .anyRequest().denyAll())
                 .httpBasic(basic -> basic.authenticationEntryPoint(SecurityConfig::unauthorized))
@@ -323,6 +478,11 @@ public class SecurityConfig {
                         .accessDeniedHandler(forbidden()))
                 .sessionManagement(session -> session
                         .sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+                // Forgery-token protection needs a session to hold the token, and this chain
+                // admits none. config/CrossSiteRequestFilter is the compensating control: it
+                // refuses a state-changing request that declares a foreign site or origin, or that
+                // carries no non-simple request header, so a cached credential a browser replays
+                // from a foreign page reaches no handler.
                 .csrf(csrf -> csrf.disable())
                 .headers(headers -> headers.cacheControl(Customizer.withDefaults()))
                 .build();
@@ -378,6 +538,34 @@ public class SecurityConfig {
     }
 
     /**
+     * Reads a resolved principal into the domain record the decision path compares ownership with.
+     *
+     * <p>{@code POST /authorizations} is the one route whose subject no rule above can read, because
+     * the request body names a card or an account and the card of an account is resolved by a lookup.
+     * Its ownership comparison therefore happens inside the decision, and the decision needs the
+     * caller's authorities as plain text. Producing them belongs here rather than in the controller:
+     * {@code Authentication} and {@code GrantedAuthority} are access-control types, and this file is
+     * the one place per service that declares access control.
+     *
+     * <p>A principal that is not an {@code Authentication}, or one carrying no authority, yields a
+     * caller entitled to nothing rather than a null. {@code domain/CallerEntitlement} refuses such a
+     * caller, which is the safe reading: an absent entitlement is not an unrestricted one. The route
+     * rule above requires a role, so no such call reaches the handler in the first place.
+     *
+     * @param caller the principal the container resolved, or {@code null} on a call carrying none
+     * @return the caller the decision path reads, never {@code null}
+     * @throws IllegalStateException when the principal name is wider than the audit column holds
+     */
+    public static RequestCaller callerOf(Principal caller) {
+        if (caller instanceof Authentication authenticated) {
+            return AuthenticatedActor.callerOf(authenticated, authenticated.getAuthorities().stream()
+                    .map(GrantedAuthority::getAuthority)
+                    .toList());
+        }
+        return AuthenticatedActor.callerOf(caller, List.of());
+    }
+
+    /**
      * Answers whether an authenticated caller holds an authority, with administrator passing all.
      *
      * @param caller    the authentication under test, possibly {@code null}
@@ -428,11 +616,16 @@ public class SecurityConfig {
      * privacy-preserving answer: a 404 would leak that the row exists and a detailed 403 would
      * leak the identifier back into a log.
      *
+     * <p>The text is {@link CallerNotEntitledException#DETAIL}, which is also what
+     * {@code api/GlobalExceptionHandler} answers when the decision path refuses a caller the subject it
+     * resolved. One owner of the text keeps the two refusals reading alike, so a caller cannot tell a
+     * route denial from an ownership denial by reading the body.
+     *
      * @return the handler the chains install
      */
     static AccessDeniedHandler forbidden() {
         return (request, response, denied) -> problem(response, HttpStatus.FORBIDDEN, "Forbidden",
-                "This identity may not use this operation.");
+                CallerNotEntitledException.DETAIL);
     }
 
     /**
@@ -501,10 +694,11 @@ public class SecurityConfig {
     // misconfigured rather than insecure. A start-up failure naming the variable says what is
     // wrong once.
     //
-    // Four credentials reach this service, and all four are checked here: the password for its own
+    // Five secrets reach this service, and all five are checked here: the password for its own
     // database login, the broker login entry that carries its Simple Authentication and Security
-    // Layer password, the identity password hashes checked as each identity is mapped, and the
-    // keystore password, checked only when a port is actually encrypted.
+    // Layer password, the identity password hashes checked as each identity is mapped, the
+    // card-token key every derivation is taken under, and the keystore password, checked only when
+    // a port is actually encrypted.
     // ------------------------------------------------------------------------------------
 
     /** Marks a value this repository publishes as an example rather than as a credential. */
@@ -544,6 +738,35 @@ public class SecurityConfig {
     static final String IDENTITY_PASSWORD_PROPERTY = "carddemo.security.users[].password";
 
     /**
+     * A card-token key this repository published as the effective default of every deployment path.
+     *
+     * <p>It reached {@code .env.example}, the Compose stack and the Kubernetes Secret template
+     * before those three carried placeholders. A card token is a keyed code over a sixteen-digit
+     * card number, so anyone holding this key and one token can recompute the token of every
+     * candidate card number offline, and the pseudonym stops being one. Start-up refuses the value
+     * for that reason, whichever path it arrives through.
+     */
+    static final String PUBLISHED_CARD_TOKEN_KEY = "carddemo-demo-card-token-key-not-for-production";
+
+    /**
+     * The card-token key {@code card-platform/pom.xml} supplies to Surefire and Failsafe.
+     *
+     * <p>It exists so that a build can derive a token at all, and so that the fifty
+     * {@code card_token} literals in the card service seed can be compared against the one
+     * derivation this platform holds. It travels one way, as a JVM system property, and a
+     * deployment supplies its key through {@link #CARD_TOKEN_KEY_VARIABLE} instead. Arriving
+     * through that variable therefore means a deployment is running on a key this repository
+     * publishes, and start-up refuses it.
+     */
+    static final String BUILD_SCOPE_CARD_TOKEN_KEY = "carddemo-build-scope-card-token-key-tests-only";
+
+    /** System property carrying the card-token key, which is the path a build supplies it on. */
+    static final String CARD_TOKEN_KEY_PROPERTY = PanMasker.CARD_TOKEN_SECRET_PROPERTY;
+
+    /** Environment variable carrying the card-token key, which is the path a deployment uses. */
+    static final String CARD_TOKEN_KEY_VARIABLE = PanMasker.CARD_TOKEN_SECRET_VARIABLE;
+
+    /**
      * Refuses to start when a credential this repository publishes reached the running service.
      *
      * <p>The method is static and the type it returns is a {@link BeanFactoryPostProcessor},
@@ -561,14 +784,14 @@ public class SecurityConfig {
     }
 
     /**
-     * Checks the three credentials this service reads from configuration, and the keystore
-     * password when a port is encrypted.
+     * Checks the two credentials and the card-token key this service reads from configuration, and
+     * the keystore password when a port is encrypted.
      *
      * <p>Identity password hashes are not checked here. Each one is checked as its identity is
      * mapped, which is where the property name is known.
      *
      * @param environment the resolved environment, which already carries substituted variables
-     * @throws IllegalStateException when a checked credential is absent, unusable or published
+     * @throws IllegalStateException when a checked secret is absent, unusable or published
      */
     static void requireUsableCredentials(Environment environment) {
         String datasourcePassword = environment.getProperty(DATASOURCE_PASSWORD_PROPERTY);
@@ -579,7 +802,64 @@ public class SecurityConfig {
                     + " Set a distinct password for this service before start-up.");
         }
         requireUsableSecret(environment.getProperty(BROKER_JAAS_PROPERTY), BROKER_JAAS_PROPERTY);
+        requireUsableCardTokenKey(environment);
         requireKeystoreMaterialWhenEncrypted(environment);
+        // The card-token key is the fifth value this repository publishes, and it is the one a
+        // derivation site cannot refuse: an absent or too-short key stops a derivation, while the
+        // published key derives tokens that anyone holding this repository can recompute for a
+        // candidate card number. PanMasker owns the check because it owns how the key is read, and
+        // the demonstration paths state their intent in their own configuration.
+        PanMasker.requireCardTokenSecretFitForUse();
+    }
+
+    /**
+     * Refuses to start without a card-token key of this deployment's own.
+     *
+     * <p>This service derives card tokens, which is why the check lives here and not in the four
+     * services that only read a token arriving in an event or a request. A token is a keyed code
+     * over a sixteen-digit card number: with the key, one token is enough to recompute the token of
+     * every candidate card number offline, so a published key turns the pseudonym back into the
+     * card number it replaced.
+     *
+     * <p>Five conditions stop start-up. A key that is absent, blank or still a placeholder is
+     * refused by {@link #requireUsableSecret}. A key shorter than
+     * {@code PanMasker.CARD_TOKEN_SECRET_MIN_LENGTH} is refused, because a short key is padded to
+     * the hash block size rather than filling it. {@link #PUBLISHED_CARD_TOKEN_KEY} is refused
+     * however it arrives. And {@link #BUILD_SCOPE_CARD_TOKEN_KEY} is refused when it arrives
+     * through {@link #CARD_TOKEN_KEY_VARIABLE}, which is the deployment path; a build supplies the
+     * same value as a system property, and that path is left open so this check does not stop every
+     * test that starts a context.
+     *
+     * <p>No message carries the key. Each one names the variable and the condition that failed.
+     *
+     * @param environment the resolved environment, which already carries substituted variables
+     * @throws IllegalStateException when no usable card-token key of this deployment's own is set
+     */
+    static void requireUsableCardTokenKey(Environment environment) {
+        String fromBuild = System.getProperty(CARD_TOKEN_KEY_PROPERTY);
+        String fromDeployment = environment.getProperty(CARD_TOKEN_KEY_VARIABLE);
+        boolean suppliedByBuild = fromBuild != null && !fromBuild.isBlank();
+        String configured = suppliedByBuild ? fromBuild.strip() : fromDeployment;
+
+        requireUsableSecret(configured, CARD_TOKEN_KEY_VARIABLE);
+        if (configured.length() < PanMasker.CARD_TOKEN_SECRET_MIN_LENGTH) {
+            throw new IllegalStateException(CARD_TOKEN_KEY_VARIABLE + " holds "
+                    + configured.length() + " characters and at least "
+                    + PanMasker.CARD_TOKEN_SECRET_MIN_LENGTH + " are required. A shorter key is"
+                    + " padded to the hash block size rather than filling it.");
+        }
+        if (PUBLISHED_CARD_TOKEN_KEY.equals(configured)) {
+            throw new IllegalStateException(CARD_TOKEN_KEY_VARIABLE + " holds a card-token key this"
+                    + " repository published as a default. Generate one for this deployment;"
+                    + " card-platform/.env.example carries the command. Anyone holding that key and"
+                    + " one card token can recompute the token of every card number.");
+        }
+        if (!suppliedByBuild && BUILD_SCOPE_CARD_TOKEN_KEY.equals(configured)) {
+            throw new IllegalStateException(CARD_TOKEN_KEY_VARIABLE + " holds the build-scope"
+                    + " card-token key card-platform/pom.xml supplies to this repository's own"
+                    + " tests. It is published in this repository, so it is not a deployment key."
+                    + " Generate one; card-platform/.env.example carries the command.");
+        }
     }
 
     /**
@@ -610,10 +890,10 @@ public class SecurityConfig {
 
     /**
      * Refuses a secret that is absent, blank, a published placeholder, or an identity password
-     * with no encoding prefix.
+     * that is not the output of an adaptive one-way encoder.
      *
-     * <p>No message carries the value. Each one names the property and states which of the three
-     * conditions failed, which is everything an operator needs and nothing an attacker does.
+     * <p>No message carries the value. Each one names the property and states which condition
+     * failed, which is everything an operator needs and nothing an attacker does.
      *
      * @param value    the configured secret
      * @param property the property name the message reports
@@ -629,10 +909,67 @@ public class SecurityConfig {
                     + " repository publishes. Generate a real value; card-platform/.env.example"
                     + " carries the command.");
         }
-        if (IDENTITY_PASSWORD_PROPERTY.equals(property) && !value.startsWith("{")) {
+        if (IDENTITY_PASSWORD_PROPERTY.equals(property)) {
+            requireApprovedPasswordEncoding(value, property);
+        }
+    }
+
+    /**
+     * Refuses an identity password that declares no encoding, declares one this platform does not
+     * accept, or declares bcrypt below {@link #BCRYPT_MINIMUM_COST}.
+     *
+     * <p>The check runs at start-up rather than at the first authentication. Left to run time, a
+     * refused encoding shows up as a 401 for an identity an operator believes is configured, which
+     * reads as a wrong password rather than as a wrong algorithm.
+     *
+     * <p>No message carries the value. Each one names the property, the identifier that was
+     * declared and the identifiers that are accepted, which is what an operator needs.
+     *
+     * @param value    the configured password, which arrives already encoded
+     * @param property the property name the message reports
+     * @throws IllegalStateException when the encoding is absent, is not approved, or is bcrypt
+     *                               below the cost floor
+     */
+    static void requireApprovedPasswordEncoding(String value, String property) {
+        int close = value.startsWith("{") ? value.indexOf('}') : -1;
+        if (close < 0) {
             throw new IllegalStateException(property + " carries no encoding prefix such as"
                     + " {bcrypt}. A value without one authenticates nobody and would let this"
                     + " service start looking misconfigured rather than refusing to start.");
+        }
+        String encoding = value.substring(1, close);
+        if (!APPROVED_PASSWORD_ENCODINGS.contains(encoding)) {
+            throw new IllegalStateException(property + " declares the encoding {" + encoding
+                    + "}, which this platform does not accept. Re-encode the password under one of "
+                    + APPROVED_PASSWORD_ENCODINGS + "; card-platform/.env.example carries the"
+                    + " command. A plaintext or unsalted-digest password is refused here rather"
+                    + " than verified successfully at run time.");
+        }
+        if (BCRYPT_ENCODING_ID.equals(encoding)) {
+            requireBcryptCost(value.substring(close + 1), property);
+        }
+    }
+
+    /**
+     * Refuses a bcrypt hash that is malformed or carries a cost below the floor.
+     *
+     * @param hash     the hash following the {@code {bcrypt}} identifier
+     * @param property the property name the message reports
+     * @throws IllegalStateException when the value is not a bcrypt hash, or its cost is below
+     *                               {@link #BCRYPT_MINIMUM_COST}
+     */
+    private static void requireBcryptCost(String hash, String property) {
+        Matcher shape = BCRYPT_HASH.matcher(hash);
+        if (!shape.matches()) {
+            throw new IllegalStateException(property + " declares {bcrypt} and carries no bcrypt"
+                    + " hash behind it. A bcrypt hash reads $2a$, $2b$ or $2y$, then two cost"
+                    + " digits, then fifty-three characters of salt and hash.");
+        }
+        int cost = Integer.parseInt(shape.group(1));
+        if (cost < BCRYPT_MINIMUM_COST) {
+            throw new IllegalStateException(property + " declares a bcrypt cost of " + cost
+                    + " and at least " + BCRYPT_MINIMUM_COST + " is required. Cost is logarithmic,"
+                    + " so every step below the floor halves what an offline guess costs.");
         }
     }
 

@@ -1,14 +1,24 @@
 package com.carddemo.authorization.messaging;
 
+import com.carddemo.authorization.config.ObservabilityConfig;
+import com.carddemo.authorization.config.ObservabilityConfig.ReplicaMeters;
 import com.carddemo.authorization.entity.ProcessedEventEntity;
 import com.carddemo.authorization.entity.ProcessedEventEntity.ProcessedEventId;
 import com.carddemo.authorization.repository.AccountCreditSnapshotRepository;
 import com.carddemo.authorization.repository.CardCrossReferenceRepository;
 import com.carddemo.authorization.repository.ProcessedEventRepository;
 
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.LoggerContext;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+
 import java.lang.reflect.Method;
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -25,13 +35,15 @@ import org.springframework.transaction.support.SimpleTransactionStatus;
 import org.springframework.transaction.support.TransactionCallback;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import org.slf4j.LoggerFactory;
+
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
+import tools.jackson.databind.node.ObjectNode;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
@@ -47,10 +59,13 @@ import static org.mockito.Mockito.when;
  * and nothing to keep current. These listeners exist because the decline rules read copies, and a copy
  * nothing updates keeps answering with whatever it last knew while raising nothing.
  *
- * <p>Both listeners are held to the same four properties: the apply and its marker reach the store
+ * <p>Both listeners are held to the same five properties: the apply and its marker reach the store
  * together, a repeat delivery applies nothing, a proven duplicate acknowledges while every other
- * integrity failure is rethrown so the record retries, and the topic and group come from configuration
- * rather than from a literal.
+ * integrity failure is rethrown so the record retries, the topic and group come from configuration
+ * rather than from a literal, and the line each one writes when it applied nothing names the event and
+ * not the account. The last of those is why {@link #recordedLines} exists: an account identifier in an
+ * ordinary log line is retained by whatever collects logs, and the event identifier is a correlation
+ * value that leads a reader to the event on the topic, where the access controls are.
  *
  * <p>Every test runs against mocked repositories and an immediate transaction template, so
  * {@code mvn test} needs no database and no broker.
@@ -95,12 +110,43 @@ class ReplicaConsumerTest {
     private ProcessedEventRepository processedEvents;
     private Acknowledgment acknowledgment;
 
+    /** The registry both listeners record through, read back by the assertions on their series. */
+    private MeterRegistry registry;
+
+    /** The recording surface the shipped configuration hands each listener. */
+    private ReplicaMeters meters;
+
     @BeforeEach
     void buildCollaborators() {
         snapshots = Mockito.mock(AccountCreditSnapshotRepository.class);
         crossReferences = Mockito.mock(CardCrossReferenceRepository.class);
         processedEvents = Mockito.mock(ProcessedEventRepository.class);
         acknowledgment = Mockito.mock(Acknowledgment.class);
+        registry = new SimpleMeterRegistry();
+        meters = new ObservabilityConfig().replicaMeters(registry);
+    }
+
+    /**
+     * Reads one consume-side series back.
+     *
+     * @param name      the meter name
+     * @param eventType the stream the series belongs to
+     * @return the count the counter carries
+     */
+    private double counter(String name, String eventType) {
+        return registry.get(name).tag(ObservabilityConfig.EVENT_TYPE_TAG, eventType)
+                .counter().count();
+    }
+
+    /**
+     * Reads one delivery timer back.
+     *
+     * @param eventType the stream the timer belongs to
+     * @return the number of deliveries the timer recorded
+     */
+    private long timedDeliveries(String eventType) {
+        return registry.get(ObservabilityConfig.REPLICA_PROCESSING_TIMER)
+                .tag(ObservabilityConfig.EVENT_TYPE_TAG, eventType).timer().count();
     }
 
     @Nested
@@ -112,7 +158,7 @@ class ReplicaConsumerTest {
         @BeforeEach
         void buildConsumer() {
             consumer = new AccountStateChangedConsumer(snapshots, processedEvents,
-                    immediateTransactions());
+                    immediateTransactions(), meters);
         }
 
         @Test
@@ -122,7 +168,7 @@ class ReplicaConsumerTest {
             when(snapshots.applyStateChange(anyString(), any(), anyString(), any(), any(), any(),
                     any(), any())).thenReturn(1);
 
-            consumer.onAccountStateChanged(accountMessage(), acknowledgment,
+            consumer.onAccountStateChanged(accountMessage(), ACCOUNT_ID, acknowledgment,
                     ACCOUNT_STATE_TOPIC);
 
             verify(snapshots).applyStateChange(eq(ACCOUNT_ID), eq(new BigDecimal("5000.00")),
@@ -142,7 +188,7 @@ class ReplicaConsumerTest {
         void appliesNothingOnARepeatDeliveryAndStillAcknowledges() {
             when(processedEvents.existsById(ACCOUNT_STATE_KEY)).thenReturn(true);
 
-            consumer.onAccountStateChanged(accountMessage(), acknowledgment,
+            consumer.onAccountStateChanged(accountMessage(), ACCOUNT_ID, acknowledgment,
                     ACCOUNT_STATE_TOPIC);
 
             verify(snapshots, never()).applyStateChange(anyString(), any(), anyString(), any(),
@@ -163,11 +209,43 @@ class ReplicaConsumerTest {
             when(snapshots.applyStateChange(anyString(), any(), anyString(), any(), any(), any(),
                     any(), any())).thenReturn(0);
 
-            consumer.onAccountStateChanged(accountMessage(), acknowledgment,
+            consumer.onAccountStateChanged(accountMessage(), ACCOUNT_ID, acknowledgment,
                     ACCOUNT_STATE_TOPIC);
 
             verify(processedEvents).save(any(ProcessedEventEntity.class));
             verify(acknowledgment).acknowledge();
+        }
+
+        /**
+         * The line written when nothing applied names the event and never the account.
+         *
+         * <p>This is the one path that logs at {@code INFO} on an ordinary day, so it is the path
+         * that decides whether account identifiers reach a log collector at all.
+         */
+        @Test
+        @DisplayName("names the event and not the account when it applied nothing")
+        void namesTheEventAndNotTheAccountWhenItAppliedNothing() {
+            when(processedEvents.existsById(ACCOUNT_STATE_KEY)).thenReturn(false);
+            when(snapshots.applyStateChange(anyString(), any(), anyString(), any(), any(), any(),
+                    any(), any())).thenReturn(0);
+
+            List<ILoggingEvent> lines = recordedLines(() ->
+                    consumer.onAccountStateChanged(accountMessage(), ACCOUNT_ID, acknowledgment,
+                            ACCOUNT_STATE_TOPIC));
+
+            assertThat(lines).as("the path that applied nothing writes one line").isNotEmpty();
+            assertThat(lines).allSatisfy(line -> {
+                assertThat(line.getFormattedMessage())
+                        .as("an account identifier reached an ordinary log line")
+                        .doesNotContain(ACCOUNT_ID);
+                assertThat(line.getThrowableProxy())
+                        .as("no throwable is attached to this outcome")
+                        .isNull();
+            });
+            assertThat(lines).anySatisfy(line ->
+                    assertThat(line.getFormattedMessage())
+                            .as("the event identifier is the correlation value a reader follows")
+                            .contains(EVENT_ID.toString()));
         }
 
         @Test
@@ -177,14 +255,15 @@ class ReplicaConsumerTest {
             when(snapshots.applyStateChange(anyString(), any(), anyString(), any(), any(), any(),
                     any(), any())).thenThrow(new DataIntegrityViolationException("marker key"));
 
-            consumer.onAccountStateChanged(accountMessage(), acknowledgment,
+            consumer.onAccountStateChanged(accountMessage(), ACCOUNT_ID, acknowledgment,
                     ACCOUNT_STATE_TOPIC);
             verify(acknowledgment).acknowledge();
 
             Acknowledgment second = Mockito.mock(Acknowledgment.class);
             when(processedEvents.existsById(ACCOUNT_STATE_KEY)).thenReturn(false, false);
 
-            assertThatThrownBy(() -> consumer.onAccountStateChanged(accountMessage(), second,
+            assertThatThrownBy(() -> consumer.onAccountStateChanged(accountMessage(), ACCOUNT_ID,
+                    second,
                     ACCOUNT_STATE_TOPIC))
                     .isInstanceOf(DataIntegrityViolationException.class);
             verifyNoInteractions(second);
@@ -194,9 +273,78 @@ class ReplicaConsumerTest {
         @DisplayName("refuses a tombstone, which this contract never produces")
         void refusesATombstone() {
             assertThatThrownBy(() ->
-                    consumer.onAccountStateChanged(null, acknowledgment, ACCOUNT_STATE_TOPIC))
+                    consumer.onAccountStateChanged(null, ACCOUNT_ID,
+                            acknowledgment, ACCOUNT_STATE_TOPIC))
                     .isInstanceOf(IllegalArgumentException.class);
             verifyNoInteractions(acknowledgment);
+        }
+
+
+        /**
+         * A delivery is counted as it arrives, timed whichever way it ends, and a repeat is counted as
+         * a duplicate.
+         *
+         * <p>The consumed count is what makes a stream that stopped arriving visible, and the
+         * duplicate count is what tells a stream arriving entirely as repeats apart from one applying
+         * changes. Neither reading existed while this listener recorded nothing, so an authorization
+         * taken against a replica no event had refreshed for hours was the first sign of either.
+         */
+        @Test
+        @DisplayName("counts and times one applied delivery")
+        void countsAndTimesOneAppliedDelivery() {
+            when(processedEvents.existsById(ACCOUNT_STATE_KEY)).thenReturn(false);
+            when(snapshots.applyStateChange(anyString(), any(), anyString(), any(), any(), any(),
+                    any(), any())).thenReturn(1);
+
+            consumer.onAccountStateChanged(accountMessage(), ACCOUNT_ID, acknowledgment,
+                    ACCOUNT_STATE_TOPIC);
+
+            assertThat(counter(ObservabilityConfig.EVENTS_CONSUMED_COUNTER,
+                    AccountStateChanged.EVENT_TYPE)).isEqualTo(1.0d);
+            assertThat(counter(ObservabilityConfig.DUPLICATES_SKIPPED_COUNTER,
+                    AccountStateChanged.EVENT_TYPE)).isZero();
+            assertThat(timedDeliveries(AccountStateChanged.EVENT_TYPE)).isEqualTo(1L);
+        }
+
+        @Test
+        @DisplayName("counts a repeat delivery as a duplicate and still times it")
+        void countsARepeatDeliveryAsADuplicate() {
+            when(processedEvents.existsById(ACCOUNT_STATE_KEY)).thenReturn(true);
+
+            consumer.onAccountStateChanged(accountMessage(), ACCOUNT_ID, acknowledgment,
+                    ACCOUNT_STATE_TOPIC);
+
+            assertThat(counter(ObservabilityConfig.EVENTS_CONSUMED_COUNTER,
+                    AccountStateChanged.EVENT_TYPE)).isEqualTo(1.0d);
+            assertThat(counter(ObservabilityConfig.DUPLICATES_SKIPPED_COUNTER,
+                    AccountStateChanged.EVENT_TYPE)).isEqualTo(1.0d);
+            assertThat(timedDeliveries(AccountStateChanged.EVENT_TYPE)).isEqualTo(1L);
+        }
+
+        @Test
+        @DisplayName("counts and times a delivery it refuses, so a dead letter is never the first sign")
+        void countsAndTimesARefusedDelivery() {
+            assertThatThrownBy(() ->
+                    consumer.onAccountStateChanged(null, ACCOUNT_ID, acknowledgment,
+                            ACCOUNT_STATE_TOPIC))
+                    .isInstanceOf(IllegalArgumentException.class);
+
+            assertThat(counter(ObservabilityConfig.EVENTS_CONSUMED_COUNTER,
+                    AccountStateChanged.EVENT_TYPE)).isEqualTo(1.0d);
+            assertThat(timedDeliveries(AccountStateChanged.EVENT_TYPE)).isEqualTo(1L);
+        }
+
+        @Test
+        @DisplayName("leaves the other stream's series untouched")
+        void leavesTheOtherStreamsSeriesUntouched() {
+            when(processedEvents.existsById(ACCOUNT_STATE_KEY)).thenReturn(false);
+
+            consumer.onAccountStateChanged(accountMessage(), ACCOUNT_ID, acknowledgment,
+                    ACCOUNT_STATE_TOPIC);
+
+            assertThat(counter(ObservabilityConfig.EVENTS_CONSUMED_COUNTER, CardUpdated.EVENT_TYPE))
+                    .as("one series per stream, so a busy stream never hides a stalled one")
+                    .isZero();
         }
 
         @Test
@@ -221,7 +369,7 @@ class ReplicaConsumerTest {
         @BeforeEach
         void buildConsumer() {
             consumer = new CardUpdatedConsumer(crossReferences, processedEvents,
-                    immediateTransactions());
+                    immediateTransactions(), meters);
         }
 
         /**
@@ -236,7 +384,7 @@ class ReplicaConsumerTest {
             when(crossReferences.refreshObservation(anyString(), anyString(), any(), any(), any()))
                     .thenReturn(1);
 
-            consumer.onCardUpdated(cardMessage(), acknowledgment, CARD_UPDATED_TOPIC);
+            consumer.onCardUpdated(cardMessage(), ACCOUNT_ID, acknowledgment, CARD_UPDATED_TOPIC);
 
             verify(crossReferences).refreshObservation(eq(ACCOUNT_ID), eq("%7065"), eq(EVENT_ID),
                     eq(Instant.parse(OCCURRED_AT)), any(Instant.class));
@@ -256,10 +404,45 @@ class ReplicaConsumerTest {
             when(crossReferences.refreshObservation(anyString(), anyString(), any(), any(), any()))
                     .thenReturn(0);
 
-            consumer.onCardUpdated(cardMessage(), acknowledgment, CARD_UPDATED_TOPIC);
+            consumer.onCardUpdated(cardMessage(), ACCOUNT_ID, acknowledgment, CARD_UPDATED_TOPIC);
 
             verify(processedEvents).save(any(ProcessedEventEntity.class));
             verify(acknowledgment).acknowledge();
+        }
+
+        /**
+         * The line written when nothing refreshed names the event and never the cardholder.
+         *
+         * <p>Both the account identifier and the visible digits of the card describe the cardholder,
+         * so neither belongs in a line a log collector retains.
+         */
+        @Test
+        @DisplayName("names the event and neither the account nor the digits when nothing refreshed")
+        void namesTheEventAndNeitherTheAccountNorTheDigits() {
+            when(processedEvents.existsById(CARD_UPDATED_KEY)).thenReturn(false);
+            when(crossReferences.refreshObservation(anyString(), anyString(), any(), any(), any()))
+                    .thenReturn(0);
+
+            List<ILoggingEvent> lines = recordedLines(() ->
+                    consumer.onCardUpdated(cardMessage(), ACCOUNT_ID,
+                            acknowledgment, CARD_UPDATED_TOPIC));
+
+            assertThat(lines).as("the path that refreshed nothing writes one line").isNotEmpty();
+            assertThat(lines).allSatisfy(line -> {
+                assertThat(line.getFormattedMessage())
+                        .as("an account identifier reached an ordinary log line")
+                        .doesNotContain(ACCOUNT_ID);
+                assertThat(line.getFormattedMessage())
+                        .as("the visible digits of a card reached an ordinary log line")
+                        .doesNotContain(CardUpdated.from(cardMessage()).visibleDigitsSuffix());
+                assertThat(line.getThrowableProxy())
+                        .as("no throwable is attached to this outcome")
+                        .isNull();
+            });
+            assertThat(lines).anySatisfy(line ->
+                    assertThat(line.getFormattedMessage())
+                            .as("the event identifier is the correlation value a reader follows")
+                            .contains(EVENT_ID.toString()));
         }
 
         @Test
@@ -267,7 +450,7 @@ class ReplicaConsumerTest {
         void refreshesNothingOnARepeatDelivery() {
             when(processedEvents.existsById(CARD_UPDATED_KEY)).thenReturn(true);
 
-            consumer.onCardUpdated(cardMessage(), acknowledgment, CARD_UPDATED_TOPIC);
+            consumer.onCardUpdated(cardMessage(), ACCOUNT_ID, acknowledgment, CARD_UPDATED_TOPIC);
 
             verify(crossReferences, never()).refreshObservation(anyString(), anyString(), any(),
                     any(), any());
@@ -284,9 +467,48 @@ class ReplicaConsumerTest {
                     .thenThrow(new DataIntegrityViolationException("some other constraint"));
 
             assertThatThrownBy(() ->
-                    consumer.onCardUpdated(cardMessage(), acknowledgment, CARD_UPDATED_TOPIC))
+                    consumer.onCardUpdated(cardMessage(), ACCOUNT_ID,
+                            acknowledgment, CARD_UPDATED_TOPIC))
                     .isInstanceOf(DataIntegrityViolationException.class);
             verifyNoInteractions(acknowledgment);
+        }
+
+
+        @Test
+        @DisplayName("counts and times one refreshing delivery")
+        void countsAndTimesOneRefreshingDelivery() {
+            when(processedEvents.existsById(CARD_UPDATED_KEY)).thenReturn(false);
+            when(crossReferences.refreshObservation(anyString(), anyString(), any(), any(), any()))
+                    .thenReturn(1);
+
+            consumer.onCardUpdated(cardMessage(), ACCOUNT_ID, acknowledgment, CARD_UPDATED_TOPIC);
+
+            assertThat(counter(ObservabilityConfig.EVENTS_CONSUMED_COUNTER, CardUpdated.EVENT_TYPE))
+                    .isEqualTo(1.0d);
+            assertThat(timedDeliveries(CardUpdated.EVENT_TYPE)).isEqualTo(1L);
+        }
+
+        @Test
+        @DisplayName("counts a repeat delivery as a duplicate")
+        void countsARepeatDeliveryAsADuplicate() {
+            when(processedEvents.existsById(CARD_UPDATED_KEY)).thenReturn(true);
+
+            consumer.onCardUpdated(cardMessage(), ACCOUNT_ID, acknowledgment, CARD_UPDATED_TOPIC);
+
+            assertThat(counter(ObservabilityConfig.DUPLICATES_SKIPPED_COUNTER,
+                    CardUpdated.EVENT_TYPE)).isEqualTo(1.0d);
+            assertThat(timedDeliveries(CardUpdated.EVENT_TYPE)).isEqualTo(1L);
+        }
+
+        @Test
+        @DisplayName("counts and times a delivery it refuses")
+        void countsAndTimesARefusedDelivery() {
+            assertThatThrownBy(() -> consumer.onCardUpdated(null, ACCOUNT_ID, acknowledgment,
+                    CARD_UPDATED_TOPIC)).isInstanceOf(IllegalArgumentException.class);
+
+            assertThat(counter(ObservabilityConfig.EVENTS_CONSUMED_COUNTER, CardUpdated.EVENT_TYPE))
+                    .isEqualTo(1.0d);
+            assertThat(timedDeliveries(CardUpdated.EVENT_TYPE)).isEqualTo(1L);
         }
 
         @Test
@@ -420,6 +642,27 @@ class ReplicaConsumerTest {
     }
 
     /** The account fixture as the checked tree a listener receives. */
+    /**
+     * Runs one delivery with a recorder attached to the package every service logs under.
+     *
+     * @param delivery the call whose log lines are wanted
+     * @return every line written during it, in order
+     */
+    private static List<ILoggingEvent> recordedLines(Runnable delivery) {
+        ListAppender<ILoggingEvent> recorder = new ListAppender<>();
+        recorder.setContext((LoggerContext) LoggerFactory.getILoggerFactory());
+        recorder.start();
+        Logger serviceLogger = (Logger) LoggerFactory.getLogger("com.carddemo");
+        serviceLogger.addAppender(recorder);
+        try {
+            delivery.run();
+        } finally {
+            serviceLogger.detachAppender(recorder);
+            recorder.stop();
+        }
+        return List.copyOf(recorder.list);
+    }
+
     private static JsonNode accountMessage() {
         return MAPPER.readTree(accountJson());
     }
@@ -427,5 +670,121 @@ class ReplicaConsumerTest {
     /** The card fixture as the checked tree a listener receives. */
     private static JsonNode cardMessage() {
         return MAPPER.readTree(cardJson());
+    }
+
+    @Nested
+    @DisplayName("The message key has to name the account each payload names")
+    class MessageKeyGuard {
+
+        private AccountStateChangedConsumer accountConsumer;
+        private CardUpdatedConsumer cardConsumer;
+
+        @BeforeEach
+        void buildConsumers() {
+            accountConsumer = new AccountStateChangedConsumer(snapshots, processedEvents,
+                    immediateTransactions(), meters);
+            cardConsumer = new CardUpdatedConsumer(crossReferences, processedEvents,
+                    immediateTransactions(), meters);
+        }
+
+        /**
+         * A record keyed on another account arrived on a partition that does not order this
+         * account's events. Applying it would move a credit limit or an expiry onto another
+         * account's snapshot, and the four decline rules would then decide that account's
+         * transactions from a value that never belonged to it.
+         */
+        @Test
+        @DisplayName("an account-state record keyed on another account is refused and writes"
+                + " nothing")
+        void anAccountStateRecordKeyedOnAnotherAccountIsRefused() {
+            assertThatThrownBy(() -> accountConsumer.onAccountStateChanged(accountMessage(),
+                    "00000000099", acknowledgment, ACCOUNT_STATE_TOPIC))
+                    .isInstanceOf(IllegalArgumentException.class);
+
+            verifyNoInteractions(snapshots);
+            verifyNoInteractions(processedEvents);
+            verifyNoInteractions(acknowledgment);
+        }
+
+        /** A card update keyed on another account would refresh another account's rows. */
+        @Test
+        @DisplayName("a card-update record keyed on another account is refused and writes nothing")
+        void aCardUpdateRecordKeyedOnAnotherAccountIsRefused() {
+            assertThatThrownBy(() -> cardConsumer.onCardUpdated(cardMessage(), "00000000099",
+                    acknowledgment, CARD_UPDATED_TOPIC))
+                    .isInstanceOf(IllegalArgumentException.class);
+
+            verifyNoInteractions(crossReferences);
+            verifyNoInteractions(processedEvents);
+            verifyNoInteractions(acknowledgment);
+        }
+
+        /** A record with no key at all was partitioned at random. */
+        @Test
+        @DisplayName("a record carrying no key is refused on both streams")
+        void aRecordCarryingNoKeyIsRefusedOnBothStreams() {
+            assertThatThrownBy(() -> accountConsumer.onAccountStateChanged(accountMessage(), null,
+                    acknowledgment, ACCOUNT_STATE_TOPIC))
+                    .isInstanceOf(IllegalArgumentException.class);
+            assertThatThrownBy(() -> cardConsumer.onCardUpdated(cardMessage(), null, acknowledgment,
+                    CARD_UPDATED_TOPIC))
+                    .isInstanceOf(IllegalArgumentException.class);
+
+            verifyNoInteractions(snapshots);
+            verifyNoInteractions(crossReferences);
+            verifyNoInteractions(acknowledgment);
+        }
+
+        /** A blank key names nothing, so it is refused for the same reason as an absent one. */
+        @Test
+        @DisplayName("a blank key is refused on both streams")
+        void aBlankKeyIsRefusedOnBothStreams() {
+            assertThatThrownBy(() -> accountConsumer.onAccountStateChanged(accountMessage(), "  ",
+                    acknowledgment, ACCOUNT_STATE_TOPIC))
+                    .isInstanceOf(IllegalArgumentException.class);
+            assertThatThrownBy(() -> cardConsumer.onCardUpdated(cardMessage(), "  ", acknowledgment,
+                    CARD_UPDATED_TOPIC))
+                    .isInstanceOf(IllegalArgumentException.class);
+
+            verifyNoInteractions(snapshots);
+            verifyNoInteractions(crossReferences);
+        }
+
+        /**
+         * A key agreeing with the envelope while the payload names another account would route
+         * correctly and write to the wrong row, so all three values are compared rather than two.
+         */
+        @Test
+        @DisplayName("an envelope and a payload that disagree are refused on both streams")
+        void anEnvelopeAndPayloadThatDisagreeAreRefusedOnBothStreams() {
+            ObjectNode account = (ObjectNode) accountMessage();
+            account.put("accountId", "00000000099");
+            ObjectNode card = (ObjectNode) cardMessage();
+            card.put("accountId", "00000000099");
+
+            assertThatThrownBy(() -> accountConsumer.onAccountStateChanged(account, ACCOUNT_ID,
+                    acknowledgment, ACCOUNT_STATE_TOPIC))
+                    .isInstanceOf(IllegalArgumentException.class);
+            assertThatThrownBy(() -> cardConsumer.onCardUpdated(card, ACCOUNT_ID, acknowledgment,
+                    CARD_UPDATED_TOPIC))
+                    .isInstanceOf(IllegalArgumentException.class);
+
+            verifyNoInteractions(snapshots);
+            verifyNoInteractions(crossReferences);
+        }
+
+        /** No refusal message names the key, the aggregate or the account it refused. */
+        @Test
+        @DisplayName("no refusal message names an identifier")
+        void noRefusalMessageNamesAnIdentifier() {
+            assertThatThrownBy(() -> accountConsumer.onAccountStateChanged(accountMessage(),
+                    "00000000099", acknowledgment, ACCOUNT_STATE_TOPIC))
+                    .hasMessageNotContaining(ACCOUNT_ID)
+                    .hasMessageNotContaining("00000000099");
+            assertThatThrownBy(() -> cardConsumer.onCardUpdated(cardMessage(), "00000000099",
+                    acknowledgment, CARD_UPDATED_TOPIC))
+                    .hasMessageNotContaining(ACCOUNT_ID)
+                    .hasMessageNotContaining("00000000099");
+        }
     }
 }

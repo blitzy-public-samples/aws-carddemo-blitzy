@@ -17,46 +17,25 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code WS-EDIT-ALPHANUM-ONLY(1:WS-EDIT-ALPHANUM-LENGTH)}. That substring equals
  * {@code LOW-VALUES}, or it equals {@code SPACES}, or its trimmed length is zero.</p>
  *
- * <p>One call site performs the paragraph. app/cbl/COACTUPC.cbl:L1584-L1586 moves the label
- * {@code 'Address Line 1'}, the submitted value, and the length 50 into working storage.
- * app/cbl/COACTUPC.cbl:L1587 then performs the paragraph. Those three moves fix the three-argument
- * order of the subject.</p>
- *
- * <p>Three host widths back the constants of this class. They are
- * {@code WS-EDIT-VARIABLE-NAME PIC X(25)} at app/cbl/COACTUPC.cbl:L53,
- * {@code WS-EDIT-ALPHANUM-ONLY PIC X(256)} at app/cbl/COACTUPC.cbl:L61, and
- * {@code WS-EDIT-ALPHANUM-LENGTH PIC S9(4) COMP-3} at app/cbl/COACTUPC.cbl:L62. A {@code MOVE}
- * into the 256-byte field pads on the right with spaces, so a value shorter than its declared
- * length arrives padded.</p>
- *
- * <p>The message build at app/cbl/COACTUPC.cbl:L1839-L1844 produces the one message this paragraph
- * can produce, and app/cbl/COACTUPC.cbl:L479 declares the one slot that holds it. Character class,
- * numeric class and maximum length each belong to another paragraph, covered by their own test
- * classes.</p>
- *
- * <p>app/cbl/COACTUPC.cbl:L1613-L1614 leave the {@code 'Address Line 2'} label move commented out.
- * No call site therefore validates address line 2. app/cbl/COACTUPC.cbl:L1615-L1616 apply the label
- * {@code 'City'} to the field {@code ACUP-NEW-CUST-ADDR-LINE-3}.</p>
+ * <p>The three-argument order follows the label, value and length moves at
+ * app/cbl/COACTUPC.cbl:L1584-L1586. A {@code MOVE} into
+ * {@code WS-EDIT-ALPHANUM-ONLY PIC X(256)} at app/cbl/COACTUPC.cbl:L61 pads on the right, so a
+ * short value arrives padded, and app/cbl/COACTUPC.cbl:L1839-L1844 builds the one message this
+ * paragraph can produce.</p>
  */
 @DisplayName("MandatoryFieldValidator, the presence edit of paragraph 1215-EDIT-MANDATORY")
 class MandatoryFieldValidatorTest {
 
-    /** Label the one call site moves at app/cbl/COACTUPC.cbl:L1584. */
+    /** The label, value and length the one call site moves at app/cbl/COACTUPC.cbl:L1584-L1586. */
     private static final String FIELD_LABEL = "Address Line 1";
 
-    /** Declared length the one call site moves at app/cbl/COACTUPC.cbl:L1586. */
     private static final int FIELD_LENGTH = 50;
 
-    /**
-     * Literal the message build appends at app/cbl/COACTUPC.cbl:L1841, opening with one space
-     * and closing with a period.
-     */
+    /** The literal app/cbl/COACTUPC.cbl:L1841 appends, with its leading space and trailing period. */
     private static final String NOT_SUPPLIED_LITERAL = " must be supplied.";
 
-    /** Width of the literal at app/cbl/COACTUPC.cbl:L1841, counting the space and the period. */
     private static final int LITERAL_WIDTH = 18;
 
-    /** The one message paragraph 1215 produces for the label of app/cbl/COACTUPC.cbl:L1584. */
     private static final String NOT_SUPPLIED_MESSAGE = "Address Line 1 must be supplied.";
 
     /** Declared width of {@code WS-EDIT-VARIABLE-NAME} at app/cbl/COACTUPC.cbl:L53. */

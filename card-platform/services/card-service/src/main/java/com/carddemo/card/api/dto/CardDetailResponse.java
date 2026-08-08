@@ -6,7 +6,7 @@ import java.time.LocalDate;
 import java.util.regex.Pattern;
 
 /**
- * Card detail projection returned by {@code POST /cards/detail}.
+ * Card detail projection returned by {@code GET /cards/{cardNumber}}.
  *
  * <p>Five components carry the card detail, in the order the card record declares
  * them at {@code app/cpy/CVACT02Y.cpy}. The card detail program
@@ -14,7 +14,7 @@ import java.util.regex.Pattern;
  * program {@code app/cbl/COCRDUPC.cbl} writes them.
  *
  * <p>The card service reads a card by its full sixteen-character Primary Account Number (PAN),
- * which arrives in the request body, and masks with
+ * which arrives as the path variable of the read route, and masks with
  * {@code com.carddemo.cobol.PanMasker.maskCardNumber} when it builds this response.
  *
  * @param maskedCardNumber the card number in its masked form, sixteen characters holding twelve

@@ -10,9 +10,12 @@
 # app/cbl/COACTUPC.cbl. Cycle-counter reset: app/cbl/CBACT04C.cbl:L353-L354.
 #
 # AccountUpdateService, ConcurrentChangeDetector, BillingCycleService, the edit
-# library, OutboxWriter and OutboxRelay are all present. The module registers no
-# controller and no listener, so the container starts, migrates its schema,
-# publishes account.state-changed rows its relay finds and answers /actuator.
+# library, OutboxWriter and OutboxRelay are all present. AccountController,
+# CustomerController and BillingCycleController serve the account read and update,
+# the customer read and the cycle close, and TransactionPostedConsumer reads
+# transaction.posted under account-posted to move the balance a posting produced. The
+# container starts, migrates its schema, serves those routes, publishes
+# account.state-changed rows its relay finds and answers /actuator.
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -66,6 +69,12 @@ spec:
           #   docker build -f card-platform/services/account-service/Dockerfile \
           #     -t "carddemo/account-service:${version}" \
           #     card-platform/services/account-service
+          # THE TAG IS MUTABLE, AND THAT IS THE RESIDUAL RISK. Bytes tagged
+          # carddemo/account-service:1.0.0-SNAPSHOT on one node are whatever an operator
+          # loaded there, and no manifest in this folder would notice a different build under the
+          # same name. The six references therefore live in one place, deploy/k8s/kustomization.yaml,
+          # so pinning them by digest is one edit rather than six. deploy/k8s/README.md gives the
+          # procedure and states plainly what a node verifies about each kind of image.
           image: carddemo/account-service:1.0.0-SNAPSHOT
           imagePullPolicy: Never
           securityContext:
@@ -266,9 +275,9 @@ spec:
                     - key: ca.crt
                       path: ca.crt
 ---
-# Pods reach this service at account-service:8080, a short name DNS resolves.
-# The authorization service reads it there, and nothing outside the cluster
-# reaches it.
+# Pods reach this service at account-service:8080, a short name DNS resolves. Nothing
+# outside the cluster reaches it, and no other service calls it: the authorization
+# service reads its own projection instead.
 apiVersion: v1
 kind: Service
 metadata:
@@ -294,15 +303,13 @@ spec:
 # Network policy for the account pod. Ingress admits its business and management
 # surfaces. Egress admits only Domain Name System (DNS), PostgreSQL and Kafka.
 #
-# This is one of the two supporting services the authorization service reads while it
-# applies the decline rules. What carries a credit limit and two cycle balances between
-# the two services is the account.state-changed stream and not a call, and the broker
-# listener it travels on is SASL_SSL for the same reason this policy exists: a cluster
-# pod network is a path shared with every other workload on the cluster.
-#
-# The authorization service is not among the callers. It reads its own copy of the two
-# accumulators and the expiry date, refreshed by the state changes this service
-# publishes, so no ingress rule here exists on its behalf.
+# The authorization service calls nothing here. It applies the decline rules against its
+# own local projection of the credit limit, the two cycle balances and the expiry date,
+# and the account.state-changed stream this service publishes is what keeps that
+# projection current. The broker listener that stream travels on is SASL_SSL for the same
+# reason this policy exists: a cluster pod network is a path shared with every other
+# workload on the cluster. No ingress rule here exists on the authorization service's
+# behalf.
 #
 # config/SecurityConfig authenticates every call to the account and customer surface
 # and checks ownership before a handler runs. It leaves /actuator/health open for

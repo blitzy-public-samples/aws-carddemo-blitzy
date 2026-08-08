@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.verify;
 
 import com.carddemo.card.CardApplication;
+import com.carddemo.card.TestIdentityPasswords;
 import com.carddemo.card.api.dto.CardListResponse;
 import com.carddemo.card.api.dto.CardSummary;
 import com.carddemo.card.domain.CardQueryService.CardListRow;
@@ -94,9 +95,11 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
         webEnvironment = SpringBootTest.WebEnvironment.NONE,
         properties = {
                 "KAFKA_SASL_PASSWORD=not-a-real-broker-password",
-                "ADMIN_PASSWORD_HASH={noop}not-a-real-admin-password",
-                "USER_PASSWORD_HASH={noop}not-a-real-user-password",
-                "MONITORING_PASSWORD_HASH={noop}not-a-real-monitoring-password"
+                "carddemo.outbox.relay.fixed-delay-ms=3600000",
+                "carddemo.retention.sweep-interval-ms=3600000",
+                "ADMIN_PASSWORD_HASH=" + TestIdentityPasswords.ADMIN_PASSWORD_HASH,
+                "USER_PASSWORD_HASH=" + TestIdentityPasswords.USER_PASSWORD_HASH,
+                "MONITORING_PASSWORD_HASH=" + TestIdentityPasswords.MONITORING_PASSWORD_HASH
         })
 @Testcontainers
 @DisplayName("CardQueryService over the fifty seeded cards: paging, filters and the two finders")

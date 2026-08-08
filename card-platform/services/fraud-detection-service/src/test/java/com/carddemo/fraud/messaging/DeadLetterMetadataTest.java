@@ -57,7 +57,7 @@ import static org.mockito.Mockito.when;
  * leading characters, a {@code null} value becomes the empty string, and no framework annotation
  * exists. They build the record directly and reach no file, context or broker.
  *
- * <p>This record is service-local. Five services each declare their own record of this name. Each
+ * <p>This record is service-local. Six service modules each declare their own record of this name. Each
  * one shortens an over-length component rather than refusing it. The record stays inside this
  * service's own package and carries no shared-library package prefix.
  */

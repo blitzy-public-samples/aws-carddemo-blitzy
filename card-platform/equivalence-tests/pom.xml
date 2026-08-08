@@ -18,16 +18,17 @@
   <name>CardDemo Equivalence Tests</name>
   <description>
     Provides fixed-width fixture loading and copybook parsing support for the equivalence
-    suite. Six *EquivalenceTest classes cover posting, authorization, bill payment,
-    interest, validation and decimal behavior. Failsafe runs them at integration-test
-    and fails the build at verify.
+    suite. Nine *EquivalenceTest classes cover posting, authorization, bill payment,
+    interest, validation, decimal behavior, identifier fidelity, fixture coverage and the
+    card seed. Failsafe runs them at integration-test and fails the build at verify, and
+    Surefire runs the contract tests that hold the shipped configuration and documentation
+    to what the code does.
   </description>
 
-  <!-- Language level. The build reads maven.compiler.release: the compiler plugin in
-       card-platform/pom.xml configures its release from that property, and the aggregator's
-       enforcer rule requires 25 in every module. java.version carries the framework's
-       conventional name for the same level and no plugin resolves it, because the aggregator
-       imports the Spring Boot bill of materials rather than inheriting the Spring Boot parent. -->
+  <!-- Language level. The compiler plugin in card-platform/pom.xml reads
+       maven.compiler.release, and the aggregator's enforcer rule requires 25 in every module.
+       java.version carries the framework's conventional name for the same level and no plugin
+       resolves it. -->
   <properties>
     <java.version>25</java.version>
     <maven.compiler.release>25</maven.compiler.release>
@@ -168,10 +169,8 @@
         </configuration>
       </plugin>
 
-      <!-- This module intentionally carries test sources only. Its primary artifact therefore
-           packages the compiled equivalence harness rather than an empty main output directory.
-           Keeping a real artifact lets both verify and install complete without a warning or a
-           meaningless production marker class. -->
+      <!-- This module carries test sources only, so its artifact packages the compiled
+           equivalence harness rather than an empty main output directory. -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-jar-plugin</artifactId>
@@ -182,12 +181,10 @@
       </plugin>
 
       <!-- Failsafe runs the *EquivalenceTest classes at integration-test and fails the build at
-           verify.
-
-           The execution identifier below is the one the parent declares in pluginManagement, so
-           Maven merges the two into one execution. The include sits inside that execution and not
-           at plugin level, so a second execution added later does not select the same classes
-           again. EquivalenceSuiteExecutionConfigurationTest holds both properties. -->
+           verify. Declaring the plugin here is what activates the execution the parent supplies in
+           pluginManagement: the identifier below matches it, so Maven merges the two into one
+           execution, and the include sits inside that execution rather than at plugin level.
+           EquivalenceSuiteExecutionConfigurationTest holds both properties. -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-failsafe-plugin</artifactId>
@@ -197,6 +194,14 @@
             <configuration>
               <includes>
                 <include>**/*EquivalenceTest.java</include>
+                <!--
+                  This module is the only one the plan lets depend on every service, so a test that
+                  spans more than one service can live nowhere else. Failsafe replaces its default
+                  selection when an include list is given, so before this second pattern a class
+                  named *IT here compiled and silently never ran. The unit-test plugin cannot pick
+                  either pattern up, so nothing runs twice.
+                -->
+                <include>**/*IT.java</include>
               </includes>
             </configuration>
           </execution>

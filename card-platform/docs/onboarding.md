@@ -20,6 +20,29 @@ The runtime stack pulls `apache/kafka:4.2.1` and `postgres:18.4`. Kafka runs in 
 
 Spring Boot 4.1.0 supplies the dependency bill of materials. Most dependencies omit their own version and inherit the managed version.
 
+### Start with one command
+
+From the repository root:
+
+```bash
+cd card-platform
+scripts/start-demo.sh
+```
+
+That is the whole first run. The script packages the reactor, creates `.env` from `.env.example`, fills all nineteen credentials, builds the six images, starts eight containers, and reads `/actuator/health` on each of the six management ports. It prompts for nothing, and re-running it changes no credential that already holds a value.
+
+Three things a clean clone cannot skip, which is why `docker compose up -d --build` alone does not work:
+
+- every `services/*/Dockerfile` copies a packaged archive out of its own module's `target/` directory, and a fresh checkout carries none;
+- `docker-compose.yml` reads nineteen credentials that nothing in this repository supplies, because a credential published here would be a credential everyone holds;
+- `.env`, where those credentials live, does not exist until it is copied.
+
+The four demo passwords the script generates are written to `card-platform/.demo-credentials` with owner-only permissions, and git ignores that file. `.env` keeps only their `{bcrypt}` hashes, and a hash cannot be sent to a service as a password. To choose the passwords yourself, set `CARDDEMO_ADMIN_PASSWORD`, `CARDDEMO_ACQUIRER_PASSWORD`, `CARDDEMO_USER_PASSWORD` or `CARDDEMO_MONITORING_PASSWORD` before running the script.
+
+To prepare `.env` without starting anything, run `scripts/generate-env.sh` on its own. It reads the credential names out of `.env.example`, so adding a credential there extends it with no edit.
+
+The rest of this section is the same work performed by hand. Read it to understand what the script does, or follow it when you want to set a value yourself.
+
 ### Clone to a configured working tree
 
 Run the following commands from the repository root:
@@ -44,10 +67,11 @@ Populate Maven’s local dependency cache before generating the encoded hashes:
 mvn -B -DskipTests package
 ```
 
-The remaining three credentials are encoded password hashes. Choose three local passwords and keep them in the current shell:
+The remaining four credentials are encoded password hashes. Choose four local passwords and keep them in the current shell:
 
 ```bash
 read -rsp "Admin password: " ADMIN_PASSWORD; echo
+read -rsp "Acquirer password: " ACQUIRER_PASSWORD; echo
 read -rsp "User password: " USER_PASSWORD; echo
 read -rsp "Monitoring password: " MONITORING_PASSWORD; echo
 
@@ -69,32 +93,37 @@ hash_password() {
 }
 
 sed -i "s|^ADMIN_PASSWORD_HASH=.*|ADMIN_PASSWORD_HASH=$(hash_password "$ADMIN_PASSWORD")|" .env
+sed -i "s|^ACQUIRER_PASSWORD_HASH=.*|ACQUIRER_PASSWORD_HASH=$(hash_password "$ACQUIRER_PASSWORD")|" .env
 sed -i "s|^USER_PASSWORD_HASH=.*|USER_PASSWORD_HASH=$(hash_password "$USER_PASSWORD")|" .env
 sed -i "s|^MONITORING_PASSWORD_HASH=.*|MONITORING_PASSWORD_HASH=$(hash_password "$MONITORING_PASSWORD")|" .env
 ```
 
 ### The card-token key
 
-`CARD_TOKEN_SECRET` and `CARD_TOKEN_VERSION` are the last two security values, and they are not `REPLACE` markers: `.env.example` ships a working demo key so the stack starts. A card token is a keyed `HMAC-SHA-256` over the full card number under that secret, prefixed by the version, rendered as 64 lower-case hexadecimal characters. Both values are required and there is no fallback, so a service refuses to start without them.
+`CARD_TOKEN_SECRET` is a `REPLACE` marker and generating it is a required step. A card token is a keyed `HMAC-SHA-256` over the full card number under that secret, prefixed by `CARD_TOKEN_VERSION`, rendered as 64 lower-case hexadecimal characters. The key is what stops a holder of one token recomputing the token of every sixteen-digit card number, so this repository ships none. Only two services read it, the authorization service and the card service, and both refuse to start without it:
 
-Leave both alone for a demonstration. If you rotate either one, three checked-in values become wrong at the same instant, and all three have to move together:
+```bash
+sed -i "s|^CARD_TOKEN_SECRET=.*|CARD_TOKEN_SECRET='$(openssl rand -base64 48 | tr -d '/+=')'|" .env
+```
 
-- the 50 `card_token` literals in `services/card-service/src/main/resources/db/migration/V2__seed.sql`;
-- the `SCOPE_CARD_` authority inside `USER_SCOPES`, in `.env.example` and in `deploy/k8s/30-configmap.yaml`;
-- any card token already stored by the notification read model, which keys `statement_transaction` on it.
+`CARD_TOKEN_VERSION` is not key material and needs no change. It is part of the message the code covers, so raising it rolls every token over under the same key.
 
-Derive one token with the key you intend to ship, using the module you have already built:
+Generating the key is all the stack needs. The 50 `card_token` literals in `services/card-service/src/main/resources/db/migration/V2__seed.sql` are derived under the build-scope key in `pom.xml`, and `CardTokenReconciler` re-derives every one of them under your key as the card service starts. What a change of key does not survive is a token stored elsewhere: `statement_transaction` and `notification_log` in the notification service, `authorization_decision` in the authorization service, and any `SCOPE_CARD_` authority already inside `USER_SCOPES`.
+
+`USER_SCOPES` therefore ships no `SCOPE_CARD_` authority, which means `admin001` reaches every card route and `user0001` reaches none. To give the ordinary identity one card, derive its token under your key using the module you have already built:
 
 ```bash
 COBOL_JAR="$(find libs/cobol-compat/target -name 'cobol-compat-*.jar' | head -1)"
-CARD_TOKEN_SECRET='your-new-key-of-at-least-32-characters' CARD_TOKEN_VERSION=2 \
-  jshell --class-path "$COBOL_JAR" -s - <<'JSHELL'
-System.out.println(com.carddemo.cobol.PanMasker.cardToken("0500024453765740"));
+export CARD_NUMBER="$(awk 'substr($0,17,11) == "00000000001" { print substr($0,1,16); exit }' \
+  ../app/data/ASCII/carddata.txt)"
+CARD_TOKEN_SECRET="$(grep '^CARD_TOKEN_SECRET=' .env | cut -d= -f2- | tr -d "'")" \
+CARD_TOKEN_VERSION=1 jshell --class-path "$COBOL_JAR" -s - <<'JSHELL'
+System.out.println(com.carddemo.cobol.PanMasker.cardToken(System.getenv("CARD_NUMBER")));
 /exit
 JSHELL
 ```
 
-Under the shipped demo key and version 1, that card number derives `d29277ff9f4215818ca524cbf2e94927149958ef6c6a9f49242ffa18a484fe9d`. A rotated key gives a different value, which is the whole point of the key.
+Append `SCOPE_CARD_<that value>` to `USER_SCOPES` in `.env`, then restart. A different key gives a different value, which is the whole point of the key.
 
 ### Build and start
 
@@ -147,7 +176,13 @@ for port in 9081 9082 9083 9084 9085 9086; do
 done
 ```
 
-Business routes require HTTP Basic authentication. The administrator username defaults to `admin001`.
+Business routes require HTTP Basic authentication. The administrator username defaults to `admin001`, and the acquiring workload username to `acquirer1`.
+
+Every state-changing request carries one header beyond the credential: `X-CardDemo-Request`, with any non-blank value. A `POST`, `PUT`, `PATCH` or `DELETE` arriving without it answers 403, and so does one declaring a cross-site `Sec-Fetch-Site` or a foreign `Origin`. The reason is that HTTP Basic is a credential a browser attaches by itself, so a page on any other site could otherwise submit a form against a business route and the browser would authenticate it; an HTML form cannot set a request header, which is what makes one header the control. Reads need nothing, which is why the health loop above carries no header. `API_CROSS_SITE_HEADER` renames it, and the value is never inspected, only its presence.
+
+Request volume is bounded as well. Each service allows 600 requests a minute per source address and per identity, 120 state-changing requests, 20 failed authentications, and 64 requests in flight, answering 429 with `Retry-After` past any of them. `API_RATE_*` raises the ceilings for a load run. Management ports are exempt, so a probe is never throttled.
+
+`POST /authorizations` admits `ACQUIRER` and `ADMIN` alone. The acquirer is the identity a point-of-sale network presents: the route names its card in the request body, so no path variable carries an identifier an ownership scope can be compared against, and it therefore reaches every card the platform holds. `user0001` is a cardholder identity and receives 403 there.
 
 Submit `POST /authorizations` with the first card in the checked-in fixture:
 
@@ -157,7 +192,8 @@ CAPTURED_AT="$(date -u +'%Y-%m-%d %H:%M:%S').000000"
 PROCESSED_AT="$(date -u +'%Y-%m-%d-%H.%M.%S').000000"
 
 curl -sS -X POST http://localhost:8081/authorizations \
-  -u "admin001:${ADMIN_PASSWORD}" \
+  -u "acquirer1:${ACQUIRER_PASSWORD}" \
+  -H 'X-CardDemo-Request: onboarding' \
   -H 'Content-Type: application/json' \
   -d "{\"cardNumber\":\"${CARD_NUMBER}\",
        \"transactionTypeCode\":\"01\",
@@ -175,7 +211,7 @@ curl -sS -X POST http://localhost:8081/authorizations \
 
 The response returns HTTP 200 for an approval and HTTP 422 for a source-equivalent decline. `approved` separates the two outcomes.
 
-Both timestamps are derived from the current time on purpose. `carddemo.authorization.origin-timestamp.max-age-minutes` defaults to 1440, so a capture moment more than a day old is refused before any decision is taken, and a typed-in date silently stops working the day after it is typed. The refusal answers 422 with one fixed text, `This request was refused before any decision was taken...`, which is deliberately the same text for every pre-decision refusal.
+Both timestamps accept the ten-character date `YYYY-MM-DD` and the twenty-six character record form. `app/cbl/COTRN02C.cbl:L389-L423` validates each as a ten-character date, and a ten-character value is widened to the record width before it reaches the event. No bound relates either value to the clock of the service: reject reason `0103` at `app/cbl/CBTRN02C.cbl:L414-L420` compares the first ten characters of the capture moment against the account expiry date, and nothing else tests the value. A date the tolerant policy declines answers 422 with `Orig Date - Not a valid date...` or `Proc Date - Not a valid date...`, and a body failing several edits reports the one text the source would have reported first.
 
 Watch the asynchronous path from inside the broker container:
 
@@ -215,6 +251,7 @@ The checked-in fixture is read data and it fails the write edits by design: thos
 ```bash
 curl -sS -X PUT http://localhost:8085/accounts/00000000050 \
   -u "admin001:${ADMIN_PASSWORD}" \
+  -H 'X-CardDemo-Request: onboarding' \
   -H 'Content-Type: application/json' \
   -d '{
     "accountData": {
@@ -259,6 +296,30 @@ Four values in it are not the seeded ones. `addressZip` is `97201` rather than `
 A write answers 200 with `Changes committed to database` and produces one event per record it changed: `AccountStateChanged` for the account row and `CustomerContextChanged` for the customer row. Run the same body twice and the second call answers 200 with `No change detected with respect to values fetched.` and produces neither. `services/account-service/src/main/resources/openapi.yaml` carries this body as a request example beside a customer-only variant.
 
 One more consequence of replacing the whole record: `currentBalance` and the two cycle counters are components of the request, so a body carrying the figures the caller was shown writes those figures back, and a transaction posted between the read and the write is overwritten. Read the account again before updating it, or send `customerData` alone and leave every account column as stored.
+
+### Run it on a local Kubernetes cluster
+
+`deploy/k8s/` carries the same six services as Deployments, with Kafka, PostgreSQL, a ConfigMap and a Secret template. One step has to happen before `kubectl apply`, and skipping it is the most common way this deployment fails.
+
+Each service Deployment names `carddemo/<service>:1.0.0-SNAPSHOT` with `imagePullPolicy: Never`. Nothing publishes those images to a registry, so the kubelet never looks for one and the image has to already be in the cluster node's image store. A cluster that has not been given them reports `ErrImageNeverPull`, which names no cause. Build the images and put them in the cluster with:
+
+```bash
+cd card-platform
+deploy/k8s/load-images.sh              # runtime read from the current kubectl context
+deploy/k8s/load-images.sh kind         # or name it: kind, minikube, docker-desktop
+```
+
+The script packages the reactor if an archive is missing, builds all six images, and then loads them the way the runtime requires: `kind load docker-image` for kind, `minikube image load` for minikube, and nothing at all for Docker Desktop, whose cluster shares this machine's Docker daemon. It then reads the node's image list back and fails if no `carddemo` image arrived. `KIND_CLUSTER_NAME` and `MINIKUBE_PROFILE` select a cluster other than the default; `IMAGE_TAG` overrides the tag, which is otherwise the version in `pom.xml`.
+
+Apply the manifests in the order `deploy/k8s/00-namespace.yaml` documents, which the script prints when it finishes: the namespace, then a filled-in copy of `31-secret.example.yaml` kept **outside** that folder, then the remaining files in filename order with the template excluded. Applying the whole folder would overwrite the Secrets with the placeholders the template publishes, and every workload would refuse to start.
+
+After a rebuild, the images change but the Pods do not. Restart them:
+
+```bash
+kubectl -n carddemo rollout restart deployment
+```
+
+The Compose stack and the cluster are alternatives rather than layers. The transport differs between them, and [the platform README](../README.md) carries the comparison: Compose serves HTTP on loopback with `SASL_PLAINTEXT`, and the manifests serve HTTPS with `SASL_SSL` and mounted key material.
 
 ## Domain context
 
@@ -372,7 +433,7 @@ Three services hold part of one `ACCTDAT` record, and the counters move along a 
 
 ### 6. Rotating the card-token key invalidates checked-in values
 
-A card token is a keyed hash, so it is a function of `CARD_TOKEN_SECRET` and `CARD_TOKEN_VERSION` as much as of the card number. Change either and the 50 seeded `card_token` literals, the `SCOPE_CARD_` authority in `USER_SCOPES`, and every token a read model already stored all become unreachable at once. The failure is quiet on the authority: a card detail request simply answers 403 for a card the caller does own. [The card-token key](#the-card-token-key) gives the rotation procedure and a command that derives a token under a candidate key.
+A card token is a keyed hash, so it is a function of `CARD_TOKEN_SECRET` and `CARD_TOKEN_VERSION` as much as of the card number. The 50 seeded `card_token` literals look after themselves: `CardTokenReconciler` re-derives them under the configured key each time the card service starts. Two things do not. Any `SCOPE_CARD_` authority in `USER_SCOPES` names a token derived under the previous key, and so does every token a read model already stored. The failure is quiet on the authority: a card detail request simply answers 403 for a card the caller does own. [The card-token key](#the-card-token-key) gives the command that derives a token under a candidate key.
 
 ### 7. The first start needs the network, even though the build does not
 
@@ -382,7 +443,7 @@ A card token is a keyed hash, so it is a function of `CARD_TOKEN_SECRET` and `CA
 docker compose pull postgres kafka
 ```
 
-The six service images are never pulled. Each is built locally as `carddemo/<service>:1.0.0-SNAPSHOT`, the Maven project version, which is the same tag `deploy/k8s` names with `imagePullPolicy: Never` and the same tag the container stage of `.github/workflows/ci.yml` builds.
+The six service images are never pulled. Each is built locally as `carddemo/<service>:1.0.0-SNAPSHOT`, the Maven project version, which is the same tag `deploy/k8s` names with `imagePullPolicy: Never` and the same tag the container stage of `.github/workflows/ci.yml` builds. That tag is mutable, and `deploy/k8s/README.md` says so and gives the procedure for pinning the six by digest instead. `Never` is why a pull can never substitute other bytes for them on a cluster: this project publishes no image, so `carddemo/<service>` is a registry name it does not own.
 
 ### 8. A replica needs an event before it holds a row
 
@@ -401,6 +462,18 @@ Submit that fixture value and the extension is gone. The account service writes 
 Send back the expiry the read returned, in the eight-character write form — `20991231` on a demo stack, and the fixture value on a run whose output is compared against the fixture. A second write is the repair: resubmit with `"expirationDate": "20991231"` and the next authorization is approved again.
 
 `ACCOUNT_FLYWAY_LOCATIONS` and `AUTHORIZATION_FLYWAY_LOCATIONS` carry the overlay together or not at all, which is why the two copies of that expiry agree until a request changes one of them. [Update an account and a customer](#update-an-account-and-a-customer) gives a body that keeps them in step.
+
+### 11. A local Kubernetes cluster cannot pull the six service images
+
+The six Deployments carry `imagePullPolicy: Never`, and no registry holds `carddemo/<service>:1.0.0-SNAPSHOT`. A cluster that has never been given those images reports `ErrImageNeverPull` on every service Pod, and that status names no cause: the images exist on the machine, and the cluster simply cannot see them. Compose does not have this problem because it builds the images into the same daemon it runs them from.
+
+Run `deploy/k8s/load-images.sh` before the first `kubectl apply`, and again after any rebuild followed by `kubectl -n carddemo rollout restart deployment`. [Run it on a local Kubernetes cluster](#run-it-on-a-local-kubernetes-cluster) gives the whole sequence.
+
+### 12. A state-changing call without `X-CardDemo-Request` answers 403
+
+Every service refuses a `POST`, `PUT`, `PATCH` or `DELETE` that does not carry the header, that declares a `Sec-Fetch-Site` other than `same-origin` or `same-site`, or that names an `Origin` other than the service it reached. The refusal is 403 with a fixed problem document naming no route, which reads exactly like a role refusal — so a command copied from an older note fails in a way that looks like a permissions problem and is not. Add `-H 'X-CardDemo-Request: 1'` and it works. Reads are unaffected.
+
+A deployment terminating Transport Layer Security at a proxy has to set `SERVER_FORWARD_HEADERS_STRATEGY=framework`, or each service compares `Origin` against the address the proxy dialled rather than the one the browser used, and bounds the proxy's address rather than the caller's. Both filters count inside one process, so several replicas bound each replica rather than the service as a whole; [suggested next tasks](suggested-next-tasks.md) records the shared-store ceiling a deployment beyond a demo wants.
 
 ## Where to go next
 

@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.carddemo.card.api.CardController;
 import java.lang.reflect.GenericArrayType;
 import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.RecordComponent;
@@ -146,11 +147,11 @@ final class ApiErrorResponseTest {
     private static final String SUPPLIED_ROUTE = "/cards";
 
     /**
-     * Route template of the card detail endpoint. No route of this service takes a card number as
-     * a path variable. The detail route is a {@code POST} whose body carries the card number, so a
-     * full Primary Account Number reaches no access log, proxy log, trace or browser history.
+     * Route template of the two endpoints that name one card. The card number is a path variable of
+     * both, and the template carries its brace-delimited name in place of any value, so no full
+     * Primary Account Number reaches a response body or a log line built from one.
      */
-    private static final String CARD_NUMBER_ROUTE = "/cards/detail";
+    private static final String CARD_NUMBER_ROUTE = "/cards/{cardNumber}";
 
     ApiErrorResponseTest() {
     }
@@ -158,7 +159,7 @@ final class ApiErrorResponseTest {
     // Shape of the record: three components, one of them the message.
 
     /**
-     * Asserts that the error payload declares exactly three components.
+     * The error payload declares exactly three components.
      *
      * <p>The three carry the Hypertext Transfer Protocol status code, the one message of
      * {@code WS-RETURN-MSG PIC X(75)} at {@code app/cbl/COCRDUPC.cbl:L173}, and the route template.
@@ -188,7 +189,7 @@ final class ApiErrorResponseTest {
     }
 
     /**
-     * Asserts the three component types, position by position.
+     * The three component types, position by position.
      *
      * <p>The status arrives as an {@code int}, and the message and the route arrive as a
      * {@link String}. The message type matches the alphanumeric {@code PIC X(75)} of
@@ -211,7 +212,7 @@ final class ApiErrorResponseTest {
     }
 
     /**
-     * Asserts that the message component holds one scalar {@link String}.
+     * The message component holds one scalar {@link String}.
      *
      * <p>The check covers the erased type and the generic type. A generic type that resolves to a
      * parameterized type or to a generic array would hold several messages, and
@@ -248,7 +249,7 @@ final class ApiErrorResponseTest {
     // Absences: shapes the payload does not have.
 
     /**
-     * Asserts that no component holds a collection, an array or a map.
+     * No component holds a collection, an array or a map.
      *
      * <p>The check runs over every component and tests the erased type and the generic type. The
      * card update program reports through one field, {@code WS-RETURN-MSG PIC X(75)} at
@@ -296,7 +297,7 @@ final class ApiErrorResponseTest {
     }
 
     /**
-     * Asserts that no component name points at a field-to-message map.
+     * No component name points at a field-to-message map.
      *
      * <p>The scan covers the per-field map fragments, including the plural {@code messages}.
      * {@code WS-RETURN-MSG PIC X(75)} at {@code app/cbl/COCRDUPC.cbl:L173} holds text and carries
@@ -315,7 +316,7 @@ final class ApiErrorResponseTest {
     }
 
     /**
-     * Asserts that exactly one component carries a message, and that the component is a scalar
+     * Exactly one component carries a message, and that the component is a scalar
      * {@link String}.
      *
      * <p>The count runs over the component names and the type check runs on the one match, so
@@ -346,7 +347,7 @@ final class ApiErrorResponseTest {
     // One payload, one message, compared character for character.
 
     /**
-     * Asserts that a payload carrying the text of {@code LOCKED-BUT-UPDATE-FAILED} keeps it
+     * A payload carrying the text of {@code LOCKED-BUT-UPDATE-FAILED} keeps it
      * character for character.
      *
      * <p>The literal sits at {@code app/cbl/COCRDUPC.cbl:L210} and line 1491 sets the condition
@@ -384,7 +385,7 @@ final class ApiErrorResponseTest {
     }
 
     /**
-     * Asserts that two texts the payload carries fit the field they come from.
+     * Two texts the payload carries fit the field they come from.
      *
      * <p>{@code WS-RETURN-MSG} holds 75 characters at {@code app/cbl/COCRDUPC.cbl:L173}. The text
      * of {@code LOCKED-BUT-UPDATE-FAILED} at L210 measures 23 characters, and the text of
@@ -428,10 +429,10 @@ final class ApiErrorResponseTest {
     }
 
     /**
-     * Asserts the route component carries a template and refuses a resolved path.
+     * The route component holds a template and refuses a resolved path.
      *
-     * <p>The endpoint that reads one card takes the card number as a path variable, so a resolved
-     * path would place a full Primary Account Number in the response body. The card record
+     * <p>The two endpoints that name one card take the card number as a path variable, so a
+     * resolved path would place a full Primary Account Number in the response body. The card record
      * declares {@code CARD-NUM PIC X(16)} at {@code app/cpy/CVACT02Y.cpy:L5}, and
      * {@code CARD-ACCT-ID PIC 9(11)} at L6 is eleven digits.
      */
@@ -443,8 +444,10 @@ final class ApiErrorResponseTest {
                 "A route template is valid. The card number stays a path variable name.");
         assertFalse(templated.route().matches(".*[0-9]{5,}.*"),
                 "A route template holds no run of five digits or more.");
-        assertFalse(templated.route().contains("{"),
-                "No route of this service declares a path variable, so none can resolve to a "
+        assertTrue(templated.route().contains("{" + CardController.CARD_NUMBER_VARIABLE + "}"),
+                "The template of the two routes that name one card holds the variable name.");
+        assertFalse(templated.route().matches(".*[0-9].*"),
+                "A route template of this service holds no digit, so none can resolve to a "
                         + "card number or an account identifier.");
 
         for (String resolved : List.of("/cards/" + "0".repeat(12) + "5740", "/cards/00000000050",

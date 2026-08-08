@@ -71,15 +71,38 @@ Every other answer is a problem document, the same four members `config/Security
 | `503` | The projection table could not be reached, so the read was never attempted | `The balance store is unavailable. Retry shortly.` |
 | `500` | A fault inside this service | `The balance could not be read.` |
 
-No member of that document echoes anything the caller sent — no rejected value, no resolved path, no query string and no header. The framework default body this replaced carried the resolved path, so a caller naming an account identifier read that identifier back and copied it into its own log. That body also answered `500` for a datastore that was merely away, which invites no retry and names no dependency; the `503` arm above names a connection that cannot be opened, a transaction that cannot be begun and a statement that ran out of time, and nothing wider. A broken query is a fault of this service and answers `500`, where a retry would only repeat it.
+No member of that document echoes anything the caller sent — no rejected value, no resolved path, no query string and no header. The framework default body this replaced carried the resolved path, so a caller naming an account identifier read that identifier back and copied it into its own log. That body also answered `500` for a datastore that was merely away, which invites no retry and names no dependency. The `503` arm above names a connection that cannot be opened, a transaction that cannot be begun, and a statement that ran out of time. It names nothing wider. A broken query is a fault of this service and answers `500`, where a retry would only repeat it.
+
+`-u user0001` with no colon makes `curl` prompt for the password, so it reaches neither the process
+environment nor the shell history. `.env` holds only the bcrypt hash of each password, so supply the
+plaintext chosen when that hash was generated. [Onboarding](../../docs/onboarding.md) carries the
+generation commands.
 
 ```bash
-curl -fsS -u user0001:"$USER_PASSWORD" http://localhost:8082/balances/00000000001
+curl -fsS -u user0001 http://localhost:8082/balances/00000000001
 ```
 
 The interface description of record is the hand-written [openapi.yaml](src/main/resources/openapi.yaml). No documentation generator produces it.
 
 This service calls no other service. It holds no web client, and every route the security configuration does not name is refused.
+
+### Two controls in front of every route
+
+`config/CrossSiteRequestFilter` guards state change: a `POST`, `PUT`, `PATCH` or `DELETE` must carry `X-CardDemo-Request`, must not declare a cross-site `Sec-Fetch-Site`, and must not carry a foreign `Origin`. This service maps one `GET` and nothing else, so no state-changing route exists here to forge today. That is the reason the filter is here rather than a reason it is not: the read-only shape becomes an enforced property instead of a fact a reader has to go and check, and the first write added inherits the control rather than needing someone to remember it. A refusal answers 403 and counts `carddemo.ledger.requests.cross.site.refused`. `GET`, `HEAD`, `OPTIONS` and `TRACE` pass untouched, which is why no path is exempted: the liveness probe and the metrics scrape are reads.
+
+`config/RequestRateCeilingFilter` bounds volume. It runs one place ahead of the security chain, because a refusal has to cost less than the attempt it refuses and an attempt that reached the chain would already have paid for a bcrypt verification.
+
+| Ceiling | Default | Counted by |
+| :--- | ---: | :--- |
+| Failed authentications | 20 per 60s | Source address, and only when the request carried a credential and was answered 401 |
+| Requests | 600 per 60s | Source address |
+| Requests | 600 per 60s | The username the credential names, read as a counter key and never verified or logged |
+| State-changing requests | 120 per 60s | Source address |
+| Requests in flight | 64 | The whole instance |
+
+A refusal answers 429 with `Retry-After` and counts `carddemo.ledger.requests.throttled`, tagged with the stage that refused: `authentication`, `source`, `identity`, `write` or `concurrency`. The five ceilings read `API_RATE_WINDOW_SECONDS`, `API_RATE_REQUESTS_PER_WINDOW`, `API_RATE_WRITE_REQUESTS_PER_WINDOW`, `API_RATE_AUTHENTICATION_FAILURES_PER_WINDOW` and `API_RATE_CONCURRENT_REQUESTS` from [`.env.example`](../../.env.example). The management base path is exempt, because a throttled probe reads as a failed container.
+
+Both filters count in this process, so several replicas bound each replica rather than the service as a whole, and the source address is the one the container resolves rather than a forwarding header a caller could write. A deployment behind a proxy sets `SERVER_FORWARD_HEADERS_STRATEGY=framework` so the container resolves the client address and the client-facing host. Both residual limits are recorded in [suggested next tasks](../../docs/suggested-next-tasks.md), and the reasoning behind the two controls is in the [Decision Log](../../docs/decision-log.md).
 
 <br/>
 
@@ -88,30 +111,41 @@ This service calls no other service. It holds no web client, and every route the
 | Direction | Event | Topic | Consumer group |
 | :--- | :--- | :--- | :--- |
 | Consumes | `TransactionAuthorized` | `transaction.authorized` | `ledger-posting` |
+| Consumes | `TransactionDeclined` | `transaction.declined` | `ledger-reject` |
 | Consumes | `AccountStateChanged` | `account.state-changed` | `ledger-account-state` |
 | Produces | `TransactionPosted` | `transaction.posted` | — |
-| Produces | `TransactionDeclined` | `transaction.declined` | — |
 | Listener failure route | the record as bytes | the source topic plus `.DLT` | — |
 | Relay failure route | `DeadLetterEnvelope` | `carddemo.dead-letter` | — |
 
 Four facts govern every payload this service reads or writes.
 
-**The consumer group is its own.** `ledger-posting` is what makes this listener independent of the fraud listener reading the same topic. Each group receives its own copy of every event, so neither service waits for the other and neither can starve it.
+**The consumer group is its own.** `ledger-posting` is what makes this listener independent of the fraud listener reading the same topic. Each group receives its own copy of every event, so neither service waits for the other and neither can starve it. Three listeners means three groups, so the reject stream and the account-state stream lag, rebalance and reset apart from posting.
 
 **The account identifier is always `aggregateId` and always the Kafka message key.** Kafka orders records within a partition and not across partitions, and the balance updates for one account must not be reordered. The identifier is `XREF-ACCT-ID PIC 9(11)` at `app/cpy/CVACT03Y.cpy:L7`, the same value `2700-UPDATE-TCATBAL` moves into the category key at `app/cbl/CBTRN02C.cbl:L469`. `domain/PostingService` refuses a record whose key does not equal the payload identifier.
 
-**Money travels as a decimal string, never as a JSON number.** Most parsers turn a JSON number into a double, which puts binary floating point back into a system whose correctness rests on fixed-point arithmetic.
+**Money travels as a decimal string, never as a JSON number.** Most parsers turn a JSON number into a double. That puts binary floating point back into a system whose correctness rests on fixed-point arithmetic.
 
 **`TransactionPosted` leaves through the outbox, never from inside the listener.** The three posting rows, the duplicate-delivery marker and the outbox row commit in one local transaction. `outbox/OutboxRelay` publishes afterwards on its own schedule, claiming up to 100 rows every 500 ms.
 
+`TransactionDeclined` is consumed so the reject path exists in production. Both halves of the fork at `app/cbl/CBTRN02C.cbl:L370`–`L378` ran in one program: the approval fell through to `2000-POST-TRANSACTION` and the refusal branched to `2500-WRITE-REJECT-REC`. The target splits them across two services, because the authorization service is the sole writer of the decision, so the refusal reaches this service as an event. `messaging/TransactionDeclinedConsumer` rebuilds the refused feed record from the payload and `domain/RejectRecorder` writes one 430-byte reject row, in the transaction the duplicate-delivery marker commits in.
+
+This service publishes nothing on `transaction.declined`, and that is deliberate rather than an omission. A second `TransactionDeclined` for one refusal would put two differently shaped events for one decision on a topic this service reads. The event exists and the row exists; what changed is which service publishes.
+
+A decline arriving at contract version 1 or 2 is acknowledged with no row written. Neither version carries the nine descriptive values `REJECT-TRAN-DATA PIC X(350)` needs, and version 2 names no account at all. Inventing values that were not sent is the one outcome equivalence forbids. All 38 reject records the fixture `app/data/ASCII/dailytran.txt` produces carry reason `0102`, which resolves an account and travels at version 3, so the boundary costs the parity evidence nothing.
+
 `AccountStateChanged` is consumed for a different reason. `account_balance_projection` holds a copy of three fields of the account record the account service owns, so the second listener keeps that copy current when the owner changes it. The consumer applies each snapshot against `source_occurred_at`, so a redelivery arriving behind a newer change discards itself. A posting is a delta this service owns and advances neither provenance column.
 
-The two failure routes carry two different forms on purpose. A spent consumer record goes to its own source topic plus `.DLT` as raw bytes, because a value that failed may never have parsed. An abandoned outbox row goes to `carddemo.dead-letter` as a governed envelope, because its event type is known.
+The two failure routes carry two different forms on purpose, and **neither carries the payload that failed**.
+
+A spent consumer record reaches its own source topic plus `.DLT`, and what is published there is not the record. `config/KafkaConsumerConfig.sanitizedDeadLetterRecord` builds a new record: the key becomes the coordinates `topic-partition-offset`, so the producer's key is not retained, and the value becomes a 134-character fixed-width diagnostic holding the four components of `01 ABEND-DATA` at `app/cpy/CSMSG02Y.cpy:L21-L29` — `ABEND-CODE PIC X(4)`, `ABEND-CULPRIT PIC X(8)`, `ABEND-REASON PIC X(50)` and `ABEND-MSG PIC X(72)`. The same four travel as the headers `carddemo-dl-code`, `carddemo-dl-culprit`, `carddemo-dl-reason` and `carddemo-dl-message`, and the outgoing header set is rebuilt from an allow-list so a producer cannot smuggle one of those names through. The failed value, the failed key, the exception message and the stack trace are all omitted. That is deliberate: a value that failed may be the very payload a schema control rejected, so republishing it would move unvalidated bytes onto a second topic.
+
+An abandoned outbox row reaches `carddemo.dead-letter` as a governed `DeadLetterEnvelope` instead, because its event type is known and the row was written by this service rather than received from another.
 
 | Meter | Kind | What moves it |
 | :--- | :--- | :--- |
 | `carddemo.ledger.events.consumed` | Counter | One delivery accepted for processing |
-| `carddemo.ledger.transactions.processed` | Counter | One posting or one reject, tagged by outcome |
+| `carddemo.ledger.transactions.processed` | Counter | One posting, one reject or one duplicate, tagged by outcome. A decline carrying no reject detail raises none of the three: it wrote no row and suppressed no earlier delivery, so reporting it as either would put a number here that means nothing |
+| `carddemo.ledger.events.published` | Counter | One outbox row the broker acknowledged, counted after the sweep commits |
 | `carddemo.ledger.failures` | Counter | One failed attempt, tagged by stage |
 | `carddemo.ledger.dead.letters` | Counter | One spent record, tagged `outcome=published` or `outcome=failed` |
 | `carddemo.ledger.processing.latency` | Timer | Listener duration to commit |
@@ -136,7 +170,7 @@ Rejections were ordinary traffic in that job, not errors. `L229` reads `IF WS-RE
 
 ### The four reject reasons
 
-The codes and their text come from `app/cbl/CBTRN02C.cbl` lines 385 to 420. The authorization service applies them; this service records a reject it is handed and stores the reason on the row.
+The codes and their text come from `app/cbl/CBTRN02C.cbl` lines 385 to 420. The authorization service applies them; this service records the reject the declined event hands it and stores the reason on the row. Codes 101, 102 and 103 resolve an account and arrive at contract version 3, carrying the nine descriptive values the 350-byte reject area holds. Code 100 resolves no account, arrives at version 2, and is acknowledged without a row.
 
 | Code | Text, verbatim from the source | Condition | Lines |
 | :--- | :--- | :--- | :--- |
@@ -167,7 +201,7 @@ The three updates run in the order `L440`–`L442` fixes, and the order is part 
 2. Add to the account balance, then to one cycle accumulator on the sign of the amount.
 3. Insert the transaction.
 
-All three writes, the outbox row and the duplicate-delivery marker commit in one local transaction. A second delivery of the same `eventId` performs no second posting.
+All three writes, the outbox row and the duplicate-delivery marker commit in one local transaction. A second delivery of the same `eventId` on the same topic performs no second posting.
 
 The private database is `carddemo_ledger` and the schema is `ledger_service`. The service logs in as `carddemo_ledger_svc`, which can connect to no other database.
 
@@ -176,10 +210,10 @@ The private database is `carddemo_ledger` and the schema is `ledger_service`. Th
 | `transaction` | `app/cpy/CVTRA05Y.cpy` `L5`–`L17`. Primary key from `app/jcl/TRANFILE.jcl:L53` `KEYS(16 0)` and record size from `:L54` `RECORDSIZE(350 350)`. A non-unique index on the processed timestamp comes from the alternate index at `:L82`–`:L87`, `KEYS(26 304)`, restated standalone at `app/jcl/TRANIDX.jcl:L25`–`L30` |
 | `transaction_category_balance` | `app/cpy/CVTRA01Y.cpy` `L5`–`L9`. `app/jcl/TCATBALF.jcl:L40` `KEYS(17 0)` confirms the 11 + 2 + 4 composite and `:L41` gives `RECORDSIZE(50 50)` |
 | `account_balance_projection` | `app/cpy/CVACT01Y.cpy` `L7`, `L13`, `L14`, plus the provenance of the account change it last replicated |
-| `rejected_transaction` | The validation trailer at `app/cbl/CBTRN02C.cbl:L446`–`L465`, with the card number masked |
+| `rejected_transaction` | `REJECT-RECORD` at `app/cbl/CBTRN02C.cbl:L176`–`L182`. `rejected_transaction_data CHAR(350)` holds the arriving record verbatim, in `app/cpy/CVTRA06Y.cpy:L5`–`L18` field order, with the card number masked. The trailer gives `reject_reason_code` and `reject_reason_description` |
 | `transaction_type` | Seven rows seeded from `app/data/ASCII/trantype.txt` |
 | `transaction_category` | Eighteen rows seeded from `app/data/ASCII/trancatg.txt` |
-| `outbox_event` | New abstraction. Posted and declined events awaiting publication |
+| `outbox_event` | New abstraction. Posted events awaiting publication |
 | `processed_event` | New abstraction. The duplicate-delivery guard |
 
 Flyway seeds fifty category balances from `app/data/ASCII/tcatbal.txt` and fifty projection rows alongside the two lookups. Both lookups live inside this schema. Neither is exposed as a shared table, and neither becomes a seventh service.
@@ -221,10 +255,16 @@ Passing such a field straight to `new BigDecimal(String)` throws on every moneta
 **3. A missing language-level override compiles at the wrong level in silence.** `pom.xml` declares `<java.version>25</java.version>`. The Spring Boot parent defaults both the language level and the compiler release to 17. A module that omits the override compiles to release 17 with no warning and no failure. Confirm the class-file major version is 69 rather than 61:
 
 ```bash
+cd card-platform/services/ledger-posting-service
 javap -verbose -cp target/classes com.carddemo.ledger.domain.PostingService | grep major
 ```
 
-`javap` ships with the same JDK that built the module, so the check needs nothing extra installed. Read the class from `target/classes` and not from the packaged archive, because `spring-boot-maven-plugin` moves application classes under `BOOT-INF/classes/` inside the jar.
+`target/classes` is relative to this module, so the `cd` is part of the check rather than decoration: run
+the `javap` line from `card-platform/` and it reports a class not found. From the repository root use the
+reactor-relative path instead, `-cp services/ledger-posting-service/target/classes`. `javap` ships with the
+same JDK that built the module, so nothing extra needs installing. Read the class from `target/classes` and
+not from the packaged archive, because `spring-boot-maven-plugin` moves application classes under
+`BOOT-INF/classes/` inside the jar.
 
 **4. Money truncates toward zero and never rounds.** The `ROUNDED` phrase appears zero times across all 28 programs in `app/cbl`, so every arithmetic store in the source truncates. Every `BigDecimal` operation here goes through `CobolDecimal` in `libs/cobol-compat`, which pins `RoundingMode.DOWN`. `HALF_UP` is the reflexive Java choice and it breaks equivalence without failing anything visibly.
 
@@ -235,6 +275,10 @@ The money-moving sites are few enough to list: `app/cbl/CBTRN02C.cbl:L403`–`L4
 The account service carries the replacement: `POST /accounts/{id}/cycle-close`. Skip it and the accumulators grow, the credit-limit rule sees an ever-larger tested balance, and available credit shrinks until every transaction declines. [Onboarding](../../docs/onboarding.md) gives the command.
 
 **6. A first category balance is not an error.** `app/cbl/CBTRN02C.cbl:L481` reads `IF TCATBALF-STATUS = '00' OR '23'`, accepting both the normal status and the record-not-found status, because a missing category balance means create it. `domain/CategoryBalanceUpdater` keeps that branch. Treating a missing row as a failure turns every first posting for an account, type and category into a dead-letter record.
+
+**7. A state-changing call needs one extra header.** This service answers reads, so nothing a caller can reach today is affected. A state-changing route added later is refused from any client that does not send `X-CardDemo-Request`, because `config/CrossSiteRequestFilter` guards the method rather than a list of routes. Add the header to the client at the same time as the route.
+
+**8. A burst answers 429 rather than being served.** A load generator, a retry loop, or a test that hammers one address reaches `config/RequestRateCeilingFilter` and answers 429 with `Retry-After`. The blanket ceiling is 600 requests a minute per address and per identity, writes are 120, and 20 failed authentications from one address close the rest of that minute. Raise `API_RATE_*` for a load run rather than removing the filter, and read the `stage` tag on `carddemo.ledger.requests.throttled` to see which ceiling refused.
 
 <br/>
 
@@ -250,7 +294,7 @@ graph TB
     ASIN{{"account.state-changed"}}
     CON["TransactionAuthorizedConsumer"]
     ASC["AccountStateChangedConsumer"]
-    GUARD{"eventId already in processed_event"}
+    GUARD{"eventId plus consumed topic<br/>already in processed_event"}
     CAT["CategoryBalanceUpdater"]
     ACC["AccountBalanceUpdater"]
     TX["TransactionRepository insert"]
@@ -284,7 +328,7 @@ Legend for Figure 1:
 
 - Hexagons are Kafka topics. Thick arrows are a Kafka consume or publish, which is where at-least-once delivery makes duplication possible.
 - Rectangles are components in this service. Plain arrows are in-process control flow.
-- The diamond is the duplicate-delivery guard. A duplicate skips every write and commits the offset, which is what makes redelivery harmless.
+- The diamond is the duplicate-delivery guard, keyed on the event identifier together with the topic the delivery arrived on. A duplicate skips every write and commits the offset, which is what makes redelivery harmless. The topic belongs in the key because the two listeners read two topics whose producers assign identifiers independently.
 - The cylinder is the private schema. Every row it names commits in a single local transaction, and no other service reads it.
 - Dotted arrows are the two terminal routes, taken only after retries are spent or a row is abandoned.
 - No arrow leaves this service toward another service, because none exists.
@@ -296,7 +340,7 @@ Legend for Figure 1:
 - **Adding a consumer of `TransactionPosted` changes nothing here.** A new service subscribes to `transaction.posted` under its own group and starts receiving events. The notification service already does exactly that.
 - **Adding a posting step means adding a component**, then placing it explicitly in the ordered chain in `domain/PostingService`. The source marks the seam itself with `* ADD MORE VALIDATIONS HERE` at `app/cbl/CBTRN02C.cbl:L377`, which is why the updaters stay separate classes instead of one method.
 - **Repository methods follow the source operation-code contract** at `app/cbl/CBSTM03B.CBL:L100`–`L112`: `K` becomes find by identifier, `R` becomes stream all, `W` becomes insert and `Z` becomes update. `O` and `C` are dropped, because the framework owns the connection lifecycle.
-- **Swapping the event bus touches one interface.** The event publisher port is the only abstracted seam in the service.
+- **Swapping the event bus touches two files, and this module ships no publisher port.** The authorization, account and card services each declare a `messaging/EventPublisherPort`; this one does not, because nothing here publishes outside the relay. The seam is instead `outbox/OutboxRelay`, which reads claimed rows and hands each to the `KafkaTemplate` that `config/KafkaProducerConfig.ledgerEventKafkaTemplate` declares. To publish onto another transport, replace that bean with one wrapping the new client and leave `OutboxRelay` untouched — it depends on the template alone, so the outbox contract, the claim protocol and the abandonment route all survive the substitution. Introducing a port here would be a second abstraction over a single call site, which is the kind of layer the brief asked this platform not to add.
 
 [Suggested next tasks](../../docs/suggested-next-tasks.md) lists work found during this build and deliberately left out of scope.
 
@@ -321,40 +365,95 @@ Use these versions. They are the tested set, not a floor.
 | Consumer groups | `ledger-posting`, `ledger-account-state` |
 | Listener retries | 3 attempts, 1000 ms backoff |
 | Outbox relay | every 500 ms, up to 100 rows, claim timeout `PT2M` |
-| Migrations | `V1__schema.sql`, `V2__seed.sql`, `V3__account_state_replica.sql` |
+| Migrations | Five, listed below |
+
+Flyway owns this schema and runs five migrations on every start, in this order:
+
+| Migration | What it does |
+| :--- | :--- |
+| `V1__schema.sql` | Creates `transaction`, `transaction_category_balance`, `account_balance_projection`, `rejected_transaction`, `outbox_event` and `processed_event` |
+| `V2__seed.sql` | Loads fifty category balances from `app/data/ASCII/tcatbal.txt`, fifty projection rows, and the transaction-type and transaction-category lookups |
+| `V3__account_state_replica.sql` | Adds the provenance columns the `AccountStateChanged` listener compares against |
+| `V4__account_state_ownership.sql` | Records which writer owns each value column of `account_balance_projection`, correcting the table comment `V3` set: an arriving account change no longer replaces a column the posting path advances |
+| `V5__processed_event_topic_key.sql` | Makes the consumed topic part of the duplicate-delivery marker's identity, so the two listener groups sharing the table can each claim the same event identifier once |
 
 Run the four steps in this order. The Dockerfile copies the packaged archive out of `target/`, and the compose build context is this module directory alone. It reaches neither the parent POM nor the two shared libraries, so Maven has to finish first.
 
-1. Prepare configuration from `card-platform/`:
+1. Prepare configuration and credentials from `card-platform/`. The copy of `.env.example` contains 19 `REPLACE` markers: fourteen passwords, one card-token key and four `{bcrypt}` identity hashes. Compose reads them with `${VAR:?}` and refuses to start while any is unset. Nothing below prompts.
+
+```bash
+cp .env.example .env
+
+for variable in POSTGRES_PASSWORD \
+  AUTHORIZATION_DB_PASSWORD LEDGER_DB_PASSWORD FRAUD_DB_PASSWORD \
+  NOTIFICATION_DB_PASSWORD ACCOUNT_DB_PASSWORD CARD_DB_PASSWORD \
+  KAFKA_ADMIN_PASSWORD \
+  AUTHORIZATION_KAFKA_PASSWORD LEDGER_KAFKA_PASSWORD FRAUD_KAFKA_PASSWORD \
+  NOTIFICATION_KAFKA_PASSWORD ACCOUNT_KAFKA_PASSWORD CARD_KAFKA_PASSWORD; do
+  sed -i "s|^${variable}=.*|${variable}=$(openssl rand -base64 24 | tr -d '/+=')|" .env
+done
+
+export ADMIN_PASSWORD="$(openssl rand -base64 18 | tr -d '/+=')"
+export USER_PASSWORD="$(openssl rand -base64 18 | tr -d '/+=')"
+export MONITORING_PASSWORD="$(openssl rand -base64 18 | tr -d '/+=')"
+
+mvn -B -ntp -DskipTests package
+
+CRYPTO_CP="$(find ~/.m2/repository/org/springframework/security/spring-security-crypto \
+  -name 'spring-security-crypto-*.jar' | sort | tail -1):\
+$(find ~/.m2/repository/commons-logging/commons-logging \
+  -name 'commons-logging-*.jar' | sort | tail -1):\
+$(find ~/.m2/repository/org/springframework/spring-core \
+  -name 'spring-core-*.jar' | sort | tail -1)"
+
+hash_password() {
+  DEMO_PASSWORD="$1" jshell --class-path "$CRYPTO_CP" -s - <<'JSHELL' 2>/dev/null | grep -m1 '^{bcrypt}'
+System.out.println(org.springframework.security.crypto.factory.PasswordEncoderFactories.createDelegatingPasswordEncoder().encode(System.getenv("DEMO_PASSWORD")));
+/exit
+JSHELL
+}
+
+sed -i "s|^ADMIN_PASSWORD_HASH=.*|ADMIN_PASSWORD_HASH='$(hash_password "$ADMIN_PASSWORD")'|" .env
+sed -i "s|^USER_PASSWORD_HASH=.*|USER_PASSWORD_HASH='$(hash_password "$USER_PASSWORD")'|" .env
+sed -i "s|^MONITORING_PASSWORD_HASH=.*|MONITORING_PASSWORD_HASH='$(hash_password "$MONITORING_PASSWORD")'|" .env
+
+grep -n '^[A-Z_]*=.*REPLACE' .env || echo "all 17 values are set"
+```
+
+Keep the single quotes on the three hashes. A bcrypt value is full of `$`, and Compose expands `$` in an unquoted dotenv value. `mvn package` above builds every module, so every image has an archive to copy.
+
+2. Start the dependencies and the service. `--wait` returns only once each container reports healthy, so the health request cannot race start-up:
 
    ```bash
-   cp .env.example .env
-   ```
-
-   The copy contains 17 `REPLACE` markers: fourteen passwords and three `{bcrypt}` identity hashes. Compose reads them with `${VAR:?}` and refuses to start while any is unset, so fill them in now. [Onboarding](../../docs/onboarding.md) carries copyable commands that generate every one.
-
-2. Build the shared libraries and this module:
-
-   ```bash
-   mvn -B -pl services/ledger-posting-service -am package
-   ```
-
-3. Start the dependencies and the service:
-
-   ```bash
-   docker compose up -d --build postgres kafka ledger-posting-service
+   docker compose up -d --build --wait postgres kafka ledger-posting-service
    curl -fsS http://localhost:9082/actuator/health
    ```
 
    Health, metrics and the Prometheus scrape answer on 9082, not on 8082. Health is open; the other two require the monitoring identity.
 
-4. Query a balance on the business port:
+3. Query a balance on the business port. The administrator identity passes every ownership check; an ordinary identity needs a matching `SCOPE_ACCOUNT_` entry in `USER_SCOPES`:
 
    ```bash
-   curl -fsS -u user0001:"$USER_PASSWORD" http://localhost:8082/balances/00000000001
+   curl -fsS -u user0001 http://localhost:8082/balances/00000000001
    ```
 
-To watch the fan-out, read both topics from the host listener on `localhost:9092` with a console consumer while an authorization runs. `transaction.authorized` shows what arrived and `transaction.posted` shows what this service published.
+   Before any posting arrives that answers the seeded projection. After one approved authorization of `+00000504.77` against account `00000000050` it answers `{"accountId":"00000000050","currentBalance":"996.77","cycleCredit":"504.77","cycleDebit":"0.00"}`.
+
+4. To watch the fan-out, start `authorization-service` too, submit one authorization with the command in the [platform README](../../README.md), and read both topics bounded so each command returns:
+
+   ```bash
+   docker compose exec kafka /opt/kafka/bin/kafka-console-consumer.sh \
+     --bootstrap-server kafka:29092 \
+     --command-config /tmp/kafka-admin.properties \
+     --topic transaction.authorized --from-beginning --max-messages 1
+
+   docker compose exec kafka /opt/kafka/bin/kafka-console-consumer.sh \
+     --bootstrap-server kafka:29092 \
+     --command-config /tmp/kafka-admin.properties \
+     --topic transaction.posted --from-beginning --max-messages 1
+   ```
+
+   `transaction.authorized` shows what arrived and `transaction.posted` shows what this service published.
 
 Run the module's own tests with:
 
@@ -362,7 +461,7 @@ Run the module's own tests with:
 mvn -B -pl services/ledger-posting-service -am test
 ```
 
-They cover the posting arithmetic, the category-balance create and update branches, the reject path across all four reason codes, outbox routing and the meters. One duplicate-delivery case proves that a second delivery of the same `eventId` moves no balance.
+They cover the posting arithmetic, the category-balance create and update branches, the reject path across all four reason codes, outbox routing and the meters. One duplicate-delivery case proves that a second delivery of the same `eventId` on the same topic moves no balance.
 
 That case earns its own test because the source has no duplicate detection at all. A replayed feed drives `2900-WRITE-TRANSACTION-FILE` at `app/cbl/CBTRN02C.cbl:L562` into a duplicate-key condition, then straight into `9999-ABEND-PROGRAM` at `L707`–`L711`.
 

@@ -39,7 +39,22 @@ import static com.carddemo.notification.domain.NotificationRenderer.editTrailing
 import static com.carddemo.notification.domain.NotificationRenderer.pic;
 
 /**
- * Renders one cardholder alert per consumed event, then records the delivery attempt.
+ * Renders one cardholder alert per consumed event, and records that it was rendered on the two
+ * paths that carry a masked card number.
+ *
+ * <p>The paths differ, so no single sentence covers them. A posted transaction renders a
+ * statement alert over the read-model page for its card, and records a rendered-alert row.
+ * {@link #renderAuthorizationAlert(String, String, String, String, String, BigDecimal,
+ * CardholderDetails, RenderedFormat)} renders one detail row built from the event, leaves the
+ * balance field as spaces, and records a rendered-alert row.
+ * {@link #renderFraudAlert(String, String, int, List, CardholderDetails, RenderedFormat)} renders
+ * an alert and records no row, because {@code FraudFlagged} carries no card number to store. A
+ * cleared assessment renders nothing at all: {@code messaging.FraudFlaggedConsumer} claims it and
+ * calls no operation here.
+ *
+ * <p>No row here is evidence that a cardholder was told anything. This service reaches no mail,
+ * message, webhook or push gateway, so {@code notification_log.outcome} carries
+ * {@code RENDERED_NOT_SENT} and nothing else.
  *
  * <p>Reproduces {@code 5000-CREATE-STATEMENT} at {@code app/cbl/CBSTM03A.CBL:L458-L504}. A
  * paragraph, in Common Business Oriented Language (COBOL), is a named block of statements that a
@@ -48,8 +63,9 @@ import static com.carddemo.notification.domain.NotificationRenderer.pic;
  *
  * <p>Per-event alerting replaces per-cycle statement assembly. {@code 1000-MAINLINE} at
  * {@code app/cbl/CBSTM03A.CBL:L316-L329} walks a cross-reference file one card at a time. Each
- * operation below runs once per event and reads one account's rows from the read model that
- * {@code 01 TRNX-RECORD.} at {@code app/cpy/COSTM01.CPY:L20} declares.
+ * operation below runs once per event, and the posted-transaction path is the one that reads the
+ * read model that {@code 01 TRNX-RECORD.} at {@code app/cpy/COSTM01.CPY:L20} declares. The
+ * authorization and fraud paths build their content from the event alone.
  *
  * <p>The source resets the running total per card. The target's unique scope is the account, so
  * each invocation totals the bounded account page it reads. Each row renders before its amount
@@ -68,9 +84,13 @@ import static com.carddemo.notification.domain.NotificationRenderer.pic;
  * {@link RenderedFormat} constant, and no edit here.
  *
  * <p>ADDITIVE: the fraud alert, since {@code app/cbl/CBSTM03A.CBL} carries no fraud concept.
- * ADDITIVE: the delivery-attempt row, since no COBOL program records one. This service reaches no
- * mail, message or push gateway. It renders a document, records the attempt and returns the
- * document to its caller.
+ * ADDITIVE: the rendered-alert row, since no COBOL program records one. This service reaches no
+ * mail, message, webhook or push gateway. It renders a document, records that it rendered one, and
+ * returns the document to its caller, which discards it. Every row it writes carries
+ * {@link com.carddemo.notification.entity.NotificationLogEntity#RENDERED_NOT_SENT}, so no row is
+ * evidence that a cardholder was told anything. Until
+ * {@code src/main/resources/db/migration/V5__rendered_not_delivered.sql} the row was described as a
+ * delivery attempt, which claimed a transport that has never existed.
  *
  * <p>Design decisions: {@code card-platform/docs/decision-log.md}. Source-to-target
  * mapping: {@code card-platform/docs/traceability-matrix.md}.
@@ -78,7 +98,6 @@ import static com.carddemo.notification.domain.NotificationRenderer.pic;
 @Service
 public class NotificationService {
 
-    /** Reports what this service rendered, naming no card, account or transaction. */
     private static final Logger LOGGER = LoggerFactory.getLogger(NotificationService.class);
 
     /**
@@ -117,13 +136,13 @@ public class NotificationService {
     /** Reads one account's rows from the read model. */
     private final StatementTransactionRepository statementTransactions;
 
-    /** Writes one row per delivery attempt. */
-    private final NotificationLogRepository deliveryAttempts;
+    /** Writes one row per rendered alert. Nothing here sends one. */
+    private final NotificationLogRepository renderedAlerts;
 
     /** Counts the alerts this service rendered, one series per output format. */
     private final NotificationMetrics metrics;
 
-    /** Reads the instant each delivery-attempt row records. */
+    /** Reads the instant each rendered-alert row records. */
     private final Clock clock;
 
     /**
@@ -133,12 +152,12 @@ public class NotificationService {
      * by key on every call. The second renderer to report a format already keyed fails
      * construction.</p>
      *
-     * <p>The instant each attempt row records comes from {@link Clock#systemUTC()}. The
+     * <p>The instant each rendered-alert row records comes from {@link Clock#systemUTC()}. The
      * constructor below takes another clock, and a test supplies a fixed one through it.</p>
      *
      * @param renderers one renderer per output format, in any order
      * @param statementTransactions the read-model repository
-     * @param deliveryAttempts the delivery-attempt repository
+     * @param renderedAlerts the rendered-alert repository
      * @param metrics the meter holder {@code config/ObservabilityConfig} registers
      * @throws NullPointerException when an argument is {@code null}
      * @throws IllegalStateException when a renderer reports no format, or when two renderers report
@@ -147,26 +166,26 @@ public class NotificationService {
     @Autowired
     public NotificationService(List<NotificationRenderer> renderers,
             StatementTransactionRepository statementTransactions,
-            NotificationLogRepository deliveryAttempts,
+            NotificationLogRepository renderedAlerts,
             NotificationMetrics metrics) {
-        this(renderers, statementTransactions, deliveryAttempts, metrics, Clock.systemUTC());
+        this(renderers, statementTransactions, renderedAlerts, metrics, Clock.systemUTC());
     }
 
     /**
-     * Takes the renderers, the collaborators and the clock the attempt row reads.
+     * Takes the renderers, the collaborators and the clock the rendered-alert row reads.
      *
      * @param renderers one renderer per output format, in any order
      * @param statementTransactions the read-model repository
-     * @param deliveryAttempts the delivery-attempt repository
+     * @param renderedAlerts the rendered-alert repository
      * @param metrics the meter holder {@code config/ObservabilityConfig} registers
-     * @param clock the clock each delivery-attempt row records its instant from
+     * @param clock the clock each rendered-alert row records its instant from
      * @throws NullPointerException when an argument is {@code null}
      * @throws IllegalStateException when a renderer reports no format, or when two renderers report
      *         the same format
      */
     NotificationService(List<NotificationRenderer> renderers,
             StatementTransactionRepository statementTransactions,
-            NotificationLogRepository deliveryAttempts,
+            NotificationLogRepository renderedAlerts,
             NotificationMetrics metrics,
             Clock clock) {
         Objects.requireNonNull(renderers, "renderers must not be null");
@@ -188,14 +207,14 @@ public class NotificationService {
         this.renderersByFormat = Map.copyOf(byFormat);
         this.statementTransactions = Objects.requireNonNull(statementTransactions,
                 "statementTransactions must not be null");
-        this.deliveryAttempts =
-                Objects.requireNonNull(deliveryAttempts, "deliveryAttempts must not be null");
+        this.renderedAlerts =
+                Objects.requireNonNull(renderedAlerts, "renderedAlerts must not be null");
         this.metrics = Objects.requireNonNull(metrics, "metrics must not be null");
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
     }
 
     /**
-     * Renders the alert one posted transaction produces, then records the attempt.
+     * Renders the alert one posted transaction produces, then records that it was rendered.
      *
      * <p>Reproduces {@code 5000-CREATE-STATEMENT} at {@code app/cbl/CBSTM03A.CBL:L458-L504} for
      * the cardholder fields, {@code 6000-WRITE-TRANS} at {@code app/cbl/CBSTM03A.CBL:L675-L679}
@@ -203,7 +222,7 @@ public class NotificationService {
      * for the total. The parameters match the payload of the {@code TransactionPosted} event.</p>
      *
      * <p>The card token names the card the rows are read under, and the card number reaches this
-     * method in either form and is masked before it reaches the attempt row.
+     * method in either form and is masked before it reaches the rendered-alert row.
      * {@code statement_transaction.card_token} carries the key and
      * {@code statement_transaction.masked_card_number} carries the masked display value, which the
      * check constraint {@code ck_statement_transaction_masked_card_number} in
@@ -214,9 +233,9 @@ public class NotificationService {
      * covers the rows the alert carries. A blank or space-filled row field renders as spaces and
      * raises nothing.</p>
      *
-     * <p>ADDITIVE: the attempt row this method writes. It carries the card token, the masked card
-     * number, the transaction identifier, the format name and the instant of the attempt, and no
-     * rendered document.</p>
+     * <p>ADDITIVE: the rendered-alert row this method writes. It carries the card token, the masked
+     * card number, the transaction identifier, the format name and the instant rendering finished,
+     * and no rendered document.</p>
      *
      * @param cardToken the card identity the read model is keyed on, which selects the rows this
      *        alert renders; must not be {@code null}
@@ -258,7 +277,7 @@ public class NotificationService {
 
         String alert = renderer.renderStatementAlert(context, detailRows, total);
         this.metrics.notificationsRendered(metricTag(format)).increment();
-        recordAttempt(cardToken, maskedCardNumber, transactionId, format);
+        recordRendered(cardToken, maskedCardNumber, transactionId, format);
         LOGGER.info("Rendered a posted-transaction alert as {} over {} rows",
                 format, detailRows.size());
 
@@ -276,7 +295,7 @@ public class NotificationService {
      * amount and no card number. The alert therefore carries no detail row, no total and no
      * balance, and the balance field renders as spaces.</p>
      *
-     * <p>This method writes no attempt row. {@code notification_log.masked_card_number} requires a
+     * <p>This method writes no row. {@code notification_log.masked_card_number} requires a
      * masked card number, and {@code FraudFlagged} carries none to store.</p>
      *
      * @param transactionId the flagged transaction; must not be {@code null}
@@ -321,21 +340,11 @@ public class NotificationService {
      * The cardholder fields reported here are the fields {@code 5000-CREATE-STATEMENT} assembles at
      * {@code app/cbl/CBSTM03A.CBL:L458-L504}.</p>
      *
-     * <p>WHY THE BALANCE RENDERS AS SPACES. An authorization establishes no balance. The ledger
-     * derives the new balance when it posts the transaction, and publishes it on
-     * {@code TransactionPosted}, which
-     * {@link #renderPostedTransactionAlert(String, String, String, String, BigDecimal,
-     * CardholderDetails, RenderedFormat)} reports. This alert says a transaction was authorized and
-     * nothing about what the account now holds, so its balance field is left in the state
-     * {@code INITIALIZE STATEMENT-LINES} at {@code app/cbl/CBSTM03A.CBL:L459} leaves, exactly as a
-     * fraud alert is.</p>
-     *
-     * <p>WHY ONE DETAIL ROW AND NOT THE READ MODEL. The read model holds transactions the ledger has
-     * posted. An authorized transaction has not been posted yet, so reading the model would report
-     * every earlier transaction and omit the one this alert is about. The single detail row is built
-     * from the event, and the total is that one amount, which is what
-     * {@code ADD TRNX-AMT TO WS-TOTAL-AMT} at {@code app/cbl/CBSTM03A.CBL:L429} accumulates over a
-     * one-row set.</p>
+     * <p>The balance field renders as spaces, the state {@code INITIALIZE STATEMENT-LINES} at
+     * {@code app/cbl/CBSTM03A.CBL:L459} leaves it in. The one detail row and the total are built from
+     * the event rather than read from the read model, so the total accumulates over a one-row set
+     * through {@code ADD TRNX-AMT TO WS-TOTAL-AMT} at {@code app/cbl/CBSTM03A.CBL:L429}. Rationale:
+     * {@code card-platform/docs/decision-log.md}.</p>
      *
      * @param cardToken the token of the card the authorization named; must not be {@code null}
      * @param cardNumber the masked card number the event carries, reported as supplied
@@ -375,7 +384,7 @@ public class NotificationService {
 
         String alert = renderer.renderStatementAlert(context, detailRows, total);
         this.metrics.notificationsRendered(metricTag(format)).increment();
-        recordAttempt(cardToken, maskedCardNumber, transactionId, format);
+        recordRendered(cardToken, maskedCardNumber, transactionId, format);
         LOGGER.info("Rendered an authorization alert as {} over one detail row", format);
 
         return alert;
@@ -408,11 +417,6 @@ public class NotificationService {
     }
 
     /**
-     * Returns the renderer that reports one format.
-     *
-     * <p>A format no renderer reports raises a refusal naming that format and every format a
-     * renderer does report. No format falls back to another.</p>
-     *
      * @param format the format the caller asked for
      * @return the renderer that reports {@code format}
      * @throws NullPointerException when {@code format} is {@code null}
@@ -434,10 +438,11 @@ public class NotificationService {
      * Reads one account's rows, up to the count one alert may carry.
      *
      * <p>The limit reaches the database rather than a list already in memory, so a card holding more
-     * rows than {@value NotificationRenderer#MAXIMUM_STATEMENT_ROWS} costs one page and not a whole
-     * history. {@link NotificationRenderer#requireRenderableRowCount(List)} refuses more than that
-     * many rows, and this method cannot return more, so the two agree by construction. That is the
-     * same page {@code GET /notifications/{cardToken}} returns.</p>
+     * rows than {@value NotificationRenderer#MAXIMUM_STATEMENT_ROWS} costs one read of that many rows
+     * and not a whole history. {@link NotificationRenderer#requireRenderableRowCount(List)} refuses
+     * more than that many rows, and this method cannot return more, so the two agree by construction.
+     * {@code GET /notifications/{cardNumber}} reads the same rows without a ceiling, so a history
+     * larger than one alert answers in full there.</p>
      *
      * @param cardToken the card token the key column holds
      * @return the rows to render, in ascending transaction-identifier order
@@ -550,30 +555,29 @@ public class NotificationService {
     }
 
     /**
-     * Writes one row recording that this service rendered one alert.
+     * Writes one row recording that this service rendered one alert and did not send it.
      *
      * <p>ADDITIVE, with no COBOL ancestor. The row carries the card token, the masked card number,
      * the transaction identifier at the width {@code TRNX-ID PIC X(16)} at
-     * {@code app/cpy/COSTM01.CPY:L23} declares, the format name and the instant of the attempt.
+     * {@code app/cpy/COSTM01.CPY:L23} declares, the format name and the instant rendering finished.
      * {@link NotificationLogEntity} declares no column for a rendered document, so no document is
-     * stored.</p>
+     * stored, and it writes {@link NotificationLogEntity#RENDERED_NOT_SENT} into {@code outcome}
+     * itself, so this method cannot claim a delivery even by mistake.</p>
      *
      * @param cardToken the token of the card the alert covered
      * @param maskedCardNumber the masked card number
      * @param transactionId the transaction the alert reported
-     * @param format the format the attempt carried
+     * @param format the format the alert was rendered in
      */
-    private void recordAttempt(String cardToken, String maskedCardNumber, String transactionId,
+    private void recordRendered(String cardToken, String maskedCardNumber, String transactionId,
             RenderedFormat format) {
-        this.deliveryAttempts.save(new NotificationLogEntity(UUID.randomUUID(), cardToken,
+        this.renderedAlerts.save(new NotificationLogEntity(UUID.randomUUID(), cardToken,
                 maskedCardNumber,
                 pic(transactionId, NotificationLogEntity.TRANSACTION_ID_LENGTH), format.name(),
                 this.clock.instant()));
     }
 
     /**
-     * Returns the metric tag one format records against.
-     *
      * @param format the format that rendered the alert
      * @return the tag value, or {@link NotificationMetrics#UNKNOWN} for a format
      *         {@code config/ObservabilityConfig} registers no series for

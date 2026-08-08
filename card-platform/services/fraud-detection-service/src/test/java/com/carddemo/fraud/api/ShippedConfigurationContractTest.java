@@ -97,8 +97,10 @@ final class ShippedConfigurationContractTest {
     /**
      * The broker credential placeholder, which carries no default either. This service
      * authenticates to the broker as its own Simple Authentication and Security Layer identity.
-     * The broker's authorizer admits it onto exactly the one topic and the one consumer group this
-     * file names.
+     * Which topics and groups that identity is admitted to is declared in
+     * {@code card-platform/docker-compose.yml} and {@code card-platform/deploy/k8s/10-kafka.yaml},
+     * not here: this service consumes {@code transaction.authorized} and publishes the fraud and
+     * dead-letter topics its own configuration names.
      */
     private static final String BROKER_CREDENTIAL_PLACEHOLDER = "${KAFKA_SASL_PASSWORD}";
 
@@ -279,7 +281,6 @@ final class ShippedConfigurationContractTest {
     /** Base directory of this module. */
     private static Path moduleBase;
 
-    /** Reads both shipped files and resolves the base directory of this module. */
     @BeforeAll
     static void readShippedConfiguration() {
         rawYaml = readClasspathResource(APPLICATION_YAML);
@@ -421,7 +422,7 @@ final class ShippedConfigurationContractTest {
     }
 
     /**
-     * Asserts every placeholder span in the shipped file carries a default separator at depth one,
+     * Every placeholder span in the shipped file carries a default separator at depth one,
      * apart from the credential placeholders. The datasource connection string nests four placeholders
      * inside a fifth, and the scan covers all five.
      */
@@ -449,7 +450,7 @@ final class ShippedConfigurationContractTest {
     }
 
     /**
-     * Asserts the datasource and schema placeholders resolve to their defaults with no environment
+     * The datasource and schema placeholders resolve to their defaults with no environment
      * variable set. Each service reaches its own database and its own schema inside it.
      */
     @Test
@@ -643,7 +644,7 @@ final class ShippedConfigurationContractTest {
     }
 
     /**
-     * Asserts the shipped acknowledgement mode string and the listener concurrency.
+     * The shipped acknowledgement mode string and the listener concurrency.
      * {@link #springBootBindsTheShippedKafkaConfiguration()} asserts the effective values the
      * listener container and both clients receive.
      */
@@ -659,7 +660,7 @@ final class ShippedConfigurationContractTest {
     }
 
     /**
-     * Asserts the configuration Spring Boot binds from the shipped file, rather than the characters
+     * The configuration Spring Boot binds from the shipped file, rather than the characters
      * the file holds. Spring resolves every placeholder and binds each value to the type
      * {@code KafkaProperties} declares. A misspelled structured key therefore binds nothing, and a
      * value outside an enumeration or a class that cannot be loaded fails the bind.
@@ -709,7 +710,7 @@ final class ShippedConfigurationContractTest {
     }
 
     /**
-     * Asserts the maps the two clients actually receive. {@code buildConsumerProperties} and
+     * The maps the two clients actually receive. {@code buildConsumerProperties} and
      * {@code buildProducerProperties} are the methods Spring Boot auto-configuration calls, so a
      * property the shipped file declares under the wrong parent reaches neither map.
      */
@@ -767,7 +768,7 @@ final class ShippedConfigurationContractTest {
     }
 
     /**
-     * Asserts that every key the two built maps carry is a configuration name its own client
+     * Every key the two built maps carry is a configuration name its own client
      * declares. A property the shipped file misspells under {@code properties} reaches the client as
      * an unknown name, which the client logs and ignores, so this test is the one that catches it.
      *
@@ -793,7 +794,7 @@ final class ShippedConfigurationContractTest {
     }
 
     /**
-     * Asserts the three names under the plural key {@code carddemo.kafka.topics}, each resolved to its
+     * The three names under the plural key {@code carddemo.kafka.topics}, each resolved to its
      * shipped default. The third names the dead-letter topic.
      */
     @Test
@@ -828,7 +829,7 @@ final class ShippedConfigurationContractTest {
     }
 
     /**
-     * Asserts the exposure list resolves to four endpoint names in order and carries no wildcard and no
+     * The exposure list resolves to four endpoint names in order and carries no wildcard and no
      * fifth name. Metric exposition is switched on.
      */
     @Test
@@ -853,7 +854,10 @@ final class ShippedConfigurationContractTest {
                 () -> assertEquals("logstash", textAt("logging", "structured", "format", "console"),
                         "logging.structured.format.console"),
                 () -> assertEquals("INFO", resolvedAt("logging", "level", "root"), "logging.level.root"),
-                () -> assertEquals("DEBUG", resolvedAt("logging", "level", "com.carddemo"),
+                // INFO rather than DEBUG. A default is what an operator gets who starts this
+                // service directly, and a DEBUG default writes identifiers into every log a
+                // deployment collects. The variable is still there to raise for one run.
+                () -> assertEquals("INFO", resolvedAt("logging", "level", "com.carddemo"),
                         "logging.level.com.carddemo"));
     }
 
@@ -1092,7 +1096,6 @@ final class ShippedConfigurationContractTest {
         return level != null && !NON_VERBOSE_LEVELS.contains(level.toUpperCase(Locale.ROOT));
     }
 
-    /** Builds one rule that reports a fixed score under a published rule identifier. */
     private static RiskRule fixedContribution(int score) {
         return new RiskRule() {
             @Override
@@ -1107,7 +1110,6 @@ final class ShippedConfigurationContractTest {
         };
     }
 
-    /** Builds one valid event for the scorer boundary check. */
     private static TransactionAuthorized authorizedForThresholdTest() {
         return TransactionAuthorized.of("00000000007", "THRESHOLD-CASE01", "01", "0003",
                 "POS TERM", "Threshold boundary", new BigDecimal("10.00"), "800000000",
@@ -1116,10 +1118,6 @@ final class ShippedConfigurationContractTest {
     }
 
     /**
-     * Returns the built property names the owning client does not declare, in encounter order. A
-     * name carrying the Spring prefix belongs to the error-handling wrapper rather than to the
-     * client, and is not reported.
-     *
      * @param builtNames    the keys of one built property map
      * @param declaredNames the configuration names the owning client declares
      * @return the names the client does not declare

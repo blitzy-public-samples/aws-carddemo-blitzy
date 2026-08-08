@@ -179,6 +179,10 @@ public class KafkaProducerConfig {
             @Qualifier(PRODUCER_FACTORY_BEAN) ProducerFactory<String, Object> producerFactory) {
         KafkaTemplate<String, Object> template = new KafkaTemplate<>(producerFactory);
         template.setDefaultTopic(fraudAssessedTopic);
+        // A failed send records its destination and failure type only.
+        // SafeProducerListener displaces LoggingProducerListener, which would write the
+        // key and the first hundred characters of the payload into the log line.
+        template.setProducerListener(new SafeProducerListener<>());
         return template;
     }
 

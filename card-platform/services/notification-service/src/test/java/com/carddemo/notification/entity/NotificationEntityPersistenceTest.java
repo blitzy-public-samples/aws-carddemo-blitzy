@@ -1,6 +1,15 @@
 package com.carddemo.notification.entity;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.carddemo.cobol.PanMasker;
+import com.carddemo.notification.TestIdentityPasswords;
 import com.carddemo.notification.entity.ProcessedEventEntity.ProcessedEventId;
 import com.carddemo.notification.entity.StatementTransactionEntity.StatementTransactionId;
 import com.carddemo.notification.repository.CardholderContextRepository;
@@ -39,14 +48,6 @@ import org.springframework.transaction.support.TransactionTemplate;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
-import static org.junit.jupiter.api.Assertions.assertAll;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertSame;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Proves the three notification entities match the migrated schema, and proves a second delivery of
@@ -87,14 +88,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @SpringBootTest(properties = {
     // The three listeners this module runs would retry an absent broker for the life of the run.
     "spring.kafka.listener.auto-startup=false",
-    // The four credentials application.yml leaves without a default, so a context can start.
-    // config/SecurityConfig refuses a blank, published or unprefixed value at start-up, and
-    // SecurityConfigTest asserts that refusal. Every value below is a fake this repository states
-    // nowhere else.
+    // One of the four credentials application.yml leaves without a default, so a context can start.
+    // config/SecurityConfig refuses a blank or published value at start-up, and SecurityConfigTest
+    // asserts that refusal. The value below is a fake this repository states nowhere else. The three
+    // identity hashes arrive from card-platform/pom.xml, because the same guard refuses a password
+    // that is not the output of an adaptive one-way encoder.
     "KAFKA_SASL_PASSWORD=a-generated-broker-value-for-the-persistence-test",
-    "ADMIN_PASSWORD_HASH={noop}a-generated-admin-value-for-the-persistence-test",
-    "USER_PASSWORD_HASH={noop}a-generated-user-value-for-the-persistence-test",
-    "MONITORING_PASSWORD_HASH={noop}a-generated-monitoring-value-for-the-persistence-test",
+    "ADMIN_PASSWORD_HASH=" + TestIdentityPasswords.ADMIN_PASSWORD_HASH,
+    "USER_PASSWORD_HASH=" + TestIdentityPasswords.USER_PASSWORD_HASH,
+    "MONITORING_PASSWORD_HASH=" + TestIdentityPasswords.MONITORING_PASSWORD_HASH,
 })
 @DisplayName("The notification schema, its four entities, and the read-model upsert")
 class NotificationEntityPersistenceTest {
@@ -199,8 +201,14 @@ class NotificationEntityPersistenceTest {
      */
     private static final int STATEMENT_TRANSACTION_COLUMNS = 14;
 
-    /** Columns {@code notification_log} declares. */
-    private static final int NOTIFICATION_LOG_COLUMNS = 6;
+    /**
+     * Columns {@code notification_log} declares.
+     *
+     * <p>Seven since {@code db/migration/V5__rendered_not_delivered.sql} added {@code outcome}, the
+     * column that carries in data what the table's prose used to claim: the alert was rendered and
+     * was not sent.</p>
+     */
+    private static final int NOTIFICATION_LOG_COLUMNS = 7;
 
     /** Columns {@code cardholder_context} declares: the key, ten fields and two instants. */
     private static final int CARDHOLDER_CONTEXT_COLUMNS = 13;
@@ -1109,10 +1117,12 @@ class NotificationEntityPersistenceTest {
                 () -> assertCharacterColumn(facts, NOTIFICATION_LOG + ".masked_card_number",
                         FIXED_CHARACTER, KEY_PART_WIDTH),
                 () -> assertEquals(TIMESTAMP_WITH_ZONE,
-                        facts.get(NOTIFICATION_LOG + ".attempted_at").dataType(),
-                        "attempted_at holds an instant"),
+                        facts.get(NOTIFICATION_LOG + ".rendered_at").dataType(),
+                        "rendered_at holds an instant"),
+                () -> assertCharacterColumn(facts, NOTIFICATION_LOG + ".outcome",
+                        VARYING_CHARACTER, 20),
                 () -> assertEquals(UUID_TYPE, facts.get(NOTIFICATION_LOG + ".id").dataType(),
-                        "the delivery-attempt identifier"),
+                        "the rendered-alert identifier"),
                 () -> assertEquals(UUID_TYPE, facts.get(PROCESSED_EVENT + ".event_id").dataType(),
                         "the consumed event identifier"),
                 () -> assertEquals(TIMESTAMP_WITH_ZONE,
@@ -1196,7 +1206,7 @@ class NotificationEntityPersistenceTest {
                                 "ix_statement_transaction_processing_timestamp"),
                         indexes.get(STATEMENT_TRANSACTION), STATEMENT_TRANSACTION + " indexes"),
                 () -> assertEquals(Set.of("pk_notification_log", "ix_notification_log_card_token",
-                                "ix_notification_log_attempted_at"),
+                                "ix_notification_log_rendered_at"),
                         indexes.get(NOTIFICATION_LOG), NOTIFICATION_LOG + " indexes"),
                 () -> assertEquals(Set.of("pk_processed_event", "ix_processed_event_processed_at"),
                         indexes.get(PROCESSED_EVENT), PROCESSED_EVENT + " indexes"),
@@ -1368,11 +1378,51 @@ class NotificationEntityPersistenceTest {
                 Instant.parse("2026-01-01T00:00:00Z")));
 
         int removed = committedTransaction().execute(status -> notificationLogs
-                .deleteAttemptsBefore(Instant.parse("2025-01-01T00:00:00Z")));
+                .deleteRenderedBefore(Instant.parse("2025-01-01T00:00:00Z"), PURGE_BATCH));
 
         assertAll("bounded attempt retention delete",
                 () -> assertEquals(1, removed, "one old attempt removed"),
                 () -> assertEquals(1L, notificationLogs.count(), "one current attempt remains"));
+    }
+
+    /**
+     * The bound this delete carries is a real ceiling on one statement, not documentation.
+     *
+     * <p>Three rows sit behind the horizon and the ceiling is two, so exactly two go and the third
+     * waits for the next batch. The ceiling is what keeps a first sweep of a long-unswept table from
+     * locking every row of it in one statement, and the ordering is what makes the batches converge:
+     * taking the oldest first means the row left behind is always nearer the horizon than the rows
+     * already removed, so a repeated batch walks forward and never revisits.
+     */
+    @Test
+    void theAttemptPurgeRemovesNoMoreThanItsCeilingAndTakesTheOldestFirst() {
+        UUID firstId = UUID.fromString("2f158d36-adbb-46b4-91f8-51e8060bef11");
+        UUID secondId = UUID.fromString("2f158d36-adbb-46b4-91f8-51e8060bef12");
+        UUID thirdId = UUID.fromString("2f158d36-adbb-46b4-91f8-51e8060bef13");
+        notificationLogs.save(new NotificationLogEntity(thirdId, CARD_TOKEN, MASKED_CARD,
+                ISOLATION_ROW_ID, "PLAIN_TEXT", Instant.parse("2024-03-01T00:00:00Z")));
+        notificationLogs.save(new NotificationLogEntity(firstId, CARD_TOKEN, MASKED_CARD,
+                TIMESTAMP_ROW_ID, "PLAIN_TEXT", Instant.parse("2024-01-01T00:00:00Z")));
+        notificationLogs.save(new NotificationLogEntity(secondId, CARD_TOKEN, MASKED_CARD,
+                UPSERT_ROW_ID, "PLAIN_TEXT", Instant.parse("2024-02-01T00:00:00Z")));
+
+        int removed = committedTransaction().execute(status -> notificationLogs
+                .deleteRenderedBefore(Instant.parse("2025-01-01T00:00:00Z"), 2));
+
+        List<UUID> surviving = jdbc()
+                .sql("SELECT id FROM " + schema + ".notification_log")
+                .query(UUID.class)
+                .list();
+        int second = committedTransaction().execute(status -> notificationLogs
+                .deleteRenderedBefore(Instant.parse("2025-01-01T00:00:00Z"), 2));
+
+        assertAll("the ceiling and the order of one bounded attempt batch",
+                () -> assertEquals(2, removed, "the ceiling caps the statement at two rows"),
+                () -> assertEquals(List.of(thirdId), surviving,
+                        "the two oldest went and the newest of the three stayed"),
+                () -> assertEquals(1, second, "the next batch takes the row that waited"),
+                () -> assertEquals(0L, notificationLogs.count(),
+                        "so repeated batches converge on an empty horizon"));
     }
 
     @Test

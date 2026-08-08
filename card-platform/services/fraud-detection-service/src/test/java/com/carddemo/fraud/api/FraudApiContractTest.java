@@ -98,6 +98,17 @@ final class FraudApiContractTest {
     private static final List<Class<?>> RESPONSE_COMPONENT_TYPES = List.of(String.class,
             String.class, int.class, List.class, boolean.class, Instant.class);
 
+    /**
+     * Component types paired with the JSON type a property describing one must declare. An instant
+     * is text because it is rendered in the ISO-8601 form rather than as an epoch number.
+     */
+    private static final Map<Class<?>, String> WIRE_TYPES = Map.of(
+            String.class, "string",
+            int.class, "integer",
+            List.class, "array",
+            boolean.class, "boolean",
+            Instant.class, "string");
+
     /** Component whose presence on both sides of the contract this class pins. */
     private static final String VERDICT_COMPONENT = "flagged";
 
@@ -160,9 +171,16 @@ final class FraudApiContractTest {
     private static final List<String> BANNED_OPERATIONS =
             List.of("post", "put", "patch", "delete", "head", "options", "trace");
 
-    /** Response keys no operation may declare. */
+    /**
+     * Response keys no operation may declare.
+     *
+     * <p>Each one is a status no code path of this service produces, so publishing it would tell a
+     * caller to handle an answer it will never receive. {@code 429} used to sit here and no longer
+     * does: {@code config/RequestRateCeilingFilter} answers it, and the description publishes it on
+     * both routes.
+     */
     private static final List<String> BANNED_RESPONSE_KEYS =
-            List.of("default", "409", "422", "429", "502");
+            List.of("default", "409", "422", "502");
 
     /** Document keys the description must not carry at any depth. */
     private static final List<String> BANNED_DOCUMENT_KEYS =
@@ -226,6 +244,48 @@ final class FraudApiContractTest {
                         .toList();
         assertEquals(RESPONSE_COMPONENT_TYPES, types,
                 "the response record declares these component types positionally");
+    }
+
+    /**
+     * Asserts every published property declares the wire type its component serializes to.
+     *
+     * <p>The two tests above hold the record to its component names and types, and the description to
+     * the same names. Neither held the description to the same <em>types</em>, so a property could
+     * describe a number where the record sends text. Publishing {@code accountId} as a number passed
+     * every test in this module while losing a leading zero, and every account identifier in
+     * {@code app/data/ASCII/acctdata.txt} is eleven digits padded on the left with them.
+     *
+     * <p>A generated client reads the declared type rather than the description, so this is the
+     * assertion that keeps a documented type from diverging from the value actually sent.
+     */
+    @Test
+    @DisplayName("Every published property declares the wire type its component serializes to")
+    void everyPublishedPropertyDeclaresItsWireType() {
+        Map<String, Object> properties = asMap(asMap(
+                nodeAt("components", "schemas", ASSESSMENT_SCHEMA), ASSESSMENT_SCHEMA)
+                .get("properties"), ASSESSMENT_SCHEMA + " properties");
+        List<String> mismatches = new ArrayList<>();
+
+        for (int position = 0; position < RESPONSE_COMPONENTS.size(); position++) {
+            String property = RESPONSE_COMPONENTS.get(position);
+            Class<?> componentType = RESPONSE_COMPONENT_TYPES.get(position);
+            String expected = WIRE_TYPES.get(componentType);
+            assertNotNull(expected, () -> "this test carries no wire type for "
+                    + componentType.getName() + ", newly held by " + property
+                    + ". Add the mapping deliberately rather than letting it default to a number.");
+            if (!properties.containsKey(property)) {
+                mismatches.add(ASSESSMENT_SCHEMA + " publishes no " + property);
+                continue;
+            }
+            Object declared = asMap(properties.get(property), property).get("type");
+            if (!expected.equals(declared)) {
+                mismatches.add(property + " declares " + declared + " for a "
+                        + componentType.getSimpleName());
+            }
+        }
+
+        assertEquals(List.of(), mismatches,
+                "properties whose declared type is not the type their component sends");
     }
 
     /**
@@ -366,10 +426,17 @@ final class FraudApiContractTest {
                         .toList();
         long withPath = declaredPaths.stream().filter(paths -> !paths.isEmpty()).count();
         assertAll(
-                () -> assertEquals(3, mapped.size(), "methods carrying a read mapping"),
+                () -> assertEquals(2, mapped.size(), "methods carrying a read mapping"),
                 () -> assertEquals(1, withPath, "read mappings declaring a path value"),
                 () -> assertTrue(declaredPaths.contains(Set.of(ITEM_PATH_TEMPLATE)),
-                        "one read mapping declares the path template " + ITEM_PATH_TEMPLATE));
+                        "one read mapping declares the path template " + ITEM_PATH_TEMPLATE),
+                () -> assertEquals(List.of(), mapped.stream()
+                                .filter(method -> method.getAnnotation(GetMapping.class)
+                                        .params().length > 0)
+                                .map(Method::getName)
+                                .toList(),
+                        "no read mapping is selected by a query parameter, so every request reaches "
+                                + "a method src/main/resources/openapi.yaml describes"));
     }
 
     @Test
@@ -403,8 +470,8 @@ final class FraudApiContractTest {
                 () -> assertEquals(TRANSACTION_ID_WIDTH, width.min(), "the constrained lower width"),
                 () -> assertEquals(TRANSACTION_ID_WIDTH, width.max(), "the constrained upper width"),
                 () -> assertNull(annotationOfType(declared, Pattern.class),
-                        "the transaction identifier field holds text, so no expression constrains "
-                                + "its characters"),
+                        "the runtime refuses blank text through @NotBlank, so no expression "
+                                + "constrains the characters of the parameter"),
                 () -> assertEquals(List.of(), fragmentsIn(rendered, DIGIT_PATTERN_FRAGMENTS),
                         "digit expressions applied to the transaction identifier"));
     }
@@ -413,7 +480,8 @@ final class FraudApiContractTest {
     @DisplayName("The account parameter is required and constrained to eleven digits")
     void theAccountParameterFixesElevenDigits() throws NoSuchMethodException {
         Annotation[] declared = FraudAssessmentController.class
-                .getDeclaredMethod("assessmentsOfAccount", String.class, int.class, int.class)
+                .getDeclaredMethod("assessmentsOfAccount", String.class, String.class,
+                        String.class, String.class)
                 .getParameterAnnotations()[0];
         RequestParam bound = annotationOfType(declared, RequestParam.class);
         Pattern shape = annotationOfType(declared, Pattern.class);
@@ -563,14 +631,19 @@ final class FraudApiContractTest {
     }
 
     @Test
-    @DisplayName("The transaction identifier property constrains its width and no expression")
-    void theTransactionIdentifierPropertyCarriesNoExpression() {
+    @DisplayName("The transaction identifier property constrains its width and refuses blank text")
+    void theTransactionIdentifierPropertyRefusesBlankText() {
         Map<String, Object> identifier = assessmentProperty("transactionId");
+        String pattern = String.valueOf(identifier.get("pattern"));
         assertAll(
                 () -> assertEquals("string", identifier.get("type"), "the declared type"),
-                () -> assertFalse(identifier.containsKey("pattern"),
-                        "the transaction identifier field holds text, so no expression constrains "
-                                + "its characters"));
+                () -> assertEquals(List.of(), fragmentsIn(pattern, DIGIT_PATTERN_FRAGMENTS),
+                        "the field holds text, so no digit expression constrains its characters"),
+                () -> assertFalse(" ".repeat(TRANSACTION_ID_WIDTH).matches(pattern),
+                        "sixteen spaces satisfy the width and are refused by the runtime @NotBlank, "
+                                + "so the published shape refuses them too"),
+                () -> assertTrue("0000000000683580".matches(pattern),
+                        "a stored identifier satisfies the published shape"));
     }
 
     @Test

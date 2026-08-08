@@ -35,9 +35,9 @@ import java.util.UUID;
  *
  * <p>Both identifiers hold a fixed count of digits as characters rather than as a number. Every
  * one of the fifty rows of {@code app/data/ASCII/cardxref.txt} opens both identifiers with a zero,
- * and a numeric column returns {@code 1} where the source holds {@code 00000000001}. The account
- * identifier is also the Kafka message key, so the padded form and the numeric form are not
- * interchangeable.
+ * so a numeric column would drop that padding and return a shorter value than the source holds.
+ * The account identifier is also the Kafka message key, so the padded form and the numeric form
+ * are not interchangeable.
  *
  * <p>The key strategy comes from the Job Control Language (JCL) member that defines the
  * Virtual Storage Access Method (VSAM) dataset. {@code KEYS(16 0)} at
@@ -109,9 +109,9 @@ public class CardCrossReferenceEntity {
      *
      * <p>The field is a {@link String} and not a number. {@code PIC 9(09)} is a display field
      * nine characters wide, and every one of the fifty records of
-     * {@code app/data/ASCII/cardxref.txt} fills all nine: record one holds {@code 000000050}. A
-     * numeric column stores that as fifty and returns {@code 50}, which is no longer the
-     * nine-character value the source record carries. The column check constraint
+     * {@code app/data/ASCII/cardxref.txt} fills all nine with leading zeros. A numeric column
+     * would store such a value as a number and return it without its padding, which is no longer
+     * the nine-character value the source record carries. The column check constraint
      * {@code ck_card_xref_customer_id_digits} holds the width and the digit class.
      */
     @Column(name = "customer_id", nullable = false,
@@ -129,8 +129,8 @@ public class CardCrossReferenceEntity {
      *
      * <p>The field is a {@link String} for the same reason {@link #customerId} is. The
      * alternate-index key at {@code KEYS(11,25)} in {@code app/jcl/XREFFILE.jcl:L74} occupies
-     * eleven bytes, and a numeric column returns {@code 50} where the record holds
-     * {@code 00000000050}. The column check constraint
+     * eleven bytes, and a numeric column would return a padded record's value without its leading
+     * zeros. The column check constraint
      * {@code ck_card_xref_account_id_digits} holds the width and the digit class.
      */
     @Column(name = "account_id", nullable = false,
@@ -180,15 +180,15 @@ public class CardCrossReferenceEntity {
     /**
      * No-argument constructor for the persistence provider.
      *
-     * <p>Hibernate calls this constructor to materialise a row, then populates the three fields
+     * <p>Hibernate calls this constructor to materialise a row, then populates the four fields
      * directly. Application code calls
-     * {@link #CardCrossReferenceEntity(String, String, String)}.
+     * {@link #CardCrossReferenceEntity(String, String, String, Instant)}.
      */
     protected CardCrossReferenceEntity() {
     }
 
     /**
-     * Builds one cross-reference row from the three mapped fields.
+     * Builds one cross-reference row from the four mapped fields.
      *
      * @param cardNumber the full card number, exactly
      *                   {@value PicClause#XREF_CARD_NUM_WIDTH} characters wide
@@ -196,6 +196,8 @@ public class CardCrossReferenceEntity {
      *                   {@value PicClause#XREF_CUST_ID_WIDTH} digits
      * @param accountId  the account identifier, exactly
      *                   {@value PicClause#XREF_ACCT_ID_WIDTH} digits
+     * @param observedAt when this service wrote the row, the moment a freshness check measures
+     *                   staleness against
      * @throws NullPointerException     if any argument is {@code null}
      * @throws IllegalArgumentException if the card number is not
      *                                  {@value PicClause#XREF_CARD_NUM_WIDTH} characters wide,

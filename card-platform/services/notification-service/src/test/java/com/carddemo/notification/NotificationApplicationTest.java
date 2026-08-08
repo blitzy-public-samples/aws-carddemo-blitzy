@@ -88,13 +88,17 @@ class NotificationApplicationTest {
      * {@code SecurityConfigTest} asserts that refusal. The values below are generated-looking and
      * distinct from every example the repository carries, so none of them trips the
      * published-value guard.
+     *
+     * <p>The three identity password hashes are not among them. The same guard refuses a password
+     * that is not the output of an adaptive one-way encoder, so {@code card-platform/pom.xml}
+     * supplies one bcrypt value per identity to every test run instead.
      */
     private static final String[] CREDENTIALS = {
         "POSTGRES_PASSWORD=a-generated-value-for-this-test",
         "KAFKA_SASL_PASSWORD=a-generated-broker-value-for-this-test",
-        "ADMIN_PASSWORD_HASH={noop}a-generated-admin-value",
-        "USER_PASSWORD_HASH={noop}a-generated-user-value",
-        "MONITORING_PASSWORD_HASH={noop}a-generated-monitoring-value",
+        "ADMIN_PASSWORD_HASH=" + TestIdentityPasswords.ADMIN_PASSWORD_HASH,
+        "USER_PASSWORD_HASH=" + TestIdentityPasswords.USER_PASSWORD_HASH,
+        "MONITORING_PASSWORD_HASH=" + TestIdentityPasswords.MONITORING_PASSWORD_HASH,
     };
 
     /**

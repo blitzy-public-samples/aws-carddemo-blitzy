@@ -5,9 +5,9 @@ import jakarta.persistence.LockModeType;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Optional;
-import java.util.UUID;
 import org.springframework.data.domain.Limit;
 import org.springframework.data.jpa.repository.Lock;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.ListCrudRepository;
 import org.springframework.data.repository.query.Param;
@@ -416,4 +416,34 @@ public interface CardRepository extends ListCrudRepository<CardEntity, String> {
      */
     @Query(value = "SELECT set_config('lock_timeout', :milliseconds, true)", nativeQuery = true)
     String applyLockWaitBound(@Param("milliseconds") String milliseconds);
+
+    /**
+     * Rewrites one row's card token, and only where the row does not already carry it.
+     *
+     * <p>{@code com.carddemo.card.domain.CardTokenReconciler} calls this at start-up. A card token is
+     * a keyed code over the card number, so the fifty literals {@code V2__seed.sql} loads belong to
+     * the build-scope key {@code card-platform/pom.xml} supplies and not to the key a deployment
+     * generates. This statement is what brings a stored value onto the live key.
+     *
+     * <p>There is no setter on {@code CardEntity} for the column, deliberately: the entity derives
+     * its token in its constructor, which is what keeps every row this service writes correct by
+     * construction. A row already in the database was not built by that constructor, so it is
+     * corrected by a statement rather than by an assignment.
+     *
+     * <p>The {@code <>} predicate makes a repeat harmless and makes two instances starting together
+     * converge: the second one's statement changes nothing and answers zero rather than conflicting.
+     *
+     * @param cardNumber the row to rewrite
+     * @param cardToken  the token the row should carry
+     * @return one where the row was rewritten, zero where it already carried the value
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("""
+            UPDATE CardEntity c
+               SET c.cardToken = :cardToken
+             WHERE c.cardNumber = :cardNumber
+               AND c.cardToken <> :cardToken
+            """)
+    int reassignCardToken(@Param("cardNumber") String cardNumber,
+            @Param("cardToken") String cardToken);
 }

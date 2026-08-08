@@ -22,11 +22,6 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 @ConfigurationPropertiesScan
 public class AuthorizationApplication {
 
-    /**
-     * Boots the Spring application context for this service.
-     *
-     * @param args command-line arguments forwarded to Spring Boot
-     */
     public static void main(String[] args) {
         SpringApplication.run(AuthorizationApplication.class, args);
     }

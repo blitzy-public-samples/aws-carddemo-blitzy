@@ -151,7 +151,7 @@ final class NotificationLogRepositoryTest extends NotificationRepositoryTestSupp
                         "the transaction identifier reads back with no padding"),
                 () -> assertEquals(TEXT_CHANNEL, stored.getChannel(),
                         "the channel reads back at the width it was written at"),
-                () -> assertEquals(written.getAttemptedAt(), stored.getAttemptedAt(),
+                () -> assertEquals(written.getRenderedAt(), stored.getRenderedAt(),
                         "the attempt instant reads back to the microsecond"));
     }
 
@@ -234,15 +234,17 @@ final class NotificationLogRepositoryTest extends NotificationRepositoryTestSupp
                 "the extended interface carries type arguments");
 
         assertAll("the declared surface of NotificationLogRepository",
-                () -> assertEquals(Set.of("save", "count", "deleteAttemptsBefore"), names,
+                () -> assertEquals(Set.of("save", "count", "deleteRenderedBefore"), names,
                         "the interface declares one insert, one total and one retention delete"),
                 () -> assertEquals(0, NotificationLogRepository.class.getDeclaredClasses().length,
                         "the interface declares no nested projection type"),
                 () -> assertTrue(names.stream().noneMatch(NotificationLogRepositoryTest::readsRows),
                         "no declared name opens with a read prefix, found " + names),
-                () -> assertEquals(Set.of(NotificationLogEntity.class, Instant.class), argumentTypes,
-                        "a declared method accepts the attempt row or a cutoff instant and nothing"
-                                + " else, found " + argumentTypes),
+                () -> assertEquals(Set.of(NotificationLogEntity.class, Instant.class, int.class),
+                        argumentTypes,
+                        "a declared method accepts the attempt row, a cutoff instant or the row"
+                                + " ceiling of one bounded batch, and nothing else, found "
+                                + argumentTypes),
                 () -> assertEquals(Set.of(NotificationLogEntity.class, long.class, int.class),
                         returnTypes, "a declared method returns the attempt row or a count, and"
                                 + " never a collection or a projection, found " + returnTypes),

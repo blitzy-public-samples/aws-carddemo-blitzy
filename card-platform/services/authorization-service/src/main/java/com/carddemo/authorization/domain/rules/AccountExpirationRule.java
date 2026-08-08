@@ -14,35 +14,21 @@ import org.springframework.stereotype.Component;
  *
  * <p>Transformed from {@code app/cbl/CBTRN02C.cbl:L414-L420}, the second of two ungated tests
  * inside the {@code NOT INVALID KEY} branch of the account read at
- * {@code app/cbl/CBTRN02C.cbl:L393-L422}:
- *
- * <pre>{@code
- * IF ACCT-EXPIRAION-DATE >= DALYTRAN-ORIG-TS (1:10)
- *   CONTINUE
- * ELSE
- *   MOVE 103 TO WS-VALIDATION-FAIL-REASON
- *   MOVE 'TRANSACTION RECEIVED AFTER ACCT EXPIRATION'
- *     TO WS-VALIDATION-FAIL-REASON-DESC
- * END-IF
- * }</pre>
+ * {@code app/cbl/CBTRN02C.cbl:L393-L422}.
  *
  * <p>Both operands are text and both stay text. {@code ACCT-EXPIRAION-DATE PIC X(10)} at
- * {@code app/cpy/CVACT01Y.cpy:L11} holds ten characters, and {@code (1:10)} takes the leading ten
- * characters of {@code DALYTRAN-ORIG-TS PIC X(26)} at {@code app/cpy/CVTRA06Y.cpy:L16}. Each value
- * is shaped year, then month, then day. Sorting those characters therefore sorts the dates, and
- * {@link String#compareTo(String)} reproduces the source ordering. The column is
- * {@code VARCHAR(10)} and the field is a {@link String}.
+ * {@code app/cpy/CVACT01Y.cpy:L11} and the leading ten characters of
+ * {@code DALYTRAN-ORIG-TS PIC X(26)} at {@code app/cpy/CVTRA06Y.cpy:L16} are both shaped
+ * {@code YYYY-MM-DD}, so lexical order is date order and {@link String#compareTo(String)}
+ * reproduces the source comparison. The boundary is inclusive: {@code >=} at
+ * {@code app/cbl/CBTRN02C.cbl:L414} approves an expiry equal to the capture date.
  *
- * <p>{@code >=} at {@code app/cbl/CBTRN02C.cbl:L414} approves an expiry date equal to the capture
- * date. {@code CONTINUE} at {@code app/cbl/CBTRN02C.cbl:L415} sits on that approving side.
+ * <p>No gate separates this test from the credit test that closes at
+ * {@code app/cbl/CBTRN02C.cbl:L413}, so the last decline of the segment wins.
  *
  * <p>The source spells the account field with a transposed word. The target spells it
  * {@code accountExpirationDate}, a rename recorded in
  * {@code card-platform/docs/traceability-matrix.md}.
- *
- * <p>This rule's answer overwrites an earlier decline of the same segment.
- * {@code app/cbl/CBTRN02C.cbl:L413} closes the credit test and
- * {@code app/cbl/CBTRN02C.cbl:L414} opens this one with no gate between them.
  */
 @Component
 @Order(40)
@@ -57,8 +43,8 @@ public class AccountExpirationRule implements DeclineRule {
      *
      * @param context values for one authorization call, carrying the account snapshot
      *                {@link AccountExistsRule} resolved
-     * @return {@link DeclineReason#ACCOUNT_EXPIRED} when the expiry date sorts below the capture
-     *         date, and an empty result when it reaches the capture date
+     * @return {@link DeclineReason#ACCOUNT_EXPIRED} when the expiry date is earlier than the
+     *         capture date, and an empty result when the two are equal or the expiry is later
      * @throws NullPointerException when no account snapshot reached {@code context}, which means
      *                              the chain ran this rule before the account resolved
      * @throws IndexOutOfBoundsException when the capture timestamp holds fewer than ten characters,

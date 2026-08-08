@@ -23,7 +23,6 @@ import com.carddemo.account.entity.CustomerEntity;
 import com.carddemo.authorization.api.AuthorizationRequest;
 import com.carddemo.authorization.api.AuthorizationResponse;
 import com.carddemo.card.api.dto.ApiErrorResponse;
-import com.carddemo.card.api.dto.CardDetailRequest;
 import com.carddemo.card.api.dto.CardDetailResponse;
 import com.carddemo.card.api.dto.CardListResponse;
 import com.carddemo.card.api.dto.CardSummary;
@@ -68,7 +67,6 @@ import org.springframework.mock.web.MockHttpServletResponse;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.json.JsonMapper;
-import tools.jackson.databind.node.JsonNodeType;
 
 /**
  * Pins every security property the shipped Application Programming Interface surface expresses, and
@@ -165,12 +163,12 @@ class ApiSurfaceSecurityContractTest {
 
     /**
      * Source files making up the Application Programming Interface surface of the three modules
-     * this class classifies: the account, authorization and card services. Nineteen of the
-     * twenty-nine declare a record carrying the name of their file; the other ten are the five
+     * this class classifies: the account, authorization and card services. Eighteen of the
+     * twenty-eight declare a record carrying the name of their file; the other ten are the five
      * endpoint files those modules answer requests on, the three handlers that answer a rejected
      * request, the account record mapper and the card message inventory.
      */
-    private static final int API_SOURCE_FILE_COUNT = 29;
+    private static final int API_SOURCE_FILE_COUNT = 28;
 
     /** Components the twelve response types declare between them. */
     private static final int RESPONSE_COMPONENT_COUNT = 68;
@@ -282,13 +280,12 @@ class ApiSurfaceSecurityContractTest {
             CardUpdateResponse.class,
             CardUpdateResponse.RefreshedCard.class);
 
-    /** The six types a service accepts as a request body. */
+    /** The five types a service accepts as a request body. */
     private static final List<Class<?>> REQUEST_TYPES = List.of(
             AccountDataRequest.class,
             AccountUpdateRequest.class,
             CustomerDataRequest.class,
             AuthorizationRequest.class,
-            CardDetailRequest.class,
             CardUpdateRequest.class);
 
     /**
@@ -590,38 +587,51 @@ class ApiSurfaceSecurityContractTest {
      * that name a narrower path below it.</p>
      *
      * <p>Three shapes appear. {@code hasRole} and {@code hasAnyRole} require an authority and
-     * nothing more, so they guard the operations only an administrator performs and the two an
-     * ordinary identity may perform on any subject. {@code access(ownsPathVariable(...))} and
+     * nothing more, so they guard the operations only an administrator performs, the one an
+     * acquiring workload performs, and the one an ordinary identity may perform on any subject.
+     * {@code POST /authorizations} is the whole of the second group: the request carries a card in
+     * its body rather than an identifier in its path, so no ownership scope can be compared against
+     * it, and the route therefore admits the acquirer role alone rather than every ordinary
+     * identity. {@code access(ownsPathVariable(...))} and
      * {@code access(ownsRequestParameter(...))} require the caller to hold a scope naming the very
      * identifier the request carries, which is the difference between an authenticated caller and an
      * entitled one: the source screens of {@code app/cbl/COACTVWC.cbl} and
      * {@code app/cbl/COCRDLIC.cbl} accept any signed-on identity and any account number it types,
      * and reproducing that would let one cardholder read another's rows.</p>
+     *
+     * <p>That one route carries a second gate as well, because its rule cannot read its subject.
+     * {@code POST /authorizations} names its subject in the request body, and it may name an account
+     * instead of a card, in which case the card is whatever the cross-reference resolves. Neither
+     * identifier exists until the decision path has resolved it, so the ownership comparison runs
+     * there rather than in the chain, and
+     * {@link WebSurfaceAccessControl#theAuthorizationDecisionComparesOwnershipItself()} is what
+     * holds it in place.</p>
      */
     private static final Map<String, List<String>> API_ROUTE_RULES = Map.of(
             "authorization-service", List.of(
-                    "POST /authorizations -> hasAnyRole(USER, ADMIN)"),
+                    "POST /authorizations -> hasAnyRole(ACQUIRER, ADMIN)"),
             "ledger-posting-service", List.of(
                     "GET /balances/{accountId} -> access(ownsPathVariable(ACCOUNT, accountId))"),
             "fraud-detection-service", List.of(
                     "GET /fraud-assessments/** -> hasRole(ADMIN)"),
             "notification-service", List.of(
-                    "GET /notifications/{cardToken} -> "
-                            + "access(ownsPathVariable(CARD, cardToken))"),
+                    "GET /notifications/{cardNumber} -> "
+                            + "access(ownsCardNumberPathVariable(cardNumber))"),
             "account-service", List.of(
                     "POST /accounts/{accountId}/cycle-close -> hasRole(ADMIN)",
                     "PUT /accounts/{accountId} -> hasRole(ADMIN)",
                     "GET /accounts/{accountId} -> access(ownsPathVariable(ACCOUNT, accountId))",
                     "GET /customers/{customerId} -> access(ownsPathVariable(CUSTOMER, customerId))"),
             "card-service", List.of(
-                    "POST /cards/detail -> hasAnyRole(USER, ADMIN)",
-                    "PUT /cards -> hasRole(ADMIN)",
+                    "GET /cards/{cardNumber} -> access(ownsCardNumberPathVariable(cardNumber))",
+                    "PUT /cards/{cardNumber} -> hasRole(ADMIN)",
                     "GET /cards -> access(ownsRequestParameter(ACCOUNT, accountId))"));
 
     /** Constant names the route inventory above reads as the value each one holds. */
     private static final Map<String, String> RULE_CONSTANT_NAMES = Map.of(
             "ROLE_ADMIN", "ADMIN",
             "ROLE_USER", "USER",
+            "ROLE_ACQUIRER", "ACQUIRER",
             "ROLE_MONITORING", "MONITORING",
             "ACCOUNT_SCOPE", "ACCOUNT",
             "CUSTOMER_SCOPE", "CUSTOMER",
@@ -635,6 +645,17 @@ class ApiSurfaceSecurityContractTest {
 
     /** The one actuator endpoint a management chain admits without a credential. */
     private static final String PERMITTED_PROBE = ".requestMatchers(EndpointRequest.to(\"health\"))";
+
+    /**
+     * The filter every ordinary chain names where it turns the forgery token off.
+     *
+     * <p>A forgery token needs a session to live in and no chain here admits one, so the token
+     * protection is unusable rather than merely unnecessary. HTTP Basic is replayable by a browser,
+     * which attaches a cached credential to a request a foreign page caused, so something else has
+     * to refuse that request. {@code config/CrossSiteRequestFilter} is that something, and this
+     * contract requires the chain to say so where a reader is already looking.
+     */
+    private static final String COMPENSATING_CROSS_SITE_CONTROL = "config/CrossSiteRequestFilter";
 
     /** Broker transport every service configures, and the mechanism it authenticates with. */
     private static final String BROKER_SECURITY_PROTOCOL = "SASL_PLAINTEXT";
@@ -1274,9 +1295,9 @@ class ApiSurfaceSecurityContractTest {
     class ResponseRedaction {
 
         /**
-         * The surface is twenty-nine files, and every record among them is classified as a response
+         * The surface is twenty-eight files, and every record among them is classified as a response
          * or a request. A new file or a new record fails here, which is where classification is
-         * enforced. Ten of the twenty-nine declare no record: the authorization endpoint and the
+         * enforced. Ten of the twenty-eight declare no record: the authorization endpoint and the
          * handler that answers a rejected request, both of which the plan requires at
          * {@code POST /authorizations}; the three account-service endpoints and the handler beside
          * them, plus the package-private account mapper, which the plan requires for the account
@@ -1284,21 +1305,22 @@ class ApiSurfaceSecurityContractTest {
          * which the plan requires for the card list, the card view and the card update; and the card
          * message inventory.
          *
-         * <p>Nineteen files declare a record and nineteen record names come out of them, one name per
+         * <p>Eighteen files declare a record and eighteen record names come out of them, one name per
          * file. {@code ApiErrorResponse} is declared once across the three modules, in the card
          * service, and that declaration is the shape {@code ErrorBodyExposure} measures. The
          * authorization service declares its error body as a record nested inside
          * {@code GlobalExceptionHandler}, so it carries no file of its own and is classified with
          * that handler.</p>
          *
-         * <p>One endpoint file serves three routes. {@code CardController} maps the list, the read
-         * and the update of {@code app/cbl/COCRDLIC.cbl}, {@code app/cbl/COCRDSLC.cbl} and
-         * {@code app/cbl/COCRDUPC.cbl} on one collection, so the file count and the route count are
-         * different numbers and neither substitutes for the other.</p>
+         * <p>One endpoint file serves three routes. {@code CardController} maps the list of
+         * {@code app/cbl/COCRDLIC.cbl} on the collection, and the read of
+         * {@code app/cbl/COCRDSLC.cbl} and the update of {@code app/cbl/COCRDUPC.cbl} on the card
+         * the path names, so the file count and the route count are different numbers and neither
+         * substitutes for the other.</p>
          */
         @Test
-        @DisplayName("the surface is twenty-nine files and every record on it is classified")
-        void theApiSurfaceIsTwentyNineFilesAndEveryRecordIsClassified() {
+        @DisplayName("the surface is twenty-eight files and every record on it is classified")
+        void theApiSurfaceIsTwentyEightFilesAndEveryRecordIsClassified() {
             Map<String, String> apiSources = new LinkedHashMap<>();
             readSourcesBelow(REPOSITORY_ROOT.get().resolve(SERVICES_DIRECTORY)
                     .resolve("account-service").resolve(MAIN_SOURCE_PATH)
@@ -1348,7 +1370,7 @@ class ApiSurfaceSecurityContractTest {
                             + "endpoint, the three handlers that answer a rejected request, and "
                             + "the message inventory");
             assertEquals(14, RESPONSE_TYPES.size(), "fourteen types leave as a response body");
-            assertEquals(6, REQUEST_TYPES.size(), "six types enter as a request body");
+            assertEquals(5, REQUEST_TYPES.size(), "five types enter as a request body");
         }
 
         /** Every declared component is classified, and every classified component is declared. */
@@ -2279,11 +2301,100 @@ class ApiSurfaceSecurityContractTest {
                         module + " declares a route rule after its default deny, where no request "
                                 + "reaches it");
                 assertTrue(chain.contains(".csrf(csrf -> csrf.disable())"),
-                        module + " leaves cross-site request forgery protection on a stateless "
-                                + "surface, where the token has no session to live in");
+                        module + " turns on forgery-token protection over a stateless surface, "
+                                + "where the token has no session to live in");
+                assertTrue(chain.contains(COMPENSATING_CROSS_SITE_CONTROL),
+                        module + " turns the forgery token off without naming "
+                                + COMPENSATING_CROSS_SITE_CONTROL + " beside it. The token is "
+                                + "unusable here because the chain admits no session, so the "
+                                + "control that actually refuses a browser replaying a cached "
+                                + "HTTP Basic credential is that filter, and a reader of this "
+                                + "chain has to be able to see which one it is");
                 assertTrue(chain.contains("SessionCreationPolicy.STATELESS"),
                         module + " admits a session, so the pseudo-conversational state section "
                                 + "0.6.4 of the plan removes would return by another route");
+            }
+        }
+
+        /**
+         * The one route whose subject no rule can read compares ownership inside its decision, and
+         * before it commits anything.
+         *
+         * <p>{@code POST /authorizations} admits an ordinary identity by role, and role alone would let
+         * that identity authorize against every account this platform holds: a request may name an
+         * account instead of a card, and the decision path then reads that account's first card, so no
+         * card number had to be known. The comparison cannot live in a route rule, because neither the
+         * account nor the card is known until the cross-reference has been read.
+         *
+         * <p>Placement is the whole of the assertion. The check has to follow the resolution, because
+         * the account it compares is the one the cross-reference named rather than the one the caller
+         * supplied, and it has to precede the identifier allocation, because a refused call must leave
+         * no sequence value, no decision row, no unresolved-card attempt and no event behind. A future
+         * edit that moved it one line later would leave a transaction identifier consumed by a caller
+         * that was refused, and a caller could count them.
+         */
+        @Test
+        @DisplayName("the authorization decision compares ownership itself, before it allocates"
+                + " anything")
+        void theAuthorizationDecisionComparesOwnershipItself() {
+            String decision = methodBodyOf(
+                    MAIN_SOURCES.get().get("authorization-service/AuthorizationService.java"),
+                    "Decision decide(");
+
+            int resolution = decision.indexOf("context.getResolvedAccountId(");
+            int entitlement = decision.indexOf("CallerEntitlement.require(");
+            int allocation = decision.indexOf("allocateTransactionId(");
+
+            assertTrue(entitlement > 0,
+                    "the authorization decision applies no ownership comparison, so an ordinary "
+                            + "credential reaches every account this platform holds");
+            assertTrue(resolution > 0,
+                    "the decision reads no resolved account, so there is no platform-held "
+                            + "identifier for the comparison to run against");
+            assertTrue(entitlement > resolution,
+                    "the comparison runs before the cross-reference resolved an account, so it "
+                            + "compares an identifier the caller supplied rather than the one the "
+                            + "platform holds");
+            assertTrue(allocation > entitlement,
+                    "a transaction identifier is allocated before the caller is entitled, so a "
+                            + "refused call consumes one and a caller can count them");
+        }
+
+        /**
+         * Every published document states which of {@code 403} and {@code 405} answers a method the
+         * route does not serve.
+         *
+         * <p>The default deny the assertion above measures runs in the filter chain, ahead of the
+         * dispatcher. A chain declares one rule per method and path, so a request whose method carries
+         * no rule is refused with {@code 403} and never reaches the handler that would answer
+         * {@code 405}. Measured against every running service: a write method on a read-only route
+         * answers {@code 403} carrying the problem document, on all six.
+         *
+         * <p>Each document declares {@code 405} with its {@code Allow} header, which is the answer a
+         * request the chain admits receives. Both descriptions carry the precedence, so a reader of
+         * either status learns which one a wrong method reaches.
+         *
+         * @throws IOException if a document cannot be read
+         */
+        @Test
+        @DisplayName("every document states which status answers a method a route does not serve")
+        void everyDocumentStatesWhichStatusAnswersAWrongMethod() throws IOException {
+            for (String module : ALL_MODULES) {
+                String document = Files.readString(REPOSITORY_ROOT.get()
+                        .resolve(SERVICES_DIRECTORY).resolve(module)
+                        .resolve("src/main/resources/openapi.yaml"));
+                String flattened = document.replaceAll("\\s+", " ");
+
+                assertTrue(flattened.contains("a request whose method carries no rule is refused "
+                                + "with 403 before the dispatcher runs"),
+                        module + " documents 405 without stating that the chain refuses an unruled "
+                                + "method with 403 first, so the document promises an answer a "
+                                + "deployed caller does not receive");
+                assertTrue(flattened.contains("A method this route does not serve is refused here "
+                                + "too, since config/SecurityConfig declares one rule per method "
+                                + "and path"),
+                        module + " documents 403 without stating that it answers a method the route "
+                                + "does not serve, which is the answer the chain writes");
             }
         }
 
@@ -2604,4 +2715,3 @@ class ApiSurfaceSecurityContractTest {
         }
     }
 }
-

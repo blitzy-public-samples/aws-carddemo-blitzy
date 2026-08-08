@@ -99,27 +99,18 @@ CREATE TABLE transaction_category (
 -- The DALYREJS dataset at app/jcl/POSTTRAN.jcl:L34-L38 is sequential and carries no
 -- KEYS parameter. The application supplies id.
 --
--- DEVIATION from the source record, deliberate: this table does NOT keep the 350 bytes
--- whole. REJECT-TRAN-DATA PIC X(350) at app/cbl/CBTRN02C.cbl:L177 is a copy of the
--- daily transaction record, and byte 264 of that layout is DALYTRAN-CARD-NUM PIC X(16)
--- at app/cpy/CVTRA06Y.cpy:L15, a full Primary Account Number. Keeping the block whole
--- would retain one unmasked card number per refused transaction, in a table that
--- accumulates and that nothing reads on the authorization path. The 350 bytes are
--- therefore replaced by the fields a reader needs to diagnose or replay a refusal, with
--- the card number masked:
---   masked_card_number        replaces DALYTRAN-CARD-NUM, twelve asterisks then the last
---                             four digits, the same shape the notification read model
---                             uses. ck_rejected_transaction_masked_card_number makes the
---                             unmasked form impossible to store: a value of sixteen
---                             digits fails the constraint.
---   transaction_amount        DALYTRAN-AMT, which is what reason 0102 turned on
---   transaction_type_code     DALYTRAN-TYPE-CD, the categorisation key
---   transaction_category_code DALYTRAN-CAT-CD, the second half of that key
---   merchant_id               DALYTRAN-MERCHANT-ID, enough to spot a merchant pattern
---   origin_timestamp          DALYTRAN-ORIG-TS, which is what reason 0103 compared
--- The four free-text merchant and description fields of the source record are dropped:
--- reject_reason_description already names the failure, and unbounded text is where an
--- unmasked card number would reappear.
+-- The table keeps the 350 bytes whole. REJECT-TRAN-DATA PIC X(350) at
+-- app/cbl/CBTRN02C.cbl:L177 is a copy of the daily transaction record, and L447 moves
+-- the whole arriving record into it without reshaping a field. rejected_transaction_data
+-- holds those 350 characters in app/cpy/CVTRA06Y.cpy:L5-L18 field order, trailing spaces
+-- included, so a reader slices any field out at its copybook offset. The card number at
+-- app/cpy/CVTRA06Y.cpy:L15 arrives masked: authorization publishes the masked form and
+-- the unmasked Primary Account Number never enters this service.
+-- ck_rejected_transaction_masked_card_number holds that boundary at the column: the
+-- sixteen characters at one-based offsets 263 through 278 of the block carry no digit in
+-- their first twelve positions.
+-- transaction_id, reject_reason_code and reject_reason_description repeat values the
+-- block and the trailer already carry, and carry them as queryable columns.
 CREATE TABLE rejected_transaction (
     id                        UUID         NOT NULL,
     -- DALYTRAN-ID PIC X(16) at app/cpy/CVTRA06Y.cpy:L5
@@ -128,31 +119,20 @@ CREATE TABLE rejected_transaction (
     reject_reason_code        VARCHAR(4)   NOT NULL,
     -- WS-VALIDATION-FAIL-REASON-DESC PIC X(76) at app/cbl/CBTRN02C.cbl:L182
     reject_reason_description VARCHAR(76)  NOT NULL,
-    -- Masked form of DALYTRAN-CARD-NUM PIC X(16) at app/cpy/CVTRA06Y.cpy:L15
-    masked_card_number        CHAR(16)     NOT NULL,
-    -- DALYTRAN-AMT PIC S9(09)V99 at app/cpy/CVTRA06Y.cpy:L10
-    transaction_amount        NUMERIC(11,2) NOT NULL,
-    -- DALYTRAN-TYPE-CD PIC X(02) at app/cpy/CVTRA06Y.cpy:L6
-    transaction_type_code     CHAR(2)      NOT NULL,
-    -- DALYTRAN-CAT-CD PIC 9(04) at app/cpy/CVTRA06Y.cpy:L7, text for the reason
-    -- V1__schema.sql gives for transaction.category_code
-    transaction_category_code CHAR(4)      NOT NULL,
-    -- DALYTRAN-MERCHANT-ID PIC 9(09) at app/cpy/CVTRA06Y.cpy:L11
-    merchant_id               CHAR(9)      NOT NULL,
-    -- DALYTRAN-ORIG-TS PIC X(26) at app/cpy/CVTRA06Y.cpy:L16
-    origin_timestamp          CHAR(26)     NOT NULL,
+    -- REJECT-TRAN-DATA PIC X(350) at app/cbl/CBTRN02C.cbl:L177, the arriving
+    -- DALYTRAN-RECORD of app/cpy/CVTRA06Y.cpy:L4-L18 verbatim
+    rejected_transaction_data CHAR(350)    NOT NULL,
     rejected_at               TIMESTAMP(6) WITH TIME ZONE NOT NULL,
     CONSTRAINT pk_rejected_transaction PRIMARY KEY (id),
-    -- Twelve asterisks then either the last four digits or four more asterisks. The
-    -- second form is what com.carddemo.cobol.PanMasker returns for a card number it
-    -- cannot read, and a refusal is exactly where such a value turns up. Either way the
-    -- first twelve positions hold no digit, so no unmasked card number fits the column.
+    -- Offsets 263 through 278 of the block are DALYTRAN-CARD-NUM PIC X(16) at
+    -- app/cpy/CVTRA06Y.cpy:L15, after the 262 characters of the ten fields ahead of it.
+    -- com.carddemo.cobol.PanMasker returns twelve asterisks then the last four digits,
+    -- and twelve asterisks then four more for a card number it cannot read. A refusal is
+    -- exactly where the second form turns up. Either way the first twelve positions hold
+    -- no digit, so no unmasked card number fits the block.
     CONSTRAINT ck_rejected_transaction_masked_card_number
-        CHECK (masked_card_number ~ '^\*{12}([0-9]{4}|\*{4})$'),
-    CONSTRAINT ck_rejected_transaction_category_digits
-        CHECK (transaction_category_code ~ '^[0-9]{4}$'),
-    CONSTRAINT ck_rejected_transaction_merchant_digits
-        CHECK (merchant_id ~ '^[0-9]{9}$')
+        CHECK (SUBSTRING(rejected_transaction_data FROM 263 FOR 16)
+               ~ '^\*{12}([0-9]{4}|\*{4})$')
 );
 
 -- Transactional outbox. Additive: no COBOL program carries an equivalent record.
@@ -324,8 +304,9 @@ COMMENT ON TABLE transaction_category IS
 
 COMMENT ON TABLE rejected_transaction IS
     'retention=90 days; purge_key=rejected_at; personal_data=pseudonymous. Diagnostic record
-     of one refusal, carrying transaction, amount, merchant and masked-card details that can
-     be linked to a customer. Purge rows whose rejected_at is older than 90 days.';
+     of one refusal, carrying the refused 350-character transaction record verbatim with its
+     card number masked. Amount, merchant and transaction identifier sit inside that block and
+     can be linked to a customer. Purge rows whose rejected_at is older than 90 days.';
 
 COMMENT ON TABLE outbox_event IS
     'retention=7 days after published; purge_key=published_at; personal_data=pseudonymous. One

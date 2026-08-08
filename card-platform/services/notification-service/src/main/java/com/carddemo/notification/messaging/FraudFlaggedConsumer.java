@@ -30,10 +30,8 @@ import org.springframework.transaction.support.TransactionTemplate;
  * fields the alert reports are the fields {@code 5000-CREATE-STATEMENT} assembles at
  * {@code app/cbl/CBSTM03A.CBL:L458-L504}.
  *
- * <p>This listener is the second independent reader of a second event, and it reads an event that
- * already travels: the fraud service publishes it and knows nothing of this service. Adding this
- * class needed no change to the fraud service, to the ledger service or to the authorization
- * service.
+ * <p>This listener reads an event the fraud service publishes without knowing of this service, and
+ * calls no other service.
  *
  * <p>One topic carries both assessment outcomes. {@link FraudFlagged} and {@link FraudCleared}
  * travel together on the assessment topic, and {@link #onFraudAssessed} routes on the concrete type
@@ -47,8 +45,10 @@ import org.springframework.transaction.support.TransactionTemplate;
  * projection holds no row for fails the delivery, so the gap reaches the dead-letter topic in place
  * of an alert carrying no name and no address.
  *
- * <p>No delivery-attempt row is written here. {@code notification_log} keys a row by card token and
- * masked card number, and an assessment carries neither.
+ * <p>No rendered-alert row is written here. {@code notification_log} keys a row by {@code id},
+ * and its {@code card_token} and {@code masked_card_number} columns are {@code NOT NULL}: the
+ * first is what {@code ix_notification_log_card_token} reads one card's rendered history by, and
+ * an assessment carries neither value.
  *
  * <p>For the path one message takes from publish through consume to the dead-letter topic, read
  * {@code card-platform/docs/event-flow.md}. The choices behind this listener sit in
@@ -57,7 +57,6 @@ import org.springframework.transaction.support.TransactionTemplate;
 @Component
 public class FraudFlaggedConsumer {
 
-    /** Writes the diagnostic lines this class emits, none carrying a cardholder value. */
     private static final Logger LOG = LoggerFactory.getLogger(FraudFlaggedConsumer.class);
 
     /**
@@ -153,21 +152,28 @@ public class FraudFlaggedConsumer {
      * is unreachable on that path, so a repeat delivery follows and the claim keeps it harmless.
      *
      * @param event          the validated event this delivery carries, flagged or cleared
+     * @param messageKey     the key the record arrived under, which must name the account the
+     *                       payload names
      * @param acknowledgment the offset commit, invoked once the transaction has committed
      * @param consumedTopic  the topic the delivery arrived on, recorded on the marker
      * @throws NullPointerException if {@code event} or {@code acknowledgment} is null
-     * @throws IllegalArgumentException if the payload is neither assessment outcome
+     * @throws IllegalArgumentException if the payload is neither assessment outcome, or the key
+     *                                  names another account
      */
     @KafkaListener(topics = "${carddemo.kafka.topics.fraud-assessed}",
             groupId = "${carddemo.kafka.groups.fraud-assessed}")
-    public void onFraudAssessed(Record event, Acknowledgment acknowledgment,
+    public void onFraudAssessed(Record event,
+            @Header(name = KafkaHeaders.RECEIVED_KEY, required = false) String messageKey,
+            Acknowledgment acknowledgment,
             @Header(KafkaHeaders.RECEIVED_TOPIC) String consumedTopic) {
         Objects.requireNonNull(event, "event is required");
         Objects.requireNonNull(acknowledgment, "acknowledgment is required");
 
         if (event instanceof FraudFlagged flagged) {
+            requireKeyNamesAggregate(messageKey, flagged.aggregateId(), flagged.accountId());
             applyFlagged(flagged, consumedTopic);
         } else if (event instanceof FraudCleared cleared) {
+            requireKeyNamesAggregate(messageKey, cleared.aggregateId(), cleared.accountId());
             applyCleared(cleared, consumedTopic);
         } else {
             throw refusePayload(event);
@@ -227,6 +233,51 @@ public class FraudFlaggedConsumer {
     }
 
     /**
+     * Refuses a record whose key does not name the aggregate its payload names.
+     *
+     * <p>Kafka orders records inside one partition and nowhere else, and the key chooses the
+     * partition. AAP 0.3.1 makes the account identifier the key of every event for exactly
+     * that reason, and the document behind this event states the rule outright: the Kafka message
+     * key, {@code aggregateId} and {@code accountId} all carry one value, so account
+     * identity has a single source. Schema validation checks the shape of each of the three and not
+     * their agreement, so a producer with write access to this topic could place one
+     * account's payload on another's partition and pass every check before this one.
+     *
+     * <p>The two transaction listeners of this service already make this check. It belongs on this
+     * stream for a reason of its own: the account this payload names is the account whose
+     * cardholder details the alert is addressed with, so an assessment applied under the wrong key
+     * would send one cardholder a fraud alert about another cardholder's transaction. Both outcomes
+     * on this topic are checked, because both carry an account and only one of them renders
+     * anything.
+     *
+     * <p>All three values are compared rather than the key against one of them. A key that matches
+     * {@code aggregateId} while {@code accountId} names something else would route correctly and
+     * write to the wrong row, which is the same defect one field further in.
+     *
+     * <p>The refusal is an {@link IllegalArgumentException} raised before anything is claimed or
+     * written, so nothing is applied, the delivery is retried, and a spent record reaches the
+     * sanitized dead-letter route of {@code config/KafkaConsumerConfig}. Neither message names the
+     * key, the aggregate or the account, so no identifier reaches a log line through them.
+     *
+     * @param messageKey  the key the record arrived under, possibly {@code null}
+     * @param aggregateId the aggregate the envelope names
+     * @param accountId   the account the payload names
+     * @throws IllegalArgumentException when the key is absent or the three do not agree
+     */
+    private static void requireKeyNamesAggregate(String messageKey, String aggregateId,
+            String accountId) {
+        if (messageKey == null || messageKey.isBlank()) {
+            throw new IllegalArgumentException("this record carries no message key, so the"
+                    + " partition it arrived on is not the one that orders its account");
+        }
+        if (!messageKey.equals(aggregateId) || !messageKey.equals(accountId)) {
+            throw new IllegalArgumentException("the message key, the aggregate and the"
+                    + " account this payload names do not agree, so the partition this"
+                    + " record arrived on is not the one that orders that account");
+        }
+    }
+
+    /**
      * Claims one event identifier inside the open transaction, and reports whether this delivery
      * took it.
      *
@@ -267,12 +318,6 @@ public class FraudFlaggedConsumer {
     }
 
     /**
-     * Names the topic this delivery arrived on, for the half of the marker key that holds it.
-     *
-     * <p>The topic is half of {@code pk_processed_event}, so it holds no null. A delivery that
-     * carried no topic header records {@link ProcessedEventEntity#NO_CONSUMED_TOPIC}, which states
-     * that absence in a value no real topic name can equal.</p>
-     *
      * @param consumedTopic the topic the delivery arrived on, possibly null or blank
      * @return the topic, or {@link ProcessedEventEntity#NO_CONSUMED_TOPIC} when it named none
      */
@@ -353,14 +398,6 @@ public class FraudFlaggedConsumer {
     }
 
     /**
-     * Names the failure kind one fault counts under.
-     *
-     * <p>A database fault counts as a persistence failure and every other fault as a rendering
-     * failure. {@code ObservabilityConfig.NotificationMetrics#isPersistenceFault} decides the first
-     * case for the whole service, and it names a transaction fault as well as a data-access fault:
-     * an unreachable database raises {@code CannotCreateTransactionException} from the connection
-     * pool. {@code config/ObservabilityConfig} registers both series.
-     *
      * @param failure the fault this delivery raised
      * @return the tag value the failure counter carries
      */

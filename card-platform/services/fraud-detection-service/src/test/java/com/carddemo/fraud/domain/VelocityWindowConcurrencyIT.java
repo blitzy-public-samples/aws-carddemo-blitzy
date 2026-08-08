@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.carddemo.events.TransactionAuthorized;
+import com.carddemo.fraud.TestIdentityPasswords;
 import com.carddemo.fraud.entity.VelocityWindowEntity;
 import com.carddemo.fraud.repository.VelocityWindowRepository;
 import java.math.BigDecimal;
@@ -34,9 +35,9 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE, properties = {
         "spring.kafka.listener.auto-startup=false",
         "KAFKA_SASL_PASSWORD=not-a-real-broker-password",
-        "ADMIN_PASSWORD_HASH={noop}not-a-real-admin-password",
-        "USER_PASSWORD_HASH={noop}not-a-real-user-password",
-        "MONITORING_PASSWORD_HASH={noop}not-a-real-monitoring-password"
+        "ADMIN_PASSWORD_HASH=" + TestIdentityPasswords.ADMIN_PASSWORD_HASH,
+        "USER_PASSWORD_HASH=" + TestIdentityPasswords.USER_PASSWORD_HASH,
+        "MONITORING_PASSWORD_HASH=" + TestIdentityPasswords.MONITORING_PASSWORD_HASH
 })
 @DisplayName("Concurrent velocity-window updates")
 class VelocityWindowConcurrencyIT {

@@ -18,7 +18,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Checks that the six Flyway migrations of the account service apply to an empty schema, and that
+ * Checks that the seven Flyway migrations of the account service apply to an empty schema, and that
  * the seed loads the row counts its fixtures carry.
  *
  * <p>Every method here reads, and none writes. Other test classes in this package assert the same
@@ -96,8 +96,8 @@ class SchemaMigrationTest extends AbstractAccountPostgresTest {
     /** Additive duplicate-delivery marker table with no source-record ancestor. */
     private static final String PROCESSED_EVENT_TABLE = "processed_event";
 
-    /** Service-local replica used to derive an account's customer identifier. */
-    private static final String CARD_CROSS_REFERENCE_TABLE = "card_xref";
+    /** Service-local table used to derive an account's customer identifier. */
+    private static final String ACCOUNT_CUSTOMER_LINK_TABLE = "account_customer_link";
 
     /** The nine tables the migrations declare. */
     private static final String[] DECLARED_TABLES = {
@@ -109,7 +109,7 @@ class SchemaMigrationTest extends AbstractAccountPostgresTest {
             STATE_ZIP_PREFIX_TABLE,
             OUTBOX_EVENT_TABLE,
             PROCESSED_EVENT_TABLE,
-            CARD_CROSS_REFERENCE_TABLE
+            ACCOUNT_CUSTOMER_LINK_TABLE
     };
 
     /**
@@ -124,11 +124,25 @@ class SchemaMigrationTest extends AbstractAccountPostgresTest {
     // assertion below reads one.
     // ------------------------------------------------------------------------------------------
 
-    /** Versions Flyway parses from the six migration file names, in installed order. */
-    private static final String[] MIGRATION_VERSIONS = {"1", "2", "3", "4", "5", "6"};
+    /** Versions Flyway parses from the eight migration file names, in installed order. */
+    private static final String[] MIGRATION_VERSIONS = {"1", "2", "3", "4", "5", "6", "7", "8"};
 
     /**
-     * The six files under {@code src/main/resources/db/migration}, in installed order.
+     * The eight files under {@code src/main/resources/db/migration}, in installed order.
+     *
+     * <p>{@code V4} and {@code V7} both appear, and both have to. An applied migration is not
+     * edited, so {@code V4} stays in the history that created the {@code card_xref} replica and
+     * {@code V7} is the migration that replaced it with {@code account_customer_link} and dropped
+     * it. {@code declaredTablesExistAndNoOthersDo} reads the schema Flyway leaves behind, which
+     * is where the drop shows.</p>
+     *
+     * <p>{@code V8} is here for the same reason and carries no data-definition statement at all. It
+     * re-issues one column comment: {@code V1} said an erasure request cleared
+     * {@code customer.social_security_number} with the rest of the row, and no export or erasure
+     * workflow exists anywhere on this platform to do that. The correction has to be a migration
+     * rather than an edit to {@code V1}, because {@code V1} has run. A comment-only migration adds a
+     * history row and changes no table, so {@code declaredTablesExistAndNoOthersDo} and the seeded
+     * row counts below read exactly as they did at {@code V7}.</p>
      */
     private static final String[] MIGRATION_SCRIPTS = {
             "V1__schema.sql",
@@ -136,7 +150,9 @@ class SchemaMigrationTest extends AbstractAccountPostgresTest {
             "V3__reference_data.sql",
             "V4__card_cross_reference_replica.sql",
             "V5__outbox_dead_letter_state.sql",
-            "V6__processed_event_topic_key.sql"
+            "V6__processed_event_topic_key.sql",
+            "V7__account_customer_link.sql",
+            "V8__subject_request_posture.sql"
     };
 
     // ------------------------------------------------------------------------------------------
@@ -156,7 +172,7 @@ class SchemaMigrationTest extends AbstractAccountPostgresTest {
     private static final long SEEDED_ROWS_TOTAL = 151L;
 
     /** Rows the card cross-reference fixture carries. */
-    private static final long CARD_CROSS_REFERENCE_SEED_ROWS = 50L;
+    private static final long ACCOUNT_CUSTOMER_LINK_SEED_ROWS = 50L;
 
     /**
      * An unquoted lower-case PostgreSQL identifier. {@link #migratedSchema()} holds the reported
@@ -167,7 +183,7 @@ class SchemaMigrationTest extends AbstractAccountPostgresTest {
     /** Ordinal of the single column each counting query selects. */
     private static final int FIRST_COLUMN = 1;
 
-    /** The component that applied the six migrations, and the source of the schema name. */
+    /** The component that applied the seven migrations, and the source of the schema name. */
     @Autowired
     private Flyway flyway;
 
@@ -190,7 +206,7 @@ class SchemaMigrationTest extends AbstractAccountPostgresTest {
     /**
      * Returns the schema the Flyway bean reports, holding it to an unquoted lower-case identifier.
      *
-     * @return the schema the six migrations landed in
+     * @return the schema the seven migrations landed in
      */
     private String migratedSchema() {
         String reported = flyway.getConfiguration().getDefaultSchema();
@@ -329,7 +345,7 @@ class SchemaMigrationTest extends AbstractAccountPostgresTest {
     }
 
     // ------------------------------------------------------------------------------------------
-    // The six migrations applied, and applied in order
+    // The seven migrations applied, and applied in order
     // ------------------------------------------------------------------------------------------
 
     /**
@@ -339,7 +355,7 @@ class SchemaMigrationTest extends AbstractAccountPostgresTest {
      * @throws SQLException when the history query fails
      */
     @Test
-    @DisplayName("flyway_schema_history holds six versioned rows, versions 1 through 6 in "
+    @DisplayName("flyway_schema_history holds seven versioned rows, versions 1 through 7 in "
             + "installed-rank order")
     void historyHoldsEveryVersionInInstalledRankOrder() throws SQLException {
         List<AppliedMigration> applied = appliedMigrations();
@@ -366,12 +382,12 @@ class SchemaMigrationTest extends AbstractAccountPostgresTest {
     }
 
     /**
-     * Asserts the six script names in installed-rank order.
+     * Asserts the seven script names in installed-rank order.
      *
      * @throws SQLException when the history query fails
      */
     @Test
-    @DisplayName("the six versioned rows name all account migration scripts in order")
+    @DisplayName("the seven versioned rows name all account migration scripts in order")
     void historyNamesEveryMigrationScript() throws SQLException {
         assertThat(appliedMigrations()).extracting(AppliedMigration::script)
                 .as("scripts under src/main/resources/db/migration, read in installed-rank order")
@@ -402,12 +418,18 @@ class SchemaMigrationTest extends AbstractAccountPostgresTest {
     }
 
     @Test
-    @DisplayName("card_xref holds the 50 account-to-customer relationships of cardxref.txt")
-    void cardCrossReferenceHoldsFiftySeededRows() throws SQLException {
-        assertThat(countRows(CARD_CROSS_REFERENCE_TABLE))
-                .as("rows V4__card_cross_reference_replica.sql inserts from "
-                        + "app/data/ASCII/cardxref.txt")
-                .isEqualTo(CARD_CROSS_REFERENCE_SEED_ROWS);
+    @DisplayName("account_customer_link holds the 50 relationships of cardxref.txt and no card")
+    void accountCustomerLinkHoldsFiftySeededRows() throws SQLException {
+        assertThat(countRows(ACCOUNT_CUSTOMER_LINK_TABLE))
+                .as("rows V7__account_customer_link.sql carries across from the replica "
+                        + "V4__card_cross_reference_replica.sql seeded from "
+                        + "app/data/ASCII/cardxref.txt, one per account")
+                .isEqualTo(ACCOUNT_CUSTOMER_LINK_SEED_ROWS);
+        assertThat(columnNames())
+                .as("every column of schema %s. A card number replicated into this schema would be "
+                        + "a Primary Account Number with no reader: this service resolves an "
+                        + "account-to-customer pair and reads no card", migratedSchema())
+                .doesNotContain("card_number");
     }
 
     // ------------------------------------------------------------------------------------------
@@ -493,7 +515,7 @@ class SchemaMigrationTest extends AbstractAccountPostgresTest {
      * @throws SQLException when the counting query fails
      */
     @Test
-    @DisplayName("outbox_event holds no row after the six migrations")
+    @DisplayName("outbox_event holds no row after the seven migrations")
     void outboxEventHoldsNoRowAfterMigration() throws SQLException {
         assertThat(countRows(OUTBOX_EVENT_TABLE))
                 .as("rows in %s, which no migration of this module inserts into",
@@ -508,7 +530,7 @@ class SchemaMigrationTest extends AbstractAccountPostgresTest {
      * @throws SQLException when the counting query fails
      */
     @Test
-    @DisplayName("processed_event holds no row after the six migrations")
+    @DisplayName("processed_event holds no row after the seven migrations")
     void processedEventHoldsNoRowAfterMigration() throws SQLException {
         assertThat(countRows(PROCESSED_EVENT_TABLE))
                 .as("rows in %s, which no migration of this module inserts into",

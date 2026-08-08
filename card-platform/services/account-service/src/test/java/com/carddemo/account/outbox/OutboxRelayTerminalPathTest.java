@@ -2,7 +2,6 @@ package com.carddemo.account.outbox;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -355,7 +354,7 @@ class OutboxRelayTerminalPathTest {
                 new AccountProperties.Outbox(
                         new AccountProperties.Outbox.Relay(500L, 4, "terminal-path-test",
                                 Duration.ofSeconds(30L), 5_000L, Duration.ofSeconds(10L)), 168L),
-                new AccountProperties.ProcessedEvent(168L),
+                new AccountProperties.ProcessedEvent(720L, 168L),
                 new AccountProperties.Retention(3_600_000L),
                 new AccountProperties.Write(3_000L));
     }
@@ -442,7 +441,7 @@ class OutboxRelayTerminalPathTest {
         }
 
         @Override
-        public int deletePublishedBefore(Instant horizon) {
+        public int deletePublishedBefore(Instant horizon, int limit) {
             return 0;
         }
 

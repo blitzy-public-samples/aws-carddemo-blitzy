@@ -52,9 +52,16 @@ CREATE TABLE card (
     -- rows, which keeps the derivation out of SQL entirely, and
     -- CardRepositoryIT.everySeededTokenMatchesTheJavaDerivation compares all fifty
     -- literals against the helper. A drifted literal therefore fails a test rather than
-    -- splitting one card's identity in two. Those literals belong to one key and one
-    -- version: card-platform/.env.example declares both, and
-    -- CardTokenKeyContractTest holds every artifact that carries a token to them.
+    -- splitting one card's identity in two.
+    --
+    -- Those literals belong to the BUILD-SCOPE key card-platform/pom.xml supplies, not to a
+    -- deployment key: card-platform/.env.example and deploy/k8s/31-secret.example.yaml both
+    -- carry a placeholder, and this service refuses to start until a deployment supplies a
+    -- key of its own. domain.CardTokenReconciler then re-derives this column for every row
+    -- of this table under that key, before the service accepts traffic, so no stored token
+    -- belongs to a key this repository publishes. There is no setter for the column on
+    -- CardEntity: a row this service builds derives it in the constructor, and a row loaded
+    -- by a migration is corrected by that statement.
     card_token              CHAR(64) NOT NULL,
     CONSTRAINT pk_card PRIMARY KEY (card_number),
     CONSTRAINT ck_card_account_id_digits

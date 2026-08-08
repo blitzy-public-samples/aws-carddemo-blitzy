@@ -20,45 +20,8 @@ import com.carddemo.cobol.PicClause;
  * {@code app/cbl/COACTUPC.cbl:L4115-L4140}. The second reads seventeen customer fields at
  * {@code app/cbl/COACTUPC.cbl:L4152-L4186}, and a comment at {@code app/cbl/COACTUPC.cbl:L4148}
  * records the split. Either condition failing sets {@code DATA-WAS-CHANGED-BEFORE-UPDATE}, from
- * {@code app/cbl/COACTUPC.cbl:L4143} and {@code app/cbl/COACTUPC.cbl:L4189}.</p>
- *
- * <p>The ten account fields, in the order the source tests them:</p>
- * <ul>
- *   <li>{@code ACCT-ACTIVE-STATUS} at {@code app/cbl/COACTUPC.cbl:L4115}, as supplied</li>
- *   <li>{@code ACCT-CURR-BAL} at {@code app/cbl/COACTUPC.cbl:L4117}, numeric</li>
- *   <li>{@code ACCT-CREDIT-LIMIT} at {@code app/cbl/COACTUPC.cbl:L4119}, numeric</li>
- *   <li>{@code ACCT-CASH-CREDIT-LIMIT} at {@code app/cbl/COACTUPC.cbl:L4121}, numeric</li>
- *   <li>{@code ACCT-CURR-CYC-CREDIT} at {@code app/cbl/COACTUPC.cbl:L4123}, numeric</li>
- *   <li>{@code ACCT-CURR-CYC-DEBIT} at {@code app/cbl/COACTUPC.cbl:L4125}, numeric</li>
- *   <li>{@code ACCT-OPEN-DATE} at {@code app/cbl/COACTUPC.cbl:L4127-L4129}, three slices</li>
- *   <li>{@code ACCT-EXPIRAION-DATE} at {@code app/cbl/COACTUPC.cbl:L4131-L4133}, three slices</li>
- *   <li>{@code ACCT-REISSUE-DATE} at {@code app/cbl/COACTUPC.cbl:L4135-L4137}, three slices</li>
- *   <li>{@code ACCT-GROUP-ID} at {@code app/cbl/COACTUPC.cbl:L4139-L4140}, folded to lower case</li>
- * </ul>
- *
- * <p>The seventeen customer fields, in the order the source tests them:</p>
- * <ul>
- *   <li>{@code CUST-FIRST-NAME} at {@code app/cbl/COACTUPC.cbl:L4152}, folded to upper case</li>
- *   <li>{@code CUST-MIDDLE-NAME} at {@code app/cbl/COACTUPC.cbl:L4154}, folded to upper case</li>
- *   <li>{@code CUST-LAST-NAME} at {@code app/cbl/COACTUPC.cbl:L4156}, folded to upper case</li>
- *   <li>{@code CUST-ADDR-LINE-1} at {@code app/cbl/COACTUPC.cbl:L4158}, folded to upper case</li>
- *   <li>{@code CUST-ADDR-LINE-2} at {@code app/cbl/COACTUPC.cbl:L4160}, folded to upper case</li>
- *   <li>{@code CUST-ADDR-LINE-3} at {@code app/cbl/COACTUPC.cbl:L4162}, folded to upper case</li>
- *   <li>{@code CUST-ADDR-STATE-CD} at {@code app/cbl/COACTUPC.cbl:L4164}, folded to upper case</li>
- *   <li>{@code CUST-ADDR-COUNTRY-CD} at {@code app/cbl/COACTUPC.cbl:L4166}, folded to upper
- *       case</li>
- *   <li>{@code CUST-ADDR-ZIP} at {@code app/cbl/COACTUPC.cbl:L4168}, as supplied</li>
- *   <li>{@code CUST-PHONE-NUM-1} at {@code app/cbl/COACTUPC.cbl:L4169}, as supplied</li>
- *   <li>{@code CUST-PHONE-NUM-2} at {@code app/cbl/COACTUPC.cbl:L4170}, as supplied</li>
- *   <li>{@code CUST-SSN} at {@code app/cbl/COACTUPC.cbl:L4171}, numeric</li>
- *   <li>{@code CUST-GOVT-ISSUED-ID} at {@code app/cbl/COACTUPC.cbl:L4172-L4173}, folded to upper
- *       case</li>
- *   <li>{@code CUST-DOB-YYYY-MM-DD} at {@code app/cbl/COACTUPC.cbl:L4174-L4179}, three slices</li>
- *   <li>{@code CUST-EFT-ACCOUNT-ID} at {@code app/cbl/COACTUPC.cbl:L4181-L4182}, as supplied</li>
- *   <li>{@code CUST-PRI-CARD-HOLDER-IND} at {@code app/cbl/COACTUPC.cbl:L4183-L4185}, as
- *       supplied</li>
- *   <li>{@code CUST-FICO-CREDIT-SCORE} at {@code app/cbl/COACTUPC.cbl:L4186}, numeric</li>
- * </ul>
+ * {@code app/cbl/COACTUPC.cbl:L4143} and {@code app/cbl/COACTUPC.cbl:L4189}. Each of the 27
+ * comparisons below carries the locator of the source condition it reproduces.</p>
  *
  * <p>{@code ACCT-ID} and {@code CUST-ID} appear in neither condition. The five account amounts read
  * the numeric redefinitions of the saved copy at {@code app/cbl/COACTUPC.cbl:L676-L707}, each
@@ -387,9 +350,6 @@ public final class ConcurrentChangeDetector {
     }
 
     /**
-     * Returns a value padded on the right to the width the field declares. An unset value becomes
-     * that width in spaces, and a longer value is returned whole.
-     *
      * @param value the value to pad
      * @param declaredWidth the width {@link PicClause} publishes for the field
      * @return the padded value, never {@code null}
@@ -406,9 +366,6 @@ public final class ConcurrentChangeDetector {
     }
 
     /**
-     * Returns an amount at the declared scale, with the digits past that scale dropped. An unset
-     * amount becomes zero at that scale.
-     *
      * @param value the amount to scale
      * @param scale the scale {@link PicClause} publishes for the field
      * @return the scaled amount, never {@code null}

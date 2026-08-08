@@ -96,6 +96,9 @@ public class AccountStateChangedConsumer {
     /** Writes the diagnostic lines this class emits, none carrying a monetary value. */
     private static final Logger LOG = LoggerFactory.getLogger(AccountStateChangedConsumer.class);
 
+    /** Envelope property naming the aggregate, which the Kafka message key must equal. */
+    private static final String AGGREGATE_ID = "aggregateId";
+
     /**
      * Bean name of the listener container factory this listener runs on.
      *
@@ -162,16 +165,21 @@ public class AccountStateChangedConsumer {
      * defect.
      *
      * @param message        the schema-checked message tree, or {@code null} for a tombstone
+     * @param messageKey     the key the record arrived under, which must name the account the
+     *                       payload names
      * @param acknowledgment the offset commit, invoked once the transaction has committed
      * @param consumedTopic  the topic the delivery arrived on, recorded on the marker
      * @throws NullPointerException     if {@code acknowledgment} is {@code null}
-     * @throws IllegalArgumentException if the payload is a tombstone
+     * @throws IllegalArgumentException if the payload is a tombstone, or the key names another
+     *                                  account
      */
     @KafkaListener(
             topics = "${carddemo.kafka.topics.account-state-changed:account.state-changed}",
             groupId = "${carddemo.kafka.groups.account-state-changed:ledger-account-state}",
             containerFactory = CONTAINER_FACTORY)
-    public void onAccountStateChanged(JsonNode message, Acknowledgment acknowledgment,
+    public void onAccountStateChanged(JsonNode message,
+            @Header(name = KafkaHeaders.RECEIVED_KEY, required = false) String messageKey,
+            Acknowledgment acknowledgment,
             @Header(KafkaHeaders.RECEIVED_TOPIC) String consumedTopic) {
 
         Objects.requireNonNull(acknowledgment, "acknowledgment is required");
@@ -185,6 +193,7 @@ public class AccountStateChangedConsumer {
         meters.recordEventConsumed();
         long startedAt = System.nanoTime();
         try {
+            requireKeyNamesAggregate(messageKey, aggregateIdOf(message), event.accountId());
             self.getObject().applyOneEvent(event, consumedTopic);
         } catch (RuntimeException failure) {
             meters.recordProcessFailure();
@@ -198,6 +207,64 @@ public class AccountStateChangedConsumer {
         }
 
         acknowledgment.acknowledge();
+    }
+
+    /**
+     * Refuses a record whose key does not name the aggregate its payload names.
+     *
+     * <p>Kafka orders records inside one partition and nowhere else, and the key chooses the
+     * partition. AAP 0.3.1 makes the account identifier the key of every event for exactly
+     * that reason, and the document behind this event states the rule outright: the Kafka message
+     * key, {@code aggregateId} and {@code accountId} all carry one value, so account
+     * identity has a single source. Schema validation checks the shape of each of the three and not
+     * their agreement, so a producer with write access to this topic could place one
+     * account's payload on another's partition and pass every check before this one.
+     *
+     * <p>The sibling listener of this module already makes this check on the authorized event, and
+     * it belongs on this stream for the same reason: the projection row is selected by account, so
+     * a change applied under the wrong key would move a balance onto an account the message never
+     * named, and the balance the ledger publishes afterwards would be that account's.
+     *
+     * <p>All three values are compared rather than the key against one of them. A key that matches
+     * {@code aggregateId} while {@code accountId} names something else would route correctly and
+     * write to the wrong row, which is the same defect one field further in.
+     *
+     * <p>The refusal is an {@link IllegalArgumentException} raised before anything is claimed or
+     * written, so nothing is applied, the delivery is retried, and a spent record reaches the
+     * sanitized dead-letter route of {@code config/KafkaConsumerConfig}. Neither message names the
+     * key, the aggregate or the account, so no identifier reaches a log line through them.
+     *
+     * @param messageKey  the key the record arrived under, possibly {@code null}
+     * @param aggregateId the aggregate the envelope names
+     * @param accountId   the account the payload names
+     * @throws IllegalArgumentException when the key is absent or the three do not agree
+     */
+    private static void requireKeyNamesAggregate(String messageKey, String aggregateId,
+            String accountId) {
+        if (messageKey == null || messageKey.isBlank()) {
+            throw new IllegalArgumentException("this record carries no message key, so the"
+                    + " partition it arrived on is not the one that orders its account");
+        }
+        if (!messageKey.equals(aggregateId) || !messageKey.equals(accountId)) {
+            throw new IllegalArgumentException("the message key, the aggregate and the"
+                    + " account this payload names do not agree, so the partition this"
+                    + " record arrived on is not the one that orders that account");
+        }
+    }
+
+    /**
+     * Reads the aggregate the envelope names, straight from the checked tree.
+     *
+     * <p>{@link AccountStateChanged} reads the components this projection applies, and the
+     * envelope's aggregate is not one of them, so it is read here rather than widened into that
+     * record.
+     *
+     * @param message the checked tree
+     * @return the aggregate the envelope names, or {@code null} when it carries no text
+     */
+    private static String aggregateIdOf(JsonNode message) {
+        JsonNode aggregate = message.path(AGGREGATE_ID);
+        return aggregate.isString() ? aggregate.stringValue() : null;
     }
 
     /**

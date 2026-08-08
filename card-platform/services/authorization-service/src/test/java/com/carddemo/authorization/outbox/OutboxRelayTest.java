@@ -5,13 +5,17 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.carddemo.authorization.AuthorizationApplication;
+import com.carddemo.authorization.TestIdentityPasswords;
 import com.carddemo.authorization.api.AuthorizationRequest;
 import com.carddemo.authorization.config.AuthorizationProperties;
+import com.carddemo.authorization.config.ObservabilityConfig;
 import com.carddemo.authorization.domain.AuthorizationService;
+import com.carddemo.authorization.domain.RequestCaller;
 import com.carddemo.authorization.entity.OutboxEventEntity;
 import com.carddemo.authorization.messaging.DeadLetterMetadata;
 import com.carddemo.authorization.messaging.EventPublisherPort;
@@ -21,17 +25,24 @@ import com.carddemo.events.DeclineReason;
 import com.carddemo.events.TransactionAuthorized;
 import com.carddemo.events.TransactionDeclined;
 import com.carddemo.events.serde.EventContracts;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import java.math.BigDecimal;
+import java.sql.Timestamp;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.Consumer;
 import java.util.regex.Pattern;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.junit.jupiter.api.AfterEach;
@@ -54,6 +65,7 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 import tools.jackson.databind.JsonNode;
@@ -94,9 +106,10 @@ import tools.jackson.databind.node.ObjectNode;
         webEnvironment = SpringBootTest.WebEnvironment.NONE,
         properties = {
                 "KAFKA_SASL_PASSWORD=not-a-real-broker-password",
-                "ADMIN_PASSWORD_HASH={noop}not-a-real-admin-password",
-                "USER_PASSWORD_HASH={noop}not-a-real-user-password",
-                "MONITORING_PASSWORD_HASH={noop}not-a-real-monitoring-password",
+                "ADMIN_PASSWORD_HASH=" + TestIdentityPasswords.ADMIN_PASSWORD_HASH,
+                "ACQUIRER_PASSWORD_HASH=" + TestIdentityPasswords.ACQUIRER_PASSWORD_HASH,
+                "USER_PASSWORD_HASH=" + TestIdentityPasswords.USER_PASSWORD_HASH,
+                "MONITORING_PASSWORD_HASH=" + TestIdentityPasswords.MONITORING_PASSWORD_HASH,
                 "spring.kafka.listener.auto-startup=false",
                 "carddemo.outbox.relay.fixed-delay-ms=3600000"
         })
@@ -116,11 +129,26 @@ class OutboxRelayTest {
     /** Host and port the broker client is pointed at, where nothing listens. */
     private static final String UNREACHABLE_BROKER = "localhost:1";
 
-    /**
-     * The request identity each decision row records, at the width {@code SEC-USR-ID PIC X(08)}
-     * declares.
-     */
+    /** The request identity each decision row records, carried whole into the audit column. */
     private static final String ACTOR = "OPERATR1";
+
+    /**
+     * The caller every decision below presents.
+     *
+     * <p>It reaches every subject. These tests measure what one call commits and what the relay then
+     * publishes, and the synthetic accounts they authorize against belong to no configured ownership
+     * scope, so an entitlement refusal would stop the decision before a row was ever written.
+     * {@code CallerEntitlementTest} measures the refusal itself.
+     */
+    private static final RequestCaller CALLER = RequestCaller.administrator(ACTOR);
+
+    /**
+     * The dead-letter destination, as {@code application.yml} names it.
+     *
+     * <p>{@link RecordingPublisher} is static and cannot read the bound settings, so the value is
+     * repeated here and {@code theDeadLetterConstantMatchesTheBoundTopic} holds the two in step.
+     */
+    private static final String DEAD_LETTER_TOPIC = "carddemo.dead-letter";
 
     /** Account of the approving pair, eleven digits opening with a zero. */
     private static final String APPROVING_ACCOUNT_ID = "00000000077";
@@ -177,11 +205,20 @@ class OutboxRelayTest {
             "description", "amount", "merchantId", "merchantName", "merchantCity", "merchantZip",
             "maskedCardNumber", "cardToken", "authorizedAt", "accountId", "currency");
 
-    /** The eleven top-level names an account-keyed {@code TransactionDeclined} declares. */
+    /**
+     * The twenty top-level names an account-keyed {@code TransactionDeclined} declares.
+     *
+     * <p>The nine descriptive names beyond the eleven of version one carry the values
+     * {@code 2500-WRITE-REJECT-REC} at {@code app/cbl/CBTRN02C.cbl:L446-L465} writes inside
+     * {@code REJECT-TRAN-DATA PIC X(350)}. The ledger posting service owns the reject row and reads
+     * them from here, because a refused transaction exists in no dataset it could read them from.
+     */
     private static final Set<String> DECLINE_PROPERTIES = Set.of(
             "eventId", "eventType", "schemaVersion", "occurredAt", "aggregateId",
             "transactionId", "accountId", "declineReasonCode", "declineReasonDescription",
-            "amount", "maskedCardNumber");
+            "amount", "maskedCardNumber", "transactionTypeCode", "merchantCategoryCode", "source",
+            "description", "merchantId", "merchantName", "merchantCity", "merchantZip",
+            "originTimestamp");
 
     /** A property name no document declares, used to prove the publish gate refuses one. */
     private static final String UNDECLARED_PROPERTY = "unexpectedProperty";
@@ -192,6 +229,28 @@ class OutboxRelayTest {
     /** Payload the recording publisher accepts, stored behind {@link #REFUSED_PAYLOAD}. */
     private static final String ACCEPTED_PAYLOAD = "{\"seq\":2}";
 
+    /** Payload the recording publisher accepts and never acknowledges. */
+    private static final String STALLED_PAYLOAD = "{\"seq\":3}";
+
+    /** What a row records when the whole-pass deadline arrived before its send resolved. */
+    private static final String RELAY_DEADLINE_EXCEEDED = "RelayDeadlineExceededException";
+
+    /**
+     * A sixteen-character transaction key, the form a decline with an unresolved card is stored under.
+     *
+     * <p>Width from {@code TRAN-ID PIC X(16)} at {@code app/cpy/CVTRA05Y.cpy:L5}. Migration
+     * {@code V4} admits this form beside the eleven-digit account form.
+     */
+    private static final String UNRESOLVED_TRANSACTION_KEY = "0000009990000001";
+
+    /**
+     * The aggregate identifier a diagnostic declares when its row names no account.
+     *
+     * <p>Eleven zeros are an account this platform neither seeds nor issues, so the value states the
+     * absence rather than attributing the failure to an account.
+     */
+    private static final String UNRESOLVED_ACCOUNT_SENTINEL = "00000000000";
+
     /** Longest an assertion waits for the sweep thread. */
     private static final Duration LONGEST_SWEEP_WAIT = Duration.ofSeconds(30L);
 
@@ -201,7 +260,6 @@ class OutboxRelayTest {
     /** Seconds the scheduler stop waits for a task it already started. */
     private static final int SCHEDULER_STOP_WAIT_SECONDS = 30;
 
-    /** Reads a stored payload back. Jackson 3, as the writer writes it. */
     private static final JsonMapper MAPPER = JsonMapper.builder().build();
 
     private static final PostgreSQLContainer POSTGRES;
@@ -228,11 +286,6 @@ class OutboxRelayTest {
     }
 
     /**
-     * Returns the container connection string with {@code currentSchema} appended.
-     *
-     * <p>{@link PostgreSQLContainer#getJdbcUrl()} already carries one query parameter, so a second
-     * question mark would fold this setting into that parameter's value and lose it.
-     *
      * @return the connection string each unqualified statement here resolves its tables through
      */
     private static String migratedSchemaUrl() {
@@ -252,10 +305,9 @@ class OutboxRelayTest {
      * @return sixteen digits, opening with {@code 9999}
      */
     private static String syntheticCardNumber(long serial) {
-        return "9999" + String.format("%012d", serial);
+        return "9999" + String.format(Locale.ROOT, "%012d", serial);
     }
 
-    /** Supplies the recording seam and a scheduler this class can stop. */
     @TestConfiguration
     static class RecordingPublisherConfiguration {
 
@@ -271,11 +323,6 @@ class OutboxRelayTest {
         }
 
         /**
-         * Supplies the scheduler each scheduled method of the service runs on.
-         *
-         * <p>The class stops it before the first assertion, so each sweep measured here is one this
-         * class invoked. Waiting for a running task on shutdown makes that stop a barrier.
-         *
          * @return the scheduler, holding one thread
          */
         @Bean
@@ -315,12 +362,57 @@ class OutboxRelayTest {
         /** Payloads this seam answers with a fault. */
         private final Set<String> refused = ConcurrentHashMap.newKeySet();
 
+        /** Payloads this seam accepts and never resolves, standing in for an unreachable broker. */
+        private final Set<String> stalled = ConcurrentHashMap.newKeySet();
+
+        /** Topics this seam refuses whatever payload arrives on them. */
+        private final Set<String> refusedTopics = ConcurrentHashMap.newKeySet();
+
+        /** Every diagnostic this seam was offered on the dead-letter topic, refused ones included. */
+        private final List<Sent> deadLettersOffered = new CopyOnWriteArrayList<>();
+
+        /**
+         * Runs inside the publish call, before the stage is answered.
+         *
+         * <p>This is how a test observes the state of the world at the moment a send is issued. The
+         * relay holds no transaction while it sends, so a read taken here through another connection
+         * sees exactly what the claim transaction committed, which is the property that
+         * distinguishes a committed claim from an uncommitted one.
+         */
+        private volatile Consumer<Sent> duringPublish = sent -> { };
+
+        /**
+         * Answers one publish call the way a broker client does.
+         *
+         * <p>A refusal arrives as a <em>failed stage</em> rather than a thrown exception, because
+         * that is where a broker reports one: the send is accepted, dispatched, and fails later.
+         * {@code OutboxRelay} unwraps the cause and records it, so the reason a row carries is the
+         * same either way, and this shape exercises the unwrapping instead of stepping around it.
+         *
+         * <p>A stalled payload returns a stage that never completes, which is the only way to reach
+         * the whole-pass deadline without a real unreachable broker.
+         *
+         * @param topic       the resolved destination
+         * @param aggregateId the message key
+         * @param payload     the stored payload, forwarded unread
+         * @return a completed, failed or never-completing stage, per this seam's configuration
+         */
         @Override
-        public void publish(String topic, String aggregateId, String payload) {
-            if (refused.contains(payload)) {
-                throw new IllegalStateException("the broker refused this record");
+        public CompletionStage<Void> publish(String topic, String aggregateId, String payload) {
+            Sent offered = new Sent(topic, aggregateId, payload, Thread.currentThread().getName());
+            duringPublish.accept(offered);
+            if (topic.equals(DEAD_LETTER_TOPIC)) {
+                deadLettersOffered.add(offered);
             }
-            sent.add(new Sent(topic, aggregateId, payload, Thread.currentThread().getName()));
+            if (refused.contains(payload) || refusedTopics.contains(topic)) {
+                return CompletableFuture.failedStage(
+                        new IllegalStateException("the broker refused this record"));
+            }
+            if (stalled.contains(payload)) {
+                return new CompletableFuture<>();
+            }
+            sent.add(offered);
+            return CompletableFuture.completedStage(null);
         }
 
         /**
@@ -332,15 +424,62 @@ class OutboxRelayTest {
             refused.add(payload);
         }
 
-        /** Forgets what was sent and what was refused. */
-        void forget() {
-            sent.clear();
-            refused.clear();
+        /**
+         * Tells this seam to accept one payload and never resolve it.
+         *
+         * @param payload the payload to leave outstanding
+         */
+        void stall(String payload) {
+            stalled.add(payload);
         }
 
         /**
-         * Returns what this seam accepted.
+         * Tells this seam to refuse every payload that arrives on one topic.
          *
+         * @param topic the topic to refuse
+         */
+        void refuseTopic(String topic) {
+            refusedTopics.add(topic);
+        }
+
+        /**
+         * Tells this seam to accept payloads on one topic again.
+         *
+         * @param topic the topic to stop refusing
+         */
+        void acceptTopic(String topic) {
+            refusedTopics.remove(topic);
+        }
+
+        /**
+         * Installs an action this seam runs inside each publish call, before it answers.
+         *
+         * @param action what to run, given the send being issued
+         */
+        void duringPublish(Consumer<Sent> action) {
+            this.duringPublish = action;
+        }
+
+        /**
+         * Returns every diagnostic this seam was offered, whether it accepted it or refused it.
+         *
+         * @return each offer on the dead-letter topic, in order
+         */
+        List<Sent> deadLettersOffered() {
+            return List.copyOf(deadLettersOffered);
+        }
+
+        /** Forgets what was sent, what was refused and what was left outstanding. */
+        void forget() {
+            sent.clear();
+            refused.clear();
+            stalled.clear();
+            refusedTopics.clear();
+            deadLettersOffered.clear();
+            duringPublish = offered -> { };
+        }
+
+        /**
          * @return each send, in order
          */
         List<Sent> all() {
@@ -348,8 +487,6 @@ class OutboxRelayTest {
         }
 
         /**
-         * Returns what this seam accepted under one message key.
-         *
          * @param key the message key to filter on
          * @return each send under that key, in order
          */
@@ -358,8 +495,6 @@ class OutboxRelayTest {
         }
 
         /**
-         * Returns the topics this seam accepted under one message key.
-         *
          * @param key the message key to filter on
          * @return each topic, in send order
          */
@@ -368,8 +503,6 @@ class OutboxRelayTest {
         }
 
         /**
-         * Returns the payloads this seam accepted under one message key.
-         *
          * @param key the message key to filter on
          * @return each payload, in send order
          */
@@ -418,6 +551,10 @@ class OutboxRelayTest {
     @Autowired
     private ThreadPoolTaskScheduler taskScheduler;
 
+    /** The registry the relay's counters register with, read back by the terminal assertions. */
+    @Autowired
+    private MeterRegistry meterRegistry;
+
     /**
      * Stops the schedule, forgets what an earlier assertion sent, then stores the replica pairs.
      *
@@ -447,12 +584,6 @@ class OutboxRelayTest {
     }
 
     /**
-     * Stores one cross-reference row and the credit projection its account keys.
-     *
-     * <p>Both rows are synthetic and belong to {@code src/test} alone. Neither
-     * {@code db/migration/V2__seed.sql} nor any file under {@code app/} is touched to reach a
-     * decline: reject code {@code 0102} follows from the limit this method stores.
-     *
      * @param cardNumber  the sixteen-digit lookup key
      * @param accountId   the eleven-digit account the card resolves to
      * @param creditLimit the limit the credit-limit rule compares against
@@ -473,8 +604,8 @@ class OutboxRelayTest {
      *
      * <p>The transaction identifier is absent: the request contract refuses one, and
      * {@code domain/TransactionIdentifierSource} allocates it from the database sequence. The
-     * capture moment is the current second, so it sits inside the window
-     * {@code domain/OriginTimestampWindow} holds.
+     * capture moment is the current second, which reject reason {@code 0103} at
+     * {@code app/cbl/CBTRN02C.cbl:L414-L420} compares against the account expiry.
      *
      * @param cardNumber the sixteen-digit card the cross-reference resolves
      * @param amount     the amount the credit-limit rule compares
@@ -516,8 +647,6 @@ class OutboxRelayTest {
     }
 
     /**
-     * Returns the current moment truncated to the second, in its own textual form.
-     *
      * @return the truncated moment, rendered as text
      */
     private static String currentSecond() {
@@ -525,8 +654,6 @@ class OutboxRelayTest {
     }
 
     /**
-     * Builds one approval event on the approving account.
-     *
      * @param amount the amount the event carries, at any scale
      * @return the event, valid against each check its record declares
      */
@@ -538,8 +665,6 @@ class OutboxRelayTest {
     }
 
     /**
-     * Returns the approving card masked to its last four digits.
-     *
      * @return twelve mask characters and four digits
      */
     private static String maskedApprovingCard() {
@@ -547,8 +672,6 @@ class OutboxRelayTest {
     }
 
     /**
-     * Stores one unpublished row under the approving account, due at a pinned moment.
-     *
      * @param dueAt   the moment the row becomes claimable, which is also its creation moment
      * @param payload the payload the relay forwards unread
      * @return the stored row
@@ -559,8 +682,6 @@ class OutboxRelayTest {
     }
 
     /**
-     * Returns the single stored row under one message key.
-     *
      * @param aggregateId the message key to filter on
      * @return the one row that key holds
      */
@@ -620,8 +741,6 @@ class OutboxRelayTest {
     }
 
     /**
-     * Returns the top-level property names of one document, ordered so a failure reads plainly.
-     *
      * @param document the parsed payload
      * @return each top-level property name
      */
@@ -630,8 +749,6 @@ class OutboxRelayTest {
     }
 
     /**
-     * Returns the configured topic names.
-     *
      * @return the bound topics of this service
      */
     private AuthorizationProperties.Kafka.Topics topics() {
@@ -639,8 +756,6 @@ class OutboxRelayTest {
     }
 
     /**
-     * Returns a moment safely in the past, so a row stored at it is claimable at once.
-     *
      * @param minutes how far back to reach
      * @return the moment
      */
@@ -653,12 +768,11 @@ class OutboxRelayTest {
     @DisplayName("one authorization call and the single row it commits")
     class OneCallOneRow {
 
-        /** Asserts an approved call commits one event row beside one decision row. */
         @Test
         @DisplayName("an approved call stores one event row and one decision row")
         void anApprovedCallStoresOneEventRowAndOneDecisionRow() {
             AuthorizationService.Outcome outcome =
-                    authorizations.authorize(request(APPROVING_CARD_NUMBER, AMOUNT), ACTOR);
+                    authorizations.authorize(request(APPROVING_CARD_NUMBER, AMOUNT), CALLER);
 
             assertTrue(outcome.approved(), "each rule accepted the call");
             assertEquals(0, new BigDecimal(APPROVING_ACCOUNT_ID).compareTo(outcome.accountId()),
@@ -671,7 +785,7 @@ class OutboxRelayTest {
         }
 
         /**
-         * Asserts a declined call commits one row carrying its four-character reject code.
+         * A declined call commits one row carrying its four-character reject code.
          *
          * <p>A decline is ordinary traffic: {@code app/cbl/CBTRN02C.cbl:L229-L230} moves 4 into the
          * return code once the reject count rises above zero, and the batch job then ends normally.
@@ -683,7 +797,7 @@ class OutboxRelayTest {
         @DisplayName("a declined call stores one row carrying its zero-padded reject code")
         void aDeclinedCallStoresOneRowCarryingItsRejectCode() {
             AuthorizationService.Outcome outcome =
-                    authorizations.authorize(request(DECLINING_CARD_NUMBER, AMOUNT), ACTOR);
+                    authorizations.authorize(request(DECLINING_CARD_NUMBER, AMOUNT), CALLER);
 
             assertFalse(outcome.approved(), "the amount exceeds the limit this account carries");
             assertEquals(DeclineReason.OVER_CREDIT_LIMIT, outcome.declineReason().orElseThrow(),
@@ -701,7 +815,6 @@ class OutboxRelayTest {
                     "the text fits the seventy-six characters PIC X(76) declares");
         }
 
-        /** Asserts the event row commits when the transaction its caller opened commits. */
         @Test
         @DisplayName("the event row commits with the transaction its caller opened")
         void theEventRowCommitsWithTheTransactionItsCallerOpened() {
@@ -711,7 +824,6 @@ class OutboxRelayTest {
             assertEquals(1, rowsFor(eventId), "the committed transaction carried the row with it");
         }
 
-        /** Asserts a caller that rolls back leaves no event row behind. */
         @Test
         @DisplayName("a caller that rolls back leaves no event row behind")
         void aCallerThatRollsBackLeavesNoEventRow() {
@@ -727,7 +839,7 @@ class OutboxRelayTest {
         }
 
         /**
-         * Asserts each write operation joins the transaction it finds.
+         * Each write operation joins the transaction it finds.
          *
          * @throws NoSuchMethodException never, since both methods are declared
          */
@@ -749,7 +861,7 @@ class OutboxRelayTest {
         }
 
         /**
-         * Asserts a producer call writes no duplicate marker.
+         * A producer call writes no duplicate marker.
          *
          * <p>The marker guards an event a consumer receives, and this call sits on the produce
          * side. The source detects no duplicate at all: the write at
@@ -758,7 +870,7 @@ class OutboxRelayTest {
         @Test
         @DisplayName("a producer call writes no duplicate marker")
         void aProducerCallWritesNoDuplicateMarker() {
-            authorizations.authorize(request(APPROVING_CARD_NUMBER, AMOUNT), ACTOR);
+            authorizations.authorize(request(APPROVING_CARD_NUMBER, AMOUNT), CALLER);
 
             assertEquals(0, (int) jdbcTemplate.queryForObject(
                     "SELECT count(*) FROM processed_event", Integer.class),
@@ -771,11 +883,10 @@ class OutboxRelayTest {
     @DisplayName("the sweep, which sends what the call committed")
     class TheSweep {
 
-        /** Asserts request handling sends nothing and leaves the committed row unsent. */
         @Test
         @DisplayName("request handling sends nothing and leaves the row unsent")
         void requestHandlingSendsNothing() {
-            authorizations.authorize(request(APPROVING_CARD_NUMBER, AMOUNT), ACTOR);
+            authorizations.authorize(request(APPROVING_CARD_NUMBER, AMOUNT), CALLER);
 
             assertEquals(List.of(), publisher.all(), "no send happened while the call was handled");
             assertEquals(Boolean.FALSE,
@@ -785,7 +896,7 @@ class OutboxRelayTest {
         }
 
         /**
-         * Asserts a sweep on another thread sends the committed row and marks it sent.
+         * A sweep on another thread sends the committed row and marks it sent.
          *
          * <p>The mark is read back outside the mapped model, so what the assertion sees is the
          * value the sweep's own transaction committed.
@@ -793,7 +904,7 @@ class OutboxRelayTest {
         @Test
         @DisplayName("a sweep on another thread sends the row and marks it sent")
         void aSweepOnAnotherThreadSendsTheRowAndMarksItSent() {
-            authorizations.authorize(request(APPROVING_CARD_NUMBER, AMOUNT), ACTOR);
+            authorizations.authorize(request(APPROVING_CARD_NUMBER, AMOUNT), CALLER);
             UUID eventId = onlyRowUnder(APPROVING_ACCOUNT_ID).getEventId();
             String callingThread = Thread.currentThread().getName();
 
@@ -812,7 +923,7 @@ class OutboxRelayTest {
         }
 
         /**
-         * Asserts the message key is the account the cross-reference resolved.
+         * The message key is the account the cross-reference resolved.
          *
          * <p>Keying each event of one account on that value holds those events on one partition and
          * in send order. The balance a downstream consumer maintains depends on that order.
@@ -820,7 +931,7 @@ class OutboxRelayTest {
         @Test
         @DisplayName("the message key is the account the cross-reference resolved")
         void theMessageKeyIsTheResolvedAccount() {
-            authorizations.authorize(request(APPROVING_CARD_NUMBER, AMOUNT), ACTOR);
+            authorizations.authorize(request(APPROVING_CARD_NUMBER, AMOUNT), CALLER);
 
             relay.publishPendingEvents();
 
@@ -830,12 +941,11 @@ class OutboxRelayTest {
                     "the key and the aggregate identifier inside the payload hold one value");
         }
 
-        /** Asserts each event type reaches its own topic and none reaches the dead-letter topic. */
         @Test
         @DisplayName("each event type reaches its own topic and none reaches the dead-letter topic")
         void eachEventTypeReachesItsOwnTopic() {
-            authorizations.authorize(request(APPROVING_CARD_NUMBER, AMOUNT), ACTOR);
-            authorizations.authorize(request(DECLINING_CARD_NUMBER, AMOUNT), ACTOR);
+            authorizations.authorize(request(APPROVING_CARD_NUMBER, AMOUNT), CALLER);
+            authorizations.authorize(request(DECLINING_CARD_NUMBER, AMOUNT), CALLER);
 
             relay.publishPendingEvents();
 
@@ -848,13 +958,13 @@ class OutboxRelayTest {
                     "a decline is a committed outcome, so it never reaches the dead-letter topic");
         }
 
-        /** Asserts rows of one account reach the broker oldest first. */
         @Test
         @DisplayName("rows of one account reach the broker oldest first")
         void rowsOfOneAccountReachTheBrokerOldestFirst() {
             storeRow(minutesAgo(2L), REFUSED_PAYLOAD);
             storeRow(minutesAgo(1L), ACCEPTED_PAYLOAD);
 
+            relay.publishPendingEvents();
             relay.publishPendingEvents();
 
             assertEquals(List.of(REFUSED_PAYLOAD, ACCEPTED_PAYLOAD),
@@ -863,16 +973,21 @@ class OutboxRelayTest {
         }
 
         /**
-         * Asserts a refused send leaves its row unsent and ends the sweep there.
+         * Asserts a refused send leaves its row unsent and pauses that account for the pass.
          *
          * <p>The row records the class of the fault. The source formats a file status at
          * {@code app/cbl/CBTRN02C.cbl:L714-L727} and then reaches the abend routine at
          * {@code app/cbl/CBTRN02C.cbl:L707-L711}, which performs no cleanup. Here the fault is
-         * bounded to one row and one sweep.
+         * bounded to one row and one account.
+         *
+         * <p>The row behind it is untouched because {@code claimDueRows} claims the due head row of
+         * each account and both rows here belong to one account. That is the property that keeps
+         * per-account order intact through a partial failure: the newer row cannot overtake the
+         * older one on the topic, because it was never in the batch that failed.
          */
         @Test
-        @DisplayName("a refused send leaves its row unsent and ends the sweep there")
-        void aRefusedSendLeavesItsRowUnsentAndEndsTheSweep() {
+        @DisplayName("a refused send leaves its row unsent and pauses that account for the pass")
+        void aRefusedSendLeavesItsRowUnsentAndPausesThatAccount() {
             OutboxEventEntity first = storeRow(minutesAgo(2L), REFUSED_PAYLOAD);
             OutboxEventEntity behind = storeRow(minutesAgo(1L), ACCEPTED_PAYLOAD);
             publisher.refuse(REFUSED_PAYLOAD);
@@ -891,12 +1006,11 @@ class OutboxRelayTest {
                     columnOf("relay_state", String.class, first.getEventId()),
                     "the refused row releases its claim for a later sweep");
             assertEquals(Boolean.FALSE, columnOf("published", Boolean.class, behind.getEventId()),
-                    "the sweep ends at the refusal, so the row behind it waits its turn");
+                    "the account pauses at the refusal, so the row behind it waits its turn");
             assertEquals(0, (int) columnOf("attempt_count", Integer.class, behind.getEventId()),
-                    "the row behind it was not attempted");
+                    "the row behind it was never claimed, so it was not attempted");
         }
 
-        /** Asserts a row whose event type has no configured topic reaches no topic at all. */
         @Test
         @DisplayName("a row whose event type has no configured topic reaches no topic")
         void aRowWithNoConfiguredTopicReachesNoTopic() {
@@ -914,7 +1028,7 @@ class OutboxRelayTest {
         }
 
         /**
-         * Asserts a claim a stopped relay left behind is returned and then sent.
+         * A claim a stopped relay left behind is returned and then sent.
          *
          * <p>The claim is older than the timeout the settings hold, so the first sweep returns it
          * and counts the attempt. A sweep then sends it, and the interval between sweeps is the
@@ -946,7 +1060,7 @@ class OutboxRelayTest {
         }
 
         /**
-         * Asserts the sweep reads its interval from configuration and opens its own boundary.
+         * The sweep reads its interval from configuration and opens its own boundary.
          *
          * @throws NoSuchMethodException never, since the method is declared
          */
@@ -967,13 +1081,445 @@ class OutboxRelayTest {
         }
     }
 
+    /**
+     * How one pass is divided into transactions, and what a row nobody can publish leaves behind.
+     *
+     * <p>Two defects are held closed here, and both were invisible while one transaction spanned the
+     * whole pass.
+     *
+     * <p><b>The claim was rolled back by the death it was meant to survive.</b> Claiming and sending
+     * shared one transaction, so a process that died mid-pass rolled its own claim back.
+     * {@code recoverStrandedClaims} looks for committed {@code CLAIMED} rows and therefore had
+     * nothing to find, and the same transaction held a connection and every row lock of the batch for
+     * the sum of its broker waits.
+     *
+     * <p><b>An abandoned row left no durable record.</b> A row that spent its attempts reached
+     * {@link OutboxEventEntity.RelayState#ABANDONED} and nothing else: no diagnostic obligation, no
+     * retry of one, and no evidence beyond a readiness probe. The source answers a write it cannot
+     * complete by ending the address space at {@code app/cbl/CBTRN02C.cbl:L707-L711}, which leaves an
+     * operator a job log. Naming the row on a topic replaces that only if the naming actually
+     * happens, which is what these assertions measure.
+     */
+    @Nested
+    @DisplayName("the transactions of one pass, and the terminal path of a row nobody can publish")
+    class TheTerminalPath {
+
+        /**
+         * Asserts the claim is committed before the first send is issued.
+         *
+         * <p>The read runs inside the publish call, through {@link JdbcTemplate} on a connection of
+         * its own, and no transaction of the relay is open at that moment. A {@code CLAIMED} row
+         * visible from there is a row whose claim transaction committed. The same read inside the old
+         * single-transaction pass saw {@code PENDING}, because the claim was still uncommitted work
+         * of the transaction doing the sending.
+         */
+        @Test
+        @DisplayName("the claim is committed before the first send is issued")
+        void theClaimIsCommittedBeforeTheFirstSendIsIssued() {
+            OutboxEventEntity row = storeRow(minutesAgo(1L), ACCEPTED_PAYLOAD);
+            List<String> observedStates = new CopyOnWriteArrayList<>();
+            publisher.duringPublish(sent -> observedStates.add(
+                    columnOf("relay_state", String.class, row.getEventId())));
+
+            relay.publishPendingEvents();
+
+            assertEquals(List.of(OutboxEventEntity.RelayState.CLAIMED.name()), observedStates,
+                    "the send saw its own row already committed as claimed");
+            assertEquals(Boolean.TRUE, columnOf("published", Boolean.class, row.getEventId()),
+                    "and the acknowledged row is marked published afterwards");
+        }
+
+        /**
+         * Asserts one result commits before the next row is attempted.
+         *
+         * <p>The second row is accepted and never acknowledged, so the pass ends on its deadline. The
+         * first row is nonetheless durable, which it could not be if one transaction covered both:
+         * that transaction would still be open when the deadline arrived.
+         *
+         * <p>The two rows belong to different accounts because the claim query returns the due head
+         * row of each account, and two rows of one account are never in one batch.
+         */
+        @Test
+        @DisplayName("one result commits before the next row is attempted")
+        void oneResultCommitsBeforeTheNextRowIsAttempted() {
+            OutboxEventEntity first = storeRow(minutesAgo(2L), ACCEPTED_PAYLOAD);
+            OutboxEventEntity second = outboxEvents.save(new OutboxEventEntity(UUID.randomUUID(),
+                    TransactionAuthorized.EVENT_TYPE, DECLINING_ACCOUNT_ID, STALLED_PAYLOAD,
+                    minutesAgo(1L)));
+            publisher.stall(STALLED_PAYLOAD);
+
+            relay.publishPendingEvents();
+
+            assertEquals(Boolean.TRUE, columnOf("published", Boolean.class, first.getEventId()),
+                    "the first result is committed, and the pass deadline arrived after it");
+            assertEquals(Boolean.FALSE, columnOf("published", Boolean.class, second.getEventId()),
+                    "the stalled row is unsent");
+            assertEquals(RELAY_DEADLINE_EXCEEDED,
+                    columnOf("last_error", String.class, second.getEventId()),
+                    "and it names the deadline rather than a broker fault");
+        }
+
+        /**
+         * Asserts a row that spends its attempts owes a diagnostic until the broker acknowledges one.
+         *
+         * <p>The obligation is a column rather than one unawaited send, and this is the reason: while
+         * the broker refuses, the row is still terminal and the claim query will never return it
+         * again, so the obligation is the only thing that brings the relay back to it.
+         */
+        @Test
+        @DisplayName("an abandoned row owes a diagnostic until the broker acknowledges one")
+        void anAbandonedRowOwesADiagnosticUntilTheBrokerAcknowledgesIt() {
+            OutboxEventEntity row = storeRow(minutesAgo(1L), REFUSED_PAYLOAD);
+            publisher.refuse(REFUSED_PAYLOAD);
+            publisher.refuseTopic(DEAD_LETTER_TOPIC);
+
+            spendEveryAttempt(row);
+
+            assertEquals(OutboxEventEntity.RelayState.ABANDONED.name(),
+                    columnOf("relay_state", String.class, row.getEventId()),
+                    "a row that cannot be published is given up on rather than retried for ever");
+            assertEquals(OutboxEventEntity.MAX_DELIVERY_ATTEMPTS,
+                    (int) columnOf("attempt_count", Integer.class, row.getEventId()),
+                    "it is given up on at the declared ceiling");
+            assertEquals(OutboxEventEntity.DeadLetterState.REQUIRED.name(),
+                    columnOf("dead_letter_state", String.class, row.getEventId()),
+                    "a refused diagnostic is still owed, which is the difference between an "
+                            + "abandoned event and a lost one");
+            assertNull(columnOf("dead_letter_published_at", Instant.class, row.getEventId()),
+                    "nothing records an acknowledgement that never arrived");
+            assertFalse(publisher.deadLettersOffered().isEmpty(),
+                    "the diagnostic was offered, and refused");
+        }
+
+        /**
+         * Asserts an owed diagnostic is offered again and cleared only on an acknowledgement.
+         *
+         * <p>The retry is independent of the event: offering the diagnostic again raises no attempt
+         * count on the business row, because the business row is already spent.
+         */
+        @Test
+        @DisplayName("an owed diagnostic is offered again and cleared on an acknowledgement")
+        void anOwedDiagnosticIsOfferedAgainAndClearedOnAnAcknowledgement() {
+            OutboxEventEntity row = storeRow(minutesAgo(1L), REFUSED_PAYLOAD);
+            publisher.refuse(REFUSED_PAYLOAD);
+            publisher.refuseTopic(DEAD_LETTER_TOPIC);
+            spendEveryAttempt(row);
+            int attemptsAfterAbandonment =
+                    columnOf("attempt_count", Integer.class, row.getEventId());
+
+            publisher.acceptTopic(DEAD_LETTER_TOPIC);
+            relay.publishPendingEvents();
+
+            assertEquals(OutboxEventEntity.DeadLetterState.PUBLISHED.name(),
+                    columnOf("dead_letter_state", String.class, row.getEventId()),
+                    "the obligation is discharged against the acknowledgement and nothing else");
+            assertNotNull(columnOf("dead_letter_published_at", Instant.class, row.getEventId()),
+                    "and the moment it was discharged is recorded");
+            assertEquals(attemptsAfterAbandonment,
+                    (int) columnOf("attempt_count", Integer.class, row.getEventId()),
+                    "offering a diagnostic is not another attempt on the business event");
+            assertEquals(1, publisher.under(row.getAggregateId()).size(),
+                    "one diagnostic reached the broker");
+            assertEquals(List.of(DEAD_LETTER_TOPIC),
+                    publisher.topicsUnder(row.getAggregateId()),
+                    "and it reached the dead-letter topic, never a business topic");
+
+            relay.publishPendingEvents();
+            relay.publishPendingEvents();
+
+            assertEquals(1, publisher.under(row.getAggregateId()).size(),
+                    "an acknowledged diagnostic is never offered again");
+        }
+
+        /**
+         * Asserts a diagnostic for a transaction-keyed row travels under the unresolved-account
+         * sentinel.
+         *
+         * <p>A decline whose card resolved no account has no account to name, so its row is keyed by
+         * the sixteen-character transaction identifier that
+         * {@code EventEnvelope.UNRESOLVED_AGGREGATE_KEY_PATTERN} admits and migration {@code V4}
+         * stores. {@code schemas/dead-letter-v1.json} accepts eleven digits and nothing else, so
+         * handing that key to the diagnostic would fail the serialize gate on every pass and leave an
+         * obligation that could never clear. The sentinel is what keeps it dischargeable, and the row
+         * still names itself through {@code failedEventId}.
+         */
+        @Test
+        @DisplayName("a transaction-keyed row names the unresolved-account sentinel on its"
+                + " diagnostic")
+        void aTransactionKeyedRowNamesTheSentinelOnItsDiagnostic() {
+            OutboxEventEntity row = outboxEvents.save(new OutboxEventEntity(UUID.randomUUID(),
+                    TransactionDeclined.EVENT_TYPE, UNRESOLVED_TRANSACTION_KEY, REFUSED_PAYLOAD,
+                    minutesAgo(1L)));
+            publisher.refuse(REFUSED_PAYLOAD);
+
+            spendEveryAttempt(row);
+
+            assertEquals(OutboxEventEntity.DeadLetterState.PUBLISHED.name(),
+                    columnOf("dead_letter_state", String.class, row.getEventId()),
+                    "the diagnostic was accepted, so the obligation could be discharged at all");
+            RecordingPublisher.Sent diagnostic = publisher.deadLettersOffered().getFirst();
+            assertEquals(UNRESOLVED_ACCOUNT_SENTINEL, diagnostic.key(),
+                    "the message key states the absence of an account");
+            assertEquals(UNRESOLVED_ACCOUNT_SENTINEL,
+                    MAPPER.readTree(diagnostic.payload()).path("aggregateId").asString(),
+                    "and the envelope declares the same value the key carries");
+            assertTrue(diagnostic.payload().contains(row.getEventId().toString()),
+                    "the row is still named exactly, through failedEventId");
+            assertEquals(List.of(), EventContracts.violationsOf(EventContracts.DEAD_LETTER,
+                            diagnostic.payload()),
+                    "and the diagnostic satisfies the document its own gate validates it against");
+        }
+
+        /**
+         * Asserts the three terminal counters record a spent row, a refused diagnostic and an
+         * acknowledged one apart from each other.
+         */
+        @Test
+        @DisplayName("the terminal counters record each outcome apart")
+        void theTerminalCountersRecordEachOutcomeApart() {
+            double abandonedBefore = counterValue(ObservabilityConfig.OUTBOX_ABANDONED_COUNTER);
+            double failedBefore = diagnosticCount(ObservabilityConfig.DIAGNOSTIC_FAILED);
+            double publishedBefore =
+                    diagnosticCount(ObservabilityConfig.DIAGNOSTIC_PUBLISHED);
+            OutboxEventEntity row = storeRow(minutesAgo(1L), REFUSED_PAYLOAD);
+            publisher.refuse(REFUSED_PAYLOAD);
+            publisher.refuseTopic(DEAD_LETTER_TOPIC);
+
+            spendEveryAttempt(row);
+
+            assertEquals(1.0D,
+                    counterValue(ObservabilityConfig.OUTBOX_ABANDONED_COUNTER) - abandonedBefore,
+                    "one row given up on, however many attempts it took");
+            assertEquals(1.0D,
+                    diagnosticCount(ObservabilityConfig.DIAGNOSTIC_FAILED) - failedBefore,
+                    "one diagnostic the broker refused");
+            assertEquals(0.0D,
+                    diagnosticCount(ObservabilityConfig.DIAGNOSTIC_PUBLISHED)
+                            - publishedBefore,
+                    "and none acknowledged");
+
+            publisher.acceptTopic(DEAD_LETTER_TOPIC);
+            relay.publishPendingEvents();
+
+            assertEquals(1.0D,
+                    diagnosticCount(ObservabilityConfig.DIAGNOSTIC_PUBLISHED)
+                            - publishedBefore,
+                    "the acknowledged diagnostic is counted once");
+            assertEquals(1.0D,
+                    counterValue(ObservabilityConfig.OUTBOX_ABANDONED_COUNTER) - abandonedBefore,
+                    "the row is given up on once, however often its diagnostic is offered");
+        }
+
+        /** Asserts the dead-letter constant this class holds is the topic the settings name. */
+        @Test
+        @DisplayName("the dead-letter constant matches the bound topic")
+        void theDeadLetterConstantMatchesTheBoundTopic() {
+            assertEquals(topics().deadLetter(), DEAD_LETTER_TOPIC,
+                    "a renamed topic must reach the static seam this class installs");
+        }
+
+        /**
+         * Runs passes until the row is abandoned, returning it to a due state between them.
+         *
+         * <p>Each recorded failure pushes {@code next_attempt_at} out, so the row would not be
+         * claimable again inside one test. Moving that column back is what a passing hour does in a
+         * deployment.
+         *
+         * @param row the row to spend every attempt of
+         */
+        private void spendEveryAttempt(OutboxEventEntity row) {
+            for (int attempt = 0; attempt < OutboxEventEntity.MAX_DELIVERY_ATTEMPTS; attempt++) {
+                jdbcTemplate.update("UPDATE outbox_event SET next_attempt_at = ? "
+                        + "WHERE event_id = ? AND relay_state = 'PENDING'",
+                        Timestamp.from(minutesAgo(1L)), row.getEventId());
+                relay.publishPendingEvents();
+            }
+        }
+
+        /**
+         * Reads one counter of this service by name, or zero before it is registered.
+         *
+         * @param name the full meter name
+         * @return the current count
+         */
+        private double counterValue(String name) {
+            Counter counter = meterRegistry.find(name).counter();
+            return counter == null ? 0.0D : counter.count();
+        }
+
+        /**
+         * Reads one terminal-diagnostic series by what became of the diagnostic.
+         *
+         * <p>The two outcomes share one meter name and are told apart by their tag, so a reader of
+         * the series learns whether the row that was lost is named anywhere.
+         *
+         * @param outcome the tag value, published or failed
+         * @return the current count of that series, or zero before it is registered
+         */
+        private double diagnosticCount(String outcome) {
+            Counter counter = meterRegistry.find(ObservabilityConfig.DEAD_LETTERS_COUNTER)
+                    .tag(ObservabilityConfig.OUTCOME_OF_DIAGNOSTIC_TAG, outcome).counter();
+            return counter == null ? 0.0D : counter.count();
+        }
+    }
+
+
     /** The document the payload column holds, read back from the row a call committed. */
+    /**
+     * Holds what happens to a row this relay gives up on.
+     *
+     * <p>A row that spends its attempts is an event no consumer will ever see. Before this behaviour
+     * existed the tenth attempt wrote the same warning line as the nine before it, the row stopped
+     * being claimed, and nothing on a topic or on the metrics endpoint said an event had been dropped:
+     * a permanent loss and a transient retry read identically. The other four services of this platform
+     * each publish a governed diagnostic at that moment, and these assertions hold this one to the same
+     * contract.
+     */
+    @Nested
+    @DisplayName("the terminal outcome of a row this relay gives up on")
+    class TheTerminalOutcome {
+
+        /** The attempt count that leaves one attempt before the row is abandoned. */
+        private static final int ONE_ATTEMPT_LEFT = OutboxEventEntity.MAX_DELIVERY_ATTEMPTS - 1;
+
+        /**
+         * The aggregate identifier a diagnostic declares when the abandoned row names no account.
+         *
+         * <p>The value is repeated here rather than read from the relay, because a constant a test
+         * reads from the class under test asserts nothing about it. {@code OutboxRelay} keeps the
+         * same eleven zeros, and {@code config/KafkaConsumerConfig} makes the same substitution on
+         * the consumer side.
+         */
+        private static final String UNRESOLVED_ACCOUNT_KEY = "00000000000";
+
+        @Test
+        @DisplayName("a row the broker acknowledged is counted as published")
+        void aRowTheBrokerAcknowledgedIsCountedAsPublished() {
+            double before = counter(ObservabilityConfig.EVENTS_PUBLISHED_COUNTER);
+            storeRow(minutesAgo(1L), ACCEPTED_PAYLOAD);
+
+            relay.publishPendingEvents();
+
+            assertEquals(before + 1.0d, counter(ObservabilityConfig.EVENTS_PUBLISHED_COUNTER),
+                    "the publish-success series counts a row the broker took, which the events-written"
+                            + " series does not: that one counts a row written to the outbox");
+        }
+
+        @Test
+        @DisplayName("a row with no attempt left is abandoned and one dead letter names it")
+        void aRowWithNoAttemptLeftIsAbandonedAndNamedOnTheDeadLetterTopic() {
+            OutboxEventEntity spent = storeRow(minutesAgo(1L), REFUSED_PAYLOAD);
+            jdbcTemplate.update("UPDATE outbox_event SET attempt_count = ? WHERE event_id = ?",
+                    ONE_ATTEMPT_LEFT, spent.getEventId());
+            publisher.refuse(REFUSED_PAYLOAD);
+            double abandonedBefore = counter(ObservabilityConfig.OUTBOX_ABANDONED_COUNTER);
+            double namedBefore = deadLetters(ObservabilityConfig.DIAGNOSTIC_PUBLISHED);
+
+            relay.publishPendingEvents();
+
+            List<RecordingPublisher.Sent> diagnostics = publisher.all();
+            assertEquals(1, diagnostics.size(), "one diagnostic, and no second copy of the event");
+            assertEquals(properties.kafka().topics().deadLetter(), diagnostics.getFirst().topic(),
+                    "the diagnostic travels on the dead-letter topic");
+            assertEquals(APPROVING_ACCOUNT_ID, diagnostics.getFirst().key(),
+                    "the diagnostic is keyed on the account the abandoned row named");
+            assertFalse(diagnostics.getFirst().payload().contains(REFUSED_PAYLOAD),
+                    "the diagnostic carries no payload of the row it names");
+            assertEquals(OutboxEventEntity.RelayState.ABANDONED.name(),
+                    columnOf("relay_state", String.class, spent.getEventId()),
+                    "the row takes no further attempt");
+            assertEquals(abandonedBefore + 1.0d,
+                    counter(ObservabilityConfig.OUTBOX_ABANDONED_COUNTER),
+                    "an abandoned row is counted once, as a row and not as an attempt");
+            assertEquals(namedBefore + 1.0d, deadLetters(ObservabilityConfig.DIAGNOSTIC_PUBLISHED),
+                    "the diagnostic the broker took is counted under its own outcome");
+        }
+
+        /**
+         * Proves a row with no account to name still reaches the dead-letter topic.
+         *
+         * <p>A decline whose card resolved to nothing has no account, so its outbox row is keyed by
+         * the sixteen-character transaction identifier instead, and {@code V4} permits either width
+         * in {@code aggregate_id}. {@code schemas/dead-letter-v1.json} keys a diagnostic on eleven
+         * account digits only, so handing that key to the diagnostic would fail the serialize gate
+         * on every pass and the obligation would never clear.
+         *
+         * <p>The relay substitutes the eleven-zero sentinel, which is an account this platform
+         * neither seeds nor issues, so the diagnostic states the absence rather than attributing the
+         * loss to an account. {@code failedEventId} still names the row exactly, and
+         * {@code outbox_event.aggregate_id} still holds the transaction identifier for anyone
+         * reading the row itself. That is the row of {@code docs/decision-log.md} recording this
+         * choice against widening the document and against skipping the diagnostic.
+         */
+        @Test
+        @DisplayName("a row keyed on a transaction is abandoned under the eleven-zero sentinel")
+        void aRowKeyedOnATransactionIsAbandonedWithNoDiagnostic() {
+            String transactionKey = "TRN0000000000001";
+            OutboxEventEntity unresolved = outboxEvents.save(new OutboxEventEntity(UUID.randomUUID(),
+                    TransactionDeclined.EVENT_TYPE, transactionKey, REFUSED_PAYLOAD,
+                    minutesAgo(1L)));
+            jdbcTemplate.update("UPDATE outbox_event SET attempt_count = ? WHERE event_id = ?",
+                    ONE_ATTEMPT_LEFT, unresolved.getEventId());
+            publisher.refuse(REFUSED_PAYLOAD);
+            double abandonedBefore = counter(ObservabilityConfig.OUTBOX_ABANDONED_COUNTER);
+            double namedBefore = deadLetters(ObservabilityConfig.DIAGNOSTIC_PUBLISHED);
+
+            relay.publishPendingEvents();
+
+            List<RecordingPublisher.Sent> diagnostics = publisher.all();
+            assertEquals(1, diagnostics.size(),
+                    "one diagnostic, and no second copy of the event it names");
+            assertEquals(properties.kafka().topics().deadLetter(), diagnostics.getFirst().topic(),
+                    "the diagnostic travels on the dead-letter topic");
+            assertEquals(UNRESOLVED_ACCOUNT_KEY, diagnostics.getFirst().key(),
+                    "the row names no account, so the diagnostic travels under the sentinel rather"
+                            + " than under a transaction identifier the document would refuse");
+            assertFalse(diagnostics.getFirst().payload().contains(transactionKey),
+                    "and the sentinel is a substitution, not an addition: the transaction key stays"
+                            + " on the row and reaches no diagnostic");
+            assertTrue(diagnostics.getFirst().payload()
+                            .contains(unresolved.getEventId().toString()),
+                    "failedEventId is what names the row exactly, which is what the substitution"
+                            + " costs nothing an operator needs");
+            assertEquals(OutboxEventEntity.RelayState.ABANDONED.name(),
+                    columnOf("relay_state", String.class, unresolved.getEventId()),
+                    "the row is terminal, so it cannot loop for ever attempting a diagnostic");
+            assertEquals(abandonedBefore + 1.0d,
+                    counter(ObservabilityConfig.OUTBOX_ABANDONED_COUNTER),
+                    "the abandonment is counted");
+            assertEquals(namedBefore + 1.0d, deadLetters(ObservabilityConfig.DIAGNOSTIC_PUBLISHED),
+                    "and the diagnostic the broker took is counted under its own outcome, so the"
+                            + " obligation this row carried is discharged");
+        }
+
+        /**
+         * Reads one untagged counter of the relay back.
+         *
+         * @param name the meter name
+         * @return the count the counter carries
+         */
+        private double counter(String name) {
+            return meterRegistry.get(name).counter().count();
+        }
+
+        /**
+         * Reads one terminal-diagnostic series back.
+         *
+         * @param outcome what became of the diagnostic
+         * @return the count that series carries
+         */
+        private double deadLetters(String outcome) {
+            return meterRegistry.get(ObservabilityConfig.DEAD_LETTERS_COUNTER)
+                    .tag(ObservabilityConfig.OUTCOME_OF_DIAGNOSTIC_TAG, outcome).counter().count();
+        }
+    }
+
     @Nested
     @DisplayName("the document the payload column holds")
     class ThePersistedPayload {
 
         /**
-         * Asserts an approval payload holds exactly the properties its contract declares.
+         * An approval payload holds exactly the properties its contract declares.
          *
          * <p>A closed inventory settles several absences at once. The three-digit verification code
          * of {@code app/cpy/CVACT02Y.cpy:L7} reaches no payload. Neither cycle accumulator of
@@ -984,7 +1530,7 @@ class OutboxRelayTest {
         @Test
         @DisplayName("an approval payload holds exactly the properties its contract declares")
         void anApprovalPayloadHoldsExactlyItsDeclaredProperties() {
-            authorizations.authorize(request(APPROVING_CARD_NUMBER, AMOUNT), ACTOR);
+            authorizations.authorize(request(APPROVING_CARD_NUMBER, AMOUNT), CALLER);
 
             JsonNode payload = payloadOf(onlyRowUnder(APPROVING_ACCOUNT_ID).getEventId());
 
@@ -994,22 +1540,25 @@ class OutboxRelayTest {
                     "fifteen payload properties beside the five the carrier adds");
         }
 
-        /** Asserts a decline payload holds exactly the eleven properties its contract declares. */
+        /** Asserts a decline payload holds exactly the twenty properties its contract declares. */
         @Test
-        @DisplayName("a decline payload holds exactly the eleven properties its contract declares")
+        @DisplayName("a decline payload holds exactly the twenty properties its contract declares")
         void aDeclinePayloadHoldsExactlyItsDeclaredProperties() {
-            authorizations.authorize(request(DECLINING_CARD_NUMBER, AMOUNT), ACTOR);
+            authorizations.authorize(request(DECLINING_CARD_NUMBER, AMOUNT), CALLER);
 
             JsonNode payload = payloadOf(onlyRowUnder(DECLINING_ACCOUNT_ID).getEventId());
 
             assertEquals(new TreeSet<>(DECLINE_PROPERTIES), propertyNamesOf(payload),
                     "the column holds the declared set and nothing beside it");
             assertEquals(DECLINE_PROPERTIES.size(), payload.size(),
-                    "six payload properties beside the five the carrier adds");
+                    "fifteen payload properties beside the five the carrier adds");
+            assertEquals(TransactionDeclined.TRANSACTION_DETAIL_SCHEMA_VERSION,
+                    payload.get("schemaVersion").asInt(0),
+                    "a decline of a resolved card carries the detail-bearing contract version");
         }
 
         /**
-         * Asserts the stored document is flat, with each carrier property at the top level.
+         * The stored document is flat, with each carrier property at the top level.
          *
          * <p>A payload holding one nested object under a wrapper key would carry six properties and
          * fail its document on the {@code required} array, so it would never reach a topic.
@@ -1017,7 +1566,7 @@ class OutboxRelayTest {
         @Test
         @DisplayName("the stored document is flat, with each carrier property at the top level")
         void theStoredDocumentIsFlat() {
-            authorizations.authorize(request(APPROVING_CARD_NUMBER, AMOUNT), ACTOR);
+            authorizations.authorize(request(APPROVING_CARD_NUMBER, AMOUNT), CALLER);
 
             JsonNode payload = payloadOf(onlyRowUnder(APPROVING_ACCOUNT_ID).getEventId());
 
@@ -1032,7 +1581,7 @@ class OutboxRelayTest {
         }
 
         /**
-         * Asserts money travels as a decimal string truncated toward zero, on both signs.
+         * Money travels as a decimal string truncated toward zero, on both signs.
          *
          * <p>The {@code ROUNDED} phrase appears zero times across the twenty-eight programs of
          * {@code app/cbl/}, so each arithmetic store truncates. Half-up rounding carries
@@ -1060,7 +1609,7 @@ class OutboxRelayTest {
         }
 
         /**
-         * Asserts the two amount patterns stay apart, and the narrower one governs this event.
+         * The two amount patterns stay apart, and the narrower one governs this event.
          *
          * <p>{@code DALYTRAN-AMT PIC S9(09)V99} admits nine integer digits and
          * {@code ACCT-CURR-BAL PIC S9(10)V99} admits ten, so a value only the wider clause admits
@@ -1081,7 +1630,7 @@ class OutboxRelayTest {
         }
 
         /**
-         * Asserts the lookup ran on the full card number and only the masked form travels.
+         * The lookup ran on the full card number and only the masked form travels.
          *
          * <p>The cross-reference read at {@code app/cbl/CBTRN02C.cbl:L382-L383} keys on all sixteen
          * characters, and the resolved account below is the proof that the unmasked value reached
@@ -1093,7 +1642,7 @@ class OutboxRelayTest {
         @DisplayName("the lookup ran on the full card number and only the masked form travels")
         void theLookupRanUnmaskedAndOnlyTheMaskedFormTravels() {
             AuthorizationService.Outcome outcome =
-                    authorizations.authorize(request(APPROVING_CARD_NUMBER, AMOUNT), ACTOR);
+                    authorizations.authorize(request(APPROVING_CARD_NUMBER, AMOUNT), CALLER);
 
             assertEquals(0, new BigDecimal(APPROVING_ACCOUNT_ID).compareTo(outcome.accountId()),
                     "the full card number resolved an account, so the lookup key was unmasked");
@@ -1115,7 +1664,7 @@ class OutboxRelayTest {
         }
 
         /**
-         * Asserts the stored document passes its own contract and the gate refuses anything else.
+         * The stored document passes its own contract and the gate refuses anything else.
          *
          * <p>The gate runs before the row is saved, so a payload it refuses never reaches the
          * column, where it would stall the sweep.
@@ -1123,7 +1672,7 @@ class OutboxRelayTest {
         @Test
         @DisplayName("the stored document passes its contract and the gate refuses anything else")
         void theStoredDocumentPassesItsContractAndTheGateRefusesAnythingElse() {
-            authorizations.authorize(request(APPROVING_CARD_NUMBER, AMOUNT), ACTOR);
+            authorizations.authorize(request(APPROVING_CARD_NUMBER, AMOUNT), CALLER);
             String stored = columnOf("payload", String.class,
                     onlyRowUnder(APPROVING_ACCOUNT_ID).getEventId());
 
@@ -1157,7 +1706,7 @@ class OutboxRelayTest {
     class ThePersistedRow {
 
         /**
-         * Asserts the message-key column and the replica account column carry different types.
+         * The message-key column and the replica account column carry different types.
          *
          * <p>The key column holds either key form and is therefore variable-length text of sixteen.
          * The replica column holds one form alone, from {@code XREF-ACCT-ID PIC 9(11)} at
@@ -1183,7 +1732,6 @@ class OutboxRelayTest {
                     "one is derived from a Picture clause and one from the carrier contract");
         }
 
-        /** Asserts the columns one sweep reads and writes carry the types it expects. */
         @Test
         @DisplayName("the columns one sweep reads and writes carry the types it expects")
         void theColumnsOneSweepTouchesCarryTheirTypes() {
@@ -1200,7 +1748,7 @@ class OutboxRelayTest {
         }
 
         /**
-         * Asserts the tables this service owns resolve unqualified through the configured schema.
+         * The tables this service owns resolve unqualified through the configured schema.
          *
          * <p>A native statement reads no mapping model, so it resolves an unqualified name through
          * the connection search path. The datasource carries {@code currentSchema} for that reason,
@@ -1223,7 +1771,7 @@ class OutboxRelayTest {
         }
 
         /**
-         * Asserts an eleven-digit key keeps its leading zero from the column to the message.
+         * An eleven-digit key keeps its leading zero from the column to the message.
          *
          * <p>The key travels as text and nothing pads, so account seventy-seven renders as eleven
          * characters opening with zeros. The cross-reference fixture measures thirty-six characters
@@ -1234,7 +1782,7 @@ class OutboxRelayTest {
         @Test
         @DisplayName("an eleven-digit key keeps its leading zero from the column to the message")
         void anElevenDigitKeyKeepsItsLeadingZero() {
-            authorizations.authorize(request(APPROVING_CARD_NUMBER, AMOUNT), ACTOR);
+            authorizations.authorize(request(APPROVING_CARD_NUMBER, AMOUNT), CALLER);
 
             relay.publishPendingEvents();
 
@@ -1281,7 +1829,7 @@ class OutboxRelayTest {
     class TheProducerSettings {
 
         /**
-         * Asserts the producer is idempotent and waits for each replica.
+         * The producer is idempotent and waits for each replica.
          *
          * <p>The settings are read from the factory the configuration built, so no broker takes
          * part. A repeated send from the client is then invisible to a consumer, and a stored
@@ -1299,7 +1847,6 @@ class OutboxRelayTest {
                     "a send is acknowledged only once each replica holds the record");
         }
 
-        /** Asserts the dead-letter topic is neither of the two topics this service publishes on. */
         @Test
         @DisplayName("the dead-letter topic is neither topic this service publishes on")
         void theDeadLetterTopicIsNeitherPublishTopic() {
@@ -1312,7 +1859,7 @@ class OutboxRelayTest {
         }
 
         /**
-         * Asserts a publish fault describes itself inside the abend-record widths.
+         * A publish fault describes itself inside the abend-record widths.
          *
          * <p>The four widths come from {@code ABEND-CODE PIC X(4)} at
          * {@code app/cpy/CSMSG02Y.cpy:L22}, {@code ABEND-CULPRIT PIC X(8)} at

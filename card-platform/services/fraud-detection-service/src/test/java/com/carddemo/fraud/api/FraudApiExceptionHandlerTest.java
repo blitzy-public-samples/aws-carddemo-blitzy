@@ -5,17 +5,28 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.LoggerContext;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.carddemo.fraud.repository.FraudAssessmentRepository;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.RequestBuilder;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.validation.beanvalidation.LocalValidatorFactoryBean;
@@ -75,29 +86,52 @@ final class FraudApiExceptionHandlerTest {
     /**
      * Asserts each refusal of a declared constraint answers the documented problem document.
      *
-     * <p>These are the six cases a caller reaches by sending a value outside the bounds the document
-     * publishes: an identifier of the wrong shape on either route, a page below zero, a page size
-     * outside one through 200, and a page size that is not a whole number at all.
+     * <p>Two identifier shapes are refused, one on each route, and both carry the fixed text
+     * {@link ApiProblem#INVALID_REQUEST_CONTENT}: a detail naming the value would echo an identifier
+     * back to its sender.
+     *
+     * <p>Four paging values are refused, and each carries a detail naming its own parameter and the
+     * bounds that parameter reads. None of those texts holds a value read from the request, and a
+     * caller sending a size of 201 learns which parameter it has to change.
      */
     @Test
     @DisplayName("A value outside its declared bounds answers 400 as one problem document")
     void aValueOutsideItsDeclaredBoundsAnswersOneProblemDocument() throws Exception {
+        String sizeBounds = "The size parameter reads as a number from 1 through 200.";
+        String pageBounds = "The page parameter reads as a number from 0 through 1000000.";
+
         assertProblem(perform(get(COLLECTION_ROUTE).param("accountId", "1")), 400,
                 ApiProblem.BAD_REQUEST, ApiProblem.INVALID_REQUEST_CONTENT);
         assertProblem(perform(get(COLLECTION_ROUTE).param("accountId", ACCOUNT)
-                .param("size", "0")), 400, ApiProblem.BAD_REQUEST,
-                ApiProblem.INVALID_REQUEST_CONTENT);
+                .param("size", "0")), 400, ApiProblem.BAD_REQUEST, sizeBounds);
         assertProblem(perform(get(COLLECTION_ROUTE).param("accountId", ACCOUNT)
-                .param("size", "201")), 400, ApiProblem.BAD_REQUEST,
-                ApiProblem.INVALID_REQUEST_CONTENT);
+                .param("size", "201")), 400, ApiProblem.BAD_REQUEST, sizeBounds);
         assertProblem(perform(get(COLLECTION_ROUTE).param("accountId", ACCOUNT)
-                .param("size", "abc")), 400, ApiProblem.BAD_REQUEST,
-                ApiProblem.INVALID_REQUEST_CONTENT);
+                .param("size", "abc")), 400, ApiProblem.BAD_REQUEST, sizeBounds);
         assertProblem(perform(get(COLLECTION_ROUTE).param("accountId", ACCOUNT)
-                .param("page", "-1")), 400, ApiProblem.BAD_REQUEST,
-                ApiProblem.INVALID_REQUEST_CONTENT);
+                .param("page", "-1")), 400, ApiProblem.BAD_REQUEST, pageBounds);
         assertProblem(perform(get(ITEM_ROUTE, "short")), 400, ApiProblem.BAD_REQUEST,
                 ApiProblem.INVALID_REQUEST_CONTENT);
+    }
+
+    /**
+     * Asserts a paging parameter that arrived carrying no characters answers 400, never a default.
+     *
+     * <p>A parameter declared as a number with a default takes that default for {@code ?page=} as
+     * well as for an omitted {@code page}, so the caller receives the first page and a {@code 200}
+     * that states nothing about what it did. The detail names the parameter and how to omit it.
+     */
+    @Test
+    @DisplayName("A paging parameter that arrived empty answers 400 as one problem document")
+    void aPagingParameterThatArrivedEmptyAnswersOneProblemDocument() throws Exception {
+        assertProblem(perform(get(COLLECTION_ROUTE).param("accountId", ACCOUNT)
+                        .param("page", "")), 400, ApiProblem.BAD_REQUEST,
+                "The page parameter arrived carrying no value. Omit it to take the default, or send"
+                        + " a number from 0 through 1000000.");
+        assertProblem(perform(get(COLLECTION_ROUTE).param("accountId", ACCOUNT)
+                        .param("size", "")), 400, ApiProblem.BAD_REQUEST,
+                "The size parameter arrived carrying no value. Omit it to take the default, or send"
+                        + " a number from 1 through 200.");
     }
 
     /** Asserts the required account parameter not arriving answers the same shape. */
@@ -150,6 +184,34 @@ final class FraudApiExceptionHandlerTest {
     }
 
     /**
+     * Asserts a method these routes do not serve answers 405 with an Allow header, not 500.
+     *
+     * <p>The catch-all arm claimed every checked Spring exception before the protocol arm existed, so
+     * a caller sending {@code POST} to a read-only route read {@code 500} and a detail saying the
+     * assessment could not be read. A client cannot tell that answer from a fault, and a retry can
+     * only repeat the mistake. {@code Allow} is the header that says which method to send instead.
+     *
+     * @throws Exception when a request cannot be performed
+     */
+    @Test
+    @DisplayName("A write method on a read-only route answers 405 with Allow, not 500")
+    void aWriteMethodAnswersMethodNotAllowedWithAllow() throws Exception {
+        for (RequestBuilder wrongMethod : List.of(post(COLLECTION_ROUTE), put(COLLECTION_ROUTE),
+                patch(COLLECTION_ROUTE), delete(COLLECTION_ROUTE),
+                post(ITEM_ROUTE, "0000000500885895"), delete(ITEM_ROUTE, "0000000500885895"))) {
+
+            MvcResult result = perform(wrongMethod);
+
+            assertEquals(405, result.getResponse().getStatus(),
+                    "a method these routes do not serve answers 405");
+            assertEquals("GET", result.getResponse().getHeader(HttpHeaders.ALLOW),
+                    "the answer names the method these routes do serve");
+            assertProblem(result, 405, HttpStatus.METHOD_NOT_ALLOWED.getReasonPhrase(),
+                    ApiProblem.UNSUPPORTED_REQUEST);
+        }
+    }
+
+    /**
      * Performs one request and returns its result.
      *
      * @param request the request to perform
@@ -197,5 +259,54 @@ final class FraudApiExceptionHandlerTest {
         assertFalse(body.containsKey("path"), "no member echoes the resolved request path");
         assertFalse(body.containsKey("timestamp"), "the framework body carried a timestamp");
         return body;
+    }
+
+    /**
+     * The line written for a fault names the failure type and never the failure's message.
+     *
+     * <p>A query timeout quotes the statement it cancelled, and a statement of this service names
+     * the account column and the value bound to it, so the message is the disclosure and the type is
+     * the diagnosis.
+     */
+    @Test
+    @DisplayName("A fault is recorded by type, and its message reaches no log line")
+    void aFaultIsRecordedByTypeAndItsMessageReachesNoLogLine() {
+        String sentinel = "00000000050";
+        Exception failure = new IllegalStateException(
+                "canceling statement: select ... where account_id = '" + sentinel + "'",
+                new IllegalArgumentException("inner " + sentinel));
+
+        java.util.List<ILoggingEvent> lines =
+                recordedLines(() -> new FraudApiExceptionHandler().onFault(failure));
+
+        assertEquals(1, lines.size(), "one fault writes one line");
+        ILoggingEvent line = lines.getFirst();
+        assertTrue(line.getFormattedMessage().contains(IllegalStateException.class.getName()),
+                "the line names the failure type: " + line.getFormattedMessage());
+        assertFalse(line.getFormattedMessage().contains(sentinel),
+                "the failure message reached the log: " + line.getFormattedMessage());
+        assertEquals(null, line.getThrowableProxy(),
+                "no throwable is attached, so the appender renders no message and no stack trace");
+    }
+
+    /**
+     * Runs one call with a recorder attached to the package every service logs under.
+     *
+     * @param call the call whose log lines are wanted
+     * @return every line written during it, in order
+     */
+    private static java.util.List<ILoggingEvent> recordedLines(Runnable call) {
+        ListAppender<ILoggingEvent> recorder = new ListAppender<>();
+        recorder.setContext((LoggerContext) org.slf4j.LoggerFactory.getILoggerFactory());
+        recorder.start();
+        Logger serviceLogger = (Logger) org.slf4j.LoggerFactory.getLogger("com.carddemo");
+        serviceLogger.addAppender(recorder);
+        try {
+            call.run();
+        } finally {
+            serviceLogger.detachAppender(recorder);
+            recorder.stop();
+        }
+        return java.util.List.copyOf(recorder.list);
     }
 }

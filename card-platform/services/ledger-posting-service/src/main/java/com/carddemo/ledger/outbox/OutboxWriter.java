@@ -1,7 +1,6 @@
 package com.carddemo.ledger.outbox;
 
 import com.carddemo.events.EventEnvelope;
-import com.carddemo.events.TransactionDeclined;
 import com.carddemo.events.TransactionPosted;
 import com.carddemo.events.serde.EventContracts;
 import com.carddemo.ledger.entity.OutboxEventEntity;
@@ -36,18 +35,14 @@ import tools.jackson.databind.json.JsonMapper;
 @Component
 public class OutboxWriter {
 
-    /** Stores the rows {@code outbox/OutboxRelay} later reads. */
     private final OutboxEventRepository outboxEvents;
 
-    /** Writes one event to text. The framework supplies it. */
     private final JsonMapper jsonMapper;
 
     /** Stamps {@code created_at}, in Coordinated Universal Time. */
     private final Clock clock = Clock.systemUTC();
 
     /**
-     * Takes the store this writer saves through and the mapper it writes payloads with.
-     *
      * @param outboxEvents store of unpublished events
      * @param jsonMapper   the framework-supplied JavaScript Object Notation (JSON) mapper
      * @throws NullPointerException if either argument is {@code null}
@@ -60,15 +55,17 @@ public class OutboxWriter {
     /**
      * Writes one event as an unpublished outbox row.
      *
-     * <p>{@code domain/PostingService} passes a {@link TransactionPosted} and
-     * {@code domain/RejectRecorder} passes a {@link TransactionDeclined}. A decline is ordinary
-     * traffic: {@code app/cbl/CBTRN02C.cbl:L229-L230} moves 4 into the return code once the reject
-     * count rises above zero.
+     * <p>{@code domain/PostingService} is the one caller, and {@link TransactionPosted} is the one
+     * event this service publishes. A decline is not published here: the authorization service is
+     * the sole writer of the decision under AAP 0.1.1, and this service consumes the decline it
+     * published rather than republishing it. A decline is nonetheless ordinary traffic, which is why
+     * {@code app/cbl/CBTRN02C.cbl:L229-L230} moves 4 into the return code rather than abending once
+     * the reject count rises above zero.
      *
-     * <p>The row takes its identifiers from the event itself, so the primary key of the row and the
-     * {@code eventId} a consumer deduplicates on hold one value. The row's {@code aggregate_id}
-     * takes {@code aggregateId}, which is the message key the relay publishes under, from
-     * {@code XREF-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT03Y.cpy:L7}.
+     * <p>The row takes its identifiers from the event itself, so the row key and the
+     * {@code eventId} a consumer deduplicates on hold one value, and {@code aggregate_id} takes the
+     * message key the relay publishes under, from {@code XREF-ACCT-ID PIC 9(11)} at
+     * {@code app/cpy/CVACT03Y.cpy:L7}.
      *
      * <p>The payload is one flat JSON object carrying the five envelope properties beside the
      * payload properties, so no {@code envelope} key reaches the row. The writer checks that
@@ -77,11 +74,10 @@ public class OutboxWriter {
      * JSON pointers and broken keywords only, so no card number and no account identifier reaches a
      * log through it.
      *
-     * @param event the event to enqueue, either a {@link TransactionPosted} or a
-     *              {@link TransactionDeclined}
+     * @param event the event to enqueue, a {@link TransactionPosted}
      * @return the row saved, carrying the event identifier the relay publishes under
      * @throws NullPointerException     if {@code event} is {@code null}
-     * @throws IllegalArgumentException if {@code event} is neither event type this service
+     * @throws IllegalArgumentException if {@code event} is not the event type this service
      *                                  publishes, if that type has no contract, or if the written
      *                                  payload breaks the contract its type names
      */
@@ -109,7 +105,7 @@ public class OutboxWriter {
      * @param event the event to read
      * @return the envelope the event carries
      * @throws NullPointerException     if {@code event} is {@code null}
-     * @throws IllegalArgumentException if {@code event} is neither event type this service
+     * @throws IllegalArgumentException if {@code event} is not the event type this service
      *                                  publishes
      */
     private static EventEnvelope envelopeOf(Object event) {
@@ -117,10 +113,9 @@ public class OutboxWriter {
 
         return switch (event) {
             case TransactionPosted posted -> posted.envelope();
-            case TransactionDeclined declined -> declined.envelope();
             default -> throw new IllegalArgumentException("the ledger posting service publishes "
-                    + TransactionPosted.EVENT_TYPE + " and " + TransactionDeclined.EVENT_TYPE
-                    + ", and " + event.getClass().getName() + " is neither");
+                    + TransactionPosted.EVENT_TYPE + " alone, and " + event.getClass().getName()
+                    + " is not it");
         };
     }
 }

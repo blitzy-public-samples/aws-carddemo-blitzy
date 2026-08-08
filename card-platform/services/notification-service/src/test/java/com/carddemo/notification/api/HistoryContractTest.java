@@ -20,17 +20,21 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Contract tests binding the shipped history endpoint description to the shipped schema migration.
  *
- * <p>The two files have to agree about how a card is named. A masked card value cannot name one
- * card, since two cards sharing their last four digits share one masked form, and a full Primary
- * Account Number (PAN) in a route lands in every access log and proxy on the way.
+ * <p>The two files name a card differently, and that difference is the contract. The route carries
+ * the card number, which is {@code TRNX-CARD-NUM PIC X(16)} at {@code app/cpy/COSTM01.CPY:L22} and
+ * the first part of the key {@code KEYS(32 0)} at {@code app/jcl/CREASTMT.JCL:L30} declares. The
+ * migration keys on the card token instead, so the stored key is derived and no card number is
+ * stored.
  *
- * <p>These tests read the two shipped files and assert that neither drifts back. The account
- * pattern agrees across the route and migration. The masked form appears only as a display value,
- * and no Primary Account Number (PAN) pattern survives anywhere.
+ * <p>These tests read the two shipped files and assert that neither drifts. The card-number pattern
+ * appears in the route parameter and nowhere else in the description. The migration carries it
+ * nowhere at all, and every card number it stores is masked and keys nothing.
  *
- * <p>The paging assertions cover the second half. The endpoint bounds what one call returns, and the
- * ceiling equals {@link NotificationRenderer#MAXIMUM_STATEMENT_ROWS}. That equality is the point: a
- * caller cannot ask for more rows than a renderer will accept.
+ * <p>The remaining assertions cover the response shape. The envelope names the card once, by its
+ * masked form, and neither the count nor the array carries a ceiling: the response covers the whole
+ * history of one card, matching {@code app/cbl/CBSTM03A.CBL:L429}, which totals every row of one
+ * card between two key breaks. {@link NotificationRenderer#MAXIMUM_STATEMENT_ROWS} bounds one
+ * rendered alert and not this body.
  *
  * <p>Reading the files rather than a running application keeps these assertions in the unit test
  * phase, which is where every other test of this module runs.
@@ -44,20 +48,20 @@ class HistoryContractTest {
     /** Classpath location of the shipped schema migration. */
     private static final String SCHEMA_MIGRATION = "/db/migration/V1__schema.sql";
 
+    /** The migration that renamed one column and one index, and added {@code outcome}. */
+    private static final String RENAME_MIGRATION = "/db/migration/V5__rendered_not_delivered.sql";
+
     /** The only path the description declares. */
-    private static final String HISTORY_PATH = "/notifications/{cardToken}";
+    private static final String HISTORY_PATH = "/notifications/{cardNumber}";
 
-    /** Name of the one path parameter, and the identity property of the response envelope. */
-    private static final String TOKEN = "cardToken";
+    /** Name of the one path parameter, and the display property of the response envelope. */
+    private static final String CARD_NUMBER = "cardNumber";
 
-    /** The one query parameter the route declares, named for the bound it carries. */
-    private static final String PAGE_SIZE = NotificationHistoryController.PAGE_SIZE_PARAMETER;
-
-    /** Pattern a card token matches, in both shipped files and in the controller. */
+    /** Pattern a card token matches, which the migration enforces on its key column. */
     private static final String TOKEN_PATTERN = PanMasker.CARD_TOKEN_PATTERN;
 
-    /** Characters a card token spans. */
-    private static final int TOKEN_LENGTH = PanMasker.CARD_TOKEN_LENGTH;
+    /** Characters a card number spans, in the route and in {@code TRNX-CARD-NUM PIC X(16)}. */
+    private static final int CARD_NUMBER_LENGTH = PanMasker.CARD_NUMBER_LENGTH;
 
     /** Characters the masked display value spans, the width {@code CHAR(16)} declares. */
     private static final int MASKED_LENGTH = PicClause.TRAN_CARD_NUM_WIDTH;
@@ -65,10 +69,7 @@ class HistoryContractTest {
     /** Pattern the masked display value matches in the migration. */
     private static final String MASKED_PATTERN = "^\\*{12}[0-9]{4}$";
 
-    /** Pattern the masked display value matches in the response, which admits a fully masked one. */
-    private static final String RESPONSE_MASKED_PATTERN = "^\\*{12}([0-9]{4}|\\*{4})$";
-
-    /** The pattern a full sixteen-digit card number would match, which must appear nowhere. */
+    /** The pattern a full sixteen-digit card number matches, which the route parameter declares. */
     private static final String PAN_PATTERN = "^[0-9]{16}$";
 
     /** The shipped interface description, character for character. */
@@ -88,50 +89,50 @@ class HistoryContractTest {
     }
 
     @Test
-    @DisplayName("The only path takes an opaque card token")
-    void onlyPathTakesTheCardToken() {
+    @DisplayName("The only path takes the card number")
+    void onlyPathTakesTheCardNumber() {
         assertThat(paths().keySet()).containsExactly(HISTORY_PATH);
     }
 
     @Test
-    @DisplayName("The path parameter is a card token with the pattern the migration enforces")
-    void pathParameterIsACardToken() {
-        Map<String, Object> parameter = parameter(TOKEN);
+    @DisplayName("The path parameter is a card number of sixteen digits")
+    void pathParameterIsACardNumber() {
+        Map<String, Object> parameter = parameter(CARD_NUMBER);
         assertThat(parameter.get("in")).isEqualTo("path");
         assertThat(parameter.get("required")).isEqualTo(true);
 
         Map<String, Object> schema = schemaOf(parameter);
         assertThat(schema.get("type")).isEqualTo("string");
-        assertThat(schema.get("pattern")).isEqualTo(TOKEN_PATTERN);
-        assertThat(schema.get("minLength")).isEqualTo(TOKEN_LENGTH);
-        assertThat(schema.get("maxLength")).isEqualTo(TOKEN_LENGTH);
+        assertThat(schema.get("pattern")).isEqualTo(PAN_PATTERN);
+        assertThat(schema.get("minLength")).isEqualTo(CARD_NUMBER_LENGTH);
+        assertThat(schema.get("maxLength")).isEqualTo(CARD_NUMBER_LENGTH);
     }
 
     @Test
-    @DisplayName("No request carries a card number of either form")
-    void noRequestCarriesACardNumber() {
+    @DisplayName("The request carries the card number and no masked value or token")
+    void theRequestCarriesTheCardNumberAlone() {
         assertThat(parameterNames())
-                .as("a masked value identifies no single card and a full one belongs in no route")
-                .containsExactly(TOKEN, "pageSize")
-                .doesNotContain("cardNumber", "maskedCardNumber");
-        assertThat(schemaOf(parameter(TOKEN)).get("pattern"))
-                .as("the one request value is a token")
-                .isNotEqualTo(MASKED_PATTERN);
+                .as("the route names the card the source key names, and reads nothing else")
+                .containsExactly(CARD_NUMBER);
+        assertThat(schemaOf(parameter(CARD_NUMBER)).get("pattern"))
+                .as("a masked value identifies no single card, so no route reads one")
+                .isNotEqualTo(MASKED_PATTERN)
+                .isNotEqualTo(TOKEN_PATTERN);
     }
 
     @Test
     @DisplayName("The controller enforces the pattern the description declares")
     void theControllerEnforcesTheDeclaredPattern() {
-        assertThat(NotificationHistoryController.CARD_TOKEN_PATTERN).isEqualTo(TOKEN_PATTERN);
+        assertThat(NotificationHistoryController.CARD_NUMBER_PATTERN).isEqualTo(PAN_PATTERN);
         assertThat(NotificationHistoryController.ROUTE_TEMPLATE).isEqualTo(HISTORY_PATH);
     }
 
     @Test
-    @DisplayName("No shipped file carries a full card number pattern")
-    void noShippedFileCarriesAPanPattern() {
-        assertThat(rawOpenapi)
-                .as("a route or a schema still describes sixteen numeric digits")
-                .doesNotContain(PAN_PATTERN);
+    @DisplayName("The card-number pattern appears in the route parameter alone")
+    void thePanPatternAppearsInTheRouteParameterAlone() {
+        assertThat(countOccurrences(rawOpenapi, PAN_PATTERN))
+                .as("the path parameter declares it, and no response schema does")
+                .isEqualTo(1);
         assertThat(rawMigration)
                 .as("the migration still admits sixteen numeric digits somewhere")
                 .doesNotContain(PAN_PATTERN);
@@ -170,59 +171,49 @@ class HistoryContractTest {
     }
 
     @Test
-    @DisplayName("The response carries the token as identity and the masked number as display data")
-    void responseCarriesTheTokenAsIdentityAndTheMaskedNumberAsDisplayData() {
+    @DisplayName("The response names the card once, by its masked form, and carries no token")
+    void responseNamesTheCardOnceByItsMaskedForm() {
         Map<String, Object> history = historySchema();
         Map<String, Object> properties = nested(history, "properties");
 
         assertThat(asStrings(history.get("required")))
-                .as("the masked form is absent when no row reports one, so it is not required")
-                .containsExactly(TOKEN, "transactionCount", "totalAmount", "transactions");
+                .as("the masked form is derived from the path value, so every response carries it")
+                .containsExactly(CARD_NUMBER, "transactionCount", "totalAmount", "transactions");
         assertThat(properties.keySet())
-                .containsExactly(TOKEN, "cardNumber", "transactionCount", "totalAmount",
-                        "transactions");
-        assertThat(nested(properties, TOKEN).get("pattern")).isEqualTo(TOKEN_PATTERN);
-        assertThat(nested(properties, "cardNumber").get("pattern")).isEqualTo(MASKED_PATTERN);
-        assertThat(nested(properties, "cardNumber").get("maxLength")).isEqualTo(MASKED_LENGTH);
+                .containsExactly(CARD_NUMBER, "transactionCount", "totalAmount", "transactions");
+        assertThat(nested(properties, CARD_NUMBER).get("pattern")).isEqualTo(MASKED_PATTERN);
+        assertThat(nested(properties, CARD_NUMBER).get("maxLength")).isEqualTo(MASKED_LENGTH);
+        assertThat(rawOpenapi)
+                .as("the stored key is a storage key and reaches no response")
+                .doesNotContain("cardToken:")
+                .doesNotContain("name: cardToken");
     }
 
     @Test
-    @DisplayName("The response bounds its array and its count at the renderer ceiling")
-    void responseBoundsItsArrayAndItsCount() {
+    @DisplayName("Neither the array nor the count carries a ceiling")
+    void responseBoundsNeitherItsArrayNorItsCount() {
         Map<String, Object> properties = nested(historySchema(), "properties");
-        int ceiling = NotificationRenderer.MAXIMUM_STATEMENT_ROWS;
 
         assertThat(nested(properties, "transactions").get("maxItems"))
-                .as("a caller cannot receive more rows than a renderer will accept")
-                .isEqualTo(ceiling);
+                .as("the array covers the whole history of one card")
+                .isNull();
         assertThat(nested(properties, "transactionCount").get("maximum"))
-                .as("the count carries the same ceiling as the array it counts")
-                .isEqualTo(ceiling);
+                .as("the count covers the whole history of one card")
+                .isNull();
+        assertThat(nested(properties, "transactionCount").get("minimum")).isEqualTo(0);
     }
 
     @Test
-    @DisplayName("The endpoint declares no offset paging, which a concurrent insert would shift")
-    void endpointDeclaresNoOffsetPaging() {
+    @DisplayName("The endpoint declares no paging parameter of any kind")
+    void endpointDeclaresNoPagingParameter() {
         assertThat(parameterNames())
-                .as("an offset lets a concurrent insert shift a page already read")
-                .doesNotContain("offset", "page", "pageNumber");
-        assertThat(parameterNames()).containsExactly(TOKEN, PAGE_SIZE);
-        assertThat(schemaOf(parameter(PAGE_SIZE)).get("minimum")).isEqualTo(1);
-    }
-
-    @Test
-    @DisplayName("The endpoint bounds one response at the ceiling the renderer accepts")
-    void endpointBoundsOneResponseAtTheRendererCeiling() {
-        Map<String, Object> pageSize = parameter(PAGE_SIZE);
-        assertThat(pageSize.get("in")).isEqualTo("query");
-        assertThat(pageSize.get("required")).isEqualTo(false);
-
-        Map<String, Object> schema = schemaOf(pageSize);
-        assertThat(schema.get("type")).isEqualTo("integer");
-        assertThat(schema.get("minimum")).isEqualTo(1);
-        assertThat(schema.get("maximum"))
-                .as("a caller cannot ask for more rows than a renderer will accept")
-                .isEqualTo(NotificationRenderer.MAXIMUM_STATEMENT_ROWS);
+                .as("a bounded page would report a total over rows the source totalled in full")
+                .doesNotContain("offset", "page", "pageNumber", "pageSize", "size", "limit",
+                        "cursor", "sort")
+                .containsExactly(CARD_NUMBER);
+        assertThat(rawOpenapi)
+                .as("no query parameter survives in the description either")
+                .doesNotContain("in: query");
     }
 
     @Test
@@ -233,6 +224,15 @@ class HistoryContractTest {
                 .isPositive();
     }
 
+    /**
+     * Holds that each retention delete has an index to run on.
+     *
+     * <p>{@code ix_notification_log_attempted_at} is the name V1 created and {@code
+     * V5__rendered_not_delivered.sql} renamed to {@code ix_notification_log_rendered_at}, together
+     * with the column it orders. Both names are asserted here: V1's because it is still the
+     * statement that created the index, and V5's because it is the name the live schema carries and
+     * the one {@code repository/NotificationLogRepository} documents.</p>
+     */
     @Test
     @DisplayName("The migration carries an index for each retention delete")
     void migrationCarriesRetentionIndexes() {
@@ -241,6 +241,10 @@ class HistoryContractTest {
                 .contains("ix_notification_log_attempted_at")
                 .contains("ix_cardholder_context_observed_at")
                 .contains("ix_processed_event_processed_at");
+        assertThat(readClasspathResource(RENAME_MIGRATION))
+                .as("the index the rendered-alert purge runs on, under the name it now carries")
+                .contains("ALTER INDEX ix_notification_log_attempted_at")
+                .contains("RENAME TO ix_notification_log_rendered_at");
     }
 
     /**

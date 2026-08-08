@@ -5,6 +5,7 @@ import com.carddemo.ledger.entity.OutboxEventEntity;
 import com.carddemo.ledger.entity.RejectedTransactionEntity;
 import com.carddemo.ledger.entity.TransactionEntity;
 
+import com.carddemo.cobol.PicClause;
 import com.carddemo.events.EventEnvelope;
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -40,8 +41,8 @@ class DiagnosticRedactionTest {
     private static final String MASKED_CARD_NUMBER = "************7065";
 
     /**
-     * The full Primary Account Number the masked form above stands for. The reject row masks it in
-     * its own constructor, so this value reaches no column and no rendering.
+     * The full Primary Account Number the masked form above stands for. The reject rendering leaves
+     * {@code rejected_transaction_data} out entirely, so this value reaches no rendering.
      *
      * <p>Its four leading digits are {@code 9999}, and no card of
      * {@code app/data/ASCII/carddata.txt} begins with them. Its visible tail is the tail
@@ -51,6 +52,22 @@ class DiagnosticRedactionTest {
 
     /** An amount at the two-place scale {@code TRAN-AMT PIC S9(09)V99} declares. */
     private static final BigDecimal AMOUNT = new BigDecimal("1250.75");
+
+    /**
+     * Zero-based offset of {@code DALYTRAN-AMT} inside {@code REJECT-TRAN-DATA}, the sum of the
+     * five fields at {@code app/cpy/CVTRA06Y.cpy:L5-L9}.
+     */
+    private static final int AMOUNT_OFFSET = PicClause.DALYTRAN_ID_WIDTH
+            + PicClause.DALYTRAN_TYPE_CD_WIDTH + PicClause.DALYTRAN_CAT_CD_WIDTH
+            + PicClause.DALYTRAN_SOURCE_WIDTH + PicClause.DALYTRAN_DESC_WIDTH;
+
+    /**
+     * Zero-based offset of {@code DALYTRAN-CARD-NUM} at {@code app/cpy/CVTRA06Y.cpy:L15}, five
+     * fields further on.
+     */
+    private static final int CARD_NUMBER_OFFSET = AMOUNT_OFFSET + PicClause.DALYTRAN_AMT_WIDTH
+            + PicClause.DALYTRAN_MERCHANT_ID_WIDTH + PicClause.DALYTRAN_MERCHANT_NAME_WIDTH
+            + PicClause.DALYTRAN_MERCHANT_CITY_WIDTH + PicClause.DALYTRAN_MERCHANT_ZIP_WIDTH;
 
     @Test
     @DisplayName("the transaction rendering keeps the identifier and withholds every value")
@@ -138,9 +155,9 @@ class DiagnosticRedactionTest {
     @DisplayName("the reject rendering withholds the identifier and keeps the source reason text")
     void theRejectRenderingWithholdsTheIdentifierAndKeepsTheReason() {
         UUID id = UUID.fromString("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+        String block = rejectBlock();
         RejectedTransactionEntity reject = new RejectedTransactionEntity(id, TRANSACTION_ID, "0102",
-                "OVERLIMIT TRANSACTION", CARD_NUMBER, AMOUNT, "01", "5411", "123456789",
-                "2024-01-15 10:30:00.000000", Instant.parse("2024-01-15T10:30:00Z"));
+                "OVERLIMIT TRANSACTION", block, Instant.parse("2024-01-15T10:30:00Z"));
 
         String rendered = reject.toString();
 
@@ -153,13 +170,44 @@ class DiagnosticRedactionTest {
         assertThat(rendered)
                 .withFailMessage("the amount of the refused record reached a log line")
                 .doesNotContain(AMOUNT.toPlainString());
+        assertThat(rendered)
+                .withFailMessage("the refused record itself reached a log line")
+                .doesNotContain(block.strip());
         assertThat(rendered).contains("id=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
         assertThat(rendered).contains("rejectReasonCode=0102");
         assertThat(rendered)
                 .withFailMessage("the reject reason text is why a reader opens this row")
                 .contains("rejectReasonDescription=OVERLIMIT TRANSACTION");
         assertThat(rendered).contains("transactionId redacted");
+        assertThat(rendered).contains("rejectedTransactionData redacted");
         assertThat(reject.getTransactionId()).isEqualTo(TRANSACTION_ID);
+        assertThat(reject.getRejectedTransactionData()).isEqualTo(block);
+    }
+
+    /**
+     * Builds one {@code REJECT-TRAN-DATA PIC X(350)} block carrying, each at the offset
+     * {@code app/cpy/CVTRA06Y.cpy:L5-L18} gives it, the three values this test asserts never reach
+     * a rendering: the transaction identifier, the amount and the full card number.
+     *
+     * @return exactly {@value com.carddemo.cobol.PicClause#REJECT_TRAN_DATA_WIDTH} characters
+     */
+    private static String rejectBlock() {
+        StringBuilder block = new StringBuilder(" ".repeat(PicClause.REJECT_TRAN_DATA_WIDTH));
+        place(block, 0, TRANSACTION_ID);
+        place(block, AMOUNT_OFFSET, AMOUNT.toPlainString());
+        place(block, CARD_NUMBER_OFFSET, CARD_NUMBER);
+        return block.toString();
+    }
+
+    /**
+     * Overwrites one field of a block, leaving its declared width alone.
+     *
+     * @param block the block under construction
+     * @param offset zero-based offset of the field
+     * @param value  the text to write at that offset
+     */
+    private static void place(StringBuilder block, int offset, String value) {
+        block.replace(offset, offset + value.length(), value);
     }
 
     @Test
@@ -171,8 +219,7 @@ class DiagnosticRedactionTest {
         assertThat(new OutboxEventEntity(UUID.randomUUID(), "TransactionPosted", ACCOUNT_ID, "{}",
                 Instant.EPOCH).toString()).startsWith("OutboxEventEntity{");
         assertThat(new RejectedTransactionEntity(UUID.randomUUID(), TRANSACTION_ID, "0100",
-                "INVALID CARD NUMBER FOUND", CARD_NUMBER, AMOUNT, "01", "5411", "123456789",
-                "2024-01-15 10:30:00.000000", Instant.EPOCH).toString())
+                "INVALID CARD NUMBER FOUND", rejectBlock(), Instant.EPOCH).toString())
                 .startsWith("RejectedTransactionEntity{");
         assertThat(new TransactionEntity(TRANSACTION_ID, "01", "5411", "POS", "D", AMOUNT,
                 "123456789", "M", "C", "62701", MASKED_CARD_NUMBER, "2024-01-15 10:30:00",

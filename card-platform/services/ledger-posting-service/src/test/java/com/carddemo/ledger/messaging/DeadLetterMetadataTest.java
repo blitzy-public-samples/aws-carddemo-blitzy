@@ -55,7 +55,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * rejected records to a fresh generation of an output dataset at {@code
  * app/jcl/POSTTRAN.jcl:L34-L38}, which no program reads back.</p>
  *
- * <p>This record is service-local. Five services each declare their own record of this name. Each
+ * <p>This record is service-local. Six service modules each declare their own record of this name. Each
  * one shortens an over-length component rather than refusing it. The record stays inside this
  * service's own package and carries no shared-library package prefix.</p>
  */
@@ -490,13 +490,13 @@ class DeadLetterMetadataTest {
         private static LedgerProperties properties() {
             return new LedgerProperties(
                     new LedgerProperties.Kafka(new LedgerProperties.Kafka.Topics(SOURCE_TOPIC,
-                            "transaction.posted", "transaction.declined", DEAD_LETTER_TOPIC,
-                            ".DLT")),
+                            "transaction.declined", "account.state-changed",
+                            "transaction.posted", DEAD_LETTER_TOPIC, ".DLT")),
                     new LedgerProperties.Consumer(new LedgerProperties.Consumer.Retry(1, 0L)),
                     new LedgerProperties.Outbox(new LedgerProperties.Outbox.Relay(1000L, 100,
-                            "ledger-relay", java.time.Duration.ofMinutes(2L)), 168L),
-                    new LedgerProperties.ProcessedEvent(168L),
-                    new LedgerProperties.Retention(3_600_000L));
+                            "ledger-relay", java.time.Duration.ofMinutes(2L), 5_000L), 168L),
+                    new LedgerProperties.ProcessedEvent(720L, 168L),
+                    new LedgerProperties.Retention(3_600_000L, 90));
         }
 
         /** Sends one failing record through the shipped handler and returns what it published. */

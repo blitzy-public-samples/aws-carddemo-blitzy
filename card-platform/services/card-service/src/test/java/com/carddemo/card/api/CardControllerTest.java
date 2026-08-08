@@ -5,7 +5,6 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -18,12 +17,11 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.carddemo.card.api.dto.ApiErrorResponse;
-import com.carddemo.card.api.dto.CardDetailRequest;
 import com.carddemo.card.api.dto.CardDetailResponse;
 import com.carddemo.card.api.dto.CardListResponse;
-import com.carddemo.card.api.dto.CardSummary;
 import com.carddemo.card.api.dto.CardUpdateRequest;
 import com.carddemo.card.api.dto.CardUpdateResponse;
+import com.carddemo.card.api.dto.CardValidationMessages;
 import com.carddemo.card.api.dto.CardUpdateResponse.RefreshedCard;
 import com.carddemo.card.api.dto.CardUpdateResponse.UpdateOutcome;
 import com.carddemo.card.config.SecurityConfig;
@@ -50,7 +48,9 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.dao.QueryTimeoutException;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -145,7 +145,15 @@ class CardControllerTest {
      */
     private static final String CARD_NUMBER_FAILING_LUHN = "4111111111111112";
 
-    /** A second card number, which makes the first row of a two-row page. */
+    /**
+     * A second card number, one greater than {@link #CARD_NUMBER}, which makes the LAST row of a
+     * two-row page.
+     *
+     * <p>{@code app/jcl/CARDFILE.jcl:L40} declares {@code KEYS(16 0)} and a browse over a
+     * key-sequenced dataset returns ascending keys, so the higher of two card numbers is the second
+     * row of a page and never the first. The fixture built it first, which made the backward-cursor
+     * assertion read the highest row as the lowest.</p>
+     */
     private static final String SECOND_CARD_NUMBER = "0500024453765741";
 
     /** An account identifier the stubbed card does not belong to, eleven digits like the column. */
@@ -252,7 +260,6 @@ class CardControllerTest {
 
     private CardQueryService cardQueries;
     private CardUpdateService cardUpdates;
-    private SecurityConfig.CardOwnership ownership;
     private CardController controller;
 
     /** Builds the controller over stubbed collaborators before each test. */
@@ -260,9 +267,7 @@ class CardControllerTest {
     void buildController() {
         cardQueries = mock(CardQueryService.class);
         cardUpdates = mock(CardUpdateService.class);
-        ownership = cardNumber -> true;
-        controller = new CardController(cardQueries, cardUpdates,
-                cardNumber -> ownership.ownsCard(cardNumber));
+        controller = new CardController(cardQueries, cardUpdates);
     }
 
     /** The list route: what it delegates, what it projects and what it reports. */
@@ -298,7 +303,7 @@ class CardControllerTest {
             when(cardQueries.listForward(any(), any(), any(), any())).thenReturn(emptyPage());
             ArgumentCaptor<Integer> requested = ArgumentCaptor.forClass(Integer.class);
 
-            controller.listCards(ACCOUNT_ID, null, CardController.FORWARD_DIRECTION, 3);
+            controller.listCards(ACCOUNT_ID, null, CardController.FORWARD_DIRECTION, "3");
 
             verify(cardQueries).listForward(isNull(), requested.capture(), eq(ACCOUNT_ID),
                     isNull());
@@ -398,8 +403,11 @@ class CardControllerTest {
 
             assertAll(
                     () -> assertTrue(further.nextPageExists(), "a further page follows"),
-                    () -> assertEquals(cardToken(CARD_NUMBER), further.nextCursor(),
-                            "a forward page continues from the token of its last row"));
+                    () -> assertEquals(cardToken(SECOND_CARD_NUMBER), further.nextCursor(),
+                            "a forward page continues from the token of its last row, which is the"
+                                    + " higher of the two card numbers"),
+                    () -> assertNotEquals(cardToken(CARD_NUMBER), further.nextCursor(),
+                            "and not from the token of its first row"));
 
             when(cardQueries.listForward(any(), any(), any(), any())).thenReturn(twoRowPage(false));
             CardListResponse last = listOneAccount();
@@ -482,20 +490,26 @@ class CardControllerTest {
             when(cardQueries.listForward(any(), any(), any(), any())).thenReturn(emptyPage());
             String cursor = cardToken(CARD_NUMBER);
 
-            controller.listCards(ACCOUNT_ID, cursor, CardController.BACKWARD_DIRECTION, 3);
+            controller.listCards(ACCOUNT_ID, cursor, CardController.BACKWARD_DIRECTION, "3");
             verify(cardQueries).listBackward(cursor, 3, ACCOUNT_ID, null);
             verify(cardQueries, never()).listForward(any(), any(), any(), any());
 
-            controller.listCards(ACCOUNT_ID, cursor, CardController.FORWARD_DIRECTION, 3);
+            controller.listCards(ACCOUNT_ID, cursor, CardController.FORWARD_DIRECTION, "3");
             verify(cardQueries).listForward(cursor, 3, ACCOUNT_ID, null);
         }
 
         /**
-         * Asserts a backward page hands back the token of its first row.
+         * Asserts a backward page hands back the token of its first row, which is its lowest.
          *
          * <p>Going back, the following page holds lower card numbers, so the row that continues the
          * browse is the lowest of this page. {@code app/cbl/COCRDLIC.cbl:L1350-L1353} writes that
          * value into {@code WS-CA-FIRST-CARDKEY}.
+         *
+         * <p>The row order is asserted here rather than assumed. The page this reads was built with
+         * its higher card number first, so the value it called the first row was the highest one, and
+         * the assertion held for a page no forward browse of a key-sequenced dataset can produce. With
+         * the page in ascending order the expected token is the LOWER of the two, and it is a
+         * different value from the one a forward page returns.
          */
         @Test
         void aBackwardPageHandsBackItsFirstCardToken() {
@@ -504,8 +518,20 @@ class CardControllerTest {
             CardListResponse page = controller.listCards(ACCOUNT_ID, null,
                     CardController.BACKWARD_DIRECTION, null);
 
-            assertEquals(cardToken(SECOND_CARD_NUMBER), page.nextCursor(),
-                    "a backward page continues from the token of its first row");
+            assertAll(
+                    () -> assertEquals(2, page.cards().size(), "row count"),
+                    () -> assertEquals(PanMasker.maskCardNumber(CARD_NUMBER), page.cards().getFirst()
+                            .cardNumber(), "row zero carries the lower card number"),
+                    () -> assertEquals(PanMasker.maskCardNumber(SECOND_CARD_NUMBER), page.cards().get(1)
+                            .cardNumber(), "row one carries the higher card number"),
+                    () -> assertTrue(CARD_NUMBER.compareTo(SECOND_CARD_NUMBER) < 0,
+                            "the two fixture card numbers are in ascending order"),
+                    () -> assertEquals(cardToken(CARD_NUMBER), page.nextCursor(),
+                            "a backward page continues from the token of its first row, which is the"
+                                    + " lower of the two card numbers"),
+                    () -> assertNotEquals(cardToken(SECOND_CARD_NUMBER), page.nextCursor(),
+                            "and not from the token of its last row, which is where a forward page"
+                                    + " continues from"));
         }
 
         /**
@@ -641,238 +667,69 @@ class CardControllerTest {
                             "the text the source sets"),
                     () -> assertEquals(404, body.status(),
                             "the body reports the status it was sent with"),
-                    () -> assertEquals(CardController.DETAIL_ROUTE, body.route(),
+                    () -> assertEquals(CardController.CARD_ROUTE, body.route(),
                             "the body carries the route template and no resolved path"));
-        }
-
-        /**
-         * Asserts a card the caller does not own answers 403 without reading the table.
-         *
-         * <p>The predicate is {@link SecurityConfig.CardOwnership}, and the read is never issued.
-         */
-        @Test
-        void aCardTheCallerDoesNotOwnAnswersForbiddenWithoutReading() {
-            ownership = cardNumber -> false;
-
-            ResponseEntity<?> response = readFixtureCard();
-
-            assertEquals(HttpStatus.FORBIDDEN, response.getStatusCode(),
-                    "the caller holds no scope for this card");
-            verify(cardQueries, never()).findByCardNumber(any());
-        }
-
-        /** Asserts a refusal and an absence carry the same text, so the two differ in status. */
-        @Test
-        void aRefusalAndAnAbsenceCarryTheSameText() {
-            when(cardQueries.findByCardNumber(CARD_NUMBER)).thenReturn(Optional.empty());
-            ApiErrorResponse absent =
-                    assertInstanceOf(ApiErrorResponse.class, readFixtureCard().getBody());
-
-            ownership = cardNumber -> false;
-            ApiErrorResponse refused =
-                    assertInstanceOf(ApiErrorResponse.class, readFixtureCard().getBody());
-
-            assertAll(
-                    () -> assertEquals(DID_NOT_FIND_CARD, absent.message(),
-                            "an absent row carries the source text"),
-                    () -> assertEquals(DID_NOT_FIND_CARD, refused.message(),
-                            "a refusal carries the same text"));
-        }
-
-        /**
-         * Asserts the ownership check receives the full number rather than the masked form.
-         *
-         * <p>The masked form names every card ending in the same four digits. The predicate derives
-         * the card token, so it needs the sixteen digits.
-         */
-        @Test
-        void theOwnershipCheckReceivesTheFullNumber() {
-            List<String> asked = new ArrayList<>();
-            ownership = cardNumber -> {
-                asked.add(cardNumber);
-                return true;
-            };
-            when(cardQueries.findByCardNumber(CARD_NUMBER)).thenReturn(Optional.empty());
-
-            readFixtureCard();
-
-            assertAll(
-                    () -> assertEquals(List.of(CARD_NUMBER), asked,
-                            "the predicate received a value other than the full number"),
-                    () -> assertNotEquals(List.of(MASKED_CARD_NUMBER), asked,
-                            "a masked value names a group of cards rather than one"));
         }
 
         /**
          * Asserts the read keys on the card number alone.
          *
          * <p>{@code app/cbl/COCRDSLC.cbl:L739} moves the account into the read key and is commented
-         * out. {@code app/cbl/COCRDSLC.cbl:L740} moves the card number and is not. The key is
-         * reproduced, and the account decides the answer rather than the row that is read.
+         * out. {@code app/cbl/COCRDSLC.cbl:L740} moves the card number and is not, so the card
+         * number is the whole key. No account accompanies the card on this route and no
+         * relationship between the two is tested: the row the key finds is the row the caller
+         * reads.
          */
         @Test
         void theReadKeysOnTheCardNumberAlone() {
-            when(cardQueries.findByCardNumber(CARD_NUMBER)).thenReturn(Optional.empty());
+            when(cardQueries.findByCardNumber(CARD_NUMBER)).thenReturn(Optional.of(storedCard()));
 
-            controller.readCard(new CardDetailRequest(OTHER_ACCOUNT_ID, CARD_NUMBER));
+            ResponseEntity<?> response = controller.readCard(CARD_NUMBER);
+            CardDetailResponse detail =
+                    assertInstanceOf(CardDetailResponse.class, response.getBody());
 
             verify(cardQueries).findByCardNumber(CARD_NUMBER);
             verify(cardQueries, never()).findByAccountId(any());
+            assertAll(
+                    () -> assertEquals(HttpStatus.OK, response.getStatusCode(),
+                            "the row the card key found answers 200"),
+                    () -> assertEquals(ACCOUNT_ID, detail.accountId(),
+                            "the account the row holds is the account the body reports"));
         }
 
         /**
-         * Asserts a row of another account is answered as an absent row.
+         * Asserts the handler carries no ownership rule of its own.
          *
-         * <p>The status and the text are the ones an absent row carries, so the two answers differ
-         * in neither.
+         * <p>The card number arrives in the path, so the filter chain of
+         * {@code config/SecurityConfig} reads it and decides ownership before this handler runs.
+         * This class therefore takes two collaborators and no predicate, and every parameter of
+         * every handler is a request value rather than an authority.
          */
         @Test
-        void aRowOfAnotherAccountIsAnsweredAsAnAbsentRow() {
-            when(cardQueries.findByCardNumber(CARD_NUMBER)).thenReturn(Optional.of(storedCard()));
-
-            ResponseEntity<?> response =
-                    controller.readCard(new CardDetailRequest(OTHER_ACCOUNT_ID, CARD_NUMBER));
-            ApiErrorResponse body = assertInstanceOf(ApiErrorResponse.class, response.getBody());
+        void theHandlerCarriesNoOwnershipRule() {
+            List<String> ownershipMembers = new ArrayList<>();
+            for (Field field : CardController.class.getDeclaredFields()) {
+                String folded = field.getName().toLowerCase(Locale.ROOT);
+                if (folded.contains("own") || folded.contains("scope")
+                        || folded.contains("authority")) {
+                    ownershipMembers.add(field.getName());
+                }
+            }
 
             assertAll(
-                    () -> assertEquals(HttpStatus.NOT_FOUND, response.getStatusCode(),
-                            "a card of another account is not this caller's card to read"),
-                    () -> assertEquals(DID_NOT_FIND_CARD, body.message(),
-                            "the text an absent row carries"));
+                    () -> assertEquals(List.of(), ownershipMembers,
+                            "CardController declares an ownership member: " + ownershipMembers),
+                    () -> assertEquals(1, CardController.class.getDeclaredConstructors().length,
+                            "one constructor"),
+                    () -> assertEquals(2,
+                            CardController.class.getDeclaredConstructors()[0]
+                                    .getParameterCount(),
+                            "the read side and the update side, and no predicate"));
         }
 
-        /**
-         * Asserts a padded account identifier names the same account.
-         *
-         * <p>{@code CARD-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT02Y.cpy:L6} is a fixed-width
-         * field, and column {@code account_id} is {@code CHAR(11)}. Both sides are stripped before
-         * the comparison.
-         */
-        @Test
-        void aPaddedAccountIdentifierNamesTheSameAccount() {
-            when(cardQueries.findByCardNumber(CARD_NUMBER)).thenReturn(Optional.of(storedCard()));
-
-            ResponseEntity<?> response =
-                    controller.readCard(new CardDetailRequest(ACCOUNT_ID + " ", CARD_NUMBER));
-
-            assertEquals(HttpStatus.OK, response.getStatusCode(),
-                    "padding is field shape rather than a different account");
-        }
-
-        /** Reads the fixture card under the fixture account. */
+        /** Reads the fixture card. */
         private ResponseEntity<?> readFixtureCard() {
-            return controller.readCard(new CardDetailRequest(ACCOUNT_ID, CARD_NUMBER));
-        }
-    }
-
-    /** The four ordered edits of the read route, and the one rule that spans both fields. */
-    @Nested
-    @DisplayName("the ordered edits of the read route")
-    class OrderedEditsOfTheReadRoute {
-
-        /**
-         * Asserts both values absent answer the text of the rule that spans both fields.
-         *
-         * <p>{@code app/cbl/COCRDSLC.cbl:L637-L640} tests both blank flags after
-         * {@code 2210-EDIT-ACCOUNT} at L630-L631 and {@code 2220-EDIT-CARD} at L633-L634 have run,
-         * under no guard, so it overwrites whichever text an edit had written.
-         */
-        @Test
-        void bothValuesAbsentAnswerTheCrossFieldText() {
-            ResponseEntity<?> response = controller.readCard(new CardDetailRequest("", ""));
-
-            assertAll(
-                    () -> assertEquals(HttpStatus.UNPROCESSABLE_CONTENT, response.getStatusCode(),
-                            "an edit refused the request"),
-                    () -> assertEquals(NO_INPUT_RECEIVED, messageOf(response),
-                            "the text of the rule that spans both fields"));
-        }
-
-        /**
-         * Asserts all-zero values count as absent.
-         *
-         * <p>{@code CC-ACCT-ID-N EQUAL ZEROS} at {@code app/cbl/COCRDSLC.cbl:L653} and
-         * {@code CC-CARD-NUM-N EQUAL ZEROS} at {@code app/cbl/COCRDSLC.cbl:L693} are the third
-         * condition of each absence test.
-         */
-        @Test
-        void allZeroValuesCountAsAbsent() {
-            ResponseEntity<?> response = controller.readCard(
-                    new CardDetailRequest("0".repeat(11), "0".repeat(16)));
-
-            assertEquals(NO_INPUT_RECEIVED, messageOf(response),
-                    "an all-zero value counts as no value");
-        }
-
-        /**
-         * Asserts an absent account answers the account prompt when the card arrived.
-         *
-         * <p>{@code app/cbl/COCRDSLC.cbl:L651} tests absence and L657 sets the text.
-         */
-        @Test
-        void anAbsentAccountAnswersTheAccountPrompt() {
-            ResponseEntity<?> response =
-                    controller.readCard(new CardDetailRequest(null, CARD_NUMBER));
-
-            assertEquals(ACCOUNT_NOT_PROVIDED, messageOf(response),
-                    "the text the account absence test sets");
-        }
-
-        /**
-         * Asserts a malformed account answers ahead of an absent card.
-         *
-         * <p>{@code app/cbl/COCRDSLC.cbl:L665} tests the account character class and writes its
-         * text under the guard, so the card edit that follows writes nothing. The rule that spans
-         * both fields needs both blank flags, and the account carries the not-ok flag instead.
-         */
-        @Test
-        void aMalformedAccountAnswersAheadOfAnAbsentCard() {
-            ResponseEntity<?> response = controller.readCard(new CardDetailRequest("50", ""));
-
-            assertEquals(ACCOUNT_FILTER_NOT_NUMERIC, messageOf(response),
-                    "the account edit writes first and the guard keeps its text");
-        }
-
-        /**
-         * Asserts an absent card answers the card prompt when the account is well formed.
-         *
-         * <p>{@code app/cbl/COCRDSLC.cbl:L691} tests absence and L697 sets the text.
-         */
-        @Test
-        void anAbsentCardAnswersTheCardPrompt() {
-            ResponseEntity<?> response =
-                    controller.readCard(new CardDetailRequest(ACCOUNT_ID, "   "));
-
-            assertEquals(CARD_NOT_PROVIDED, messageOf(response),
-                    "the text the card absence test sets");
-        }
-
-        /**
-         * Asserts a malformed card answers the card character-class text.
-         *
-         * <p>{@code app/cbl/COCRDSLC.cbl:L706} tests the character class and L711 carries the
-         * literal, which reads {@code A 16} with no space after the comma.
-         */
-        @Test
-        void aMalformedCardAnswersTheCharacterClassText() {
-            ResponseEntity<?> response =
-                    controller.readCard(new CardDetailRequest(ACCOUNT_ID, "050002445376574X"));
-
-            assertEquals(CARD_FILTER_NOT_NUMERIC, messageOf(response),
-                    "the literal the card edit carries");
-        }
-
-        /** Asserts a well-formed pair passes every edit. */
-        @Test
-        void aWellFormedPairPassesEveryEdit() {
-            assertNull(CardController.firstSearchFailure(
-                            new CardDetailRequest(ACCOUNT_ID, CARD_NUMBER)),
-                    "eleven digits and sixteen digits pass every edit");
-        }
-
-        /** Reads the one message a failing response carries. */
-        private String messageOf(ResponseEntity<?> response) {
-            return assertInstanceOf(ApiErrorResponse.class, response.getBody()).message();
+            return controller.readCard(CARD_NUMBER);
         }
     }
 
@@ -889,8 +746,10 @@ class CardControllerTest {
          * {@code app/cbl/COCRDUPC.cbl:L680-L682} and a failing edit both carry 422. An absent row
          * carries 404, and a lost race and a row that could not be locked both carry 409.
          *
-         * <p>A rewrite that failed after the lock carries 500, the status
-         * {@code src/main/resources/openapi.yaml} documents for the same text.
+         * <p>A rewrite that failed after the lock carries 503. The source reaches it from a file
+         * status other than normal on the {@code REWRITE} at
+         * {@code app/cbl/COCRDUPC.cbl:L1483-L1491}, which is the datastore refusing the write, so
+         * the status names a condition a caller may retry rather than a defect of this service.
          */
         @Test
         void eachOutcomeCarriesItsStatusAndItsText() {
@@ -925,11 +784,11 @@ class CardControllerTest {
                             textOf(CardUpdateResponse.lockNotAcquired()),
                             "the text app/cbl/COCRDUPC.cbl:L206 declares"),
 
-                    () -> assertEquals(HttpStatus.INTERNAL_SERVER_ERROR,
+                    () -> assertEquals(HttpStatus.SERVICE_UNAVAILABLE,
                             statusOf(CardUpdateResponse.updateFailedAfterLock()),
-                            "a rewrite that failed after the lock is a fault inside this service"),
+                            "a rewrite the datastore refused is retryable rather than a defect"),
                     () -> assertEquals(UPDATE_OF_RECORD_FAILED,
-                            textOf(CardUpdateResponse.updateFailedAfterLock()),
+                            failureTextOf(CardUpdateResponse.updateFailedAfterLock()),
                             "the text app/cbl/COCRDUPC.cbl:L210 declares"));
         }
 
@@ -957,7 +816,8 @@ class CardControllerTest {
                                 "a failing edit asks the caller to correct one value"),
                         () -> assertEquals(text, textOf(rejected),
                                 "the text of the failing edit reached the caller changed"),
-                        () -> assertNull(answerFor(rejected).getBody().refreshedCard(),
+                        () -> assertNull(assertInstanceOf(CardUpdateResponse.class,
+                                answerFor(rejected).getBody()).refreshedCard(),
                                 "a failing edit carries no snapshot"));
             }
         }
@@ -1007,17 +867,48 @@ class CardControllerTest {
         void aRewriteThatFailedAfterTheLockCarriesItsOwnText() {
             CardUpdateResponse failed = CardUpdateResponse.updateFailedAfterLock();
 
-            ResponseEntity<CardUpdateResponse> response = answerFor(failed);
+            ResponseEntity<?> response = answerFor(failed);
+            ApiErrorResponse body = assertInstanceOf(ApiErrorResponse.class, response.getBody());
 
             assertAll(
-                    () -> assertEquals(HttpStatus.INTERNAL_SERVER_ERROR, response.getStatusCode(),
-                            "a fault inside this service is a 500"),
-                    () -> assertEquals(UPDATE_OF_RECORD_FAILED, response.getBody().message(),
+                    () -> assertEquals(HttpStatus.SERVICE_UNAVAILABLE, response.getStatusCode(),
+                            "a write the datastore refused invites a retry"),
+                    () -> assertEquals(UPDATE_OF_RECORD_FAILED, body.message(),
                             "the override text reached the caller changed"),
-                    () -> assertNotEquals(EXPIRY_MONTH_NOT_VALID, response.getBody().message(),
+                    () -> assertNotEquals(EXPIRY_MONTH_NOT_VALID, body.message(),
                             "no earlier text was revived on this arm"),
-                    () -> assertNull(response.getBody().refreshedCard(),
-                            "this arm carries no snapshot"));
+                    () -> assertEquals(503, body.status(),
+                            "the body reports the status it was sent with"),
+                    () -> assertEquals(CardController.CARD_ROUTE, body.route(),
+                            "the body carries the route template and no resolved path"));
+        }
+
+        /**
+         * Asserts the failure shape is the one this operation carries at 503, and the only one.
+         *
+         * <p>{@code api/CardApiExceptionHandler.onDatastoreUnreachable} answers the same status when
+         * the card table cannot be reached at all, and it writes {@code ApiErrorResponse}. One
+         * status on one operation therefore carries one schema, which is what
+         * {@code src/main/resources/openapi.yaml} declares for it.
+         */
+        @Test
+        void theRetryableWriteAndTheUnreachableStoreCarryOneShape() {
+            ResponseEntity<?> refusedWrite =
+                    answerFor(CardUpdateResponse.updateFailedAfterLock());
+
+            assertAll(
+                    () -> assertInstanceOf(ApiErrorResponse.class, refusedWrite.getBody(),
+                            "the retryable write carries the failure shape"),
+                    () -> assertEquals(MediaType.APPLICATION_JSON,
+                            new CardApiExceptionHandler()
+                                    .onDatastoreUnreachable(new QueryTimeoutException("x"), null)
+                                    .getHeaders().getContentType(),
+                            "the unreachable store carries the same media type"),
+                    () -> assertInstanceOf(ApiErrorResponse.class,
+                            new CardApiExceptionHandler()
+                                    .onDatastoreUnreachable(new QueryTimeoutException("x"), null)
+                                    .getBody(),
+                            "the unreachable store carries the same shape"));
         }
 
         /**
@@ -1033,14 +924,16 @@ class CardControllerTest {
          */
         @Test
         void aLostRaceCarriesFiveSnapshotComponentsAndNoVerificationValue() {
-            ResponseEntity<CardUpdateResponse> response = answerFor(lostRace());
-            JsonNode snapshot = serialize(response.getBody()).get("refreshedCard");
+            ResponseEntity<?> response = answerFor(lostRace());
+            CardUpdateResponse outcome =
+                    assertInstanceOf(CardUpdateResponse.class, response.getBody());
+            JsonNode snapshot = serialize(outcome).get("refreshedCard");
             Set<String> written = propertyNames(snapshot);
 
             assertAll(
                     () -> assertEquals(HttpStatus.CONFLICT, response.getStatusCode(),
                             "a lost race answers 409"),
-                    () -> assertEquals(CHANGED_BEFORE_UPDATE, response.getBody().message(),
+                    () -> assertEquals(CHANGED_BEFORE_UPDATE, outcome.message(),
                             "the text the source sets, with some one as two words"),
                     () -> assertEquals(Set.of("embossedName", "expiryYear", "expiryMonth",
                             "expiryDay", "activeStatus"), written, "the snapshot changed shape"),
@@ -1049,7 +942,7 @@ class CardControllerTest {
                     () -> assertFalse(named(written, "cvv") || named(written, "verification"),
                             "the snapshot started naming the card verification value: " + written),
                     () -> assertEquals(REFRESHED_EXPIRY_YEAR,
-                            response.getBody().refreshedCard().expiryYear(),
+                            outcome.refreshedCard().expiryYear(),
                             "the refreshed year slice reached the caller"),
                     () -> assertEquals(5, RefreshedCard.class.getRecordComponents().length,
                             "RefreshedCard declares five components"));
@@ -1068,16 +961,17 @@ class CardControllerTest {
          */
         @Test
         void aLockThatWasNotAcquiredCarriesNoSnapshot() {
-            ResponseEntity<CardUpdateResponse> response =
-                    answerFor(CardUpdateResponse.lockNotAcquired());
-            JsonNode body = serialize(response.getBody());
+            ResponseEntity<?> response = answerFor(CardUpdateResponse.lockNotAcquired());
+            CardUpdateResponse outcome =
+                    assertInstanceOf(CardUpdateResponse.class, response.getBody());
+            JsonNode body = serialize(outcome);
 
             assertAll(
                     () -> assertEquals(HttpStatus.CONFLICT, response.getStatusCode(),
                             "a row that could not be held answers 409"),
-                    () -> assertEquals(COULD_NOT_LOCK, response.getBody().message(),
+                    () -> assertEquals(COULD_NOT_LOCK, outcome.message(),
                             "the text the source sets"),
-                    () -> assertNull(response.getBody().refreshedCard(),
+                    () -> assertNull(outcome.refreshedCard(),
                             "the conflict comparison never ran, so no snapshot exists"),
                     () -> assertTrue(body.get("refreshedCard") == null
                                     || body.get("refreshedCard").isNull(),
@@ -1092,19 +986,23 @@ class CardControllerTest {
          * L121. The write path rejoins the three at L1467-L1474 and the conflict comparison slices
          * positions one to four, six to seven and nine to ten at L1505-L1507.
          *
-         * <p>The card number is the sixth component. No route of this controller carries it in a
-         * path or in a query string.
+         * <p>The card number is no component. It names the row the update rewrites and arrives as
+         * the path variable of the route, which is the value
+         * {@code CCUP-NEW-CARDID PIC X(16)} at {@code app/cbl/COCRDUPC.cbl:L305} names above the
+         * payload group.
          */
         @Test
-        void theUpdateRequestCarriesSixComponentsWithTheExpiryDecomposed() {
+        void theUpdateRequestCarriesFiveComponentsWithTheExpiryDecomposed() {
             Set<String> declared = recordComponents(CardUpdateRequest.class);
 
             assertAll(
-                    () -> assertEquals(Set.of("cardNumber", "embossedName", "expiryYear",
+                    () -> assertEquals(Set.of("embossedName", "expiryYear",
                             "expiryMonth", "expiryDay", "activeStatus"), declared,
                             "the update request changed shape"),
-                    () -> assertEquals(6, CardUpdateRequest.class.getRecordComponents().length,
-                            "the update request declares six components"),
+                    () -> assertEquals(5, CardUpdateRequest.class.getRecordComponents().length,
+                            "the update request declares five components"),
+                    () -> assertFalse(declared.contains("cardNumber"),
+                            "the card number names the row and travels in the path"),
                     () -> assertFalse(declared.contains("expirationDate"),
                             "the expiry stays decomposed rather than joined"),
                     () -> assertFalse(named(declared, "cvv") || named(declared, "verification"),
@@ -1116,17 +1014,42 @@ class CardControllerTest {
         @Test
         void theOutcomeReachesTheCallerUnchanged() {
             CardUpdateRequest submitted = submittedUpdate();
-            when(cardUpdates.updateCard(submitted)).thenReturn(CardUpdateResponse.updated());
+            when(cardUpdates.updateCard(CARD_NUMBER, submitted))
+                    .thenReturn(CardUpdateResponse.updated());
 
-            ResponseEntity<CardUpdateResponse> response = controller.updateCard(submitted);
+            ResponseEntity<?> response = controller.updateCard(CARD_NUMBER, submitted);
+            CardUpdateResponse body =
+                    assertInstanceOf(CardUpdateResponse.class, response.getBody());
 
             assertAll(
                     () -> assertEquals(HttpStatus.OK, response.getStatusCode(),
                             "an applied update answers 200"),
-                    () -> assertNotNull(response.getBody(), "the outcome reaches the caller"),
-                    () -> assertEquals(UpdateOutcome.UPDATED, response.getBody().outcome(),
+                    () -> assertEquals(UpdateOutcome.UPDATED, body.outcome(),
                             "the outcome is the one the update side produced"));
-            verify(cardUpdates).updateCard(submitted);
+            verify(cardUpdates).updateCard(CARD_NUMBER, submitted);
+        }
+
+        /**
+         * Asserts the card the path names is the card the update side receives.
+         *
+         * <p>The path value is the key {@code app/cbl/COCRDUPC.cbl:L1425} moves into the read for
+         * update. It reaches the update side as its own argument, so no body property can name a
+         * different row.
+         */
+        @Test
+        void theCardThePathNamesReachesTheUpdateSide() {
+            CardUpdateRequest submitted = submittedUpdate();
+            when(cardUpdates.updateCard(any(), any())).thenReturn(CardUpdateResponse.updated());
+            ArgumentCaptor<String> named = ArgumentCaptor.forClass(String.class);
+
+            controller.updateCard(SECOND_CARD_NUMBER, submitted);
+
+            verify(cardUpdates).updateCard(named.capture(), eq(submitted));
+            assertAll(
+                    () -> assertEquals(SECOND_CARD_NUMBER, named.getValue(),
+                            "the update side received the card the path named"),
+                    () -> assertEquals(16, named.getValue().length(),
+                            "the key holds the width CARD-NUM PIC X(16) declares"));
         }
 
         /**
@@ -1150,15 +1073,21 @@ class CardControllerTest {
             return HttpStatus.valueOf(answerFor(outcome).getStatusCode().value());
         }
 
-        /** Reads the text one outcome carries through the route. */
+        /** Reads the text one outcome carries through the route in the update body. */
         private String textOf(CardUpdateResponse outcome) {
-            return answerFor(outcome).getBody().message();
+            return assertInstanceOf(CardUpdateResponse.class, answerFor(outcome).getBody())
+                    .message();
+        }
+
+        /** Reads the text one outcome carries through the route in the failure body. */
+        private String failureTextOf(CardUpdateResponse outcome) {
+            return assertInstanceOf(ApiErrorResponse.class, answerFor(outcome).getBody()).message();
         }
 
         /** Sends one submitted update whose outcome the update side reports. */
-        private ResponseEntity<CardUpdateResponse> answerFor(CardUpdateResponse outcome) {
-            when(cardUpdates.updateCard(any())).thenReturn(outcome);
-            return controller.updateCard(submittedUpdate());
+        private ResponseEntity<?> answerFor(CardUpdateResponse outcome) {
+            when(cardUpdates.updateCard(any(), any())).thenReturn(outcome);
+            return controller.updateCard(CARD_NUMBER, submittedUpdate());
         }
     }
 
@@ -1183,8 +1112,7 @@ class CardControllerTest {
                     .thenReturn(Optional.empty());
             ArgumentCaptor<String> looked = ArgumentCaptor.forClass(String.class);
 
-            ResponseEntity<?> response = controller.readCard(
-                    new CardDetailRequest(ACCOUNT_ID, CARD_NUMBER_FAILING_LUHN));
+            ResponseEntity<?> response = controller.readCard(CARD_NUMBER_FAILING_LUHN);
 
             verify(cardQueries).findByCardNumber(looked.capture());
             assertAll(
@@ -1215,7 +1143,7 @@ class CardControllerTest {
 
             assertAll(
                     () -> assertEquals(Set.of(CardController.BASE_PATH,
-                            CardController.BASE_PATH + CardController.DETAIL_PATH), mapped,
+                            CardController.CARD_ROUTE), mapped,
                             "the mapped path set changed"),
                     () -> assertFalse(mapped.contains(CardController.BASE_PATH + "/status"),
                             "a status route appeared: " + mapped),
@@ -1245,17 +1173,27 @@ class CardControllerTest {
         }
 
         /**
-         * Asserts no route carries a card number in a path template.
+         * Asserts every path template holds a variable name and no identifier value.
          *
-         * <p>No mapped path declares a path variable, so no route template holds a Primary
-         * Account Number.
+         * <p>Two routes carry the card number as a path variable, reproducing transaction
+         * {@code CCDL} at {@code app/csd/CARDDEMO.CSD:L347-L348} and transaction {@code CCUP} at
+         * {@code app/csd/CARDDEMO.CSD:L367-L369}. A template holds the variable name and never a
+         * resolved value, which is what every failing body reports:
+         * {@code api/dto/ApiErrorResponse} refuses a route holding a run of more than four digits.
          */
         @Test
-        void noRouteCarriesAnIdentifierInItsPathTemplate() {
+        void everyPathTemplateHoldsAVariableNameAndNoIdentifierValue() {
             for (String path : mappedPaths()) {
-                assertFalse(path.contains("{"),
-                        "a route carries a path variable and could carry an identifier: " + path);
+                assertFalse(path.matches(".*[0-9]{5,}.*"),
+                        "a route template holds a run of digits: " + path);
+                assertFalse(path.contains("{}"), "a route template holds an unnamed variable: "
+                        + path);
             }
+            assertEquals(Set.of(CardController.BASE_PATH, CardController.CARD_ROUTE), mappedPaths(),
+                    "the mapped path set changed");
+            assertEquals("/cards/{cardNumber}", CardController.CARD_ROUTE,
+                    "the two card-numbered routes carry the variable the source keys on at "
+                            + "app/cbl/COCRDSLC.cbl:L740");
         }
 
         /**
@@ -1273,13 +1211,13 @@ class CardControllerTest {
         void theCardVerificationValueReachesNoBody() {
             when(cardQueries.listForward(any(), any(), any(), any())).thenReturn(oneRowPage());
             when(cardQueries.findByCardNumber(CARD_NUMBER)).thenReturn(Optional.of(storedCard()));
-            when(cardUpdates.updateCard(any())).thenReturn(lostRace());
+            when(cardUpdates.updateCard(any(), any())).thenReturn(lostRace());
 
             String listBody = rendered(controller.listCards(ACCOUNT_ID, null,
                     CardController.FORWARD_DIRECTION, null));
-            String readBody = rendered(controller
-                    .readCard(new CardDetailRequest(ACCOUNT_ID, CARD_NUMBER)).getBody());
-            String updateBody = rendered(controller.updateCard(submittedUpdate()).getBody());
+            String readBody = rendered(controller.readCard(CARD_NUMBER).getBody());
+            String updateBody =
+                    rendered(controller.updateCard(CARD_NUMBER, submittedUpdate()).getBody());
 
             assertAll(
                     () -> assertTrue(listBody.contains(MASKED_CARD_NUMBER),
@@ -1317,8 +1255,7 @@ class CardControllerTest {
 
             String listBody = rendered(controller.listCards(ACCOUNT_ID, null,
                     CardController.FORWARD_DIRECTION, null));
-            String readBody = rendered(controller
-                    .readCard(new CardDetailRequest(ACCOUNT_ID, CARD_NUMBER)).getBody());
+            String readBody = rendered(controller.readCard(CARD_NUMBER).getBody());
 
             assertAll(
                     () -> assertFalse(listBody.contains(CARD_NUMBER),
@@ -1342,8 +1279,7 @@ class CardControllerTest {
         void aFailingReadBodyCarriesThreePropertiesAndOneText() {
             when(cardQueries.findByCardNumber(CARD_NUMBER)).thenReturn(Optional.empty());
 
-            JsonNode body = serialize(controller
-                    .readCard(new CardDetailRequest(ACCOUNT_ID, CARD_NUMBER)).getBody());
+            JsonNode body = serialize(controller.readCard(CARD_NUMBER).getBody());
             Set<String> written = propertyNames(body);
 
             assertAll(
@@ -1362,23 +1298,50 @@ class CardControllerTest {
         /**
          * Asserts a failing body echoes no submitted value.
          *
-         * <p>The refusal names the edit that failed and quotes neither submitted value.
+         * <p>The refusal names the route template and quotes no value the request carried. A read
+         * that found no row is the failure this test drives, since a malformed path value is
+         * refused by the constraint on the path variable before the handler runs.
          */
         @Test
         void aFailingBodyEchoesNoSubmittedValue() {
-            String body = rendered(controller
-                    .readCard(new CardDetailRequest(ACCOUNT_ID, "050002445376574X")).getBody());
+            when(cardQueries.findByCardNumber(SECOND_CARD_NUMBER)).thenReturn(Optional.empty());
+
+            ApiErrorResponse body = assertInstanceOf(ApiErrorResponse.class,
+                    controller.readCard(SECOND_CARD_NUMBER).getBody());
+            String rendered = rendered(body);
 
             assertAll(
-                    () -> assertFalse(body.contains("050002445376574X"),
-                            "the refusal echoed the submitted value: " + body),
-                    () -> assertFalse(body.contains(ACCOUNT_ID),
-                            "the refusal echoed the submitted account: " + body),
+                    () -> assertFalse(rendered.contains(SECOND_CARD_NUMBER),
+                            "the refusal echoed the card the path named: " + rendered),
+                    () -> assertEquals(DID_NOT_FIND_CARD, body.message(),
+                            "the literal app/cbl/COCRDSLC.cbl:L760 sets"),
+                    () -> assertEquals(CardController.CARD_ROUTE, body.route(),
+                            "the body carries the template and no resolved path"));
+        }
+
+        /**
+         * Asserts the shape of the card-number path constraint is the source's one test.
+         *
+         * <p>{@code app/cbl/COCRDUPC.cbl:L784} reads {@code IF CC-CARD-NUM IS NOT NUMERIC} over a
+         * {@code PIC X(16)} field, so sixteen digits is the whole rule. The text a refusal carries
+         * is the one {@code app/cbl/COCRDUPC.cbl:L789} declares.
+         */
+        @Test
+        void thePathConstraintCarriesTheSourceShapeAndText() {
+            assertAll(
+                    () -> assertEquals("^[0-9]{16}$", CardController.CARD_NUMBER_PATTERN,
+                            "sixteen digits, the width CARD-NUM PIC X(16) declares"),
+                    () -> assertTrue(CARD_NUMBER.matches(CardController.CARD_NUMBER_PATTERN),
+                            "the fixture card passes"),
+                    () -> assertFalse("050002445376574X"
+                                    .matches(CardController.CARD_NUMBER_PATTERN),
+                            "a non-digit fails"),
+                    () -> assertFalse("050002445376574"
+                                    .matches(CardController.CARD_NUMBER_PATTERN),
+                            "fifteen digits fail"),
                     () -> assertEquals(CARD_FILTER_NOT_NUMERIC,
-                            serialize(controller
-                                    .readCard(new CardDetailRequest(ACCOUNT_ID, "050002445376574X"))
-                                    .getBody()).get("message").asString(),
-                            "the literal the card edit carries"));
+                            CardValidationMessages.CARD_FILTER_NOT_NUMERIC,
+                            "the text app/cbl/COCRDUPC.cbl:L789 declares"));
         }
 
         /** Reports whether one rendered body names the card verification value. */
@@ -1398,14 +1361,11 @@ class CardControllerTest {
         void everyCollaboratorIsRequired() {
             assertAll(
                     () -> assertThrows(NullPointerException.class,
-                            () -> new CardController(null, cardUpdates, ownership),
+                            () -> new CardController(null, cardUpdates),
                             "the read side is required"),
                     () -> assertThrows(NullPointerException.class,
-                            () -> new CardController(cardQueries, null, ownership),
-                            "the update side is required"),
-                    () -> assertThrows(NullPointerException.class,
-                            () -> new CardController(cardQueries, cardUpdates, null),
-                            "the ownership predicate is required"));
+                            () -> new CardController(cardQueries, null),
+                            "the update side is required"));
         }
     }
 
@@ -1430,17 +1390,27 @@ class CardControllerTest {
     }
 
     /**
-     * Builds a page of two rows in ascending card-number order.
+     * Builds a page of two rows in ascending card-number order, with the cursors that order implies.
+     *
+     * <p>{@code app/jcl/CARDFILE.jcl:L40} declares {@code KEYS(16 0)}, and the browse at
+     * {@code app/cbl/COCRDLIC.cbl:L1160-L1216} reads that dataset forward, so a page arrives with its
+     * lowest card number first. {@link #CARD_NUMBER} is the lower of the two, so it is row zero and
+     * the first-row cursor, and {@link #SECOND_CARD_NUMBER} is row one and the last-row cursor.
+     *
+     * <p>The order is what makes the two cursor assertions mean anything. A page built the other way
+     * round names the highest row as its first, so a backward page appears to continue from the token
+     * the production service would only ever return going forward, and both directions pass on one
+     * value.
      *
      * @param furtherPage whether a further page follows
      * @return the page
      */
     private static CardPage twoRowPage(boolean furtherPage) {
         List<CardListRow> rows = List.of(
-                new CardListRow(SECOND_CARD_NUMBER, ACCOUNT_ID, ACTIVE_STATUS),
-                new CardListRow(CARD_NUMBER, ACCOUNT_ID, ACTIVE_STATUS));
-        return new CardPage(rows, furtherPage, cardToken(SECOND_CARD_NUMBER),
-                cardToken(CARD_NUMBER));
+                new CardListRow(CARD_NUMBER, ACCOUNT_ID, ACTIVE_STATUS),
+                new CardListRow(SECOND_CARD_NUMBER, ACCOUNT_ID, ACTIVE_STATUS));
+        return new CardPage(rows, furtherPage, cardToken(CARD_NUMBER),
+                cardToken(SECOND_CARD_NUMBER));
     }
 
     /**
@@ -1471,8 +1441,7 @@ class CardControllerTest {
      * @return the request, with the expiry decomposed into a year, a month and a day
      */
     private static CardUpdateRequest submittedUpdate() {
-        return new CardUpdateRequest(CARD_NUMBER, "MORGAN", EXPIRY_YEAR, EXPIRY_MONTH, EXPIRY_DAY,
-                "N");
+        return new CardUpdateRequest("MORGAN", EXPIRY_YEAR, EXPIRY_MONTH, EXPIRY_DAY, "N");
     }
 
     /**

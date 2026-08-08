@@ -125,6 +125,15 @@ paths:
             answers this, and the response also carries
             WWW-Authenticate: Basic realm="carddemo" because a 401 has to name
             the scheme a caller should retry with.
+          headers:
+            WWW-Authenticate:
+              description: >-
+                The challenge, naming the basic scheme and the realm.
+                config/SecurityConfig writes this exact value.
+              required: true
+              schema:
+                type: string
+                const: 'Basic realm="carddemo", charset="UTF-8"'
           content:
             application/problem+json:
               schema:
@@ -143,6 +152,8 @@ paths:
             operation nor the identifier: a 404 would reveal that the row
             exists, and a detailed 403 would copy the identifier back into the
             caller's own log.
+            A method this route does not serve is refused here too, since config/SecurityConfig
+            declares one rule per method and path and admits no request a rule does not name.
           content:
             application/problem+json:
               schema:
@@ -159,6 +170,41 @@ paths:
             response carries no body. The identifier passed the pattern and the
             caller holds the account, so the row simply is not there: no
             transaction has posted to it yet.
+
+        '405':
+          description: >-
+            The route was called with a method it does not serve. This route
+            serves GET alone, and the Allow header names it.
+            api/LedgerApiExceptionHandler keeps the status and the headers the
+            framework named rather than reporting a caller's mistake as a fault
+            of this service.
+            config/SecurityConfig declares one rule per method and path, and a request whose method
+            carries no rule is refused with 403 before the dispatcher runs, so this answer is the
+            one a request the chain admits receives.
+          headers:
+            Allow:
+              description: The methods this route serves.
+              required: true
+              schema:
+                type: string
+                examples: ['GET']
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ApiProblem'
+              example:
+                type: 'about:blank'
+                title: 'Method Not Allowed'
+                status: 405
+                detail: >-
+                  This route does not serve the method, path or media type the
+                  request named.
+
+        '406':
+          description: >-
+            The Accept header of the request names no media type this route
+            writes. The response carries no body, because a caller that accepts
+            nothing this route writes cannot be sent a problem document either.
 
         '503':
           description: >-
@@ -194,6 +240,36 @@ paths:
                 title: 'Internal Server Error'
                 status: 500
                 detail: 'The balance could not be read.'
+        '429':
+          description: >-
+            A rate ceiling refused this request. config/RequestRateCeilingFilter runs ahead of the
+            security chain and bounds requests from one source, requests presenting one identity,
+            state-changing requests from one source, failed authentications from one source, and
+            requests in flight. Retry-After names whole seconds until the window rolls.
+
+
+            ADDITIVE: a CICS transaction arrived from a terminal an operator was sitting at and the
+            nightly feed of app/jcl/POSTTRAN.jcl arrived once a day as a dataset, so the source had
+            no request rate to bound and holds no matching condition. The detail is fixed and names
+            no address, no identity and no route.
+          headers:
+            Retry-After:
+              description: Whole seconds until the window rolls, one or more.
+              required: true
+              schema:
+                type: integer
+                minimum: 1
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ApiProblem'
+              example:
+                type: 'about:blank'
+                title: 'Too many requests'
+                status: 429
+                detail: >-
+                  This request exceeded a rate this service accepts. Retry after the interval the
+                  response names.
 
 components:
 

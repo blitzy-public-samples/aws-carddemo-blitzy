@@ -1,13 +1,14 @@
 package com.carddemo.equivalence;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
 import com.carddemo.account.entity.DisclosureGroupEntity;
 import com.carddemo.account.repository.DisclosureGroupRepository;
+import com.carddemo.cobol.PicClause;
 import com.carddemo.ledger.entity.AccountBalanceProjectionEntity;
 import com.carddemo.ledger.entity.RejectedTransactionEntity;
 import com.carddemo.ledger.entity.TransactionCategoryBalanceEntity;
@@ -159,11 +160,9 @@ class RepositorySurfaceTest {
                 new Surface(TransactionRepository.class,
                         Set.of("save", "findById", "existsById", "count")),
                 new Surface(RejectedTransactionRepository.class,
-                        Set.of("save", "count")),
+                        Set.of("save", "count", "deleteRejectedBefore")),
                 new Surface(TransactionCategoryBalanceRepository.class,
-                        Set.of("findById", "save", "addToCategoryBalance", "count")),
-                new Surface(DisclosureGroupRepository.class,
-                        Set.of("findById", "findAll")));
+                        Set.of("findById", "save", "addToCategoryBalance", "count")));
     }
 
     /**
@@ -191,31 +190,89 @@ class RepositorySurfaceTest {
                 surface + " offers a different set of operations than its aggregate supports");
     }
 
+    /**
+     * The one bounded retention delete a business repository is allowed to expose, by repository.
+     *
+     * <p>Every other entry in {@link #surfaces()} holds the ledger itself, and the ledger expires
+     * nothing: paragraph {@code 2700-UPDATE-TCATBAL} at {@code app/cbl/CBTRN02C.cbl:L467-L542}
+     * writes and rewrites a category balance and never removes one, and no {@code COMMENT ON TABLE}
+     * gives {@code transaction}, {@code transaction_category_balance} or
+     * {@code account_balance_projection} a horizon.
+     *
+     * <p>{@code rejected_transaction} is the exception, and it is faithful rather than a
+     * relaxation. The source writes each reject to a new generation of a Generation Data Group at
+     * {@code app/jcl/POSTTRAN.jcl:L34-L38}, and {@code app/jcl/DALYREJS.jcl:L24-L28} defines that
+     * base with {@code LIMIT(5)} and {@code SCRATCH}: the group keeps five generations and a sixth
+     * write deletes the oldest. All six bases in {@code app/jcl/DEFGDGB.jcl} carry the same two
+     * parameters. The reject set the source keeps is therefore bounded and self-expiring, and the
+     * deletion lives in a catalogue definition rather than in a {@code PERFORM}, which is why no
+     * paragraph appears to remove one. The table's own {@code COMMENT ON TABLE} declares
+     * {@code retention=90 days; purge_key=rejected_at}, and a security review found that nothing
+     * applied it.
+     */
+    private static final Map<Class<?>, String> PERMITTED_RETENTION_DELETE =
+            Map.of(RejectedTransactionRepository.class, "deleteRejectedBefore");
+
     @ParameterizedTest(name = "{0}")
     @MethodSource("surfaces")
-    @DisplayName("No business aggregate exposes a delete; no source paragraph removes such a row")
+    @DisplayName("No business aggregate exposes a delete beyond its one declared retention purge")
     void noRepositoryExposesDelete(Surface surface) {
+        String permitted = PERMITTED_RETENTION_DELETE.get(surface.repository());
         List<String> deletes = Arrays.stream(surface.repository().getMethods())
                 .map(Method::getName)
                 .filter(name -> name.startsWith("delete") || name.startsWith("remove"))
+                .filter(name -> !name.equals(permitted))
                 .toList();
         assertTrue(deletes.isEmpty(), surface + " exposes " + deletes
-                + ", and no paragraph in app/cbl/ deletes a row of this aggregate. A bounded "
-                + "retention delete belongs on the additive infrastructure tables only: "
-                + "outbox_event, processed_event, velocity_window, statement_transaction, "
-                + "notification_log and authorization_decision");
+                + ", and no paragraph in app/cbl/ deletes a row of this aggregate and no "
+                + "COMMENT ON TABLE gives it a horizon. A bounded retention delete belongs on the "
+                + "additive infrastructure tables — outbox_event, processed_event, "
+                + "velocity_window, statement_transaction, notification_log and "
+                + "authorization_decision — and on "
+                + "fraud_assessment and rejected_transaction, each of which declares its own "
+                + "horizon. PERMITTED_RETENTION_DELETE names the one exception among the "
+                + "repositories listed here and cites why");
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("surfaces")
+    @DisplayName("A permitted retention delete is bounded and takes the horizon first")
+    void aPermittedRetentionDeleteIsBounded(Surface surface) {
+        String permitted = PERMITTED_RETENTION_DELETE.get(surface.repository());
+        if (permitted == null) {
+            return;
+        }
+
+        Method purge = Arrays.stream(surface.repository().getMethods())
+                .filter(method -> method.getName().equals(permitted))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError(
+                        surface + " must declare " + permitted + ", the retention delete "
+                                + "PERMITTED_RETENTION_DELETE names for it"));
+
+        assertEquals(List.of(Instant.class, int.class), List.of(purge.getParameterTypes()),
+                surface + "." + permitted + " must take the horizon then a row bound, so one "
+                        + "statement cannot hold the table for the length of a purge");
+        assertSame(int.class, purge.getReturnType(),
+                surface + "." + permitted + " must report how many rows it removed, so a caller "
+                        + "can tell a pass that finished from one that filled its bound");
     }
 
     @Test
-    @DisplayName("Reference data exposes no write, because only a migration writes it")
-    void referenceDataExposesNoWrite() {
+    @DisplayName("Reference data declares no method; its whole surface is the inherited contract")
+    void referenceDataDeclaresNoMethodOfItsOwn() {
+        List<String> declared = Arrays.stream(DisclosureGroupRepository.class.getDeclaredMethods())
+                .map(Method::getName)
+                .toList();
+        assertTrue(declared.isEmpty(), "DisclosureGroupRepository declares " + declared
+                + ". Its surface is the inherited ListCrudRepository contract, and a migration is "
+                + "the only writer of app/data/ASCII/discgrp.txt");
+
         Set<String> offered = Arrays.stream(DisclosureGroupRepository.class.getMethods())
                 .map(Method::getName)
                 .collect(Collectors.toSet());
-        assertFalse(offered.contains("save"),
-                "DisclosureGroupRepository exposes save, yet OPEN INPUT DISCGRP-FILE at "
-                        + "app/cbl/CBACT04C.cbl:L272 is the only access the source makes");
-        assertFalse(offered.contains("saveAll"), "DisclosureGroupRepository exposes saveAll");
+        assertTrue(offered.containsAll(Set.of("findById", "findAll")),
+                "DisclosureGroupRepository has to inherit the keyed read and the full read");
     }
 
     @Test
@@ -290,8 +347,7 @@ class RepositorySurfaceTest {
         long before = rejects.count();
         RejectedTransactionEntity rejected = new RejectedTransactionEntity(
                 UUID.randomUUID(), "SURFACEREJECT001", "0102", "OVERLIMIT TRANSACTION",
-                "4859452612877065", new java.math.BigDecimal("1250.75"), "01", "5411", "123456789",
-                "2024-01-03 00:00:00.000000", Instant.parse("2024-01-03T00:00:00Z"));
+                surfaceRejectBlock(), Instant.parse("2024-01-03T00:00:00Z"));
         inLedgerTransaction(() -> rejects.save(rejected));
         assertEquals(before + 1, rejects.count(), "the insert did not add a row");
     }
@@ -378,6 +434,28 @@ class RepositorySurfaceTest {
         if (entityManager != null && entityManager.isOpen()) {
             entityManager.close();
         }
+    }
+
+    /**
+     * Builds one {@code REJECT-TRAN-DATA PIC X(350)} block the reject column accepts.
+     *
+     * <p>{@code ck_rejected_transaction_masked_card_number} reads the sixteen characters at the
+     * offset {@code DALYTRAN-CARD-NUM} occupies in {@code app/cpy/CVTRA06Y.cpy:L15}, so the masked
+     * form stands there and spaces fill the rest.</p>
+     *
+     * @return exactly {@link PicClause#REJECT_TRAN_DATA_WIDTH} characters
+     */
+    private static String surfaceRejectBlock() {
+        int cardOffset = PicClause.DALYTRAN_ID_WIDTH + PicClause.DALYTRAN_TYPE_CD_WIDTH
+                + PicClause.DALYTRAN_CAT_CD_WIDTH + PicClause.DALYTRAN_SOURCE_WIDTH
+                + PicClause.DALYTRAN_DESC_WIDTH + PicClause.DALYTRAN_AMT_WIDTH
+                + PicClause.DALYTRAN_MERCHANT_ID_WIDTH + PicClause.DALYTRAN_MERCHANT_NAME_WIDTH
+                + PicClause.DALYTRAN_MERCHANT_CITY_WIDTH + PicClause.DALYTRAN_MERCHANT_ZIP_WIDTH;
+        StringBuilder block = new StringBuilder(" ".repeat(PicClause.REJECT_TRAN_DATA_WIDTH));
+        block.replace(0, "SURFACEREJECT001".length(), "SURFACEREJECT001");
+        block.replace(cardOffset, cardOffset + PicClause.DALYTRAN_CARD_NUM_WIDTH,
+                "************7065");
+        return block.toString();
     }
 
     /**

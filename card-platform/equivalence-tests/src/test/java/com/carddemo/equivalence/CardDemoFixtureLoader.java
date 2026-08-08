@@ -268,6 +268,31 @@ public final class CardDemoFixtureLoader {
     }
 
     /**
+     * Loads {@code app/data/ASCII/dailytran.txt} as the untouched record text of each record.
+     *
+     * <p>This is what {@code app/cbl/CBTRN02C.cbl:L447} needs. The reject path there moves the whole
+     * {@code DALYTRAN-RECORD} into {@code REJECT-TRAN-DATA} in one statement, so the 350 bytes of a
+     * reject record are the bytes that were read, not a value re-rendered from the parsed fields.
+     * Anything reconstructed from {@link CopybookRecordParser.DailyTransactionRecord} would have to
+     * re-encode the sign overpunch the amount column carries and re-pad every text field, and each
+     * of those is an opportunity to differ from the fixture in a way the comparison could not
+     * see.</p>
+     *
+     * <p>Every record is exactly {@link PicClause#DAILYTRAN_FIXTURE_RECORD_WIDTH} characters, so a
+     * caller may index into it with the offsets {@code app/cpy/CVTRA06Y.cpy} declares.</p>
+     *
+     * @return {@link PicClause#DAILYTRAN_FIXTURE_RECORD_COUNT} immutable record strings, in file
+     *         order, each with its separator removed
+     * @throws IllegalStateException when the fixture is absent, or holds an unexpected record
+     *         width or record count
+     */
+    public static List<String> loadDailyTransactionRecordText() {
+        return readRecords(DAILYTRAN_FIXTURE_FILE_NAME,
+                PicClause.DAILYTRAN_FIXTURE_RECORD_WIDTH,
+                PicClause.DAILYTRAN_FIXTURE_RECORD_COUNT);
+    }
+
+    /**
      * Loads {@code app/data/ASCII/discgrp.txt}.
      *
      * @return {@link PicClause#DISCGRP_FIXTURE_RECORD_COUNT} immutable disclosure group records
@@ -349,6 +374,26 @@ public final class CardDemoFixtureLoader {
             padded.add(record + COBOL_TEXT_PAD.repeat(PicClause.CARD_XREF_RECORD_FILLER_WIDTH));
         }
         return List.copyOf(padded);
+    }
+
+    /**
+     * Reads {@code app/data/ASCII/dailytran.txt} as unparsed records.
+     *
+     * <p>{@code app/cbl/CBTRN02C.cbl:L447} moves the whole arriving record into
+     * {@code REJECT-TRAN-DATA PIC X(350)} without reshaping a field, so one record of this list is
+     * what a reject row holds for the transaction it refused. The fixture delivers each record at
+     * the {@link PicClause#DALYTRAN_RECORD_LENGTH} bytes {@code app/cpy/CVTRA06Y.cpy:L4} declares,
+     * so no padding is applied.</p>
+     *
+     * @return {@link PicClause#DAILYTRAN_FIXTURE_RECORD_COUNT} immutable records in fixture order,
+     *         each {@link PicClause#DALYTRAN_RECORD_LENGTH} characters long
+     * @throws IllegalStateException when the fixture is absent, or holds an unexpected record
+     *         width or record count
+     */
+    public static List<String> dailyTransactionRecordsAtDeclaredWidth() {
+        return readRecords(DAILYTRAN_FIXTURE_FILE_NAME,
+                PicClause.DAILYTRAN_FIXTURE_RECORD_WIDTH,
+                PicClause.DAILYTRAN_FIXTURE_RECORD_COUNT);
     }
 
     // Lookup projections. The cross-reference key is text and the account key is numeric, which
@@ -600,6 +645,11 @@ public final class CardDemoFixtureLoader {
      * and every field offset holds. Sign overpunch characters are single bytes and survive
      * unchanged.</p>
      *
+     * <p>Visible to the suite in this package so that a test can drive the three refusals this
+     * method raises &mdash; an absent fixture, a fixture larger than its declared shape, and a
+     * fixture holding the wrong number of records &mdash; and can read a record exactly as it sits
+     * on disk, before any field parsing.</p>
+     *
      * @param fileName    fixture file name, reported when a check fails
      * @param recordWidth expected character width of each record
      * @param recordCount expected number of records
@@ -608,7 +658,7 @@ public final class CardDemoFixtureLoader {
      *         width or record count
      * @throws UncheckedIOException  when the fixture does not read
      */
-    private static List<String> readRecords(String fileName, int recordWidth, int recordCount) {
+    static List<String> readRecords(String fileName, int recordWidth, int recordCount) {
         Path directory = fixtureDirectory();
         Path fixture = directory.resolve(fileName);
         if (!Files.isRegularFile(fixture, LinkOption.NOFOLLOW_LINKS)) {
@@ -668,6 +718,7 @@ public final class CardDemoFixtureLoader {
      * <p>A separator closing the final record adds no empty record, and a final record without one
      * is kept whole.</p>
      *
+     * @param content the fixture text to split
      * @return the records, separator removed
      */
     private static List<String> splitRecords(String content) {

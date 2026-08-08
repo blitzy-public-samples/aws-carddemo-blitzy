@@ -3,10 +3,8 @@ package com.carddemo.ledger.domain;
 import com.carddemo.cobol.PicClause;
 import com.carddemo.events.DeclineReason;
 import com.carddemo.events.TransactionAuthorized;
-import com.carddemo.events.TransactionDeclined;
 import com.carddemo.ledger.config.ObservabilityConfig.LedgerMeters;
 import com.carddemo.ledger.entity.RejectedTransactionEntity;
-import com.carddemo.ledger.outbox.OutboxWriter;
 import com.carddemo.ledger.repository.RejectedTransactionRepository;
 import java.math.BigDecimal;
 import java.time.Clock;
@@ -16,7 +14,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * Inserts the 430-byte reject row and enqueues one {@code TransactionDeclined} event.
+ * Inserts the 430-byte reject row one refused transaction earns.
  *
  * <p>Reproduces {@code 2500-WRITE-REJECT-REC} at {@code app/cbl/CBTRN02C.cbl:L446-L465}, whose
  * record is {@code 01 REJECT-RECORD} at {@code :L176-L182}. {@code REJECT-TRAN-DATA PIC X(350)}
@@ -40,15 +38,28 @@ import org.springframework.transaction.annotation.Transactional;
  * {@code 2500-WRITE-REJECT-REC} writes. A transaction the ledger cannot post for an infrastructure
  * reason is not a reject and does not reach this class: it fails the consumer, leaves the offset
  * uncommitted and reaches the dead-letter topic.
+ *
+ * <h2>The row alone, and why no event is published beside it</h2>
+ *
+ * <p>This class writes the reject row and publishes nothing. The declined event that names the same
+ * refusal is published by the authorization service, which AAP 0.1.1 makes the sole writer of the
+ * authorization decision, and it is that event which reaches
+ * {@code messaging/TransactionDeclinedConsumer} and drives this class. Publishing a second
+ * {@code TransactionDeclined} here would put two differently shaped events for one decision on
+ * {@code transaction.declined}, and this service reads that topic, so it would consume its own
+ * publication.
+ *
+ * <p>The pairing AAP 0.4.1 describes — a reject row beside a declined event — therefore still holds.
+ * The event exists, the row exists, and the two commit atomically with respect to each other because
+ * the arriving event's {@code processed_event} marker and this row share one transaction. What
+ * changed is which service publishes, and the reason is the sole-writer rule rather than a
+ * convenience. {@code card-platform/docs/decision-log.md} carries the entry.
  */
 @Service
 public class RejectRecorder {
 
     /** Stores one reject row. The target of the {@code WRITE} at {@code :L451}. */
     private final RejectedTransactionRepository rejectedTransactions;
-
-    /** Enqueues the declined event beside that row in this method's transaction. */
-    private final OutboxWriter outbox;
 
     /**
      * Carries the {@code outcome=rejected} counter one reject increments.
@@ -81,28 +92,27 @@ public class RejectRecorder {
     private final Clock clock = Clock.systemUTC();
 
     /**
-     * Takes the store this recorder saves through and the writer it enqueues through.
+     * Takes the store this recorder saves through and the meters it counts on.
      *
      * @param rejectedTransactions store over {@code rejected_transaction}
-     * @param outbox               writer over {@code outbox_event}
      * @param meters               registry of the counter one reject increments
      * @throws NullPointerException when any argument is {@code null}
      */
-    public RejectRecorder(RejectedTransactionRepository rejectedTransactions, OutboxWriter outbox,
+    public RejectRecorder(RejectedTransactionRepository rejectedTransactions,
             LedgerMeters meters) {
         this.rejectedTransactions =
                 Objects.requireNonNull(rejectedTransactions, "rejectedTransactions is required");
-        this.outbox = Objects.requireNonNull(outbox, "outbox is required");
         this.meters = Objects.requireNonNull(meters, "meters is required");
     }
 
     /**
-     * Records one refused transaction: the row first, then the event.
+     * Records one refused transaction as one reject row.
      *
      * <p>{@code app/cbl/CBTRN02C.cbl:L447-L448} assembles the two halves and {@code :L451} writes
      * them as one record. A store failure travels on to the caller, which is the target form of the
-     * status ladder at {@code :L452-L464}. The reject row and event row share this transaction, so
-     * either both commit or both roll back.
+     * status ladder at {@code :L452-L464}. The row joins the caller's transaction, which is the one
+     * the arriving declined event's {@code processed_event} marker also commits in, so a reject row
+     * without its marker cannot exist and neither can the reverse.
      *
      * <p>{@link DeclineReason#INVALID_CARD_NUMBER} cannot reach this method. That reason is
      * assigned inside the {@code INVALID KEY} limb of the cross-reference read at
@@ -141,15 +151,9 @@ public class RejectRecorder {
                 event.transactionId(),
                 reason.code(),
                 reason.description(),
-                event.maskedCardNumber(),
-                event.amount(),
-                alphanumeric(event.transactionTypeCode(), PicClause.DALYTRAN_TYPE_CD_WIDTH),
-                numeric(event.merchantCategoryCode(), PicClause.DALYTRAN_CAT_CD_WIDTH),
-                numeric(event.merchantId(), PicClause.DALYTRAN_MERCHANT_ID_WIDTH),
-                alphanumeric(event.originTimestamp(), PicClause.DALYTRAN_ORIG_TS_WIDTH),
+                rejectTranData,
                 clock.instant()));
 
-        outbox.write(declined(event, reason));
         meters.recordTransactionRejected();
     }
 
@@ -202,22 +206,6 @@ public class RejectRecorder {
         }
         return numeric(reason.code(), PicClause.VALIDATION_FAIL_REASON_WIDTH)
                 + alphanumeric(description, PicClause.VALIDATION_FAIL_REASON_DESC_WIDTH);
-    }
-
-    /**
-     * Builds the declined event, keyed on the account identifier the refused event carries.
-     *
-     * <p>{@code recordReject} has already refused a reason that resolves no account, so the account
-     * identifier here is the one the cross-reference read at
-     * {@code app/cbl/CBTRN02C.cbl:L383} held.
-     *
-     * @param event  the refused feed record
-     * @param reason the validation failure the caller established
-     * @return the event, carrying a freshly stamped envelope
-     */
-    private static TransactionDeclined declined(FeedTransaction event, DeclineReason reason) {
-        return TransactionDeclined.of(event.accountId(), event.transactionId(), reason,
-                event.amount(), event.maskedCardNumber());
     }
 
     /**

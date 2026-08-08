@@ -63,10 +63,21 @@ public class AuthorizationDecisionEntity implements Persistable<String> {
     public static final String DECLINED_OUTCOME = "DECLINED";
 
     /**
-     * Characters {@code actor} holds at most, from {@code SEC-USR-ID PIC X(08)} at
-     * {@code app/cpy/CSUSR01Y.cpy:L18}.
+     * Characters {@code actor} holds at most.
+     *
+     * <p>Not a source width. {@code SEC-USR-ID PIC X(08)} at {@code app/cpy/CSUSR01Y.cpy:L18} is
+     * eight characters wide and this column does not hold that field: it holds the authenticated
+     * principal of an HTTP request, which {@code carddemo.security.users} configures and which no
+     * source field bounds. The column was eight characters wide until
+     * {@code src/main/resources/db/migration/V7__cycle_exposure_reservation.sql} widened it, and at
+     * that width the shipped nine-character monitoring identity was recorded as {@code monitor0}.
+     * Two identities that agreed in their first eight characters then shared one recorded actor,
+     * which makes the column unusable for the one purpose it has.
+     *
+     * <p>{@code config/SecurityConfig} refuses a configured identity wider than this at start-up, so
+     * no deployment reaches a decision with a principal this column cannot hold whole.
      */
-    public static final int ACTOR_MAX_LENGTH = 8;
+    public static final int ACTOR_MAX_LENGTH = 64;
 
     /** Widest {@code transactionId} this row holds, from {@code TRAN-ID PIC X(16)}. */
     public static final int TRANSACTION_ID_MAX_LENGTH = PicClause.DALYTRAN_ID_WIDTH;
@@ -149,6 +160,18 @@ public class AuthorizationDecisionEntity implements Persistable<String> {
     @Column(name = "event_id", nullable = false)
     private UUID eventId;
 
+    /**
+     * The processing moment the caller declared, at the width the transaction record holds.
+     *
+     * <p>{@code app/cbl/COTRN02C.cbl:L470} moves {@code TPROCDTI OF COTRN2AI} into
+     * {@code TRAN-PROC-TS PIC X(26)}, so the capture path stores what the caller declared. The
+     * ledger stamps its own value when it posts, at {@code app/cbl/CBTRN02C.cbl:L438}, so this column
+     * is the only record of the declared moment.
+     */
+    @Column(name = "declared_processing_timestamp",
+            length = PicClause.TRAN_PROC_TS_WIDTH)
+    private String declaredProcessingTimestamp;
+
     /** Jakarta Persistence requires a no-argument constructor, and no caller uses this one. */
     protected AuthorizationDecisionEntity() {
     }
@@ -167,11 +190,12 @@ public class AuthorizationDecisionEntity implements Persistable<String> {
      * @param declineReasonDescription the text that reject code carries, {@code null} on an approval
      * @param decidedAt                the moment the decision was taken
      * @param eventId                  the outbox row this decision published through
+     * @param declaredProcessingTimestamp the processing moment the caller declared, or {@code null}
      */
     private AuthorizationDecisionEntity(String transactionId, String actor, String accountId,
             String maskedCardNumber, String cardToken, BigDecimal amount, boolean approved,
             String declineReasonCode, String declineReasonDescription, Instant decidedAt,
-            UUID eventId) {
+            UUID eventId, String declaredProcessingTimestamp) {
         Objects.requireNonNull(transactionId, "transactionId must be present");
         Objects.requireNonNull(actor, "actor must be present");
         if (actor.isBlank() || actor.length() > ACTOR_MAX_LENGTH) {
@@ -218,6 +242,13 @@ public class AuthorizationDecisionEntity implements Persistable<String> {
         this.declineReasonDescription = declineReasonDescription;
         this.decidedAt = Objects.requireNonNull(decidedAt, "decidedAt must be present");
         this.eventId = Objects.requireNonNull(eventId, "eventId must be present");
+        if (declaredProcessingTimestamp != null
+                && declaredProcessingTimestamp.length() != PicClause.TRAN_PROC_TS_WIDTH) {
+            throw new IllegalArgumentException("declaredProcessingTimestamp holds "
+                    + PicClause.TRAN_PROC_TS_WIDTH + " characters and the supplied value holds "
+                    + declaredProcessingTimestamp.length());
+        }
+        this.declaredProcessingTimestamp = declaredProcessingTimestamp;
     }
 
     /**
@@ -235,17 +266,20 @@ public class AuthorizationDecisionEntity implements Persistable<String> {
      * @param amount           the decided amount, at two digits after the decimal point
      * @param decidedAt        the moment the decision was taken
      * @param eventId          the outbox row this decision published through
+     * @param declaredProcessingTimestamp the processing moment the caller declared, at the record
+     *                                    width, or {@code null}
      * @return the approved row
      * @throws NullPointerException     when a required argument is {@code null}
      * @throws IllegalArgumentException when a value misses its width or its digit class
      */
     public static AuthorizationDecisionEntity approved(String transactionId, String actor,
             String accountId, String maskedCardNumber, String cardToken, BigDecimal amount,
-            Instant decidedAt, UUID eventId) {
+            Instant decidedAt, UUID eventId, String declaredProcessingTimestamp) {
         Objects.requireNonNull(accountId, "accountId must be present on an approval");
 
         return new AuthorizationDecisionEntity(transactionId, actor, accountId, maskedCardNumber,
-                cardToken, amount, true, null, null, decidedAt, eventId);
+                cardToken, amount, true, null, null, decidedAt, eventId,
+                declaredProcessingTimestamp);
     }
 
     /**
@@ -256,6 +290,7 @@ public class AuthorizationDecisionEntity implements Persistable<String> {
      * cross-reference read at {@code :L383}, where no account exists to record.
      *
      * @param transactionId            identifier of the decided transaction
+     * @param actor                    the request identity this decision is recorded against
      * @param accountId                the account the cross-reference resolved, or {@code null}
      * @param maskedCardNumber         the card number, already masked
      * @param cardToken                the card token, or {@link PanMasker#ABSENT_CARD_TOKEN}
@@ -264,6 +299,8 @@ public class AuthorizationDecisionEntity implements Persistable<String> {
      * @param declineReasonDescription the text that reject code carries
      * @param decidedAt                the moment the decision was taken
      * @param eventId                  the outbox row this decision published through
+     * @param declaredProcessingTimestamp the processing moment the caller declared, at the record
+     *                                    width, or {@code null}
      * @return the declined row
      * @throws NullPointerException     when a required argument is {@code null}
      * @throws IllegalArgumentException when a value misses its width or its digit class
@@ -271,7 +308,7 @@ public class AuthorizationDecisionEntity implements Persistable<String> {
     public static AuthorizationDecisionEntity declined(String transactionId, String actor,
             String accountId, String maskedCardNumber, String cardToken, BigDecimal amount,
             String declineReasonCode, String declineReasonDescription, Instant decidedAt,
-            UUID eventId) {
+            UUID eventId, String declaredProcessingTimestamp) {
         Objects.requireNonNull(declineReasonCode, "declineReasonCode must be present on a decline");
         if (!DECLINE_REASON_CODE_MATCHER.matcher(declineReasonCode).matches()) {
             throw new IllegalArgumentException("declineReasonCode holds "
@@ -289,7 +326,7 @@ public class AuthorizationDecisionEntity implements Persistable<String> {
 
         return new AuthorizationDecisionEntity(transactionId, actor, accountId, maskedCardNumber,
                 cardToken, amount, false, declineReasonCode, declineReasonDescription, decidedAt,
-                eventId);
+                eventId, declaredProcessingTimestamp);
     }
 
     /**
@@ -329,7 +366,7 @@ public class AuthorizationDecisionEntity implements Persistable<String> {
     }
 
     /**
-     * Returns the authenticated request identity behind this decision.
+     * Returns the authenticated request identity behind this decision, recorded whole.
      *
      * @return the actor, at most {@value #ACTOR_MAX_LENGTH} characters, never {@code null} on a
      *         constructed instance
@@ -427,6 +464,16 @@ public class AuthorizationDecisionEntity implements Persistable<String> {
      */
     public UUID getEventId() {
         return eventId;
+    }
+
+    /**
+     * Returns the processing moment the caller declared.
+     *
+     * @return the declared moment at {@value PicClause#TRAN_PROC_TS_WIDTH} characters, or
+     *         {@code null} when the request carried none this row could store
+     */
+    public String getDeclaredProcessingTimestamp() {
+        return declaredProcessingTimestamp;
     }
 
     /**

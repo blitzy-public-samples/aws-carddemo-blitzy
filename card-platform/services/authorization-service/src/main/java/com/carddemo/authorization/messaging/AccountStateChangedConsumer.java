@@ -1,12 +1,13 @@
 package com.carddemo.authorization.messaging;
 
+import com.carddemo.authorization.config.ObservabilityConfig.ReplicaMeters;
 import com.carddemo.authorization.entity.ProcessedEventEntity;
 import com.carddemo.authorization.entity.ProcessedEventEntity.ProcessedEventId;
 import com.carddemo.authorization.repository.AccountCreditSnapshotRepository;
 import com.carddemo.authorization.repository.ProcessedEventRepository;
 
 import java.time.Clock;
-import java.time.Instant;
+import java.time.Duration;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -43,6 +44,14 @@ import tools.jackson.databind.JsonNode;
  * the marker makes the replay harmless. The upsert carries its own newer-wins guard, so an
  * out-of-order redelivery is discarded rather than applied backwards.
  *
+ * <p>Three series report this stream, and each is read per delivery rather than per applied change:
+ * {@code carddemo.authorization.events.consumed}, {@code carddemo.authorization.duplicates.skipped}
+ * and {@code carddemo.authorization.processing.latency}, all tagged
+ * {@code eventType=AccountStateChanged}. The consumed count rises as the delivery arrives, so a stream
+ * that stopped arriving is a count that stopped rising rather than a silence, and the timer records
+ * every delivery including one that failed. A delivery this service gives up on is counted again by
+ * {@code config/KafkaConsumerConfig} as a fault of the replica stage.
+ *
  * <p>Decisions: {@code card-platform/docs/decision-log.md}. Event paths:
  * {@code card-platform/docs/event-flow.md}.
  */
@@ -51,6 +60,9 @@ public class AccountStateChangedConsumer {
 
     /** Writes the diagnostic lines this class emits, none carrying a monetary value. */
     private static final Logger LOG = LoggerFactory.getLogger(AccountStateChangedConsumer.class);
+
+    /** Envelope property naming the aggregate, which the Kafka message key must equal. */
+    private static final String AGGREGATE_ID = "aggregateId";
 
     /** Store of the credit projection the decline rules read. */
     private final AccountCreditSnapshotRepository snapshots;
@@ -61,24 +73,30 @@ public class AccountStateChangedConsumer {
     /** Opens the one transaction the apply and its marker commit in. */
     private final TransactionTemplate transactionTemplate;
 
+    /** The three consume-side series of this stream. */
+    private final ReplicaMeters meters;
+
     /** Supplies the observation moment a freshness check later reads. */
     private final Clock clock = Clock.systemUTC();
 
     /**
-     * Takes the two stores and the transaction boundary.
+     * Takes the two stores, the transaction boundary and the recording surface.
      *
      * @param snapshots       store of the credit projection
      * @param processedEvents store of the duplicate-delivery markers
      * @param transactionTemplate    opens the one transaction per delivery
+     * @param meters          the consume-side series of this stream
      * @throws NullPointerException if any argument is {@code null}
      */
     public AccountStateChangedConsumer(AccountCreditSnapshotRepository snapshots,
-            ProcessedEventRepository processedEvents, TransactionTemplate transactionTemplate) {
+            ProcessedEventRepository processedEvents, TransactionTemplate transactionTemplate,
+            ReplicaMeters meters) {
         this.snapshots = Objects.requireNonNull(snapshots, "snapshots is required");
         this.processedEvents =
                 Objects.requireNonNull(processedEvents, "processedEvents is required");
         this.transactionTemplate =
                 Objects.requireNonNull(transactionTemplate, "transactionTemplate is required");
+        this.meters = Objects.requireNonNull(meters, "meters is required");
     }
 
     /**
@@ -96,34 +114,109 @@ public class AccountStateChangedConsumer {
      * producer defect.
      *
      * @param message        the schema-checked message tree, or {@code null} for a tombstone
+     * @param messageKey     the key the record arrived under, which must name the account the
+     *                       payload names
      * @param acknowledgment the offset commit, invoked once the transaction has committed
      * @param consumedTopic  the topic the delivery arrived on, recorded on the marker
      * @throws NullPointerException     if {@code acknowledgment} is {@code null}
-     * @throws IllegalArgumentException if the payload is a tombstone
+     * @throws IllegalArgumentException if the payload is a tombstone, or the key names another
+     *                                  account
      */
     @KafkaListener(topics = "${carddemo.kafka.topics.account-state-changed}",
             groupId = "${carddemo.kafka.groups.account-state-changed}")
-    public void onAccountStateChanged(JsonNode message, Acknowledgment acknowledgment,
+    public void onAccountStateChanged(JsonNode message,
+            @Header(name = KafkaHeaders.RECEIVED_KEY, required = false) String messageKey,
+            Acknowledgment acknowledgment,
             @Header(KafkaHeaders.RECEIVED_TOPIC) String consumedTopic) {
 
         Objects.requireNonNull(acknowledgment, "acknowledgment is required");
-        if (message == null) {
-            throw new IllegalArgumentException("account.state-changed carries no tombstone, and a "
-                    + "record with no payload cannot name the account it changed");
-        }
 
-        AccountStateChanged event = AccountStateChanged.from(message);
+        meters.recordEventConsumed(AccountStateChanged.EVENT_TYPE);
+        long startedAt = System.nanoTime();
         try {
-            transactionTemplate.executeWithoutResult(status -> applyOneEvent(event, consumedTopic));
-        } catch (DataIntegrityViolationException integrityFailure) {
-            if (!isCommittedDuplicate(event.eventId(), consumedTopic)) {
-                throw integrityFailure;
+            if (message == null) {
+                throw new IllegalArgumentException("account.state-changed carries no tombstone, and a"
+                        + " record with no payload cannot name the account it changed");
             }
-            LOG.debug("Event {} gained a marker from a delivery running alongside this one, so this"
-                    + " one applied nothing.", event.eventId());
+
+            AccountStateChanged event = AccountStateChanged.from(message);
+            requireKeyNamesAggregate(messageKey, aggregateIdOf(message),
+                    event.accountId());
+            try {
+                transactionTemplate
+                        .executeWithoutResult(status -> applyOneEvent(event, consumedTopic));
+            } catch (DataIntegrityViolationException integrityFailure) {
+                if (!isCommittedDuplicate(event.eventId(), consumedTopic)) {
+                    throw integrityFailure;
+                }
+                meters.recordDuplicateSkipped(AccountStateChanged.EVENT_TYPE);
+                LOG.debug("Event {} gained a marker from a delivery running alongside this one, so"
+                        + " this one applied nothing.", event.eventId());
+            }
+        } finally {
+            meters.recordProcessingLatency(AccountStateChanged.EVENT_TYPE,
+                    Duration.ofNanos(System.nanoTime() - startedAt));
         }
 
         acknowledgment.acknowledge();
+    }
+
+    /**
+     * Refuses a record whose key does not name the aggregate its payload names.
+     *
+     * <p>Kafka orders records inside one partition and nowhere else, and the key chooses the
+     * partition. AAP 0.3.1 makes the account identifier the key of every event for exactly
+     * that reason, and the document behind this event states the rule outright: the Kafka message
+     * key, {@code aggregateId} and {@code accountId} all carry one value, so account
+     * identity has a single source. Schema validation checks the shape of each of the three and not
+     * their agreement, so a producer with write access to this topic could place one
+     * account's payload on another's partition and pass every check before this one.
+     *
+     * <p>This service authorizes against the row this listener maintains. A change applied under
+     * the wrong key would move a credit limit or an expiry onto another account's snapshot, and the
+     * four decline rules of {@code app/cbl/CBTRN02C.cbl:L380-L420} would then decide that account's
+     * transactions from a value that never belonged to it.
+     *
+     * <p>All three values are compared rather than the key against one of them. A key that matches
+     * {@code aggregateId} while {@code accountId} names something else would route correctly and
+     * write to the wrong row, which is the same defect one field further in.
+     *
+     * <p>The refusal is an {@link IllegalArgumentException} raised before anything is claimed or
+     * written, so nothing is applied, the delivery is retried, and a spent record reaches the
+     * sanitized dead-letter route of {@code config/KafkaConsumerConfig}. Neither message names the
+     * key, the aggregate or the account, so no identifier reaches a log line through them.
+     *
+     * @param messageKey  the key the record arrived under, possibly {@code null}
+     * @param aggregateId the aggregate the envelope names
+     * @param accountId   the account the payload names
+     * @throws IllegalArgumentException when the key is absent or the three do not agree
+     */
+    private static void requireKeyNamesAggregate(String messageKey, String aggregateId,
+            String accountId) {
+        if (messageKey == null || messageKey.isBlank()) {
+            throw new IllegalArgumentException("this record carries no message key, so the"
+                    + " partition it arrived on is not the one that orders its account");
+        }
+        if (!messageKey.equals(aggregateId) || !messageKey.equals(accountId)) {
+            throw new IllegalArgumentException("the message key, the aggregate and the"
+                    + " account this payload names do not agree, so the partition this"
+                    + " record arrived on is not the one that orders that account");
+        }
+    }
+
+    /**
+     * Reads the aggregate the envelope names, straight from the checked tree.
+     *
+     * <p>{@link AccountStateChanged} reads the components this service replicates and the
+     * envelope's
+     * aggregate is not one of them, so it is read here rather than widened into that record.
+     *
+     * @param message the checked tree
+     * @return the aggregate the envelope names, or {@code null} when it carries no text
+     */
+    private static String aggregateIdOf(JsonNode message) {
+        JsonNode aggregate = message.path(AGGREGATE_ID);
+        return aggregate.isString() ? aggregate.stringValue() : null;
     }
 
     /**
@@ -138,6 +231,7 @@ public class AccountStateChangedConsumer {
      */
     private void applyOneEvent(AccountStateChanged event, String consumedTopic) {
         if (processedEvents.existsById(markerKey(event.eventId(), consumedTopic))) {
+            meters.recordDuplicateSkipped(AccountStateChanged.EVENT_TYPE);
             LOG.debug("Event {} already carries a marker for the topic it arrived on, so this"
                     + " delivery applied nothing.", event.eventId());
             return;
@@ -148,8 +242,12 @@ public class AccountStateChangedConsumer {
                 event.eventId(), event.occurredAt(), clock.instant());
 
         if (applied == 0) {
-            LOG.info("Event {} for account {} was not applied, because a newer change is already"
-                    + " recorded on the row.", event.eventId(), event.accountId());
+            // The event identifier is the correlation value and the account identifier is not.
+            // A reader who needs the account reads the event from the topic, where access is
+            // controlled; a log line that named it would put an account identifier into every
+            // centralized log this deployment feeds and into whatever retains them.
+            LOG.info("Event {} was not applied, because a newer change is already recorded on the"
+                    + " row it names.", event.eventId());
         }
         processedEvents.save(marker(event.eventId(), consumedTopic));
     }

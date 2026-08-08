@@ -8,6 +8,7 @@ import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.util.List;
 
+import java.util.Locale;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -253,7 +254,7 @@ class UsSocialSecurityNumberValidatorTest {
             + "reaches 666 and the band alone")
     void sweepsEveryThreeDigitPartOne() {
         for (int value = 0; value <= PART1_VALUE_CEILING; value++) {
-            String part1 = String.format("%03d", value);
+            String part1 = String.format(Locale.ROOT, "%03d", value);
 
             EditResult result =
                     UsSocialSecurityNumberValidator.validate(part1, VALID_PART2, VALID_PART3);
@@ -499,7 +500,7 @@ class UsSocialSecurityNumberValidatorTest {
             + "carries no range test for it")
     void admitsEveryPartTwoTheStoredWidthHolds() {
         for (int value = 1; value <= 99; value++) {
-            String part2 = String.format("%02d", value);
+            String part2 = String.format(Locale.ROOT, "%02d", value);
 
             EditResult result =
                     UsSocialSecurityNumberValidator.validate(VALID_PART1, part2, VALID_PART3);

@@ -11,7 +11,6 @@ import java.util.Objects;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.dao.DataAccessException;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.kafka.support.Acknowledgment;
 import org.springframework.kafka.support.KafkaHeaders;
@@ -87,6 +86,9 @@ public class CustomerContextChangedConsumer {
     /** Envelope property carrying when the change occurred at its source. */
     private static final String OCCURRED_AT = "occurredAt";
 
+    /** Envelope property naming the aggregate, which the Kafka message key must equal. */
+    private static final String AGGREGATE_ID = "aggregateId";
+
     /** Payload property carrying the account the ten cardholder fields belong to. */
     private static final String ACCOUNT_ID = "accountId";
 
@@ -146,13 +148,18 @@ public class CustomerContextChangedConsumer {
      * is unreachable on that path, so a repeat delivery follows and the claim keeps it harmless.
      *
      * @param event          the checked tree this delivery carries
+     * @param messageKey     the key the record arrived under, which must name the account the
+     *                       payload names
      * @param acknowledgment the offset commit, invoked once the transaction has committed
      * @param consumedTopic  the topic the delivery arrived on, recorded on the marker
      * @throws NullPointerException if {@code event} or {@code acknowledgment} is null
+     * @throws IllegalArgumentException if the key is absent or names another account
      */
     @KafkaListener(topics = "${carddemo.kafka.topics.customer-context-changed}",
             groupId = "${carddemo.kafka.groups.customer-context-changed}")
-    public void onCustomerContextChanged(JsonNode event, Acknowledgment acknowledgment,
+    public void onCustomerContextChanged(JsonNode event,
+            @Header(name = KafkaHeaders.RECEIVED_KEY, required = false) String messageKey,
+            Acknowledgment acknowledgment,
             @Header(KafkaHeaders.RECEIVED_TOPIC) String consumedTopic) {
         Objects.requireNonNull(event, "event is required");
         Objects.requireNonNull(acknowledgment, "acknowledgment is required");
@@ -161,6 +168,8 @@ public class CustomerContextChangedConsumer {
         metrics.eventsConsumed(NotificationMetrics.EVENT_CUSTOMER_CONTEXT_CHANGED).increment();
         long startedAt = System.nanoTime();
         try {
+            requireKeyNamesAggregate(messageKey, text(event, AGGREGATE_ID),
+                    text(event, ACCOUNT_ID));
             transactionTemplate
                     .executeWithoutResult(status -> applyOneEvent(event, eventId, consumedTopic));
         } catch (RuntimeException failure) {
@@ -217,6 +226,49 @@ public class CustomerContextChangedConsumer {
         if (rowsWritten == CardholderContextRepository.NO_ROW_WRITTEN) {
             LOG.debug("Event {} carries a change no later than the stored one, so the projection"
                     + " keeps the row it holds.", eventId);
+        }
+    }
+
+    /**
+     * Refuses a record whose key does not name the aggregate its payload names.
+     *
+     * <p>Kafka orders records inside one partition and nowhere else, and the key chooses the
+     * partition. AAP 0.3.1 makes the account identifier the key of every event for exactly
+     * that reason, and the document behind this event states the rule outright: the Kafka message
+     * key, {@code aggregateId} and {@code accountId} all carry one value, so account
+     * identity has a single source. Schema validation checks the shape of each of the three and not
+     * their agreement, so a producer with write access to this topic could place one
+     * account's payload on another's partition and pass every check before this one.
+     *
+     * <p>The two transaction listeners of this service already make this check on their own
+     * envelopes. It belongs here too: the context row is keyed by account, and this row supplies
+     * the name and the address every rendered alert carries, so a change applied under the wrong
+     * key would address one cardholder's alert with another cardholder's details.
+     *
+     * <p>All three values are compared rather than the key against one of them. A key that matches
+     * {@code aggregateId} while {@code accountId} names something else would route correctly and
+     * write to the wrong row, which is the same defect one field further in.
+     *
+     * <p>The refusal is an {@link IllegalArgumentException} raised before anything is claimed or
+     * written, so nothing is applied, the delivery is retried, and a spent record reaches the
+     * sanitized dead-letter route of {@code config/KafkaConsumerConfig}. Neither message names the
+     * key, the aggregate or the account, so no identifier reaches a log line through them.
+     *
+     * @param messageKey  the key the record arrived under, possibly {@code null}
+     * @param aggregateId the aggregate the envelope names
+     * @param accountId   the account the payload names
+     * @throws IllegalArgumentException when the key is absent or the three do not agree
+     */
+    private static void requireKeyNamesAggregate(String messageKey, String aggregateId,
+            String accountId) {
+        if (messageKey == null || messageKey.isBlank()) {
+            throw new IllegalArgumentException("this record carries no message key, so the"
+                    + " partition it arrived on is not the one that orders its account");
+        }
+        if (!messageKey.equals(aggregateId) || !messageKey.equals(accountId)) {
+            throw new IllegalArgumentException("the message key, the aggregate and the"
+                    + " account this payload names do not agree, so the partition this"
+                    + " record arrived on is not the one that orders that account");
         }
     }
 

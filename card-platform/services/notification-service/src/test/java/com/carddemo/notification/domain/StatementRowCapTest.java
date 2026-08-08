@@ -27,9 +27,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * <p>The ceiling is enforced by one static method on the shared interface, and both implementations
  * call it. These tests run against both, so an implementation that stops calling it fails here.
  *
- * <p>The ceiling equals the maximum page size of {@code GET /notifications/{cardToken}}. One test
- * below holds that equality, because the two numbers drifting apart is what would let a caller ask
- * for a page no renderer will accept.
+ * <p>The ceiling bounds one rendered alert alone. {@code GET /notifications/{cardNumber}} reads
+ * every row of one card and applies no ceiling, matching {@code app/cbl/CBSTM03A.CBL:L429}, which
+ * totals every row of one card between two key breaks. One test below holds the ceiling to the
+ * number {@code NotificationRenderer} declares.
  */
 class StatementRowCapTest {
 
@@ -59,10 +60,10 @@ class StatementRowCapTest {
     }
 
     @Test
-    @DisplayName("The ceiling matches the maximum page size of the history endpoint")
-    void ceilingMatchesTheMaximumPageSize() {
+    @DisplayName("The ceiling on one rendered alert is two hundred rows")
+    void ceilingOnOneRenderedAlertIsTwoHundredRows() {
         assertThat(NotificationRenderer.MAXIMUM_STATEMENT_ROWS)
-                .as("carddemo.history.maximum-page-size in application.yml carries the same number")
+                .as("the row count one rendered alert carries, and no configuration property")
                 .isEqualTo(200);
     }
 

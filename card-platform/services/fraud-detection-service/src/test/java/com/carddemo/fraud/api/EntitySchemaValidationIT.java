@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.carddemo.fraud.TestIdentityPasswords;
 import com.carddemo.fraud.entity.FraudAssessmentEntity;
 import com.carddemo.fraud.entity.OutboxEventEntity;
 import com.carddemo.fraud.entity.ProcessedEventEntity;
@@ -41,7 +42,6 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
-import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.ApplicationContext;
@@ -73,9 +73,9 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
         webEnvironment = SpringBootTest.WebEnvironment.NONE,
         properties = {
                 "KAFKA_SASL_PASSWORD=not-a-real-broker-password",
-                "ADMIN_PASSWORD_HASH={noop}not-a-real-admin-password",
-                "USER_PASSWORD_HASH={noop}not-a-real-user-password",
-                "MONITORING_PASSWORD_HASH={noop}not-a-real-monitoring-password"
+                "ADMIN_PASSWORD_HASH=" + TestIdentityPasswords.ADMIN_PASSWORD_HASH,
+                "USER_PASSWORD_HASH=" + TestIdentityPasswords.USER_PASSWORD_HASH,
+                "MONITORING_PASSWORD_HASH=" + TestIdentityPasswords.MONITORING_PASSWORD_HASH
         })
 @DisplayName("Entity mappings and physical columns of the migrated fraud schema")
 class EntitySchemaValidationIT {
@@ -350,7 +350,7 @@ class EntitySchemaValidationIT {
     @Test
     @DisplayName("Flyway created the one schema both properties name, and applied versions 1, 3 "
             + "and 4")
-    void flywayCreatedTheSchemaAndAppliedItsTwoMigrations() {
+    void flywayCreatedTheSchemaAndAppliedItsFourMigrations() {
         String schema = schema();
         Integer schemaRows = jdbc.queryForObject(
                 "SELECT count(*) FROM pg_namespace WHERE nspname = ?", Integer.class, schema);
@@ -365,6 +365,9 @@ class EntitySchemaValidationIT {
                 Boolean.class);
         Boolean versionFourApplied = jdbc.queryForObject(
                 "SELECT success FROM " + qualified(FLYWAY_HISTORY) + " WHERE version = '4'",
+                Boolean.class);
+        Boolean versionFiveApplied = jdbc.queryForObject(
+                "SELECT success FROM " + qualified(FLYWAY_HISTORY) + " WHERE version = '5'",
                 Boolean.class);
         Integer versionRows = jdbc.queryForObject(
                 "SELECT count(*) FROM " + qualified(FLYWAY_HISTORY) + " WHERE version IS NOT NULL",
@@ -381,8 +384,10 @@ class EntitySchemaValidationIT {
                 () -> assertEquals(Boolean.TRUE, versionThreeApplied, "migration version 3"),
                 () -> assertEquals(Boolean.TRUE, versionFourApplied, "migration version 4, "
                         + "V4__processed_event_topic_key.sql"),
-                () -> assertEquals(Integer.valueOf(3), versionRows,
-                        "the three versioned migrations this service ships"));
+                () -> assertEquals(Boolean.TRUE, versionFiveApplied, "migration version 5, "
+                        + "V5__outbox_dead_letter_state.sql"),
+                () -> assertEquals(Integer.valueOf(4), versionRows,
+                        "the four versioned migrations this service ships"));
     }
 
     @Test

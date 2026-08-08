@@ -57,7 +57,52 @@ class FraudPropertiesTest {
             assertThat(properties.fraud().risk().velocityCountThreshold()).isEqualTo(5);
             assertThat(properties.fraud().risk().amountAnomalyThreshold())
                     .isEqualTo(new java.math.BigDecimal("500.00"));
+            assertThat(properties.processedEvent().markerRetentionHours())
+                    .as("the marker horizon outlasts broker retention rather than equalling it")
+                    .isEqualTo(720L);
+            assertThat(properties.processedEvent().brokerRetentionHours()).isEqualTo(168L);
+            assertThat(properties.retention().sweepIntervalMs()).isEqualTo(3_600_000L);
+            assertThat(properties.retention().assessmentRetentionDays())
+                    .as("the horizon COMMENT ON TABLE fraud_assessment declares")
+                    .isEqualTo(90);
+            assertThat(properties.retention().velocityRetentionDays())
+                    .as("the horizon COMMENT ON TABLE velocity_window declares")
+                    .isEqualTo(7);
         });
+    }
+
+    @Test
+    @DisplayName("an assessment horizon of zero stops start-up")
+    void anAssessmentHorizonOfZeroStopsStartUp() {
+        shipped.withPropertyValues("carddemo.retention.assessment-retention-days=0")
+                .run(context -> {
+                    assertThat(context).hasFailed();
+                    assertThat(context.getStartupFailure())
+                            .hasStackTraceContaining("assessmentRetentionDays");
+                });
+    }
+
+    /**
+     * Asserts a velocity horizon of zero stops start-up, and names which guard refuses it.
+     *
+     * <p>Two guards cover this value and they do not fire in the same order. {@code @Positive} on the
+     * component would name {@code velocityRetentionDays}, but bean validation runs after the record
+     * is instantiated, and the cross-record guard in the {@code FraudProperties} constructor runs
+     * during instantiation. Zero fails that guard first, so the refusal an operator reads names the
+     * two configuration keys rather than a component of a record. Asserting the earlier message is
+     * what keeps this test measuring the behaviour instead of the annotation.
+     */
+    @Test
+    @DisplayName("a velocity horizon of zero stops start-up")
+    void aVelocityHorizonOfZeroStopsStartUp() {
+        shipped.withPropertyValues("carddemo.retention.velocity-retention-days=0")
+                .run(context -> {
+                    assertThat(context).hasFailed();
+                    assertThat(context.getStartupFailure())
+                            .hasStackTraceContaining("carddemo.retention.velocity-retention-days")
+                            .hasStackTraceContaining(
+                                    "carddemo.fraud.risk.velocity-window-minutes");
+                });
     }
 
     @Test
@@ -176,6 +221,41 @@ class FraudPropertiesTest {
                 });
     }
 
+
+    @Test
+    @DisplayName("a marker horizon that does not outlast broker retention stops start-up")
+    void aMarkerHorizonUnderTheMarginStopsStartUp() {
+        shipped.withPropertyValues("carddemo.processed-event.marker-retention-hours=168")
+                .run(context -> {
+                    assertThat(context).hasFailed();
+                    assertThat(context.getStartupFailure())
+                            .hasStackTraceContaining("markerRetentionHours")
+                            .hasStackTraceContaining("brokerRetentionHours");
+                });
+    }
+
+    @Test
+    @DisplayName("a marker horizon at exactly the margin starts")
+    void aMarkerHorizonAtExactlyTheMarginStarts() {
+        shipped.withPropertyValues("carddemo.processed-event.marker-retention-hours=336")
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context.getBean(FraudProperties.class).processedEvent()
+                            .markerRetentionHours()).isEqualTo(336L);
+                });
+    }
+
+    @Test
+    @DisplayName("raising broker retention without raising the marker horizon stops start-up")
+    void raisingBrokerRetentionAloneStopsStartUp() {
+        shipped.withPropertyValues("carddemo.processed-event.broker-retention-hours=720")
+                .run(context -> {
+                    assertThat(context).hasFailed();
+                    assertThat(context.getStartupFailure())
+                            .hasStackTraceContaining("markerRetentionHours must be at")
+                            .hasStackTraceContaining("least 2 times");
+                });
+    }
 
     @Test
     @DisplayName("the bound record is the only properties bean and it is immutable")

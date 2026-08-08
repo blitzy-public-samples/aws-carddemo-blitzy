@@ -36,6 +36,7 @@ import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.kafka.core.DefaultKafkaProducerFactory;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.listener.ConsumerRecordRecoverer;
+import org.springframework.kafka.listener.ContainerProperties;
 import org.springframework.kafka.listener.DeadLetterPublishingRecoverer;
 import org.springframework.kafka.listener.DeadLetterPublishingRecoverer.HeaderNames.HeadersToAdd;
 import org.springframework.kafka.listener.DefaultErrorHandler;
@@ -193,7 +194,13 @@ public class KafkaConsumerConfig {
         settings.put(ProducerConfig.ACKS_CONFIG, "all");
         settings.put(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, Boolean.TRUE);
 
-        return new KafkaTemplate<>(new DefaultKafkaProducerFactory<>(settings));
+        KafkaTemplate<String, byte[]> template =
+                new KafkaTemplate<>(new DefaultKafkaProducerFactory<>(settings));
+        // A failed send records its destination and failure type only.
+        // SafeProducerListener displaces LoggingProducerListener, which would write the
+        // key and the first hundred characters of the payload into the log line.
+        template.setProducerListener(new SafeProducerListener<>());
+        return template;
     }
 
     /**
@@ -249,10 +256,18 @@ public class KafkaConsumerConfig {
      * next start-up or partition assignment read the same record again and published a second
      * diagnostic for one set of coordinates.
      *
+     * <p>That setting only takes effect under {@code MANUAL_IMMEDIATE}, which is also the one mode
+     * that commits the offset at the acknowledgement this listener issues after its own writes
+     * commit. The mode the configurer produced is therefore read back and checked: a deployment
+     * naming {@code MANUAL} or an automatic mode would withdraw both guarantees in silence, so the
+     * context stops rather than run without them.
+     *
      * @param consumerFactory              the auto-configured consumer factory
      * @param configurer                   the auto-configured container-factory configurer
      * @param postedTransactionErrorHandler the delivery-attempt policy and the dead-letter route
      * @return the container factory the listener of this service runs in
+     * @throws IllegalStateException when the effective acknowledgement mode is not
+     *                               {@code MANUAL_IMMEDIATE}
      */
     @Bean
     @Lazy
@@ -267,8 +282,31 @@ public class KafkaConsumerConfig {
         configurer.configure(factory, consumerFactory);
         factory.setCommonErrorHandler(postedTransactionErrorHandler);
         factory.getContainerProperties().setDeliveryAttemptHeader(true);
+        requireImmediateManualAcknowledgement(factory.getContainerProperties().getAckMode());
 
         return factory;
+    }
+
+    /**
+     * Holds the effective acknowledgement mode at {@code MANUAL_IMMEDIATE}, naming the property that
+     * moved it when it is anything else.
+     *
+     * @param ackMode the mode the configurer left on the container properties
+     * @return the same mode, once it is the one this service supports
+     * @throws IllegalStateException when the mode is absent or names another mode
+     */
+    static ContainerProperties.AckMode requireImmediateManualAcknowledgement(
+            ContainerProperties.AckMode ackMode) {
+
+        if (ackMode != ContainerProperties.AckMode.MANUAL_IMMEDIATE) {
+            throw new IllegalStateException("The property spring.kafka.listener.ack-mode must name "
+                    + ContainerProperties.AckMode.MANUAL_IMMEDIATE
+                    + ", because that is the one mode which commits the offset at the"
+                    + " acknowledgement a listener issues after its own writes commit and the one"
+                    + " mode under which a dead-lettered record's offset is committed. The effective"
+                    + " mode is " + ackMode + ".");
+        }
+        return ackMode;
     }
 
     /**

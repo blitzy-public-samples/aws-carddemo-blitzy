@@ -42,6 +42,7 @@ import org.apache.kafka.common.errors.TopicExistsException;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.awaitility.Awaitility;
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -81,9 +82,9 @@ import tools.jackson.databind.json.JsonMapper;
 @Testcontainers
 @SpringBootTest(properties = {
         "KAFKA_SASL_PASSWORD=not-a-real-broker-password",
-        "ADMIN_PASSWORD_HASH={noop}not-a-real-admin-password",
-        "USER_PASSWORD_HASH={noop}not-a-real-user-password",
-        "MONITORING_PASSWORD_HASH={noop}not-a-real-monitoring-password"
+        "ADMIN_PASSWORD_HASH=" + TestIdentityPasswords.ADMIN_PASSWORD_HASH,
+        "USER_PASSWORD_HASH=" + TestIdentityPasswords.USER_PASSWORD_HASH,
+        "MONITORING_PASSWORD_HASH=" + TestIdentityPasswords.MONITORING_PASSWORD_HASH
 })
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 @DisplayName("One consumed authorization event publishes one assessment event")
@@ -321,6 +322,24 @@ public class ConsumeToPublishIT {
         this.jdbc = context.getBean(JdbcTemplate.class);
         this.listenerRegistry = context.getBean(KafkaListenerEndpointRegistry.class);
         this.producerConfig = context.getBean(KafkaProducerConfig.class);
+        startedContext = context;
+    }
+
+    /** The context of the most recent test instance, for {@link #stopBackgroundWork()}. */
+    private static ApplicationContext startedContext;
+
+    /**
+     * Stops the relay tick and the listeners while both containers are still up.
+     *
+     * <p>An {@code @AfterAll} method runs before the extension callback that stops {@link #POSTGRES}
+     * and {@link #KAFKA}, which is the only window in which this can be done. Without it the relay
+     * keeps ticking every half second into a database that has gone, and the build log carries a
+     * closed-connection stack trace under {@code Unexpected error occurred in scheduled task} on a
+     * run where every assertion passed.
+     */
+    @AfterAll
+    static void stopBackgroundWork() {
+        ScheduledWorkShutdown.stopBefore(startedContext);
     }
 
     /**

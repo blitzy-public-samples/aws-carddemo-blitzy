@@ -32,6 +32,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -314,6 +316,56 @@ class AccountControllerOutcomeAndMergeTest {
                     "the answer says which component was missing");
             assertNull(problem.messages(), "one text travels, and no list carries it");
             verify(accounts, never()).findByAccountId(any());
+        }
+
+        /**
+         * Asserts an identifier that is not nine digits answers 422 and reads no row.
+         *
+         * <p>{@code CUST-ID PIC 9(09)} at {@code app/cpy/CVCUS01Y.cpy:L5} is nine digits and
+         * {@code ck_customer_customer_id_digits} in
+         * {@code src/main/resources/db/migration/V1__schema.sql} carries the same rule, so no stored
+         * row can hold another shape. Without this check the value reached
+         * {@code CustomerRepository.findByCustomerId} and came back as {@code 404}, which told a
+         * caller the customer does not exist rather than that the identifier is not one.
+         *
+         * <p>{@code AccountUpdateRequest} declares no cascade marker, so the {@code Pattern} on
+         * {@code CustomerDataRequest.customerId} does not run through this route and the controller
+         * holds the rule. {@code DtoValidationWiringTest.theRequestDeclaresNoCascade} is what fixes
+         * that absence.
+         */
+        @ParameterizedTest
+        @ValueSource(strings = {"1", "0000000012", "00000000A", "00000000 ", "-00000001",
+                "000 000 0"})
+        void anIdentifierOfAnotherShapeAnswersUnprocessable(String submitted) {
+            ResponseEntity<?> response = controller.updateAccount(ACCOUNT_ID,
+                    new AccountUpdateRequest(accountDataRaising(),
+                            new CustomerDataRequest(submitted, null, null, null, null, null, null,
+                                    null, null, null, null, null, null, null, null, null, null, null,
+                                    null, null)));
+
+            assertEquals(HttpStatus.UNPROCESSABLE_CONTENT, response.getStatusCode(),
+                    "an identifier of another width is a caller's to correct");
+            ApiProblem problem = assertInstanceOf(ApiProblem.class, response.getBody());
+            assertEquals(CustomerDataRequest.CUSTOMER_ID_MESSAGE, problem.detail(),
+                    "the answer names the shape the identifier holds");
+            assertFalse(problem.detail().contains(submitted),
+                    "and repeats nothing the caller sent");
+            assertNull(problem.messages(), "one text travels, and no list carries it");
+            verify(customers, never()).findByCustomerId(any());
+        }
+
+        /** Asserts the nine digits the source keys on still pass. */
+        @Test
+        void theNineDigitsTheSourceKeysOnStillPass() {
+            resolveBoth();
+            when(accountUpdates.updateAccount(any(), any(), any(), any()))
+                    .thenReturn(EditResult.ok());
+
+            ResponseEntity<?> response = controller.updateAccount(ACCOUNT_ID, requestRaising());
+
+            assertEquals(HttpStatus.OK, response.getStatusCode(),
+                    CUSTOMER_ID + " is the nine digits app/cpy/CVCUS01Y.cpy:L5 declares");
+            verify(customers).findByCustomerId(CUSTOMER_ID);
         }
     }
 

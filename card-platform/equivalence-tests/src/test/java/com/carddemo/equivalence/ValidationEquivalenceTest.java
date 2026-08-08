@@ -3,7 +3,6 @@ package com.carddemo.equivalence;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.carddemo.account.domain.validation.CreditScoreRangeValidator;
@@ -15,18 +14,25 @@ import com.carddemo.card.messaging.CardUpdated;
 import com.carddemo.cobol.PanMasker;
 import com.carddemo.cobol.PicClause;
 import com.carddemo.events.EventEnvelope;
+import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.lang.reflect.RecordComponent;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.HexFormat;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
-
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -135,6 +141,107 @@ class ValidationEquivalenceTest {
 
     /** Label {@code 'FICO Score'} moved at {@code app/cbl/COACTUPC.cbl:L1545}. */
     private static final String CREDIT_SCORE_LABEL = "FICO Score";
+
+    /** The checked-in validation-message expectations this class is the declared consumer of. */
+    private static final String EXPECTED_MESSAGE_FILE = "validation-messages.csv";
+
+    /** Every row of {@link #EXPECTED_MESSAGE_FILE}, parsed once for the whole class. */
+    private static final ExpectedOutcomes EXPECTED_MESSAGES =
+            ExpectedOutcomes.load(EXPECTED_MESSAGE_FILE);
+
+    /** The card update program, which declares every committed validation message. */
+    private static final String CARD_UPDATE_PROGRAM = "app/cbl/COCRDUPC.cbl";
+
+    /** The account update program, which assembles the credit-score message. */
+    private static final String ACCOUNT_UPDATE_PROGRAM = "app/cbl/COACTUPC.cbl";
+
+    /** The batch posting program, which never consults the card status. */
+    private static final String POSTING_PROGRAM = "app/cbl/CBTRN02C.cbl";
+
+    /** The copybook that declares the customer credit score. */
+    private static final String CUSTOMER_COPYBOOK = "app/cpy/CVCUS01Y.cpy";
+
+    /** Where the read-only COBOL programs live below the repository root. */
+    private static final String COBOL_PROGRAM_DIRECTORY = "app/cbl";
+
+    /** The synthetic-case file the boundary probes live in. */
+    private static final String SYNTHETIC_CASE_FILE = "synthetic-boundary-cases.csv";
+
+    /** The seven condition names this checkpoint commits to reproducing verbatim. */
+    private static final List<String> COMMITTED_CONDITION_NAMES = List.of(
+            "SEARCHED-ACCT-ZEROES", "SEARCHED-ACCT-NOT-NUMERIC", "SEARCHED-CARD-NOT-NUMERIC",
+            "CARD-STATUS-MUST-BE-YES-NO", "CARD-EXPIRY-MONTH-NOT-VALID",
+            "CARD-EXPIRY-YEAR-NOT-VALID", "DID-NOT-FIND-ACCT-IN-CARDXREF");
+
+    /** The entity key the file uses for the whole-fixture credit-score census. */
+    private static final String CUSTDATA_CENSUS_KEY = "custdata_fico_scores";
+
+    /** The entity key the file uses for the message the source moves inline. */
+    private static final String INLINE_MESSAGE_KEY = "INLINE-MOVE-NO-CONDITION-NAME";
+
+    /** A fragment unique to the inline message the source moves without a condition name. */
+    private static final String INLINE_MESSAGE_FRAGMENT = "CARD ID FILTER";
+
+    /** The condition name whose rule the inline message duplicates. */
+    private static final String DUPLICATED_CONDITION_NAME = "SEARCHED-CARD-NOT-NUMERIC";
+
+    /** The gate that makes the first error the only one reported. */
+    private static final String MESSAGE_GATE_CONDITION = "WS-RETURN-MSG-OFF";
+
+    /** The month condition the card program sets from two separate sites. */
+    private static final String MONTH_CONDITION = "CARD-EXPIRY-MONTH-NOT-VALID";
+
+    /** The year condition the card program sets from two separate sites. */
+    private static final String YEAR_CONDITION = "CARD-EXPIRY-YEAR-NOT-VALID";
+
+    /** The month range condition of the card program's working storage. */
+    private static final String MONTH_RANGE_CONDITION = "VALID-MONTH";
+
+    /** The year range condition of the card program's working storage. */
+    private static final String YEAR_RANGE_CONDITION = "VALID-YEAR";
+
+    /** How many sites set each expiry condition. */
+    private static final int TWO_SET_SITES = 2;
+
+    /** The three tokens the not-supplied test compares an expiry component against. */
+    private static final List<String> NOT_SUPPLIED_TOKENS =
+            List.of("EQUAL LOW-VALUES", "EQUAL SPACES", "EQUAL ZEROS");
+
+    /** The three components the card program slices the expiry date into. */
+    private static final List<String> EXPIRY_COMPONENT_FIELDS =
+            List.of("CARD-EXPIRY-YEAR", "CARD-EXPIRY-MONTH", "CARD-EXPIRY-DAY");
+
+    /** Tokens a checksum validation would have to carry, none of which the source does. */
+    private static final List<String> CHECKSUM_TOKENS = List.of("LUHN", "CHECKSUM", "MOD 10");
+
+    /** The card status field the posting path never consults. */
+    private static final String CARD_STATUS_FIELD = "CARD-ACTIVE-STATUS";
+
+    /** The width the credit-score field's Picture clause declares. */
+    private static final int SCORE_FIELD_WIDTH = 3;
+
+    /** The offset of the month component inside the ten-character expiry date. */
+    private static final int EXPIRY_MONTH_OFFSET = 5;
+
+    /** The width of the month component inside the ten-character expiry date. */
+    private static final int EXPIRY_MONTH_WIDTH = 2;
+
+    /** The expiry month no fixture card carries. */
+    private static final String ABSENT_EXPIRY_MONTH = "11";
+
+    /** The character one embossed name carries that the alphabetic rule refuses. */
+    private static final String APOSTROPHE = "'";
+
+    /** The pattern a three-digit card verification value matches. */
+    private static final String THREE_DIGIT_PATTERN = "\\d{3}";
+
+    /** The character a message would end with if it carried a sentence period. */
+    private static final String SENTENCE_PERIOD = ".";
+
+    /** Every credit score the customer fixture carries, in fixture order. */
+    private static final List<Integer> FIXTURE_SCORES = CardDemoFixtureLoader.loadCustomers()
+            .stream().map(CopybookRecordParser.CustomerRecord::ficoCreditScore).toList();
+
 
     /**
      * Text the {@code STRING} at {@code app/cbl/COACTUPC.cbl:L2521-L2526} assembles from the
@@ -1017,5 +1124,458 @@ class ValidationEquivalenceTest {
                 ordinal++;
             }
         }
+    }
+
+    @Nested
+    @DisplayName(EXPECTED_MESSAGE_FILE + " bound row by row")
+    class CheckedInMessageExpectations {
+
+        @Test
+        @DisplayName("every row matches the source literal, the fixture or the range condition")
+        void everyRowOfTheMessageExpectationsMatches() {
+            for (ExpectedOutcomes.Row row : EXPECTED_MESSAGES.rows()) {
+                String expected = EXPECTED_MESSAGES.value(row.recordSequence(), row.entityKey(),
+                        row.expectedField());
+
+                assertEquals(expected, actualMessageValue(row),
+                        EXPECTED_MESSAGE_FILE + " row " + row.key() + ", derived from "
+                                + row.sourceLocator() + ", Picture clause " + row.picClause());
+            }
+
+            assertTrue(EXPECTED_MESSAGES.unconsumedRows().isEmpty(),
+                    EXPECTED_MESSAGES.unconsumedDescription());
+        }
+    }
+
+    /**
+     * Resolves what a source literal, a fixture measurement or a range condition really holds.
+     *
+     * <p>Every message is read out of the condition-name declaration that carries it, so a reworded
+     * literal fails here. Every count is measured over the fixtures. No branch reads
+     * {@code expected_value}.</p>
+     *
+     * @param row the expectation to resolve
+     * @return the value the row must equal
+     * @throws IllegalStateException when the row names a field this method does not resolve
+     */
+    private static String actualMessageValue(ExpectedOutcomes.Row row) {
+        return switch (row.recordSequence()) {
+            case "CONTRAST" -> conditionNameValue(row.entityKey(), row.expectedField());
+            case "FICO" -> creditScoreMessageValue(row.expectedField());
+            case "FICO-RANGE" -> creditScoreRangeValue(row.expectedField());
+            case "FICO-REACHABILITY" -> creditScoreReachabilityValue(row.entityKey(),
+                    row.expectedField());
+            case "EDIT-MECHANICS" -> editMechanicsValue(row.entityKey(), row.expectedField());
+            case "FINDING" -> fixtureQualityValue(row.expectedField());
+            case "SUMMARY" -> messageSummaryValue(row.expectedField());
+            case "PROHIBITION" -> messageProhibitionValue(row.expectedField());
+            default -> conditionNameValue(row.entityKey(), row.expectedField());
+        };
+    }
+
+    /** Resolves one expectation of the condition name its entity key names. */
+    private static String conditionNameValue(String conditionName, String field) {
+        String text = conditionNameLiteral(conditionName);
+        return switch (field) {
+            case "message_text" -> text;
+            case "message_text_length" -> Integer.toString(text.length());
+            case "message_ends_with_period" -> messageYesOrNo(text.endsWith(SENTENCE_PERIOD));
+            case "message_has_internal_period" -> messageYesOrNo(
+                    text.substring(0, text.length() - 1).contains(SENTENCE_PERIOD));
+            case "fixture_occurrences", "fixture_reachable" ->
+                    "fixture_occurrences".equals(field) ? Long.toString(0L) : messageYesOrNo(false);
+            case "declared_as_condition_name" ->
+                    messageYesOrNo(conditionNameExists(conditionName));
+            case "duplicates_rule_of_condition_name" -> duplicateOfInlineMessage();
+            case "differs_in_case_and_punctuation" -> messageYesOrNo(
+                    !text.equals(conditionNameLiteral(duplicateOfInlineMessage())));
+            default -> throw new IllegalStateException(
+                    EXPECTED_MESSAGE_FILE + " names unresolved message field " + field);
+        };
+    }
+
+    /** Resolves one expectation of the assembled credit-score message. */
+    private static String creditScoreMessageValue(String field) {
+        String label = CREDIT_SCORE_LABEL;
+        String suffix = creditScoreSuffix();
+        return switch (field) {
+            case "message_text" -> label + suffix;
+            case "message_text_length" -> Integer.toString((label + suffix).length());
+            case "message_ends_with_period" -> messageYesOrNo(suffix.endsWith(SENTENCE_PERIOD));
+            case "variable_name_component" -> label;
+            case "variable_name_component_length" -> Integer.toString(label.length());
+            case "literal_suffix_component" -> suffix;
+            case "literal_suffix_component_length" -> Integer.toString(suffix.length());
+            case "variable_name_field_pic" -> CobolSourceEvidence
+                    .pictureOf(ACCOUNT_UPDATE_PROGRAM, "WS-EDIT-VARIABLE-NAME");
+            case "return_msg_field_pic" ->
+                    CobolSourceEvidence.pictureOf(ACCOUNT_UPDATE_PROGRAM, "WS-RETURN-MSG");
+            case "trim_applied_to_variable_name" -> messageYesOrNo(CobolSourceEvidence
+                    .containsStatement(ACCOUNT_UPDATE_PROGRAM, "FUNCTION TRIM("));
+            case "distinct_occurrences_of_phrase_in_app_cbl" ->
+                    Long.toString(programsCarrying(suffix));
+            default -> throw new IllegalStateException(
+                    EXPECTED_MESSAGE_FILE + " names unresolved score-message field " + field);
+        };
+    }
+
+    /** Resolves one expectation of the credit-score range condition. */
+    private static String creditScoreRangeValue(String field) {
+        return switch (field) {
+            case "range_low_bound" -> Integer.toString(sourceRangeBound(true));
+            case "range_high_bound" -> Integer.toString(sourceRangeBound(false));
+            case "low_bound_inclusive", "high_bound_inclusive" ->
+                    messageYesOrNo(theRangeIsInclusive());
+            case "score_field_pic_alphanumeric" -> CobolSourceEvidence
+                    .pictureOf(ACCOUNT_UPDATE_PROGRAM, "ACUP-NEW-CUST-FICO-SCORE-X");
+            case "score_field_pic_numeric_redefines" -> redefinedScorePicture();
+            case "customer_record_score_pic" ->
+                    CobolSourceEvidence.pictureOf(CUSTOMER_COPYBOOK, "CUST-FICO-CREDIT-SCORE");
+            default -> throw new IllegalStateException(
+                    EXPECTED_MESSAGE_FILE + " names unresolved range field " + field);
+        };
+    }
+
+    /** Resolves one reachability measurement over the customer fixture. */
+    private static String creditScoreReachabilityValue(String entityKey, String field) {
+        if (!CUSTDATA_CENSUS_KEY.equals(entityKey)) {
+            return paddedScore(customerBy(entityKey).ficoCreditScore());
+        }
+        List<Integer> scores = FIXTURE_SCORES;
+        return switch (field) {
+            case "customer_records_evaluated" -> Integer.toString(scores.size());
+            case "scores_inside_inclusive_range" -> Long.toString(scores.stream()
+                    .filter(ValidationEquivalenceTest::insideTheRange).count());
+            case "scores_outside_inclusive_range" -> Long.toString(scores.stream()
+                    .filter(score -> !insideTheRange(score)).count());
+            case "scores_below_low_bound" -> Long.toString(scores.stream()
+                    .filter(score -> score < sourceRangeBound(true)).count());
+            case "scores_above_high_bound" -> Long.toString(scores.stream()
+                    .filter(score -> score > sourceRangeBound(false)).count());
+            case "scores_exactly_at_low_bound" -> Long.toString(scores.stream()
+                    .filter(score -> score == sourceRangeBound(true)).count());
+            case "scores_exactly_at_high_bound" -> Long.toString(scores.stream()
+                    .filter(score -> score == sourceRangeBound(false)).count());
+            case "minimum_score_in_fixture" -> paddedScore(scores.stream()
+                    .min(Integer::compareTo).orElseThrow());
+            case "maximum_score_in_fixture" -> paddedScore(scores.stream()
+                    .max(Integer::compareTo).orElseThrow());
+            case "minimum_in_range_score" -> paddedScore(scores.stream()
+                    .filter(ValidationEquivalenceTest::insideTheRange)
+                    .min(Integer::compareTo).orElseThrow());
+            case "maximum_in_range_score" -> paddedScore(scores.stream()
+                    .filter(ValidationEquivalenceTest::insideTheRange)
+                    .max(Integer::compareTo).orElseThrow());
+            case "invalid_branch_is_fixture_reachable" -> messageYesOrNo(scores.stream()
+                    .anyMatch(score -> !insideTheRange(score)));
+            case "boundary_cases_are_fixture_reachable" -> messageYesOrNo(scores.stream()
+                    .anyMatch(score -> score == sourceRangeBound(true)
+                            || score == sourceRangeBound(false)));
+            case "boundary_cases_file" -> resourceOnTheClasspath(SYNTHETIC_CASE_FILE);
+            default -> throw new IllegalStateException(
+                    EXPECTED_MESSAGE_FILE + " names unresolved reachability field " + field);
+        };
+    }
+
+    /** Resolves one expectation of how the edit routines set their flags and messages. */
+    private static String editMechanicsValue(String entityKey, String field) {
+        return switch (field) {
+            case "first_error_wins", "gate_off_value_is_low_values",
+                    "input_error_flag_set_independently_of_message" -> messageYesOrNo(true);
+            case "gate_condition_name" -> MESSAGE_GATE_CONDITION;
+            case "card_program_uses_same_gate" -> messageYesOrNo(CobolSourceEvidence
+                    .containsStatement(CARD_UPDATE_PROGRAM, MESSAGE_GATE_CONDITION));
+            case "edit_exits_via_go_to_on_failure" -> messageYesOrNo(CobolSourceEvidence
+                    .containsStatement(ACCOUNT_UPDATE_PROGRAM, "GO TO "));
+            case "month_condition_set_site_not_supplied", "month_condition_set_site_out_of_range" ->
+                    messageYesOrNo(setSiteCount(MONTH_CONDITION) >= TWO_SET_SITES);
+            case "year_condition_set_site_not_supplied", "year_condition_set_site_out_of_range" ->
+                    messageYesOrNo(setSiteCount(YEAR_CONDITION) >= TWO_SET_SITES);
+            case "not_supplied_tests_low_values_spaces_zeros" -> messageYesOrNo(
+                    NOT_SUPPLIED_TOKENS.stream().allMatch(token -> CobolSourceEvidence
+                            .containsStatement(CARD_UPDATE_PROGRAM, token)));
+            case "valid_month_range" -> declaredRange(MONTH_RANGE_CONDITION);
+            case "valid_year_range" -> declaredRange(YEAR_RANGE_CONDITION);
+            case "expiry_decomposed_year_month_day" -> messageYesOrNo(
+                    EXPIRY_COMPONENT_FIELDS.stream().allMatch(component -> CobolSourceEvidence
+                            .containsStatement(CARD_UPDATE_PROGRAM, component)));
+            case "card_number_validated_as_16_numeric_only" ->
+                    messageYesOrNo(theCardNumberRuleIsLengthAndDigitsOnly());
+            default -> throw new IllegalStateException(EXPECTED_MESSAGE_FILE
+                    + " names unresolved mechanics field " + field + " under " + entityKey);
+        };
+    }
+
+    /** Resolves one fixture-quality finding over the card and customer fixtures. */
+    private static String fixtureQualityValue(String field) {
+        List<CopybookRecordParser.CardRecord> cards = CardDemoFixtureLoader.loadCards();
+        return switch (field) {
+            case "embossed_names_failing_alphabetic_rule" -> Long.toString(cards.stream()
+                    .filter(card -> !isAlphabeticOrSpace(card.embossedName())).count());
+            case "embossed_name_with_apostrophe" -> cards.stream()
+                    .map(CopybookRecordParser.CardRecord::embossedName)
+                    .filter(name -> name.contains(APOSTROPHE))
+                    .map(String::strip)
+                    .findFirst()
+                    .orElseThrow(() -> new IllegalStateException(
+                            "app/data/ASCII/carddata.txt carries no embossed name with an "
+                                    + "apostrophe"));
+            case "expiry_month_11_absent_from_fixture" -> messageYesOrNo(cards.stream()
+                    .noneMatch(card -> ABSENT_EXPIRY_MONTH.equals(monthOf(card))));
+            case "distinct_card_expiry_dates" -> Integer.toString(cards.stream()
+                    .map(CopybookRecordParser.CardRecord::expirationDate).distinct().toList()
+                    .size());
+            case "earliest_card_expiry" -> cards.stream()
+                    .map(CopybookRecordParser.CardRecord::expirationDate).min(String::compareTo)
+                    .orElseThrow();
+            case "latest_card_expiry" -> cards.stream()
+                    .map(CopybookRecordParser.CardRecord::expirationDate).max(String::compareTo)
+                    .orElseThrow();
+            case "card_cvv_all_three_numeric_digits" -> messageYesOrNo(cards.stream()
+                    .allMatch(card -> card.cardVerificationValue()
+                            .matches(THREE_DIGIT_PATTERN)));
+            default -> throw new IllegalStateException(
+                    EXPECTED_MESSAGE_FILE + " names unresolved finding field " + field);
+        };
+    }
+
+    /** Resolves one summary count over the committed message set. */
+    private static String messageSummaryValue(String field) {
+        List<String> committed = COMMITTED_CONDITION_NAMES;
+        return switch (field) {
+            case "committed_condition_names" -> Integer.toString(committed.size());
+            case "committed_distinct_texts" -> Integer.toString(committed.stream()
+                    .map(ValidationEquivalenceTest::conditionNameLiteral).distinct().toList()
+                    .size());
+            case "duplicate_text_pair" -> duplicateTextPair();
+            case "committed_texts_ending_in_period" -> Long.toString(committed.stream()
+                    .map(ValidationEquivalenceTest::conditionNameLiteral)
+                    .filter(text -> text.endsWith(SENTENCE_PERIOD)).count());
+            case "committed_texts_fixture_reachable" -> Long.toString(0L);
+            case "fico_message_count" -> Long.toString(programsCarrying(creditScoreSuffix()));
+            case "fico_invalid_branch_fixture_occurrences" -> Long.toString(FIXTURE_SCORES.stream()
+                    .filter(score -> !insideTheRange(score)).count());
+            default -> throw new IllegalStateException(
+                    EXPECTED_MESSAGE_FILE + " names unresolved summary field " + field);
+        };
+    }
+
+    /** Resolves one prohibition of the message discipline. */
+    private static String messageProhibitionValue(String field) {
+        return switch (field) {
+            case "no_message_text_may_be_reworded", "no_trailing_period_may_be_added",
+                    "no_case_normalisation_permitted", "all_errors_collection_would_diverge" ->
+                    messageYesOrNo(true);
+            case "no_luhn_check_may_be_added" ->
+                    messageYesOrNo(theCardNumberRuleIsLengthAndDigitsOnly());
+            case "no_card_status_check_in_authorization_path" -> messageYesOrNo(
+                    CobolSourceEvidence.occurrences(POSTING_PROGRAM, CARD_STATUS_FIELD) == 0L);
+            case "exclusive_fico_bound_would_diverge_on_two_values" -> messageYesOrNo(
+                    theRangeIsInclusive());
+            default -> throw new IllegalStateException(
+                    EXPECTED_MESSAGE_FILE + " names unresolved prohibition field " + field);
+        };
+    }
+
+    /**
+     * Reads the literal one condition name of the card update program declares.
+     *
+     * <p>The declaration puts the literal on the line after the name, so the two lines are joined
+     * before the literal is taken. Reading it rather than writing it here is what makes a reworded
+     * message fail this binding.</p>
+     *
+     * @param conditionName the level-88 condition name
+     * @return the literal, without its quotes or the statement period
+     * @throws IllegalStateException when the program declares no such condition name
+     */
+    private static String conditionNameLiteral(String conditionName) {
+        List<String> lines = CobolSourceEvidence.lines(CARD_UPDATE_PROGRAM);
+        for (int index = 0; index < lines.size(); index++) {
+            String line = lines.get(index);
+            if (!line.startsWith("88 " + conditionName + " ")
+                    && !line.equals("88 " + conditionName + " VALUE")) {
+                continue;
+            }
+            String joined = index + 1 < lines.size() ? line + " " + lines.get(index + 1) : line;
+            Matcher literal = Pattern.compile("'([^']*)'").matcher(joined);
+            if (literal.find()) {
+                return literal.group(1);
+            }
+        }
+        Matcher inline = Pattern.compile("'([^']*" + Pattern.quote(INLINE_MESSAGE_FRAGMENT)
+                + "[^']*)'").matcher(CobolSourceEvidence.file(CARD_UPDATE_PROGRAM));
+        if (INLINE_MESSAGE_KEY.equals(conditionName) && inline.find()) {
+            return inline.group(1);
+        }
+        throw new IllegalStateException(
+                CARD_UPDATE_PROGRAM + " declares no condition name " + conditionName);
+    }
+
+    /** Reports whether the card update program declares one condition name. */
+    private static boolean conditionNameExists(String conditionName) {
+        return CobolSourceEvidence.lines(CARD_UPDATE_PROGRAM).stream()
+                .anyMatch(line -> line.startsWith("88 " + conditionName + " "));
+    }
+
+    /** Names the condition name whose rule the inline message duplicates. */
+    private static String duplicateOfInlineMessage() {
+        return DUPLICATED_CONDITION_NAME;
+    }
+
+    /** Names the two condition names that carry the same literal, in declaration order. */
+    private static String duplicateTextPair() {
+        Map<String, List<String>> byText = new LinkedHashMap<>();
+        for (String conditionName : COMMITTED_CONDITION_NAMES) {
+            byText.computeIfAbsent(conditionNameLiteral(conditionName),
+                    text -> new ArrayList<>()).add(conditionName);
+        }
+        for (Map.Entry<String, List<String>> entry : byText.entrySet()) {
+            if (entry.getValue().size() == 2) {
+                return entry.getValue().get(0) + " and " + entry.getValue().get(1);
+            }
+        }
+        throw new IllegalStateException(
+                CARD_UPDATE_PROGRAM + " carries no pair of condition names sharing one literal");
+    }
+
+    /** Reads the literal suffix the account update program strings after the field label. */
+    private static String creditScoreSuffix() {
+        Matcher suffix = Pattern.compile("'(: should be between \\d+ and \\d+)'")
+                .matcher(CobolSourceEvidence.file(ACCOUNT_UPDATE_PROGRAM));
+        if (!suffix.find()) {
+            throw new IllegalStateException(
+                    ACCOUNT_UPDATE_PROGRAM + " strings no credit-score range suffix");
+        }
+        return suffix.group(1);
+    }
+
+    /** Counts the programs below {@code app/cbl/} that carry one phrase. */
+    private static long programsCarrying(String phrase) {
+        Path programs = CardDemoFixtureLoader.fixtureDirectory().getParent().getParent()
+                .getParent().resolve(COBOL_PROGRAM_DIRECTORY);
+        try (Stream<Path> files = Files.list(programs)) {
+            return files.filter(Files::isRegularFile).filter(file -> carries(file, phrase)).count();
+        } catch (IOException unreadable) {
+            throw new UncheckedIOException("cannot list " + programs, unreadable);
+        }
+    }
+
+    /** Reports whether one program carries a phrase. */
+    private static boolean carries(Path program, String phrase) {
+        try {
+            return Files.readString(program, StandardCharsets.UTF_8).contains(phrase);
+        } catch (IOException unreadable) {
+            throw new UncheckedIOException("cannot read " + program, unreadable);
+        }
+    }
+
+    /** Reads one bound of the credit-score range condition out of the account update program. */
+    private static int sourceRangeBound(boolean low) {
+        Matcher bounds = Pattern.compile("88 FICO-RANGE-IS-VALID VALUES (\\d+) THROUGH (\\d+)")
+                .matcher(String.join(" ", CobolSourceEvidence.lines(ACCOUNT_UPDATE_PROGRAM)));
+        if (!bounds.find()) {
+            throw new IllegalStateException(
+                    ACCOUNT_UPDATE_PROGRAM + " declares no credit-score range");
+        }
+        return Integer.parseInt(bounds.group(low ? 1 : 2));
+    }
+
+    /**
+     * Reads the Picture clause of the numeric redefinition of the credit-score field.
+     *
+     * <p>The declaration spans two source lines, with {@code REDEFINES} ending the first and the
+     * redefined name and the Picture clause on the second, so a single-line lookup finds the
+     * alphanumeric declaration instead. The lines are joined before the clause is taken.</p>
+     *
+     * @return the clause as the program writes it
+     * @throws IllegalStateException when the program carries no such redefinition
+     */
+    private static String redefinedScorePicture() {
+        Matcher clause = Pattern.compile(
+                "ACUP-NEW-CUST-FICO-SCORE REDEFINES ACUP-NEW-CUST-FICO-SCORE-X PIC ([^\\s.]+)")
+                .matcher(String.join(" ", CobolSourceEvidence.lines(ACCOUNT_UPDATE_PROGRAM)));
+        if (!clause.find()) {
+            throw new IllegalStateException(
+                    ACCOUNT_UPDATE_PROGRAM + " carries no numeric redefinition of the score field");
+        }
+        return clause.group(1);
+    }
+
+    /** Reports whether the range condition includes both of its bounds. */
+    private static boolean theRangeIsInclusive() {
+        return CobolSourceEvidence.containsStatement(ACCOUNT_UPDATE_PROGRAM, "THROUGH");
+    }
+
+    /** Reports whether one score falls inside the inclusive range the source declares. */
+    private static boolean insideTheRange(int score) {
+        return score >= sourceRangeBound(true) && score <= sourceRangeBound(false);
+    }
+
+    /** Renders one score at the width its Picture clause declares. */
+    private static String paddedScore(int score) {
+        String digits = Integer.toString(score);
+        return "0".repeat(Math.max(0, SCORE_FIELD_WIDTH - digits.length())) + digits;
+    }
+
+    /** Answers the customer fixture row one identifier names. */
+    private static CopybookRecordParser.CustomerRecord customerBy(String customerId) {
+        return CardDemoFixtureLoader.loadCustomers().stream()
+                .filter(customer -> customer.customerId().equals(customerId))
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException(
+                        "app/data/ASCII/custdata.txt carries no customer " + customerId));
+    }
+
+    /** Counts how often one condition name is set to true in the card update program. */
+    private static long setSiteCount(String conditionName) {
+        return CobolSourceEvidence.lines(CARD_UPDATE_PROGRAM).stream()
+                .filter(line -> line.equals("SET " + conditionName + " TO TRUE"))
+                .count();
+    }
+
+    /** Reads the value range one condition name declares, as the source writes it. */
+    private static String declaredRange(String conditionName) {
+        Matcher range = Pattern.compile("88 " + conditionName + " VALUES (\\d+ THRU \\d+)")
+                .matcher(String.join(" ", CobolSourceEvidence.lines(CARD_UPDATE_PROGRAM)));
+        if (!range.find()) {
+            throw new IllegalStateException(
+                    CARD_UPDATE_PROGRAM + " declares no range for " + conditionName);
+        }
+        return range.group(1);
+    }
+
+    /** Reports whether the card-number rule tests only sixteen digits and nothing else. */
+    private static boolean theCardNumberRuleIsLengthAndDigitsOnly() {
+        boolean redefinedAsNumeric = CobolSourceEvidence
+                .containsStatement(CARD_UPDATE_PROGRAM, "CARD-CARD-NUM-N REDEFINES");
+        boolean noChecksum = CHECKSUM_TOKENS.stream().noneMatch(token -> CobolSourceEvidence
+                .contains(CARD_UPDATE_PROGRAM, token));
+        return redefinedAsNumeric && noChecksum;
+    }
+
+    /** Reports whether one embossed name holds only letters and spaces. */
+    private static boolean isAlphabeticOrSpace(String name) {
+        return name.chars().allMatch(character ->
+                Character.isLetter(character) || character == ' ');
+    }
+
+    /** Answers the two-character month component of one card's expiry date. */
+    private static String monthOf(CopybookRecordParser.CardRecord card) {
+        return card.expirationDate().substring(EXPIRY_MONTH_OFFSET,
+                EXPIRY_MONTH_OFFSET + EXPIRY_MONTH_WIDTH);
+    }
+
+    /** Answers one expected resource's name, having confirmed it is really on the classpath. */
+    private static String resourceOnTheClasspath(String fileName) {
+        if (ValidationEquivalenceTest.class
+                .getResource(ExpectedOutcomes.RESOURCE_DIRECTORY + fileName) == null) {
+            throw new IllegalStateException(fileName + " is not on the test classpath");
+        }
+        return fileName;
+    }
+
+    /** Writes a boolean the way {@link #EXPECTED_MESSAGE_FILE} writes one. */
+    private static String messageYesOrNo(boolean value) {
+        return value ? ExpectedOutcomes.YES : ExpectedOutcomes.NO;
     }
 }

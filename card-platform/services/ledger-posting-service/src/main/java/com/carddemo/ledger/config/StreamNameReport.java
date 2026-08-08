@@ -83,13 +83,17 @@ public class StreamNameReport implements ApplicationListener<ApplicationReadyEve
                         "TOPIC_TRANSACTION_AUTHORIZED",
                         topics.transactionAuthorized()),
                 new ReportedName(
+                        "topic this service consumes a refused authorization from",
+                        "TOPIC_TRANSACTION_DECLINED",
+                        topics.transactionDeclined()),
+                new ReportedName(
+                        "topic this service consumes an account state change from",
+                        "TOPIC_ACCOUNT_STATE_CHANGED",
+                        topics.accountStateChanged()),
+                new ReportedName(
                         "topic a posted transaction travels on",
                         "TOPIC_TRANSACTION_POSTED",
                         topics.transactionPosted()),
-                new ReportedName(
-                        "topic a rejected transaction travels on",
-                        "TOPIC_TRANSACTION_DECLINED",
-                        topics.transactionDeclined()),
                 new ReportedName(
                         "fallback topic for a record with no source topic",
                         "TOPIC_DEAD_LETTER",

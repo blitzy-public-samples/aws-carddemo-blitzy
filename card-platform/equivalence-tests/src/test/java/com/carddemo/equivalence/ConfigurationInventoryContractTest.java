@@ -9,6 +9,7 @@ import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -28,28 +29,25 @@ class ConfigurationInventoryContractTest {
 
     private static final Map<String, String> EXPECTED_DEFAULTS = Map.of(
             "OUTBOX_PUBLISHED_RETENTION_HOURS", "168",
-            "PROCESSED_EVENT_RETENTION_HOURS", "168",
+            // 720 rather than 168 since a security review found the marker horizon equal to broker
+            // log retention. A record still readable after its marker was swept is applied twice, so
+            // every service now refuses a horizon under twice KAFKA_LOG_RETENTION_HOURS at start-up.
+            "PROCESSED_EVENT_RETENTION_HOURS", "720",
             "STATEMENT_RETENTION_DAYS", "400",
             "NOTIFICATION_LOG_RETENTION_DAYS", "90",
-            "NOTIFICATION_HISTORY_PAGE_SIZE", "50",
-            "NOTIFICATION_HISTORY_MAX_PAGE_SIZE", "200",
             "MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED", "true");
 
     private static final Map<String, Integer> APPLICATION_REFERENCE_COUNTS = Map.of(
             "OUTBOX_PUBLISHED_RETENTION_HOURS", 5,
             "PROCESSED_EVENT_RETENTION_HOURS", 6,
             "STATEMENT_RETENTION_DAYS", 1,
-            "NOTIFICATION_LOG_RETENTION_DAYS", 1,
-            "NOTIFICATION_HISTORY_PAGE_SIZE", 1,
-            "NOTIFICATION_HISTORY_MAX_PAGE_SIZE", 1);
+            "NOTIFICATION_LOG_RETENTION_DAYS", 1);
 
     private static final Map<String, Integer> COMPOSE_ENVIRONMENT_COUNTS = Map.of(
             "OUTBOX_PUBLISHED_RETENTION_HOURS", 5,
             "PROCESSED_EVENT_RETENTION_HOURS", 6,
             "STATEMENT_RETENTION_DAYS", 1,
             "NOTIFICATION_LOG_RETENTION_DAYS", 1,
-            "NOTIFICATION_HISTORY_PAGE_SIZE", 1,
-            "NOTIFICATION_HISTORY_MAX_PAGE_SIZE", 1,
             "MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED", 1);
 
     private static final Set<String> OUTBOX_RETENTION_SERVICES = Set.of(
@@ -120,9 +118,7 @@ class ConfigurationInventoryContractTest {
 
         String notification = serviceBlock(compose, "notification-service");
         for (String key : Set.of("STATEMENT_RETENTION_DAYS",
-                "NOTIFICATION_LOG_RETENTION_DAYS",
-                "NOTIFICATION_HISTORY_PAGE_SIZE",
-                "NOTIFICATION_HISTORY_MAX_PAGE_SIZE")) {
+                "NOTIFICATION_LOG_RETENTION_DAYS")) {
             assertTrue(notification.contains(key + ":"),
                     "notification-service must receive " + key);
         }
@@ -218,6 +214,57 @@ class ConfigurationInventoryContractTest {
         }
         assertFalse(applications.contains("${MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED:"),
                 "Spring Boot binds the management key directly from the container environment");
+    }
+
+    /**
+     * Holds the one unmanaged pin this build carries, and the source of structured log output.
+     *
+     * <p>A pin no module declares governs nothing: {@code dependencyManagement} has no coordinate to
+     * manage, the library never reaches a classpath, and a reader is left believing a dependency is
+     * present that is absent. {@code net.logstash.logback:logstash-logback-encoder} was such a pin
+     * and is withdrawn, so this test fails if it returns without a module that declares it.
+     *
+     * <p>The other half of the assertion is what replaced it. Structured JSON output comes from the
+     * framework, selected by one property per service, and no service ships a Logback configuration
+     * file. A configuration file appearing beside that property would mean two mechanisms competed
+     * for the same output, and the file would win silently.
+     */
+    @Test
+    @DisplayName("one unmanaged pin, and structured logging taken from the framework")
+    void theBuildPinsOnlyTheUnmanagedArtifactItDeclares() {
+        List<Path> poms = new ArrayList<>();
+        poms.add(platformDirectory().resolve("pom.xml"));
+        poms.add(platformDirectory().resolve("libs/event-contracts/pom.xml"));
+        poms.add(platformDirectory().resolve("libs/cobol-compat/pom.xml"));
+        poms.add(platformDirectory().resolve("equivalence-tests/pom.xml"));
+        for (String service : APPLICATION_SERVICES) {
+            poms.add(platformDirectory().resolve("services").resolve(service).resolve("pom.xml"));
+        }
+
+        for (Path pom : poms) {
+            assertFalse(read(pom).contains("<artifactId>logstash-logback-encoder</artifactId>"),
+                    pom.getFileName() + " under " + pom.getParent().getFileName()
+                            + " declares an encoder no version pins; pin it in the aggregator "
+                            + "first, and record the decision");
+        }
+        assertTrue(read(poms.get(0))
+                        .contains("<artifactId>json-schema-validator</artifactId>"),
+                "the aggregator has to keep pinning the one artifact the bill of materials does "
+                        + "not manage");
+
+        for (String service : APPLICATION_SERVICES) {
+            Path resources = platformDirectory().resolve("services")
+                    .resolve(service)
+                    .resolve("src/main/resources");
+            assertTrue(read(resources.resolve("application.yml"))
+                            .contains("console: logstash"),
+                    service + " has to select the Logstash format the framework implements");
+            for (String file : List.of("logback.xml", "logback-spring.xml")) {
+                assertFalse(Files.exists(resources.resolve(file)),
+                        service + " ships " + file + ", which takes over the output the "
+                                + "logging.structured.format.console property configures");
+            }
+        }
     }
 
     private static Map<String, String> dotenvValues(Path file) {

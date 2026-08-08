@@ -13,9 +13,9 @@ import tools.jackson.databind.annotation.JsonSerialize;
 import tools.jackson.databind.ser.std.ToStringSerializer;
 
 /**
- * The event one approved authorization call publishes, and the event the ledger posting and fraud
- * detection services are to consume. The notification service reacts to what those two publish, so
- * three services react to one call.
+ * The event one approved authorization call publishes. The ledger posting, fraud detection and
+ * notification services each consume it directly, under a consumer group of their own, so one call
+ * reaches three independent readers.
  *
  * <p>Twelve payload components each carry one field of the 350-byte transaction record at
  * {@code app/cpy/CVTRA05Y.cpy}. Its daily-feed twin at {@code app/cpy/CVTRA06Y.cpy} declares the
@@ -69,9 +69,9 @@ import tools.jackson.databind.ser.std.ToStringSerializer;
  * toward zero and never rounds half up.
  *
  * <p>The authorization service publishes this event to topic {@code transaction.authorized}. The
- * ledger-posting and fraud-detection services read it in the consumer groups
- * {@code ledger-posting} and {@code fraud-detection}, and neither calls the other. Adding a
- * consumer needs no change here.
+ * ledger-posting, fraud-detection and notification services read it in the consumer groups
+ * {@code ledger-posting}, {@code fraud-detection} and {@code notification-authorized}, and none
+ * calls another. Adding a consumer needs no change here.
  *
  * @param eventId              the idempotency key each consumer records before it applies side
  *                             effects, a Universally Unique Identifier (UUID)
@@ -128,9 +128,6 @@ import tools.jackson.databind.ser.std.ToStringSerializer;
  * @param authorizedAt         the authorization timestamp, twenty-six characters shaped
  *                             {@code YYYY-MM-DD HH:MM:SS.ffffff}. From
  *                             {@code TRAN-ORIG-TS PIC X(26)} at {@code app/cpy/CVTRA05Y.cpy:L16}
- * @param accountId            the same eleven-digit account identifier {@code aggregateId} carries.
- *                             From {@code XREF-ACCT-ID PIC 9(11)} at
- *                             {@code app/cpy/CVACT03Y.cpy:L7}. Leading zeros belong to the value
  * @param currency             the currency of the amount, always {@link #CURRENCY}. ADDITIVE. No
  *                             source field exists
  */
@@ -590,18 +587,6 @@ public record TransactionAuthorized(
     }
 
     /**
-     * Requires a component to stay within the width of its source field.
-     *
-     * <p>The schema document caps these components by length alone. A shorter value is accepted,
-     * including an empty one.
-     *
-     * @param value     the component value
-     * @param maximum   the greatest accepted length
-     * @param component the component name, used in the failure text
-     * @throws NullPointerException     when {@code value} is {@code null}
-     * @throws IllegalArgumentException when {@code value} is longer than {@code maximum}
-     */
-    /**
      * Rejects a component holding a character outside {@link #PRINTABLE_TEXT_PATTERN}.
      *
      * <p>The message reports the position of the first offending character and its code
@@ -629,6 +614,18 @@ public record TransactionAuthorized(
                 + (int) value.charAt(position) + " at position " + position);
     }
 
+    /**
+     * Requires a component to stay within the width of its source field.
+     *
+     * <p>The schema document caps these components by length alone. A shorter value is accepted,
+     * including an empty one.
+     *
+     * @param value     the component value
+     * @param maximum   the greatest accepted length
+     * @param component the component name, used in the failure text
+     * @throws NullPointerException     when {@code value} is {@code null}
+     * @throws IllegalArgumentException when {@code value} is longer than {@code maximum}
+     */
     private static void requireMaxLength(String value, int maximum, String component) {
         Objects.requireNonNull(value, component + " must be present");
 

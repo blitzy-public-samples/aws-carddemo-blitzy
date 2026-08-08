@@ -19,9 +19,9 @@ import org.springframework.stereotype.Component;
  * marks the extension point. Shape only, no logic: this class copies no reject code, no reject text
  * and no balance arithmetic from that program.
  *
- * <p>Risk is based on transaction magnitude. A refund therefore uses its absolute amount instead of
- * clearing this rule by carrying a negative sign. This service is net new, so that fraud-specific
- * treatment does not alter the ledger's source-compatible refund arithmetic.
+ * <p>The comparison reads the absolute amount, so a refund scores like a purchase of the same size
+ * and does not clear the rule by carrying a negative sign. Rationale:
+ * {@code card-platform/docs/decision-log.md}.
  */
 @Component
 @Order(20)

@@ -1,6 +1,7 @@
 package com.carddemo.notification.config;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.nullable;
 import static org.mockito.Mockito.mock;
@@ -42,7 +43,10 @@ import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.springframework.boot.context.properties.bind.Bindable;
 import org.springframework.boot.context.properties.bind.Binder;
 import org.springframework.boot.kafka.autoconfigure.ConcurrentKafkaListenerContainerFactoryConfigurer;
@@ -548,6 +552,48 @@ final class KafkaConsumerConfigTest {
                     .forEach(names::add);
         }
         return List.copyOf(names);
+    }
+
+    /**
+     * Asserts the acknowledgement mode the four listeners of this service run under is an invariant.
+     *
+     * <p>Each listener acknowledges after its own writes commit, and only
+     * {@link ContainerProperties.AckMode#MANUAL_IMMEDIATE} commits the offset at that acknowledgement
+     * and applies {@code setCommitRecovered(true)} to a dead-lettered record. The mode arrives from
+     * {@code spring.kafka.listener.ack-mode}, so a deployment can move it; the gate below turns a
+     * moved mode into a refused start-up rather than a guarantee that silently stopped holding.
+     */
+    @Nested
+    @DisplayName("The acknowledgement mode")
+    class AcknowledgementMode {
+
+        @Test
+        @DisplayName("is accepted where it names the immediate manual mode")
+        void isAcceptedWhereItNamesTheImmediateManualMode() {
+            assertThat(KafkaConsumerConfig.requireImmediateManualAcknowledgement(
+                    ContainerProperties.AckMode.MANUAL_IMMEDIATE))
+                    .isEqualTo(ContainerProperties.AckMode.MANUAL_IMMEDIATE);
+        }
+
+        @ParameterizedTest
+        @EnumSource(value = ContainerProperties.AckMode.class,
+                names = "MANUAL_IMMEDIATE", mode = EnumSource.Mode.EXCLUDE)
+        @DisplayName("stops start-up on every other mode, naming the property that moved it")
+        void stopsStartUpOnEveryOtherMode(ContainerProperties.AckMode mode) {
+            assertThatThrownBy(
+                    () -> KafkaConsumerConfig.requireImmediateManualAcknowledgement(mode))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("spring.kafka.listener.ack-mode")
+                    .hasMessageContaining(mode.name());
+        }
+
+        @Test
+        @DisplayName("stops start-up where no value is bound, because the framework default is BATCH")
+        void stopsStartUpWhereNoValueIsBound() {
+            assertThatThrownBy(() -> KafkaConsumerConfig.requireImmediateManualAcknowledgement(null))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("spring.kafka.listener.ack-mode");
+        }
     }
 
     private static byte[] bytes(String value) {

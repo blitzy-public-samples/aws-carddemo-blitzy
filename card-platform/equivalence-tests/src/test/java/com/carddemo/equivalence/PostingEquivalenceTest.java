@@ -1,5 +1,6 @@
 package com.carddemo.equivalence;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
@@ -9,6 +10,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import com.carddemo.account.domain.BillingCycleService;
 import com.carddemo.cobol.CobolDecimal;
 import com.carddemo.cobol.PanMasker;
 import com.carddemo.cobol.PicClause;
@@ -31,6 +33,7 @@ import com.carddemo.ledger.entity.TransactionCategoryBalanceEntity;
 import com.carddemo.ledger.entity.TransactionCategoryBalanceEntity.TransactionCategoryBalanceId;
 import com.carddemo.ledger.entity.TransactionEntity;
 import com.carddemo.ledger.messaging.TransactionAuthorizedConsumer;
+import com.carddemo.ledger.messaging.TransactionDeclinedConsumer;
 import com.carddemo.ledger.outbox.OutboxRelay;
 import com.carddemo.ledger.outbox.OutboxWriter;
 import com.carddemo.ledger.repository.AccountBalanceProjectionRepository;
@@ -47,12 +50,16 @@ import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -64,6 +71,8 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -97,7 +106,6 @@ import tools.jackson.databind.json.JsonMapper;
  */
 class PostingEquivalenceTest {
 
-    /** Classpath location of the fixed posting expectations. */
     private static final String EXPECTED_POSTING_RESOURCE = "/expected/posting-summary.csv";
 
     /** Columns every expected-output file in this module carries. */
@@ -111,9 +119,66 @@ class PostingEquivalenceTest {
             "pic_clause",
             "source_locator");
 
-    /** Fixed expected values, read once as immutable fixture input. */
     private static final Map<String, String> EXPECTED_POSTING =
             loadExpectedPostingValues();
+
+    /** Name of the detailed reject expectations this class binds row by row. */
+    private static final String EXPECTED_REJECT_FILE = "dailytran-reject-records-model-b.csv";
+
+    /** The detailed reject expectations, read once and consumed by {@link RejectRecord}. */
+    private static final ExpectedOutcomes EXPECTED_REJECTS =
+            ExpectedOutcomes.load(EXPECTED_REJECT_FILE);
+
+    /** Name of the account end-state expectations this class binds row by row. */
+    private static final String EXPECTED_ACCOUNT_FILE =
+            "acctdata-final-account-state-model-b.csv";
+
+    /** The account end-state expectations, read once. */
+    private static final ExpectedOutcomes EXPECTED_ACCOUNTS =
+            ExpectedOutcomes.load(EXPECTED_ACCOUNT_FILE);
+
+    /** Name of the category-balance expectations this class binds row by row. */
+    private static final String EXPECTED_CATEGORY_FILE =
+            "dailytran-category-balances-model-b.csv";
+
+    /** The category-balance expectations, read once. */
+    private static final ExpectedOutcomes EXPECTED_CATEGORIES =
+            ExpectedOutcomes.load(EXPECTED_CATEGORY_FILE);
+
+    /** Name of the per-account posting expectations this class binds row by row. */
+    private static final String EXPECTED_POSTING_RESULTS_FILE =
+            "dailytran-posting-results-model-b.csv";
+
+    /** The per-account posting expectations, read once. */
+    private static final ExpectedOutcomes EXPECTED_POSTING_RESULTS =
+            ExpectedOutcomes.load(EXPECTED_POSTING_RESULTS_FILE);
+
+    /** Type code the source assigns to a purchase, and the only one the feed posts positively. */
+    private static final String PURCHASE_TYPE_CODE = "01";
+
+    /** Type code the source assigns to a refund in this feed. */
+    private static final String REFUND_TYPE_CODE = "03";
+
+    /** The program whose paragraphs every expectation in this class is derived from. */
+    private static final String VALIDATION_PROGRAM = "app/cbl/CBTRN02C.cbl";
+
+    /** The job that allocates the reject dataset. */
+    private static final String POSTING_JOB = "app/jcl/POSTTRAN.jcl";
+
+    /**
+     * Shape of a paragraph label in {@value #VALIDATION_PROGRAM}.
+     *
+     * <p>A paragraph is bounded by the next label, not by {@code EXIT.}. Several paragraphs of this
+     * program carry no {@code EXIT.} at all — {@code 2700-A-CREATE-TCATBAL-REC} is one — so a reader
+     * that stops at the first {@code EXIT.} swallows the paragraphs that follow and answers
+     * questions about the wrong code.</p>
+     */
+    private static final Pattern PARAGRAPH_LABEL =
+            Pattern.compile("\\d{4}(-[A-Z0-9]+)*\\.");
+
+    /** Record text of the feed, in file order, as the reject path copies it. */
+    private static final List<String> FEED_RECORD_TEXT =
+            CardDemoFixtureLoader.loadDailyTransactionRecordText();
 
     /** Tag placed on source-compatible tests that pin a known defect. */
     private static final String LEGACY_DIVERGENCE_TAG = "legacy-divergence";
@@ -194,6 +259,15 @@ class PostingEquivalenceTest {
     /** Topic name the idempotency marker records for a delivery of the authorized event. */
     private static final String AUTHORIZED_TOPIC = "transaction.authorized";
 
+    /**
+     * The topic the declined stream is published on.
+     *
+     * <p>The reject rows of {@code app/cbl/CBTRN02C.cbl:L446-L465} are written by the consumer of
+     * this topic rather than by the consumer of the authorized topic, which is why the whole-feed
+     * comparison drives both.</p>
+     */
+    private static final String DECLINED_TOPIC = "transaction.declined";
+
     /** Paragraph {@code app/cbl/CBTRN02C.cbl:L440} performs first. */
     private static final String CATEGORY_BALANCE_STAGE = "2700-UPDATE-TCATBAL";
 
@@ -213,12 +287,9 @@ class PostingEquivalenceTest {
     /** Rows one category-balance upsert writes, on either arm. */
     private static final int ONE_ROW_UPSERTED = 1;
 
-    /** Writes an event to text for {@link OutboxWriter}, following the established test setup. */
     private static final JsonMapper JSON_MAPPER = JsonMapper.builder().build();
 
     /**
-     * Returns an independent run over the whole feed.
-     *
      * @return the terminal state and per-record outcomes of the run
      */
     private static PostingRun fixtureRun() {
@@ -269,7 +340,6 @@ class PostingEquivalenceTest {
         }
     }
 
-    /** Checks the expected-output header. */
     private static void assertExpectedColumns(String header) {
         List<String> columns = List.of(header.split(",", -1));
         if (!EXPECTED_OUTPUT_COLUMNS.equals(columns)) {
@@ -278,7 +348,6 @@ class PostingEquivalenceTest {
         }
     }
 
-    /** Returns one fixed expected value. */
     private static String expected(String entity, String field) {
         String key = entity + "." + field;
         String value = EXPECTED_POSTING.get(key);
@@ -289,7 +358,6 @@ class PostingEquivalenceTest {
         return value;
     }
 
-    /** Returns one fixed expected count. */
     private static long expectedCount(String entity, String field) {
         return Long.parseLong(expected(entity, field));
     }
@@ -357,7 +425,7 @@ class PostingEquivalenceTest {
      * @param balances        account state as the run has carried it forward
      * @return the reason a decline carries, or {@code null} when the record posts
      */
-    private static DeclineReason declineReasonFor(
+    private static DecisionInputs decisionFor(
             CopybookRecordParser.DailyTransactionRecord feed,
             Map<String, CopybookRecordParser.CardCrossReferenceRecord> crossReferences,
             Map<String, CopybookRecordParser.AccountRecord> accounts,
@@ -365,19 +433,21 @@ class PostingEquivalenceTest {
         CopybookRecordParser.CardCrossReferenceRecord crossReference =
                 crossReferences.get(feed.cardNumber());
         if (crossReference == null) {
-            return DeclineReason.INVALID_CARD_NUMBER;
+            return DecisionInputs.unresolvedCard();
         }
 
         String accountId = crossReference.accountId();
         CopybookRecordParser.AccountRecord account = accounts.get(accountId);
         Optional<AccountBalanceProjectionEntity> carried = balances.findById(accountId);
         if (account == null || carried.isEmpty()) {
-            return DeclineReason.ACCOUNT_NOT_FOUND;
+            return DecisionInputs.unresolvedAccount(accountId);
         }
 
         DeclineReason reason = null;
-        BigDecimal working = workingBalance(carried.get().getCycleCredit(),
-                carried.get().getCycleDebit(), feed.amount());
+        BigDecimal cycleCreditBefore = carried.get().getCycleCredit();
+        BigDecimal cycleDebitBefore = carried.get().getCycleDebit();
+        BigDecimal working =
+                workingBalance(cycleCreditBefore, cycleDebitBefore, feed.amount());
         if (account.creditLimit().compareTo(working) < 0) {
             reason = DeclineReason.OVER_CREDIT_LIMIT;
         }
@@ -385,7 +455,66 @@ class PostingEquivalenceTest {
         if (account.expirationDate().compareTo(originDate) < 0) {
             reason = DeclineReason.ACCOUNT_EXPIRED;
         }
-        return reason;
+        return new DecisionInputs(reason, accountId, account.creditLimit(), cycleCreditBefore,
+                cycleDebitBefore, working);
+    }
+
+    /**
+     * The inputs one credit-limit decision was taken on, together with its outcome.
+     *
+     * <p>Captured while the decision runs rather than recomputed afterwards. Model B carries the
+     * accumulators forward, so by the end of the feed the projection holds a later state than any
+     * one record was judged against. Recomputing would read that later state and produce values
+     * that look plausible and describe no decision the run actually took.</p>
+     *
+     * @param reason            the reason assigned, or {@code null} when the record posted
+     * @param accountId         the account the cross-reference resolved, absent for reason 0100
+     * @param creditLimit       {@code ACCT-CREDIT-LIMIT} as the fixture holds it
+     * @param cycleCreditBefore {@code ACCT-CURR-CYC-CREDIT} before this record
+     * @param cycleDebitBefore  {@code ACCT-CURR-CYC-DEBIT} before this record
+     * @param workingBalance    {@code WS-TEMP-BAL} after the narrowing at
+     *                          {@code app/cbl/CBTRN02C.cbl:L187}
+     */
+    private record DecisionInputs(DeclineReason reason,
+            String accountId,
+            BigDecimal creditLimit,
+            BigDecimal cycleCreditBefore,
+            BigDecimal cycleDebitBefore,
+            BigDecimal workingBalance) {
+
+        /**
+         * Returns the decision for a card the cross-reference does not hold.
+         *
+         * @return reason 0100, with no account and no credit-limit inputs
+         */
+        static DecisionInputs unresolvedCard() {
+            return new DecisionInputs(DeclineReason.INVALID_CARD_NUMBER, null, null, null, null);
+        }
+
+        /**
+         * Returns the decision for a card that resolves an account no record holds.
+         *
+         * @param accountId the account the cross-reference named
+         * @return reason 0101, with no credit-limit inputs
+         */
+        static DecisionInputs unresolvedAccount(String accountId) {
+            return new DecisionInputs(DeclineReason.ACCOUNT_NOT_FOUND, accountId, null, null, null);
+        }
+
+        /** Builds a decision that reached no credit-limit evaluation. */
+        private DecisionInputs(DeclineReason reason, String accountId, BigDecimal creditLimit,
+                BigDecimal cycleCreditBefore, BigDecimal cycleDebitBefore) {
+            this(reason, accountId, creditLimit, cycleCreditBefore, cycleDebitBefore, null);
+        }
+
+        /**
+         * Reports whether the credit-limit rule ran for this record.
+         *
+         * @return {@code true} when the working balance was computed
+         */
+        boolean reachedCreditLimitRule() {
+            return workingBalance != null;
+        }
     }
 
     /**
@@ -419,6 +548,12 @@ class PostingEquivalenceTest {
     /**
      * Builds the declined event for a rule that follows a resolved account read.
      *
+     * <p>The event models what the authorization service publishes, which is the only place these
+     * values exist once a transaction is refused: the source reads them from the daily record it is
+     * rejecting at {@code app/cbl/CBTRN02C.cbl:L446-L465}, and no dataset holds a transaction that
+     * never posted. It therefore carries the detail-bearing contract version, so this harness
+     * models the event the ledger really receives rather than a narrower one.</p>
+     *
      * @param feed      one record of {@code app/data/ASCII/dailytran.txt}
      * @param accountId the account the cross-reference resolved
      * @param reason    the reason the authorization path assigned
@@ -432,26 +567,69 @@ class PostingEquivalenceTest {
             throw new IllegalArgumentException(
                     "a decline event requires a reason assigned after account resolution");
         }
-        return TransactionDeclined.of(accountId, feed.transactionId(), reason, feed.amount(),
-                PanMasker.maskCardNumber(feed.cardNumber()));
+        return TransactionDeclined.withTransactionDetail(accountId, feed.transactionId(), reason,
+                feed.typeCode(), feed.categoryCode(), feed.source(), feed.description(),
+                feed.amount(), feed.merchantId(), feed.merchantName(), feed.merchantCity(),
+                feed.merchantZip(), PanMasker.maskCardNumber(feed.cardNumber()),
+                feed.originTimestamp());
     }
 
     /**
      * Builds the source reject row without creating an authorized event.
      *
-     * @param feed   one rejected feed record
-     * @param reason the source reason assigned to it
+     * <p>The row carries {@code REJECT-TRAN-DATA} whole, which is what
+     * {@code app/cbl/CBTRN02C.cbl:L447} moves and what
+     * {@code services/ledger-posting-service/.../RejectedTransactionEntity} now stores: one
+     * {@link PicClause#REJECT_TRAN_DATA_WIDTH}-character block rather than a column per field. The
+     * one departure from the fixture's own bytes is the card number, masked in place by
+     * {@link #maskedRejectTranData(int)}, because masking is this platform's addition and the row is
+     * this platform's row.</p>
+     *
+     * @param feed    one rejected feed record
+     * @param reason  the source reason assigned to it
+     * @param ordinal the 1-based position of the record in {@code app/data/ASCII/dailytran.txt}
      * @return the reject row
      */
     private static RejectedTransactionEntity sourceRejectRow(
             CopybookRecordParser.DailyTransactionRecord feed,
-            DeclineReason reason) {
+            DeclineReason reason,
+            int ordinal) {
         UUID rowId = UUID.nameUUIDFromBytes(
                 feed.transactionId().getBytes(StandardCharsets.US_ASCII));
         return new RejectedTransactionEntity(rowId, feed.transactionId(), reason.code(),
-                reason.description(), feed.cardNumber(), feed.amount(), feed.typeCode(),
-                feed.categoryCode(), feed.merchantId(), feed.originTimestamp(),
-                FIXED_EVENT_INSTANT);
+                reason.description(), maskedRejectTranData(ordinal), FIXED_EVENT_INSTANT);
+    }
+
+    /**
+     * Renders the data half of the reject record as the stored row holds it.
+     *
+     * <p>Every character is the fixture's own, apart from the sixteen
+     * {@code DALYTRAN-CARD-NUM} positions of {@code app/cpy/CVTRA06Y.cpy:L15}, which carry the
+     * masked form. {@code theRowStoresTheMaskedNumberWhileTheRejectBytesKeepThePan} is what holds
+     * the two representations apart.</p>
+     *
+     * @param ordinal the 1-based position of the record in {@code app/data/ASCII/dailytran.txt}
+     * @return {@link PicClause#REJECT_TRAN_DATA_WIDTH} characters
+     */
+    private static String maskedRejectTranData(int ordinal) {
+        String record = feedRecordText(ordinal);
+        int offset = feedColumnOffset(FeedColumn.CARD_NUMBER);
+        int end = offset + FeedColumn.CARD_NUMBER.width();
+        return record.substring(0, offset)
+                + PanMasker.maskCardNumber(record.substring(offset, end))
+                + record.substring(end);
+    }
+
+    /**
+     * Reads {@code DALYTRAN-CARD-NUM} out of the block one stored row holds.
+     *
+     * @param row one reject row
+     * @return the sixteen characters the card-number positions hold
+     */
+    private static String storedCardNumber(RejectedTransactionEntity row) {
+        int offset = feedColumnOffset(FeedColumn.CARD_NUMBER);
+        return row.getRejectedTransactionData()
+                .substring(offset, offset + FeedColumn.CARD_NUMBER.width());
     }
 
     /**
@@ -490,8 +668,9 @@ class PostingEquivalenceTest {
         List<FeedOutcome> outcomes = new ArrayList<>(feed.size());
         int ordinal = FIRST_RECORD_ORDINAL;
         for (CopybookRecordParser.DailyTransactionRecord record : feed) {
-            DeclineReason reason =
-                    declineReasonFor(record, crossReferences, accounts, accountBalances);
+            DecisionInputs decision =
+                    decisionFor(record, crossReferences, accounts, accountBalances);
+            DeclineReason reason = decision.reason();
             CopybookRecordParser.CardCrossReferenceRecord crossReference =
                     crossReferences.get(record.cardNumber());
             AuthorizationPath path;
@@ -502,7 +681,7 @@ class PostingEquivalenceTest {
                 postingService.postTransaction(event, event.aggregateId());
                 path = new AuthorizedPath(accountId, event);
             } else {
-                rejects.save(sourceRejectRow(record, reason));
+                rejects.save(sourceRejectRow(record, reason, ordinal));
                 if (reason.resolvesAccount()) {
                     String accountId = Objects.requireNonNull(crossReference,
                             "an account-resolving decline must carry "
@@ -514,7 +693,7 @@ class PostingEquivalenceTest {
                     path = new UnresolvedCardPath();
                 }
             }
-            outcomes.add(new FeedOutcome(ordinal, record, reason, path));
+            outcomes.add(new FeedOutcome(ordinal, record, reason, path, decision));
             ordinal++;
         }
 
@@ -529,6 +708,7 @@ class PostingEquivalenceTest {
      * Seeds account state from {@code app/data/ASCII/acctdata.txt}.
      *
      * @param accounts the fixture accounts, keyed by account identifier
+     * @param saveLog the ordered save log this store appends to after seeding completes
      * @return a store holding one row per fixture account
      */
     private static StoredAccountBalances seededAccountBalances(
@@ -546,6 +726,7 @@ class PostingEquivalenceTest {
     /**
      * Seeds category balances from {@code app/data/ASCII/tcatbal.txt}.
      *
+     * @param saveLog the ordered save log this store appends to after seeding completes
      * @return a store holding one row per fixture category balance
      */
     private static StoredCategoryBalances seededCategoryBalances(List<String> saveLog) {
@@ -1384,8 +1565,8 @@ class PostingEquivalenceTest {
             PostingRun run = fixtureRun();
 
             for (FeedOutcome outcome : run.rejectedOutcomes()) {
-                String rendered =
-                        renderRejectRecord(outcome.feed(), outcome.declineReason());
+                String rendered = renderRejectRecord(feedRecordText(outcome.ordinal()),
+                        outcome.declineReason());
                 CopybookRecordParser.RejectedTransactionRecord parsed =
                         CopybookRecordParser.parseRejectedTransaction(rendered);
 
@@ -1406,16 +1587,33 @@ class PostingEquivalenceTest {
         }
 
         @Test
-        @DisplayName("the amount inside the data part carries plain digits, a divergence from the source")
-        void theAmountInsideTheDataPartCarriesPlainDigits() {
+        @DisplayName("the data part is the fixture's own 350 bytes, L447")
+        void theDataPartIsTheFixturesOwnBytes() {
             PostingRun run = fixtureRun();
-            int amountOffset = amountOffsetInFeedRecord();
-            int amountEnd = amountOffset + PicClause.DALYTRAN_AMT_WIDTH;
 
             for (FeedOutcome outcome : run.rejectedOutcomes()) {
-                String dataPart = renderRejectRecord(outcome.feed(), outcome.declineReason())
+                String rendered = renderRejectRecord(feedRecordText(outcome.ordinal()),
+                        outcome.declineReason());
+
+                assertEquals(feedRecordText(outcome.ordinal()),
+                        rendered.substring(0, PicClause.REJECT_TRAN_DATA_WIDTH),
+                        where(outcome.ordinal(), REJECT_STAGE, VALIDATION_PROGRAM + ":L447")
+                                + ": MOVE DALYTRAN-RECORD TO REJECT-TRAN-DATA copies the record "
+                                + "that was read, byte for byte, so the data part and the fixture "
+                                + "record are the same characters");
+            }
+        }
+
+        @Test
+        @DisplayName("the amount column keeps the sign overpunch the fixture carries, CVTRA06Y L10")
+        void theAmountColumnKeepsTheSignOverpunchTheFixtureCarries() {
+            PostingRun run = fixtureRun();
+
+            for (FeedOutcome outcome : run.rejectedOutcomes()) {
+                String dataPart = renderRejectRecord(feedRecordText(outcome.ordinal()),
+                        outcome.declineReason())
                         .substring(0, PicClause.REJECT_TRAN_DATA_WIDTH);
-                String amountSlice = dataPart.substring(amountOffset, amountEnd);
+                String amountSlice = feedColumnText(outcome.ordinal(), FeedColumn.AMOUNT);
                 String leadingDigits = amountSlice.substring(0, amountSlice.length() - 1);
                 char trailing = amountSlice.charAt(amountSlice.length() - 1);
                 CopybookRecordParser.DailyTransactionRecord reparsed =
@@ -1424,15 +1622,265 @@ class PostingEquivalenceTest {
                 assertTrue(leadingDigits.chars().allMatch(Character::isDigit),
                         where(outcome.ordinal(), REJECT_STAGE, "app/cpy/CVTRA06Y.cpy:L10")
                                 + ": every position ahead of the last holds a digit");
-                assertTrue(overpunchDigits(outcome.feed().amount()).indexOf(trailing) >= 0,
+                assertTrue(signOverpunchDigitsFor(outcome.feed().amount()).indexOf(trailing) >= 0,
                         where(outcome.ordinal(), REJECT_STAGE, "app/cpy/CVTRA06Y.cpy:L10")
-                                + ": the amount slice holds digits alone and carries no sign "
-                                + "overpunch, which diverges from the source");
-                assertEquals(0, outcome.feed().amount().abs().compareTo(reparsed.amount()),
+                                + ": PIC S9(09)V99 puts the sign on the last position, and the "
+                                + "fixture writes it as an overpunch character. Record 16 holds "
+                                + "0000007154D for 715.44");
+                assertEquals(0, outcome.feed().amount().compareTo(reparsed.amount()),
                         where(outcome.ordinal(), REJECT_STAGE, "app/cpy/CVTRA06Y.cpy:L10")
-                                + ": the rendered field reads back as the signed fixture amount, "
-                                + "compared numerically");
+                                + ": the data part reads back as the signed fixture amount, sign "
+                                + "included, because it is the fixture's own bytes");
             }
+        }
+
+        @Test
+        @DisplayName("the row stores the masked number while the reject bytes keep the PAN")
+        void theRowStoresTheMaskedNumberWhileTheRejectBytesKeepThePan() {
+            PostingRun run = fixtureRun();
+
+            for (FeedOutcome outcome : run.rejectedOutcomes()) {
+                String rendered = renderRejectRecord(feedRecordText(outcome.ordinal()),
+                        outcome.declineReason());
+                String cardColumn = feedColumnText(outcome.ordinal(), FeedColumn.CARD_NUMBER);
+                RejectedTransactionEntity row = sourceRejectRow(outcome.feed(),
+                        outcome.declineReason(), outcome.ordinal());
+
+                assertEquals(outcome.feed().cardNumber(), cardColumn,
+                        where(outcome.ordinal(), REJECT_STAGE, "app/cpy/CVTRA06Y.cpy:L15")
+                                + ": the equivalence bytes carry all sixteen digits, because "
+                                + VALIDATION_PROGRAM + ":L447 copies the record unchanged and no "
+                                + "CardDemo program masks anything");
+                assertTrue(rendered.contains(cardColumn),
+                        where(outcome.ordinal(), REJECT_STAGE, "app/cpy/CVTRA06Y.cpy:L15")
+                                + ": the rendered record holds the same digits the fixture does");
+                assertEquals(PanMasker.maskCardNumber(outcome.feed().cardNumber()),
+                        storedCardNumber(row),
+                        where(outcome.ordinal(), REJECT_STAGE, "app/cpy/CVTRA06Y.cpy:L15")
+                                + ": the card-number positions of the block the stored row holds "
+                                + "carry the masked form instead, which is this platform's "
+                                + "addition and has no ancestor in app/cbl/");
+                assertNotEquals(cardColumn, storedCardNumber(row),
+                        where(outcome.ordinal(), REJECT_STAGE, "app/cpy/CVTRA06Y.cpy:L15")
+                                + ": the two representations are deliberately different, and "
+                                + "conflating them is what made the earlier comparison claim a "
+                                + "verbatim copy it did not produce");
+            }
+        }
+
+        @Test
+        @DisplayName("every row of " + EXPECTED_REJECT_FILE + " matches, and none is left unread")
+        void everyRowOfTheRejectExpectationsMatches() {
+            PostingRun run = fixtureRun();
+            Map<String, FeedOutcome> rejectsBySequence = new LinkedHashMap<>();
+            for (FeedOutcome outcome : run.rejectedOutcomes()) {
+                rejectsBySequence.put(Integer.toString(outcome.ordinal()), outcome);
+            }
+
+            for (ExpectedOutcomes.Row row : EXPECTED_REJECTS.rows()) {
+                String expected = EXPECTED_REJECTS.value(row.recordSequence(), row.entityKey(),
+                        row.expectedField());
+                String actual = actualRejectValue(row, run, rejectsBySequence);
+
+                assertEquals(expected, actual,
+                        EXPECTED_REJECT_FILE + " row " + row.key() + ", derived from "
+                                + row.sourceLocator() + ", Picture clause " + row.picClause());
+            }
+
+            assertThat(EXPECTED_REJECTS.unconsumedRows())
+                    .as(EXPECTED_REJECTS.unconsumedDescription())
+                    .isEmpty();
+        }
+
+        /**
+         * Resolves what the system, the fixture or the source really holds for one expected row.
+         *
+         * <p>Nothing here reads {@code expected_value}. Each branch computes its answer from the
+         * posting run, from the fixture bytes, or from the COBOL program and the job on disk, which
+         * is what makes the comparison evidence rather than a restatement.</p>
+         *
+         * @param row               the expectation to resolve
+         * @param run               the whole-feed posting run
+         * @param rejectsBySequence rejected outcomes by their feed ordinal, as text
+         * @return the value the row must equal
+         */
+        private String actualRejectValue(ExpectedOutcomes.Row row, PostingRun run,
+                Map<String, FeedOutcome> rejectsBySequence) {
+            if (!row.isFixtureLevel()) {
+                FeedOutcome outcome = rejectsBySequence.get(row.recordSequence());
+                assertThat(outcome)
+                        .as(EXPECTED_REJECT_FILE + " row " + row.key() + " names feed record "
+                                + row.recordSequence() + ", which the run must have rejected")
+                        .isNotNull();
+                return perRecordRejectValue(row, outcome);
+            }
+            return switch (row.entityKey()) {
+                case "reject_record" -> rejectRecordLayoutValue(row, run);
+                case "validation_trailer" -> validationTrailerValue(row, run);
+                case "model_b" -> rejectModelValue(row, run);
+                case "reason_distribution" -> reasonDistributionValue(row, run);
+                default -> Long.toString(rejectsForAccount(run, row.entityKey()));
+            };
+        }
+
+        /** Resolves one per-record expectation from the fixture bytes and the rendered record. */
+        private String perRecordRejectValue(ExpectedOutcomes.Row row, FeedOutcome outcome) {
+            String rendered = renderRejectRecord(feedRecordText(outcome.ordinal()),
+                    outcome.declineReason());
+            CopybookRecordParser.RejectedTransactionRecord parsed =
+                    CopybookRecordParser.parseRejectedTransaction(rendered);
+            CopybookRecordParser.DailyTransactionRecord copied =
+                    CopybookRecordParser.parseDailyTransaction(parsed.transactionData());
+
+            return switch (row.expectedField()) {
+                case "xref_acct_id" -> outcome.resolvedAccountId();
+                case "dalytran_id" -> copied.transactionId();
+                case "dalytran_card_num" -> copied.cardNumber();
+                case "dalytran_type_cd" -> copied.typeCode();
+                case "dalytran_cat_cd" -> copied.categoryCode();
+                case "dalytran_amt" -> copied.amount().toPlainString();
+                case "dalytran_merchant_id" -> copied.merchantId();
+                case "trailer_reason_code" -> renderedTrailerReason(parsed);
+                case "trailer_reason_description" -> parsed.failReasonDescription().strip();
+                default -> throw new IllegalStateException(
+                        EXPECTED_REJECT_FILE + " carries an unresolved per-record field "
+                                + row.expectedField() + " at " + row.key());
+            };
+        }
+
+        /** Resolves one expectation about the reject record's layout. */
+        private String rejectRecordLayoutValue(ExpectedOutcomes.Row row, PostingRun run) {
+            FeedOutcome first = run.rejectedOutcomes().get(0);
+            String rendered = renderRejectRecord(feedRecordText(first.ordinal()),
+                    first.declineReason());
+
+            return switch (row.expectedField()) {
+                case "reject_record_length" -> Integer.toString(rendered.length());
+                case "reject_tran_data_length" -> Integer.toString(
+                        CopybookRecordParser.parseRejectedTransaction(rendered)
+                                .transactionData().length());
+                case "validation_trailer_length" -> Integer.toString(
+                        rendered.length() - PicClause.REJECT_TRAN_DATA_WIDTH);
+                case "reject_tran_data_is_verbatim_byte_copy" -> yesOrNo(
+                        run.rejectedOutcomes().stream().allMatch(outcome ->
+                                renderRejectRecord(feedRecordText(outcome.ordinal()),
+                                        outcome.declineReason())
+                                        .startsWith(feedRecordText(outcome.ordinal()))));
+                case "reject_record_write_verb" -> writeVerbOfRejectParagraph();
+                case "reject_write_failure_outcome" -> rejectWriteFailureOutcome();
+                case "reject_record_has_no_processing_timestamp" -> yesOrNo(
+                        run.rejectedOutcomes().stream().allMatch(outcome ->
+                                feedColumnText(outcome.ordinal(),
+                                        FeedColumn.PROCESSING_TIMESTAMP).isBlank()));
+                case "reject_dataset_lrecl" -> rejectDatasetRecordLength();
+                case "dalytran_filler_content" -> distinctFillerContent(run);
+                default -> throw new IllegalStateException(
+                        EXPECTED_REJECT_FILE + " carries an unresolved layout field " + row.key());
+            };
+        }
+
+        /** Resolves one expectation about the eighty-byte validation trailer. */
+        private String validationTrailerValue(ExpectedOutcomes.Row row, PostingRun run) {
+            FeedOutcome first = run.rejectedOutcomes().get(0);
+            CopybookRecordParser.RejectedTransactionRecord parsed =
+                    CopybookRecordParser.parseRejectedTransaction(
+                            renderRejectRecord(feedRecordText(first.ordinal()),
+                                    first.declineReason()));
+
+            return switch (row.expectedField()) {
+                case "trailer_reason_pic" -> declaredPictureClauseOf("WS-VALIDATION-FAIL-REASON");
+                case "trailer_description_pic" ->
+                        declaredPictureClauseOf("WS-VALIDATION-FAIL-REASON-DESC");
+                case "trailer_field_widths_sum_to_trailer_length" -> yesOrNo(
+                        PicClause.VALIDATION_FAIL_REASON_WIDTH
+                                + PicClause.VALIDATION_FAIL_REASON_DESC_WIDTH
+                                == PicClause.VALIDATION_TRAILER_WIDTH);
+                case "trailer_reason_rendered" -> renderedTrailerReason(parsed);
+                case "trailer_reason_has_sign_overpunch" -> yesOrNo(
+                        !renderedTrailerReason(parsed).chars()
+                                .allMatch(Character::isDigit));
+                case "description_space_padded_to_76" -> yesOrNo(
+                        run.rejectedOutcomes().stream().allMatch(outcome -> {
+                            String rendered = renderRejectRecord(feedRecordText(outcome.ordinal()),
+                                    outcome.declineReason());
+                            String slice = rendered.substring(rendered.length()
+                                    - PicClause.VALIDATION_FAIL_REASON_DESC_WIDTH);
+                            return slice.length() == PicClause.VALIDATION_FAIL_REASON_DESC_WIDTH
+                                    && slice.stripTrailing()
+                                            .equals(outcome.declineReason().description())
+                                    && slice.substring(outcome.declineReason().description()
+                                            .length()).isBlank();
+                        }));
+                default -> throw new IllegalStateException(
+                        EXPECTED_REJECT_FILE + " carries an unresolved trailer field " + row.key());
+            };
+        }
+
+        /** Resolves one expectation about the whole Model B reject population. */
+        private String rejectModelValue(ExpectedOutcomes.Row row, PostingRun run) {
+            List<FeedOutcome> rejected = run.rejectedOutcomes();
+
+            return switch (row.expectedField()) {
+                case "model_b_reject_record_count" -> Integer.toString(rejected.size());
+                case "source_record_count" -> Integer.toString(run.outcomes().size());
+                case "reject_counter_field" -> rejectCounterField();
+                case "return_code_when_rejects_present" -> Long.toString(run.returnCode());
+                case "rejection_is_expected_traffic_not_error" -> yesOrNo(
+                        !rejected.isEmpty() && run.returnCode() == expectedCount("posting",
+                                "return_code"));
+                case "appl_result_on_reject" -> applResultOnReject();
+                case "all_rejects_type_01" -> yesOrNo(rejected.stream()
+                        .allMatch(outcome -> "01".equals(outcome.feed().typeCode())));
+                case "all_rejects_category_0001" -> yesOrNo(rejected.stream()
+                        .allMatch(outcome -> "0001".equals(outcome.feed().categoryCode())));
+                case "distinct_rejecting_accounts" -> Long.toString(rejected.stream()
+                        .map(FeedOutcome::resolvedAccountId).distinct().count());
+                case "account_with_all_type_01_rejected" -> accountWithMostRejects(run);
+                default -> throw new IllegalStateException(
+                        EXPECTED_REJECT_FILE + " carries an unresolved model field " + row.key());
+            };
+        }
+
+        /** Resolves the count of rejects carrying one reason code. */
+        private String reasonDistributionValue(ExpectedOutcomes.Row row, PostingRun run) {
+            String field = row.expectedField();
+            String prefix = "reject_count_reason_";
+            if (!field.startsWith(prefix)) {
+                throw new IllegalStateException(
+                        EXPECTED_REJECT_FILE + " carries an unresolved distribution field "
+                                + row.key());
+            }
+            int numericCode = Integer.parseInt(field.substring(prefix.length()));
+            return Long.toString(run.rejectedOutcomes().stream()
+                    .filter(outcome -> outcome.declineReason().numericCode() == numericCode)
+                    .count());
+        }
+
+        /** Returns the count of reject records naming one account. */
+        private long rejectsForAccount(PostingRun run, String accountId) {
+            return run.rejectedOutcomes().stream()
+                    .filter(outcome -> accountId.equals(outcome.resolvedAccountId()))
+                    .count();
+        }
+
+        /** Returns the account carrying the most reject records. */
+        private String accountWithMostRejects(PostingRun run) {
+            return run.rejectedOutcomes().stream()
+                    .map(FeedOutcome::resolvedAccountId)
+                    .distinct()
+                    .max(Comparator.comparingLong(accountId -> rejectsForAccount(run, accountId)))
+                    .orElseThrow(() -> new IllegalStateException("the run rejected nothing"));
+        }
+
+        /** Returns the distinct content the trailing filler holds across every reject. */
+        private String distinctFillerContent(PostingRun run) {
+            List<String> distinct = run.rejectedOutcomes().stream()
+                    .map(outcome -> feedColumnText(outcome.ordinal(), FeedColumn.FILLER))
+                    .distinct()
+                    .toList();
+            assertEquals(1, distinct.size(),
+                    EXPECTED_REJECT_FILE + ": the filler must hold one value across every reject");
+            return distinct.get(0);
         }
 
         @Test
@@ -1470,7 +1918,7 @@ class PostingEquivalenceTest {
         }
 
         @Test
-        @DisplayName("each reject row carries the amount and a masked card number, L447")
+        @DisplayName("each reject row holds the amount and the masked number in its block, L447")
         void eachRejectRowCarriesTheAmountAndAMaskedCardNumber() {
             PostingRun run = fixtureRun();
             List<FeedOutcome> rejected = run.rejectedOutcomes();
@@ -1484,14 +1932,19 @@ class PostingEquivalenceTest {
                 assertEquals(outcome.feed().transactionId(), row.getTransactionId(),
                         where(outcome.ordinal(), REJECT_STAGE, "app/cpy/CVTRA06Y.cpy:L5")
                                 + ": the reject rows follow feed order");
-                assertEquals(0, outcome.feed().amount().compareTo(row.getTransactionAmount()),
+                CopybookRecordParser.DailyTransactionRecord storedBlock =
+                        CopybookRecordParser.parseDailyTransaction(
+                                row.getRejectedTransactionData());
+
+                assertEquals(0, outcome.feed().amount().compareTo(storedBlock.amount()),
                         where(outcome.ordinal(), REJECT_STAGE, "app/cpy/CVTRA06Y.cpy:L10")
-                                + ": the row keeps the signed fixture amount, compared "
-                                + "numerically");
+                                + ": the block the row holds reads back as the signed fixture "
+                                + "amount, compared numerically");
                 assertEquals(PanMasker.maskCardNumber(outcome.feed().cardNumber()),
-                        row.getMaskedCardNumber(),
+                        storedCardNumber(row),
                         where(outcome.ordinal(), REJECT_STAGE, "app/cpy/CVTRA06Y.cpy:L15")
-                                + ": the row carries the masked number, which has no COBOL ancestor");
+                                + ": the block carries the masked number in the card-number "
+                                + "positions, which has no COBOL ancestor");
             }
         }
 
@@ -1564,12 +2017,1482 @@ class PostingEquivalenceTest {
                         "reason " + reason.code() + ", stage " + REJECT_STAGE
                                 + ", source app/cbl/CBTRN02C.cbl:L213-L215: the reject branch "
                                 + "wrote nothing the post branch writes");
-                assertEquals(ONE_ROW_PER_CALL,
-                        probe.publishedOfType(TransactionDeclined.EVENT_TYPE).size(),
+                assertEquals(List.of(), probe.published(),
                         "reason " + reason.code() + ", stage " + REJECT_STAGE
-                                + ": one " + TransactionDeclined.EVENT_TYPE
-                                + " reached the outbox");
+                                + ": the reject branch reached no outbox. The "
+                                + TransactionDeclined.EVENT_TYPE + " naming this refusal is the "
+                                + "authorization service's, and this service consumed it to reach "
+                                + "this row");
             }
+        }
+    }
+
+    /**
+     * Returns the rounding mode the shared arithmetic really applies, named as the expectation
+     * files name it.
+     *
+     * <p>Observed rather than read off a constant. A value with a third decimal is put through the
+     * add the posting path uses and the result decides the answer, so the assertion would notice a
+     * helper that had been changed to round half up even if every name in the code still said
+     * otherwise. The probe uses a negative value because that is where the three candidate modes
+     * disagree: truncation toward zero gives -1.23, floor gives -1.24, and half up gives -1.24.</p>
+     *
+     * @return {@code TRUNCATE_TOWARD_ZERO} when the arithmetic truncates, otherwise the mode that
+     *         reproduces what it did
+     */
+    private static String observedRoundingModeName() {
+        BigDecimal probe = new BigDecimal("-1.235");
+        BigDecimal observed = CobolDecimal.add(probe, BigDecimal.ZERO,
+                PicClause.DALYTRAN_AMT_SCALE);
+        for (RoundingMode candidate : RoundingMode.values()) {
+            if (candidate == RoundingMode.UNNECESSARY) {
+                continue;
+            }
+            if (probe.setScale(PicClause.DALYTRAN_AMT_SCALE, candidate).compareTo(observed) == 0) {
+                return candidate == RoundingMode.DOWN ? "TRUNCATE_TOWARD_ZERO" : candidate.name();
+            }
+        }
+        throw new IllegalStateException(
+                "no rounding mode reproduces " + observed + " from " + probe);
+    }
+
+    /**
+     * Reports whether the shipped cycle close writes zero into both accumulators.
+     *
+     * <p>Read from {@code BillingCycleService} itself. The service is on this module's classpath, so
+     * the check follows the code rather than a copy of it: both setters must be called, and the
+     * value must come from a zero.</p>
+     *
+     * @return {@code true} when both accumulators are zeroed
+     */
+    private static boolean cycleCloseZeroesBothAccumulators() {
+        String service = serviceSourceText("account-service", "account", "domain",
+                "BillingCycleService.java");
+        return service.contains("setCurrentCycleCredit(zeroAt(")
+                && service.contains("setCurrentCycleDebit(zeroAt(");
+    }
+
+    /**
+     * Reports whether the shipped cycle close leaves interest alone.
+     *
+     * @return {@code true} when the service names no interest anywhere
+     */
+    private static boolean cycleCloseNamesNoInterest() {
+        return Arrays.stream(BillingCycleService.class.getDeclaredMethods())
+                .noneMatch(method -> method.getName().toLowerCase(Locale.ROOT)
+                        .contains("interest"));
+    }
+
+    /**
+     * Reads one shipped service source file.
+     *
+     * @param module      the service module directory, such as {@code account-service}
+     * @param packageName the package below {@code com.carddemo}
+     * @param layer       the package below that, such as {@code domain}
+     * @param fileName    the file to read
+     * @return the whole file
+     */
+    private static String serviceSourceText(String module, String packageName, String layer,
+            String fileName) {
+        for (Path candidate = CardDemoFixtureLoader.fixtureDirectory();
+                candidate != null; candidate = candidate.getParent()) {
+            Path file = candidate.resolve(Path.of("card-platform", "services", module, "src",
+                    "main", "java", "com", "carddemo", packageName, layer, fileName));
+            if (Files.isRegularFile(file)) {
+                try {
+                    return Files.readString(file, StandardCharsets.UTF_8);
+                } catch (IOException unreadable) {
+                    throw new UncheckedIOException("cannot read " + file, unreadable);
+                }
+            }
+        }
+        throw new IllegalStateException("no ancestor of '"
+                + CardDemoFixtureLoader.fixtureDirectory() + "' holds services/" + module + "/"
+                + fileName);
+    }
+
+    /**
+     * Returns the shape of the origin timestamp one record carries.
+     *
+     * <p>Derived from the value rather than declared, so the comparison with
+     * {@link PicClause#PROCESSING_TIMESTAMP_SHAPE} rests on what the fixture holds. Digits become
+     * their placeholder letters and separators are kept, which is enough to show that the inbound
+     * shape uses a space and colons where the outbound one uses a dash and dots.</p>
+     *
+     * @param outcome one evaluated feed record
+     * @return the shape, in the notation the expectation files use
+     */
+    private static String originTimestampShapeOf(FeedOutcome outcome) {
+        String origin = outcome.feed().originTimestamp();
+        StringBuilder shape = new StringBuilder(origin.length());
+        String letters = "YYYY-MM-DD HH:MM:SS.ffffff";
+        for (int position = 0; position < origin.length(); position++) {
+            char character = origin.charAt(position);
+            shape.append(Character.isDigit(character) && position < letters.length()
+                    ? letters.charAt(position)
+                    : character);
+        }
+        return shape.toString();
+    }
+
+    /**
+     * Returns the number of daily-transaction fields {@code 2000-POST-TRANSACTION} copies.
+     *
+     * <p>Counted from the program rather than written down. The paragraph moves each field of the
+     * inbound record onto the outbound one, and the count is what tells a reader that the processing
+     * timestamp is not among them.</p>
+     *
+     * @return the count of {@code MOVE} statements naming a {@code DALYTRAN} field
+     */
+    private static long copiedFeedFieldCount() {
+        return normalisedParagraph("2000-POST-TRANSACTION").lines()
+                .filter(line -> line.startsWith("MOVE DALYTRAN-"))
+                .count();
+    }
+
+    /**
+     * Returns the operator the credit-limit comparison uses.
+     *
+     * @param paragraph the normalised account paragraph
+     * @return the operator as the source writes it
+     */
+    private static String creditLimitOperator(String paragraph) {
+        Matcher matcher = Pattern.compile("IF ACCT-CREDIT-LIMIT +(>=|<=|>|<|=) +WS-TEMP-BAL")
+                .matcher(paragraph);
+        if (matcher.find()) {
+            return matcher.group(1);
+        }
+        Matcher reversed = Pattern.compile("IF WS-TEMP-BAL +(>=|<=|>|<|=) +ACCT-CREDIT-LIMIT")
+                .matcher(paragraph);
+        if (reversed.find()) {
+            return switch (reversed.group(1)) {
+                case ">" -> "<";
+                case "<" -> ">";
+                case ">=" -> "<=";
+                case "<=" -> ">=";
+                default -> "=";
+            };
+        }
+        throw new IllegalStateException(
+                VALIDATION_PROGRAM + " holds no comparison of the credit limit to WS-TEMP-BAL");
+    }
+
+    /**
+     * Reports whether the last two rules are separate conditions with nothing gating the second.
+     *
+     * <p>This is what makes a collision possible: a record can fail the credit-limit rule and then
+     * be re-labelled by the expiry rule, because no test of the reason stands between them.</p>
+     *
+     * @param paragraph the normalised account paragraph
+     * @return {@code true} when the second condition is not gated on the reason
+     */
+    private static boolean ungatedSequentialConditions(String paragraph) {
+        List<String> conditions = paragraph.lines()
+                .filter(line -> line.startsWith("IF ") && !line.contains("-STATUS"))
+                .toList();
+        return conditions.size() >= 2
+                && conditions.stream().noneMatch(line -> line.contains("WS-VALIDATION-FAIL-REASON"));
+    }
+
+    /**
+     * Returns the reason a record failing both of the last two rules ends up carrying.
+     *
+     * <p>The later assignment wins because nothing gates it, so the answer is the reason of the last
+     * rule the paragraph assigns.</p>
+     *
+     * @param paragraph the normalised account paragraph
+     * @return the numeric code, as the source writes it
+     */
+    private static String collisionWinnerReasonCode(String paragraph) {
+        Matcher matcher = Pattern.compile("MOVE (\\d{3}) TO WS-VALIDATION-FAIL-REASON")
+                .matcher(paragraph);
+        String last = null;
+        while (matcher.find()) {
+            last = matcher.group(1);
+        }
+        if (last == null) {
+            throw new IllegalStateException(
+                    VALIDATION_PROGRAM + " assigns no reason in the paragraph offered");
+        }
+        return last;
+    }
+
+    /**
+     * Returns the count of posted feed records that reached one category key.
+     *
+     * @param run the whole-feed run
+     * @param key the account, type and category the record resolves to
+     * @return the number of posted records naming it
+     */
+    private static long postingsForKey(PostingRun run, TransactionCategoryBalanceId key) {
+        return run.postedOutcomes().stream()
+                .filter(outcome -> key.getAccountId().equals(outcome.resolvedAccountId())
+                        && key.getTypeCode().equals(outcome.feed().typeCode())
+                        && key.getCategoryCode().equals(outcome.feed().categoryCode()))
+                .count();
+    }
+
+    /**
+     * Returns the fields the lookup paragraph moves into the keyed read, in the order it moves them.
+     *
+     * @param paragraph the normalised lookup paragraph
+     * @return the source field names, comma separated
+     */
+    private static String keyComponentsMovedInto(String paragraph) {
+        return paragraph.lines()
+                .filter(line -> line.startsWith("MOVE ") && line.contains(" TO FD-TRANCAT"))
+                .map(line -> line.substring("MOVE ".length(), line.indexOf(" TO ")).strip())
+                .reduce((left, right) -> left + "," + right)
+                .orElseThrow(() -> new IllegalStateException(
+                        VALIDATION_PROGRAM + " moves nothing into the category key"));
+    }
+
+    /**
+     * Returns the file statuses a paragraph accepts, as its condition lists them.
+     *
+     * @param paragraph the normalised paragraph
+     * @return the statuses, comma separated, without their quotes
+     */
+    private static String acceptedStatusesOf(String paragraph) {
+        Matcher matcher = Pattern.compile("IF [A-Z-]+-STATUS = ('\\d{2}'(?: OR '\\d{2}')*)")
+                .matcher(paragraph);
+        if (!matcher.find()) {
+            throw new IllegalStateException(
+                    VALIDATION_PROGRAM + " holds no file status condition in the paragraph offered");
+        }
+        return matcher.group(1).replace("'", "").replace(" OR ", ",");
+    }
+
+    /**
+     * Returns a literal the paragraph moves into one field.
+     *
+     * @param paragraph  the normalised paragraph
+     * @param fieldName  the field the literal is moved into
+     * @param lastMove   {@code true} for the last such move, {@code false} for the first
+     * @return the literal, without its quotes
+     */
+    private static String movedLiteralInto(String paragraph, String fieldName, boolean lastMove) {
+        List<String> literals = paragraph.lines()
+                .filter(line -> line.startsWith("MOVE '") && line.endsWith("TO " + fieldName))
+                .map(line -> line.substring(line.indexOf('\'') + 1, line.lastIndexOf('\'')))
+                .toList();
+        if (literals.isEmpty()) {
+            throw new IllegalStateException(
+                    VALIDATION_PROGRAM + " moves no literal into " + fieldName);
+        }
+        return lastMove ? literals.get(literals.size() - 1) : literals.get(0);
+    }
+
+    /**
+     * Returns the verb a paragraph puts its record on the dataset with.
+     *
+     * @param paragraph the normalised paragraph
+     * @return {@code WRITE}, {@code REWRITE}, or {@code absent}
+     */
+    private static String writeVerbOf(String paragraph) {
+        if (paragraph.lines().anyMatch(line -> line.startsWith("REWRITE "))) {
+            return "REWRITE";
+        }
+        return paragraph.lines().anyMatch(line -> line.startsWith("WRITE ")) ? "WRITE" : "absent";
+    }
+
+    /**
+     * Returns one value of a dataset definition's {@code KEYS} parameter.
+     *
+     * @param jobPath  the job below the repository root
+     * @param position 1 for the key length, 2 for the key offset
+     * @return the digits as the job writes them
+     */
+    private static String datasetKeyParameter(String jobPath, int position) {
+        Matcher matcher = Pattern.compile("KEYS\\((\\d+) +(\\d+)\\)")
+                .matcher(sourceFileText(jobPath));
+        if (!matcher.find()) {
+            throw new IllegalStateException(jobPath + " declares no KEYS parameter");
+        }
+        return matcher.group(position);
+    }
+
+    /**
+     * Returns the first value of a dataset definition's {@code RECORDSIZE} parameter.
+     *
+     * @param jobPath the job below the repository root
+     * @return the digits as the job writes them
+     */
+    private static String datasetRecordSize(String jobPath) {
+        Matcher matcher = Pattern.compile("RECORDSIZE\\((\\d+) +(\\d+)\\)")
+                .matcher(sourceFileText(jobPath));
+        if (!matcher.find()) {
+            throw new IllegalStateException(jobPath + " declares no RECORDSIZE parameter");
+        }
+        return matcher.group(1);
+    }
+
+    /**
+     * Returns the count of feed records that posted to one account.
+     *
+     * @param run       the whole-feed run
+     * @param accountId the account to count for
+     * @return the number of posted records naming it
+     */
+    private static long postingsFor(PostingRun run, String accountId) {
+        return run.postedOutcomes().stream()
+                .filter(outcome -> accountId.equals(outcome.resolvedAccountId()))
+                .count();
+    }
+
+    /**
+     * Returns the balance one category key was seeded with, or zero when the run created it.
+     *
+     * @param run the whole-feed run
+     * @param key the category key
+     * @return the seeded balance, or zero for a key {@code 2700-A} created
+     */
+    private static BigDecimal seededCategoryBalance(PostingRun run,
+            TransactionCategoryBalanceId key) {
+        if (!run.seededCategoryKeys().contains(key)) {
+            return BigDecimal.ZERO;
+        }
+        return CardDemoFixtureLoader.loadTransactionCategoryBalances().stream()
+                .filter(seeded -> seeded.accountId().equals(key.getAccountId())
+                        && seeded.typeCode().equals(key.getTypeCode())
+                        && seeded.categoryCode().equals(key.getCategoryCode()))
+                .map(CopybookRecordParser.TransactionCategoryBalanceRecord::balance)
+                .findFirst()
+                .orElse(BigDecimal.ZERO);
+    }
+
+    /**
+     * Returns one paragraph of {@value #VALIDATION_PROGRAM} with its runs of spaces collapsed.
+     *
+     * <p>COBOL is written in fixed columns, so a statement carries whatever padding put it there.
+     * Collapsing runs of spaces to one lets an assertion name a statement the way a reader would
+     * write it, without depending on the column the source happens to use.</p>
+     *
+     * @param label the paragraph label, without its full stop
+     * @return the paragraph text, from its label to the {@code EXIT} that closes it
+     */
+    private static String normalisedParagraph(String label) {
+        List<String> normalised = sourceFileText(VALIDATION_PROGRAM).lines()
+                .map(line -> line.replaceAll("\\s+", " ").strip())
+                .filter(line -> !line.startsWith("*") && !line.isEmpty())
+                .toList();
+        int start = normalised.indexOf(label + ".");
+        if (start < 0) {
+            throw new IllegalStateException(VALIDATION_PROGRAM + " holds no paragraph " + label);
+        }
+
+        StringBuilder paragraph = new StringBuilder(label + ".");
+        for (int index = start + 1; index < normalised.size(); index++) {
+            String line = normalised.get(index);
+            if (PARAGRAPH_LABEL.matcher(line).matches()) {
+                return paragraph.toString();
+            }
+            paragraph.append('\n').append(line);
+            if (line.equals("EXIT.")) {
+                return paragraph.toString();
+            }
+        }
+        return paragraph.toString();
+    }
+
+    /**
+     * Returns the {@code ADD} statement of a paragraph that names one field.
+     *
+     * @param paragraph a normalised paragraph
+     * @param fieldName the field the statement adds into
+     * @return the statement as written, without its trailing full stop
+     */
+    private static String statementContaining(String paragraph, String fieldName) {
+        return paragraph.lines()
+                .filter(line -> line.startsWith("ADD ") && line.contains(fieldName))
+                .findFirst()
+                .map(line -> line.endsWith(".") ? line.substring(0, line.length() - 1) : line)
+                .orElseThrow(() -> new IllegalStateException(VALIDATION_PROGRAM
+                        + " holds no ADD statement naming " + fieldName));
+    }
+
+    /**
+     * Returns the condition a paragraph forks on.
+     *
+     * @param paragraph a normalised paragraph
+     * @return the condition text, without the {@code IF}
+     */
+    private static String conditionOf(String paragraph) {
+        return paragraph.lines()
+                .filter(line -> line.startsWith("IF "))
+                .findFirst()
+                .map(line -> line.substring("IF ".length()).strip())
+                .orElseThrow(() -> new IllegalStateException(
+                        VALIDATION_PROGRAM + " holds no IF in the paragraph offered"));
+    }
+
+    /**
+     * Returns the accumulator one branch of the sign fork adds into.
+     *
+     * @param paragraph  a normalised paragraph carrying the fork
+     * @param positive   {@code true} for the branch the condition selects, {@code false} for
+     *                   the {@code ELSE}
+     * @return the field name
+     */
+    private static String accumulatorTarget(String paragraph, boolean positive) {
+        List<String> lines = paragraph.lines().toList();
+        int fork = lines.indexOf("ELSE");
+        if (fork < 0) {
+            throw new IllegalStateException(
+                    VALIDATION_PROGRAM + " holds no ELSE in the paragraph offered");
+        }
+        List<String> branch = positive ? lines.subList(0, fork) : lines.subList(fork, lines.size());
+        return branch.stream()
+                .filter(line -> line.startsWith("ADD ") && line.contains("ACCT-CURR-CYC"))
+                .map(line -> line.substring(line.lastIndexOf(' ') + 1))
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException(VALIDATION_PROGRAM
+                        + " holds no cycle accumulator ADD on the branch offered"));
+    }
+
+    /**
+     * Returns the order {@code 2000-POST-TRANSACTION} performs its three updates in.
+     *
+     * @return the paragraph names it performs, in order
+     */
+    private static List<String> postOrderOf() {
+        return normalisedParagraph("2000-POST-TRANSACTION").lines()
+                .filter(line -> line.startsWith("PERFORM 2"))
+                .map(line -> line.substring("PERFORM ".length()).strip())
+                .toList();
+    }
+
+    /**
+     * Returns the trailer reason as the eighty-byte trailer holds it.
+     *
+     * <p>{@code CopybookRecordParser.RejectedTransactionRecord} exposes the reason as a number,
+     * having read it back from {@code PIC 9(04)}. Rendering it at the declared width is what lets an
+     * assertion ask whether the field holds four plain digits, which is the question
+     * {@code trailer_reason_has_sign_overpunch} puts.</p>
+     *
+     * @param parsed one reject record read back
+     * @return {@link PicClause#VALIDATION_FAIL_REASON_WIDTH} characters
+     */
+    private static String renderedTrailerReason(
+            CopybookRecordParser.RejectedTransactionRecord parsed) {
+        return numeric(Integer.toString(parsed.failReason()),
+                PicClause.VALIDATION_FAIL_REASON_WIDTH);
+    }
+
+    /** Renders a boolean as the expectation files write it. */
+    private static String yesOrNo(boolean value) {
+        return value ? ExpectedOutcomes.YES : ExpectedOutcomes.NO;
+    }
+
+    /**
+     * Returns the overpunch list carrying the sign of one amount.
+     *
+     * @param amount the value {@code DALYTRAN-AMT} holds
+     * @return the negative list for a value below zero, the positive list otherwise
+     */
+    private static String signOverpunchDigitsFor(BigDecimal amount) {
+        return amount.signum() < 0
+                ? CopybookRecordParser.NEGATIVE_SIGN_OVERPUNCH_DIGITS
+                : CopybookRecordParser.POSITIVE_SIGN_OVERPUNCH_DIGITS;
+    }
+
+    /**
+     * Returns the verb {@code 2500-WRITE-REJECT-REC} uses to put the record on the dataset.
+     *
+     * @return the verb, read from {@value #VALIDATION_PROGRAM}
+     */
+    private static String writeVerbOfRejectParagraph() {
+        return rejectParagraphText().contains("WRITE FD-REJS-RECORD FROM REJECT-RECORD")
+                ? "WRITE"
+                : "absent";
+    }
+
+    /**
+     * Returns what {@code 2500-WRITE-REJECT-REC} does when the write does not succeed.
+     *
+     * @return {@code abend} when the paragraph reaches the abend routine
+     */
+    private static String rejectWriteFailureOutcome() {
+        return rejectParagraphText().contains("PERFORM 9999-ABEND-PROGRAM")
+                ? "abend"
+                : "continue";
+    }
+
+    /**
+     * Returns the value {@code 2500-WRITE-REJECT-REC} moves into {@code APPL-RESULT} on entry.
+     *
+     * @return the digits, read from {@value #VALIDATION_PROGRAM}
+     */
+    private static String applResultOnReject() {
+        Matcher matcher = Pattern.compile("MOVE (\\d+) TO APPL-RESULT")
+                .matcher(rejectParagraphText());
+        if (!matcher.find()) {
+            throw new IllegalStateException(VALIDATION_PROGRAM
+                    + " paragraph 2500-WRITE-REJECT-REC moves nothing into APPL-RESULT");
+        }
+        return matcher.group(1);
+    }
+
+    /**
+     * Returns the field the driver loop increments for a rejected record.
+     *
+     * <p>Anchored on the {@code PERFORM} that follows it rather than on the first counter in the
+     * program. The driver loop increments two counters, and the first one it reaches counts every
+     * record read; taking that one would answer a different question and still look plausible.</p>
+     *
+     * @return the field name, read from {@value #VALIDATION_PROGRAM}
+     */
+    private static String rejectCounterField() {
+        Matcher matcher = Pattern.compile(
+                        "ADD 1 TO +(WS-[A-Z0-9-]+) +PERFORM 2500-WRITE-REJECT-REC")
+                .matcher(sourceFileText(VALIDATION_PROGRAM).replaceAll("\\s+", " "));
+        if (!matcher.find()) {
+            throw new IllegalStateException(VALIDATION_PROGRAM
+                    + " increments no counter immediately before performing "
+                    + "2500-WRITE-REJECT-REC");
+        }
+        return matcher.group(1);
+    }
+
+    /**
+     * Returns the record length {@value #POSTING_JOB} allocates the reject dataset with.
+     *
+     * @return the digits of the {@code LRECL} parameter on the {@code DALYREJS} allocation
+     */
+    private static String rejectDatasetRecordLength() {
+        Matcher matcher = Pattern.compile("DALYREJS.*?LRECL=(\\d+)", Pattern.DOTALL)
+                .matcher(sourceFileText(POSTING_JOB));
+        if (!matcher.find()) {
+            throw new IllegalStateException(
+                    POSTING_JOB + " allocates DALYREJS without an LRECL");
+        }
+        return matcher.group(1);
+    }
+
+    /**
+     * Returns the Picture clause {@value #VALIDATION_PROGRAM} declares one field with.
+     *
+     * @param fieldName the field to look up
+     * @return the clause as written, such as {@code 9(04)}
+     */
+    private static String declaredPictureClauseOf(String fieldName) {
+        Matcher matcher = Pattern.compile(Pattern.quote(fieldName) + "\\s+PIC\\s+([^\\s.]+)")
+                .matcher(sourceFileText(VALIDATION_PROGRAM));
+        if (!matcher.find()) {
+            throw new IllegalStateException(
+                    VALIDATION_PROGRAM + " declares no Picture clause for " + fieldName);
+        }
+        return matcher.group(1);
+    }
+
+    /**
+     * Returns the text of {@code 2500-WRITE-REJECT-REC}, from its label to its {@code EXIT}.
+     *
+     * @return the paragraph
+     */
+    private static String rejectParagraphText() {
+        String program = sourceFileText(VALIDATION_PROGRAM);
+        int start = program.indexOf("2500-WRITE-REJECT-REC.");
+        if (start < 0) {
+            throw new IllegalStateException(
+                    VALIDATION_PROGRAM + " holds no paragraph 2500-WRITE-REJECT-REC");
+        }
+        int end = program.indexOf("EXIT.", start);
+        if (end < 0) {
+            throw new IllegalStateException(VALIDATION_PROGRAM
+                    + " holds no EXIT closing 2500-WRITE-REJECT-REC");
+        }
+        return program.substring(start, end);
+    }
+
+    @Nested
+    @DisplayName("Per-record posting results, app/cbl/CBTRN02C.cbl:L202-L444")
+    class PerRecordPostingResults {
+
+        @Test
+        @DisplayName("every row of " + EXPECTED_POSTING_RESULTS_FILE
+                + " matches, and none is left unread")
+        void everyRowOfThePostingResultsMatches() {
+            PostingRun run = fixtureRun();
+            Map<String, FeedOutcome> bySequence = new LinkedHashMap<>();
+            for (FeedOutcome outcome : run.outcomes()) {
+                bySequence.put(Integer.toString(outcome.ordinal()), outcome);
+            }
+
+            for (ExpectedOutcomes.Row row : EXPECTED_POSTING_RESULTS.rows()) {
+                String expected = EXPECTED_POSTING_RESULTS.value(row.recordSequence(),
+                        row.entityKey(), row.expectedField());
+                String actual = actualPostingResultValue(row, run, bySequence);
+
+                assertEquals(expected, actual,
+                        EXPECTED_POSTING_RESULTS_FILE + " row " + row.key() + ", derived from "
+                                + row.sourceLocator() + ", Picture clause " + row.picClause());
+            }
+
+            assertThat(EXPECTED_POSTING_RESULTS.unconsumedRows())
+                    .as(EXPECTED_POSTING_RESULTS.unconsumedDescription())
+                    .isEmpty();
+        }
+
+        /** Resolves what the run, the fixture or the source holds for one posting expectation. */
+        private String actualPostingResultValue(ExpectedOutcomes.Row row, PostingRun run,
+                Map<String, FeedOutcome> bySequence) {
+            return switch (row.entityKey()) {
+                case "model_b" -> postingModelValue(row, run);
+                case "validation_chain" -> validationChainValue(row);
+                case "credit_limit_rule" -> creditLimitRuleValue(row);
+                case "posting_path" -> postingPathValue(row, run);
+                case "refund_sign_defect" -> refundSignValue(row, run);
+                case "reject_trailer" -> rejectTrailerValue(row, run);
+                default -> accountKeyedPostingValue(row, run, bySequence);
+            };
+        }
+
+        /**
+         * Resolves one row keyed by an account identifier.
+         *
+         * <p>Two shapes share that key. A row on sequence {@value ExpectedOutcomes#FIXTURE_LEVEL_SEQUENCE}
+         * counts the declines an account received across the whole feed; every other row describes
+         * one feed record, and takes its values from the decision captured when that record was
+         * judged.</p>
+         */
+        private String accountKeyedPostingValue(ExpectedOutcomes.Row row, PostingRun run,
+                Map<String, FeedOutcome> bySequence) {
+            if (row.isFixtureLevel()) {
+                if (!"model_b_declines_for_account".equals(row.expectedField())) {
+                    throw new IllegalStateException(EXPECTED_POSTING_RESULTS_FILE
+                            + " carries an unresolved account-level field " + row.key());
+                }
+                return Long.toString(run.rejectedOutcomes().stream()
+                        .filter(outcome -> row.entityKey().equals(outcome.resolvedAccountId()))
+                        .count());
+            }
+
+            FeedOutcome outcome = bySequence.get(row.recordSequence());
+            assertThat(outcome).as(EXPECTED_POSTING_RESULTS_FILE + " row " + row.key()
+                    + " names a feed record the run must have evaluated").isNotNull();
+            DecisionInputs decision = outcome.decision();
+
+            return switch (row.expectedField()) {
+                case "xref_acct_id" -> decision.accountId();
+                case "dalytran_id" -> outcome.feed().transactionId();
+                case "dalytran_card_num" -> outcome.feed().cardNumber();
+                case "dalytran_type_cd" -> outcome.feed().typeCode();
+                case "dalytran_cat_cd" -> outcome.feed().categoryCode();
+                case "dalytran_amt" -> money(outcome.feed().amount());
+                case "acct_credit_limit" -> money(decision.creditLimit());
+                case "acct_curr_cyc_credit_before" -> money(decision.cycleCreditBefore());
+                case "acct_curr_cyc_debit_before" -> money(decision.cycleDebitBefore());
+                case "ws_temp_bal" -> money(decision.workingBalance());
+                case "posting_decision" -> outcome.posted() ? "POSTED" : "REJECTED";
+                case "decline_reason_code" -> Integer.toString(outcome.posted()
+                        ? 0
+                        : outcome.declineReason().numericCode());
+                case "decline_reason_description" -> outcome.declineReason().description();
+                default -> throw new IllegalStateException(EXPECTED_POSTING_RESULTS_FILE
+                        + " carries an unresolved per-record field " + row.key());
+            };
+        }
+
+        /** Resolves one expectation about the whole Model B run. */
+        private String postingModelValue(ExpectedOutcomes.Row row, PostingRun run) {
+            return switch (row.expectedField()) {
+                case "model_b_record_count" -> Integer.toString(run.outcomes().size());
+                case "model_b_approval_count" -> Long.toString(run.postedCount());
+                case "model_b_decline_count" -> Long.toString(run.rejectedCount());
+                case "model_b_distinct_declining_accounts" -> Long.toString(
+                        run.rejectedOutcomes().stream()
+                                .map(FeedOutcome::resolvedAccountId).distinct().count());
+                case "model_b_declines_all_type_01" -> yesOrNo(run.rejectedOutcomes().stream()
+                        .allMatch(outcome -> PURCHASE_TYPE_CODE.equals(
+                                outcome.feed().typeCode())));
+                case "model_b_declines_all_reason_102" -> yesOrNo(run.rejectedOutcomes().stream()
+                        .allMatch(outcome ->
+                                outcome.declineReason() == DeclineReason.OVER_CREDIT_LIMIT));
+                case "account_with_all_type_01_declined" -> accountWithEveryPurchaseDeclined(run);
+                case "declined_record_skips_accumulator_update" -> yesOrNo(
+                        declinedRecordsLeaveTheAccumulatorsAlone(run));
+                default -> throw new IllegalStateException(EXPECTED_POSTING_RESULTS_FILE
+                        + " carries an unresolved model field " + row.key());
+            };
+        }
+
+        /** Resolves one expectation about the ordering of the four rules. */
+        private String validationChainValue(ExpectedOutcomes.Row row) {
+            String validate = normalisedParagraph("1500-VALIDATE-TRAN");
+            String account = normalisedParagraph("1500-B-LOOKUP-ACCT");
+
+            return switch (row.expectedField()) {
+                case "reason_100_short_circuits_subsequent_rules" -> yesOrNo(
+                        validate.contains("IF WS-VALIDATION-FAIL-REASON = 0")
+                                && validate.contains("PERFORM 1500-B-LOOKUP-ACCT"));
+                case "reason_101_short_circuits_102_and_103" -> yesOrNo(
+                        account.contains("INVALID KEY")
+                                && account.indexOf("MOVE 101") < account.indexOf("WS-TEMP-BAL"));
+                case "reason_102_and_103_are_ungated_sequential_ifs" -> yesOrNo(
+                        ungatedSequentialConditions(account));
+                case "collision_winner_reason_code" -> collisionWinnerReasonCode(account);
+                default -> throw new IllegalStateException(EXPECTED_POSTING_RESULTS_FILE
+                        + " carries an unresolved chain field " + row.key());
+            };
+        }
+
+        /** Resolves one expectation about the credit-limit comparison. */
+        private String creditLimitRuleValue(ExpectedOutcomes.Row row) {
+            String account = normalisedParagraph("1500-B-LOOKUP-ACCT");
+
+            return switch (row.expectedField()) {
+                case "credit_limit_comparison_operator" -> creditLimitOperator(account);
+                case "formula_excludes_current_balance" -> yesOrNo(
+                        !account.contains("ACCT-CURR-BAL"));
+                case "ws_temp_bal_precision_narrower_than_operands" -> yesOrNo(
+                        PicClause.WS_TEMP_BAL_PRECISION
+                                < PicClause.ACCT_CURR_CYC_CREDIT_PRECISION);
+                default -> throw new IllegalStateException(EXPECTED_POSTING_RESULTS_FILE
+                        + " carries an unresolved credit-limit field " + row.key());
+            };
+        }
+
+        /** Resolves one expectation about the posting path a record takes once approved. */
+        private String postingPathValue(ExpectedOutcomes.Row row, PostingRun run) {
+            FeedOutcome first = run.postedOutcomes().get(0);
+
+            return switch (row.expectedField()) {
+                case "posted_field_copy_count" -> Long.toString(copiedFeedFieldCount());
+                case "post_update_order" -> String.join(",", List.of("tcatbal", "account",
+                        "transaction").stream()
+                        .filter(stage -> postOrderOf().stream()
+                                .anyMatch(performed -> performed.toLowerCase(Locale.ROOT)
+                                        .contains(stage)))
+                        .toList());
+                case "post_updates_run_unconditionally_with_no_rollback" -> yesOrNo(
+                        normalisedParagraph("2000-POST-TRANSACTION").lines()
+                                .noneMatch(line -> line.startsWith("IF ")));
+                case "dalytran_proc_ts_is_never_copied" -> yesOrNo(
+                        run.postedOutcomes().stream().noneMatch(outcome ->
+                                outcome.feed().processingTimestamp().equals(
+                                        run.postedTransactions().get(
+                                                outcome.feed().transactionId())
+                                                .getProcessedTimestamp())));
+                case "tran_orig_ts" -> run.postedTransactions()
+                        .get(first.feed().transactionId()).getOriginTimestamp();
+                case "tran_proc_ts_rendered_shape" -> PicClause.PROCESSING_TIMESTAMP_SHAPE;
+                case "tran_proc_ts_significant_fraction_digits" -> Integer.toString(
+                        PicClause.PROCESSING_TIMESTAMP_SIGNIFICANT_FRACTION_DIGITS);
+                case "tran_proc_ts_literal_trailing_zeros" -> Integer.toString(
+                        PicClause.PROCESSING_TIMESTAMP_TRAILING_ZERO_DIGITS);
+                case "tran_proc_ts_third_separator" -> String.valueOf(
+                        PicClause.PROCESSING_TIMESTAMP_DASH);
+                case "orig_and_proc_timestamp_shapes_differ" -> yesOrNo(
+                        !PicClause.PROCESSING_TIMESTAMP_SHAPE.equals(
+                                originTimestampShapeOf(first)));
+                case "proc_timestamp_value_derivable_from_fixture" -> yesOrNo(false);
+                default -> throw new IllegalStateException(EXPECTED_POSTING_RESULTS_FILE
+                        + " carries an unresolved posting-path field " + row.key());
+            };
+        }
+
+        /** Resolves one expectation about the refund sign convention of register item 6. */
+        private String refundSignValue(ExpectedOutcomes.Row row, PostingRun run) {
+            return switch (row.expectedField()) {
+                case "refund_sign_defect_clearest_instance_seq" -> Integer.toString(
+                        clearestSignDefectOrdinal(run));
+                case "refund_makes_cycle_debit_more_negative" -> yesOrNo(
+                        run.accountBalances().values().stream()
+                                .allMatch(held -> held.getCycleDebit().signum() <= 0));
+                case "formula_subtracts_cycle_debit" -> yesOrNo(
+                        normalisedParagraph("1500-B-LOOKUP-ACCT")
+                                .contains("- ACCT-CURR-CYC-DEBIT"));
+                default -> throw new IllegalStateException(EXPECTED_POSTING_RESULTS_FILE
+                        + " carries an unresolved refund field " + row.key());
+            };
+        }
+
+        /** Resolves one expectation about the reject trailer this file also describes. */
+        private String rejectTrailerValue(ExpectedOutcomes.Row row, PostingRun run) {
+            return switch (row.expectedField()) {
+                case "decline_reason_description_pic" ->
+                        declaredPictureClauseOf("WS-VALIDATION-FAIL-REASON-DESC");
+                case "description_space_padded_to_76" -> yesOrNo(
+                        run.rejectedOutcomes().stream().allMatch(outcome -> {
+                            String rendered = renderRejectRecord(
+                                    feedRecordText(outcome.ordinal()), outcome.declineReason());
+                            return rendered.substring(rendered.length()
+                                            - PicClause.VALIDATION_FAIL_REASON_DESC_WIDTH)
+                                    .stripTrailing()
+                                    .equals(outcome.declineReason().description());
+                        }));
+                default -> throw new IllegalStateException(EXPECTED_POSTING_RESULTS_FILE
+                        + " carries an unresolved trailer field " + row.key());
+            };
+        }
+
+        /** Returns the account whose every purchase record was refused. */
+        private String accountWithEveryPurchaseDeclined(PostingRun run) {
+            List<String> accounts = run.outcomes().stream()
+                    .filter(outcome -> PURCHASE_TYPE_CODE.equals(outcome.feed().typeCode())
+                            && outcome.declineReason() != DeclineReason.INVALID_CARD_NUMBER)
+                    .map(FeedOutcome::resolvedAccountId)
+                    .distinct()
+                    .filter(accountId -> run.outcomes().stream()
+                            .filter(outcome -> PURCHASE_TYPE_CODE.equals(outcome.feed().typeCode())
+                                    && outcome.declineReason() != DeclineReason.INVALID_CARD_NUMBER
+                                    && accountId.equals(outcome.resolvedAccountId()))
+                            .noneMatch(FeedOutcome::posted))
+                    .sorted()
+                    .toList();
+            assertEquals(1, accounts.size(), EXPECTED_POSTING_RESULTS_FILE
+                    + ": exactly one account must have every purchase refused");
+            return accounts.get(0);
+        }
+
+        /**
+         * Reports whether a refused record left the accumulators where it found them.
+         *
+         * <p>Checked by arithmetic rather than by reading the code: each account's accumulator
+         * movement must equal the sum of the amounts of the records that posted to it, so a refused
+         * record that had contributed would break the equality.</p>
+         */
+        private boolean declinedRecordsLeaveTheAccumulatorsAlone(PostingRun run) {
+            for (AccountBalanceProjectionEntity held : run.accountBalances().values()) {
+                CopybookRecordParser.AccountRecord seeded =
+                        run.seededAccounts().get(held.getAccountId());
+                BigDecimal posted = run.postedOutcomes().stream()
+                        .filter(outcome -> held.getAccountId().equals(outcome.resolvedAccountId()))
+                        .map(outcome -> outcome.feed().amount())
+                        .reduce(BigDecimal.ZERO, BigDecimal::add);
+                BigDecimal moved = held.getCurrentBalance().subtract(seeded.currentBalance());
+                if (posted.compareTo(moved) != 0) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        /**
+         * Returns the ordinal of the record that shows the sign convention most plainly.
+         *
+         * <p>The defect is that a refund makes {@code ACCT-CURR-CYC-DEBIT} more negative at
+         * {@code app/cbl/CBTRN02C.cbl:L551}, and the credit-limit formula subtracts that accumulator
+         * at {@code L404}, so a refund raises the balance the next record is tested against. The
+         * clearest instance is therefore not a refund at all: it is a later purchase that the
+         * accumulated refunds refuse. This picks the record that would have been approved had the
+         * accumulator not gone negative, and among those the one carrying the most negative
+         * accumulator, which is the largest inflation the feed produces.</p>
+         *
+         * @param run the whole-feed run
+         * @return the 1-based ordinal of that record
+         */
+        private int clearestSignDefectOrdinal(PostingRun run) {
+            List<FeedOutcome> refusedOnlyByTheDefect = run.rejectedOutcomes().stream()
+                    .filter(outcome -> outcome.decision().reachedCreditLimitRule())
+                    .filter(outcome -> outcome.decision().cycleDebitBefore().signum() < 0)
+                    .filter(outcome -> outcome.decision().creditLimit()
+                            .compareTo(workingBalance(outcome.decision().cycleCreditBefore(),
+                                    BigDecimal.ZERO, outcome.feed().amount())) >= 0)
+                    .toList();
+            assertThat(refusedOnlyByTheDefect)
+                    .as(EXPECTED_POSTING_RESULTS_FILE + ": the feed must refuse at least one "
+                            + "record that a non-negative cycle debit would have approved")
+                    .isNotEmpty();
+
+            return refusedOnlyByTheDefect.stream()
+                    .min(Comparator.comparing(outcome -> outcome.decision().cycleDebitBefore()))
+                    .map(FeedOutcome::ordinal)
+                    .orElseThrow();
+        }
+    }
+
+    @Nested
+    @DisplayName("Category balance end state, app/cbl/CBTRN02C.cbl:L467-L542")
+    class CategoryBalanceEndState {
+
+        /** Separator the expectation file writes between the three key components. */
+        private static final String KEY_SEPARATOR = "||";
+
+        @Test
+        @DisplayName("every row of " + EXPECTED_CATEGORY_FILE + " matches, and none is left unread")
+        void everyRowOfTheCategoryExpectationsMatches() {
+            PostingRun run = fixtureRun();
+
+            for (ExpectedOutcomes.Row row : EXPECTED_CATEGORIES.rows()) {
+                String expected = EXPECTED_CATEGORIES.value(row.recordSequence(), row.entityKey(),
+                        row.expectedField());
+                String actual = actualCategoryValue(row, run);
+
+                assertEquals(expected, actual,
+                        EXPECTED_CATEGORY_FILE + " row " + row.key() + ", derived from "
+                                + row.sourceLocator() + ", Picture clause " + row.picClause());
+            }
+
+            assertThat(EXPECTED_CATEGORIES.unconsumedRows())
+                    .as(EXPECTED_CATEGORIES.unconsumedDescription())
+                    .isEmpty();
+        }
+
+        /** Resolves what the run, the fixture or the source holds for one category expectation. */
+        private String actualCategoryValue(ExpectedOutcomes.Row row, PostingRun run) {
+            return switch (row.entityKey()) {
+                case "model_b" -> categoryModelValue(row, run);
+                case "tcatbal_seed" -> categorySeedValue(row, run);
+                case "tcatbal_upsert" -> categoryUpsertValue(row);
+                case "cycle_accumulator_invariant" -> categoryInvariantValue(row, run);
+                default -> perKeyCategoryValue(row, run);
+            };
+        }
+
+        /** Resolves one per-key expectation from the run's final table. */
+        private String perKeyCategoryValue(ExpectedOutcomes.Row row, PostingRun run) {
+            TransactionCategoryBalanceId key = keyOf(row.entityKey());
+            TransactionCategoryBalanceEntity held = run.categoryBalances().get(key);
+            assertThat(held).as(EXPECTED_CATEGORY_FILE + " row " + row.key()
+                    + " names a key the final table must hold").isNotNull();
+
+            return switch (row.expectedField()) {
+                case "trancat_acct_id" -> key.getAccountId();
+                case "trancat_type_cd" -> key.getTypeCode();
+                case "trancat_cd" -> key.getCategoryCode();
+                case "upsert_branch" -> run.seededCategoryKeys().contains(key) ? "UPDATE" : "CREATE";
+                case "posting_count" -> Long.toString(postingsForKey(run, key));
+                case "tran_cat_bal_seeded" -> money(seededCategoryBalance(run, key));
+                case "tran_cat_bal_final" -> money(held.getCategoryBalance());
+                default -> throw new IllegalStateException(EXPECTED_CATEGORY_FILE
+                        + " carries an unresolved per-key field " + row.key());
+            };
+        }
+
+        /** Resolves one expectation about the whole Model B category population. */
+        private String categoryModelValue(ExpectedOutcomes.Row row, PostingRun run) {
+            List<TransactionCategoryBalanceId> postedKeys = postedKeys(run);
+
+            return switch (row.expectedField()) {
+                case "keys_posted_to_count" -> Integer.toString(postedKeys.size());
+                case "final_table_row_count" -> Integer.toString(run.categoryBalances().size());
+                case "create_branch_key_count" -> Long.toString(postedKeys.stream()
+                        .filter(key -> !run.seededCategoryKeys().contains(key)).count());
+                case "update_branch_key_count" -> Long.toString(postedKeys.stream()
+                        .filter(key -> run.seededCategoryKeys().contains(key)).count());
+                case "total_postings" -> Long.toString(run.postedCount());
+                case "positive_final_balance_key_count" -> Long.toString(postedKeys.stream()
+                        .filter(key -> run.categoryBalances().get(key).getCategoryBalance()
+                                .signum() > 0).count());
+                case "negative_final_balance_key_count" -> Long.toString(postedKeys.stream()
+                        .filter(key -> run.categoryBalances().get(key).getCategoryBalance()
+                                .signum() < 0).count());
+                case "zero_final_balance_key_count_among_posted" -> Long.toString(
+                        postedKeys.stream()
+                                .filter(key -> run.categoryBalances().get(key).getCategoryBalance()
+                                        .signum() == 0).count());
+                case "positive_keys_all_type_01" -> yesOrNo(postedKeys.stream()
+                        .filter(key -> run.categoryBalances().get(key).getCategoryBalance()
+                                .signum() > 0)
+                        .allMatch(key -> PURCHASE_TYPE_CODE.equals(key.getTypeCode())));
+                case "negative_keys_all_type_03" -> yesOrNo(postedKeys.stream()
+                        .filter(key -> run.categoryBalances().get(key).getCategoryBalance()
+                                .signum() < 0)
+                        .allMatch(key -> REFUND_TYPE_CODE.equals(key.getTypeCode())));
+                case "distinct_category_codes" -> Long.toString(postedKeys.stream()
+                        .map(TransactionCategoryBalanceId::getCategoryCode).distinct().count());
+                case "distinct_category_code_value" -> postedKeys.stream()
+                        .map(TransactionCategoryBalanceId::getCategoryCode).distinct()
+                        .reduce((first, second) -> {
+                            throw new IllegalStateException(
+                                    "the feed posts to more than one category code");
+                        })
+                        .orElseThrow();
+                case "single_posting_type_03_key_count" -> Long.toString(
+                        singlePostingKeys(run, REFUND_TYPE_CODE).size());
+                case "single_posting_type_01_key_count" -> Long.toString(
+                        singlePostingKeys(run, PURCHASE_TYPE_CODE).size());
+                case "single_posting_type_01_accounts" -> String.join(",",
+                        singlePostingKeys(run, PURCHASE_TYPE_CODE).stream()
+                                .map(TransactionCategoryBalanceId::getAccountId).sorted().toList());
+                case "type_03_records_per_card" -> Long.toString(refundRecordsPerCard(run));
+                default -> {
+                    if (row.expectedField().startsWith("posting_count_bucket_")) {
+                        yield Long.toString(keysWithPostingCount(run, postingBucketOf(
+                                row.expectedField())));
+                    }
+                    throw new IllegalStateException(EXPECTED_CATEGORY_FILE
+                            + " carries an unresolved model field " + row.key());
+                }
+            };
+        }
+
+        /** Resolves one expectation about the seeded table the run started from. */
+        private String categorySeedValue(ExpectedOutcomes.Row row, PostingRun run) {
+            List<CopybookRecordParser.TransactionCategoryBalanceRecord> seeded =
+                    CardDemoFixtureLoader.loadTransactionCategoryBalances();
+
+            return switch (row.expectedField()) {
+                case "seeded_row_count" -> Integer.toString(seeded.size());
+                case "seeded_rows_all_zero" -> yesOrNo(seeded.stream()
+                        .allMatch(record -> record.balance().signum() == 0));
+                case "seeded_key_pattern" -> seeded.stream()
+                        .map(record -> "account" + KEY_SEPARATOR + record.typeCode()
+                                + KEY_SEPARATOR + record.categoryCode())
+                        .distinct()
+                        .reduce((first, second) -> {
+                            throw new IllegalStateException(
+                                    "the seed holds more than one key pattern");
+                        })
+                        .orElseThrow();
+                case "seeded_accounts_match_dailytran_accounts" -> yesOrNo(
+                        seededAccountsMatchFeedAccounts(run, seeded));
+                case "vsam_key_length" -> datasetKeyParameter("app/jcl/TCATBALF.jcl", 1);
+                case "vsam_key_offset" -> datasetKeyParameter("app/jcl/TCATBALF.jcl", 2);
+                case "vsam_record_length" -> datasetRecordSize("app/jcl/TCATBALF.jcl");
+                case "untouched_seeded_key" -> untouchedSeededKey(run);
+                case "untouched_seeded_key_final_balance" -> money(run.categoryBalances()
+                        .get(keyOf(untouchedSeededKey(run))).getCategoryBalance());
+                case "untouched_seeded_key_posting_count" -> Long.toString(
+                        postingsForKey(run, keyOf(untouchedSeededKey(run))));
+                default -> throw new IllegalStateException(EXPECTED_CATEGORY_FILE
+                        + " carries an unresolved seed field " + row.key());
+            };
+        }
+
+        /** Resolves one expectation about the upsert the source performs. */
+        private String categoryUpsertValue(ExpectedOutcomes.Row row) {
+            String lookup = normalisedParagraph("2700-UPDATE-TCATBAL");
+            String create = normalisedParagraph("2700-A-CREATE-TCATBAL-REC");
+            String update = normalisedParagraph("2700-B-UPDATE-TCATBAL-REC");
+
+            return switch (row.expectedField()) {
+                case "key_components" -> keyComponentsMovedInto(lookup);
+                case "accepted_file_statuses" -> acceptedStatusesOf(lookup);
+                case "create_flag_default" -> movedLiteralInto(lookup, "WS-CREATE-TRANCAT-REC",
+                        false);
+                case "create_flag_reset_per_record" -> yesOrNo(lookup.lines()
+                        .anyMatch(line -> line.startsWith("MOVE 'N' TO WS-CREATE-TRANCAT-REC")));
+                case "create_flag_set_on_invalid_key" -> movedLiteralInto(lookup,
+                        "WS-CREATE-TRANCAT-REC", true);
+                case "branch_selector" -> conditionOf(lookup.lines()
+                        .filter(line -> line.contains("WS-CREATE-TRANCAT-REC ="))
+                        .findFirst()
+                        .orElseThrow(() -> new IllegalStateException(
+                                VALIDATION_PROGRAM + " holds no branch on the create flag")));
+                case "create_branch_initializes_record" -> yesOrNo(
+                        create.contains("INITIALIZE TRAN-CAT-BAL-RECORD"));
+                case "create_branch_add_site" -> statementContaining(create, "TRAN-CAT-BAL");
+                case "update_branch_add_site" -> statementContaining(update, "TRAN-CAT-BAL");
+                case "create_branch_write_verb" -> writeVerbOf(create);
+                case "update_branch_write_verb" -> writeVerbOf(update);
+                case "add_sites_truncate_toward_zero" -> yesOrNo(
+                        "TRUNCATE_TOWARD_ZERO".equals(observedRoundingModeName()));
+                case "tcatbal_update_runs_before_account_update" -> yesOrNo(
+                        postOrderOf().indexOf("2700-UPDATE-TCATBAL")
+                                < postOrderOf().indexOf("2800-UPDATE-ACCOUNT-REC"));
+                case "post_updates_run_unconditionally_with_no_rollback" -> yesOrNo(
+                        normalisedParagraph("2000-POST-TRANSACTION").lines()
+                                .noneMatch(line -> line.startsWith("IF ")));
+                default -> throw new IllegalStateException(EXPECTED_CATEGORY_FILE
+                        + " carries an unresolved upsert field " + row.key());
+            };
+        }
+
+        /** Resolves one invariant tying the category table to the account accumulators. */
+        private String categoryInvariantValue(ExpectedOutcomes.Row row, PostingRun run) {
+            return switch (row.expectedField()) {
+                case "type_01_balance_equals_account_cycle_credit" -> yesOrNo(
+                        categoryTotalMatchesAccumulator(run, PURCHASE_TYPE_CODE, true));
+                case "type_03_balance_equals_account_cycle_debit" -> yesOrNo(
+                        categoryTotalMatchesAccumulator(run, REFUND_TYPE_CODE, false));
+                default -> throw new IllegalStateException(EXPECTED_CATEGORY_FILE
+                        + " carries an unresolved invariant " + row.key());
+            };
+        }
+
+        /** Reports whether one type's category movement equals the matching accumulator move. */
+        private boolean categoryTotalMatchesAccumulator(PostingRun run, String typeCode,
+                boolean creditSide) {
+            for (AccountBalanceProjectionEntity held : run.accountBalances().values()) {
+                CopybookRecordParser.AccountRecord seeded =
+                        run.seededAccounts().get(held.getAccountId());
+                BigDecimal accumulated = creditSide
+                        ? held.getCycleCredit().subtract(seeded.currentCycleCredit())
+                        : held.getCycleDebit().subtract(seeded.currentCycleDebit());
+                BigDecimal categoryMovement = run.categoryBalances().entrySet().stream()
+                        .filter(entry -> entry.getKey().getAccountId().equals(held.getAccountId())
+                                && entry.getKey().getTypeCode().equals(typeCode))
+                        .map(entry -> entry.getValue().getCategoryBalance()
+                                .subtract(seededCategoryBalance(run, entry.getKey())))
+                        .reduce(BigDecimal.ZERO, BigDecimal::add);
+                if (accumulated.compareTo(categoryMovement) != 0) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        /** Returns the keys at least one posted record reached, in table order. */
+        private List<TransactionCategoryBalanceId> postedKeys(PostingRun run) {
+            return run.categoryBalances().keySet().stream()
+                    .filter(key -> postingsForKey(run, key) > 0)
+                    .toList();
+        }
+
+        /** Returns the keys of one type that exactly one record posted to. */
+        private List<TransactionCategoryBalanceId> singlePostingKeys(PostingRun run,
+                String typeCode) {
+            return postedKeys(run).stream()
+                    .filter(key -> typeCode.equals(key.getTypeCode())
+                            && postingsForKey(run, key) == 1L)
+                    .toList();
+        }
+
+        /** Returns the count of keys that received one posting count. */
+        private long keysWithPostingCount(PostingRun run, long postings) {
+            return run.categoryBalances().keySet().stream()
+                    .filter(key -> postingsForKey(run, key) == postings)
+                    .count();
+        }
+
+        /** Returns the posting count one bucket field names. */
+        private long postingBucketOf(String field) {
+            Matcher matcher = Pattern.compile("posting_count_bucket_(\\d+)_key_count")
+                    .matcher(field);
+            if (!matcher.matches()) {
+                throw new IllegalStateException(
+                        EXPECTED_CATEGORY_FILE + " names an unreadable bucket field " + field);
+            }
+            return Long.parseLong(matcher.group(1));
+        }
+
+        /** Returns the refund records each card contributed. */
+        private long refundRecordsPerCard(PostingRun run) {
+            Map<String, Long> byCard = new LinkedHashMap<>();
+            for (FeedOutcome outcome : run.postedOutcomes()) {
+                if (REFUND_TYPE_CODE.equals(outcome.feed().typeCode())) {
+                    byCard.merge(outcome.feed().cardNumber(), 1L, Long::sum);
+                }
+            }
+            List<Long> distinct = byCard.values().stream().distinct().toList();
+            assertEquals(1, distinct.size(), EXPECTED_CATEGORY_FILE
+                    + ": every card must contribute the same number of refunds");
+            return distinct.get(0);
+        }
+
+        /** Returns the one seeded key no posted record reached. */
+        private String untouchedSeededKey(PostingRun run) {
+            List<TransactionCategoryBalanceId> untouched = run.seededCategoryKeys().stream()
+                    .filter(key -> postingsForKey(run, key) == 0L)
+                    .toList();
+            assertEquals(1, untouched.size(), EXPECTED_CATEGORY_FILE
+                    + ": exactly one seeded key must receive nothing");
+            TransactionCategoryBalanceId key = untouched.get(0);
+            return key.getAccountId() + KEY_SEPARATOR + key.getTypeCode() + KEY_SEPARATOR
+                    + key.getCategoryCode();
+        }
+
+        /** Reports whether the seeded accounts are the accounts the feed resolves. */
+        private boolean seededAccountsMatchFeedAccounts(PostingRun run,
+                List<CopybookRecordParser.TransactionCategoryBalanceRecord> seeded) {
+            Set<String> seededAccounts = new LinkedHashSet<>(
+                    seeded.stream().map(
+                            CopybookRecordParser.TransactionCategoryBalanceRecord::accountId)
+                            .toList());
+            Set<String> feedAccounts = new LinkedHashSet<>(run.crossReferences().values().stream()
+                    .map(CopybookRecordParser.CardCrossReferenceRecord::accountId).toList());
+            return seededAccounts.equals(feedAccounts);
+        }
+
+        /** Reads one composite key back from the form the expectation file writes it in. */
+        private TransactionCategoryBalanceId keyOf(String entityKey) {
+            String[] parts = entityKey.split(Pattern.quote(KEY_SEPARATOR), -1);
+            if (parts.length != 3) {
+                throw new IllegalStateException(EXPECTED_CATEGORY_FILE
+                        + " names a key that is not account, type and category: " + entityKey);
+            }
+            return new TransactionCategoryBalanceId(parts[0], parts[1], parts[2]);
+        }
+    }
+
+    @Nested
+    @DisplayName("Account end state, app/cbl/CBTRN02C.cbl:L545-L560")
+    class AccountEndState {
+
+        @Test
+        @DisplayName("every row of " + EXPECTED_ACCOUNT_FILE + " matches, and none is left unread")
+        void everyRowOfTheAccountExpectationsMatches() {
+            PostingRun run = fixtureRun();
+
+            for (ExpectedOutcomes.Row row : EXPECTED_ACCOUNTS.rows()) {
+                String expected = EXPECTED_ACCOUNTS.value(row.recordSequence(), row.entityKey(),
+                        row.expectedField());
+                String actual = actualAccountValue(row, run);
+
+                assertEquals(expected, actual,
+                        EXPECTED_ACCOUNT_FILE + " row " + row.key() + ", derived from "
+                                + row.sourceLocator() + ", Picture clause " + row.picClause());
+            }
+
+            assertThat(EXPECTED_ACCOUNTS.unconsumedRows())
+                    .as(EXPECTED_ACCOUNTS.unconsumedDescription())
+                    .isEmpty();
+        }
+
+        /** Resolves what the run, the fixture or the source holds for one account expectation. */
+        private String actualAccountValue(ExpectedOutcomes.Row row, PostingRun run) {
+            return switch (row.entityKey()) {
+                case "account_update" -> accountUpdateValue(row);
+                case "account_record" -> unchangedFieldValue(row, run);
+                case "arithmetic" -> arithmeticValue(row);
+                case "reason_109" -> reasonOneOhNineValue(row, run);
+                case "invariant" -> invariantValue(row, run);
+                case "model_b" -> accountModelValue(row, run);
+                case "cycle_close" -> cycleCloseValue(row, run);
+                default -> perAccountValue(row, run);
+            };
+        }
+
+        /** Resolves one per-account expectation from the run's before and after state. */
+        private String perAccountValue(ExpectedOutcomes.Row row, PostingRun run) {
+            String accountId = row.entityKey();
+            CopybookRecordParser.AccountRecord seeded = run.seededAccounts().get(accountId);
+            AccountBalanceProjectionEntity held = run.accountBalances().get(accountId);
+            assertThat(seeded).as(EXPECTED_ACCOUNT_FILE + " row " + row.key()
+                    + " names an account app/data/ASCII/acctdata.txt must hold").isNotNull();
+            assertThat(held).as(EXPECTED_ACCOUNT_FILE + " row " + row.key()
+                    + " names an account the run must have projected").isNotNull();
+
+            return switch (row.expectedField()) {
+                case "acct_id" -> held.getAccountId();
+                case "acct_curr_bal_initial" -> money(seeded.currentBalance());
+                case "acct_curr_bal_final" -> money(held.getCurrentBalance());
+                case "acct_curr_cyc_credit_initial" -> money(seeded.currentCycleCredit());
+                case "acct_curr_cyc_credit_final" -> money(held.getCycleCredit());
+                case "acct_curr_cyc_debit_initial" -> money(seeded.currentCycleDebit());
+                case "acct_curr_cyc_debit_final" -> money(held.getCycleDebit());
+                case "acct_credit_limit" -> money(seeded.creditLimit());
+                case "posting_count" -> Long.toString(postingsFor(run, accountId));
+                default -> throw new IllegalStateException(EXPECTED_ACCOUNT_FILE
+                        + " carries an unresolved per-account field " + row.key());
+            };
+        }
+
+        /** Resolves one expectation about {@code 2800-UPDATE-ACCOUNT-REC} from the program text. */
+        private String accountUpdateValue(ExpectedOutcomes.Row row) {
+            String paragraph = normalisedParagraph("2800-UPDATE-ACCOUNT-REC");
+
+            return switch (row.expectedField()) {
+                case "balance_add_site" -> statementContaining(paragraph, "ACCT-CURR-BAL");
+                case "sign_fork_condition" -> conditionOf(paragraph);
+                case "positive_amount_target" -> accumulatorTarget(paragraph, true);
+                case "negative_amount_target" -> accumulatorTarget(paragraph, false);
+                case "zero_amount_routes_to_cycle_credit" -> yesOrNo(conditionOf(paragraph)
+                        .endsWith(">= 0"));
+                case "account_update_write_verb" -> paragraph.contains("REWRITE FD-ACCTFILE-REC")
+                        ? "REWRITE"
+                        : "absent";
+                case "account_update_runs_after_tcatbal_update" -> yesOrNo(
+                        postOrderOf().indexOf("2700-UPDATE-TCATBAL")
+                                < postOrderOf().indexOf("2800-UPDATE-ACCOUNT-REC"));
+                default -> throw new IllegalStateException(EXPECTED_ACCOUNT_FILE
+                        + " carries an unresolved update field " + row.key());
+            };
+        }
+
+        /**
+         * Resolves whether one account field survived the whole run unchanged.
+         *
+         * <p>The projection the ledger owns carries the three values the posting arithmetic derives
+         * and nothing else, so a field named here is one no posting may touch. The check compares
+         * the fixture value against itself through the run's seeded map, which is the only place the
+         * value exists after posting, and asserts the projection never gained a column for it.</p>
+         */
+        private String unchangedFieldValue(ExpectedOutcomes.Row row, PostingRun run) {
+            String field = row.expectedField().replace("_unchanged_by_posting", "");
+            List<String> projected = List.of("current_balance", "cycle_credit", "cycle_debit");
+            boolean unchanged = run.seededAccounts().values().stream()
+                    .allMatch(seeded -> fieldOf(seeded, field) != null)
+                    && !projected.contains(field);
+
+            return yesOrNo(unchanged);
+        }
+
+        /** Returns one protected account field, so an absent name fails rather than passes. */
+        private Object fieldOf(CopybookRecordParser.AccountRecord seeded, String field) {
+            return switch (field) {
+                case "credit_limit" -> seeded.creditLimit();
+                case "cash_credit_limit" -> seeded.cashCreditLimit();
+                case "open_date" -> seeded.openDate();
+                case "expiration_date" -> seeded.expirationDate();
+                case "reissue_date" -> seeded.reissueDate();
+                case "addr_zip" -> seeded.addressZip();
+                case "group_id" -> seeded.groupId();
+                case "active_status" -> seeded.activeStatus();
+                default -> throw new IllegalStateException(EXPECTED_ACCOUNT_FILE
+                        + " names an account field this parser does not carry: " + field);
+            };
+        }
+
+        /** Resolves one expectation about how the arithmetic stores its result. */
+        private String arithmeticValue(ExpectedOutcomes.Row row) {
+            return switch (row.expectedField()) {
+                case "balance_add_rounding_mode", "accumulator_add_rounding_mode" ->
+                        observedRoundingModeName();
+                case "rounded_phrase_absent_from_source" -> yesOrNo(
+                        !sourceFileText(VALIDATION_PROGRAM).contains("ROUNDED"));
+                default -> throw new IllegalStateException(EXPECTED_ACCOUNT_FILE
+                        + " carries an unresolved arithmetic field " + row.key());
+            };
+        }
+
+        /** Resolves one expectation about the reason the rewrite failure assigns. */
+        private String reasonOneOhNineValue(ExpectedOutcomes.Row row, PostingRun run) {
+            String paragraph = normalisedParagraph("2800-UPDATE-ACCOUNT-REC");
+            String description = "ACCOUNT RECORD NOT FOUND";
+
+            return switch (row.expectedField()) {
+                case "reason_109_set_on_rewrite_invalid_key" -> yesOrNo(
+                        paragraph.contains("INVALID KEY")
+                                && paragraph.contains("MOVE 109 TO WS-VALIDATION-FAIL-REASON"));
+                case "reason_109_description" -> paragraph.contains(description)
+                        ? description
+                        : "absent";
+                case "reason_109_description_identical_to_reason_101" -> yesOrNo(
+                        DeclineReason.ACCOUNT_NOT_FOUND.description().equals(description));
+                case "reason_109_ever_inspected_by_program" -> yesOrNo(
+                        sourceFileText(VALIDATION_PROGRAM).contains("WS-VALIDATION-FAIL-REASON = 109"));
+                case "reason_109_occurrences_in_fixture" -> Long.toString(
+                        run.rejectedOutcomes().stream()
+                                .filter(outcome -> outcome.declineReason().numericCode() == 109)
+                                .count());
+                default -> throw new IllegalStateException(EXPECTED_ACCOUNT_FILE
+                        + " carries an unresolved reason-109 field " + row.key());
+            };
+        }
+
+        /** Resolves one invariant that must hold across every account after the run. */
+        private String invariantValue(ExpectedOutcomes.Row row, PostingRun run) {
+            return switch (row.expectedField()) {
+                case "balance_reconciles_to_accumulators" -> yesOrNo(
+                        run.accountBalances().values().stream().allMatch(held -> {
+                            CopybookRecordParser.AccountRecord seeded =
+                                    run.seededAccounts().get(held.getAccountId());
+                            BigDecimal moved = held.getCurrentBalance()
+                                    .subtract(seeded.currentBalance());
+                            BigDecimal accumulated = held.getCycleCredit()
+                                    .subtract(seeded.currentCycleCredit())
+                                    .add(held.getCycleDebit()
+                                            .subtract(seeded.currentCycleDebit()));
+                            return moved.compareTo(accumulated) == 0;
+                        }));
+                case "cycle_credit_equals_type_01_category_balance" -> yesOrNo(
+                        accumulatorMatchesCategory(run, PURCHASE_TYPE_CODE, true));
+                case "cycle_debit_equals_type_03_category_balance" -> yesOrNo(
+                        accumulatorMatchesCategory(run, REFUND_TYPE_CODE, false));
+                default -> throw new IllegalStateException(EXPECTED_ACCOUNT_FILE
+                        + " carries an unresolved invariant " + row.key());
+            };
+        }
+
+        /**
+         * Reports whether every account's accumulator movement equals its category balance movement
+         * for one transaction type.
+         *
+         * <p>The two run off the same amounts — {@code 2700} adds to the category row and
+         * {@code 2800} adds to the accumulator — so they must agree account by account. Where an
+         * account has no row for the type, its accumulator must not have moved either.</p>
+         */
+        private boolean accumulatorMatchesCategory(PostingRun run, String typeCode,
+                boolean creditSide) {
+            for (AccountBalanceProjectionEntity held : run.accountBalances().values()) {
+                CopybookRecordParser.AccountRecord seeded =
+                        run.seededAccounts().get(held.getAccountId());
+                BigDecimal moved = creditSide
+                        ? held.getCycleCredit().subtract(seeded.currentCycleCredit())
+                        : held.getCycleDebit().subtract(seeded.currentCycleDebit());
+                BigDecimal categoryMovement = run.categoryBalances().entrySet().stream()
+                        .filter(entry -> entry.getKey().getAccountId().equals(held.getAccountId())
+                                && entry.getKey().getTypeCode().equals(typeCode))
+                        .map(entry -> entry.getValue().getCategoryBalance()
+                                .subtract(seededCategoryBalance(run, entry.getKey())))
+                        .reduce(BigDecimal.ZERO, BigDecimal::add);
+                if (moved.compareTo(categoryMovement) != 0) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        /** Resolves one expectation about the whole Model B account population. */
+        private String accountModelValue(ExpectedOutcomes.Row row, PostingRun run) {
+            return switch (row.expectedField()) {
+                case "accounts_with_negative_final_cycle_debit" -> Long.toString(
+                        run.accountBalances().values().stream()
+                                .filter(held -> held.getCycleDebit().signum() < 0).count());
+                case "cycle_debit_accumulates_negative_amounts_directly" -> yesOrNo(
+                        accumulatorTarget(normalisedParagraph("2800-UPDATE-ACCOUNT-REC"), false)
+                                .equals("ACCT-CURR-CYC-DEBIT"));
+                case "credit_limit_formula_subtracts_cycle_debit" -> yesOrNo(
+                        normalisedParagraph("1500-B-LOOKUP-ACCT")
+                                .contains("- ACCT-CURR-CYC-DEBIT"));
+                case "accounts_with_negative_final_balance" -> Long.toString(
+                        accountsWithNegativeBalance(run).size());
+                case "accounts_with_negative_final_balance_ids" -> String.join(",",
+                        accountsWithNegativeBalance(run));
+                case "credit_limit_rule_ignores_current_balance" -> yesOrNo(
+                        !normalisedParagraph("1500-B-LOOKUP-ACCT")
+                                .contains("ACCT-CURR-BAL"));
+                case "accounts_with_unchanged_cycle_credit" -> Long.toString(
+                        accountsWithUnchangedCycleCredit(run).size());
+                case "accounts_with_unchanged_cycle_credit_ids" -> String.join(",",
+                        accountsWithUnchangedCycleCredit(run));
+                case "accounts_with_changed_cycle_credit" -> Long.toString(
+                        run.accountBalances().size()
+                                - accountsWithUnchangedCycleCredit(run).size());
+                case "accounts_with_changed_cycle_debit" -> Long.toString(
+                        run.accountBalances().values().stream()
+                                .filter(held -> held.getCycleDebit().compareTo(run.seededAccounts()
+                                        .get(held.getAccountId()).currentCycleDebit()) != 0)
+                                .count());
+                case "accounts_with_changed_balance" -> Long.toString(
+                        run.accountBalances().values().stream()
+                                .filter(held -> held.getCurrentBalance()
+                                        .compareTo(run.seededAccounts()
+                                                .get(held.getAccountId()).currentBalance()) != 0)
+                                .count());
+                case "total_postings" -> Long.toString(run.postedCount());
+                case "account_count" -> Integer.toString(run.accountBalances().size());
+                default -> throw new IllegalStateException(EXPECTED_ACCOUNT_FILE
+                        + " carries an unresolved model field " + row.key());
+            };
+        }
+
+        /** Resolves one expectation about the cycle-close operation this end state precedes. */
+        private String cycleCloseValue(ExpectedOutcomes.Row row, PostingRun run) {
+            return switch (row.expectedField()) {
+                case "cycle_close_zeroes_both_accumulators" -> yesOrNo(
+                        cycleCloseZeroesBothAccumulators());
+                case "cycle_close_omits_interest_add" -> yesOrNo(
+                        cycleCloseNamesNoInterest());
+                case "state_recorded_is_pre_cycle_close" -> yesOrNo(
+                        run.accountBalances().values().stream()
+                                .anyMatch(held -> held.getCycleCredit().signum() != 0));
+                default -> throw new IllegalStateException(EXPECTED_ACCOUNT_FILE
+                        + " carries an unresolved cycle-close field " + row.key());
+            };
+        }
+
+        /** Returns the accounts whose balance ended below zero, in identifier order. */
+        private List<String> accountsWithNegativeBalance(PostingRun run) {
+            return run.accountBalances().values().stream()
+                    .filter(held -> held.getCurrentBalance().signum() < 0)
+                    .map(AccountBalanceProjectionEntity::getAccountId)
+                    .sorted()
+                    .toList();
+        }
+
+        /** Returns the accounts whose cycle credit never moved, in identifier order. */
+        private List<String> accountsWithUnchangedCycleCredit(PostingRun run) {
+            return run.accountBalances().values().stream()
+                    .filter(held -> held.getCycleCredit().compareTo(run.seededAccounts()
+                            .get(held.getAccountId()).currentCycleCredit()) == 0)
+                    .map(AccountBalanceProjectionEntity::getAccountId)
+                    .sorted()
+                    .toList();
         }
     }
 
@@ -1748,9 +3671,16 @@ class PostingEquivalenceTest {
                     "spring.kafka.consumer.auto-offset-reset=earliest",
                     "spring.kafka.listener.ack-mode=manual_immediate",
                     "KAFKA_SASL_PASSWORD=not-a-real-broker-password",
-                    "ADMIN_PASSWORD_HASH={noop}not-a-real-admin-password",
-                    "USER_PASSWORD_HASH={noop}not-a-real-user-password",
-                    "MONITORING_PASSWORD_HASH={noop}not-a-real-monitoring-password",
+                    "ADMIN_PASSWORD_HASH=" + TestIdentityPasswords.ADMIN_PASSWORD_HASH,
+                    // The acquirer identity belongs to the authorization service and not to this
+                    // one. It is named here because this module carries all six services on one
+                    // classpath, so the application.yml a context loads is whichever copy the
+                    // classpath orders first, and an identity password resolves from no default by
+                    // design. An unresolved placeholder binds as its own text, which carries no
+                    // encoding prefix, so the value is supplied rather than the guard weakened.
+                    "ACQUIRER_PASSWORD_HASH=" + TestIdentityPasswords.ACQUIRER_PASSWORD_HASH,
+                    "USER_PASSWORD_HASH=" + TestIdentityPasswords.USER_PASSWORD_HASH,
+                    "MONITORING_PASSWORD_HASH=" + TestIdentityPasswords.MONITORING_PASSWORD_HASH,
                     "spring.jpa.hibernate.ddl-auto=validate",
                     "carddemo.kafka.topics.transaction-authorized=transaction.authorized",
                     "carddemo.kafka.topics.transaction-posted=transaction.posted",
@@ -1760,7 +3690,15 @@ class PostingEquivalenceTest {
                     "carddemo.consumer.retry.max-attempts=3",
                     "carddemo.consumer.retry.backoff-ms=0",
                     "carddemo.outbox.relay.fixed-delay-ms=3600000",
-                    "carddemo.outbox.relay.batch-size=100"
+                    "carddemo.outbox.relay.batch-size=100",
+                    // The reject horizon this service applies to rejected_transaction. It is named
+                    // for the same reason the acquirer hash above is: the application.yml a context
+                    // on this shared classpath loads is whichever copy the classpath orders first,
+                    // and no other service declares a ledger-specific key. It resolves from no
+                    // default by design, because a horizon that binds silently is a horizon nobody
+                    // chose, which is the defect app/jcl/DALYREJS.jcl:L24-L28 avoids by naming
+                    // LIMIT(5) in the catalogue definition itself.
+                    "carddemo.retention.rejected-transaction-retention-days=90"
             })
     @Testcontainers
     class DeployablePostingPath {
@@ -1771,7 +3709,6 @@ class PostingEquivalenceTest {
         /** Private schema the ledger service owns. */
         private static final String SERVICE_SCHEMA = "ledger_service";
 
-        /** Isolated PostgreSQL server for this group. */
         private static final PostgreSQLContainer POSTGRES =
                 new PostgreSQLContainer("postgres:18.4")
                         .withDatabaseName(DATABASE_LOGIN)
@@ -1790,19 +3727,15 @@ class PostingEquivalenceTest {
         @MockitoBean
         private KafkaTemplate<String, Object> publishChannel;
 
-        /** Real consumer bean reached through its listener method. */
         @Autowired
         private TransactionAuthorizedConsumer consumer;
 
-        /** Real account projection repository. */
         @Autowired
         private AccountBalanceProjectionRepository accountBalances;
 
-        /** Real posted transaction repository. */
         @Autowired
         private TransactionRepository postedTransactions;
 
-        /** Real processed-event repository. */
         @Autowired
         private ProcessedEventRepository processedEvents;
 
@@ -1810,11 +3743,19 @@ class PostingEquivalenceTest {
         @Autowired
         private RejectedTransactionRepository rejectedTransactions;
 
+        /**
+         * Real declined consumer, reached through its listener method.
+         *
+         * <p>The reject rows of {@code app/cbl/CBTRN02C.cbl:L446-L465} are this consumer's work,
+         * not the authorized consumer's, so reproducing the whole feed means driving both.</p>
+         */
+        @Autowired
+        private TransactionDeclinedConsumer declinedConsumer;
+
         /** Real outbox repository. */
         @Autowired
         private OutboxEventRepository outboxEvents;
 
-        /** Query channel used for complete-state comparisons. */
         @Autowired
         private JdbcTemplate jdbc;
 
@@ -1832,14 +3773,12 @@ class PostingEquivalenceTest {
                     () -> SERVICE_SCHEMA);
         }
 
-        /** Returns the container URL with the service schema on the connection search path. */
         private static String jdbcUrl() {
             String url = POSTGRES.getJdbcUrl();
             return url + (url.contains("?") ? "&" : "?")
                     + "currentSchema=" + SERVICE_SCHEMA;
         }
 
-        /** Returns the ledger migration directory alone. */
         private static String ledgerMigrationLocation() {
             return "filesystem:" + CardDemoFixtureLoader.fixtureDirectory()
                     .getParent()
@@ -1878,6 +3817,22 @@ class PostingEquivalenceTest {
             }
         }
 
+        /**
+         * Counts the idempotency markers one consumed topic left behind.
+         *
+         * <p>Both consumers write into the same {@code processed_event} table, so a bare count
+         * measures the two streams together. Filtering on the recorded topic is what keeps each
+         * stream's expectation independently checkable.</p>
+         *
+         * @param consumedTopic the topic whose markers to count
+         * @return how many markers name that topic
+         */
+        private long processedMarkersFrom(String consumedTopic) {
+            return processedEvents.findAll().stream()
+                    .filter(marker -> consumedTopic.equals(marker.getConsumedTopic()))
+                    .count();
+        }
+
         @Test
         @DisplayName("the migrated consumer result matches the checked-in Model B output")
         void theMigratedConsumerResultMatchesTheCheckedInOutput() {
@@ -1894,7 +3849,7 @@ class PostingEquivalenceTest {
             for (CopybookRecordParser.DailyTransactionRecord record
                     : CardDemoFixtureLoader.loadDailyTransactions()) {
                 DeclineReason reason =
-                        declineReasonFor(record, crossReferences, accounts, accountBalances);
+                        decisionFor(record, crossReferences, accounts, accountBalances).reason();
                 CopybookRecordParser.CardCrossReferenceRecord crossReference =
                         crossReferences.get(record.cardNumber());
                 if (reason == null) {
@@ -1922,6 +3877,15 @@ class PostingEquivalenceTest {
                 }
                 offset++;
             }
+
+            AtomicInteger declinedAcknowledgments = new AtomicInteger();
+            for (TransactionDeclined declined : declinedEvents) {
+                declinedConsumer.onTransactionDeclined(declined, declined.accountId(),
+                        DECLINED_TOPIC, declinedAcknowledgments::incrementAndGet);
+            }
+            assertEquals(declinedEvents.size(), declinedAcknowledgments.get(),
+                    "each declined delivery must acknowledge after its own transaction, and the "
+                            + "authorized count must stay measurable on its own counter");
 
             List<String> storedTransactionIds = jdbc.queryForList(
                     "SELECT transaction_id FROM \"transaction\" ORDER BY transaction_id",
@@ -1972,11 +3936,21 @@ class PostingEquivalenceTest {
                     postedTransactions.count(),
                     "the migrated transaction table count moved");
             assertEquals(expectedCount("posting", "processed_event_count"),
-                    processedEvents.count(),
+                    processedMarkersFrom(AUTHORIZED_TOPIC),
                     "the migrated processed-event count moved");
-            assertEquals(expectedCount("posting", "ledger_rejected_transaction_count"),
+            assertEquals(expectedCount("posting", "ledger_declined_processed_event_count"),
+                    processedMarkersFrom(DECLINED_TOPIC),
+                    "the declined consumer records its own idempotency marker per refusal");
+            assertEquals(processedEvents.count(),
+                    processedMarkersFrom(AUTHORIZED_TOPIC) + processedMarkersFrom(DECLINED_TOPIC),
+                    "every marker belongs to one of the two streams and nothing else writes one");
+            assertEquals(expectedCount("posting", "ledger_declined_consumer_reject_row_count"),
                     rejectedTransactions.count(),
-                    "the authorized consumer must not create reject rows");
+                    "every refusal the feed produces reaches a reject row through the declined "
+                            + "consumer, which is what app/cbl/CBTRN02C.cbl:L446-L465 writes");
+            assertEquals(expectedCount("posting", "declined_count"), declinedOutcomes.size(),
+                    "the refusal count the whole feed produces, which the declined consumer "
+                            + "turns into reject rows");
             assertEquals(expectedCount("posting", "posted_outbox_count"),
                     outboxEvents.findAll().stream()
                             .filter(row -> TransactionPosted.EVENT_TYPE.equals(row.getEventType()))
@@ -2235,7 +4209,6 @@ class PostingEquivalenceTest {
         return held;
     }
 
-    /** Renders one monetary value at the two-decimal scale of the posting records. */
     private static String money(BigDecimal value) {
         return value.setScale(PicClause.TRAN_AMT_SCALE, RoundingMode.DOWN).toPlainString();
     }
@@ -2397,88 +4370,179 @@ class PostingEquivalenceTest {
     }
 
     /**
-     * Returns the offset of {@code DALYTRAN-AMT} inside a {@code DALYTRAN-RECORD}.
+     * Returns the untouched record text of one feed record.
      *
-     * <p>The offset is the running sum of the widths {@code app/cpy/CVTRA06Y.cpy:L5-L9}
-     * declares.</p>
-     *
-     * @return the zero-based offset of the amount field
+     * @param ordinal the 1-based position of the record in {@code app/data/ASCII/dailytran.txt}
+     * @return {@link PicClause#DALYTRAN_RECORD_LENGTH} characters, exactly as the fixture holds them
      */
-    private static int amountOffsetInFeedRecord() {
-        return PicClause.DALYTRAN_ID_WIDTH
-                + PicClause.DALYTRAN_TYPE_CD_WIDTH
-                + PicClause.DALYTRAN_CAT_CD_WIDTH
-                + PicClause.DALYTRAN_SOURCE_WIDTH
-                + PicClause.DALYTRAN_DESC_WIDTH;
+    private static String feedRecordText(int ordinal) {
+        return FEED_RECORD_TEXT.get(ordinal - FIRST_RECORD_ORDINAL);
+    }
+
+    /**
+     * Reads one file of the source repository, without writing to it.
+     *
+     * <p>Several reject expectations state a fact about the COBOL program or the job rather than
+     * about a value the services compute: which verb writes the record, what happens when the write
+     * fails, which field counts the rejects, what length the dataset is allocated with. Reading the
+     * file makes those assertions real. Asserting them against a constant in this class would only
+     * prove the class agrees with itself.</p>
+     *
+     * @param repositoryPath path below the repository root, such as {@value #VALIDATION_PROGRAM}
+     * @return the whole file
+     * @throws IllegalStateException when no ancestor of the fixture directory holds the file
+     */
+    private static String sourceFileText(String repositoryPath) {
+        for (Path candidate = CardDemoFixtureLoader.fixtureDirectory();
+                candidate != null; candidate = candidate.getParent()) {
+            Path file = candidate.resolve(repositoryPath);
+            if (Files.isRegularFile(file)) {
+                try {
+                    return Files.readString(file, StandardCharsets.ISO_8859_1);
+                } catch (IOException unreadable) {
+                    throw new UncheckedIOException("cannot read " + file, unreadable);
+                }
+            }
+        }
+        throw new IllegalStateException("no ancestor of '"
+                + CardDemoFixtureLoader.fixtureDirectory() + "' holds '" + repositoryPath + "'");
+    }
+
+    /**
+     * Returns the zero-based offset of one column inside a {@code DALYTRAN-RECORD}.
+     *
+     * <p>Offsets are summed from the widths {@code app/cpy/CVTRA06Y.cpy} declares rather than
+     * written down, so a corrected width moves every column after it without a second edit.</p>
+     *
+     * @param column the column to locate
+     * @return the offset of its first character
+     */
+    private static int feedColumnOffset(FeedColumn column) {
+        int offset = 0;
+        for (FeedColumn earlier : FeedColumn.values()) {
+            if (earlier == column) {
+                return offset;
+            }
+            offset += earlier.width();
+        }
+        throw new IllegalStateException("unreachable: " + column + " is one of the declared columns");
+    }
+
+    /**
+     * Returns the text one column holds in one feed record.
+     *
+     * @param ordinal the 1-based position of the record in {@code app/data/ASCII/dailytran.txt}
+     * @param column  the column to read
+     * @return exactly {@link FeedColumn#width()} characters
+     */
+    private static String feedColumnText(int ordinal, FeedColumn column) {
+        int offset = feedColumnOffset(column);
+        return feedRecordText(ordinal).substring(offset, offset + column.width());
+    }
+
+    /**
+     * The columns of {@code DALYTRAN-RECORD}, in the order {@code app/cpy/CVTRA06Y.cpy} declares.
+     *
+     * <p>The order is the whole point: it is what makes {@link #feedColumnOffset} correct, and it is
+     * why the enum carries every column rather than only the ones an assertion reads.</p>
+     */
+    private enum FeedColumn {
+
+        /** {@code DALYTRAN-ID}, {@code app/cpy/CVTRA06Y.cpy:L5}. */
+        ID(PicClause.DALYTRAN_ID_WIDTH),
+
+        /** {@code DALYTRAN-TYPE-CD}, {@code app/cpy/CVTRA06Y.cpy:L6}. */
+        TYPE_CODE(PicClause.DALYTRAN_TYPE_CD_WIDTH),
+
+        /** {@code DALYTRAN-CAT-CD}, {@code app/cpy/CVTRA06Y.cpy:L7}. */
+        CATEGORY_CODE(PicClause.DALYTRAN_CAT_CD_WIDTH),
+
+        /** {@code DALYTRAN-SOURCE}, {@code app/cpy/CVTRA06Y.cpy:L8}. */
+        SOURCE(PicClause.DALYTRAN_SOURCE_WIDTH),
+
+        /** {@code DALYTRAN-DESC}, {@code app/cpy/CVTRA06Y.cpy:L9}. */
+        DESCRIPTION(PicClause.DALYTRAN_DESC_WIDTH),
+
+        /** {@code DALYTRAN-AMT}, {@code app/cpy/CVTRA06Y.cpy:L10}, sign overpunched. */
+        AMOUNT(PicClause.DALYTRAN_AMT_WIDTH),
+
+        /** {@code DALYTRAN-MERCHANT-ID}, {@code app/cpy/CVTRA06Y.cpy:L11}. */
+        MERCHANT_ID(PicClause.DALYTRAN_MERCHANT_ID_WIDTH),
+
+        /** {@code DALYTRAN-MERCHANT-NAME}, {@code app/cpy/CVTRA06Y.cpy:L12}. */
+        MERCHANT_NAME(PicClause.DALYTRAN_MERCHANT_NAME_WIDTH),
+
+        /** {@code DALYTRAN-MERCHANT-CITY}, {@code app/cpy/CVTRA06Y.cpy:L13}. */
+        MERCHANT_CITY(PicClause.DALYTRAN_MERCHANT_CITY_WIDTH),
+
+        /** {@code DALYTRAN-MERCHANT-ZIP}, {@code app/cpy/CVTRA06Y.cpy:L14}. */
+        MERCHANT_ZIP(PicClause.DALYTRAN_MERCHANT_ZIP_WIDTH),
+
+        /** {@code DALYTRAN-CARD-NUM}, {@code app/cpy/CVTRA06Y.cpy:L15}, all sixteen digits. */
+        CARD_NUMBER(PicClause.DALYTRAN_CARD_NUM_WIDTH),
+
+        /** {@code DALYTRAN-ORIG-TS}, {@code app/cpy/CVTRA06Y.cpy:L16}. */
+        ORIGIN_TIMESTAMP(PicClause.DALYTRAN_ORIG_TS_WIDTH),
+
+        /** {@code DALYTRAN-PROC-TS}, {@code app/cpy/CVTRA06Y.cpy:L17}. */
+        PROCESSING_TIMESTAMP(PicClause.DALYTRAN_PROC_TS_WIDTH),
+
+        /** The trailing {@code FILLER}, {@code app/cpy/CVTRA06Y.cpy:L18}. */
+        FILLER(PicClause.DALYTRAN_RECORD_FILLER_WIDTH);
+
+        /** Characters the column holds. */
+        private final int width;
+
+        FeedColumn(int width) {
+            this.width = width;
+        }
+
+        /**
+         * Returns the characters this column holds.
+         *
+         * @return the width
+         */
+        int width() {
+            return width;
+        }
     }
 
     /**
      * Renders one {@code REJECT-RECORD} as {@code app/cbl/CBTRN02C.cbl:L446-L465} lays it out.
      *
-     * <p>The amount carries plain zero-padded digits from the absolute value, which has no COBOL
-     * ancestor. The trailer holds the reason code at {@link PicClause#VALIDATION_FAIL_REASON_WIDTH}
-     * characters and the description at {@link PicClause#VALIDATION_FAIL_REASON_DESC_WIDTH}.</p>
+     * <p>The data part is the fixture's own record text, unchanged. That is what the source does:
+     * {@code app/cbl/CBTRN02C.cbl:L447} moves the whole {@code DALYTRAN-RECORD} into
+     * {@code REJECT-TRAN-DATA} in one statement, so the 350 bytes of a reject record are the bytes
+     * that were read. Nothing here re-renders a field, which matters in two places a
+     * reconstruction previously got wrong. The amount column carries a sign overpunch in the
+     * fixture — record 16 holds {@code 0000007154D} for 715.44 — and the card column carries all
+     * sixteen digits of the number. A copy reproduces both without having to model either.</p>
      *
-     * @param feed   the record {@code app/cbl/CBTRN02C.cbl:L447} moves into
-     *               {@code REJECT-TRAN-DATA}
-     * @param reason the reason {@code app/cbl/CBTRN02C.cbl:L448} moves into the trailer
+     * <p>Masking is deliberately absent. It is an addition this platform makes for its published
+     * payloads and its stored rows, with no ancestor in {@code app/cbl/}, so applying it here would
+     * make the comparison disagree with the fixture on 16 of every 350 bytes while claiming to be a
+     * verbatim copy. {@code theRowStoresTheMaskedNumberWhileTheRejectBytesKeepThePan} holds the two
+     * representations apart.</p>
+     *
+     * <p>The trailer is the one part the source builds rather than copies: the reason code at
+     * {@link PicClause#VALIDATION_FAIL_REASON_WIDTH} characters as plain digits, and the
+     * description space-padded to {@link PicClause#VALIDATION_FAIL_REASON_DESC_WIDTH}.</p>
+     *
+     * @param feedRecordText the record text {@code app/cbl/CBTRN02C.cbl:L447} moves into
+     *                       {@code REJECT-TRAN-DATA}, of
+     *                       {@link PicClause#DALYTRAN_RECORD_LENGTH} characters
+     * @param reason         the reason {@code app/cbl/CBTRN02C.cbl:L448} moves into the trailer
      * @return a record of {@link PicClause#REJECT_RECORD_LENGTH} characters
      */
-    private static String renderRejectRecord(CopybookRecordParser.DailyTransactionRecord feed,
-            DeclineReason reason) {
-        StringBuilder data = new StringBuilder(PicClause.REJECT_TRAN_DATA_WIDTH)
-                .append(alphanumeric(feed.transactionId(), PicClause.DALYTRAN_ID_WIDTH))
-                .append(alphanumeric(feed.typeCode(), PicClause.DALYTRAN_TYPE_CD_WIDTH))
-                .append(numeric(feed.categoryCode(), PicClause.DALYTRAN_CAT_CD_WIDTH))
-                .append(alphanumeric(feed.source(), PicClause.DALYTRAN_SOURCE_WIDTH))
-                .append(alphanumeric(feed.description(), PicClause.DALYTRAN_DESC_WIDTH))
-                .append(signedOverpunchAmount(feed.amount()))
-                .append(numeric(feed.merchantId(), PicClause.DALYTRAN_MERCHANT_ID_WIDTH))
-                .append(alphanumeric(feed.merchantName(), PicClause.DALYTRAN_MERCHANT_NAME_WIDTH))
-                .append(alphanumeric(feed.merchantCity(), PicClause.DALYTRAN_MERCHANT_CITY_WIDTH))
-                .append(alphanumeric(feed.merchantZip(), PicClause.DALYTRAN_MERCHANT_ZIP_WIDTH))
-                .append(alphanumeric(PanMasker.maskCardNumber(feed.cardNumber()),
-                        PicClause.DALYTRAN_CARD_NUM_WIDTH))
-                .append(alphanumeric(feed.originTimestamp(), PicClause.DALYTRAN_ORIG_TS_WIDTH))
-                .append(COBOL_TEXT_PAD.repeat(PicClause.DALYTRAN_PROC_TS_WIDTH))
-                .append(COBOL_TEXT_PAD.repeat(PicClause.DALYTRAN_RECORD_FILLER_WIDTH));
+    private static String renderRejectRecord(String feedRecordText, DeclineReason reason) {
+        if (feedRecordText.length() != PicClause.REJECT_TRAN_DATA_WIDTH) {
+            throw new IllegalStateException("REJECT-TRAN-DATA at CBTRN02C L177 holds "
+                    + PicClause.REJECT_TRAN_DATA_WIDTH + " characters, and the record offered "
+                    + "holds " + feedRecordText.length());
+        }
         String trailer = numeric(reason.code(), PicClause.VALIDATION_FAIL_REASON_WIDTH)
                 + alphanumeric(reason.description(), PicClause.VALIDATION_FAIL_REASON_DESC_WIDTH);
-        return data + trailer;
-    }
-
-    /**
-     * Renders an amount as zero-padded digits whose trailing character carries the sign.
-     *
-     * <p>The sign travels on the last position, as {@code PIC S9(09)V99} holds it in the amount
-     * column of {@code app/data/ASCII/dailytran.txt}. The character comes from
-     * {@link CopybookRecordParser#POSITIVE_SIGN_OVERPUNCH_DIGITS} or from
-     * {@link CopybookRecordParser#NEGATIVE_SIGN_OVERPUNCH_DIGITS}, indexed by the digit it
-     * replaces, so {@link CopybookRecordParser#parseDailyTransaction} reads the value back with
-     * its sign.</p>
-     *
-     * @param amount the value {@code DALYTRAN-AMT} holds
-     * @return {@link PicClause#DALYTRAN_AMT_WIDTH} characters
-     */
-    private static String signedOverpunchAmount(BigDecimal amount) {
-        String digits = numeric(amount.abs().movePointRight(PicClause.DALYTRAN_AMT_SCALE)
-                .toBigInteger().toString(), PicClause.DALYTRAN_AMT_WIDTH);
-        int lastPosition = digits.length() - 1;
-        int lastDigit = digits.charAt(lastPosition) - '0';
-
-        return digits.substring(0, lastPosition) + overpunchDigits(amount).charAt(lastDigit);
-    }
-
-    /**
-     * Selects the overpunch list that carries the sign of one amount.
-     *
-     * @param amount the value {@code DALYTRAN-AMT} holds
-     * @return the negative list for a value below zero, the positive list otherwise
-     */
-    private static String overpunchDigits(BigDecimal amount) {
-        return amount.signum() < 0
-                ? CopybookRecordParser.NEGATIVE_SIGN_OVERPUNCH_DIGITS
-                : CopybookRecordParser.POSITIVE_SIGN_OVERPUNCH_DIGITS;
+        return feedRecordText + trailer;
     }
 
     /**
@@ -2557,11 +4621,17 @@ class PostingEquivalenceTest {
     private record FeedOutcome(int ordinal,
             CopybookRecordParser.DailyTransactionRecord feed,
             DeclineReason declineReason,
-            AuthorizationPath path) {
+            AuthorizationPath path,
+            DecisionInputs decision) {
 
         FeedOutcome {
             Objects.requireNonNull(feed, "feed is required");
             Objects.requireNonNull(path, "path is required");
+            Objects.requireNonNull(decision, "the decision inputs are required");
+            if (decision.reason() != declineReason) {
+                throw new IllegalArgumentException(
+                        "the captured decision must carry the outcome reason");
+            }
             if ((path instanceof AuthorizedPath) != (declineReason == null)) {
                 throw new IllegalArgumentException(
                         "an authorized path must have no decline reason, "
@@ -2590,8 +4660,6 @@ class PostingEquivalenceTest {
         }
 
         /**
-         * Returns the account identifier of a path that resolved one.
-         *
          * @return the resolved account identifier
          * @throws IllegalStateException for the unresolved-card path
          */
@@ -2606,8 +4674,6 @@ class PostingEquivalenceTest {
         }
 
         /**
-         * Returns the authorized event.
-         *
          * @return the event the ledger consumes
          * @throws IllegalStateException on either decline path
          */
@@ -2619,8 +4685,6 @@ class PostingEquivalenceTest {
         }
 
         /**
-         * Returns the declined event when the account was resolved.
-         *
          * @return the event, or empty for an approval and reason 0100
          */
         Optional<TransactionDeclined> declinedEvent() {
@@ -2630,7 +4694,6 @@ class PostingEquivalenceTest {
             return Optional.empty();
         }
 
-        /** Reports whether this outcome is the reason-0100 unresolved-card path. */
         boolean unresolvedCardAttempt() {
             return path instanceof UnresolvedCardPath;
         }
@@ -2725,8 +4788,6 @@ class PostingEquivalenceTest {
         }
 
         /**
-         * Returns the outcomes of the records that posted.
-         *
          * @return the posted outcomes, in feed order
          */
         List<FeedOutcome> postedOutcomes() {
@@ -2734,8 +4795,6 @@ class PostingEquivalenceTest {
         }
 
         /**
-         * Returns the outcomes of the records that were rejected.
-         *
          * @return the rejected outcomes, in feed order
          */
         List<FeedOutcome> rejectedOutcomes() {
@@ -2743,8 +4802,6 @@ class PostingEquivalenceTest {
         }
 
         /**
-         * Returns the distinct decline reasons the run produced.
-         *
          * @return the reasons, in feed order of first appearance
          */
         Set<DeclineReason> declineReasons() {
@@ -2754,8 +4811,6 @@ class PostingEquivalenceTest {
         }
 
         /**
-         * Returns the outbox rows carrying one event type.
-         *
          * @param eventType the value {@code EventEnvelope.eventType} holds
          * @return the matching rows, in publication order
          */
@@ -2772,20 +4827,16 @@ class PostingEquivalenceTest {
      */
     private static final class StoredAccountBalances implements AccountBalanceProjectionRepository {
 
-        /** Rows the run has written, in first-write order. */
         private final Map<String, AccountBalanceProjectionEntity> rows = new LinkedHashMap<>();
 
-        /** Shared log every store appends its stage name to on a write. */
         private final List<String> saveLog;
 
-        /** Writes made before the run began, which the log leaves out. */
         private boolean seeding = true;
 
         private StoredAccountBalances(List<String> saveLog) {
             this.saveLog = saveLog;
         }
 
-        /** Marks the end of seeding, so later writes reach the log. */
         void seedingComplete() {
             seeding = false;
         }
@@ -2886,8 +4937,6 @@ class PostingEquivalenceTest {
         }
 
         /**
-         * Returns the rows this store holds.
-         *
          * @return an unmodifiable view in first-write order
          */
         Map<String, AccountBalanceProjectionEntity> snapshot() {
@@ -2902,24 +4951,20 @@ class PostingEquivalenceTest {
     private static final class StoredCategoryBalances
             implements TransactionCategoryBalanceRepository {
 
-        /** Rows the run has written, in first-write order. */
         private final Map<TransactionCategoryBalanceId, TransactionCategoryBalanceEntity> rows =
                 new LinkedHashMap<>();
 
         /** Keys whose read raised the {@code INVALID KEY} branch, in read order. */
         private final List<TransactionCategoryBalanceId> keysMissedOnRead = new ArrayList<>();
 
-        /** Shared log every store appends its stage name to on a write. */
         private final List<String> saveLog;
 
-        /** Writes made before the run began, which the log leaves out. */
         private boolean seeding = true;
 
         private StoredCategoryBalances(List<String> saveLog) {
             this.saveLog = saveLog;
         }
 
-        /** Marks the end of seeding, so later writes reach the log. */
         void seedingComplete() {
             seeding = false;
         }
@@ -2983,8 +5028,6 @@ class PostingEquivalenceTest {
         }
 
         /**
-         * Returns the keys this store holds.
-         *
          * @return the keys in first-write order
          */
         Set<TransactionCategoryBalanceId> keys() {
@@ -2992,8 +5035,6 @@ class PostingEquivalenceTest {
         }
 
         /**
-         * Returns the keys whose read found no row.
-         *
          * @return the keys in read order
          */
         List<TransactionCategoryBalanceId> keysMissedOnRead() {
@@ -3001,8 +5042,6 @@ class PostingEquivalenceTest {
         }
 
         /**
-         * Returns the rows this store holds.
-         *
          * @return an unmodifiable view in first-write order
          */
         Map<TransactionCategoryBalanceId, TransactionCategoryBalanceEntity> snapshot() {
@@ -3016,13 +5055,11 @@ class PostingEquivalenceTest {
      */
     private static final class StoredTransactions implements TransactionRepository {
 
-        /** Rows the run has written, in write order. */
         private final Map<String, TransactionEntity> rows = new LinkedHashMap<>();
 
         /** Identifiers a write presented more than once. */
         private final List<String> repeatedIdentifiers = new ArrayList<>();
 
-        /** Shared log every store appends its stage name to on a write. */
         private final List<String> saveLog;
 
         private StoredTransactions(List<String> saveLog) {
@@ -3055,8 +5092,6 @@ class PostingEquivalenceTest {
         }
 
         /**
-         * Returns the identifiers a write presented more than once.
-         *
          * @return the identifiers in write order
          */
         List<String> repeatedIdentifiers() {
@@ -3064,8 +5099,6 @@ class PostingEquivalenceTest {
         }
 
         /**
-         * Returns the rows this store holds.
-         *
          * @return an unmodifiable view in write order
          */
         Map<String, TransactionEntity> snapshot() {
@@ -3079,10 +5112,8 @@ class PostingEquivalenceTest {
      */
     private static final class StoredRejects implements RejectedTransactionRepository {
 
-        /** Rows the run has written, in write order. */
         private final List<RejectedTransactionEntity> rows = new ArrayList<>();
 
-        /** Shared log every store appends its stage name to on a write. */
         private final List<String> saveLog;
 
         private StoredRejects(List<String> saveLog) {
@@ -3099,6 +5130,24 @@ class PostingEquivalenceTest {
         @Override
         public long count() {
             return rows.size();
+        }
+
+        /**
+         * Removes nothing, because equivalence compares one run against the fixtures.
+         *
+         * <p>{@code domain/RetentionSweep} applies the ninety-day horizon
+         * {@code COMMENT ON TABLE rejected_transaction} declares, on its own schedule and never
+         * inside a posting. A run of the three hundred fixture records finishes in under a second,
+         * so no row of it is anywhere near that horizon, and a store that deleted here would remove
+         * a row this test is about to compare.
+         *
+         * @param horizon ignored
+         * @param limit   ignored
+         * @return 0, always
+         */
+        @Override
+        public int deleteRejectedBefore(Instant horizon, int limit) {
+            return 0;
         }
 
         /**
@@ -3150,25 +5199,18 @@ class PostingEquivalenceTest {
      */
     private static final class Probe {
 
-        /** Stage name of every write this probe made, in order. */
         private final List<String> saveLog = new ArrayList<>();
 
-        /** Account state the probe carries. */
         private final StoredAccountBalances accountBalances;
 
-        /** Category balances the probe carries. */
         private final StoredCategoryBalances categoryBalances;
 
-        /** Transaction rows the probe carries. */
         private final TransactionRepository transactions;
 
-        /** Reject rows the probe carries. */
         private final StoredRejects rejects;
 
-        /** Outbox the probe publishes through. */
         private final CapturedOutbox outbox = new CapturedOutbox();
 
-        /** The service under test. */
         private final PostingService postingService;
 
         /** The reject path under test. */
@@ -3195,13 +5237,14 @@ class PostingEquivalenceTest {
                     new AccountBalanceUpdater(accountBalances),
                     transactions,
                     outbox.writer());
-            this.rejectRecorder = new RejectRecorder(rejects, outbox.writer(),
+            // Two arguments, not three. The recorder writes the reject row and publishes nothing:
+            // the declined event that names the same refusal is the authorization service's, and
+            // messaging/TransactionDeclinedConsumer is what turns it into a call on this class.
+            this.rejectRecorder = new RejectRecorder(rejects,
                     new ObservabilityConfig().ledgerMeters(new SimpleMeterRegistry()));
         }
 
         /**
-         * Returns the posting service this probe wired.
-         *
          * @return the service
          */
         PostingService postingService() {
@@ -3209,8 +5252,6 @@ class PostingEquivalenceTest {
         }
 
         /**
-         * Returns the reject path this probe wired.
-         *
          * @return the recorder
          */
         RejectRecorder rejectRecorder() {
@@ -3218,8 +5259,6 @@ class PostingEquivalenceTest {
         }
 
         /**
-         * Returns the account state this probe carries.
-         *
          * @return the account store
          */
         StoredAccountBalances accountBalances() {
@@ -3227,8 +5266,6 @@ class PostingEquivalenceTest {
         }
 
         /**
-         * Returns the transaction rows this probe carries.
-         *
          * @return the transaction store
          */
         TransactionRepository transactions() {
@@ -3236,8 +5273,6 @@ class PostingEquivalenceTest {
         }
 
         /**
-         * Returns the reject rows this probe carries.
-         *
          * @return the reject store
          */
         StoredRejects rejects() {
@@ -3245,8 +5280,6 @@ class PostingEquivalenceTest {
         }
 
         /**
-         * Returns the stage name of every write this probe made.
-         *
          * @return the log, in write order
          */
         List<String> saveLog() {
@@ -3254,15 +5287,17 @@ class PostingEquivalenceTest {
         }
 
         /**
-         * Returns the outbox rows this probe produced carrying one event type.
+         * Returns every outbox row this probe produced.
          *
-         * @param eventType the value {@code EventEnvelope.eventType} holds
-         * @return the matching rows, in publication order
+         * <p>The reject path contributes nothing here. {@link RejectRecorder} writes its row and
+         * reaches no outbox, because the declined event naming the same refusal belongs to the
+         * authorization service, which published it before this service saw it. Only the post
+         * branch, through {@code PostingService}, puts a row in this list.</p>
+         *
+         * @return the rows, in publication order
          */
-        List<OutboxEventEntity> publishedOfType(String eventType) {
-            return outbox.snapshot().stream()
-                    .filter(row -> eventType.equals(row.getEventType()))
-                    .toList();
+        List<OutboxEventEntity> published() {
+            return outbox.snapshot();
         }
     }
 
@@ -3274,7 +5309,6 @@ class PostingEquivalenceTest {
      */
     private static final class CapturedOutbox {
 
-        /** Rows the writer produced, in publication order. */
         private final List<OutboxEventEntity> rows = new ArrayList<>();
 
         /** The writer under test, wired to a store that returns each row unchanged. */
@@ -3291,8 +5325,6 @@ class PostingEquivalenceTest {
         }
 
         /**
-         * Returns the writer the ledger services publish through.
-         *
          * @return the writer
          */
         OutboxWriter writer() {
@@ -3300,8 +5332,6 @@ class PostingEquivalenceTest {
         }
 
         /**
-         * Returns the rows the writer produced.
-         *
          * @return an unmodifiable view in publication order
          */
         List<OutboxEventEntity> snapshot() {

@@ -60,6 +60,33 @@ public record FraudProperties(
         @NotNull @Valid Fraud fraud) {
 
     /**
+     * Refuses a velocity retention horizon that does not outlast the window it retains.
+     *
+     * <p>The two settings live in different sub-records, so no per-field annotation can relate
+     * them. Binding is the only place both are visible, and start-up is the only moment at which
+     * refusing costs nothing: a horizon shorter than the window span would delete the window a
+     * live authorization is counting into, and the symptom would be a burst that quietly stopped
+     * triggering the velocity rule rather than an error anyone could see.
+     *
+     * <p>The comparison is strict. Equality is not enough, because a window that started exactly
+     * one span ago is still the current window for an authorization arriving in the same instant.
+     *
+     * @throws IllegalArgumentException when the horizon does not exceed the window span
+     */
+    public FraudProperties {
+        if (retention != null && fraud != null && fraud.risk() != null) {
+            Duration horizon = Duration.ofDays(retention.velocityRetentionDays());
+            Duration window = Duration.ofMinutes(fraud.risk().velocityWindowMinutes());
+            if (horizon.compareTo(window) <= 0) {
+                throw new IllegalArgumentException("carddemo.retention.velocity-retention-days of "
+                        + horizon + " must exceed carddemo.fraud.risk.velocity-window-minutes of "
+                        + window + ", or the sweep removes the window a live authorization is "
+                        + "counting into");
+            }
+        }
+    }
+
+    /**
      * The broker-facing names this service uses.
      *
      * @param topics the three topics this service reads or writes
@@ -134,6 +161,10 @@ public record FraudProperties(
          *
          * @param fixedDelayMs milliseconds between the end of one sweep and the start of the next
          * @param batchSize    unpublished rows one sweep reads
+         * @param instanceId   identity written into {@code outbox_event.claimed_by}, distinct per
+         *                     replica
+         * @param claimTimeout how long a claim stands before another sweep reclaims the row, and the
+         *                     cap on the retry backoff
          * @param maxDurationMs maximum wall time one sweep may spend waiting on sends
          */
         public record Relay(
@@ -150,12 +181,91 @@ public record FraudProperties(
         }
     }
 
-    /** @param markerRetentionHours hours a processed-event marker remains */
-    public record ProcessedEvent(@Positive long markerRetentionHours) {
+    /**
+     * The duplicate-marker horizon, and the broker retention it has to outlast.
+     *
+     * <p>A marker matters only while a redelivery of its event is still possible, and past that
+     * point it is dead weight on a table every message passes through. That makes the horizon a
+     * relationship rather than a number: the marker has to outlast every window through which the
+     * record itself can come back. Broker log retention is the shortest of those windows and the
+     * only one this platform configures, so it is the one the relationship is stated against.
+     *
+     * <p>The two shipped values were equal, which made the relationship an equality rather than a
+     * margin. Segment cleanup is not instant, a restored backup can carry a record older than the
+     * broker would still hold, and an operator resetting a consumer group replays whatever the log
+     * still has. Any one of those leaves a record readable after its marker has been swept, and the
+     * consumer then applies it a second time: for {@code account-posted} that means one transaction
+     * amount reaching a balance and a cycle accumulator twice.
+     *
+     * <p>{@link #MINIMUM_RETENTION_MARGIN} is therefore enforced here rather than documented,
+     * and at start-up rather than later, because the two values arrive from configuration and a
+     * mismatch is invisible until the day a replay happens. The shipped pair is 720 hours of
+     * markers against 168 hours of broker log, which is a margin above four.
+     *
+     * @param markerRetentionHours hours a processed-event marker remains
+     * @param brokerRetentionHours hours the broker is configured to retain a topic log, which
+     *                             {@code KAFKA_LOG_RETENTION_HOURS} sets for the broker and for
+     *                             every service that has to outlast it
+     */
+    public record ProcessedEvent(@Positive long markerRetentionHours,
+            @Positive long brokerRetentionHours) {
+
+        /**
+         * The smallest multiple of broker retention a marker horizon may be.
+         *
+         * <p>Two rather than one, because equality is what the review found: it leaves no room for
+         * segment cleanup lag, a restored backup, or a manually replayed window. Two rather than a
+         * larger figure, because the floor has to be one a deployment can meet by configuration
+         * alone, and the shipped pair clears it four times over.
+         */
+        public static final long MINIMUM_RETENTION_MARGIN = 2L;
+
+        /**
+         * Refuses a marker horizon that does not outlast broker retention by the required margin.
+         *
+         * @throws IllegalArgumentException when the marker horizon is under the margin
+         */
+        public ProcessedEvent {
+            if (markerRetentionHours > 0 && brokerRetentionHours > 0
+                    && markerRetentionHours < brokerRetentionHours * MINIMUM_RETENTION_MARGIN) {
+                throw new IllegalArgumentException(
+                        "processed-event.markerRetentionHours must be at least "
+                                + MINIMUM_RETENTION_MARGIN + " times"
+                                + " processed-event.brokerRetentionHours, so a replayed record"
+                                + " cannot outlive the marker that suppresses it. Found "
+                                + markerRetentionHours + " against " + brokerRetentionHours);
+            }
+        }
     }
 
-    /** @param sweepIntervalMs milliseconds between retention sweeps */
-    public record Retention(@Positive long sweepIntervalMs) {
+    /**
+     * How often the retention sweep runs, and how long the two business tables of this service keep
+     * a row.
+     *
+     * <p>Both horizons were declared before anything applied them. {@code COMMENT ON TABLE
+     * fraud_assessment} and {@code COMMENT ON TABLE velocity_window} in
+     * {@code src/main/resources/db/migration/V1__schema.sql} name ninety days and seven days
+     * respectively, and {@code domain/RetentionSweep} deleted only outbox rows and duplicate
+     * markers, so both numbers described an intention rather than the table. A security review
+     * found the gap. The two components below are what the sweep now reads, so the declaration and
+     * the behaviour come from one place.
+     *
+     * <p>Days rather than hours, because both declarations are written in days and a reader
+     * comparing the catalogue comment against the setting should not have to divide.
+     *
+     * @param sweepIntervalMs          milliseconds between retention sweeps
+     * @param assessmentRetentionDays  days a {@code fraud_assessment} row is kept, measured from
+     *                                 {@code assessed_at}
+     * @param velocityRetentionDays    days a {@code velocity_window} row is kept, measured from
+     *                                 {@code window_start}. It has to exceed
+     *                                 {@code carddemo.fraud.risk.velocity-window-minutes}, or the
+     *                                 purge removes the bucket a live authorization is counting
+     *                                 into; {@code domain/RetentionSweep} refuses to start
+     *                                 otherwise
+     */
+    public record Retention(@Positive long sweepIntervalMs,
+            @Positive int assessmentRetentionDays,
+            @Positive int velocityRetentionDays) {
     }
 
     /**

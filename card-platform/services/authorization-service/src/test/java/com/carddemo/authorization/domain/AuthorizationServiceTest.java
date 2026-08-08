@@ -9,6 +9,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import com.carddemo.authorization.api.AuthorizationRequest;
@@ -87,22 +88,21 @@ final class AuthorizationServiceTest {
     /** An expiry date before the capture date, so the expiry rule declines. */
     private static final String EXPIRY_BEFORE_CAPTURE = "2020-01-31";
 
-    /** The request identity every call below carries, at the width the audit column holds. */
+    /** The request identity every call below carries, recorded whole on the decision row. */
     private static final String ACTOR = "user0001";
+
+    /**
+     * The caller every request below presents.
+     *
+     * <p>It reaches every subject, which is what these tests want: they measure the rule chain, the
+     * event and the audit row, and an entitlement refusal would stop each of them before the chain ran.
+     * {@code CallerEntitlementTest} measures the refusal itself, and the nested entitlement class below
+     * measures where it sits in the decision.
+     */
+    private static final RequestCaller CALLER = RequestCaller.administrator(ACTOR);
 
     /** The identifier the source allocates when the request supplies none. */
     private static final String ALLOCATED_ID = "0000001000000001";
-
-    /**
-     * A capture-moment window wide enough to hold the 2022 records of
-     * {@code app/data/ASCII/dailytran.txt}.
-     *
-     * <p>The shipped window is a day wide, and every request below carries a fixture timestamp from
-     * 2022, so the tests would otherwise measure the window rather than the rule chain. One dedicated
-     * test narrows the window and asserts the refusal.
-     */
-    private static final OriginTimestampWindow FIXTURE_WINDOW =
-            new OriginTimestampWindow(Duration.ofDays(36500).toMinutes(), 5);
 
     private CardCrossReferenceRepository cardCrossReferences;
     private AccountCreditSnapshotRepository accountSnapshots;
@@ -112,6 +112,7 @@ final class AuthorizationServiceTest {
     private TransactionIdentifierSource identifiers;
     private List<AuthorizationDecisionEntity> audited;
     private List<OutboxEventEntity> written;
+    private CycleExposureReservation cycleExposure;
     private AuthorizationService service;
 
     /** Builds the service over stubbed repositories before each test. */
@@ -140,16 +141,26 @@ final class AuthorizationServiceTest {
         identifiers = mock(TransactionIdentifierSource.class);
         when(identifiers.nextIdentifier()).thenReturn(ALLOCATED_ID);
 
+        when(accountSnapshots.reserveCycleExposure(any(), any(), any(), any())).thenReturn(1);
+        cycleExposure =
+                new CycleExposureReservation(accountSnapshots, properties(TOLERANT_STALENESS));
+
         List<DeclineRule> rules = List.of(new CardCrossReferenceRule(cardCrossReferences),
-                new AccountExistsRule(accountSnapshots), new CreditLimitRule(),
+                new AccountExistsRule(accountSnapshots), new CreditLimitRule(cycleExposure),
                 new AccountExpirationRule());
 
         meters = new SimpleMeterRegistry();
         service = new AuthorizationService(rules, cardCrossReferences, identifiers,
                 new OutboxWriter(outboxEvents), unresolvedCardAttempts, authorizationDecisions,
-                FIXTURE_WINDOW, meters, immediateTransactions(),
-                properties(TOLERANT_STALENESS));
+                meters, immediateTransactions(), properties(TOLERANT_STALENESS),
+                cycleExposure);
     }
+
+    /** The lock-wait bound the configured decision block carries, in milliseconds. */
+    private static final long LOCK_WAIT_MS = 3_000L;
+
+    /** How long a reservation counts, wide enough that no test below reaches its expiry. */
+    private static final Duration RESERVATION_TTL = Duration.ofMinutes(15);
 
     /**
      * A staleness ceiling wide enough that no fixture observation is ever too old.
@@ -189,6 +200,8 @@ final class AuthorizationServiceTest {
         AuthorizationProperties.Replica replica = mock(AuthorizationProperties.Replica.class);
         when(replica.maxStaleness()).thenReturn(maxStaleness);
         when(properties.replica()).thenReturn(replica);
+        when(properties.decision()).thenReturn(
+                new AuthorizationProperties.Decision(LOCK_WAIT_MS, RESERVATION_TTL));
         return properties;
     }
 
@@ -199,7 +212,7 @@ final class AuthorizationServiceTest {
         resolveAccount(new BigDecimal("5000.00"), new BigDecimal("0.00"), new BigDecimal("0.00"),
                 EXPIRY_AFTER_CAPTURE);
 
-        AuthorizationService.Outcome outcome = service.authorize(request("504.77"), ACTOR);
+        AuthorizationService.Outcome outcome = service.authorize(request("504.77"), CALLER);
 
         assertTrue(outcome.approved(), "the transaction fits the credit limit and the expiry date");
         assertEquals(new BigDecimal(ACCOUNT_ID), outcome.accountId(), "the approval names the resolved account");
@@ -234,7 +247,7 @@ final class AuthorizationServiceTest {
         written.clear();
 
         AuthorizationService.Outcome approved =
-                service.authorize(requestWithTransactionId("9999999999999999", "504.77"), ACTOR);
+                service.authorize(requestWithTransactionId("9999999999999999", "504.77"), CALLER);
 
         assertEquals(ALLOCATED_ID, approved.transactionId(),
                 "an approval reports the allocated identifier and not one the caller named");
@@ -248,7 +261,7 @@ final class AuthorizationServiceTest {
         written.clear();
 
         AuthorizationService.Outcome declined =
-                service.authorize(requestWithTransactionId("9999999999999999", "504.77"), ACTOR);
+                service.authorize(requestWithTransactionId("9999999999999999", "504.77"), CALLER);
 
         assertFalse(declined.approved(), "the amount exceeds the credit limit");
         assertEquals(ALLOCATED_ID, declined.transactionId(),
@@ -277,7 +290,7 @@ final class AuthorizationServiceTest {
             written.clear();
 
             AuthorizationService.Outcome outcome = service.authorize(
-                    build(CARD_NUMBER, null, "504.77", ORIGIN_TIMESTAMP, null, supplied), ACTOR);
+                    build(CARD_NUMBER, null, "504.77", ORIGIN_TIMESTAMP, null, supplied), CALLER);
 
             assertTrue(outcome.approved(),
                     "a category code of width " + supplied.length() + " was refused");
@@ -303,7 +316,7 @@ final class AuthorizationServiceTest {
         resolveAccount(new BigDecimal("5000.00"), new BigDecimal("0.00"), new BigDecimal("0.00"),
                 EXPIRY_AFTER_CAPTURE);
 
-        service.authorize(request("504.77"), ACTOR);
+        service.authorize(request("504.77"), CALLER);
 
         String payload = written.get(0).getPayload();
         String expected = com.carddemo.cobol.PanMasker.cardToken(CARD_NUMBER);
@@ -323,7 +336,7 @@ final class AuthorizationServiceTest {
         resolveAccount(new BigDecimal("5000.00"), new BigDecimal("0.00"), new BigDecimal("0.00"),
                 EXPIRY_AFTER_CAPTURE);
 
-        service.authorize(request("504.77"), ACTOR);
+        service.authorize(request("504.77"), CALLER);
 
         String payload = written.get(0).getPayload();
         assertTrue(payload.contains("************7065"),
@@ -345,7 +358,7 @@ final class AuthorizationServiceTest {
     void anUnresolvedCardPublishesItsDeclineAndRecordsTheAttempt() {
         when(cardCrossReferences.findByCardNumber(CARD_NUMBER)).thenReturn(Optional.empty());
 
-        AuthorizationService.Outcome outcome = service.authorize(request("504.77"), ACTOR);
+        AuthorizationService.Outcome outcome = service.authorize(request("504.77"), CALLER);
 
         assertFalse(outcome.approved(), "no cross-reference row carries the card number");
         assertEquals(Optional.of(DeclineReason.INVALID_CARD_NUMBER), outcome.declineReason(),
@@ -387,7 +400,7 @@ final class AuthorizationServiceTest {
         resolveAccount(new BigDecimal("5000.00"), new BigDecimal("0.00"), new BigDecimal("0.00"),
                 EXPIRY_AFTER_CAPTURE);
 
-        AuthorizationService.Outcome approval = service.authorize(request("504.77"), ACTOR);
+        AuthorizationService.Outcome approval = service.authorize(request("504.77"), CALLER);
 
         assertEquals(1, audited.size(), "one call records one decision");
         assertEquals(approval.transactionId(), audited.get(0).getTransactionId(),
@@ -402,8 +415,8 @@ final class AuthorizationServiceTest {
                 "the row records the identity the web layer resolved for the call");
 
         audited.clear();
-        when(accountSnapshots.findByAccountId(any())).thenReturn(Optional.empty());
-        service.authorize(request("504.77"), ACTOR);
+        when(accountSnapshots.findForUpdateByAccountId(any())).thenReturn(Optional.empty());
+        service.authorize(request("504.77"), CALLER);
 
         assertEquals(1, audited.size(), "a decline records one decision too");
         assertEquals(AuthorizationDecisionEntity.DECLINED_OUTCOME, audited.get(0).outcome(),
@@ -413,7 +426,7 @@ final class AuthorizationServiceTest {
 
         audited.clear();
         when(cardCrossReferences.findByCardNumber(CARD_NUMBER)).thenReturn(Optional.empty());
-        service.authorize(request("504.77"), ACTOR);
+        service.authorize(request("504.77"), CALLER);
 
         assertEquals(1, audited.size(), "an unresolved card records one decision too");
         assertNull(audited.get(0).getAccountId(),
@@ -424,36 +437,47 @@ final class AuthorizationServiceTest {
     }
 
     /**
-     * Asserts a backdated capture moment is refused before any identifier is allocated.
+     * Asserts the capture moment is tested by reject reason {@code 0103} and by nothing else.
      *
-     * <p>Reject reason {@code 0103} at {@code app/cbl/CBTRN02C.cbl:L414-L420} approves whenever the
-     * account expiry is at or after the first ten characters of the capture moment, so a caller who
-     * backdates that value authorizes against an account that expired years ago. The window refuses
-     * the request instead, and reject reason {@code 0103} keeps its meaning.
+     * <p>{@code app/cbl/CBTRN02C.cbl:L414-L420} approves whenever the account expiry is at or after
+     * the first ten characters of the capture moment, and the comparison is lexical over ten
+     * characters of text. A moment years in the past therefore approves against an account whose
+     * expiry is later still, and {@code app/cbl/COTRN02C.cbl:L389-L423} applies no clock bound to the
+     * value either: it validates the date and nothing more.
      */
     @Test
-    void aBackdatedCaptureMomentIsRefusedBeforeAnythingIsAllocated() {
-        TransactionIdentifierSource identifiers = mock(TransactionIdentifierSource.class);
-        when(identifiers.nextIdentifier()).thenReturn(ALLOCATED_ID);
-        AuthorizationService narrowed = new AuthorizationService(
-                List.of(new CardCrossReferenceRule(cardCrossReferences),
-                        new AccountExistsRule(accountSnapshots), new CreditLimitRule(),
-                        new AccountExpirationRule()),
-                cardCrossReferences, identifiers, new OutboxWriter(outboxEvents),
-                unresolvedCardAttempts, authorizationDecisions, new OriginTimestampWindow(1440, 5),
-                new SimpleMeterRegistry(), immediateTransactions(),
-                properties(TOLERANT_STALENESS));
+    void aCaptureMomentYearsOldIsTestedByTheExpiryRuleAlone() {
         resolveCard();
         resolveAccount(new BigDecimal("5000.00"), new BigDecimal("0.00"), new BigDecimal("0.00"),
                 "2021-01-31");
 
-        assertThrows(IllegalArgumentException.class,
-                () -> narrowed.authorize(requestWithTransactionId(null, "504.77",
-                        "2020-01-01 00:00:00.000000"), ACTOR),
-                "a capture moment six years old reached the expiry rule");
+        AuthorizationService.Outcome outcome = service.authorize(
+                requestWithTransactionId(null, "504.77", "2020-01-01"), CALLER);
 
-        assertEquals(List.of(), written, "a refused request writes no event");
-        assertEquals(List.of(), audited, "a refused request records no decision");
+        assertTrue(outcome.approved(),
+                "an expiry after the capture moment approves at app/cbl/CBTRN02C.cbl:L414-L420");
+        assertEquals(1, written.size(), "an approval writes one event");
+        assertEquals(1, audited.size(), "an approval records one decision");
+    }
+
+    /**
+     * Asserts a capture moment after the account expiry declines with reject reason {@code 0103}.
+     *
+     * <p>This is the one test {@code app/cbl/CBTRN02C.cbl:L414-L420} applies to the capture moment,
+     * and it compares ten characters of text.
+     */
+    @Test
+    void aCaptureMomentAfterTheAccountExpiryDeclinesWithItsOwnCode() {
+        resolveCard();
+        resolveAccount(new BigDecimal("5000.00"), new BigDecimal("0.00"), new BigDecimal("0.00"),
+                "2019-12-31");
+
+        AuthorizationService.Outcome outcome = service.authorize(
+                requestWithTransactionId(null, "504.77", "2020-01-01"), CALLER);
+
+        assertFalse(outcome.approved(), "a capture moment after the expiry declines");
+        assertEquals(Optional.of(DeclineReason.ACCOUNT_EXPIRED), outcome.declineReason(),
+                "the decline carries the reject reason app/cbl/CBTRN02C.cbl:L417 assigns");
     }
 
     /**
@@ -464,7 +488,7 @@ final class AuthorizationServiceTest {
     void aMissingCardNeverReachesTheAccountRead() {
         when(cardCrossReferences.findByCardNumber(CARD_NUMBER)).thenReturn(Optional.empty());
 
-        service.authorize(request("504.77"), ACTOR);
+        service.authorize(request("504.77"), CALLER);
 
         verify(accountSnapshots, never()).findByAccountId(any());
     }
@@ -473,9 +497,9 @@ final class AuthorizationServiceTest {
     @Test
     void aMissingAccountDeclinesWithItsOwnCode() {
         resolveCard();
-        when(accountSnapshots.findByAccountId(any())).thenReturn(Optional.empty());
+        when(accountSnapshots.findForUpdateByAccountId(any())).thenReturn(Optional.empty());
 
-        AuthorizationService.Outcome outcome = service.authorize(request("504.77"), ACTOR);
+        AuthorizationService.Outcome outcome = service.authorize(request("504.77"), CALLER);
 
         assertEquals(Optional.of(DeclineReason.ACCOUNT_NOT_FOUND), outcome.declineReason(),
                 "app/cbl/CBTRN02C.cbl:L397 assigns this code");
@@ -500,7 +524,7 @@ final class AuthorizationServiceTest {
         resolveAccount(new BigDecimal("100.00"), new BigDecimal("0.00"), new BigDecimal("0.00"),
                 EXPIRY_AFTER_CAPTURE);
 
-        AuthorizationService.Outcome outcome = service.authorize(request("100.01"), ACTOR);
+        AuthorizationService.Outcome outcome = service.authorize(request("100.01"), CALLER);
 
         assertEquals(Optional.of(DeclineReason.OVER_CREDIT_LIMIT), outcome.declineReason(),
                 "app/cbl/CBTRN02C.cbl:L410 assigns this code");
@@ -515,7 +539,7 @@ final class AuthorizationServiceTest {
         resolveAccount(new BigDecimal("100.00"), new BigDecimal("0.00"), new BigDecimal("0.00"),
                 EXPIRY_AFTER_CAPTURE);
 
-        AuthorizationService.Outcome outcome = service.authorize(request("100.00"), ACTOR);
+        AuthorizationService.Outcome outcome = service.authorize(request("100.00"), CALLER);
 
         assertTrue(outcome.approved(),
                 "app/cbl/CBTRN02C.cbl:L407 approves on greater-or-equal, not on greater");
@@ -528,7 +552,7 @@ final class AuthorizationServiceTest {
         resolveAccount(new BigDecimal("5000.00"), new BigDecimal("0.00"), new BigDecimal("0.00"),
                 EXPIRY_BEFORE_CAPTURE);
 
-        AuthorizationService.Outcome outcome = service.authorize(request("504.77"), ACTOR);
+        AuthorizationService.Outcome outcome = service.authorize(request("504.77"), CALLER);
 
         assertEquals(Optional.of(DeclineReason.ACCOUNT_EXPIRED), outcome.declineReason(),
                 "app/cbl/CBTRN02C.cbl:L417 assigns this code");
@@ -549,7 +573,7 @@ final class AuthorizationServiceTest {
         resolveAccount(new BigDecimal("100.00"), new BigDecimal("0.00"), new BigDecimal("0.00"),
                 EXPIRY_BEFORE_CAPTURE);
 
-        AuthorizationService.Outcome outcome = service.authorize(request("100.01"), ACTOR);
+        AuthorizationService.Outcome outcome = service.authorize(request("100.01"), CALLER);
 
         assertEquals(Optional.of(DeclineReason.ACCOUNT_EXPIRED), outcome.declineReason(),
                 "the later assignment wins, and the earlier one does not survive");
@@ -569,7 +593,7 @@ final class AuthorizationServiceTest {
         resolveAccount(new BigDecimal("100.00"), new BigDecimal("0.00"), new BigDecimal("-50.00"),
                 EXPIRY_AFTER_CAPTURE);
 
-        AuthorizationService.Outcome outcome = service.authorize(request("60.00"), ACTOR);
+        AuthorizationService.Outcome outcome = service.authorize(request("60.00"), CALLER);
 
         assertEquals(Optional.of(DeclineReason.OVER_CREDIT_LIMIT), outcome.declineReason(),
                 "zero minus minus fifty plus sixty reaches one hundred and ten, above the limit");
@@ -588,7 +612,7 @@ final class AuthorizationServiceTest {
         resolveAccount(new BigDecimal("100.00"), new BigDecimal("1000000000.00"),
                 new BigDecimal("0.00"), EXPIRY_AFTER_CAPTURE);
 
-        AuthorizationService.Outcome outcome = service.authorize(request("50.00"), ACTOR);
+        AuthorizationService.Outcome outcome = service.authorize(request("50.00"), CALLER);
 
         assertTrue(outcome.approved(),
                 "one billion and fifty stores as fifty in a nine-digit field, so the limit of one "
@@ -610,7 +634,7 @@ final class AuthorizationServiceTest {
                 EXPIRY_AFTER_CAPTURE);
 
         AuthorizationService.Outcome outcome = service.authorize(
-                requestWithTransactionId("0000000000683580", "504.77"), ACTOR);
+                requestWithTransactionId("0000000000683580", "504.77"), CALLER);
 
         assertEquals(ALLOCATED_ID, outcome.transactionId(),
                 "the decision ran on the allocated identifier and not on the supplied one");
@@ -635,13 +659,13 @@ final class AuthorizationServiceTest {
         when(cardCrossReferences.findByCardNumber(CARD_NUMBER)).thenReturn(Optional.of(
                 new CardCrossReferenceEntity(CARD_NUMBER, "000000007", fixtureAccountId,
                         OBSERVED_AT)));
-        when(accountSnapshots.findByAccountId(fixtureAccountId)).thenReturn(
+        when(accountSnapshots.findForUpdateByAccountId(fixtureAccountId)).thenReturn(
                 Optional.of(new AccountCreditSnapshotEntity(fixtureAccountId,
                         new BigDecimal("2065.00"), "2024-12-13", new BigDecimal("0.00"),
                         new BigDecimal("0.00"), OBSERVED_AT)));
 
         AuthorizationService.Outcome outcome = service.authorize(
-                requestWithTransactionId(null, "504.77", "2022-06-10 19:27:53.000000"), ACTOR);
+                requestWithTransactionId(null, "504.77", "2022-06-10 19:27:53.000000"), CALLER);
 
         assertTrue(outcome.approved(), "504.77 fits a limit of 2065.00 and an expiry of 2024-12-13");
         assertEquals(new BigDecimal(fixtureAccountId), outcome.accountId(),
@@ -663,7 +687,7 @@ final class AuthorizationServiceTest {
         String shortCard = storedKey.substring(1);
 
         IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
-                () -> service.authorize(requestWithCardNumber(shortCard), ACTOR));
+                () -> service.authorize(requestWithCardNumber(shortCard), CALLER));
 
         assertEquals(AuthorizationRequest.IDENTIFIER_REQUIRED_MESSAGE, refused.getMessage(),
                 "the refusal uses the source-shaped missing-identifier text");
@@ -689,7 +713,7 @@ final class AuthorizationServiceTest {
                 EXPIRY_AFTER_CAPTURE);
 
         AuthorizationService.Outcome outcome =
-                service.authorize(requestNamingOnlyAnAccount(), ACTOR);
+                service.authorize(requestNamingOnlyAnAccount(), CALLER);
 
         assertTrue(outcome.approved(), "the card the account resolved decides the request");
         assertEquals(new BigDecimal(ACCOUNT_ID), outcome.accountId(),
@@ -717,7 +741,7 @@ final class AuthorizationServiceTest {
                 EXPIRY_AFTER_CAPTURE);
 
         AuthorizationService.Outcome outcome =
-                service.authorize(requestNamingOnlyAnAccount(), ACTOR);
+                service.authorize(requestNamingOnlyAnAccount(), CALLER);
 
         assertEquals(Optional.of(DeclineReason.OVER_CREDIT_LIMIT), outcome.declineReason(),
                 "the resolved card reached the credit-limit rule on the resolved account");
@@ -741,7 +765,7 @@ final class AuthorizationServiceTest {
                 .thenReturn(Optional.empty());
 
         IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
-                () -> service.authorize(requestNamingOnlyAnAccount(), ACTOR));
+                () -> service.authorize(requestNamingOnlyAnAccount(), CALLER));
 
         assertEquals(AuthorizationRequest.ACCOUNT_ID_NOT_FOUND_MESSAGE, refused.getMessage(),
                 "the refusal carries the NOTFND text of app/cbl/COTRN02C.cbl:L591-L592");
@@ -760,7 +784,7 @@ final class AuthorizationServiceTest {
     @Test
     void aRequestNamingNeitherIdentifierIsRefusedBeforeAnyRead() {
         IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
-                () -> service.authorize(requestNamingNeitherIdentifier(), ACTOR));
+                () -> service.authorize(requestNamingNeitherIdentifier(), CALLER));
 
         assertEquals(AuthorizationRequest.IDENTIFIER_REQUIRED_MESSAGE, refused.getMessage(),
                 "the refusal carries the WHEN OTHER text of app/cbl/COTRN02C.cbl:L226");
@@ -771,62 +795,75 @@ final class AuthorizationServiceTest {
     }
 
     /**
-     * Asserts a matching account identifier is accepted only as a check of the card lookup.
+     * Asserts a request naming both identifiers is decided by the account branch.
+     *
+     * <p>The {@code EVALUATE TRUE} at {@code app/cbl/COTRN02C.cbl:L195} tests the account field
+     * first, so a request carrying both values takes the account limb and the card limb never runs.
+     * The card the cross-reference row names then reaches the rules.
      */
     @Test
-    void aMatchingAccountCrossCheckLeavesTheCardDecisionUnchanged() {
+    void aRequestNamingBothIdentifiersTakesTheAccountBranch() {
+        resolveCardFromAccount();
         resolveCard();
         resolveAccount(new BigDecimal("5000.00"), new BigDecimal("0.00"),
                 new BigDecimal("0.00"),
                 EXPIRY_AFTER_CAPTURE);
 
         AuthorizationService.Outcome outcome = service.authorize(
-                build(CARD_NUMBER, ACCOUNT_ID, "504.77", ORIGIN_TIMESTAMP, null), ACTOR);
+                build(CARD_NUMBER, ACCOUNT_ID, "504.77", ORIGIN_TIMESTAMP, null), CALLER);
 
-        assertTrue(outcome.approved(), "the account cross-check agrees with the card lookup");
+        assertTrue(outcome.approved(), "the card the account resolved decides the request");
         assertEquals(new BigDecimal(ACCOUNT_ID), outcome.accountId(),
-                "the outcome names the account the card cross-reference supplied");
-        assertEquals(1, written.size(), "one matching request writes one event");
+                "the outcome names the account the resolved row carries");
+        verify(cardCrossReferences).findFirstByAccountIdOrderByCardNumberAsc(ACCOUNT_ID);
+        assertEquals(1, written.size(), "one request writes one event");
     }
 
     /**
-     * Asserts a caller cannot pair a valid card with another account identifier.
+     * Asserts the card the cross-reference row carries replaces the card the caller named.
+     *
+     * <p>{@code app/cbl/COTRN02C.cbl:L209} moves {@code XREF-CARD-NUM} into {@code CARDNINI}, which
+     * overwrites whatever the card field held. Every later paragraph reads the overwritten field, and
+     * {@code app/cbl/COTRN02C.cbl:L462} stores it on the transaction record, so the resolved card is
+     * the card the decision runs on.
      */
     @Test
-    void aMismatchedAccountCrossCheckIsRefusedBeforeAnIdentifierOrEventIsAllocated() {
+    void theResolvedCardReplacesTheCardTheCallerNamed() {
+        String cardTheCallerNamed = "9999999999999999";
+        resolveCardFromAccount();
         resolveCard();
         resolveAccount(new BigDecimal("5000.00"), new BigDecimal("0.00"),
                 new BigDecimal("0.00"),
                 EXPIRY_AFTER_CAPTURE);
 
-        IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
-                () -> service.authorize(
-                        build(CARD_NUMBER, "00000000008", "504.77", ORIGIN_TIMESTAMP, null),
-                        ACTOR));
+        AuthorizationService.Outcome outcome = service.authorize(
+                build(cardTheCallerNamed, ACCOUNT_ID, "504.77", ORIGIN_TIMESTAMP, null), CALLER);
 
-        assertEquals(AuthorizationService.ACCOUNT_CROSS_CHECK_MISMATCH_MESSAGE,
-                refused.getMessage());
-        verify(identifiers, never()).nextIdentifier();
-        assertEquals(List.of(), written, "a mismatched cross-check writes no event");
-        assertEquals(List.of(), audited, "a mismatched cross-check records no decision");
+        assertTrue(outcome.approved(), "the resolved card decides the request");
+        assertEquals(PanMasker.maskCardNumber(CARD_NUMBER), audited.get(0).getMaskedCardNumber(),
+                "the decision row records the resolved card, masked, and not the card supplied");
+        verify(cardCrossReferences, never()).findByCardNumber(cardTheCallerNamed);
     }
 
     /**
-     * Asserts an untrusted account value is never attached to a card that resolves no account.
+     * Asserts a card-only request whose card resolves no account records the unresolved attempt.
+     *
+     * <p>The card limb of {@code app/cbl/COTRN02C.cbl:L210-L218} runs only where the account field is
+     * empty, and reject reason {@code 0100} at {@code app/cbl/CBTRN02C.cbl:L385-L387} is the outcome
+     * of a cross-reference read that missed.
      */
     @Test
-    void anUnresolvedCardDoesNotAdoptTheCallerAccountCrossCheck() {
+    void aCardResolvingNoAccountRecordsTheUnresolvedAttempt() {
         when(cardCrossReferences.findByCardNumber(CARD_NUMBER)).thenReturn(Optional.empty());
 
-        AuthorizationService.Outcome outcome = service.authorize(
-                build(CARD_NUMBER, "00000000008", "504.77", ORIGIN_TIMESTAMP, null), ACTOR);
+        AuthorizationService.Outcome outcome = service.authorize(request("504.77"), CALLER);
 
         assertEquals(Optional.of(DeclineReason.INVALID_CARD_NUMBER), outcome.declineReason());
-        assertNull(outcome.accountId(), "the caller account is not authoritative");
+        assertNull(outcome.accountId(), "no account resolved, so the outcome names none");
         assertEquals(ALLOCATED_ID, written.get(0).getAggregateId(),
                 "the unresolved event is keyed on the allocated transaction identifier");
         assertNull(audited.get(0).getAccountId(),
-                "the audit row does not attribute the probe to the caller account");
+                "the audit row names no account either");
     }
 
     /**
@@ -840,7 +877,7 @@ final class AuthorizationServiceTest {
         resolveAccount(new BigDecimal("5000.00"), new BigDecimal("0.00"), new BigDecimal("0.00"),
                 ORIGIN_TIMESTAMP.substring(0, 10));
 
-        AuthorizationService.Outcome outcome = service.authorize(request("504.77"), ACTOR);
+        AuthorizationService.Outcome outcome = service.authorize(request("504.77"), CALLER);
 
         assertTrue(outcome.approved(),
                 "app/cbl/CBTRN02C.cbl:L414 approves on greater-or-equal, not on greater");
@@ -860,7 +897,7 @@ final class AuthorizationServiceTest {
 
         List<DeclineRule> rules = new ArrayList<>(
                 List.of(new CardCrossReferenceRule(cardCrossReferences),
-                        new AccountExistsRule(accountSnapshots), new CreditLimitRule(),
+                        new AccountExistsRule(accountSnapshots), new CreditLimitRule(cycleExposure),
                         new AccountExpirationRule()));
         rules.add(new DeclineRule() {
 
@@ -878,10 +915,10 @@ final class AuthorizationServiceTest {
         when(identifiers.nextIdentifier()).thenReturn(ALLOCATED_ID);
         AuthorizationService extended = new AuthorizationService(rules, cardCrossReferences,
                 identifiers, new OutboxWriter(outboxEvents), unresolvedCardAttempts,
-                authorizationDecisions, FIXTURE_WINDOW, new SimpleMeterRegistry(),
-                immediateTransactions(), properties(TOLERANT_STALENESS));
+                authorizationDecisions, new SimpleMeterRegistry(),
+                immediateTransactions(), properties(TOLERANT_STALENESS), cycleExposure);
 
-        AuthorizationService.Outcome outcome = extended.authorize(request("504.77"), ACTOR);
+        AuthorizationService.Outcome outcome = extended.authorize(request("504.77"), CALLER);
 
         assertEquals(Optional.of(DeclineReason.OVER_CREDIT_LIMIT), outcome.declineReason(),
                 "the added rule ran last and its answer stands");
@@ -891,9 +928,9 @@ final class AuthorizationServiceTest {
     @Test
     void aStoppingRuleEndsTheChainBeforeTheOverwritingSegmentRuns() {
         resolveCard();
-        when(accountSnapshots.findByAccountId(any())).thenReturn(Optional.empty());
+        when(accountSnapshots.findForUpdateByAccountId(any())).thenReturn(Optional.empty());
 
-        AuthorizationService.Outcome outcome = service.authorize(request("100.01"), ACTOR);
+        AuthorizationService.Outcome outcome = service.authorize(request("100.01"), CALLER);
 
         assertEquals(Optional.of(DeclineReason.ACCOUNT_NOT_FOUND), outcome.declineReason(),
                 "the credit test and the expiry test never ran, so neither overwrote this answer");
@@ -986,7 +1023,7 @@ final class AuthorizationServiceTest {
             BigDecimal cycleDebit, String expiryDate) {
         AccountCreditSnapshotEntity snapshot = new AccountCreditSnapshotEntity(ACCOUNT_ID,
                 creditLimit, expiryDate, cycleCredit, cycleDebit, OBSERVED_AT);
-        when(accountSnapshots.findByAccountId(ACCOUNT_ID))
+        when(accountSnapshots.findForUpdateByAccountId(ACCOUNT_ID))
                 .thenReturn(Optional.of(snapshot));
     }
 
@@ -1101,14 +1138,14 @@ final class AuthorizationServiceTest {
         /** Builds the service under a window that refuses the fixture observation. */
         private AuthorizationService strictService() {
             List<DeclineRule> rules = List.of(new CardCrossReferenceRule(cardCrossReferences),
-                    new AccountExistsRule(accountSnapshots), new CreditLimitRule(),
+                    new AccountExistsRule(accountSnapshots), new CreditLimitRule(cycleExposure),
                     new AccountExpirationRule());
             TransactionIdentifierSource identifiers = mock(TransactionIdentifierSource.class);
             when(identifiers.nextIdentifier()).thenReturn(ALLOCATED_ID);
 
             return new AuthorizationService(rules, cardCrossReferences, identifiers,
                     new OutboxWriter(outboxEvents), unresolvedCardAttempts, authorizationDecisions,
-                    FIXTURE_WINDOW, meters, immediateTransactions(), properties(STRICT));
+                    meters, immediateTransactions(), properties(STRICT), cycleExposure);
         }
 
         @Test
@@ -1119,7 +1156,7 @@ final class AuthorizationServiceTest {
                     new BigDecimal("0.00"), EXPIRY_AFTER_CAPTURE);
 
             assertThrows(AuthorizationService.StaleReplicaException.class,
-                    () -> strictService().authorize(requestWithCardNumber(CARD_NUMBER), ACTOR));
+                    () -> strictService().authorize(requestWithCardNumber(CARD_NUMBER), CALLER));
 
             assertTrue(written.isEmpty(),
                     "a call this service could not answer must write no event, because an event is"
@@ -1140,7 +1177,7 @@ final class AuthorizationServiceTest {
                     new BigDecimal("0.00"), EXPIRY_AFTER_CAPTURE);
 
             assertThrows(AuthorizationService.StaleReplicaException.class,
-                    () -> strictService().authorize(requestWithCardNumber(CARD_NUMBER), ACTOR));
+                    () -> strictService().authorize(requestWithCardNumber(CARD_NUMBER), CALLER));
 
             assertEquals(1.0d,
                     meters.counter(AuthorizationService.FAILURES_COUNTER, "stage",
@@ -1163,7 +1200,7 @@ final class AuthorizationServiceTest {
             when(cardCrossReferences.findByCardNumber(CARD_NUMBER)).thenReturn(Optional.empty());
 
             AuthorizationService.Outcome outcome =
-                    strictService().authorize(requestWithCardNumber(CARD_NUMBER), ACTOR);
+                    strictService().authorize(requestWithCardNumber(CARD_NUMBER), CALLER);
 
             assertFalse(outcome.approved(), "an unresolved card is declined");
             assertEquals(Optional.of(DeclineReason.INVALID_CARD_NUMBER), outcome.declineReason(),
@@ -1183,7 +1220,7 @@ final class AuthorizationServiceTest {
             when(accountSnapshots.findByAccountId(ACCOUNT_ID)).thenReturn(Optional.empty());
 
             AuthorizationService.Outcome outcome =
-                    strictService().authorize(requestWithCardNumber(CARD_NUMBER), ACTOR);
+                    strictService().authorize(requestWithCardNumber(CARD_NUMBER), CALLER);
 
             assertEquals(Optional.of(DeclineReason.ACCOUNT_NOT_FOUND), outcome.declineReason(),
                     "an absent account row carries reason 0101, not a refusal");
@@ -1201,8 +1238,8 @@ final class AuthorizationServiceTest {
             assertThrows(IllegalArgumentException.class,
                     () -> new AuthorizationService(List.of(), cardCrossReferences, identifiers,
                             new OutboxWriter(outboxEvents), unresolvedCardAttempts,
-                            authorizationDecisions, FIXTURE_WINDOW, meters,
-                            immediateTransactions(), properties(Duration.ZERO)));
+                            authorizationDecisions, meters, immediateTransactions(),
+                            properties(Duration.ZERO), cycleExposure));
         }
     }
 
@@ -1220,7 +1257,7 @@ final class AuthorizationServiceTest {
         /** Builds the service over a boundary that rolls back instead of committing. */
         private AuthorizationService serviceOverFailingCommit() {
             List<DeclineRule> rules = List.of(new CardCrossReferenceRule(cardCrossReferences),
-                    new AccountExistsRule(accountSnapshots), new CreditLimitRule(),
+                    new AccountExistsRule(accountSnapshots), new CreditLimitRule(cycleExposure),
                     new AccountExpirationRule());
             TransactionIdentifierSource identifiers = mock(TransactionIdentifierSource.class);
             when(identifiers.nextIdentifier()).thenReturn(ALLOCATED_ID);
@@ -1235,7 +1272,7 @@ final class AuthorizationServiceTest {
 
             return new AuthorizationService(rules, cardCrossReferences, identifiers,
                     new OutboxWriter(outboxEvents), unresolvedCardAttempts, authorizationDecisions,
-                    FIXTURE_WINDOW, meters, failing, properties(TOLERANT_STALENESS));
+                    meters, failing, properties(TOLERANT_STALENESS), cycleExposure);
         }
 
         @Test
@@ -1247,7 +1284,7 @@ final class AuthorizationServiceTest {
 
             assertThrows(org.springframework.dao.CannotAcquireLockException.class,
                     () -> serviceOverFailingCommit()
-                            .authorize(requestWithCardNumber(CARD_NUMBER), ACTOR));
+                            .authorize(requestWithCardNumber(CARD_NUMBER), CALLER));
 
             assertEquals(0.0d,
                     meters.counter(AuthorizationService.DECISION_COUNTER, "outcome",
@@ -1270,7 +1307,7 @@ final class AuthorizationServiceTest {
             resolveAccount(new BigDecimal("5000.00"), new BigDecimal("0.00"),
                     new BigDecimal("0.00"), EXPIRY_AFTER_CAPTURE);
 
-            service.authorize(requestWithCardNumber(CARD_NUMBER), ACTOR);
+            service.authorize(requestWithCardNumber(CARD_NUMBER), CALLER);
 
             assertEquals(1.0d,
                     meters.counter(AuthorizationService.DECISION_COUNTER, "outcome",
@@ -1293,14 +1330,229 @@ final class AuthorizationServiceTest {
             resolveAccount(new BigDecimal("5000.00"), new BigDecimal("0.00"),
                     new BigDecimal("0.00"), EXPIRY_AFTER_CAPTURE);
 
-            service.authorize(requestWithCardNumber(CARD_NUMBER), ACTOR);
+            service.authorize(requestWithCardNumber(CARD_NUMBER), CALLER);
             assertThrows(org.springframework.dao.CannotAcquireLockException.class,
                     () -> serviceOverFailingCommit()
-                            .authorize(requestWithCardNumber(CARD_NUMBER), ACTOR));
+                            .authorize(requestWithCardNumber(CARD_NUMBER), CALLER));
 
             assertEquals(2L, meters.timer(AuthorizationService.DECISION_TIMER).count(),
                     "the timer covers the failed call as well, because a call that could not commit"
                             + " still took time and a slow failure is worth seeing");
+        }
+    }
+
+    /**
+     * The exposure an approval commits, and whether the next decision for the same account sees it.
+     *
+     * <p>{@code app/cbl/CBTRN02C.cbl} posts each record before it validates the next: paragraph
+     * {@code 2000-POST-TRANSACTION} at {@code :L424-L444} runs inside the sequential read loop and
+     * paragraph {@code 2700-UPDATE-ACCOUNT} at {@code :L545-L560} has already moved both accumulators
+     * by the time {@code :L403-L405} reads them again. Two transactions of 60.00 against a limit of
+     * 100.00 therefore approve once and decline once, in that order.
+     *
+     * <p>Here the account service owns the accumulators and reports them back four asynchronous hops
+     * after the decision, so without a reservation both calls approved and the limit was breached by
+     * every call arriving inside that window. The store below carries the reservation forward between
+     * the two calls exactly as a row would, so these tests run the real service, the real rule chain
+     * and the real reservation.
+     */
+    @Nested
+    @DisplayName("Cumulative exposure across two decisions")
+    class CumulativeExposure {
+
+        /** The reserved cycle credit the account row reports, moved by each reservation write. */
+        private final java.util.concurrent.atomic.AtomicReference<BigDecimal> reservedCredit =
+                new java.util.concurrent.atomic.AtomicReference<>(new BigDecimal("0.00"));
+
+        /** The reserved cycle debit the account row reports, moved by each reservation write. */
+        private final java.util.concurrent.atomic.AtomicReference<BigDecimal> reservedDebit =
+                new java.util.concurrent.atomic.AtomicReference<>(new BigDecimal("0.00"));
+
+        /** Stands the account row up so its reservation survives from one decision to the next. */
+        @BeforeEach
+        void carryTheReservationBetweenCalls() {
+            resolveCard();
+            AccountCreditSnapshotEntity row = mock(AccountCreditSnapshotEntity.class);
+            when(row.getAccountId()).thenReturn(ACCOUNT_ID);
+            when(row.getCreditLimit()).thenReturn(new BigDecimal("100.00"));
+            when(row.getAccountExpirationDate()).thenReturn(EXPIRY_AFTER_CAPTURE);
+            when(row.getCurrentCycleCredit()).thenReturn(new BigDecimal("0.00"));
+            when(row.getCurrentCycleDebit()).thenReturn(new BigDecimal("0.00"));
+            when(row.isFreshAt(any(), any())).thenReturn(true);
+            when(row.effectivePendingCycleCredit(any())).thenAnswer(call -> reservedCredit.get());
+            when(row.effectivePendingCycleDebit(any())).thenAnswer(call -> reservedDebit.get());
+
+            when(accountSnapshots.findForUpdateByAccountId(ACCOUNT_ID))
+                    .thenReturn(Optional.of(row));
+            when(accountSnapshots.reserveCycleExposure(any(), any(), any(), any()))
+                    .thenAnswer(call -> {
+                        reservedCredit.set(call.getArgument(1));
+                        reservedDebit.set(call.getArgument(2));
+                        return 1;
+                    });
+        }
+
+        @Test
+        @DisplayName("two calls of 60.00 against a limit of 100.00 approve once and decline once")
+        void twoCallsAgainstOneLimitApproveOnceAndDeclineOnce() {
+            AuthorizationService.Outcome first = service.authorize(request("60.00"), CALLER);
+            AuthorizationService.Outcome second = service.authorize(request("60.00"), CALLER);
+
+            assertTrue(first.approved(), "the first 60.00 fits a limit of 100.00");
+            assertFalse(second.approved(),
+                    "the second 60.00 must see the first, which is what app/cbl/CBTRN02C.cbl:L407 "
+                            + "sees because :L545-L560 already rewrote the account record");
+            assertEquals(Optional.of(DeclineReason.OVER_CREDIT_LIMIT), second.declineReason(),
+                    "reject code 0102 at app/cbl/CBTRN02C.cbl:L403-L413 is the one that stands");
+        }
+
+        @Test
+        @DisplayName("an approval reserves its amount against the cycle credit")
+        void anApprovalReservesItsAmount() {
+            service.authorize(request("60.00"), CALLER);
+
+            assertEquals(new BigDecimal("60.00"), reservedCredit.get(),
+                    "app/cbl/CBTRN02C.cbl:L549 adds an amount of zero or more to the cycle credit");
+            assertEquals(new BigDecimal("0.00"), reservedDebit.get(),
+                    "and leaves the debit accumulator alone");
+        }
+
+        @Test
+        @DisplayName("a refund reserves against the cycle debit, keeping the source sign convention")
+        void aRefundReservesAgainstTheCycleDebit() {
+            service.authorize(request("-60.00"), CALLER);
+
+            assertEquals(new BigDecimal("-60.00"), reservedDebit.get(),
+                    "app/cbl/CBTRN02C.cbl:L551 adds a negative amount, and :L404 subtracts the "
+                            + "accumulator, so a refund tightens the next authorization. Flagged in "
+                            + "card-platform/docs/business-rule-flags.md and reproduced here");
+        }
+
+        @Test
+        @DisplayName("a declined call reserves nothing")
+        void aDeclinedCallReservesNothing() {
+            AuthorizationService.Outcome declined = service.authorize(request("500.00"), CALLER);
+
+            assertFalse(declined.approved(), "500.00 exceeds a limit of 100.00");
+            assertEquals(new BigDecimal("0.00"), reservedCredit.get(),
+                    "a decline commits no exposure, so it reserves none");
+            verify(accountSnapshots, never())
+                    .reserveCycleExposure(any(), any(), any(), any());
+        }
+
+        @Test
+        @DisplayName("every decision bounds how long it waits for the account it locks")
+        void everyDecisionBoundsItsLockWait() {
+            service.authorize(request("60.00"), CALLER);
+
+            verify(accountSnapshots).applyLockWaitBound(LOCK_WAIT_MS + "ms");
+        }
+    }
+
+    /**
+     * Which caller may authorize against the subject its request resolved to.
+     *
+     * <p>ADDITIVE. {@code app/cbl/CBTRN02C.cbl} authorizes a record the nightly feed supplied and has
+     * no caller to entitle. The gap these tests close is that an ordinary credential could authorize
+     * against any account in the platform: a request may name an account alone, and
+     * {@code resolveCardNumber} then reads that account's first card, so no card number had to be
+     * known.
+     *
+     * <p>Where the refusal sits is as important as the refusal. It runs after the chain has resolved
+     * the card and the account, because the account it compares is the one the cross-reference named,
+     * and before the transaction identifier is allocated, so a refused call leaves nothing behind.
+     */
+    @Nested
+    @DisplayName("Caller entitlement and what a refusal leaves behind")
+    class CallerEntitlementInTheDecision {
+
+        @Test
+        @DisplayName("a caller owning neither subject is refused and leaves nothing behind")
+        void aCallerOwningNeitherSubjectIsRefused() {
+            resolveCard();
+            resolveAccount(new BigDecimal("5000.00"), new BigDecimal("0.00"),
+                    new BigDecimal("0.00"), EXPIRY_AFTER_CAPTURE);
+
+            assertThrows(CallerNotEntitledException.class,
+                    () -> service.authorize(request("504.77"), ownerOfAnotherAccount()),
+                    "an ordinary credential must not authorize against an account it does not own");
+
+            assertEquals(List.of(), written, "a refused caller produces no event");
+            assertEquals(List.of(), audited, "and no decision row");
+            verify(identifiers, never()).nextIdentifier();
+            verify(accountSnapshots, never())
+                    .reserveCycleExposure(any(), any(), any(), any());
+        }
+
+        @Test
+        @DisplayName("a caller owning the resolved account authorizes it")
+        void aCallerOwningTheResolvedAccountAuthorizesIt() {
+            resolveCard();
+            resolveAccount(new BigDecimal("5000.00"), new BigDecimal("0.00"),
+                    new BigDecimal("0.00"), EXPIRY_AFTER_CAPTURE);
+
+            AuthorizationService.Outcome outcome =
+                    service.authorize(request("504.77"), ownerOfTheResolvedAccount());
+
+            assertTrue(outcome.approved(), "the caller owns the account the card resolved");
+            assertEquals(1, written.size(), "one entitled call writes one event");
+            assertEquals(ACTOR, audited.get(0).getActor(),
+                    "and the decision row names the identity that asked");
+        }
+
+        @Test
+        @DisplayName("a refusal counts the entitlement stage and no other")
+        void aRefusalCountsTheEntitlementStage() {
+            resolveCard();
+            resolveAccount(new BigDecimal("5000.00"), new BigDecimal("0.00"),
+                    new BigDecimal("0.00"), EXPIRY_AFTER_CAPTURE);
+
+            assertThrows(CallerNotEntitledException.class,
+                    () -> service.authorize(request("504.77"), ownerOfAnotherAccount()));
+
+            assertEquals(1.0d, meters.counter(AuthorizationService.FAILURES_COUNTER, "stage",
+                            AuthorizationService.ENTITLEMENT_STAGE).count(),
+                    "the refusal is counted where an operator can see it");
+            assertEquals(0.0d, meters.counter(AuthorizationService.FAILURES_COUNTER, "stage",
+                            AuthorizationService.PERSIST_STAGE).count(),
+                    "and it is not reported as a datastore fault");
+            assertEquals(0.0d, meters.counter(AuthorizationService.DECISION_COUNTER, "outcome",
+                            AuthorizationService.APPROVED_OUTCOME_TAG).count(),
+                    "nor as an outcome, because no decision was taken");
+        }
+
+        @Test
+        @DisplayName("a card that resolved no account is refused too, so card existence stays hidden")
+        void anUnresolvedCardIsRefusedTooForAnUnentitledCaller() {
+            when(cardCrossReferences.findByCardNumber(CARD_NUMBER)).thenReturn(Optional.empty());
+
+            assertThrows(CallerNotEntitledException.class,
+                    () -> service.authorize(request("504.77"), ownerOfAnotherAccount()),
+                    "answering reject code 0100 here would confirm the card is unknown, and an "
+                            + "approval would confirm it is known");
+
+            assertEquals(List.of(), written, "and no decline event names a card the caller sent");
+            verifyNoInteractions(unresolvedCardAttempts);
+        }
+
+        /**
+         * Builds a caller entitled to the account this card resolves to.
+         *
+         * @return the caller
+         */
+        private RequestCaller ownerOfTheResolvedAccount() {
+            return RequestCaller.of(ACTOR, List.of("ROLE_USER",
+                    RequestCaller.ACCOUNT_SCOPE_PREFIX + ACCOUNT_ID));
+        }
+
+        /**
+         * Builds a caller entitled to some other account, and to no card of this one.
+         *
+         * @return the caller
+         */
+        private RequestCaller ownerOfAnotherAccount() {
+            return RequestCaller.of(ACTOR, List.of("ROLE_USER",
+                    RequestCaller.ACCOUNT_SCOPE_PREFIX + "00000000008"));
         }
     }
 }

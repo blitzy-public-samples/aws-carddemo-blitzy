@@ -10,6 +10,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -54,6 +55,21 @@ class DocumentationContractTest {
 
     private static final Pattern FLAG_ROW =
             Pattern.compile("(?m)^\\|\\s*(\\d+)\\s+[^|]*\\|");
+
+    /** Selects the count of findings the register heading states. */
+    private static final Pattern DECLARED_REGISTER_SIZE =
+            Pattern.compile("## Register coverage\\s*\\n\\s*All (\\d+) register items");
+
+    /** The identifier the first register finding carries. */
+    private static final int FIRST_REGISTER_IDENTIFIER = 1;
+
+    /**
+     * The number of register identifiers other documents already cite by number.
+     *
+     * <p>The register may grow past this, and findings above it are as binding as those below.
+     * Shrinking below it would break a citation, so this is a floor and not a ceiling.</p>
+     */
+    private static final int SMALLEST_STABLE_REGISTER = 26;
     private static final Pattern LINK = Pattern.compile("\\[[^]]+\\]\\(([^)]+)\\)");
     private static final Pattern CITATION =
             Pattern.compile("(app/[A-Za-z0-9_./-]+):L(\\d+)(?:-L?(\\d+))?");
@@ -134,7 +150,9 @@ class DocumentationContractTest {
         }
 
         assertTrue(matrix.contains("12 + 8 + 2 + 6 = 28"));
-        assertTrue(matrix.contains("12 + 8 + 1 + 6 + 1 = 28"));
+        // CSDAT01Y.cpy moved from excluded to reference-and-semantics: it is the timestamp
+        // layout authority BillPaymentEquivalenceTest reads, not a presentation-only helper.
+        assertTrue(matrix.contains("12 + 9 + 1 + 5 + 1 = 28"));
         assertTrue(matrix.contains("11 + 3 + 15 = 29"));
     }
 
@@ -160,8 +178,21 @@ class DocumentationContractTest {
         assertEquals(8, count(csd, "JOURNAL(NO)"));
     }
 
+    /**
+     * A register identifier is a permanent contract. Other documents, this suite and earlier review
+     * records all cite findings by number, so renumbering silently redirects a citation to a
+     * different finding. {@code PostedTransactionServiceTest} citing register item 6 is one such
+     * reference.
+     *
+     * <p>The contract has two parts, and this test enforces both. Identifiers 1 to 26 are the block
+     * the Agent Action Plan fixes, in the order it fixes them, so those 26 numbers must be present
+     * and in order. Every later finding is appended, so the identifiers above 26 must form one
+     * contiguous run starting at 27 with no gap and no repeat. Appending is what an earlier revision
+     * failed to do: it collapsed the register onto the specification's numbering and lost eleven
+     * findings, which is why the run below is checked rather than the total counted.</p>
+     */
     @Test
-    void theBusinessRuleRegisterKeepsExactlyTheTwentySixStableIdentifiers() {
+    void theBusinessRuleRegisterKeepsStableIdentifiersInASpecificationBlockAndAnAppendedBlock() {
         String flags = read(docsDirectory().resolve("business-rule-flags.md"));
         String coverage = section(flags, "## Register coverage",
                 "## The largest item: a named program that does not exist");
@@ -170,13 +201,50 @@ class DocumentationContractTest {
         while (matcher.find()) {
             identifiers.add(Integer.valueOf(matcher.group(1)));
         }
-        assertEquals(26, identifiers.size());
-        for (int expected = 1; expected <= 26; expected++) {
-            assertEquals(expected, identifiers.get(expected - 1).intValue());
+
+        assertTrue(identifiers.size() >= 26,
+                "The specification block fixes identifiers 1 to 26, so the register cannot hold"
+                        + " fewer than 26 rows. Found " + identifiers.size() + ".");
+        for (int position = 0; position < identifiers.size(); position++) {
+            assertEquals(position + 1, identifiers.get(position).intValue(),
+                    "Register identifiers must run contiguously from 1 with no gap and no repeat:"
+                            + " identifiers 1 to 26 are the specification block and every later"
+                            + " finding is appended from 27 upward. Row " + (position + 1)
+                            + " carries identifier " + identifiers.get(position) + ".");
         }
+
+        assertTrue(flags.contains("An identifier is a permanent contract, never reused and never"
+                        + " renumbered"),
+                "The register must publish the stable-identifier rule this test enforces.");
+
+
+        assertEquals(identifiers.size(), new LinkedHashSet<>(identifiers).size(),
+
+                "no two findings may share an identifier");
+
+        assertEquals(String.valueOf(identifiers.size()), declaredRegisterSize(flags),
+
+                "the register heading has to state the number of findings the table carries");
+
         assertTrue(flags.contains("## Resolved rather than flagged"));
         assertTrue(flags.contains("app/cpy/CVACT01Y.cpy:L13-L14"));
         assertTrue(flags.contains("`RECOVERY(NONE) JOURNAL(NO)`"));
+    }
+
+    /**
+     * Reads the count of findings the register heading states.
+     *
+     * @param flags the whole register document
+     * @return the number the heading states, as text
+     * @throws IllegalStateException when the heading states no count
+     */
+    private static String declaredRegisterSize(String flags) {
+        Matcher declared = DECLARED_REGISTER_SIZE.matcher(flags);
+        if (!declared.find()) {
+            throw new IllegalStateException(
+                    "business-rule-flags.md states no register size after its coverage heading");
+        }
+        return declared.group(1);
     }
 
     @Test
@@ -229,7 +297,19 @@ class DocumentationContractTest {
         assertTrue(model.contains("no relationship between `ACCOUNT` and `CUSTOMER`"));
         assertTrue(model.contains("`VARCHAR(10)`"));
         assertTrue(model.contains("`DATE`"));
-        assertTrue(model.contains("980 telephone area codes"));
+
+        // The copybook spells 980 area-code literals but declares only 490 distinct codes: all 490
+        // under VALID-PHONE-AREA-CODE, then 410 again as VALID-GENERAL-PURP-CODE and 80 as
+        // VALID-EASY-RECOG-AREA-CODE. us_phone_area_code holds 490 rows, so the document must report
+        // the distinct count and the literal count rather than conflating them.
+        assertTrue(model.contains("490 distinct telephone area codes"));
+        assertTrue(model.contains("980"));
+
+        // The operational appendix carries every index and every named constraint, as tables. The
+        // six diagram assertions above are what keeps it from being drawn as a seventh diagram.
+        assertTrue(model.contains("## Operational DDL appendix"));
+        assertTrue(model.contains("45 named indexes and 117 named constraints"));
+        assertTrue(model.contains("## Reference data"));
     }
 
     @Test

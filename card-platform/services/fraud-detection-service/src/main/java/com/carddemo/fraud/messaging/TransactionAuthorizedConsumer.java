@@ -44,14 +44,17 @@ import org.springframework.transaction.annotation.Transactional;
  * consumer group rebalance, a restart mid-batch, or a crash after side effects and before the
  * offset commit.
  *
- * <p>The wire form is flat. One serialized {@link TransactionAuthorized} holds twenty properties
- * in one JavaScript Object Notation (JSON) object: five envelope properties beside fifteen payload
- * properties. A nested {@code envelope} property fails the contract. Acknowledgement follows the
+ * <p>The wire form is flat. One serialized {@link TransactionAuthorized} holds its five envelope
+ * properties beside its payload properties in one JavaScript Object Notation (JSON) object: nineteen
+ * properties at version one, and twenty at version two, which adds {@code cardToken}. A nested
+ * {@code envelope} property fails the contract. Acknowledgement follows the
  * commit: automatic commit is off, the acknowledgement mode is manual and immediate, and
  * {@link Acknowledgment#acknowledge()} is the last statement of the listener.
  *
  * <p>{@link #assessOneEvent} claims the marker, then scores, then writes the assessment row, then
- * writes the outbox row, in that order, inside one local transaction. The single
+ * writes the outbox row, in that order, inside one local transaction. A delivery that does not take
+ * the marker does none of that work and acknowledges: a duplicate is a no-op rather than a second
+ * assessment. The single
  * {@code velocity_window} update belongs to {@link RiskScoringService}. {@link OutboxWriter} joins
  * this transaction and opens none, so the assessment row and the event row commit together or not
  * at all. Nothing here publishes: {@code OutboxRelay} in the sibling {@code outbox} package reads
@@ -224,9 +227,12 @@ public class TransactionAuthorizedConsumer {
      * both read nothing and both apply their effects; the primary key of {@code processed_event}
      * closes that window inside the statement.
      *
-     * <p>The envelope's {@code eventId} is the idempotency key. The velocity window is updated once
-     * per event, inside {@link RiskScoringService#assess(TransactionAuthorized)}, so a redelivered
-     * event adds nothing to a window count.
+     * <p>The marker is keyed by the envelope's {@code eventId} together with the topic the delivery
+     * arrived on, which is the composite key {@code V4__processed_event_topic_key.sql} declares, so a
+     * marker written for one topic never hides a delivery of the same identifier on another. The
+     * velocity window is updated once per event, inside
+     * {@link RiskScoringService#assess(TransactionAuthorized)}, so a redelivered event adds nothing
+     * to a window count.
      *
      * <p>The account identifier and the transaction identifier travel as text, and a leading zero
      * belongs to the value. The authorization timestamp is carried unread: no line here parses it,

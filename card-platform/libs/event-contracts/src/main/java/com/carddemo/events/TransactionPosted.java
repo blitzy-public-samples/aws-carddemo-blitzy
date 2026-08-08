@@ -654,10 +654,11 @@ public record TransactionPosted(
      * Builds the event that follows one authorized transaction, at the version the authorized event
      * supports.
      *
-     * <p>Ten of the fifteen payload values are copied from the authorized event, so a producer
-     * cannot transpose two of them or leave one blank. The account identifier, the transaction
-     * identifier, the amount, the masked card number and the card token all come from the same
-     * source, which is why the two events describe one transaction and not two.
+     * <p>At version two, fourteen of the fifteen payload values are copied from the authorized
+     * event and only the balance is new, so a producer cannot transpose two of them or leave one
+     * blank. The account identifier, the transaction identifier, the amount, the masked card number
+     * and the card token all come from the same source, which is why the two events describe one
+     * transaction and not two.
      *
      * <p>{@code app/cbl/CBTRN02C.cbl:L425-L436} moves the same twelve values from the feed record
      * onto the posted record, and {@code app/cbl/CBTRN02C.cbl:L438} stamps the posting timestamp,
@@ -731,7 +732,7 @@ public record TransactionPosted(
      * {@code envelope} key.
      *
      * @return an envelope equal to the one
-     *         {@link #of(EventEnvelope, String, BigDecimal, String, BigDecimal, String)} accepted
+     *         {@link #of(EventEnvelope, TransactionAuthorized, BigDecimal, String)} accepted
      */
     public EventEnvelope envelope() {
         return new EventEnvelope(eventId, eventType, schemaVersion, occurredAt, aggregateId);
@@ -831,43 +832,6 @@ public record TransactionPosted(
      */
     public boolean carriesTransactionDetail() {
         return schemaVersion == TRANSACTION_DETAIL_SCHEMA_VERSION;
-    }
-
-    /**
-     * Builds the posted event from the authorization it posts.
-     *
-     * <p>The same construction as
-     * {@link #forAuthorized(TransactionAuthorized, BigDecimal, String)}, under a second name the
-     * platform reads. Both names resolve to one construction, so a component built through either
-     * carries the same values.</p>
-     *
-     * @param authorized the authorization this posting settles
-     * @param newBalance the account balance after the posting arithmetic
-     * @param postedAt   the processing timestamp, twenty-six characters
-     * @return the event at {@link #TRANSACTION_DETAIL_SCHEMA_VERSION} when {@code authorized}
-     *         carries a card token, and at {@link EventEnvelope#SCHEMA_VERSION} when it does not
-     */
-    public static TransactionPosted from(TransactionAuthorized authorized, BigDecimal newBalance,
-            String postedAt) {
-        return forAuthorized(authorized, newBalance, postedAt);
-    }
-
-    /**
-     * Builds the posted event from the authorization it posts.
-     *
-     * <p>The same construction as
-     * {@link #forAuthorized(TransactionAuthorized, BigDecimal, String)}, under a third name the
-     * platform reads.</p>
-     *
-     * @param authorized the authorization this posting settles
-     * @param newBalance the account balance after the posting arithmetic
-     * @param postedAt   the processing timestamp, twenty-six characters
-     * @return the event at {@link #TRANSACTION_DETAIL_SCHEMA_VERSION} when {@code authorized}
-     *         carries a card token, and at {@link EventEnvelope#SCHEMA_VERSION} when it does not
-     */
-    public static TransactionPosted forPostedAuthorization(TransactionAuthorized authorized,
-            BigDecimal newBalance, String postedAt) {
-        return forAuthorized(authorized, newBalance, postedAt);
     }
 
     /**

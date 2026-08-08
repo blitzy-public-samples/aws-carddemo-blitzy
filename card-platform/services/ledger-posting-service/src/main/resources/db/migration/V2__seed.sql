@@ -86,10 +86,9 @@ INSERT INTO transaction_category (type_code, category_code, category_description
 -- Composite key width from KEYS(17 0) at app/jcl/TCATBALF.jcl:L40, record width from
 -- RECORDSIZE(50 50) at :L41, load step REPRO INFILE(TCATBAL) OUTFILE(TCATBALV)
 -- at :L61.
--- One row per account, account 00000000001 through account 00000000050, each
--- carrying type code 01 and category code 0001.
--- The trailing FILLER PIC X(22) at app/cpy/CVTRA01Y.cpy:L10 holds zero characters
--- and gets no column.
+-- One row per account, for each of the 50 fixture accounts, every one carrying type
+-- code 01 and category code 0001. The trailing FILLER PIC X(22) at
+-- app/cpy/CVTRA01Y.cpy:L10 holds zero characters and gets no column.
 INSERT INTO transaction_category_balance
     (account_id, type_code, category_code, category_balance) VALUES
     ('00000000001', '01', '0001', 0.00),

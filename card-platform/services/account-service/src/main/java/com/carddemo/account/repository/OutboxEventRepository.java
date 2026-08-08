@@ -55,28 +55,45 @@ public interface OutboxEventRepository extends ListCrudRepository<OutboxEventEnt
      * <p>The condition names {@code published} as well as {@code published_at} so the delete matches
      * the partial index exactly and can never touch a row the relay has not published.
      *
+     * <p>{@code limit} bounds one statement. An unbounded delete holds every row it removes under
+     * one lock for the whole statement, so a schema idle long enough to accumulate a week of rows
+     * takes one long statement that blocks the relay sweeping this same table, for a duration
+     * nobody can predict from the configuration. {@code domain/RetentionSweep} repeats this call
+     * until it removes fewer rows than the limit, which drains the same backlog in short
+     * transactions that each release their locks.
+     *
+     * <p>{@code ORDER BY published_at} makes the batches deterministic and lets
+     * {@code ix_outbox_event_published_at} serve both the subquery and the ordering, so the oldest
+     * rows leave first and no batch overlaps another.
+     *
      * @param horizon the instant before which a published row is removed
+     * @param limit   the largest number of rows one statement removes
      * @return the number of rows removed
      */
     @Modifying
-    @Query("""
-            DELETE FROM OutboxEventEntity row
-            WHERE row.published = TRUE AND row.publishedAt < :horizon
-            """)
-    int deletePublishedBefore(@Param("horizon") Instant horizon);
+    @Query(value = """
+            DELETE FROM outbox_event
+            WHERE event_id IN (SELECT event_id
+                               FROM outbox_event
+                               WHERE published = TRUE AND published_at < :horizon
+                               ORDER BY published_at
+                               LIMIT :limit)
+            """, nativeQuery = true)
+    int deletePublishedBefore(@Param("horizon") Instant horizon, @Param("limit") int limit);
 
-    /** Reports whether any row reached the terminal abandoned state. */
     boolean existsByRelayState(OutboxEventEntity.RelayState relayState);
 
     /**
-     * Returns unpublished rows in write order, taking no lock.
+     * Every row still carrying {@code published = false}, in write order, taking no lock.
      *
-     * <p>This is the reading counterpart of {@link #claimDueRows(Instant, Limit)}: a diagnostic view of
-     * the backlog, and the finder a test uses to assert what a write left behind. A relay never uses
-     * it, because two relay instances reading the same unlocked rows would publish every one twice.
+     * <p>The result is not the publishable backlog. It holds rows a relay has already claimed and
+     * rows in the terminal abandoned state as well as pending ones, because none of those is
+     * published. {@link #claimDueRows(Instant, Limit)} is the finder that selects what is due. This
+     * one is a diagnostic view, and the finder a test uses to assert what a write left behind. A
+     * relay never uses it: two instances reading the same unlocked rows would publish each twice.
      *
      * @param limit greatest number of rows to return
-     * @return unpublished rows, oldest first, and empty when none awaits publication
+     * @return every unpublished row, oldest first, whatever relay state it holds
      */
     List<OutboxEventEntity> findByPublishedFalseOrderByCreatedAtAscEventIdAsc(Limit limit);
 
@@ -92,10 +109,9 @@ public interface OutboxEventRepository extends ListCrudRepository<OutboxEventEnt
      * finder cannot do this: two instances read the same unpublished rows and publish every one of
      * them twice.
      *
-     * <p>The query is written in the Jakarta Persistence Query Language rather than as native SQL so
-     * that the schema comes from the entity mapping. A native {@code FROM outbox_event} carries no
-     * schema, and {@code spring.jpa.properties.hibernate.default_schema} does not apply to a native
-     * string, so such a query fails wherever the search path does not already name the right schema.
+     * <p>The query is written in the Jakarta Persistence Query Language rather than as native SQL, so
+     * the schema comes from the entity mapping. Rationale:
+     * {@code card-platform/docs/decision-log.md}.
      *
      * <p>The filter is {@code relayState = PENDING} and {@code nextAttemptAt <= now}, so a row
      * awaiting its backoff is left alone and a row in either terminal state is never returned. A
@@ -113,8 +129,8 @@ public interface OutboxEventRepository extends ListCrudRepository<OutboxEventEnt
      *
      * @param now   the current time, against which {@code nextAttemptAt} is compared
      * @param limit how many rows to claim, at least one
-     * @return the claimed account heads in due and write order, at most {@code limit} rows,
-     *         and empty when no row is due
+     * @return the claimed account heads ordered by {@code nextAttemptAt} then {@code eventId}, at
+     *         most {@code limit} rows, and empty when no row is due
      */
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @QueryHints(@QueryHint(name = "jakarta.persistence.lock.timeout", value = SKIP_LOCKED_TIMEOUT))
@@ -139,12 +155,6 @@ public interface OutboxEventRepository extends ListCrudRepository<OutboxEventEnt
     List<OutboxEventEntity> claimDueRows(@Param("now") Instant now, Limit limit);
 
     /**
-     * Returns rows left in {@link OutboxEventEntity.RelayState#CLAIMED} since before
-     * {@code claimedBefore}, so a relay instance that died holding a claim does not strand them.
-     *
-     * <p>Without this, one crash costs one event permanently: the row stays {@code CLAIMED}, the
-     * claim query filters on {@code PENDING}, and nothing ever looks at it again.
-     *
      * @param relayState    always {@link OutboxEventEntity.RelayState#CLAIMED}; the parameter
      *                      keeps the derived query readable rather than hiding the state in a name
      * @param claimedBefore the cutoff; a row claimed at or after it is still considered live
@@ -157,22 +167,6 @@ public interface OutboxEventRepository extends ListCrudRepository<OutboxEventEnt
             OutboxEventEntity.RelayState relayState, Instant claimedBefore, Limit limit);
 
     /**
-     * Returns abandoned rows that still owe a terminal diagnostic, oldest attempt first.
-     *
-     * <p>An abandoned row is terminal and {@link #claimDueRows(Instant, Limit)} does not return it,
-     * so without this query the sweep that gave up on a row is the last sweep that ever sees it.
-     * This is the query that makes a refused dead letter a delay rather than a loss: the obligation
-     * sits in {@code dead_letter_state} and every later sweep reads it back until the broker
-     * acknowledges the diagnostic.
-     *
-     * <p>The same {@code SKIP LOCKED} lock the claim query takes applies here, so two relay
-     * instances sweeping one table divide the owed diagnostics between them instead of publishing
-     * the same one twice.
-     *
-     * <p>The partial index {@code ix_outbox_event_dead_letter_required} from
-     * {@code src/main/resources/db/migration/V5__outbox_dead_letter_state.sql} serves this query and
-     * holds only the owed rows, so the read costs nothing while the relay is healthy.
-     *
      * @param deadLetterState always {@link OutboxEventEntity.DeadLetterState#REQUIRED}; passing it
      *                        keeps the derived query readable rather than hiding the state in a name
      * @param limit           how many owed rows one sweep takes on

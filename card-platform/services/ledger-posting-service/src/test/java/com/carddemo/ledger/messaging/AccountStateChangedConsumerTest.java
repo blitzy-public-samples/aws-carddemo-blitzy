@@ -231,7 +231,7 @@ class AccountStateChangedConsumerTest {
             claimSucceeds();
             bootstrapInserts();
 
-            consumer.onAccountStateChanged(aChange(), acknowledgment, TOPIC);
+            consumer.onAccountStateChanged(aChange(), ACCOUNT_ID, acknowledgment, TOPIC);
 
             verify(accountBalances, times(1)).insertMissingProjection(eq(ACCOUNT_ID),
                     eq(new BigDecimal("193.00")), eq(new BigDecimal("0.00")),
@@ -255,7 +255,7 @@ class AccountStateChangedConsumerTest {
             claimSucceeds();
             bootstrapInserts();
 
-            consumer.onAccountStateChanged(aCycleClose(), acknowledgment, TOPIC);
+            consumer.onAccountStateChanged(aCycleClose(), ACCOUNT_ID, acknowledgment, TOPIC);
 
             verify(accountBalances, times(1)).insertMissingProjection(anyString(),
                     any(BigDecimal.class), any(BigDecimal.class), any(BigDecimal.class),
@@ -289,7 +289,7 @@ class AccountStateChangedConsumerTest {
             claimSucceeds();
             rowAlreadyHeld();
 
-            consumer.onAccountStateChanged(aChange(), acknowledgment, TOPIC);
+            consumer.onAccountStateChanged(aChange(), ACCOUNT_ID, acknowledgment, TOPIC);
 
             verify(acknowledgment, times(1)).acknowledge();
             assertEquals(0.0d, counter("carddemo.ledger.failures", "stage", "process"),
@@ -320,7 +320,7 @@ class AccountStateChangedConsumerTest {
                     Instant.parse("2026-02-01T00:00:00Z"),
                     AccountStateChanged.CHANGE_KIND_BILLING_CYCLE_CLOSED);
 
-            consumer.onAccountStateChanged(staleBalance, acknowledgment, TOPIC);
+            consumer.onAccountStateChanged(staleBalance, ACCOUNT_ID, acknowledgment, TOPIC);
 
             // The zeroing statement names two columns and takes no balance argument at all, so a
             // balance in the payload has no route to the column that holds the posted value.
@@ -352,7 +352,7 @@ class AccountStateChangedConsumerTest {
             rowAlreadyHeld();
             cycleCloseDiscarded();
 
-            consumer.onAccountStateChanged(aCycleClose(), acknowledgment, TOPIC);
+            consumer.onAccountStateChanged(aCycleClose(), ACCOUNT_ID, acknowledgment, TOPIC);
 
             verify(acknowledgment, times(1)).acknowledge();
             assertEquals(0.0d, counter("carddemo.ledger.failures", "stage", "process"),
@@ -398,7 +398,7 @@ class AccountStateChangedConsumerTest {
             when(processedEvents.claimEvent(any(UUID.class), any(Instant.class), anyString()))
                     .thenReturn(0);
 
-            consumer.onAccountStateChanged(aChange(), acknowledgment, TOPIC);
+            consumer.onAccountStateChanged(aChange(), ACCOUNT_ID, acknowledgment, TOPIC);
 
             verifyNoInteractions(accountBalances);
             verify(acknowledgment, times(1)).acknowledge();
@@ -421,7 +421,7 @@ class AccountStateChangedConsumerTest {
         @DisplayName("a tombstone is refused rather than ignored")
         void aTombstoneIsRefused() {
             assertThrows(IllegalArgumentException.class,
-                    () -> consumer.onAccountStateChanged(null, acknowledgment, TOPIC),
+                    () -> consumer.onAccountStateChanged(null, ACCOUNT_ID, acknowledgment, TOPIC),
                     "this stream produces no tombstone, so one means a producer defect");
 
             verify(acknowledgment, never()).acknowledge();
@@ -437,7 +437,8 @@ class AccountStateChangedConsumerTest {
                     any(Instant.class))).thenThrow(new IllegalStateException("the store refused"));
 
             assertThrows(IllegalStateException.class,
-                    () -> consumer.onAccountStateChanged(aChange(), acknowledgment, TOPIC));
+                    () -> consumer.onAccountStateChanged(aChange(), ACCOUNT_ID,
+                            acknowledgment, TOPIC));
 
             verify(acknowledgment, never()).acknowledge();
             assertEquals(1.0d, counter("carddemo.ledger.failures", "stage", "process"),
@@ -453,7 +454,8 @@ class AccountStateChangedConsumerTest {
                     any(Instant.class))).thenThrow(new IllegalStateException("the store refused"));
 
             assertThrows(IllegalStateException.class,
-                    () -> consumer.onAccountStateChanged(aCycleClose(), acknowledgment, TOPIC));
+                    () -> consumer.onAccountStateChanged(aCycleClose(), ACCOUNT_ID,
+                            acknowledgment, TOPIC));
 
             verify(acknowledgment, never()).acknowledge();
             assertEquals(1.0d, counter("carddemo.ledger.failures", "stage", "process"),
@@ -466,7 +468,7 @@ class AccountStateChangedConsumerTest {
             claimSucceeds();
             bootstrapInserts();
 
-            consumer.onAccountStateChanged(aChange(), acknowledgment, TOPIC);
+            consumer.onAccountStateChanged(aChange(), ACCOUNT_ID, acknowledgment, TOPIC);
 
             registry.getMeters().forEach(meter -> meter.getId().getTags()
                     .forEach(tag -> assertFalse(tag.getValue().contains(ACCOUNT_ID),
@@ -534,6 +536,96 @@ class AccountStateChangedConsumerTest {
                             Instant.parse("2026-01-01T00:00:00Z"))),
                     "the native upsert bypasses the entity constructor, so the scale is checked "
                             + "here or nowhere");
+        }
+    }
+
+    @Nested
+    @DisplayName("The message key has to name the account the payload names")
+    class MessageKeyGuard {
+
+        /**
+         * A record keyed on another account arrived on a partition that does not order this
+         * account's events. AAP 0.3.1 keys every event by account identifier for exactly that
+         * reason, and applying such a record would move a balance onto an account the message never
+         * named. The check runs before the transaction opens, so nothing is written and no marker
+         * claims the event: a correctly keyed redelivery can still apply it.
+         */
+        @Test
+        @DisplayName("a key naming another account is refused and writes nothing")
+        void aKeyNamingAnotherAccountIsRefused() {
+            assertThrows(IllegalArgumentException.class,
+                    () -> consumer.onAccountStateChanged(aChange(), "00000000099",
+                            acknowledgment, TOPIC),
+                    "the partition this record arrived on does not order the account it names");
+
+            verifyNoInteractions(accountBalances);
+            verifyNoInteractions(acknowledgment);
+        }
+
+        /** A record with no key at all was partitioned at random, which is the same defect. */
+        @Test
+        @DisplayName("a record carrying no key is refused")
+        void aRecordCarryingNoKeyIsRefused() {
+            assertThrows(IllegalArgumentException.class,
+                    () -> consumer.onAccountStateChanged(aChange(), null, acknowledgment, TOPIC),
+                    "a record with no key was partitioned at random");
+
+            verifyNoInteractions(accountBalances);
+            verifyNoInteractions(acknowledgment);
+        }
+
+        /** A blank key names nothing, so it is refused for the same reason as an absent one. */
+        @Test
+        @DisplayName("a blank key is refused")
+        void aBlankKeyIsRefused() {
+            assertThrows(IllegalArgumentException.class,
+                    () -> consumer.onAccountStateChanged(aChange(), "   ", acknowledgment, TOPIC),
+                    "a blank key names no account");
+
+            verifyNoInteractions(accountBalances);
+        }
+
+        /**
+         * A key that agrees with the envelope while the payload names something else routes
+         * correctly and writes to the wrong row, so all three values are compared rather than two.
+         */
+        @Test
+        @DisplayName("an envelope and a payload that disagree are refused even when the key matches"
+                + " one of them")
+        void anEnvelopeAndPayloadThatDisagreeAreRefused() {
+            ObjectNode disagreeing = (ObjectNode) aChange();
+            disagreeing.put("accountId", "00000000099");
+
+            assertThrows(IllegalArgumentException.class,
+                    () -> consumer.onAccountStateChanged(disagreeing, ACCOUNT_ID, acknowledgment,
+                            TOPIC),
+                    "the key names the aggregate and the payload names another account");
+
+            verifyNoInteractions(accountBalances);
+        }
+
+        /** A refusal is counted, so a mis-keyed producer is visible rather than silent. */
+        @Test
+        @DisplayName("a refusal counts one consumed event and one process failure")
+        void aRefusalCountsOneFailure() {
+            assertThrows(IllegalArgumentException.class,
+                    () -> consumer.onAccountStateChanged(aChange(), "00000000099",
+                            acknowledgment, TOPIC));
+
+            assertEquals(1.0d, registry.get("carddemo.ledger.events.consumed").counter().count(),
+                    "the delivery was read");
+            assertEquals(1.0d, counter("carddemo.ledger.failures", "stage",
+                            LedgerMeters.POST_STAGE),
+                    "and its refusal is counted, so a mis-keyed producer is visible");
+        }
+
+        /** The correctly keyed delivery still applies, so the guard refuses nothing it should not. */
+        @Test
+        @DisplayName("the key the fixture carries still applies the change")
+        void theMatchingKeyStillApplies() {
+            consumer.onAccountStateChanged(aChange(), ACCOUNT_ID, acknowledgment, TOPIC);
+
+            verify(acknowledgment, times(1)).acknowledge();
         }
     }
 }

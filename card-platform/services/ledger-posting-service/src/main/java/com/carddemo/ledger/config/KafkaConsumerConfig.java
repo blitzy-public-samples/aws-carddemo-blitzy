@@ -3,7 +3,6 @@ package com.carddemo.ledger.config;
 
 import com.carddemo.events.serde.JsonSchemaValidatingDeserializer;
 import com.carddemo.ledger.messaging.DeadLetterMetadata;
-import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -118,18 +117,6 @@ public class KafkaConsumerConfig {
     /** The first delivery is an attempt and not a retry, and {@link FixedBackOff} counts retries. */
     private static final long FIRST_DELIVERY = 1L;
 
-    /** The attempt count a dead letter reports when the container recorded none. */
-    private static final int ONE_ATTEMPT = 1;
-
-    /**
-     * The largest attempt count a diagnostic reports.
-     *
-     * <p>The container sets the delivery-attempt header, but the header name is not reserved, so a
-     * producer can set it too. The count is clamped rather than trusted, so a value a producer chose
-     * cannot reach a diagnostic or an envelope that bounds it.
-     */
-    private static final int MAX_REPORTED_ATTEMPTS = 1_000;
-
     /** Depth cap on a cause-chain walk, which also ends the walk on a self-referencing cause. */
     private static final int MAX_CAUSE_DEPTH = 16;
 
@@ -139,8 +126,18 @@ public class KafkaConsumerConfig {
     /** Acknowledgement setting every producer of this service carries. */
     private static final String ACKS_FROM_ALL_REPLICAS = "all";
 
-    /** The prefix the two acknowledgement modes that require the listener to acknowledge share. */
-    private static final String MANUAL_ACK_MODE_PREFIX = "MANUAL";
+    /**
+     * The one acknowledgement mode this service runs under.
+     *
+     * <p>{@code MANUAL} was admitted here alongside it and is not admitted any more. Both modes leave
+     * the acknowledgement to the listener, but only this one commits the offset at that
+     * acknowledgement, and only this one applies
+     * {@link DefaultErrorHandler#setCommitRecovered(boolean)}: under {@code MANUAL} the framework
+     * reports that setting as ignored, so a dead-lettered record keeps its offset and is published
+     * again after the next restart or rebalance.
+     */
+    private static final ContainerProperties.AckMode REQUIRED_ACK_MODE =
+            ContainerProperties.AckMode.MANUAL_IMMEDIATE;
 
     /**
      * Broker coordinates safe to retain after the refused record and producer-controlled headers
@@ -228,7 +225,8 @@ public class KafkaConsumerConfig {
      * @param kafkaProperties            the bound {@code spring.kafka} block
      * @param ledgerConsumerErrorHandler the delivery-attempt policy and the dead-letter route
      * @return the container factory, which hands the listener one record per invocation
-     * @throws IllegalStateException when the acknowledgement mode acknowledges automatically
+     * @throws IllegalStateException when the bound acknowledgement mode is anything other than
+     *                               {@link #REQUIRED_ACK_MODE}
      */
     @Bean
     public ConcurrentKafkaListenerContainerFactory<String, Object> kafkaListenerContainerFactory(
@@ -239,13 +237,11 @@ public class KafkaConsumerConfig {
                 new ConcurrentKafkaListenerContainerFactory<>();
         factory.setConsumerFactory(ledgerEventConsumerFactory);
         factory.setCommonErrorHandler(ledgerConsumerErrorHandler);
-        factory.setAutoStartup(kafkaProperties.getListener().isAutoStartup());
 
         Integer concurrency = kafkaProperties.getListener().getConcurrency();
         if (concurrency != null) {
             factory.setConcurrency(concurrency);
         }
-        factory.setAutoStartup(kafkaProperties.getListener().isAutoStartup());
 
         // spring.kafka.listener.auto-startup reaches the auto-configured factory on its own, and
         // this factory replaces that one, so the setting has to be carried across by hand. A test
@@ -258,7 +254,7 @@ public class KafkaConsumerConfig {
 
         ContainerProperties containerProperties = factory.getContainerProperties();
         containerProperties.setAckMode(
-                requireManualAcknowledgement(kafkaProperties.getListener().getAckMode()));
+                requireImmediateManualAcknowledgement(kafkaProperties.getListener().getAckMode()));
         containerProperties.setDeliveryAttemptHeader(true);
 
         return factory;
@@ -294,6 +290,10 @@ public class KafkaConsumerConfig {
                 new DefaultKafkaProducerFactory<>(settings, new StringSerializer(),
                         new ByteArraySerializer()));
         template.setDefaultTopic(ledgerProperties.kafka().topics().deadLetter());
+        // A failed send records its destination and failure type only.
+        // SafeProducerListener displaces LoggingProducerListener, which would write the
+        // key and the first hundred characters of the payload into the log line.
+        template.setProducerListener(new SafeProducerListener<>());
         return template;
     }
 
@@ -361,17 +361,24 @@ public class KafkaConsumerConfig {
     }
 
     /**
-     * Returns the mode bound from {@code spring.kafka.listener.ack-mode}. The framework default is
-     * {@code BATCH}, which acknowledges on the listener's behalf, so this method admits the two
-     * manual modes and stops start-up on the five automatic ones.
+     * Returns the mode bound from {@code spring.kafka.listener.ack-mode}, which has to be
+     * {@link #REQUIRED_ACK_MODE}. The framework default is {@code BATCH}, which acknowledges on the
+     * listener's behalf, and the six other modes either do that or delay the commit past the
+     * acknowledgement, so start-up stops on every one of them.
+     *
+     * @param ackMode the mode bound from the configuration
+     * @return the same mode, once it is the one this service supports
+     * @throws IllegalStateException when the mode is absent or names another mode
      */
-    private static ContainerProperties.AckMode requireManualAcknowledgement(
+    static ContainerProperties.AckMode requireImmediateManualAcknowledgement(
             ContainerProperties.AckMode ackMode) {
 
-        if (ackMode == null || !ackMode.name().startsWith(MANUAL_ACK_MODE_PREFIX)) {
-            throw new IllegalStateException("The property spring.kafka.listener.ack-mode must name"
-                    + " an acknowledgement mode that requires the listener to acknowledge, and the"
-                    + " bound mode is " + ackMode + ".");
+        if (ackMode != REQUIRED_ACK_MODE) {
+            throw new IllegalStateException("The property spring.kafka.listener.ack-mode must name "
+                    + REQUIRED_ACK_MODE + ", because that is the one mode which commits the offset at"
+                    + " the acknowledgement a listener issues after its own writes commit and the one"
+                    + " mode under which a dead-lettered record's offset is committed. The bound mode"
+                    + " is " + ackMode + ".");
         }
         return ackMode;
     }
@@ -538,18 +545,6 @@ public class KafkaConsumerConfig {
         return header == null || header.value() == null
                 ? null
                 : new String(header.value(), StandardCharsets.UTF_8);
-    }
-
-    /** The attempt the container recorded, and {@link #ONE_ATTEMPT} when it recorded none. */
-    private static int attemptCountOf(ConsumerRecord<?, ?> record) {
-        Header attempt = record.headers().lastHeader(KafkaHeaders.DELIVERY_ATTEMPT);
-
-        if (attempt == null || attempt.value() == null
-                || attempt.value().length != Integer.BYTES) {
-            return ONE_ATTEMPT;
-        }
-        return Math.clamp(ByteBuffer.wrap(attempt.value()).getInt(), ONE_ATTEMPT,
-                MAX_REPORTED_ATTEMPTS);
     }
 
     /** The resolved partition, and {@code null} when the resolver named a negative one. */

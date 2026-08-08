@@ -19,7 +19,9 @@ import java.util.regex.Pattern;
  * five in its {@code required} array, beside the payload names.
  *
  * <p>A consumer routes and deduplicates on these five fields and parses no payload to do it. Each
- * consumer checks {@code eventId} against its own {@code processed_event} table before it acts. It
+ * consumer claims a row in its own {@code processed_event} table before it acts, keyed by
+ * {@code (event_id, consumed_topic)} rather than by {@code eventId} alone: one topic's delivery of
+ * an identifier is a different delivery from another topic's, and several groups share one table. It
  * then writes its side effects and the marker row in one local transaction. It acknowledges the
  * message only after that transaction commits, so a duplicate delivery changes nothing and a crash
  * part-way through loses no work. {@code eventType} tells a consumer which payload arrived, which
@@ -43,8 +45,9 @@ import java.util.regex.Pattern;
  *                      {@link #MAX_SCHEMA_VERSION}
  * @param occurredAt    the moment the producer wrote the event, serialized in Coordinated
  *                      Universal Time with seconds and up to nine fractional digits
- * @param aggregateId   the Kafka message key: the eleven-digit account identifier the event belongs
- *                      to. Leading zeros belong to the value
+ * @param aggregateId   the Kafka message key, in one of two forms: the eleven-digit account
+ *                      identifier the event belongs to, or, where no account was resolved, the
+ *                      sixteen-character transaction identifier. Leading zeros belong to the value
  */
 public record EventEnvelope(UUID eventId, String eventType, int schemaVersion, Instant occurredAt,
         String aggregateId) {
@@ -65,8 +68,12 @@ public record EventEnvelope(UUID eventId, String eventType, int schemaVersion, I
      * one. {@code com.carddemo.events.serde.EventSchemas} decides which pairs of event type and
      * version exist. A pair with no document is refused at the serialize and deserialize gates, so
      * widening the range here admits nothing on its own.
+     *
+     * <p>Version 3 exists for one contract, {@code schemas/transaction-declined-v3.json}. Each event
+     * type numbers its own contracts, so this constant is the widest number any of them uses rather
+     * than a version every type ships.
      */
-    public static final int MAX_SCHEMA_VERSION = 2;
+    public static final int MAX_SCHEMA_VERSION = 3;
 
     /**
      * The form {@code aggregateId} takes: exactly eleven decimal digits, the account identifier.
