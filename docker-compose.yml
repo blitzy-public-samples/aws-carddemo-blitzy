@@ -104,6 +104,18 @@ x-backend-service: &backend-service
     SPRING_DATA_REDIS_HOST: redis
     SPRING_DATA_REDIS_PORT: "6379"
     SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
+    # Session/CSRF cookie transport policy. Every service's application.yml
+    # resolves `server.servlet.session.cookie.secure` from this variable and
+    # defaults it to TRUE, and the gateway gates the XSRF-TOKEN cookie's Secure
+    # attribute on the same value. This local stack is served over plain HTTP
+    # (no TLS terminator in front of the gateway or the SPA's nginx), and a
+    # browser never returns a Secure cookie over http://, so leaving the default
+    # in place makes sign-on appear to succeed and then fail every authenticated
+    # call. It is switched off HERE ONLY, exactly as the application.yml comments
+    # describe, and stays at the secure default in every TLS-terminated
+    # deployment (k8s/*.yaml never sets it). Overridable for a stack fronted by
+    # a local TLS terminator.
+    CARDDEMO_COOKIE_SECURE: ${CARDDEMO_COOKIE_SECURE:-false}
     # Actuator health details are only rendered to authenticated principals
     #; anonymous callers still receive the overall UP/DOWN status.
     MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: when-authorized
@@ -297,6 +309,12 @@ services:
       SPRING_DATA_REDIS_HOST: redis
       SPRING_DATA_REDIS_PORT: "6379"
       SPRING_DATA_REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
+      # A service-level `environment` map REPLACES the one merged from the anchor,
+      # so the plain-HTTP cookie switch must be repeated here. The gateway is the
+      # component that actually writes the SESSION and XSRF-TOKEN cookies the
+      # browser stores, so without it the SPA's sign-on cannot complete over
+      # http://localhost. See the anchor above for the full rationale.
+      CARDDEMO_COOKIE_SECURE: ${CARDDEMO_COOKIE_SECURE:-false}
       MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: when-authorized
       # The gateway is the trace entry point: it must export to the same collector as
       # every downstream service so a request produces ONE joined trace (AAP 0.7.5).
