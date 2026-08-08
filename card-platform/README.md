@@ -504,7 +504,7 @@ The delivered suite includes:
 - truncation toward zero;
 - fixture census, identifier fidelity, and card seed checks.
 
-The published run reports 228 Failsafe equivalence tests and 375 unit or contract tests, with zero failures. See [Equivalence Results](docs/equivalence-results.md).
+The published run reports 228 Failsafe equivalence tests and 391 unit or contract tests, with zero failures. See [Equivalence Results](docs/equivalence-results.md).
 
 Interest is verified but not migrated. `BillingCycleService` reproduces only the two accumulator resets at `app/cbl/CBACT04C.cbl:L353-L354`.
 

@@ -28,10 +28,12 @@ import java.util.Set;
  *
  * <p>An expected-output file that no test reads is worse than no file at all: it looks like
  * evidence, and it can drift away from both the source and the code without anything failing. This
- * class therefore remembers every row an assertion looked up. A binding test asserts in
- * {@code @AfterAll} that {@link #unconsumedRows()} is empty, which turns "the evidence is checked"
- * into a build-enforced property rather than a claim. Adding a row to a CSV without asserting on it
- * fails the build, and so does deleting an assertion.</p>
+ * class therefore remembers every row an assertion looked up. Each consuming class ends the test
+ * that walks its rows by asserting {@link #unconsumedRows()} is empty, which turns "the evidence is
+ * checked" into a build-enforced property rather than a claim. The assertion closes the walking
+ * test rather than sitting in an {@code @AfterAll} method, so it holds however the runner orders
+ * the class. Adding a row to a CSV without asserting on it fails the build, and so does deleting an
+ * assertion.</p>
  *
  * <h2>Two column shapes that trip up a naive reader</h2>
  *
@@ -467,8 +469,8 @@ final class ExpectedOutcomes {
     /**
      * Returns the rows no assertion has looked up.
      *
-     * <p>A consuming test class asserts this is empty once all of its methods have run. A row that
-     * appears here is checked-in evidence nothing verifies.</p>
+     * <p>A consuming test class asserts this is empty at the end of the test that walks its rows. A
+     * row that appears here is checked-in evidence nothing verifies.</p>
      *
      * @return the unconsumed rows, in file order
      */

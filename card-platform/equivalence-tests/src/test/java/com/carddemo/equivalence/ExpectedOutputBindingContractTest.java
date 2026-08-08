@@ -35,8 +35,9 @@ import org.junit.jupiter.api.Test;
  * {@code expected/} directory from disk, so a file added later is covered the moment it lands, and
  * for each file it requires three things: the file parses under the canonical eight-column schema,
  * its comment line names the test class that consumes it, and that class's source really mentions
- * the file. The per-row half of the guarantee lives in the consuming classes themselves, each of
- * which asserts in {@code @AfterAll} that {@link ExpectedOutcomes#unconsumedRows()} is empty.</p>
+ * the file. The per-row half of the guarantee lives in the consuming classes themselves: each ends
+ * the test that walks its rows by asserting {@link ExpectedOutcomes#unconsumedRows()} is empty, so
+ * the check holds however the runner orders the class.</p>
  *
  * <p>Between the two halves, a row cannot be added without an assertion reading it, an assertion
  * cannot be deleted without the row becoming unconsumed, and a file cannot be added without a named
@@ -120,10 +121,10 @@ class ExpectedOutputBindingContractTest {
      * <p>Naming it in a comment is not reading it, and a check that accepted a mention would leave
      * the exact gap this class exists to close. A source counts as reading the file when it carries
      * the file name as a string literal <em>and</em> opens an expected-output resource, either
-     * through {@link ExpectedOutcomes#load} or through the classpath path the two classes that
-     * predate that reader use. Requiring the literal to sit inside the call would be stricter still
-     * and would forbid naming the file in a constant, which every binding does so that the file name
-     * can appear in its own test display names.</p>
+     * through {@link ExpectedOutcomes#load} or through the classpath path the one class that
+     * predates that reader uses, {@code FixtureCoverageEquivalenceTest}. Requiring the literal to
+     * sit inside the call would be stricter still and would forbid naming the file in a constant,
+     * which every binding does so that the file name can appear in its own test display names.</p>
      *
      * @param source   the test source
      * @param fileName the expected-output file name

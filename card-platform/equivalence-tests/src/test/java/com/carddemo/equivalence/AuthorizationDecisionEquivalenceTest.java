@@ -38,7 +38,6 @@ import com.carddemo.equivalence.CopybookRecordParser.DailyTransactionRecord;
 import com.carddemo.events.DeclineReason;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationHandler;
@@ -97,10 +96,27 @@ class AuthorizationDecisionEquivalenceTest {
     /** Reject reasons no record of {@code app/data/ASCII/dailytran.txt} reaches. */
     private static final long UNREACHABLE_FROM_FIXTURES = 0L;
 
-    /** Row of {@code /expected/posting-summary.csv} holding the stateless decline count. */
-    private static final String MODEL_A_DECLINE_KEY = "model_a.declined_count";
+    /** Name of the run-total expectations this class cross-checks its own count against. */
+    private static final String EXPECTED_SUMMARY_FILE = "posting-summary.csv";
 
-    private static final String EXPECTED_POSTING_RESOURCE = "/expected/posting-summary.csv";
+    /** {@code entity_key} of the row holding the stateless decline count. */
+    private static final String MODEL_A_ENTITY = "model_a";
+
+    /** {@code expected_field} of the row holding the stateless decline count. */
+    private static final String DECLINED_COUNT_FIELD = "declined_count";
+
+    /**
+     * The run totals of both evaluation models, read once.
+     *
+     * <p>{@code PostingEquivalenceTest} is the row-by-row consumer of this file and is what proves
+     * no row of it goes unread. This class reads one row, {@link #MODEL_A_ENTITY} with
+     * {@link #DECLINED_COUNT_FIELD}, so the stateless decline count it derives from the fixtures is
+     * compared against a checked-in figure rather than against itself. Both classes now read the
+     * file through {@link ExpectedOutcomes}, so one reader governs the column contract, the quoting
+     * and the duplicate-key refusal for every asset in the module.</p>
+     */
+    private static final ExpectedOutcomes EXPECTED_SUMMARY =
+            ExpectedOutcomes.load(EXPECTED_SUMMARY_FILE);
 
     /** Name of the stateless decision expectations this class binds row by row. */
     private static final String EXPECTED_MODEL_A_FILE =
@@ -1336,41 +1352,18 @@ class AuthorizationDecisionEquivalenceTest {
     }
 
     /**
-     * Reads the stateless decline count from {@code /expected/posting-summary.csv}.
+     * Reads the stateless decline count from {@value #EXPECTED_SUMMARY_FILE}.
      *
-     * <p>The row is {@code model_a.declined_count}, keyed as
-     * {@code PostingEquivalenceTest} keys it: the entity column joined to the field column.
+     * <p>The pair of {@link #MODEL_A_ENTITY} and {@link #DECLINED_COUNT_FIELD} identifies the row
+     * on its own, so the sequence column plays no part. {@code posting.declined_count} carries the
+     * cumulative count of the other model and is a different row, which is why the entity is named
+     * rather than the field alone.</p>
      *
      * @return the checked-in count
-     * @throws IllegalStateException when the resource holds no such row
+     * @throws IllegalStateException when the file holds no such row, or more than one
      */
     private static long expectedModelADeclineCount() {
-        Map<String, String> expected = new TreeMap<>();
-        try (InputStream stream = AuthorizationDecisionEquivalenceTest.class
-                .getResourceAsStream(EXPECTED_POSTING_RESOURCE)) {
-            if (stream == null) {
-                throw new IllegalStateException(EXPECTED_POSTING_RESOURCE + " is not on the "
-                        + "test classpath");
-            }
-            for (String line : new String(stream.readAllBytes(), StandardCharsets.UTF_8)
-                    .lines()
-                    .toList()) {
-                String[] columns = line.split(",", -1);
-                if (line.startsWith("#") || columns.length < 6) {
-                    continue;
-                }
-                expected.putIfAbsent(columns[3] + "." + columns[4], columns[5]);
-            }
-        } catch (IOException unreadable) {
-            throw new UncheckedIOException("cannot read " + EXPECTED_POSTING_RESOURCE, unreadable);
-        }
-
-        String value = expected.get(MODEL_A_DECLINE_KEY);
-        if (value == null) {
-            throw new IllegalStateException(
-                    EXPECTED_POSTING_RESOURCE + " holds no " + MODEL_A_DECLINE_KEY + " row");
-        }
-        return Long.parseLong(value);
+        return EXPECTED_SUMMARY.count(MODEL_A_ENTITY, DECLINED_COUNT_FIELD);
     }
 
     /**

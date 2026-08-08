@@ -8,7 +8,7 @@ A reader needs to know what "equivalent" was measured against before reading any
 
 The comparison executes the Java implementations and independent source-rule references against the fixtures under `app/data/ASCII/`, checking them against expected results held in `card-platform/equivalence-tests/src/test/resources/expected/`. Those expected files are derived from documented source semantics and are checked in, one per fixture subject.
 
-Each expected file is loaded by the class its own provenance header names, and **every data row is compared against a value re-derived from the fixtures or the source text**. A summary count is never accepted in place of the rows it summarises. Two properties of the reader make that claim checkable rather than asserted. A row that no derivation covers fails the assertion, so an asset cannot be loaded and left partly unread. The declared row count is asserted before any comparison, so adding or removing a row fails the build until the count is restated. The [asset consumption](#asset-consumption) table below lists every file, its row count and the class that reads it.
+Each expected file is loaded by the class its own provenance header names, and **every data row is compared against a value re-derived from the fixtures or the source text**. A summary count is never accepted in place of the rows it summarises. Two properties make that claim checkable rather than asserted. Thirteen of the fourteen files are read through one reader that records every row an assertion looks up, and each consuming class ends its row-by-row comparison by requiring that no row went unread. The fourteenth, `fixture-coverage.csv`, keeps a reader of its own and asserts the row count it declares. Removing a row from any of them fails the lookup that named it, and `DocumentationContractTest` reads every file's row count off disk, so the inventory this document publishes cannot drift from the files. The [asset consumption](#asset-consumption) table below lists every file, its row count and the class that reads it.
 
 **The suite never calls the mainframe.** Two things make an offline basis the correct reading rather than a compromise. The user forbade the new services from calling into the mainframe at runtime. The user's own equivalence requirement permits comparison against the original COBOL "or its documented business rules", and that parenthetical is what the harness relies on.
 
@@ -40,7 +40,7 @@ The continuous-integration workflow runs equivalence as its own stage, `Run equi
 
 ## Observed run
 
-**What backs the figures below, and what does not.** They come from running the command named above against the tree this document is committed in. The repository retains no report artifact. `target/` is not committed, so there is no stored Surefire or Failsafe report a reader can open. No figure here should be read as quoting one. Two things are reproducible instead. The command reproduces the run on any machine set up per [onboarding](onboarding.md). The class census below is static, so it can be checked with `ls` and without running anything.
+**What backs the figures below, and what does not.** They come from running the command named above against the tree this document is committed in. The repository retains no report artifact. `target/` is not committed, so there is no stored Surefire or Failsafe report a reader can open. No figure here should be read as quoting one. Three things are checkable instead. The command reproduces the run on any machine set up per [onboarding](onboarding.md). The class census below is static, so it can be checked with `ls` and without running anything. And the run totals are asserted from the build: `DocumentationContractTest` counts the cases the other reactor projects reported in the same run and fails when this document or the [platform guide](../README.md) states a figure that disagrees.
 
 Every count below comes from one run, and this is that run. Any other number published anywhere in this repository is either this run's or stale, so the run is identified before its results.
 
@@ -51,18 +51,18 @@ Every count below comes from one run, and this is that run. Any other number pub
 | Command | `CI=true mvn -B -ntp clean verify` from `card-platform/` |
 | Runtime | Eclipse Temurin OpenJDK 25.0.4+7, Apache Maven 3.9.16 |
 | Container runtime | Docker Engine 29.7.0, images `postgres:18.4` and `apache/kafka:4.2.1` |
-| Duration | 9 minutes 9 seconds, all ten reactor projects reporting SUCCESS |
-| Counts read from | Every figure counts the `testcase` elements in `target/surefire-reports/TEST-*.xml` and `target/failsafe-reports/TEST-*.xml`, which is the number Maven prints in its own per-module summary. Counting the `tests` attribute instead would be wrong: a report for a class holding `@Nested` classes lists the nested cases but counts only its own, so the attribute sums to 5,755 Surefire and 541 Failsafe across the reactor against Maven's 5,768 and 547 |
+| Duration | 8 minutes 41 seconds, all ten reactor projects reporting SUCCESS. Wall-clock time moves with the load the host is under; no count does |
+| Counts read from | Every figure counts the `testcase` elements in `target/surefire-reports/TEST-*.xml` and `target/failsafe-reports/TEST-*.xml`, which is the number Maven prints in its own per-module summary. Summing the `tests` attribute instead under-reports, because a report for a class holding `@Nested` classes lists every nested case and counts only its own |
 
 The command completed successfully across all ten reactor projects.
 
-The command was run again after the documentation changes, and every repeat reproduced every count below, so the numbers describe the delivered tree and not just the moment they were taken. Each repeat reported `BUILD SUCCESS`, in wall-clock times between nine and fourteen minutes. Those times differ from each other and from the row above because the runs shared the host differently; no count differs.
+The command was run again after the documentation changes, and every repeat reproduced every count below, so the numbers describe the delivered tree and not just the moment they were taken. Each repeat reported `BUILD SUCCESS`. The wall-clock times differed from each other and from the row above because the runs shared the host differently; no count differed.
 
 | Measure | Observed result |
 |---|---:|
 | Failsafe equivalence tests | 228 passed across the nine `*EquivalenceTest` classes |
 | Failsafe end-to-end flow test in the same module | 6 passed in `ThreeConsumerAuthorizationFlowIT`, giving 234 for this module's whole Failsafe run |
-| Surefire unit and contract tests in the same module | 375 passed |
+| Surefire unit and contract tests in the same module | 391 passed |
 | `*EquivalenceTest` classes executed | 9 |
 | Required named equivalence classes | 6 present and passing |
 | Checked-in expected-output files | 14, every one read by its declared consumer |
@@ -73,7 +73,7 @@ The command was run again after the documentation changes, and every repeat repr
 
 The module holds nine classes matching `**/*EquivalenceTest.java`: the six the specification names, plus three added during implementation. The three added contribute 34 tests and the six named contribute the remaining 194, which is the 228 above. Failsafe here also selects `**/*IT.java`, and the one class that pattern matches contributes the remaining 6.
 
-Every one of the fourteen files under `src/test/resources/expected/` is now read row by row by the test its comment line declares, and each reader refuses to finish while any row is left unconsumed. `ExpectedOutputBindingContractTest` lists that directory from disk, so a new file is covered the moment it lands and a file whose declared consumer never opens it fails the build rather than sitting unread.
+Every one of the fourteen files under `src/test/resources/expected/` is read row by row by the test its comment line declares, and thirteen of them refuse to finish while any row is left unconsumed. The fourteenth holds itself to the row count it declares instead, which catches the same addition. `ExpectedOutputBindingContractTest` lists that directory from disk, so a new file is covered the moment it lands and a file whose declared consumer never opens it fails the build rather than sitting unread.
 
 | Expected-output file | Rows | Read by |
 |---|---:|---|
@@ -109,7 +109,7 @@ The reject record itself is compared as bytes. `renderRejectRecord` copies the f
 | `CardSeedEquivalenceTest` | 7 |
 | `ThreeConsumerAuthorizationFlowIT` | 6 |
 
-The whole reactor ran 5,768 Surefire and 547 Failsafe tests in the same run, with zero failures, zero errors and zero skips. Those two figures belong here rather than in a service guide, because one run identity is easier to keep true than seven.
+The whole reactor ran 5,810 Surefire and 548 Failsafe tests in the same run, with zero failures, zero errors and zero skips. Those two figures belong here rather than in a service guide, because one run identity is easier to keep true than seven. `DocumentationContractTest` counts the `testcase` elements the other reactor projects wrote in the same run and requires this document and the [platform guide](../README.md) to publish figures that agree with them, so a count here cannot drift from the build that produced it.
 
 ## Fixture inventory and results
 
@@ -239,9 +239,11 @@ The credit-score range comes from `app/cbl/COACTUPC.cbl:L848-L849`, where `88 FI
 
 Every checked-in expected file, its row count and its readers are stated once, in the table under [observed run](#observed-run). They are not restated here, because they were, and the two tables drifted: this section reported one file at 18 rows and no assertion depending on it, and another as partitioned across four readers, while the delivered harness reads 20 rows of the first through two classes and gives all 215 rows of the second to one. A count is evidence, and evidence stated twice is evidence that can disagree with itself.
 
-The binding is not editorial. Each file's own comment line names its consuming test or tests, `ExpectedOutputBindingContractTest` requires that class to exist and to open the file, and each consuming class asserts in `@AfterAll` that no row of its instance went unread. `DocumentationContractTest` reads the same comment lines and row counts off disk and requires the table above to state them, so a file whose rows or readers change fails the build until the table follows.
+The binding is not editorial. Each file's own comment line names its consuming test or tests, `ExpectedOutputBindingContractTest` requires that class to exist and to open the file, and each consuming class closes the test that walks its rows by asserting that none of them went unread. That assertion ends the walking test rather than sitting in an `@AfterAll` method, so it holds however the runner orders the class. `DocumentationContractTest` reads the same comment lines and row counts off disk and requires the table above to state them, so a file whose rows or readers change fails the build until the table follows.
 
-`posting-summary.csv` is the smallest asset and it is asserted, not decorative. Its 20 rows carry the two evaluation models' run totals and the four `sha256` digests of section [two evaluation models](#two-evaluation-models-and-why-both-are-published). `PostingEquivalenceTest` loads all of them, keyed as the entity column joined to the field column, and `AuthorizationDecisionEquivalenceTest` reads `model_a.declined_count` from the same file so that the stateless decline count it derives is compared against a checked-in figure rather than against itself.
+`posting-summary.csv` is the smallest asset and it is asserted, not decorative. Its 20 rows carry the two evaluation models' run totals and the four `sha256` digests of section [two evaluation models](#two-evaluation-models-and-why-both-are-published). `PostingEquivalenceTest` answers every one of them from the run it drives through the real consumers and refuses to finish while any row is unread, and `AuthorizationDecisionEquivalenceTest` reads `model_a.declined_count` from its own instance so that the stateless decline count it derives is compared against a checked-in figure rather than against itself.
+
+It was the one asset with neither the shared reader's per-row tracking nor a declared row count in its consumer, so a row added to it went unread and only the inventory check above noticed. It is now read through the same reader as the other twelve. One row shows why that mattered rather than being merely untidy. `posting.ledger_rejected_transaction_count` states that the posting consumer's own reject path writes nothing for this feed, and no assertion read it. The whole-feed comparison now counts reject rows after the authorized stream and before the declined stream, which is the only point in the run where the claim is measurable.
 
 ### The synthetic cases
 

@@ -43,7 +43,6 @@ import com.carddemo.ledger.repository.RejectedTransactionRepository;
 import com.carddemo.ledger.repository.TransactionCategoryBalanceRepository;
 import com.carddemo.ledger.repository.TransactionRepository;
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.lang.reflect.Method;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -107,21 +106,21 @@ import tools.jackson.databind.json.JsonMapper;
  */
 class PostingEquivalenceTest {
 
-    private static final String EXPECTED_POSTING_RESOURCE = "/expected/posting-summary.csv";
+    /** Name of the run-total expectations this class is the row-by-row consumer of. */
+    private static final String EXPECTED_SUMMARY_FILE = "posting-summary.csv";
 
-    /** Columns every expected-output file in this module carries. */
-    private static final List<String> EXPECTED_OUTPUT_COLUMNS = List.of(
-            "evaluation_model",
-            "derived_from",
-            "record_seq",
-            "entity_key",
-            "expected_field",
-            "expected_value",
-            "pic_clause",
-            "source_locator");
-
-    private static final Map<String, String> EXPECTED_POSTING =
-            loadExpectedPostingValues();
+    /**
+     * The run totals and output digests of both evaluation models, read once.
+     *
+     * <p>Read through {@link ExpectedOutcomes} like the other thirteen checked-in assets. It was
+     * the one file loaded by a reader of its own, which cost it the per-row consumption tracking
+     * every other asset has: a row added to it went unread, and only the documentation inventory
+     * in {@code DocumentationContractTest} noticed. {@link DeployablePostingPath} now compares
+     * every row of it against a value derived from the run and refuses to finish while any row is
+     * unread.</p>
+     */
+    private static final ExpectedOutcomes EXPECTED_SUMMARY =
+            ExpectedOutcomes.load(EXPECTED_SUMMARY_FILE);
 
     /** Name of the detailed reject expectations this class binds row by row. */
     private static final String EXPECTED_REJECT_FILE = "dailytran-reject-records-model-b.csv";
@@ -298,69 +297,31 @@ class PostingEquivalenceTest {
     }
 
     /**
-     * Reads the checked-in posting expectations.
+     * Returns one checked-in run total or digest, and marks its row read.
      *
-     * @return immutable values keyed by entity and field
+     * <p>The pair of {@code entity_key} and {@code expected_field} identifies a row of
+     * {@value #EXPECTED_SUMMARY_FILE} on its own, so the sequence column plays no part here and no
+     * caller carries an ordinal that means nothing to it. Every lookup consumes its row, which is
+     * what lets {@link DeployablePostingPath} finish by proving no row went unread.</p>
+     *
+     * @param entity the {@code entity_key} column, such as {@code posting}
+     * @param field  the {@code expected_field} column, such as {@code approved_count}
+     * @return the {@code expected_value} column
+     * @throws IllegalStateException when the file holds no such row, or more than one
      */
-    private static Map<String, String> loadExpectedPostingValues() {
-        try (InputStream source =
-                PostingEquivalenceTest.class.getResourceAsStream(EXPECTED_POSTING_RESOURCE)) {
-            if (source == null) {
-                throw new IllegalStateException(
-                        "missing classpath resource " + EXPECTED_POSTING_RESOURCE);
-            }
-            List<String> lines = List.of(
-                    new String(source.readAllBytes(), StandardCharsets.US_ASCII).split("\\R"));
-            if (lines.size() < 3 || !lines.get(0).startsWith("#")) {
-                throw new IllegalStateException(
-                        EXPECTED_POSTING_RESOURCE + " must hold a comment, header and data");
-            }
-            assertExpectedColumns(lines.get(1));
-
-            Map<String, String> values = new LinkedHashMap<>();
-            for (int index = 2; index < lines.size(); index++) {
-                if (lines.get(index).isBlank()) {
-                    continue;
-                }
-                String[] columns = lines.get(index).split(",", -1);
-                if (columns.length != EXPECTED_OUTPUT_COLUMNS.size()) {
-                    throw new IllegalStateException(EXPECTED_POSTING_RESOURCE + " line "
-                            + (index + 1) + " must hold " + EXPECTED_OUTPUT_COLUMNS.size()
-                            + " columns");
-                }
-                String key = columns[3] + "." + columns[4];
-                if (values.putIfAbsent(key, columns[5]) != null) {
-                    throw new IllegalStateException(
-                            EXPECTED_POSTING_RESOURCE + " repeats " + key);
-                }
-            }
-            return Map.copyOf(values);
-        } catch (IOException unreadable) {
-            throw new UncheckedIOException(
-                    "cannot read " + EXPECTED_POSTING_RESOURCE, unreadable);
-        }
-    }
-
-    private static void assertExpectedColumns(String header) {
-        List<String> columns = List.of(header.split(",", -1));
-        if (!EXPECTED_OUTPUT_COLUMNS.equals(columns)) {
-            throw new IllegalStateException(EXPECTED_POSTING_RESOURCE
-                    + " must declare " + EXPECTED_OUTPUT_COLUMNS + ", found " + columns);
-        }
-    }
-
     private static String expected(String entity, String field) {
-        String key = entity + "." + field;
-        String value = EXPECTED_POSTING.get(key);
-        if (value == null) {
-            throw new IllegalStateException(
-                    EXPECTED_POSTING_RESOURCE + " holds no value for " + key);
-        }
-        return value;
+        return EXPECTED_SUMMARY.value(entity, field);
     }
 
+    /**
+     * Returns one checked-in run total as a whole number, and marks its row read.
+     *
+     * @param entity the {@code entity_key} column
+     * @param field  the {@code expected_field} column
+     * @return the value
+     */
     private static long expectedCount(String entity, String field) {
-        return Long.parseLong(expected(entity, field));
+        return EXPECTED_SUMMARY.count(entity, field);
     }
 
     /**
@@ -3867,8 +3828,19 @@ class PostingEquivalenceTest {
                     .count();
         }
 
+        /**
+         * Drives the whole feed through both real consumers and compares the result.
+         *
+         * <p>The comparison closes over every row of {@value #EXPECTED_SUMMARY_FILE}, not only the
+         * rows an individual assertion above names. Each row is answered by a value derived from
+         * this run, a row the derivation does not cover fails rather than passing unnoticed, and
+         * the last assertion requires the file to have no row left unread. That is the guarantee
+         * the other thirteen checked-in assets already carried and this one did not, because it was
+         * the one file read by a loader of its own.</p>
+         */
         @Test
-        @DisplayName("the migrated consumer result matches the checked-in Model B output")
+        @DisplayName("the migrated consumer result matches every row of the checked-in Model B "
+                + "output")
         void theMigratedConsumerResultMatchesTheCheckedInOutput() {
             Map<String, CopybookRecordParser.CardCrossReferenceRecord> crossReferences =
                     CardDemoFixtureLoader.cardCrossReferencesByCardNumber();
@@ -3911,6 +3883,16 @@ class PostingEquivalenceTest {
                 }
                 offset++;
             }
+
+            long rejectRowsAfterTheAuthorizedStream = rejectedTransactions.count();
+            assertEquals(expectedCount("posting", "ledger_rejected_transaction_count"),
+                    rejectRowsAfterTheAuthorizedStream,
+                    "the authorized stream alone has run at this point, and no record of "
+                            + "app/data/ASCII/dailytran.txt fails the feed-level checks that make "
+                            + "the posting consumer write a reject row. Every reject row this run "
+                            + "produces belongs to the declined stream below, which is what "
+                            + VALIDATION_PROGRAM + ":L446-L465 writes on the branch "
+                            + VALIDATION_PROGRAM + ":L211 gates");
 
             AtomicInteger declinedAcknowledgments = new AtomicInteger();
             for (TransactionDeclined declined : declinedEvents) {
@@ -4038,6 +4020,64 @@ class PostingEquivalenceTest {
             assertEquals(expected("category_balance", "state_sha256"),
                     sha256Lines(categoryLines),
                     "the migrated category balance output moved");
+
+            Map<String, String> observed = new LinkedHashMap<>();
+            observed.put("model_a.declined_count", Long.toString(statelessDeclineCount()));
+            observed.put("posting.record_count", Long.toString(offset));
+            observed.put("posting.approved_count", Integer.toString(approvedIds.size()));
+            observed.put("posting.declined_count", Integer.toString(declinedOutcomes.size()));
+            observed.put("posting.declined_event_count",
+                    Integer.toString(declinedEvents.size()));
+            observed.put("posting.return_code", Integer.toString(declinedOutcomes.isEmpty()
+                    ? RETURN_CODE_WHEN_NO_REJECT
+                    : RETURN_CODE_WHEN_REJECTS_PRESENT));
+            observed.put("posting.transaction_row_count",
+                    Long.toString(postedTransactions.count()));
+            observed.put("posting.processed_event_count",
+                    Long.toString(processedMarkersFrom(AUTHORIZED_TOPIC)));
+            observed.put("posting.ledger_rejected_transaction_count",
+                    Long.toString(rejectRowsAfterTheAuthorizedStream));
+            observed.put("posting.posted_outbox_count", Long.toString(outboxEvents.findAll()
+                    .stream()
+                    .filter(row -> TransactionPosted.EVENT_TYPE.equals(row.getEventType()))
+                    .count()));
+            observed.put("posting.ledger_declined_consumer_reject_row_count",
+                    Long.toString(rejectedTransactions.count()));
+            observed.put("posting.ledger_declined_processed_event_count",
+                    Long.toString(processedMarkersFrom(DECLINED_TOPIC)));
+            observed.put("category_balance.row_count", Long.toString(categoryRows));
+            observed.put("category_balance.nonzero_row_count",
+                    Long.toString(nonzeroCategoryRows));
+            observed.put("category_balance.positive_row_count",
+                    Long.toString(positiveCategoryRows));
+            observed.put("category_balance.negative_row_count",
+                    Long.toString(negativeCategoryRows));
+            observed.put("posting.approved_transaction_ids_sha256",
+                    sha256Lines(storedTransactionIds));
+            observed.put("posting.declined_outcomes_sha256", sha256Lines(declinedOutcomes));
+            observed.put("account_projection.state_sha256", sha256Lines(accountLines));
+            observed.put("category_balance.state_sha256", sha256Lines(categoryLines));
+
+            for (ExpectedOutcomes.Row row : EXPECTED_SUMMARY.rows()) {
+                String key = row.entityKey() + "." + row.expectedField();
+                String actual = observed.get(key);
+                if (actual == null) {
+                    throw new IllegalStateException(EXPECTED_SUMMARY_FILE + " row " + row.key()
+                            + " carries no derivation in this comparison. Derive it from the run "
+                            + "rather than deleting the row, because a checked-in row nothing "
+                            + "computes is evidence nothing verifies.");
+                }
+                assertEquals(EXPECTED_SUMMARY.value(row.recordSequence(), row.entityKey(),
+                                row.expectedField()),
+                        actual,
+                        EXPECTED_SUMMARY_FILE + " row " + row.key() + ", model "
+                                + row.evaluationModel() + ", derived from " + row.sourceLocator()
+                                + ", Picture clause " + row.picClause());
+            }
+
+            assertThat(EXPECTED_SUMMARY.unconsumedRows())
+                    .as(EXPECTED_SUMMARY.unconsumedDescription())
+                    .isEmpty();
         }
     }
 

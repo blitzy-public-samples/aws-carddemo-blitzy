@@ -10,6 +10,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -136,6 +137,57 @@ class DocumentationContractTest {
     private static final Pattern LINK = Pattern.compile("\\[[^]]+\\]\\(([^)]+)\\)");
     private static final Pattern CITATION =
             Pattern.compile("(app/[A-Za-z0-9_./-]+):L(\\d+)(?:-L?(\\d+))?");
+
+    /** The module this test runs inside, whose own reports are still being written. */
+    private static final String THIS_MODULE = "equivalence-tests";
+
+    /** Report directory the unit-test plugin writes, relative to a module directory. */
+    private static final String UNIT_TEST_REPORTS = "target/surefire-reports";
+
+    /** Report directory the integration-test plugin writes, relative to a module directory. */
+    private static final String INTEGRATION_TEST_REPORTS = "target/failsafe-reports";
+
+    /** Prefix every report file carries. */
+    private static final String REPORT_PREFIX = "TEST-";
+
+    /** Suffix every report file carries. */
+    private static final String REPORT_SUFFIX = ".xml";
+
+    /** One executed case inside a report. Counted, because the {@code tests} attribute under-reports. */
+    private static final Pattern REPORT_CASE = Pattern.compile("<testcase\\b");
+
+    /** One module path the aggregator declares. */
+    private static final Pattern AGGREGATED_MODULE = Pattern.compile("<module>([^<]+)</module>");
+
+    /** Suffix of the classes the integration-test plugin selects beside the equivalence pattern. */
+    private static final String INTEGRATION_CLASS_SUFFIX = "IT.java";
+
+    /** Suffix of the classes the results document tallies as equivalence classes. */
+    private static final String EQUIVALENCE_CLASS_SUFFIX = "EquivalenceTest";
+
+    /** The results-document row stating this module's unit and contract count. */
+    private static final Pattern PUBLISHED_MODULE_UNIT_TESTS = Pattern.compile(
+            "(?m)^\\| Surefire unit and contract tests in the same module \\| ([\\d,]+) passed \\|$");
+
+    /** The results-document row stating the equivalence subtotal. */
+    private static final Pattern PUBLISHED_EQUIVALENCE_TESTS = Pattern.compile(
+            "(?m)^\\| Failsafe equivalence tests \\| ([\\d,]+) passed across");
+
+    /** The results-document phrase stating this module's whole integration-test count. */
+    private static final Pattern PUBLISHED_MODULE_INTEGRATION_TESTS =
+            Pattern.compile("giving ([\\d,]+) for this module's whole Failsafe run");
+
+    /** The results-document sentence stating both reactor totals. */
+    private static final Pattern PUBLISHED_REACTOR_TESTS = Pattern.compile(
+            "The whole reactor ran ([\\d,]+) Surefire and ([\\d,]+) Failsafe tests");
+
+    /** One row of the per-class table: a class name in backticks and its count. */
+    private static final Pattern PUBLISHED_CLASS_TALLY =
+            Pattern.compile("(?m)^\\| `([A-Za-z0-9_]+)` \\| (\\d+) \\|$");
+
+    /** The platform README sentence stating the same two module figures. */
+    private static final Pattern README_PUBLISHED_TESTS = Pattern.compile(
+            "reports ([\\d,]+) Failsafe equivalence tests and ([\\d,]+) unit or contract tests");
 
     @Test
     void allSixRuleDocumentsExistAndEveryRelativeLinkResolves() {
@@ -653,6 +705,220 @@ class DocumentationContractTest {
                 "partition across four classes")) {
             assertFalse(results.contains(withdrawn),
                     "the withdrawn inventory narrative may not survive: " + withdrawn);
+        }
+    }
+
+    /**
+     * The test counts the two documents publish are the counts this build's own reports carry.
+     *
+     * <p>A review found four of them stale: the module's unit total, both reactor totals, and the
+     * copy of the module total in the platform README. Nothing had asserted them, so tests added to
+     * other modules moved the real figures and the published ones stayed where they were written.
+     * The per-asset row counts never drifted, because the test above reads those off disk. This test
+     * gives the run totals the same treatment.</p>
+     *
+     * <p><strong>What is measured and what is derived.</strong> Reports are counted by their
+     * {@code testcase} elements, which is the number Maven prints per module. This module is left
+     * out of the measurement because its own reports are still being written while this test runs:
+     * the unit report for this very class does not exist yet, and the integration phase has not
+     * started. So the arithmetic runs the other way — the published reactor figure minus the
+     * published module figure has to equal what the other eight modules really wrote. The module's
+     * own integration figure is closed against the per-class table instead, and the README is
+     * required to state the same two numbers as the results document.</p>
+     *
+     * <p><strong>Why an absent report directory is not a failure.</strong> The continuous-integration
+     * workflow runs {@code mvn -pl equivalence-tests -am test} in one stage, which executes every
+     * module's unit tests and no integration test anywhere. A comparison that demanded integration
+     * reports would fail that stage for a reason unrelated to the documents. A report kind is
+     * therefore compared whenever any module wrote one, a kind written by some modules and not
+     * others fails naming the gap, and a kind nobody wrote is left to the closure checks above. No
+     * assumption is used, so the case count of this class does not depend on how it was invoked.</p>
+     */
+    @Test
+    @DisplayName("the published test counts are the ones this build's own reports carry")
+    void thePublishedTestCountsAreTheOnesThisBuildMeasured() {
+        String results = read(docsDirectory().resolve("equivalence-results.md"));
+        String platformReadme = read(platformDirectory().resolve("README.md"));
+
+        long publishedModuleUnit = publishedFigure(results, PUBLISHED_MODULE_UNIT_TESTS,
+                "| Surefire unit and contract tests in the same module | <count> passed |");
+        long publishedEquivalence = publishedFigure(results, PUBLISHED_EQUIVALENCE_TESTS,
+                "| Failsafe equivalence tests | <count> passed across the nine ... classes |");
+        long publishedModuleIntegration = publishedFigure(results,
+                PUBLISHED_MODULE_INTEGRATION_TESTS,
+                "giving <count> for this module's whole Failsafe run");
+        Matcher reactor = PUBLISHED_REACTOR_TESTS.matcher(results);
+        assertTrue(reactor.find(),
+                "equivalence-results.md must state both reactor totals as \"The whole reactor ran"
+                        + " <count> Surefire and <count> Failsafe tests\", because this test reads"
+                        + " them from that sentence");
+        long publishedReactorUnit = number(reactor.group(1));
+        long publishedReactorIntegration = number(reactor.group(2));
+
+        Map<String, Long> tallies = publishedClassTallies(results);
+        long publishedEquivalenceTally = tallies.entrySet().stream()
+                .filter(entry -> entry.getKey().endsWith(EQUIVALENCE_CLASS_SUFFIX))
+                .mapToLong(Map.Entry::getValue)
+                .sum();
+        long publishedWholeTally = tallies.values().stream().mapToLong(Long::longValue).sum();
+
+        assertEquals(publishedEquivalence, publishedEquivalenceTally,
+                "the equivalence subtotal has to be the sum of the per-class rows that name an "
+                        + EQUIVALENCE_CLASS_SUFFIX + " class. The table sums to "
+                        + publishedEquivalenceTally + " and the subtotal says " + publishedEquivalence);
+        assertEquals(publishedModuleIntegration, publishedWholeTally,
+                "this module's whole Failsafe figure has to be the sum of every per-class row. The "
+                        + "table sums to " + publishedWholeTally + " and the figure says "
+                        + publishedModuleIntegration);
+        assertTrue(publishedReactorUnit > publishedModuleUnit,
+                "the reactor ran more unit tests than this module alone, so the reactor figure "
+                        + publishedReactorUnit + " cannot be at or below the module figure "
+                        + publishedModuleUnit);
+        assertTrue(publishedReactorIntegration >= publishedModuleIntegration,
+                "the reactor Failsafe figure " + publishedReactorIntegration + " cannot be below "
+                        + "this module's own " + publishedModuleIntegration);
+
+        Matcher readme = README_PUBLISHED_TESTS.matcher(platformReadme);
+        assertTrue(readme.find(),
+                "the platform README must state the same two module figures as \"reports <count> "
+                        + "Failsafe equivalence tests and <count> unit or contract tests\", because "
+                        + "a figure published twice is a figure that can disagree with itself");
+        assertEquals(publishedEquivalence, number(readme.group(1)),
+                "the README equivalence figure must be the one equivalence-results.md publishes");
+        assertEquals(publishedModuleUnit, number(readme.group(2)),
+                "the README unit figure must be the one equivalence-results.md publishes");
+
+        List<String> others = new ArrayList<>(aggregatedModules());
+        others.remove(THIS_MODULE);
+        assertFalse(others.isEmpty(), "the aggregator declares modules beside " + THIS_MODULE);
+
+        compareAgainstReports(others, UNIT_TEST_REPORTS, "Surefire",
+                publishedReactorUnit - publishedModuleUnit, publishedReactorUnit,
+                publishedModuleUnit);
+        compareAgainstReports(others.stream().filter(
+                        DocumentationContractTest::carriesIntegrationClasses).toList(),
+                INTEGRATION_TEST_REPORTS, "Failsafe",
+                publishedReactorIntegration - publishedModuleIntegration,
+                publishedReactorIntegration, publishedModuleIntegration);
+    }
+
+    /**
+     * Holds one published reactor total against the reports the other modules wrote.
+     *
+     * @param modules         module paths to measure, this module already excluded
+     * @param reportDirectory report directory to read, relative to a module directory
+     * @param plugin          plugin name, for the failure message
+     * @param expected        published reactor total minus published module total
+     * @param reactorTotal    the published reactor total, for the failure message
+     * @param moduleTotal     the published module total, for the failure message
+     */
+    private static void compareAgainstReports(List<String> modules, String reportDirectory,
+            String plugin, long expected, long reactorTotal, long moduleTotal) {
+        List<String> silent = new ArrayList<>();
+        long measured = 0L;
+        for (String module : modules) {
+            long cases = reportedCases(module, reportDirectory);
+            if (cases < 0L) {
+                silent.add(module);
+            } else {
+                measured += cases;
+            }
+        }
+        if (silent.size() == modules.size()) {
+            // No module reached this phase in this invocation. The closure checks above still hold.
+            return;
+        }
+        assertTrue(silent.isEmpty(),
+                plugin + " reports are present for some modules and absent for " + silent
+                        + ". Run the reactor rather than one module, so the published totals are"
+                        + " compared against a complete run");
+        assertEquals(expected, measured,
+                "the other modules wrote " + measured + " " + plugin + " cases in this run, so "
+                        + "equivalence-results.md must publish a reactor total of "
+                        + (measured + moduleTotal) + " beside its module total of " + moduleTotal
+                        + ". It publishes " + reactorTotal + ". Count the testcase elements under "
+                        + reportDirectory + " and restate the figure rather than editing this test");
+    }
+
+    /** Returns one figure the results document publishes, or fails naming the sentence it needs. */
+    private static long publishedFigure(String document, Pattern figure, String shape) {
+        Matcher match = figure.matcher(document);
+        assertTrue(match.find(),
+                "equivalence-results.md must state its test counts as \"" + shape + "\", because "
+                        + "this test reads the published figure from there");
+        return number(match.group(1));
+    }
+
+    /** Returns the per-class table of the results document, keyed by class name. */
+    private static Map<String, Long> publishedClassTallies(String document) {
+        Map<String, Long> tallies = new LinkedHashMap<>();
+        Matcher rows = PUBLISHED_CLASS_TALLY.matcher(document);
+        while (rows.find()) {
+            tallies.put(rows.group(1), number(rows.group(2)));
+        }
+        assertFalse(tallies.isEmpty(),
+                "equivalence-results.md must carry the per-class Failsafe table, one row per class"
+                        + " as \"| `ClassName` | <count> |\"");
+        return tallies;
+    }
+
+    /** Reads a published count, tolerating the thousands separator the documents use. */
+    private static long number(String published) {
+        return Long.parseLong(published.replace(",", ""));
+    }
+
+    /** Returns the module paths the aggregator declares, in declaration order. */
+    private static List<String> aggregatedModules() {
+        List<String> modules = new ArrayList<>();
+        Matcher declared = AGGREGATED_MODULE.matcher(read(platformDirectory().resolve("pom.xml")));
+        while (declared.find()) {
+            modules.add(declared.group(1));
+        }
+        assertFalse(modules.isEmpty(), "the aggregator must declare its modules");
+        return modules;
+    }
+
+    /**
+     * Counts the executed cases one module's reports hold.
+     *
+     * @param module          module path as the aggregator declares it
+     * @param reportDirectory report directory relative to the module directory
+     * @return the case count, or {@code -1} when the module wrote no such directory
+     */
+    private static long reportedCases(String module, String reportDirectory) {
+        Path directory = platformDirectory().resolve(module).resolve(reportDirectory);
+        if (!Files.isDirectory(directory)) {
+            return -1L;
+        }
+        long cases = 0L;
+        try (Stream<Path> reports = Files.list(directory)) {
+            for (Path report : reports.filter(Files::isRegularFile).toList()) {
+                String name = report.getFileName().toString();
+                if (!name.startsWith(REPORT_PREFIX) || !name.endsWith(REPORT_SUFFIX)) {
+                    continue;
+                }
+                Matcher executed = REPORT_CASE.matcher(read(report));
+                while (executed.find()) {
+                    cases++;
+                }
+            }
+        } catch (IOException unreadable) {
+            throw new UncheckedIOException("cannot list " + directory, unreadable);
+        }
+        return cases;
+    }
+
+    /** Reports whether one module carries a class the integration-test plugin selects. */
+    private static boolean carriesIntegrationClasses(String module) {
+        Path tests = platformDirectory().resolve(module).resolve("src/test/java");
+        if (!Files.isDirectory(tests)) {
+            return false;
+        }
+        try (Stream<Path> walk = Files.walk(tests)) {
+            return walk.anyMatch(
+                    path -> path.getFileName().toString().endsWith(INTEGRATION_CLASS_SUFFIX));
+        } catch (IOException unreadable) {
+            throw new UncheckedIOException("cannot walk " + tests, unreadable);
         }
     }
 
