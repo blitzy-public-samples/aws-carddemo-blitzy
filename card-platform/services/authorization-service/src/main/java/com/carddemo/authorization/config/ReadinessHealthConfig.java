@@ -1,7 +1,10 @@
 package com.carddemo.authorization.config;
 
+import com.carddemo.authorization.domain.ReplicaSynchronization;
+import com.carddemo.authorization.domain.AuthorizationService.StaleReplicaException;
 import com.carddemo.authorization.entity.OutboxEventEntity;
 import com.carddemo.authorization.repository.OutboxEventRepository;
+import com.carddemo.authorization.repository.ReplicaGapRepository;
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -152,6 +155,57 @@ public class ReadinessHealthConfig {
     public HealthIndicator listenersHealthIndicator(
             ObjectProvider<KafkaListenerEndpointRegistry> registries) {
         return () -> listenersHealth(registries.getIfAvailable());
+    }
+
+    /**
+     * Reports whether this service can authorize against its replica tables.
+     *
+     * <p>Readiness answered UP while every authorization call was being refused, and that mismatch is
+     * the reason this indicator exists. The refusal is a property of the replica streams, so the probe
+     * that decides whether traffic should arrive has to read the same property the decision reads.
+     *
+     * <p>Two facts are reported, and they are the two {@code domain/AuthorizationService} consults.
+     * {@link ReplicaSynchronization} says whether both replica listeners exist, run, hold partitions
+     * and report lag within the ceiling, and the gap store says whether any account is missing a
+     * change a delivery failed to apply. Down on either, because a decision would be refused on
+     * either.
+     *
+     * <p>The details name the condition and the counts and never an account: {@code reason} is a fixed
+     * phrase from the verdict, {@code lag} is the highest measurement observed, and {@code gaps} is how
+     * many accounts are affected. An operator who needs the accounts reads {@code replica_gap}, where
+     * access is controlled.
+     *
+     * <p>The gap count reaches the datastore, so it can fail rather than answer. A failure is reported
+     * as a down indicator named by the type of its root cause, exactly as
+     * {@link #outboxHealthIndicator} and {@link #kafkaHealth} answer, so the endpoint renders its own
+     * document with {@code 503} instead of losing it to the container error path.
+     *
+     * @param synchronization reports whether the replica streams are caught up
+     * @param replicaGaps     the accounts a delivery failed to apply a change for
+     * @return the indicator the readiness group polls
+     */
+    @Bean
+    public HealthIndicator replicaHealthIndicator(ReplicaSynchronization synchronization,
+            ReplicaGapRepository replicaGaps) {
+        return () -> {
+            ReplicaSynchronization.Verdict verdict = synchronization.verdict();
+            long gaps;
+            try {
+                gaps = replicaGaps.countOpenGaps();
+            } catch (Exception failure) {
+                return Health.down()
+                        .withDetail("reason", rootCause(failure).getClass().getSimpleName())
+                        .build();
+            }
+
+            Health.Builder answer = verdict.usable() && gaps == 0 ? Health.up() : Health.down();
+            return answer
+                    .withDetail("reason", gaps == 0 ? verdict.reason()
+                            : StaleReplicaException.UNAPPLIED_CHANGE)
+                    .withDetail("lag", verdict.observedLag())
+                    .withDetail("gaps", gaps)
+                    .build();
+        };
     }
 
     /**

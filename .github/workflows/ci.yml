@@ -141,9 +141,12 @@ jobs:
 
   # Stage 2. Reads the working tree and the branch history for committed secrets.
   # A finding fails the run. The rule pack is the scanner's own default set, and
-  # /.gitleaks.toml names the known-safe values this repository ships on purpose,
-  # each with the reason it is safe. That file is the allowlist: a value not
-  # matching one of its shapes fails this stage wherever it appears.
+  # card-platform/.gitleaks.toml names the known-safe values this repository ships
+  # on purpose, each with the reason it is safe. That file is the allowlist: a value
+  # not matching one of its shapes fails this stage wherever it appears. It sits
+  # under card-platform/ because that directory and .github/ are the only paths this
+  # engagement adds to, so the scope of the change stays mechanically auditable. The
+  # scan target is still the whole repository: only the configuration path is scoped.
   secret-scan:
     name: Scan for committed secrets
     needs: compile
@@ -177,7 +180,7 @@ jobs:
         working-directory: .
         run: |
           mkdir -p card-platform/target/security-reports
-          gitleaks dir . --config .gitleaks.toml --no-banner --redact \
+          gitleaks dir . --config card-platform/.gitleaks.toml --no-banner --redact \
             --report-format sarif \
             --report-path card-platform/target/security-reports/gitleaks-working-tree.sarif \
             --exit-code 1
@@ -186,7 +189,7 @@ jobs:
         working-directory: .
         run: |
           mkdir -p card-platform/target/security-reports
-          gitleaks git . --config .gitleaks.toml --no-banner --redact \
+          gitleaks git . --config card-platform/.gitleaks.toml --no-banner --redact \
             --report-format sarif \
             --report-path card-platform/target/security-reports/gitleaks-history.sarif \
             --exit-code 1

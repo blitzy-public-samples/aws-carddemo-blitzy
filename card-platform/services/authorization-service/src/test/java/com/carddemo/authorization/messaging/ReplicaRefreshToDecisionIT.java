@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.carddemo.authorization.TestIdentityPasswords;
 import com.carddemo.authorization.api.AuthorizationRequest;
 import com.carddemo.authorization.domain.AuthorizationService;
+import com.carddemo.authorization.domain.ReplicaSynchronization;
 import com.carddemo.authorization.domain.RequestCaller;
 import com.carddemo.events.DeclineReason;
 import java.math.BigDecimal;
@@ -244,6 +245,18 @@ class ReplicaRefreshToDecisionIT {
     /** The account-state listener, invoked directly by the rollback test alone. */
     @Autowired
     private AccountStateChangedConsumer accountStateListener;
+
+    /**
+     * The replica verdict every decision here waits for.
+     *
+     * <p>This is the real {@code messaging/KafkaReplicaSynchronization} over the real listener
+     * containers and the real broker, not a substitute. Nothing about the rule is relaxed for these
+     * comparisons; {@link #decideOnTheSeededCard()} simply waits for the same condition
+     * {@code /actuator/health/readiness} publishes, which is what an orchestrator waits for before
+     * routing a request to a fresh instance.
+     */
+    @Autowired
+    private ReplicaSynchronization replicaStreams;
 
     /**
      * Points the datasource and the broker client at the two containers.
@@ -624,6 +637,7 @@ class ReplicaRefreshToDecisionIT {
      * @return the decision
      */
     private AuthorizationService.Outcome decideOnTheSeededCard() {
+        awaitUsableReplicaStreams();
         Instant capturedAt = Instant.now();
         AuthorizationRequest request = new AuthorizationRequest(null, "01", "0001", "POS TERM",
                 "Purchase at Abshire-Lowe", REQUEST_AMOUNT, "800000000", "Abshire-Lowe",
@@ -690,6 +704,28 @@ class ReplicaRefreshToDecisionIT {
             throw new AssertionError("The broker did not accept the record on " + topic
                     + " within " + PUBLISH_TIMEOUT + ".", timedOut);
         }
+    }
+
+    /**
+     * Waits until both replica listeners hold their partitions, so a decision may read their tables.
+     *
+     * <p>A container that has started and has not yet been assigned anything reads nothing, and a
+     * decision against its table cannot be shown to hold what the owner published, so
+     * {@code domain/AuthorizationService} refuses with {@code replica-partitions-unassigned}. That is
+     * the intended answer rather than a defect: a fresh instance is not ready, and readiness carries
+     * the same verdict so an orchestrator withholds traffic until assignment completes. Without this
+     * wait, whichever test decided first raced the group's first assignment and refused, which is what
+     * happened to the first decision of
+     * {@code twoPublishedEventsMoveOneAccountFromExpiredToOverLimitToApproved}.
+     *
+     * <p>The wait is on the real verdict, so a stream that is genuinely behind still refuses and every
+     * comparison below still measures the decision rules rather than the replica rule.
+     */
+    private void awaitUsableReplicaStreams() {
+        Awaitility.await("both replica listeners to hold their partitions")
+                .atMost(REFRESH_ARRIVES_WITHIN)
+                .pollInterval(POLL_INTERVAL)
+                .until(() -> replicaStreams.verdict().usable());
     }
 
     /** Waits until the snapshot row names the given event as its source. */

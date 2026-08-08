@@ -151,7 +151,7 @@ final class ApiErrorResponseTest {
      * both, and the template carries its brace-delimited name in place of any value, so no full
      * Primary Account Number reaches a response body or a log line built from one.
      */
-    private static final String CARD_NUMBER_ROUTE = "/cards/{cardNumber}";
+    private static final String CARD_NUMBER_ROUTE = "/cards/{cardToken}";
 
     ApiErrorResponseTest() {
     }
@@ -444,7 +444,7 @@ final class ApiErrorResponseTest {
                 "A route template is valid. The card number stays a path variable name.");
         assertFalse(templated.route().matches(".*[0-9]{5,}.*"),
                 "A route template holds no run of five digits or more.");
-        assertTrue(templated.route().contains("{" + CardController.CARD_NUMBER_VARIABLE + "}"),
+        assertTrue(templated.route().contains("{" + CardController.CARD_TOKEN_VARIABLE + "}"),
                 "The template of the two routes that name one card holds the variable name.");
         assertFalse(templated.route().matches(".*[0-9].*"),
                 "A route template of this service holds no digit, so none can resolve to a "

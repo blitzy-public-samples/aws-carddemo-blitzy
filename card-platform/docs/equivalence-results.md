@@ -237,39 +237,30 @@ The credit-score range comes from `app/cbl/COACTUPC.cbl:L848-L849`, where `88 FI
 
 ## Asset consumption
 
-Every checked-in expected file and the class that reads it. The row count excludes the provenance comment on line one and the column header on line two. Each count is asserted by the reading class, so a changed file fails the build until the count is restated here and there.
+Every checked-in expected file, its row count and its readers are stated once, in the table under [observed run](#observed-run). They are not restated here, because they were, and the two tables drifted: this section reported one file at 18 rows and no assertion depending on it, and another as partitioned across four readers, while the delivered harness reads 20 rows of the first through two classes and gives all 215 rows of the second to one. A count is evidence, and evidence stated twice is evidence that can disagree with itself.
 
-| Expected file | Rows | Read by |
+The binding is not editorial. Each file's own comment line names its consuming test or tests, `ExpectedOutputBindingContractTest` requires that class to exist and to open the file, and each consuming class asserts in `@AfterAll` that no row of its instance went unread. `DocumentationContractTest` reads the same comment lines and row counts off disk and requires the table above to state them, so a file whose rows or readers change fails the build until the table follows.
+
+`posting-summary.csv` is the smallest asset and it is asserted, not decorative. Its 20 rows carry the two evaluation models' run totals and the four `sha256` digests of section [two evaluation models](#two-evaluation-models-and-why-both-are-published). `PostingEquivalenceTest` loads all of them, keyed as the entity column joined to the field column, and `AuthorizationDecisionEquivalenceTest` reads `model_a.declined_count` from the same file so that the stateless decline count it derives is compared against a checked-in figure rather than against itself.
+
+### The synthetic cases
+
+`synthetic-boundary-cases.csv` collects every case the fixtures cannot reach, and all 215 of its rows are read by `AuthorizationDecisionEquivalenceTest`. The file says so itself: its `SUMMARY` topic carries `consuming_test_classes = 1` beside `total_cases = 19`, and the class asserts both.
+
+The 19 cases fall into six families, and the file's own summary rows state each count, which the class checks against the cases it read and against their sum:
+
+| Case family | Cases | What each constructs |
 |---|---:|---|
-| `dailytran-posting-results-model-b.csv` | 3686 | `PostingEquivalenceTest` |
-| `dailytran-authorization-decisions-model-a.csv` | 3035 | `AuthorizationDecisionEquivalenceTest` |
-| `dailytran-decimal-truncation-model-b.csv` | 743 | `DecimalTruncationEquivalenceTest` |
-| `dailytran-category-balances-model-b.csv` | 690 | `PostingEquivalenceTest` |
-| `tcatbal-interest-accrual.csv` | 616 | `InterestCalculationEquivalenceTest` |
-| `bill-payment-results.csv` | 532 | `BillPaymentEquivalenceTest` |
-| `acctdata-final-account-state-model-b.csv` | 492 | `PostingEquivalenceTest` |
-| `dailytran-reject-records-model-b.csv` | 388 | `PostingEquivalenceTest` |
-| `discgrp-interest-rates.csv` | 236 | `InterestCalculationEquivalenceTest` |
-| `synthetic-boundary-cases.csv` | 215 | four classes, each filtering on `record_seq` |
-| `cardxref-account-resolution.csv` | 163 | `AuthorizationDecisionEquivalenceTest` and `PostingEquivalenceTest` |
-| `validation-messages.csv` | 136 | `ValidationEquivalenceTest` |
-| `fixture-coverage.csv` | 190 | `FixtureCoverageEquivalenceTest` |
-| `posting-summary.csv` | 18 | supplemental context only |
+| Authorization declines | 5 | reasons 0100, 0101 and 0103, the expiry-equality boundary, and the record both the credit-limit and the expiry rule would refuse |
+| Working-balance narrowing | 3 | a cycle credit at one billion, the largest value below it, and the amount that makes the narrowed balance equal the limit |
+| Reason 0109 | 1 | the code `app/cbl/CBTRN02C.cbl:L556` sets and no source statement reads |
+| Truncation | 1 | the negative category balance that separates truncation from both alternatives |
+| Rate resolution | 5 | three matched groups including the all-zero-rate one, the default-group fallback, and the double miss that abends |
+| Credit-score bounds | 4 | 299, 300, 850 and 851 against `88 FICO-RANGE-IS-VALID` |
 
-`posting-summary.csv` is the one file no assertion depends on. It holds run totals that the detailed assets already carry row by row, so reading a total from it in place of those rows would weaken the comparison. `PostingEquivalenceTest` names it in commentary and derives nothing from it.
+Four further topics carry no case. `COVERAGE` records how often each decline reason occurs in the 300-record feed, which is what makes a constructed case necessary at all. `SETUP` records the constructed cross-reference row the account-miss case needs. `SUMMARY` records the counts above. `PROHIBITION` records the discipline the cases are held to: no fixture file is modified, no case is invented, and the narrowing defect is reproduced rather than corrected.
 
-### The synthetic slice partition
-
-`synthetic-boundary-cases.csv` is the only expected file with more than one reader, because it collects every constructed case the fixtures cannot reach. Its 215 rows partition across four classes with no row read twice and none left unread:
-
-| Reader | Rows | Cases |
-|---|---:|---|
-| `AuthorizationDecisionEquivalenceTest` | 133 | nine decline and narrowing cases, plus the coverage, setup, summary and prohibition topics |
-| `InterestCalculationEquivalenceTest` | 47 | five rate-resolution cases, including the double miss that abends |
-| `ValidationEquivalenceTest` | 22 | four credit-score bound cases at 299, 300, 850 and 851 |
-| `DecimalTruncationEquivalenceTest` | 13 | the negative-amount truncation case |
-
-The four counts sum to 215, and each class asserts its own slice size. The summary topic records nineteen constructed cases, and the six per-group counts in that topic are themselves asserted to sum to nineteen, so a case added to the file without a reader fails the build.
+Two other classes name the file without reading a row of it, which is why the readers column names one class. `ValidationEquivalenceTest` asserts the file is on the test classpath, as the evidence its own boundary rows defer to. `DecimalTruncationEquivalenceTest` names it as the place the truncation-versus-floor separation is recorded, having established the truncation-versus-half-up difference itself.
 
 ## The arithmetic sites
 

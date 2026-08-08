@@ -13,6 +13,7 @@ import com.carddemo.authorization.config.AuthorizationProperties;
 import com.carddemo.authorization.domain.AuthorizationService.Outcome;
 import com.carddemo.authorization.domain.AuthorizationService;
 import com.carddemo.authorization.domain.CycleExposureReservation;
+import com.carddemo.authorization.domain.ReplicaSynchronization;
 import com.carddemo.authorization.domain.DeclineRule;
 import com.carddemo.authorization.domain.RequestCaller;
 import com.carddemo.authorization.domain.TransactionIdentifierSource;
@@ -27,6 +28,7 @@ import com.carddemo.authorization.repository.AccountCreditSnapshotRepository;
 import com.carddemo.authorization.repository.AuthorizationDecisionRepository;
 import com.carddemo.authorization.repository.CardCrossReferenceRepository;
 import com.carddemo.authorization.repository.OutboxEventRepository;
+import com.carddemo.authorization.repository.ReplicaGapRepository;
 import com.carddemo.authorization.repository.UnresolvedCardAttemptRepository;
 import com.carddemo.cobol.CobolDecimal;
 import com.carddemo.cobol.PicClause;
@@ -421,8 +423,14 @@ class AuthorizationDecisionEquivalenceTest {
     /** Credit limit the narrowed remainder of {@link #OVER_CEILING_CYCLE_CREDIT} fits under. */
     private static final BigDecimal NARROWING_LIMIT = new BigDecimal("500.00");
 
-    /** Staleness window wide enough for a capture moment from the fixtures. */
-    private static final Duration TOLERANT_STALENESS = Duration.ofDays(36_500L);
+    /**
+     * The lag ceiling the harness configures, matching the shipped default.
+     *
+     * <p>Zero records waiting. The harness reads its replica rows from two in-memory tables and runs
+     * no listener at all, so {@link #caughtUpReplica()} answers the verdict directly and this value is
+     * only what {@code CycleExposureReservation} reads out of the same properties record.
+     */
+    private static final long LAG_CEILING = 0L;
 
     /** Every record of the daily transaction feed, parsed once. */
     private static final List<DailyTransactionRecord> FEED =
@@ -1628,7 +1636,7 @@ class AuthorizationDecisionEquivalenceTest {
                     writeOnlySeam(UnresolvedCardAttemptRepository.class),
                     writeOnlySeam(AuthorizationDecisionRepository.class),
                     new SimpleMeterRegistry(), immediateTransactions(), replicaProperties(),
-                    reservation);
+                    reservation, caughtUpReplica(), noReplicaGaps());
             return new DecisionHarness(service, rules, crossReferences, accounts);
         }
 
@@ -2001,8 +2009,49 @@ class AuthorizationDecisionEquivalenceTest {
      */
     private static AuthorizationProperties replicaProperties() {
         return new AuthorizationProperties(null, null, null, null,
-                new AuthorizationProperties.Replica(TOLERANT_STALENESS),
+                new AuthorizationProperties.Replica(LAG_CEILING),
                 new AuthorizationProperties.Decision(LOCK_WAIT_MS, RESERVATION_TTL));
+    }
+
+    /**
+     * The replica verdict this harness authorizes under.
+     *
+     * <p>The harness stands two in-memory tables where {@code card_xref} and
+     * {@code account_credit_snapshot} sit and runs no Kafka listener, so there is no stream to measure
+     * and nothing that could be behind one. Declaring the streams caught up is what keeps these
+     * comparisons about the four decline rules of {@code app/cbl/CBTRN02C.cbl:L380-L420}, which is the
+     * parity this class exists to establish. The verdict itself is measured by
+     * {@code KafkaReplicaSynchronizationTest} in the authorization module.
+     *
+     * @return a verdict reporting a stream with nothing waiting on it
+     */
+    private static ReplicaSynchronization caughtUpReplica() {
+        return () -> ReplicaSynchronization.Verdict.synchronizedAt(0L);
+    }
+
+    /**
+     * The gap record this harness reads, which never holds a row.
+     *
+     * <p>A gap row is written by a replica listener that could not apply a delivered change, and this
+     * harness runs no listener. The read-only seam answers no open gap for every account, so no
+     * comparison below is refused by a condition the source has no counterpart for.
+     *
+     * @return a repository seam reporting no open gap
+     */
+    private static ReplicaGapRepository noReplicaGaps() {
+        InvocationHandler handler = (proxy, member, arguments) -> switch (member.getName()) {
+            case "existsForAggregate" -> Boolean.FALSE;
+            case "countOpenGaps" -> 0L;
+            case "findByAggregateAndStream" -> java.util.Optional.empty();
+            case "equals" -> proxy == arguments[0];
+            case "hashCode" -> System.identityHashCode(proxy);
+            case "toString" -> "ReplicaGapRepository[no open gap]";
+            default -> throw new UnsupportedOperationException("ReplicaGapRepository."
+                    + member.getName() + " takes no part in an authorization decision");
+        };
+        return (ReplicaGapRepository) Proxy.newProxyInstance(
+                ReplicaGapRepository.class.getClassLoader(),
+                new Class<?>[] {ReplicaGapRepository.class}, handler);
     }
 
     /** The lock-wait bound the harness configures, matching the shipped default. */

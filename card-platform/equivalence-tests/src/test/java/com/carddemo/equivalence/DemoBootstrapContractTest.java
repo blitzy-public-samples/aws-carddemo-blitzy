@@ -9,12 +9,18 @@ import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 /**
  * Holds the committed bootstrap procedures against the files that advertise them.
@@ -55,6 +61,21 @@ class DemoBootstrapContractTest {
     /** The names it marks as already-encoded identity hashes. */
     private static final Pattern IDENTITY_PLACEHOLDER =
             Pattern.compile("(?m)^([A-Z0-9_]+)='\\{bcrypt}.*REPLACE-THIS");
+
+    /**
+     * A Compose reference of the form <code>${VAR:?message}</code>, which has no default at all.
+     *
+     * <p>A doubled dollar is excluded deliberately. Compose reads <code>$$</code> as one literal
+     * dollar and interpolates nothing, so such a reference reaches a container's own shell and is
+     * answered by that container's environment rather than by the dotenv file. The provisioning
+     * container's SERVICE_DATABASE_NAMES is one: Compose sets it in the same file.
+     */
+    private static final Pattern REQUIRED_COMPOSE_VARIABLE =
+            Pattern.compile("(?<!\\$)\\$\\{([A-Z][A-Z0-9_]*):\\?");
+
+    /** Every assignment one dotenv document declares, in the order it declares them. */
+    private static final Pattern DOTENV_ASSIGNMENT =
+            Pattern.compile("(?m)^([A-Za-z_][A-Za-z0-9_]*)=(.*)$");
 
     @Nested
     @DisplayName("every committed script")
@@ -173,6 +194,227 @@ class DemoBootstrapContractTest {
                             || script.contains("CARDDEMO_\" + \"${identity}_PASSWORD"),
                     "the caller has to be able to choose a password rather than read a generated"
                             + " one");
+        }
+
+        /**
+         * Reconciles a prior-version environment file, and every value already chosen survives.
+         *
+         * <p>This is the failure that made the documented demo path stop at its first command.
+         * {@code .env.example} is the declaration of what a run needs and {@code .env} is one
+         * machine's answer to it, so a key added to the declaration after the answer was written is
+         * simply absent from the answer. An absent key leaves no placeholder behind, so the
+         * placeholder count the script ends with could not see it: the script reported success on a
+         * file that was missing {@code ACQUIRER_PASSWORD_HASH}, and {@code docker compose config}
+         * then refused to interpolate a variable Compose requires without a default.
+         *
+         * <p>The fixture here is a real prior version rather than a sketch: it is the shipped
+         * example with the same kind of gap, every placeholder already answered, and one setting the
+         * example no longer declares. Nothing is generated, so this runs without {@code openssl} or
+         * {@code jshell} on the path, which is why the script requires each tool where it uses it.
+         *
+         * @param workspace a directory JUnit creates and removes
+         * @throws Exception when the script cannot be run
+         */
+        @Test
+        @DisplayName("reconciles a prior-version .env, preserving every value already chosen")
+        void reconcilesAPriorVersionEnvironmentFile(@TempDir Path workspace) throws Exception {
+            String example = read(platformDirectory().resolve(".env.example"));
+            List<String> declared = declaredKeys(example);
+            assertTrue(declared.size() > 100,
+                    "the example declares " + declared.size() + " assignments, so this fixture is"
+                            + " reading the wrong file");
+
+            Set<String> withheld = Set.of("ACQUIRER_USERNAME", "ACQUIRER_PASSWORD_HASH",
+                    "API_CROSS_SITE_HEADER", "REPLICA_LAG_CEILING");
+            String retired = "A_SETTING_THE_EXAMPLE_NO_LONGER_DECLARES";
+            String priorVersion = priorVersionOf(example, withheld) + retired + "=kept\n";
+
+            Files.createDirectory(workspace.resolve("scripts"));
+            Files.copy(platformDirectory().resolve(GENERATE_ENV),
+                    workspace.resolve(GENERATE_ENV));
+            Files.writeString(workspace.resolve(".env.example"), example, StandardCharsets.UTF_8);
+            Files.writeString(workspace.resolve(".env"), priorVersion, StandardCharsets.UTF_8);
+
+            Process run = new ProcessBuilder("bash", GENERATE_ENV)
+                    .directory(workspace.toFile())
+                    .redirectErrorStream(true)
+                    .start();
+            String output = new String(run.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+            assertTrue(run.waitFor(2, TimeUnit.MINUTES), "the generator did not finish");
+            assertEquals(0, run.exitValue(),
+                    "the generator refused a prior-version file it can reconcile:\n" + output);
+
+            String reconciled = read(workspace.resolve(".env"));
+            List<String> stillMissing = declared.stream()
+                    .filter(key -> !reconciled.contains("\n" + key + "=")
+                            && !reconciled.startsWith(key + "="))
+                    .toList();
+            assertEquals(List.of(), stillMissing,
+                    "every assignment the example declares has to be present afterwards, or"
+                            + " Compose refuses to interpolate it");
+            for (String added : withheld) {
+                assertTrue(output.contains(added),
+                        "the run has to name " + added + " as one it added, so an operator can see"
+                                + " what changed");
+            }
+            assertTrue(output.contains(retired),
+                    "and name the setting the example no longer declares rather than deleting a"
+                            + " value this machine may have chosen");
+            assertTrue(reconciled.contains(retired + "=kept"),
+                    "which means leaving it in place");
+
+            Map<String, String> before = assignments(priorVersion);
+            Map<String, String> after = assignments(reconciled);
+            List<String> rewritten = before.keySet().stream()
+                    .filter(key -> !before.get(key).equals(after.get(key)))
+                    .toList();
+            assertEquals(List.of(), rewritten,
+                    "no value already chosen on this machine may be rewritten: a password is not"
+                            + " recoverable from the hash it made");
+
+            for (String identity : names(IDENTITY_PLACEHOLDER, example)) {
+                assertTrue(after.containsKey(identity),
+                        "all four request identities have to be declared afterwards, and "
+                                + identity + " is not");
+                assertFalse(after.get(identity).contains("REPLACE-THIS"),
+                        identity + " is still a placeholder, so nothing generated it");
+            }
+        }
+
+        /**
+         * A published key is replaced, and a tightened default is named rather than changed.
+         *
+         * <p>Reconciling names closed one half of the upgrade problem. This is the other half, and
+         * both halves were found the same way: the delivered workspace would not start. Two values
+         * that were usable when they were written had stopped being usable. {@code
+         * CARD_TOKEN_SECRET} held the demo key this repository publishes, which the authorization
+         * and card services now refuse outright, and {@code PROCESSED_EVENT_RETENTION_HOURS} held a
+         * week, which is no longer twice the broker window the marker has to outlive. Neither is a
+         * missing key and neither is a placeholder, so every check the script had passed while four
+         * of six services could not start.
+         *
+         * <p>The two are handled differently on purpose. A published key is nobody's secret and no
+         * running deployment can hold it, so it is regenerated. An overridden setting may be a
+         * deliberate choice, so it is reported with both values and left alone: the operator decides,
+         * and the report is what makes the decision possible.
+         */
+        @Test
+        @DisplayName("regenerates a published card-token key and names an overridden setting")
+        void regeneratesAPublishedKeyAndNamesAnOverriddenSetting(@TempDir Path workspace)
+                throws Exception {
+            String example = read(platformDirectory().resolve(".env.example"));
+            String publishedKey = publishedCardTokenKey();
+            String prior = priorVersionOf(example, Set.of())
+                    .replaceAll("(?m)^CARD_TOKEN_SECRET=.*$",
+                            "CARD_TOKEN_SECRET=" + publishedKey)
+                    .replaceAll("(?m)^PROCESSED_EVENT_RETENTION_HOURS=.*$",
+                            "PROCESSED_EVENT_RETENTION_HOURS=168");
+
+            Files.createDirectory(workspace.resolve("scripts"));
+            Files.copy(platformDirectory().resolve(GENERATE_ENV), workspace.resolve(GENERATE_ENV));
+            Files.writeString(workspace.resolve(".env.example"), example, StandardCharsets.UTF_8);
+            Files.writeString(workspace.resolve(".env"), prior, StandardCharsets.UTF_8);
+
+            Process run = new ProcessBuilder("bash", GENERATE_ENV)
+                    .directory(workspace.toFile())
+                    .redirectErrorStream(true)
+                    .start();
+            String output = new String(run.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+            assertTrue(run.waitFor(2, TimeUnit.MINUTES), "the generator did not finish");
+            assertEquals(0, run.exitValue(), "the generator refused the file:\n" + output);
+
+            Map<String, String> after = assignments(read(workspace.resolve(".env")));
+            assertFalse(publishedKey.equals(after.get("CARD_TOKEN_SECRET")),
+                    "the published key has to be replaced, because every service that reads it"
+                            + " refuses to start on it");
+            assertFalse(after.get("CARD_TOKEN_SECRET").contains("REPLACE-WITH"),
+                    "and replaced with a generated value rather than the placeholder");
+            assertTrue(after.get("CARD_TOKEN_SECRET").length() >= 32,
+                    "a card-token key under 32 characters is padded rather than filled, so the"
+                            + " generated one has to be at least that long");
+            assertTrue(output.contains(
+                            "CARD_TOKEN_SECRET held a value this repository publishes"),
+                    "the run has to say why it replaced a value, since replacing one is otherwise"
+                            + " the thing this script never does:\n" + output);
+
+            String script = read(platformDirectory().resolve(GENERATE_ENV));
+            for (String refused : refusedCardTokenKeys()) {
+                assertTrue(script.contains("\"" + refused + "\""),
+                        "the services refuse " + refused + " at start-up, so the generator has to"
+                                + " recognise it. A value the code refuses and the generator keeps"
+                                + " is a workspace that reports success and cannot start.");
+            }
+
+            assertEquals("168", after.get("PROCESSED_EVENT_RETENTION_HOURS"),
+                    "an overridden setting stays as this machine set it");
+            assertTrue(output.contains(
+                            "PROCESSED_EVENT_RETENTION_HOURS is 168 here and 720 in the example"),
+                    "and is reported with both values, which is what turns a start-up refusal into"
+                            + " one actionable line:\n" + output);
+        }
+
+        /**
+         * The demo card-token key this repository publishes, read from the service that refuses it.
+         *
+         * @return the published literal
+         */
+        private String publishedCardTokenKey() {
+            List<String> refused = refusedCardTokenKeys();
+            assertFalse(refused.isEmpty(),
+                    "the authorization service has to declare the published key this script"
+                            + " replaces, or the two have drifted apart");
+            return refused.getFirst();
+        }
+
+        /**
+         * Every card-token key the authorization service refuses at start-up.
+         *
+         * <p>Read from the service rather than listed here, so a key added to the refusal there
+         * fails this test until the generator recognises it too.
+         *
+         * @return the refused literals, in declaration order
+         */
+        private List<String> refusedCardTokenKeys() {
+            String source = read(platformDirectory().resolve("services/authorization-service/src"
+                    + "/main/java/com/carddemo/authorization/config/SecurityConfig.java"));
+            Matcher literal = Pattern
+                    .compile("(?:PUBLISHED|BUILD_SCOPE)_CARD_TOKEN_KEY = \"([^\"]+)\"")
+                    .matcher(source);
+            return literal.results().map(match -> match.group(1)).toList();
+        }
+
+        /**
+         * Every variable Compose requires without a default is declared by the example.
+         *
+         * <p>The static half of the same guarantee, and it is what makes the reconciliation above
+         * sufficient. {@code ${VAR:?message}} tells Compose to refuse the whole file when {@code VAR}
+         * resolves to nothing, so such a variable has to be declared somewhere a reader can find it.
+         * A variable Compose requires and the example does not declare cannot be reconciled into an
+         * environment file, because there is nothing to copy it from.
+         */
+        @Test
+        @DisplayName("every variable Compose requires without a default is declared by the example")
+        void everyVariableComposeRequiresIsDeclaredByTheExample() {
+            String compose = read(platformDirectory().resolve("docker-compose.yml"));
+            String example = read(platformDirectory().resolve(".env.example"));
+            Set<String> declared = Set.copyOf(declaredKeys(example));
+
+            Matcher required = REQUIRED_COMPOSE_VARIABLE.matcher(compose);
+            List<String> undeclared = new ArrayList<>();
+            int checked = 0;
+            while (required.find()) {
+                checked++;
+                if (!declared.contains(required.group(1))) {
+                    undeclared.add(required.group(1));
+                }
+            }
+
+            assertTrue(checked >= 15,
+                    "Compose requires " + checked + " variables without a default, which is fewer"
+                            + " than this file has ever had");
+            assertEquals(List.of(), undeclared,
+                    "a variable Compose refuses to default cannot be reconciled from an example"
+                            + " that does not declare it");
         }
 
         @Test
@@ -347,6 +589,50 @@ class DemoBootstrapContractTest {
                     "the printed apply order has to keep the Secret template excluded, which is the"
                             + " order 00-namespace.yaml documents");
         }
+    }
+
+    /** The names one dotenv document assigns, in file order. */
+    private static List<String> declaredKeys(String document) {
+        return names(DOTENV_ASSIGNMENT, document);
+    }
+
+    /** The assignments one dotenv document carries, name to value. */
+    private static Map<String, String> assignments(String document) {
+        Map<String, String> values = new LinkedHashMap<>();
+        Matcher assignment = DOTENV_ASSIGNMENT.matcher(document);
+        while (assignment.find()) {
+            values.put(assignment.group(1), assignment.group(2));
+        }
+        return values;
+    }
+
+    /**
+     * Builds a plausible earlier answer to the shipped example: every declared assignment except
+     * the withheld ones, with each placeholder replaced by a value of the right shape.
+     *
+     * <p>Answering the placeholders is what keeps this fixture hermetic. A file still carrying them
+     * would send the script to {@code openssl} and to {@code jshell}, and a test that needs a
+     * particular binary on the path tests the machine it runs on as much as the script.
+     *
+     * @param example  the shipped declaration
+     * @param withheld the names this earlier answer never carried
+     * @return the earlier answer, one assignment per line
+     */
+    private static String priorVersionOf(String example, Set<String> withheld) {
+        StringBuilder earlier = new StringBuilder();
+        assignments(example).forEach((key, value) -> {
+            if (withheld.contains(key)) {
+                return;
+            }
+            String answered = value
+                    .replace("'{bcrypt}$2a$10$REPLACE-THIS-PLACEHOLDER-WITH-A-REAL-BCRYPT-HASH'",
+                            "'{bcrypt}$2a$10$" + "0123456789012345678901"
+                                    + "0123456789012345678901234567890'")
+                    .replaceAll("REPLACE-WITH[A-Za-z0-9-]*",
+                            "aValueThisMachineAlreadyChoseOfAtLeastThirtyTwoCharacters");
+            earlier.append(key).append('=').append(answered).append('\n');
+        });
+        return earlier.toString();
     }
 
     /** The script with its comment lines removed, leaving what it actually executes. */

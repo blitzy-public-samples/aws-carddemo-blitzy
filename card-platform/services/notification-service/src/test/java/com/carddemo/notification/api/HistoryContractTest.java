@@ -20,15 +20,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Contract tests binding the shipped history endpoint description to the shipped schema migration.
  *
- * <p>The two files name a card differently, and that difference is the contract. The route carries
- * the card number, which is {@code TRNX-CARD-NUM PIC X(16)} at {@code app/cpy/COSTM01.CPY:L22} and
- * the first part of the key {@code KEYS(32 0)} at {@code app/jcl/CREASTMT.JCL:L30} declares. The
- * migration keys on the card token instead, so the stored key is derived and no card number is
- * stored.
+ * <p>The two files name a card the same way, and that agreement is the contract. The route carries
+ * the card token and the migration keys the read model on it, so the description and the schema hold
+ * one value and the service derives nothing. The token stands for
+ * {@code TRNX-CARD-NUM PIC X(16)} at {@code app/cpy/COSTM01.CPY:L22}, the first part of the key
+ * {@code KEYS(32 0)} at {@code app/jcl/CREASTMT.JCL:L30} declares.
  *
  * <p>These tests read the two shipped files and assert that neither drifts. The card-number pattern
- * appears in the route parameter and nowhere else in the description. The migration carries it
- * nowhere at all, and every card number it stores is masked and keys nothing.
+ * appears in neither: no request of this service carries a card number, so no parameter declares its
+ * shape, and every card number the migration stores is masked and keys nothing.
  *
  * <p>The remaining assertions cover the response shape. The envelope names the card once, by its
  * masked form, and neither the count nor the array carries a ceiling: the response covers the whole
@@ -52,16 +52,16 @@ class HistoryContractTest {
     private static final String RENAME_MIGRATION = "/db/migration/V5__rendered_not_delivered.sql";
 
     /** The only path the description declares. */
-    private static final String HISTORY_PATH = "/notifications/{cardNumber}";
+    private static final String HISTORY_PATH = "/notifications/{cardToken}";
 
-    /** Name of the one path parameter, and the display property of the response envelope. */
+    /** The display property of the response envelope, which is the masked card number. */
     private static final String CARD_NUMBER = "cardNumber";
+
+    /** Name of the one path parameter, which is the card token. */
+    private static final String CARD_TOKEN = "cardToken";
 
     /** Pattern a card token matches, which the migration enforces on its key column. */
     private static final String TOKEN_PATTERN = PanMasker.CARD_TOKEN_PATTERN;
-
-    /** Characters a card number spans, in the route and in {@code TRNX-CARD-NUM PIC X(16)}. */
-    private static final int CARD_NUMBER_LENGTH = PanMasker.CARD_NUMBER_LENGTH;
 
     /** Characters the masked display value spans, the width {@code CHAR(16)} declares. */
     private static final int MASKED_LENGTH = PicClause.TRAN_CARD_NUM_WIDTH;
@@ -89,53 +89,59 @@ class HistoryContractTest {
     }
 
     @Test
-    @DisplayName("The only path takes the card number")
-    void onlyPathTakesTheCardNumber() {
+    @DisplayName("The only path takes the card token")
+    void onlyPathTakesTheCardToken() {
         assertThat(paths().keySet()).containsExactly(HISTORY_PATH);
     }
 
     @Test
-    @DisplayName("The path parameter is a card number of sixteen digits")
-    void pathParameterIsACardNumber() {
-        Map<String, Object> parameter = parameter(CARD_NUMBER);
+    @DisplayName("The path parameter is a card token of sixty-four hexadecimal characters")
+    void pathParameterIsACardToken() {
+        Map<String, Object> parameter = parameter(CARD_TOKEN);
         assertThat(parameter.get("in")).isEqualTo("path");
         assertThat(parameter.get("required")).isEqualTo(true);
 
         Map<String, Object> schema = schemaOf(parameter);
         assertThat(schema.get("type")).isEqualTo("string");
-        assertThat(schema.get("pattern")).isEqualTo(PAN_PATTERN);
-        assertThat(schema.get("minLength")).isEqualTo(CARD_NUMBER_LENGTH);
-        assertThat(schema.get("maxLength")).isEqualTo(CARD_NUMBER_LENGTH);
+        assertThat(schema.get("pattern")).isEqualTo(TOKEN_PATTERN);
+        assertThat(schema.get("minLength")).isEqualTo(PanMasker.CARD_TOKEN_LENGTH);
+        assertThat(schema.get("maxLength")).isEqualTo(PanMasker.CARD_TOKEN_LENGTH);
     }
 
     @Test
-    @DisplayName("The request carries the card number and no masked value or token")
-    void theRequestCarriesTheCardNumberAlone() {
+    @DisplayName("The request carries the card token and neither a card number nor a masked value")
+    void theRequestCarriesTheCardTokenAlone() {
         assertThat(parameterNames())
-                .as("the route names the card the source key names, and reads nothing else")
-                .containsExactly(CARD_NUMBER);
-        assertThat(schemaOf(parameter(CARD_NUMBER)).get("pattern"))
-                .as("a masked value identifies no single card, so no route reads one")
-                .isNotEqualTo(MASKED_PATTERN)
-                .isNotEqualTo(TOKEN_PATTERN);
+                .as("the route names the card by the value the read model is keyed on, and reads "
+                        + "nothing else")
+                .containsExactly(CARD_TOKEN);
+        assertThat(schemaOf(parameter(CARD_TOKEN)).get("pattern"))
+                .as("a card number in a path reaches logs this service cannot redact, and a masked "
+                        + "value identifies no single card, so the route reads neither")
+                .isNotEqualTo(PAN_PATTERN)
+                .isNotEqualTo(MASKED_PATTERN);
     }
 
     @Test
     @DisplayName("The controller enforces the pattern the description declares")
     void theControllerEnforcesTheDeclaredPattern() {
-        assertThat(NotificationHistoryController.CARD_NUMBER_PATTERN).isEqualTo(PAN_PATTERN);
+        assertThat(NotificationHistoryController.CARD_TOKEN_PATTERN).isEqualTo(TOKEN_PATTERN);
         assertThat(NotificationHistoryController.ROUTE_TEMPLATE).isEqualTo(HISTORY_PATH);
     }
 
     @Test
-    @DisplayName("The card-number pattern appears in the route parameter alone")
-    void thePanPatternAppearsInTheRouteParameterAlone() {
+    @DisplayName("The card-number pattern appears nowhere in either shipped file")
+    void thePanPatternAppearsInNeitherShippedFile() {
         assertThat(countOccurrences(rawOpenapi, PAN_PATTERN))
-                .as("the path parameter declares it, and no response schema does")
-                .isEqualTo(1);
+                .as("no parameter and no schema of this service declares the shape of a card "
+                        + "number, because no request and no response carries one")
+                .isZero();
         assertThat(rawMigration)
-                .as("the migration still admits sixteen numeric digits somewhere")
+                .as("the migration admits sixteen numeric digits nowhere")
                 .doesNotContain(PAN_PATTERN);
+        assertThat(countOccurrences(rawOpenapi, TOKEN_PATTERN))
+                .as("the path parameter declares the token shape, and no response schema does")
+                .isEqualTo(1);
     }
 
     @Test
@@ -177,16 +183,16 @@ class HistoryContractTest {
         Map<String, Object> properties = nested(history, "properties");
 
         assertThat(asStrings(history.get("required")))
-                .as("the masked form is derived from the path value, so every response carries it")
+                .as("the masked form is read from an entry, and this body is built only where one "
+                        + "was read, so every response carries it")
                 .containsExactly(CARD_NUMBER, "transactionCount", "totalAmount", "transactions");
         assertThat(properties.keySet())
                 .containsExactly(CARD_NUMBER, "transactionCount", "totalAmount", "transactions");
         assertThat(nested(properties, CARD_NUMBER).get("pattern")).isEqualTo(MASKED_PATTERN);
         assertThat(nested(properties, CARD_NUMBER).get("maxLength")).isEqualTo(MASKED_LENGTH);
-        assertThat(rawOpenapi)
-                .as("the stored key is a storage key and reaches no response")
-                .doesNotContain("cardToken:")
-                .doesNotContain("name: cardToken");
+        assertThat(nested(historySchema(), "properties").keySet())
+                .as("the token names the resource on the request line and reaches no response body")
+                .doesNotContain(CARD_TOKEN);
     }
 
     @Test
@@ -210,7 +216,7 @@ class HistoryContractTest {
                 .as("a bounded page would report a total over rows the source totalled in full")
                 .doesNotContain("offset", "page", "pageNumber", "pageSize", "size", "limit",
                         "cursor", "sort")
-                .containsExactly(CARD_NUMBER);
+                .containsExactly(CARD_TOKEN);
         assertThat(rawOpenapi)
                 .as("no query parameter survives in the description either")
                 .doesNotContain("in: query");

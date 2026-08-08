@@ -2,6 +2,7 @@ package com.carddemo.authorization.messaging;
 
 import com.carddemo.authorization.config.ObservabilityConfig;
 import com.carddemo.authorization.config.ObservabilityConfig.ReplicaMeters;
+import com.carddemo.authorization.domain.ReplicaGapLog;
 import com.carddemo.authorization.entity.ProcessedEventEntity;
 import com.carddemo.authorization.entity.ProcessedEventEntity.ProcessedEventId;
 import com.carddemo.authorization.repository.AccountCreditSnapshotRepository;
@@ -116,12 +117,22 @@ class ReplicaConsumerTest {
     /** The recording surface the shipped configuration hands each listener. */
     private ReplicaMeters meters;
 
+    /**
+     * The gap log both listeners open and close.
+     *
+     * <p>Stubbed rather than exercised here. What it records is asserted in
+     * {@link com.carddemo.authorization.domain.ReplicaGapLogTest}, and what a decision does with a
+     * standing gap is asserted in {@code domain/AuthorizationServiceTest}.
+     */
+    private ReplicaGapLog replicaGaps;
+
     @BeforeEach
     void buildCollaborators() {
         snapshots = Mockito.mock(AccountCreditSnapshotRepository.class);
         crossReferences = Mockito.mock(CardCrossReferenceRepository.class);
         processedEvents = Mockito.mock(ProcessedEventRepository.class);
         acknowledgment = Mockito.mock(Acknowledgment.class);
+        replicaGaps = Mockito.mock(ReplicaGapLog.class);
         registry = new SimpleMeterRegistry();
         meters = new ObservabilityConfig().replicaMeters(registry);
     }
@@ -158,7 +169,7 @@ class ReplicaConsumerTest {
         @BeforeEach
         void buildConsumer() {
             consumer = new AccountStateChangedConsumer(snapshots, processedEvents,
-                    immediateTransactions(), meters);
+                    immediateTransactions(), meters, replicaGaps);
         }
 
         @Test
@@ -369,7 +380,7 @@ class ReplicaConsumerTest {
         @BeforeEach
         void buildConsumer() {
             consumer = new CardUpdatedConsumer(crossReferences, processedEvents,
-                    immediateTransactions(), meters);
+                    immediateTransactions(), meters, replicaGaps);
         }
 
         /**
@@ -682,9 +693,9 @@ class ReplicaConsumerTest {
         @BeforeEach
         void buildConsumers() {
             accountConsumer = new AccountStateChangedConsumer(snapshots, processedEvents,
-                    immediateTransactions(), meters);
+                    immediateTransactions(), meters, replicaGaps);
             cardConsumer = new CardUpdatedConsumer(crossReferences, processedEvents,
-                    immediateTransactions(), meters);
+                    immediateTransactions(), meters, replicaGaps);
         }
 
         /**

@@ -378,16 +378,17 @@ public class SecurityConfig {
     /**
      * Secures the notification service API.
      *
-     * <p>One route answers. {@code GET /notifications/{cardNumber}} returns the alert history of one
+     * <p>One route answers. {@code GET /notifications/{cardToken}} returns the alert history of one
      * card, and the rule scopes it to the cards the caller owns.
      *
-     * <p>The path segment is the card number, {@value com.carddemo.cobol.PanMasker#CARD_NUMBER_LENGTH}
-     * digits, and {@link #ownsCardNumberPathVariable(String)} derives the card token from it before it
-     * looks for an authority. An authority therefore names a token and never a card number, which is
-     * what {@code src/main/resources/db/migration/V1__schema.sql} stores as the key of the read model.
-     * The token is what lets this rule decide one card. Over a masked number the rule would be unsound
-     * rather than merely weak: one authority would admit its holder to every card sharing those last
-     * four digits.
+     * <p>The path segment is the card token, which is both the key
+     * {@code src/main/resources/db/migration/V1__schema.sql} stores the read model under and the value
+     * a {@code SCOPE_CARD_} authority names, so {@link #ownsPathVariable(String, String)} compares two
+     * values of the same kind and derives nothing. No card number reaches a request line at all.
+     *
+     * <p>The token is what lets this rule decide one card. Over a masked number the rule would be
+     * unsound rather than merely weak: one authority would admit its holder to every card sharing those
+     * last four digits.
      *
      * @param http the builder Spring Security supplies
      * @return the chain covering every request that is not an actuator endpoint
@@ -407,8 +408,8 @@ public class SecurityConfig {
                         // server.error.include-* key at a value that reveals no detail.
                         .dispatcherTypeMatchers(DispatcherType.ERROR, DispatcherType.ASYNC)
                             .permitAll()
-                        .requestMatchers(HttpMethod.GET, "/notifications/{cardNumber}")
-                            .access(ownsCardNumberPathVariable("cardNumber"))
+                        .requestMatchers(HttpMethod.GET, "/notifications/{cardToken}")
+                            .access(ownsPathVariable(CARD_SCOPE, "cardToken"))
                         // Default deny. A route named by no rule above is refused.
                         .anyRequest().denyAll())
                 .httpBasic(basic -> basic.authenticationEntryPoint(SecurityConfig::unauthorized))
@@ -452,42 +453,6 @@ public class SecurityConfig {
             boolean granted = value != null
                     && holds(authentication.get(), SCOPE_PREFIX + kind + "_" + value);
             return new AuthorizationDecision(granted);
-        };
-    }
-
-    /**
-     * Grants a request only when the caller owns the card whose number the path carries.
-     *
-     * <p>The path variable is a card number and a configured authority names a card token, so this
-     * manager derives the token through {@link PanMasker#cardToken(String)} and then looks for
-     * {@code SCOPE_CARD_<token>} exactly as {@link #ownsPathVariable(String, String)} does. The
-     * derivation is keyed under the deployment card-token key, so no card number reaches an authority
-     * list, a configuration file or this decision beyond the request that carried it.
-     *
-     * <p>A missing path variable denies, and so does a value holding no character: neither names a
-     * card to derive a token from. A value of any other shape derives a token that matches no
-     * authority and denies as well, so a caller learns nothing about which values exist.
-     *
-     * @param variable name of the path variable carrying the card number
-     * @return the manager the rule applies
-     * @throws IllegalStateException when no card-token key is configured, which is a deployment fault
-     *         rather than a decision about the caller
-     */
-    static AuthorizationManager<RequestAuthorizationContext> ownsCardNumberPathVariable(
-            String variable) {
-        return (authentication, context) -> {
-            String cardNumber = context.getVariables().get(variable);
-            if (cardNumber == null) {
-                return new AuthorizationDecision(false);
-            }
-            String token;
-            try {
-                token = PanMasker.cardToken(cardNumber);
-            } catch (IllegalArgumentException noCardNamed) {
-                return new AuthorizationDecision(false);
-            }
-            return new AuthorizationDecision(
-                    holds(authentication.get(), SCOPE_PREFIX + CARD_SCOPE + "_" + token));
         };
     }
 

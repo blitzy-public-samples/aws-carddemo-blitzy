@@ -154,7 +154,7 @@ Migration `V5` adds the table. It is the row a caller's decision leaves behind. 
 | `decline_reason_code` | `VARCHAR(4)` | The four-digit reason of `app/cbl/CBTRN02C.cbl:L380-L420`. Null on approval |
 | `decline_reason_description` | `VARCHAR(76)` | The 76-character description width of the reject trailer at `app/cbl/CBTRN02C.cbl:L446-L465` |
 | `decided_at` | `TIMESTAMP(6) WITH TIME ZONE` | Additive |
-| `event_id` | `UUID` | Additive. Ties the row to the one event the call published |
+| `event_id` | `UUID` | Additive, and nullable since migration V13. Ties the row to the event the call published, and holds null on the one decided outcome that publishes none, reason 0100. `ck_authorization_decision_event` holds it and `account_id` present or absent together |
 
 Seven named constraints hold the shape the columns alone cannot. `pk_authorization_decision` keys the table on the transaction. `ck_authorization_decision_outcome` is the important one. An approved row must carry neither reason column, and a declined row must carry both. No row can claim an outcome it does not explain. `ck_authorization_decision_approved_account` requires an account on every approval, because an approval without a resolved account is not reachable. `ck_authorization_decision_actor` bounds the actor to one to eight printable characters, `ck_authorization_decision_account_digits` to eleven digits, and `ck_authorization_decision_reason_digits` to four. `ck_authorization_decision_card_token` requires 64 lower-case hexadecimal characters, and `ck_authorization_decision_masked_card` accepts only the two forms masking produces: twelve asterisks and four digits, or sixteen asterisks when no digits are known.
 
@@ -166,14 +166,14 @@ The three columns with no source field close the gap those hops open. `app/cbl/C
 
 | Table | Provenance | Key point |
 | --- | --- | --- |
-| `unresolved_card_attempt` | Reason 0100 path in `CBTRN02C` plus additive capture | Uses transaction identifier because no account was resolved |
+| `unresolved_card_attempt` | Reason 0100 path in `CBTRN02C` plus additive capture | Keyed on the transaction identifier because no account was resolved. With the `authorization_decision` row beside it, this is the whole record of that outcome: nothing is published for it |
 | `authorization_decision` | Additive audit state; no source program records who asked | `actor` is `VARCHAR(64)` and holds the whole authenticated principal, because `SEC-USR-ID PIC X(08)` bounds a signon identity and not an HTTP principal |
-| `outbox_event` | Additive; source ancestor is `CORPT00C:L517-L519` | Migration V4 permits either an 11-digit account key or a 16-character transaction key. Migration V8 adds `dead_letter_state` and `dead_letter_published_at` |
+| `outbox_event` | Additive; source ancestor is `CORPT00C:L517-L519` | Every row this service writes carries the 11-digit account key. Migration V4 also permits a 16-character transaction key and migration V14 records that no producer writes one, keeping the form readable for records published under `transaction-declined-v2` before that decision. Migration V8 adds `dead_letter_state` and `dead_letter_published_at` |
 | `processed_event` | Additive | Guards `AccountStateChanged` application |
 
 `dead_letter_state` and `dead_letter_published_at` are the durable half of giving up on a row. A row that spends its attempts reaches `ABANDONED`, and the claim query never returns an abandoned row, so the pass that gave up on it would otherwise be the last pass that ever saw it — a diagnostic dispatched at that moment and not awaited makes an unreachable broker indistinguishable from a healthy one. Abandoning the row writes `REQUIRED` in the same transaction, a partial index on `last_attempt_at` holds only the owed rows, and `PUBLISHED` plus a timestamp is written only once the broker has acknowledged the diagnostic. Three `CHECK` constraints pair the two columns: the state is one of the three names, a timestamp appears only with `PUBLISHED`, and `PUBLISHED` never appears without one.
 
-A diagnostic for a row whose `aggregate_id` holds the 16-character transaction key travels under `00000000000` rather than that key, because `schemas/dead-letter-v1.json` accepts eleven digits. The row is still named exactly by `failedEventId`, and `outbox_event.aggregate_id` still holds the transaction identifier for anyone reading the row.
+A diagnostic for a row whose `aggregate_id` holds the 16-character transaction key travels under `00000000000` rather than that key, because `schemas/dead-letter-v1.json` accepts eleven digits. The row is still named exactly by `failedEventId`, and `outbox_event.aggregate_id` still holds the transaction identifier for anyone reading the row. No producer writes that key form now, so this substitution applies only to a row stored before that decision.
 
 ### Ledger database
 
@@ -376,6 +376,8 @@ erDiagram
 
 An abandoned row is never marked published. That distinction is the whole reason the state is a separate column rather than a reuse of `published`: a reader has to be able to tell an event that reached its consumers from one this service gave up on and merely reported.
 
+A row reaches `ABANDONED` by either of two routes, and both are recorded the same way. One is a row whose ten attempts ran out. The other is a row whose failure is permanent — a payload the schema document refuses, or one no record type reads — which `OutboxEventEntity.abandon` closes outright rather than after ten identical refusals, because the tenth refusal would reach a conclusion the first already reached. That method writes the terminal state and the `REQUIRED` obligation in one write, before any diagnostic is attempted, so a broker that refuses the diagnostic leaves the obligation standing and a later pass offers it again.
+
 All four growing tables of this schema are swept on one hourly schedule, in bounded ordered batches of at most five hundred rows, each repeated until it comes back short or a thirty-second per-table ceiling stops it. `velocity_window` is the table that needed this: nothing reads a bucket once its span elapses, so every authorization otherwise left a row behind for ever. Its horizon comes from `FRAUD_VELOCITY_RETENTION_DAYS` and must exceed `carddemo.fraud.risk.velocity-window-minutes`, because a shorter horizon would delete the bucket a live authorization is counting into, and the service refuses to start when it does not. `fraud_assessment` is swept on the same schedule under `FRAUD_ASSESSMENT_RETENTION_DAYS`, the horizon its own `COMMENT ON TABLE` declares.
 
 ### Notification database
@@ -469,7 +471,7 @@ The source composite key is 32 bytes. `app/jcl/CREASTMT.JCL:L30` defines `KEYS(3
 
 | Table | Shape | Rule |
 | --- | --- | --- |
-| `notification_log` | UUID, card token, masked card, transaction, channel, render time, outcome | Stores metadata only, never a rendered body. `outcome` carries `RENDERED_NOT_SENT` and `ck_notification_log_outcome` permits no other value: nothing on this platform sends a cardholder alert, so a row records what was rendered and never a delivery |
+| `notification_log` | UUID, card token, masked card, transaction, channel, render time, outcome | Stores metadata only, never a rendered body. `outcome` carries `RENDERED_NOT_SENT` and `ck_notification_log_outcome` permits no other value: nothing on this platform sends a cardholder alert, so a row records what was rendered and never a delivery. Two of the three rendered alerts reach this table. A fraud alert reaches none, because `FraudFlagged` carries neither the card token nor the masked card number the two `CHECK` constraints below require, and neither can be derived from an event that names only a transaction, an account, a score and the rules that fired |
 | `processed_event` | Event identifier, process time, consumed topic | Guards all four notification listener groups; `consumed_topic` keeps one event identifier claimable once per group |
 
 ### Account database

@@ -2,8 +2,10 @@ package com.carddemo.card.api;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.carddemo.cobol.PanMasker;
 import com.networknt.schema.InputFormat;
 import com.networknt.schema.Schema;
 import com.networknt.schema.SchemaRegistry;
@@ -80,6 +82,26 @@ class OpenApiExampleValidationTest {
      * rather than take it for a card of the demonstration data.
      */
     private static final String PLACEHOLDER_CARD_NUMBER = "4000000000000000";
+
+    /**
+     * The card token a published path example carries.
+     *
+     * <p>Sixty-four zeros, which passes {@link PanMasker#CARD_TOKEN_PATTERN} and is the value
+     * {@link PanMasker#ABSENT_CARD_TOKEN} declares for a card that resolved to nothing. A real token
+     * is the keyed code over a card number under a deployment-supplied key, so no token this document
+     * could publish resolves under a reader's own key, and publishing one derived under the build key
+     * would put a value in the document that names a seeded card for anyone holding that key.
+     */
+    private static final String PLACEHOLDER_CARD_TOKEN = PanMasker.ABSENT_CARD_TOKEN;
+
+    /**
+     * The card number of record 1 of {@code app/data/ASCII/carddata.txt}, read to prove the published
+     * placeholder token is not that card's token.
+     *
+     * <p>It is a fixture value of a public repository and names no real card. Nothing sends it: the
+     * assertion derives a token from it and requires the published example to differ.
+     */
+    private static final String SEEDED_CARD_NUMBER = "0500024453765740";
 
     /** Reads the document and registers its component section. */
     @BeforeAll
@@ -163,13 +185,17 @@ class OpenApiExampleValidationTest {
             }
         }
 
-        Map<String, Object> variable = pathVariable("cardNumber");
-        assertEquals(PLACEHOLDER_CARD_NUMBER, valueOf(asMap(variable.get("examples"))
-                        .get("placeholder")),
-                "the path variable publishes the placeholder");
-        assertTrue(PLACEHOLDER_CARD_NUMBER.matches(CardController.CARD_NUMBER_PATTERN),
-                "the placeholder passes the shape app/cbl/COCRDUPC.cbl:L784 tests, so the published "
-                        + "example is a request this service would read");
+        Map<String, Object> variable = pathVariable("cardToken");
+        String publishedToken =
+                String.valueOf(valueOf(asMap(variable.get("examples")).get("placeholder")));
+        assertEquals(PLACEHOLDER_CARD_TOKEN, publishedToken,
+                "the path variable publishes the placeholder token");
+        assertTrue(publishedToken.matches(CardController.CARD_TOKEN_PATTERN),
+                "the placeholder passes the token shape, so the published example is a request this "
+                        + "service would read");
+        assertNotEquals(PanMasker.cardToken(SEEDED_CARD_NUMBER), publishedToken,
+                "the placeholder resolves to no seeded row, so a reader who pastes it reads 404 "
+                        + "rather than one card's detail");
     }
 
     /**
@@ -595,7 +621,7 @@ class OpenApiExampleValidationTest {
     @SuppressWarnings("unchecked")
     private static Map<String, Object> pathVariable(String name) {
         for (Object parameter : (List<Object>) node((Map<String, Object>) openApi.get("paths"),
-                "/cards/{cardNumber}", "parameters")) {
+                "/cards/{cardToken}", "parameters")) {
             Map<String, Object> declared = asMap(parameter);
             if (name.equals(declared.get("name"))) {
                 return declared;

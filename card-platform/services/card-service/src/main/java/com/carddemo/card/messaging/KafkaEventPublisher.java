@@ -102,11 +102,20 @@ public class KafkaEventPublisher implements EventPublisherPort {
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     /**
-     * The topic name this deployment configures for {@link EventContracts#CARD_UPDATED}, read from
-     * {@code carddemo.kafka.topics.card-updated}. A deployment that renames the topic still binds,
-     * and a blank value leaves the registry default as the only accepted name.
+     * Each event type this service publishes, mapped to the topic this deployment configures.
+     *
+     * <p>Two entries, and the second is the one a review found missing. {@link EventContracts#CARD_UPDATED}
+     * comes from {@code carddemo.kafka.topics.card-updated} and {@link EventContracts#DEAD_LETTER}
+     * from {@code carddemo.kafka.topics.dead-letter}. {@link #requireBoundToTopic} refuses any event
+     * type whose destination this map does not confirm, so a deployment that renamed the dead-letter
+     * topic — which {@code docker-compose.yml} and {@code deploy/k8s/30-configmap.yaml} both allow —
+     * had every terminal diagnostic refused before it was sent. That is the one record of an event the
+     * relay gave up on, and losing it leaves an abandoned row that nothing on the broker accounts for.
+     *
+     * <p>A blank value leaves the registry default as the only accepted name for that type, which is
+     * what an unset property means.
      */
-    private final String configuredCardUpdatedTopic;
+    private final Map<String, String> configuredTopics;
 
     /**
      * The one gate every event of this platform passes on the way out.
@@ -133,21 +142,26 @@ public class KafkaEventPublisher implements EventPublisherPort {
      * Takes the producer template Spring Boot builds from the {@code spring.kafka.producer}
      * properties and checks the reliability settings that template carries.
      *
-     * @param kafkaTemplate              the template that sends every card event to the broker
-     * @param configuredCardUpdatedTopic the topic name configured for the card update event, which
-     *                                   {@code application.yml} reads from
-     *                                   {@code carddemo.kafka.topics.card-updated}
-     * @param publishTimeout             how long one send waits for the broker, from
-     *                                   {@code carddemo.outbox.relay.publish-timeout}
+     * @param kafkaTemplate   the template that sends every card event to the broker
+     * @param cardUpdatedTopic the topic name configured for the card update event, which
+     *                        {@code application.yml} reads from
+     *                        {@code carddemo.kafka.topics.card-updated}
+     * @param deadLetterTopic the topic name configured for the terminal diagnostic of an abandoned
+     *                        outbox row, from {@code carddemo.kafka.topics.dead-letter}
+     * @param publishTimeout  how long one send waits for the broker, from
+     *                        {@code carddemo.outbox.relay.publish-timeout}
      * @throws IllegalStateException when the producer does not pin acknowledgement from every
      *         in-sync replica, idempotent production, an in-flight limit of at most
      *         {@value #MAX_IN_FLIGHT_LIMIT}, or a bounded delivery, request and block timeout
      */
     public KafkaEventPublisher(KafkaTemplate<String, String> kafkaTemplate,
-            @Value("${carddemo.kafka.topics.card-updated:}") String configuredCardUpdatedTopic,
+            @Value("${carddemo.kafka.topics.card-updated:}") String cardUpdatedTopic,
+            @Value("${carddemo.kafka.topics.dead-letter:}") String deadLetterTopic,
             @Value("${carddemo.outbox.relay.publish-timeout}") Duration publishTimeout) {
         this.kafkaTemplate = kafkaTemplate;
-        this.configuredCardUpdatedTopic = configuredCardUpdatedTopic;
+        this.configuredTopics = Map.of(
+                EventContracts.CARD_UPDATED, cardUpdatedTopic == null ? "" : cardUpdatedTopic,
+                EventContracts.DEAD_LETTER, deadLetterTopic == null ? "" : deadLetterTopic);
         this.publishTimeout = publishTimeout;
         requireReliableProducer(kafkaTemplate.getProducerFactory().getConfigurationProperties());
     }
@@ -252,7 +266,7 @@ public class KafkaEventPublisher implements EventPublisherPort {
                     + "', which no contract registers. " + EventContracts.eventTypes()
                     + " are the registered types.");
         }
-        if (!EventContracts.isBoundToTopic(eventType, topic, configuredCardUpdatedTopic)) {
+        if (!EventContracts.isBoundToTopic(eventType, topic, configuredTopics.get(eventType))) {
             throw new IllegalArgumentException(eventType + " belongs on the topic "
                     + EventContracts.defaultTopicFor(eventType) + " and the supplied topic reads "
                     + topic + ".");

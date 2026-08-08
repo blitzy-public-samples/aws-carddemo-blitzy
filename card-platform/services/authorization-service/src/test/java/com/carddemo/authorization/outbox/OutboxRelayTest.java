@@ -15,6 +15,7 @@ import com.carddemo.authorization.api.AuthorizationRequest;
 import com.carddemo.authorization.config.AuthorizationProperties;
 import com.carddemo.authorization.config.ObservabilityConfig;
 import com.carddemo.authorization.domain.AuthorizationService;
+import com.carddemo.authorization.domain.ReplicaSynchronization;
 import com.carddemo.authorization.domain.RequestCaller;
 import com.carddemo.authorization.entity.OutboxEventEntity;
 import com.carddemo.authorization.messaging.DeadLetterMetadata;
@@ -320,6 +321,29 @@ class OutboxRelayTest {
         @Primary
         RecordingPublisher recordingPublisher() {
             return new RecordingPublisher();
+        }
+
+        /**
+         * Declares the replica streams caught up, which this context cannot measure.
+         *
+         * <p>{@code KafkaReplicaSynchronization} reads the two replica listener containers, and this
+         * context starts neither: {@code spring.kafka.listener.auto-startup=false} is set above
+         * because {@link #UNREACHABLE_BROKER} is where the client points. A stopped container is a
+         * refusal in production and correctly so, since nothing is applying what the owners publish
+         * while it is stopped, so without this bean every decision below would refuse before it wrote
+         * the row this class exists to measure.
+         *
+         * <p>Substituting the verdict rather than relaxing the rule is what keeps the two concerns
+         * apart. {@code messaging/KafkaReplicaSynchronizationTest} measures the verdict itself,
+         * container state by container state, and {@code domain/AuthorizationServiceTest} measures
+         * what a refusing verdict does to a decision. This class measures the outbox.
+         *
+         * @return a verdict reporting a stream with nothing waiting on it
+         */
+        @Bean
+        @Primary
+        ReplicaSynchronization synchronizedReplicaStreams() {
+            return () -> ReplicaSynchronization.Verdict.synchronizedAt(0L);
         }
 
         /**

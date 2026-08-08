@@ -6,7 +6,7 @@ import java.time.LocalDate;
 import java.util.regex.Pattern;
 
 /**
- * Card detail projection returned by {@code GET /cards/{cardNumber}}.
+ * Card detail projection returned by {@code GET /cards/{cardToken}}.
  *
  * <p>Five components carry the card detail, in the order the card record declares
  * them at {@code app/cpy/CVACT02Y.cpy}. The card detail program

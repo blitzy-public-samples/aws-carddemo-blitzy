@@ -4,6 +4,7 @@
 - [Source provenance](#source-provenance)
 - [Endpoints](#endpoints)
 - [Decision chain](#decision-chain)
+- [Replica currency](#replica-currency)
 - [Events](#events)
 - [Domain and data ownership](#domain-and-data-ownership)
 - [Domain context](#domain-context)
@@ -18,9 +19,13 @@
 
 ## Purpose
 
-`authorization-service` owns `POST /authorizations`, the one synchronous Representational State Transfer (REST) endpoint a client calls in this platform. It resolves a card to an account, applies four decline rules in source order, and writes one outcome event through a transactional outbox for every request that reaches a decision. No other service writes the authorization decision.
+`authorization-service` owns `POST /authorizations`, the one synchronous Representational State Transfer (REST) endpoint a client calls in this platform. It resolves a card to an account, applies four decline rules in source order, and writes the outcome event through a transactional outbox. No other service writes the authorization decision.
 
-The guarantee is one event per *decision*, not one per HTTP call. A request refused before the decision service is entered writes nothing: an unauthenticated or unauthorized call, a body the JSON reader cannot bind, a field the bean constraints reject, and a capture moment outside the staleness window are all answered from the web layer, and the outbox stays untouched. Every request that reaches the rule chain produces exactly one `TransactionAuthorized` or one `TransactionDeclined`.
+**At most one event per decision, and never more than one.** A request refused before the decision service is entered writes nothing at all: an unauthenticated or unauthorized call, a body the JSON reader cannot bind, and a field the bean constraints reject are answered from the web layer, and the outbox stays untouched. A request that reaches the rule chain writes one `TransactionAuthorized` on an approval, and one `TransactionDeclined` on a decline that resolved an account — reasons 0101, 0102 and 0103.
+
+Reason 0100 is the one decided outcome that publishes nothing. It fires where the cross-reference read missed, so no account identifier exists, and every event on this platform names an account and is keyed on one. The caller still receives the decline, and the outcome is still durable: one row in `unresolved_card_attempt` carrying the masked card number and the reject code, and one in `authorization_decision` carrying no event identifier. The source answers the same condition the same way on its own synchronous path, returning the screen message at `app/cbl/COTRN02C.cbl:L620-L636` and writing no reject record. The [decision log](../../docs/decision-log.md) records why the three publishable alternatives were each refused.
+
+A decision also refuses when this instance cannot show that its two replica tables hold what their owners published. That is a property of the replica *streams* rather than of the age of a row, so a card nobody has updated stays authorizable indefinitely; the [replica currency](#replica-currency) section below is the whole rule.
 
 Ledger posting, fraud detection, and notification each consume the authorized event under their own consumer group. None of the three calls this service back, and none of them calls another. This service reads no other service during a decision.
 
@@ -54,13 +59,13 @@ Every rule the source leaves ambiguous, undocumented, or inconsistent is listed 
 
 | Method and path | Access | Purpose |
 | :--- | :--- | :--- |
-| `POST /authorizations` | `ACQUIRER` or `ADMIN` | Decide one transaction and produce one event for it |
+| `POST /authorizations` | `ACQUIRER` or `ADMIN` | Decide one transaction and publish the event that outcome produces, which is one event for every outcome but reason 0100 |
 
-Every business route requires HTTP Basic authentication. **Access to this route is decided by role alone.** `config/SecurityConfig.java` matches it with `hasAnyRole("USER", "ADMIN")` and installs no ownership manager, so an ordinary `USER` may authorize any card the platform holds and needs no `SCOPE_CARD_` or `SCOPE_ACCOUNT_` entry in `USER_SCOPES`. Every other route in this platform is ownership-scoped; this one is not, and the difference is deliberate. An acquirer presents a card it did not issue, and the card is named in the request body rather than in a path the caller could be said to own. The control that applies instead is the decision chain itself: a card the cross-reference does not carry is refused with reason 0100 from `app/cbl/CBTRN02C.cbl:L385-L387`. Nothing else on this service is reachable, because `anyRequest().denyAll()` closes the chain.
+Every business route requires HTTP Basic authentication. **Access to this route is decided by role alone.** `config/SecurityConfig.java` matches it with `hasAnyRole(ROLE_ACQUIRER, ROLE_ADMIN)` and installs no ownership manager, so exactly two roles reach it and every other identity is refused with 403 — a cardholder `USER` included. Every other route in this platform is ownership-scoped; this one is not, and the difference is deliberate. The card is named in the request body rather than in a path, so no path variable carries an identifier an ownership scope could be compared against, which makes the role the whole access decision. A route that reaches every card the platform holds must therefore not be reachable by an identity entitled to one card. Nothing else on this service is reachable at all, because `anyRequest().denyAll()` closes the chain.
 
 A request may name the card number, the account identifier, or both. An account-only request resolves its card through the cross-reference, and a request naming neither is refused with the source's own message.
 
-The route's role rule cannot decide the Access column on its own, because the subject arrives in the request body and an account-only request has no card until the cross-reference has been read. The decision therefore compares the caller against the resolved account and card itself, immediately after the cross-check and before a transaction identifier is allocated. `ADMIN` reaches every subject, which is the fork at `app/cbl/COSGN00C.cbl:L232-L236`. A `USER` reaches the accounts and cards its configured scopes name, and reaches nothing else.
+A second gate runs inside the decision, and in this configuration it refuses nobody. `domain/CallerEntitlement` compares the caller against the resolved account immediately after the cross-reference read and before a transaction identifier is allocated, which is where the comparison has to happen because an account-only request has no card until that read has run. It admits a caller that `domain/RequestCaller.reachesEverySubject()` answers true for, which is `ROLE_ADMIN` — the fork at `app/cbl/COSGN00C.cbl:L232-L236` — or `ROLE_ACQUIRER`, and those are the only two roles the chain admits. The gate is therefore a structural guard rather than a live control: it is what keeps the ownership comparison in place for the day a scoped identity is admitted, and `CallerEntitlementTest` measures the refusal it would then produce. A refused caller would receive the same 403, with no decision row, no attempt row and no event written for it.
 
 `ACQUIRER` is a machine identity a point-of-sale network presents. It owns no account, no customer and no card, and `ACQUIRER_USERNAME` in [`.env.example`](../../.env.example) configures it separately from every cardholder identity. The reason is the shape of the route: the card travels in the request body, so no identifier in the path can be compared against an ownership scope, and the role is therefore the whole authorization decision. A cardholder identity carrying `USER` is refused with 403 — it holds one account and this route reaches every card the platform holds. `ADMIN` keeps the route because `app/cbl/COSGN00C.cbl:L232-L236` forks an administrator onto every function the region offers.
 
@@ -77,7 +82,7 @@ The status codes are the source's own outcome model, restated over HTTP. `app/cb
 | Credential holds no role this route admits | 403 | A problem document naming neither the operation nor the card |
 | Body larger than the service reads | 413 | Refused before the parser, by the declared ceiling |
 | Fault inside the service | 500 | No value read from the request |
-| Replica older than the staleness bound | 503 | The one status worth retrying, and deliberately not a decline |
+| Replica stream behind, or a change lost for this account | 503 | The one status worth retrying, and deliberately not a decline. See [replica currency](#replica-currency) |
 
 A decline answers 422. No decline answers 500 and none answers 503.
 
@@ -206,6 +211,27 @@ Reason 103 compares raw text. `app/cbl/CBTRN02C.cbl:L414` reads `IF ACCT-EXPIRAI
 
 <br/>
 
+## Replica currency
+
+The source read the cross-reference and account datasets themselves, at `app/cbl/CBTRN02C.cbl:L382` and `:L395`. This service reads `card_xref` and `account_credit_snapshot`, which are replicas the account and card services own, so it has to answer a question the source never had: is what this copy holds what the owner published?
+
+**The question is about the stream, and never about the age of a row.** Both owners publish on a state change and on nothing else, so the observation stamp of a card nobody has touched recedes for ever while the copy stays exactly correct. An earlier version of this service measured row age against a one-day ceiling, and a day after seeding every ordinary authorization refused — the quiet case, not the failing one, and no amount of correct operation cleared it. Consumer lag says the opposite thing about the same situation: a caught-up consumer of an idle topic reports no backlog, so a card nobody has updated stays authorizable indefinitely.
+
+Two things are read before every decision, and both have to be satisfied.
+
+| What is read | Where it comes from | What refuses |
+| :--- | :--- | :--- |
+| The replica streams are caught up | `messaging/KafkaReplicaSynchronization`, from the two listener containers this process already runs | A topic no listener subscribes to; a container that is not running; a running container the group has assigned no partition; a measured `records-lag-max` over `carddemo.replica.lag-ceiling` |
+| No change was delivered to this account and lost | `domain/ReplicaGapLog` over the `replica_gap` table, created by `V12__replica_gap.sql` | One open row for the account this decision names |
+
+The second reading exists because the first cannot see everything. A record that was delivered and could not be applied has its offset advanced once its diagnostic is away, so the backlog returns to zero while one account's copy is missing a change. The listener writes a `replica_gap` row for that account in a transaction of its own, which survives the rollback of the failing delivery, and clears it inside the transaction that finally applies a change for that account. A record whose key names no account is logged and attributed to none, because attributing it to a sentinel would refuse every account for one malformed record.
+
+`carddemo.replica.lag-ceiling` is `REPLICA_LAG_CEILING` and defaults to `0`: no record may be waiting. Raise it only where a known steady backlog is acceptable, and understand what it admits — a ceiling of *n* says a decision may read a copy that is *n* records behind its owner.
+
+A refusal answers 503 and counts a failure at the replica stage. It is deliberately not a decline: nothing is decided, no transaction identifier is drawn, and no row and no event is written. `/actuator/health/readiness` includes the same verdict under `replica`, reporting the reason, the observed lag and the number of open gaps, so an orchestrator removes the instance rather than letting it serve refusals. A consumer that has an assignment and has completed no fetch publishes no lag sample at all, and that is read as a stream with nothing waiting on it rather than as an unknown — refusing until a first sample arrived would reproduce the defect above in a form that never recovered, because an idle topic never produces one.
+
+<br/>
+
 ## Events
 
 | Direction | Event | Topic | Consumer group |
@@ -327,9 +353,9 @@ Each of these was measured while building this module, and each bites here.
 5. **Amounts are not parsed with `new BigDecimal(String)`.** `app/cbl/COTRN02C.cbl:L383` and `:L456` use `FUNCTION NUMVAL-C`, which accepts currency symbols and thousands separators. Route every amount through `com.carddemo.cobol.NumvalParser`.
 6. **The date validator accepts one undocumented case.** `app/cbl/COTRN02C.cbl:L397` accepts severity `'0000'`, and line 400 also accepts message number `2513` with no comment explaining it. `com.carddemo.cobol.CobolDateValidator` keeps that tolerance. The condition name at `app/cbl/CSUTLDTC.cbl:L62` is inverted: `88 FC-INVALID-DATE VALUE X'0000000000000000'` is the all-zero token that means success.
 7. **`mvn package` runs before `docker compose up`.** The image copies a finished archive with `COPY target/*.jar` and builds nothing inside itself, because the aggregator and both library modules sit outside the build context.
-8. **A live demo needs the demo migration, or reason 103 declines everything.** Every one of the fifty seeded accounts expires in 2025, and a caller sending today's date as the origin timestamp sends a later value. `docker-compose.yml` names both `classpath:db/migration` and `classpath:db/demo`, and the second extends every seeded expiry to 2099-12-31. An equivalence run must name `db/migration` alone, because `V2__seed.sql` is the oracle the suite measures against.
+8. **A live demo needs the demo migration, or reason 103 declines everything.** Every one of the fifty seeded accounts expires in 2025, and a caller sending today's date as the origin timestamp sends a later value. `docker-compose.yml` names both `classpath:db/migration` and `classpath:db/demo`, and so does `deploy/k8s/30-configmap.yaml`, and the second location extends every seeded expiry to 2099-12-31. An equivalence run must name `db/migration` alone, because `V2__seed.sql` is the oracle the suite measures against.
 9. **Without a cycle close, available credit shrinks until everything declines.** Nothing else zeroes the two accumulators the credit-limit rule reads. Call the cycle-close operation on the account service, described in [onboarding](../../docs/onboarding.md).
-10. **A stale replica answers 503, not a decline.** An account update or a cycle close must publish `AccountStateChanged`, or the projection keeps answering with what it last observed. Past `carddemo.replica.max-staleness` this service refuses the call and counts a failure at the replica stage.
+10. **An unusable replica answers 503, not a decline.** The rule is about the replica streams and not about the age of a row, so an untouched card stays authorizable indefinitely. What refuses is a listener that is stopped or unassigned, a measured backlog over `carddemo.replica.lag-ceiling`, or an open `replica_gap` row for the account this call names. Start the broker and the two replica listeners before authorizing, and read `/actuator/health/readiness` under `replica` when a call answers 503. [Replica currency](#replica-currency) is the whole rule.
 11. **One account is decided one decision at a time.** Each decision reads its account row under a write lock so that the exposure it reserves cannot be lost, and `carddemo.decision.lock-wait-ms` bounds the wait. A second concurrent call against the same account answers 503 rather than waiting, which is the same refusal a contended row already answers elsewhere on the platform.
 12. **A reservation whose posting never lands releases itself.** `carddemo.decision.reservation-ttl` defaults to fifteen minutes. Longer than that, an approval sitting in the dead-letter topic stops holding credit, so a demo does not silently drift toward declining everything. Shorter than the time posting really takes, two calls inside one window could together exceed the limit.
 13. **A state-changing call needs one extra header.** A `curl` that worked before this control answers 403 until it adds `-H 'X-CardDemo-Request: 1'`. `config/CrossSiteRequestFilter` requires the header on every `POST`, `PUT`, `PATCH` and `DELETE`, because HTTP Basic is a credential a browser attaches without being asked and an HTML form cannot set a header. Reads need nothing. The name is configurable through `API_CROSS_SITE_HEADER` and it is not a secret: the value is never checked, only its presence.
@@ -523,14 +549,14 @@ curl -fsS http://localhost:9081/actuator/health
 
 The copy contains 19 `REPLACE` markers: fourteen passwords, one card-token key and four `{bcrypt}` identity hashes. Compose reads them with `${VAR:?}` and refuses to start while any is unset, so fill in all nineteen before the first `docker compose up`, not only the three this service uses. [Onboarding](../../docs/onboarding.md) generates the bcrypt hashes and holds the full platform walkthrough. Read it once before the first run.
 
-Flyway owns this schema. Eleven migrations run on every start, in this order:
+Flyway owns this schema. Fourteen migrations run on every start, in this order:
 
 | Migration | What it creates |
 | :--- | :--- |
 | `V1__schema.sql` | `card_xref`, `account_credit_snapshot`, `outbox_event`, `processed_event` |
 | `V2__seed.sql` | The 50 cross-reference rows and 50 credit snapshots from `app/data/ASCII/cardxref.txt` and `app/data/ASCII/acctdata.txt` |
 | `V3__unresolved_card_attempt.sql` | `unresolved_card_attempt`, the record of an attempt whose card resolved no account |
-| `V4__outbox_transaction_key.sql` | The transaction key an unresolved-card decline is published under |
+| `V4__outbox_transaction_key.sql` | The widening of `outbox_event.aggregate_id` to sixteen characters, and the check admitting either an eleven-digit account key or a sixteen-character transaction key. `V14` records why no producer writes the second form |
 | `V5__authorization_decision.sql` | `authorization_decision`, one row per decision, with its actor and outcome constraints |
 | `V6__processed_event_topic_key.sql` | The topic component of the duplicate-delivery marker key |
 | `V7__cycle_exposure_reservation.sql` | The two reserved-exposure columns of `account_credit_snapshot` and its expiry, so an approval is visible to the next decision, plus the widening of `authorization_decision.actor` to `VARCHAR(64)` |
@@ -538,8 +564,11 @@ Flyway owns this schema. Eleven migrations run on every start, in this order:
 | `V9__declared_processing_timestamp.sql` | `authorization_decision.declared_processing_timestamp`, the processing moment a caller declares, which `app/cbl/COTRN02C.cbl:L470` moves into `TRAN-PROC-TS` |
 | `V10__declared_retention_matches_the_sweep.sql` | The catalogue comments of `authorization_decision` and `unresolved_card_attempt`, restated to name the window `domain/RetentionSweep` actually applies |
 | `V11__subject_request_posture.sql` | The `card_xref` comment, corrected to drop a claim that an erasure request propagates into this replica |
+| `V12__replica_gap.sql` | `replica_gap`, one row per account whose replica change could not be applied, which `domain/ReplicaGapLog` writes and `domain/AuthorizationService` reads before every decision |
+| `V13__decision_without_event.sql` | `authorization_decision.event_id` made nullable, and `ck_authorization_decision_event` holding the account identifier and the event identifier present or absent together |
+| `V14__unresolved_decline_is_unpublished.sql` | The `outbox_event.aggregate_id` and `unresolved_card_attempt` comments, restated to record that an unresolved-card decline publishes nothing |
 
-A twelfth file, `src/main/resources/db/demo/V900__demo_expiry_extension.sql`, is **not** applied by default. It lifts every seeded account expiry to `2099-12-31` so a live call carrying today's date is not declined with reason 0103 by a fixture whose latest expiry is in 2025. It runs only when `spring.flyway.locations` names `classpath:db/demo` alongside `classpath:db/migration`, which `card-platform/docker-compose.yml` does through `AUTHORIZATION_FLYWAY_LOCATIONS` and nothing else does. `mvn verify` therefore measures the untouched fixture, and the demonstration gets the extension.
+A fifteenth file, `src/main/resources/db/demo/V900__demo_expiry_extension.sql`, is **not** applied by default. It lifts every seeded account expiry to `2099-12-31` so a live call carrying today's date is not declined with reason 0103 by a fixture whose latest expiry is in 2025. It runs only when `spring.flyway.locations` names `classpath:db/demo` alongside `classpath:db/migration`, which both deployment paths do and nothing else does: `card-platform/docker-compose.yml` through `AUTHORIZATION_FLYWAY_LOCATIONS`, and `card-platform/deploy/k8s/30-configmap.yaml` through the key of the same name, read by `40-authorization-service.yaml`. Both paths are demo profiles by design, and both expose the same opt-out — set that key to `classpath:db/migration`, together with `ACCOUNT_FLYWAY_LOCATIONS`, for a fixture-faithful run. This module's own `application.yml` ships `${SPRING_FLYWAY_LOCATIONS:classpath:db/migration}`, so `mvn verify` measures the untouched fixture and the demonstration gets the extension.
 
 Run this module's tests alone, which builds both libraries first:
 
@@ -555,6 +584,7 @@ CAPTURED_AT="$(date -u +'%Y-%m-%d %H:%M:%S').000000"
 PROCESSED_AT="$(date -u +'%Y-%m-%d-%H.%M.%S').000000"
 
 curl -sS -u "admin001:$ADMIN_PASSWORD" -X POST \
+  -H 'X-CardDemo-Request: authorization-cli' \
   -H 'Content-Type: application/json' \
   -d "{\"cardNumber\":\"${CARD_NUMBER}\",
        \"transactionTypeCode\":\"01\",

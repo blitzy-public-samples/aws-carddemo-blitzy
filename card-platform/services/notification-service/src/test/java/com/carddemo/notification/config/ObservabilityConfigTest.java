@@ -68,14 +68,14 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
-@DisplayName("ObservabilityConfig, six meters under one prefix and the observability properties of"
+@DisplayName("ObservabilityConfig, seven meters under one prefix and the observability properties of"
         + " the notification service")
 class ObservabilityConfigTest {
 
     /** Prefix every meter of this module carries. No meter sits outside it. */
     private static final String METER_PREFIX = "carddemo.notification";
 
-    /** The six meter names, each read verbatim from {@link ObservabilityConfig}. */
+    /** The seven meter names, each read verbatim from {@link ObservabilityConfig}. */
     private static final String EVENTS_CONSUMED = "carddemo.notification.events.consumed";
     private static final String PROCESSING_LATENCY = "carddemo.notification.processing.latency";
     private static final String FAILURES = "carddemo.notification.failures";
@@ -84,14 +84,23 @@ class ObservabilityConfigTest {
             "carddemo.notification.notifications.rendered";
     private static final String DUPLICATES_SKIPPED = "carddemo.notification.duplicates.skipped";
 
-    /** The six names as one set. A seventh meter name fails the set comparison. */
+    /**
+     * Deliveries this service consumed, recognised and deliberately applied nothing for.
+     *
+     * <p>Today that is one case: a contract version predating the card token both of this service's
+     * tables are keyed on. Such a delivery is counted here, reported once and acknowledged, where it
+     * was previously refused, retried and dead-lettered as though a governed event were poison.
+     */
+    private static final String EVENTS_UNAPPLIED = "carddemo.notification.events.unapplied";
+
+    /** The seven names as one set. An eighth meter name fails the set comparison. */
     private static final Set<String> DECLARED_METER_NAMES = Set.of(EVENTS_CONSUMED,
             PROCESSING_LATENCY, FAILURES, DEAD_LETTERED, NOTIFICATIONS_RENDERED,
-            DUPLICATES_SKIPPED);
+            DUPLICATES_SKIPPED, EVENTS_UNAPPLIED);
 
-    /** The five meter names a {@link Counter} carries. */
+    /** The six meter names a {@link Counter} carries. */
     private static final List<String> COUNTER_NAMES = List.of(EVENTS_CONSUMED, FAILURES,
-            DEAD_LETTERED, NOTIFICATIONS_RENDERED, DUPLICATES_SKIPPED);
+            DEAD_LETTERED, NOTIFICATIONS_RENDERED, DUPLICATES_SKIPPED, EVENTS_UNAPPLIED);
 
     /** The three tag keys, one per tagged meter. */
     private static final String EVENT_TYPE_TAG = "event.type";
@@ -281,8 +290,8 @@ class ObservabilityConfigTest {
     }
 
     @Test
-    @DisplayName("the registry holds six meter names, all under one prefix")
-    void theSixDeclaredMeterNamesAreTheOnlyOnesInTheRegistry() {
+    @DisplayName("the registry holds seven meter names, all under one prefix")
+    void theSevenDeclaredMeterNamesAreTheOnlyOnesInTheRegistry() {
         RUNNER.run(context -> {
             assertThat(context).hasNotFailed();
             Set<String> names = meterNamesOf(context.getBean(MeterRegistry.class));
@@ -290,13 +299,13 @@ class ObservabilityConfigTest {
             assertThat(names)
                     .as("meter names this module registers")
                     .containsExactlyInAnyOrderElementsOf(DECLARED_METER_NAMES)
-                    .hasSize(6)
+                    .hasSize(7)
                     .allSatisfy(name -> assertThat(name).startsWith(METER_PREFIX + "."));
         });
     }
 
     @Test
-    void fiveMetersAreCountersAndProcessingLatencyIsATimer() {
+    void sixMetersAreCountersAndProcessingLatencyIsATimer() {
         RUNNER.run(context -> {
             MeterRegistry registry = context.getBean(MeterRegistry.class);
 
@@ -322,7 +331,8 @@ class ObservabilityConfigTest {
                     PROCESSING_LATENCY, EVENT_TYPE_TAG,
                     FAILURES, FAILURE_KIND_TAG,
                     DEAD_LETTERED, FAILURE_KIND_TAG,
-                    NOTIFICATIONS_RENDERED, FORMAT_TAG);
+                    NOTIFICATIONS_RENDERED, FORMAT_TAG,
+                    EVENTS_UNAPPLIED, EVENT_TYPE_TAG);
 
             keyByMeter.forEach((name, tagKey) -> assertThat(tagKeysOf(registry, name))
                     .as("tag keys meter %s carries", name)

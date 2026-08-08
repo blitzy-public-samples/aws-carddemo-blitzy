@@ -79,6 +79,16 @@ class DeadLetterSanitizationTest {
     private static final long SOURCE_OFFSET = 4_815_162_342L;
 
     /**
+     * The aggregate identifier every diagnostic of this service declares and is keyed on.
+     *
+     * <p>Eleven zeros. {@code schemas/dead-letter-v1.json} requires an account-shaped value and a
+     * record this service could not read carries no account it can be trusted to name, so the sentinel
+     * says exactly that: this is not an account the platform seeds or issues. It matches the value
+     * {@code config/KafkaConsumerConfig} declares, and no producer can influence it.
+     */
+    private static final String UNRESOLVED_ACCOUNT_KEY = "00000000000";
+
+    /**
      * A sentinel standing in for a full Primary Account Number.
      *
      * <p>Sixteen digits, so it is the width {@code app/cpy/CVACT02Y.cpy:L5} declares, and a value no
@@ -151,20 +161,51 @@ class DeadLetterSanitizationTest {
     }
 
     /**
-     * Asserts the key a producer chose is not republished.
+     * Asserts the key a producer chose is replaced by the aggregate the envelope declares.
      *
-     * <p>A producer controls the key, so a key holding a card number is a key this service must not
-     * carry forward. The coordinates of the record replace it, and they name the record inside a
-     * topic that already carries its own access controls.
+     * <p>Two properties are held here at once, and a review found the second one broken.
+     *
+     * <p>The first is sanitization. A producer controls the key, so a key holding a card number is a
+     * key this service must not carry forward, and the sentinel {@value #UNRESOLVED_ACCOUNT_KEY} is a
+     * value no producer can influence: eleven zeros are not an account this platform seeds or issues.
+     *
+     * <p>The second is agreement with the contract. {@code schemas/dead-letter-v1.json} describes
+     * {@code aggregateId} as the Kafka message key of the envelope, and the key used to be the
+     * coordinates of the refused record — {@code topic-partition-offset} — so every diagnostic
+     * contradicted the payload it carried and scattered one shared topic across as many partitions as
+     * there were source offsets. The coordinates are not lost by the change: they are three declared
+     * fields of the same document, asserted in {@link #oneGovernedEnvelopeTravelsInstead()}.
      */
     @Test
-    void theProducerKeyIsReplacedByTheRecordCoordinates() {
+    void theProducerKeyIsReplacedByTheDeclaredAggregate() {
         recover(refusedByTheDeserializer());
 
-        assertEquals(SOURCE_TOPIC + "-" + SOURCE_PARTITION + "-" + SOURCE_OFFSET,
-                published.key(), "the key names the refused record rather than its subject");
+        assertEquals(UNRESOLVED_ACCOUNT_KEY, published.key(),
+                "the key is the aggregateId the envelope declares, so the record and its payload"
+                        + " name one aggregate");
         assertFalse(String.valueOf(published.key()).contains(SENTINEL_PAN),
                 "the producer key reached the dead-letter topic");
+        assertTrue(valueText().contains("\"aggregateId\":\"" + UNRESOLVED_ACCOUNT_KEY + "\""),
+                "and the payload declares the same value the record is keyed on");
+    }
+
+    /**
+     * Asserts two refusals from different offsets carry one key, so the shared topic stays ordered.
+     *
+     * <p>This is the consequence of the defect rather than the defect itself. Keyed on coordinates,
+     * two diagnostics from one source topic landed on two partitions, so an operator replaying the
+     * dead-letter topic read them in no defined order. One key form puts every diagnostic of this
+     * service in publish order on one partition.
+     */
+    @Test
+    void twoRefusalsFromDifferentOffsetsCarryOneKey() {
+        recover(refusedByTheDeserializer());
+        Object firstKey = published.key();
+
+        recover(refusedByTheDeserializer(SOURCE_OFFSET + 1));
+
+        assertEquals(firstKey, published.key(),
+                "two refusals carry one key, so they stay on one partition and in publish order");
     }
 
     /**
@@ -338,8 +379,18 @@ class DeadLetterSanitizationTest {
      * @return the refused record, with a producer-chosen key and header
      */
     private static ConsumerRecord<?, ?> refusedByTheDeserializer() {
+        return refusedByTheDeserializer(SOURCE_OFFSET);
+    }
+
+    /**
+     * Builds a refused record at one named offset.
+     *
+     * @param offset the offset the record arrived at, which two diagnostics differ by
+     * @return the refused record
+     */
+    private static ConsumerRecord<?, ?> refusedByTheDeserializer(long offset) {
         ConsumerRecord<String, String> failed = new ConsumerRecord<>(SOURCE_TOPIC, SOURCE_PARTITION,
-                SOURCE_OFFSET, 0L, TimestampType.CREATE_TIME, 0, 0, SENTINEL_PAN, null,
+                offset, 0L, TimestampType.CREATE_TIME, 0, 0, SENTINEL_PAN, null,
                 new org.apache.kafka.common.header.internals.RecordHeaders(), java.util.Optional.empty());
         failed.headers().add("x-producer-note",
                 SENTINEL_HEADER_VALUE.getBytes(StandardCharsets.UTF_8));

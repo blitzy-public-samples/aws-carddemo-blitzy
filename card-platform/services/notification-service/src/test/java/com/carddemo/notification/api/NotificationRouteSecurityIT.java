@@ -55,9 +55,10 @@ import tools.jackson.databind.json.JsonMapper;
  * sentences are pinned here as well as in the interface description.
  *
  * <p>The rules under test are declared at {@code config/SecurityConfig}:
- * <ul><li>{@code GET /notifications/{cardNumber}} carries a sixteen-digit card number and requires
- *     the card-ownership authority for the token that number derives, which {@code ROLE_ADMIN}
- *     satisfies for every card.</li>
+ * <ul><li>{@code GET /notifications/{cardToken}} carries a card token and requires the
+ *     card-ownership authority naming that same token, which {@code ROLE_ADMIN} satisfies for every
+ *     card. The path value and the authority value are the same kind of value, so the rule compares
+ *     them directly and derives nothing.</li>
  * <li>Every other path and method is denied.</li></ul>
  *
  * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
@@ -112,9 +113,8 @@ class NotificationRouteSecurityIT {
      * Card number the ordinary identity holds, sixteen digits.
      *
      * <p>Record one of {@code app/data/ASCII/cardxref.txt}, which names account
-     * {@code 00000000050}. The route reads a card number and
-     * {@code api/NotificationHistoryController} derives the token from it, so the path variable is
-     * the number and the authority granted below is the token that number derives.
+     * {@code 00000000050}. No request below sends it: the route reads a card token, so this value is
+     * tokenized before it reaches a path and the authority granted below names the same token.
      */
     private static final String OWNED_CARD_NUMBER = "0500024453765740";
 
@@ -208,9 +208,8 @@ class NotificationRouteSecurityIT {
             HttpResponse<String> response = send(authorized(USER_USERNAME, USER_PASSWORD,
                     historyRoute(OWNED_CARD_NUMBER)).GET().build());
 
-            assertEquals(200, response.statusCode(),
-                    "the identity holding the card scope for this number reaches the handler: "
-                            + response.body());
+            assertReachedTheHandler(response,
+                    "the identity holding the card scope for this token reaches the handler");
         }
 
         /** Asserts the administrator reaches any card's history. */
@@ -220,8 +219,7 @@ class NotificationRouteSecurityIT {
             HttpResponse<String> response = send(authorized(ADMIN_USERNAME, ADMIN_PASSWORD,
                     historyRoute(UNHELD_CARD_NUMBER)).GET().build());
 
-            assertEquals(200, response.statusCode(),
-                    "ROLE_ADMIN passes every ownership check: " + response.body());
+            assertReachedTheHandler(response, "ROLE_ADMIN passes every ownership check");
         }
 
         /** Asserts a caller carrying no credential is challenged. */
@@ -260,8 +258,12 @@ class NotificationRouteSecurityIT {
                     () -> assertProblem(response, 403, "Forbidden", FORBIDDEN_DETAIL),
                     () -> assertFalse(response.body().contains(UNHELD_CARD_NUMBER),
                             "the refusal does not echo the card number that was asked for"),
+                    () -> assertFalse(
+                            response.body().contains(PanMasker.cardToken(UNHELD_CARD_NUMBER)),
+                            "nor the token it was asked for"),
                     () -> assertNotEquals(404, response.statusCode(),
-                            "a 404 would say whether that card has any history at all"));
+                            "the chain refuses before the read, so a caller holding no authority "
+                                    + "cannot tell an unheld card from one with no history"));
         }
 
         /** Asserts the metrics identity reaches no business route. */
@@ -299,15 +301,46 @@ class NotificationRouteSecurityIT {
     }
 
     /**
-     * Returns the route of one card's notification history.
+     * Returns the route of one card's notification history, naming the card by its token.
      *
-     * @param cardNumber the card number, sixteen digits
+     * <p>The number is tokenized here rather than sent. A path is written to an access log, a proxy
+     * log, a trace and a browser history, and none of the four is reachable by this application's
+     * redaction, so no test of this service sends a card number in a request line either.
+     *
+     * @param cardNumber the card number, sixteen digits, which this method tokenizes
      * @return the route
      */
     private static String historyRoute(String cardNumber) {
-        return "/notifications/" + cardNumber;
+        return "/notifications/" + PanMasker.cardToken(cardNumber);
     }
 
+
+    /**
+     * Asserts one request passed the filter chain and was answered by the handler.
+     *
+     * <p>What this class measures is who reaches the handler, not what the handler then returns. No
+     * read-model row is seeded here, so the handler answers {@code 404} with its own three-member
+     * failure shape, which is the answer {@code api/NotificationHistoryController} gives a token it
+     * holds no statement entry for. That is enough to distinguish it from the chain's own refusals:
+     * the chain writes {@code 401} or {@code 403} carrying a four-member problem document under
+     * {@code application/problem+json} and never reaches the handler at all.
+     * {@code api/NotificationHistoryControllerTest} is where the successful body is asserted.
+     *
+     * @param response the response to read
+     * @param because  what reaching the handler proves
+     */
+    private static void assertReachedTheHandler(HttpResponse<String> response, String because) {
+        assertAll(because + ": " + response.body(),
+                () -> assertNotEquals(401, response.statusCode(),
+                        "the chain challenged the credential rather than admitting it"),
+                () -> assertNotEquals(403, response.statusCode(),
+                        "the chain refused the request rather than admitting it"),
+                () -> assertEquals(404, response.statusCode(),
+                        "the handler answered, and no statement entry is seeded for this card"),
+                () -> assertTrue(response.body().contains("\"route\""),
+                        "the body is the endpoint's own failure shape, which names the route "
+                                + "template, rather than the problem document the chain writes"));
+    }
 
     /**
      * Asserts one refusal is the fixed problem document the security chain writes.

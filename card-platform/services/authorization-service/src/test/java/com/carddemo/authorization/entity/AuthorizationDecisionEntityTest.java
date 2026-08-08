@@ -127,21 +127,40 @@ final class AuthorizationDecisionEntityTest {
                 decision.getDeclineReasonDescription(), "the verbatim source text");
     }
 
+    /**
+     * Reject code {@code 0100} resolves no account, and AAP 0.1.1 puts an account identifier in every
+     * decline event while AAP 0.3.1 keys every event on one. There is therefore no event for this
+     * outcome to name, and {@code ck_authorization_decision_event} in
+     * {@code V13__decision_without_event.sql} ties the two absences together.
+     */
     @Test
-    @DisplayName("the decline that resolved no account records none")
+    @DisplayName("the decline that resolved no account records neither an account nor an event")
     void theDeclineThatResolvedNoAccountRecordsNone() {
-        AuthorizationDecisionEntity decision =
-                decline(null, DeclineReason.INVALID_CARD_NUMBER);
+        AuthorizationDecisionEntity decision = declineWithoutEvent(null,
+                DeclineReason.INVALID_CARD_NUMBER);
 
         assertNull(decision.getAccountId(),
                 "reject code 0100 follows a cross-reference read that resolved no account");
+        assertNull(decision.getEventId(),
+                "and it publishes no event, because every decline contract requires an account");
         assertEquals(PanMasker.FULLY_MASKED_CARD_NUMBER,
                 AuthorizationDecisionEntity.declined(TRANSACTION_ID, ACTOR, null,
                         PanMasker.maskCardNumber(null), PanMasker.tokenOf(null), AMOUNT,
                         DeclineReason.INVALID_CARD_NUMBER.code(),
                         DeclineReason.INVALID_CARD_NUMBER.description(), DECIDED_AT,
-                        UUID.randomUUID(), DECLARED_PROCESSING_TIMESTAMP).getMaskedCardNumber(),
+                        null, DECLARED_PROCESSING_TIMESTAMP).getMaskedCardNumber(),
                 "a request naming no card number stores the fully masked form");
+    }
+
+    @Test
+    @DisplayName("a decision refuses to name an event it did not publish, in either direction")
+    void aDecisionRefusesToNameAnEventItDidNotPublish() {
+        assertThrows(IllegalArgumentException.class,
+                () -> decline(null, DeclineReason.INVALID_CARD_NUMBER),
+                "a decision that resolved no account has no event to name");
+        assertThrows(IllegalArgumentException.class,
+                () -> declineWithoutEvent(ACCOUNT_ID, DeclineReason.OVER_CREDIT_LIMIT),
+                "a decision that resolved an account published one and must name it");
     }
 
     @Test
@@ -220,6 +239,22 @@ final class AuthorizationDecisionEntityTest {
         return AuthorizationDecisionEntity.declined(TRANSACTION_ID, ACTOR, accountId,
                 PanMasker.maskCardNumber(CARD_NUMBER), PanMasker.tokenOf(CARD_NUMBER), AMOUNT,
                 reason.code(), reason.description(), DECIDED_AT, UUID.randomUUID(),
+                DECLARED_PROCESSING_TIMESTAMP);
+    }
+
+    /**
+     * Builds one declined row that names no event, which is the one decided outcome that publishes
+     * none.
+     *
+     * @param accountId the account the cross-reference named, or {@code null}
+     * @param reason    the reject reason that stands
+     * @return the row
+     */
+    private static AuthorizationDecisionEntity declineWithoutEvent(String accountId,
+            DeclineReason reason) {
+        return AuthorizationDecisionEntity.declined(TRANSACTION_ID, ACTOR, accountId,
+                PanMasker.maskCardNumber(CARD_NUMBER), PanMasker.tokenOf(CARD_NUMBER), AMOUNT,
+                reason.code(), reason.description(), DECIDED_AT, null,
                 DECLARED_PROCESSING_TIMESTAMP);
     }
 

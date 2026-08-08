@@ -4,9 +4,6 @@ import com.carddemo.authorization.entity.AccountCreditSnapshotEntity;
 import com.carddemo.authorization.entity.CardCrossReferenceEntity;
 import com.carddemo.events.DeclineReason;
 import java.math.BigDecimal;
-import java.time.Duration;
-import java.time.Instant;
-import java.util.Objects;
 import java.util.Optional;
 
 /**
@@ -223,45 +220,6 @@ public interface DeclineRule {
                 throw new NullPointerException("accountCreditSnapshot must not be null");
             }
             this.accountCreditSnapshot = accountCreditSnapshot;
-        }
-
-        /**
-         * Reports whether both replica rows this context resolved were observed recently enough to
-         * authorize against.
-         *
-         * <p>No COBOL ancestor: the target reads copies where the source read the datasets
-         * themselves. {@code app/cbl/CBTRN02C.cbl:L382} and
-         * {@code app/cbl/CBTRN02C.cbl:L395} issue keyed reads against the cross-reference and
-         * account files, so the source has nothing that can go stale and therefore nothing to
-         * check. {@code card_xref} and {@code account_credit_snapshot} are replicas kept current by
-         * state-change events, and a replica whose events stopped arriving keeps answering with
-         * whatever it last knew.
-         *
-         * <p>Which makes the failure silent rather than loud, and that is why this method is here.
-         * A stale credit limit or a stale pair of cycle accumulators raises no error. The
-         * credit-limit rule at {@code app/cbl/CBTRN02C.cbl:L403-L407} computes an answer from
-         * obsolete numbers, and approves a transaction the current numbers would have declined.
-         * An expiry date that was updated and never replicated does the same.
-         *
-         * <p>A row with no observation time is reported stale rather than fresh, and a row that is
-         * absent is reported stale as well. The caller decides what to do with a false answer; this
-         * method only refuses to claim freshness it cannot establish.
-         *
-         * @param now    the current time
-         * @param maxAge how old an observation may be and still count as fresh, from configuration
-         *               rather than from here, so the policy is set once for the service
-         * @return true only when both resolved rows are present and were observed within
-         *         {@code maxAge} of {@code now}
-         * @throws NullPointerException if {@code now} or {@code maxAge} is {@code null}
-         */
-        public boolean isReplicaDataFresh(Instant now, Duration maxAge) {
-            Objects.requireNonNull(now, "now");
-            Objects.requireNonNull(maxAge, "maxAge");
-            if (cardCrossReference == null || accountCreditSnapshot == null) {
-                return false;
-            }
-            return cardCrossReference.isFreshAt(now, maxAge)
-                    && accountCreditSnapshot.isFreshAt(now, maxAge);
         }
     }
 

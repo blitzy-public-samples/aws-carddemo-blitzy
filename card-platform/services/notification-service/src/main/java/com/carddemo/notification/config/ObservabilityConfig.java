@@ -75,7 +75,7 @@ public class ObservabilityConfig {
     }
 
     /**
-     * The five meters this service reports, registered once and read by name.
+     * The seven meters this service reports, registered once and read by name.
      *
      * <p>The constructor registers every meter and every bounded tag value eagerly, so a scrape
      * taken before the first message lists each series at zero. Every field is final and holds
@@ -85,7 +85,7 @@ public class ObservabilityConfig {
      *
      * <p>A tag value outside its own set, and a null value, both resolve to {@link #UNKNOWN},
      * which every tagged meter registers. No lookup registers a meter and no lookup returns null.
-     * A sixth meter needs one field here, one registration in the constructor and one lookup
+     * An eighth meter needs one field here, one registration in the constructor and one lookup
      * method.</p>
      *
      * <p>The path that records against each meter:
@@ -96,7 +96,9 @@ public class ObservabilityConfig {
      * {@link NotificationMetrics#eventsConsumed(String)}, time
      * {@link NotificationMetrics#processingLatency(String)}, increment
      * {@link NotificationMetrics#duplicatesSkipped()} when the idempotency guard rejects a replay,
-     * and increment {@link NotificationMetrics#failures(String)} on a fault;
+     * increment {@link NotificationMetrics#eventsUnapplied(String)} for a governed event whose
+     * contract version this service applies nothing for, and increment
+     * {@link NotificationMetrics#failures(String)} on a fault;
      * {@code config/KafkaConsumerConfig.java} increments
      * {@link NotificationMetrics#deadLettered(String)} once for each record whose attempts ran out;
      * {@code domain/NotificationService.java} increments
@@ -160,6 +162,7 @@ public class ObservabilityConfig {
         private final Map<String, Counter> failures;
         private final Map<String, Counter> deadLettered;
         private final Map<String, Counter> notificationsRendered;
+        private final Map<String, Counter> eventsUnapplied;
         private final Counter duplicatesSkipped;
 
         NotificationMetrics(MeterRegistry registry) {
@@ -188,6 +191,9 @@ public class ObservabilityConfig {
             this.notificationsRendered = counters(registry,
                     "carddemo.notification.notifications.rendered", "Cardholder alerts rendered",
                     FORMAT_TAG, List.of(FORMAT_TEXT, FORMAT_HTML, UNKNOWN));
+            this.eventsUnapplied = counters(registry, "carddemo.notification.events.unapplied",
+                    "Events consumed, recognised and deliberately not applied, one per delivery",
+                    EVENT_TYPE_TAG, eventTypes);
             this.duplicatesSkipped = Counter.builder("carddemo.notification.duplicates.skipped")
                     .description("Events skipped as already processed")
                     .register(registry);
@@ -230,6 +236,30 @@ public class ObservabilityConfig {
         /** Returns the rendered-alert counter for {@code format}. */
         public Counter notificationsRendered(String format) {
             return resolve(this.notificationsRendered, format);
+        }
+
+        /**
+         * Returns the counter of events consumed and deliberately not applied, for
+         * {@code eventType}.
+         *
+         * <p>The unit is one delivery. It moves for a governed, valid event this service consumed and
+         * chose to apply nothing for, which today is exactly one case: a contract version that
+         * predates the card token both of this service's tables are keyed on. Such a record was
+         * previously refused, retried three times and dead-lettered, which reported a valid event as a
+         * poison record and lost it to a topic nobody reads.
+         *
+         * <p>It is separate from every other series here for a reason each. It is not a
+         * {@link #failures(String)}, because nothing failed. It is not a
+         * {@link #deadLettered(String)}, because the record is acknowledged. It is not a
+         * {@link #duplicatesSkipped()}, because the event was never processed before. And
+         * {@link #eventsConsumed(String)} alone cannot show it, because a consumed count that rises
+         * with no alert rendered and no failure recorded is the ambiguity this series removes.
+         *
+         * @param eventType the event type the unapplied delivery carried
+         * @return the counter for that type, or the {@link #UNKNOWN} series for an undeclared value
+         */
+        public Counter eventsUnapplied(String eventType) {
+            return resolve(this.eventsUnapplied, eventType);
         }
 
         /** Returns the counter of events an idempotency guard skipped. */

@@ -289,25 +289,25 @@ graph LR
 - Three thick arrows leave `transaction.authorized`, one for each independent consumer group. That fan-out is the point of the target state.
 - The three downstream consumers have **no direct edge between them**. That absence is the requirement made visible. The Maven module graph enforces it, because no service module declares another as a dependency. A forbidden import fails the build instead of a review.
 - The outbox row committed beside the decision, the processed-event marker inside each consumer transaction, and the dead-letter route are all **additive**. The source has none of the three. See [event contracts and messaging](decision-log.md#event-contracts-and-messaging).
-- `transaction.declined` has no runtime consumer. `card.updated` refreshes an authorization observation and changes no decision rule, and `account.state-changed` feeds two replicas under two groups.
+- `transaction.declined` is consumed by the ledger under group `ledger-reject`, which writes one reject row per decline and publishes nothing. `card.updated` refreshes an authorization observation and changes no decision rule, and `account.state-changed` feeds two replicas under two groups.
 
 ### Topic and consumer-group inventory
 
-Thirteen topics are created explicitly: seven business topics, five source-specific dead-letter topics, and one shared fallback. `card.updated` needs no `.DLT` twin, because its only consumer routes a spent record to the shared fallback instead.
+Fourteen topics are created explicitly: seven business topics, six source-specific dead-letter topics, and one shared fallback. `card.updated` needs no `.DLT` twin, because its only consumer routes a spent record to the shared fallback instead. Both provisioning programs create the same fourteen, and `BrokerTopicProvisioningContractTest` fails the build if either creates a topic it does not authorize or authorizes one it does not create.
 
 | Topic | Event types | Producer | Consumer groups |
 | --- | --- | --- | --- |
 | `transaction.authorized` | `TransactionAuthorized` | authorization | `ledger-posting`, `fraud-detection`, `notification-authorized` |
-| `transaction.declined` | `TransactionDeclined` | authorization, and ledger on a feed-validation reject | none in the demo |
+| `transaction.declined` | `TransactionDeclined` | authorization, and ledger on a feed-validation reject | `ledger-reject` |
 | `transaction.posted` | `TransactionPosted` | ledger posting | `notification-posted`, `account-posted` |
 | `fraud.assessed` | `FraudFlagged` and `FraudCleared` on one topic | fraud detection | `notification-fraud` |
 | `account.state-changed` | `AccountStateChanged` | account | `authorization-account-state`, `ledger-account-state` |
 | `customer.context-changed` | `CustomerContextChanged` | account | `notification-customer` |
 | `card.updated` | `CardUpdated` | card | `authorization-card-updated` |
-| `<source>.DLT`, five of them | Fixed-width abend diagnostic derived from `app/cpy/CSMSG02Y.cpy:L21` | Listener error handlers on ledger, fraud and notification. Ledger has two listeners, fraud one and notification four | Operator inspection and replay |
+| `<source>.DLT`, six of them | Fixed-width abend diagnostic derived from `app/cpy/CSMSG02Y.cpy:L21` | Listener error handlers on ledger, fraud and notification. Ledger has three listeners, fraud one and notification four | Operator inspection and replay |
 | `carddemo.dead-letter` | `DeadLetterEnvelope` | The authorization and account listener error handlers, and **all five** outbox relays on an abandoned row: authorization, ledger, fraud, account and card | Operator inspection and replay |
 
-Ten consumer groups run across five listening services. Authorization takes two for its replicas, and ledger takes one for the authorization stream and one for its balance replica. Fraud takes one, notification four for four independent inputs, and account one for the posted amount it applies. Card registers no listener. Delivery guarantees, acknowledgement, and the duplicate check belong to [event flow](event-flow.md) and are not repeated here.
+Eleven consumer groups run across five listening services, one per listener. Authorization takes two for its replicas. Ledger takes three: one for the authorization stream, one for the declines it records, and one for its balance replica. Fraud takes one, notification four for four independent inputs, and account one for the posted amount it applies. Card registers no listener. Delivery guarantees, acknowledgement, and the duplicate check belong to [event flow](event-flow.md) and are not repeated here.
 
 The account identifier is the Kafka message key whenever an account is known. Kafka orders records only within a partition, and the ledger's balance updates for one account must stay in order.
 

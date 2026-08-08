@@ -1,6 +1,7 @@
 package com.carddemo.authorization.messaging;
 
 import com.carddemo.authorization.config.ObservabilityConfig.ReplicaMeters;
+import com.carddemo.authorization.domain.ReplicaGapLog;
 import com.carddemo.authorization.entity.ProcessedEventEntity;
 import com.carddemo.authorization.entity.ProcessedEventEntity.ProcessedEventId;
 import com.carddemo.authorization.repository.CardCrossReferenceRepository;
@@ -79,21 +80,33 @@ public class CardUpdatedConsumer {
     /** The three consume-side series of this stream. */
     private final ReplicaMeters meters;
 
-    /** Supplies the observation moment a freshness check later reads. */
+    /**
+     * Opens and closes the record of accounts this stream owes a change.
+     *
+     * <p>A delivery that cannot be applied leaves the account it names behind, and lag alone cannot
+     * report that: the offset advances once the record's diagnostic is away, so the stream reads as
+     * caught up while one account's cards are missing a change. The gap is what makes
+     * {@code domain/AuthorizationService} refuse that one account rather than every account or none.
+     */
+    private final ReplicaGapLog replicaGaps;
+
+    /** Supplies the observation moment recorded on the rows this delivery refreshes. */
     private final Clock clock = Clock.systemUTC();
 
     /**
-     * Takes the two stores, the transaction boundary and the recording surface.
+     * Takes the two stores, the transaction boundary, the recording surface and the gap log.
      *
      * @param crossReferences store of the cross-reference
      * @param processedEvents store of the duplicate-delivery markers
      * @param transactionTemplate    opens the one transaction per delivery
      * @param meters          the consume-side series of this stream
+     * @param replicaGaps     opens and closes the record of accounts this stream owes a change
      * @throws NullPointerException if any argument is {@code null}
      */
     public CardUpdatedConsumer(CardCrossReferenceRepository crossReferences,
             ProcessedEventRepository processedEvents, TransactionTemplate transactionTemplate,
-            ReplicaMeters meters) {
+            ReplicaMeters meters, ReplicaGapLog replicaGaps) {
+        this.replicaGaps = Objects.requireNonNull(replicaGaps, "replicaGaps is required");
         this.crossReferences =
                 Objects.requireNonNull(crossReferences, "crossReferences is required");
         this.processedEvents =
@@ -150,6 +163,12 @@ public class CardUpdatedConsumer {
                 LOG.debug("Event {} gained a marker from a delivery running alongside this one, so"
                         + " this one refreshed nothing.", event.eventId());
             }
+        } catch (RuntimeException failure) {
+            // The gap is committed in its own transaction, so this delivery's rollback leaves it
+            // standing. The failure then propagates, so the container still retries and still
+            // dead-letters: nothing about the existing error handling changes here.
+            replicaGaps.recordFailure(messageKey, consumedTopic, failure);
+            throw failure;
         } finally {
             meters.recordProcessingLatency(CardUpdated.EVENT_TYPE,
                     Duration.ofNanos(System.nanoTime() - startedAt));
@@ -247,6 +266,11 @@ public class CardUpdatedConsumer {
                     + " the account it names ending in the digits it names, or a newer change is"
                     + " already recorded.", event.eventId());
         }
+
+        // The copy and the record of its gap move together. A gap opened by an earlier failed
+        // delivery is closed here, inside the transaction that applies the change, so no decision can
+        // read rows whose gap was cleared by a write that then rolled back.
+        replicaGaps.clear(event.accountId());
         processedEvents.save(marker(event.eventId(), consumedTopic));
     }
 

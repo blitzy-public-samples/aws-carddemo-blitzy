@@ -4,6 +4,7 @@ import com.carddemo.authorization.TestIdentityPasswords;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -137,6 +138,17 @@ class PoisonRecordRecoveryIT {
     private static final Duration SILENCE_WINDOW = Duration.ofSeconds(3L);
 
     /**
+     * The key every diagnostic of the shared dead-letter topic carries.
+     *
+     * <p>{@code config/KafkaConsumerConfig} keys on the aggregate identifier the envelope itself
+     * declares, and a record it could not read carries no account it can be trusted to name, so the
+     * sentinel says exactly that: eleven zeros are not an account this platform seeds or issues. The
+     * coordinates of the refused record are declared fields of the payload instead, which is where
+     * this test reads them.
+     */
+    private static final String UNRESOLVED_ACCOUNT_KEY = "00000000000";
+
+    /**
      * A document whose envelope members sit under one nested object.
      *
      * <p>Every member {@code schemas/account-state-changed-v1.json} requires is therefore absent from
@@ -202,19 +214,26 @@ class PoisonRecordRecoveryIT {
             awaitReaderAssignment(diagnostics);
             RecordMetadata poison = publishPoison();
             TopicPartition partition = new TopicPartition(poison.topic(), poison.partition());
-            String expectedKey = poison.topic() + "-" + poison.partition() + "-" + poison.offset();
+            String expectedCoordinates = coordinatesOf(poison);
 
             ConsumerRecord<String, byte[]> diagnostic =
-                    awaitDiagnostic(diagnostics, expectedKey);
+                    awaitDiagnostic(diagnostics, expectedCoordinates);
 
             assertAll("the first and only pass over one poison record",
                     () -> assertEquals(DEAD_LETTER_TOPIC, diagnostic.topic(),
                             "the diagnostic reached the configured dead-letter topic"),
-                    () -> assertEquals(expectedKey, diagnostic.key(),
-                            "and it is keyed by the coordinates of the record it names, which no "
-                                    + "producer controls"),
+                    () -> assertEquals(UNRESOLVED_ACCOUNT_KEY, diagnostic.key(),
+                            "and it is keyed by the aggregate identifier its own payload declares, "
+                                    + "which is the sentinel a record naming no readable account "
+                                    + "carries and which no producer controls"),
                     () -> assertTrue(diagnostic.value().length > 0,
-                            "the diagnostic carries the abend record"));
+                            "the diagnostic carries the abend record"),
+                    () -> assertTrue(namesTheCoordinates(diagnostic, poison),
+                            "the coordinates of the refused record are declared fields of the "
+                                    + "payload rather than the key: " + payloadOf(diagnostic)),
+                    () -> assertFalse(payloadOf(diagnostic).contains("creditLimit"),
+                            "and no member of the refused document is republished: "
+                                    + payloadOf(diagnostic)));
 
             Awaitility.await("the offset of the recovered record")
                     .atMost(ARRIVAL_TIMEOUT)
@@ -226,7 +245,7 @@ class PoisonRecordRecoveryIT {
 
             reassignTheListener();
 
-            assertNoFurtherDiagnostic(diagnostics, expectedKey);
+            assertNoFurtherDiagnostic(diagnostics, poison);
             assertEquals(poison.offset() + 1L, committedOffset(partition),
                     "and the reassignment left the committed offset where recovery put it");
         }
@@ -344,29 +363,34 @@ class PoisonRecordRecoveryIT {
     /**
      * Waits for the one diagnostic naming the published record.
      *
+     * <p>Matching is on the coordinates the payload declares rather than on the message key. Every
+     * diagnostic this service publishes to the shared dead-letter topic is keyed on the aggregate
+     * identifier its own payload declares, so the key does not distinguish one refused record from
+     * another; {@code sourceTopic}, {@code sourcePartition} and {@code sourceOffset} do.
+     *
      * @param reader      the dead-letter reader
-     * @param expectedKey the coordinates the diagnostic is keyed by
+     * @param coordinates the source coordinates the payload declares, for the alias alone
      * @return the diagnostic record
      */
     private static ConsumerRecord<String, byte[]> awaitDiagnostic(
-            KafkaConsumer<String, byte[]> reader, String expectedKey) {
-        return Awaitility.await("the diagnostic naming " + expectedKey)
+            KafkaConsumer<String, byte[]> reader, String coordinates) {
+        return Awaitility.await("the diagnostic naming " + coordinates)
                 .atMost(ARRIVAL_TIMEOUT)
                 .pollInterval(POLL_INTERVAL)
-                .until(() -> firstMatching(reader, expectedKey), record -> record != null);
+                .until(() -> firstMatching(reader, coordinates), record -> record != null);
     }
 
     /**
      * Asserts no second diagnostic for the same record arrives inside the silence window.
      *
-     * @param reader      the dead-letter reader
-     * @param expectedKey the coordinates a duplicate would carry
+     * @param reader the dead-letter reader
+     * @param poison where the broker stored the record a duplicate would name
      */
     private static void assertNoFurtherDiagnostic(KafkaConsumer<String, byte[]> reader,
-            String expectedKey) {
+            RecordMetadata poison) {
         long deadline = System.nanoTime() + SILENCE_WINDOW.toNanos();
         while (System.nanoTime() - deadline < 0L) {
-            ConsumerRecord<String, byte[]> repeated = firstMatching(reader, expectedKey);
+            ConsumerRecord<String, byte[]> repeated = firstMatching(reader, coordinatesOf(poison));
             assertNull(repeated,
                     "one poison record produces one diagnostic, however often its partition is "
                             + "assigned");
@@ -374,21 +398,58 @@ class PoisonRecordRecoveryIT {
     }
 
     /**
-     * Fetches once and returns the first record carrying one key, or null.
+     * Fetches once and returns the first record whose payload declares one set of coordinates, or
+     * null.
      *
      * @param reader      the reader to fetch through
-     * @param expectedKey the key to match
+     * @param coordinates the rendered coordinates to match inside the payload
      * @return the matching record, or null when this fetch held none
      */
     private static ConsumerRecord<String, byte[]> firstMatching(
-            KafkaConsumer<String, byte[]> reader, String expectedKey) {
+            KafkaConsumer<String, byte[]> reader, String coordinates) {
         ConsumerRecords<String, byte[]> fetched = reader.poll(FETCH_TIMEOUT);
         for (ConsumerRecord<String, byte[]> record : fetched) {
-            if (expectedKey.equals(record.key())) {
+            if (payloadOf(record).contains(coordinates)) {
                 return record;
             }
         }
         return null;
+    }
+
+    /**
+     * Renders the source-topic field of a diagnostic payload, which is the part of the coordinates a
+     * substring match can rely on whatever order the writer emits members in.
+     *
+     * @param published where the broker stored the refused record
+     * @return the rendered {@code sourceTopic} member
+     */
+    private static String coordinatesOf(RecordMetadata published) {
+        return "\"sourceTopic\":\"" + published.topic() + "\"";
+    }
+
+    /**
+     * Reports whether one diagnostic payload declares every coordinate of one refused record.
+     *
+     * @param diagnostic the diagnostic
+     * @param published  where the broker stored the refused record
+     * @return {@code true} when the payload names the topic, the partition and the offset
+     */
+    private static boolean namesTheCoordinates(ConsumerRecord<String, byte[]> diagnostic,
+            RecordMetadata published) {
+        String payload = payloadOf(diagnostic);
+        return payload.contains("\"sourceTopic\":\"" + published.topic() + "\"")
+                && payload.contains("\"sourcePartition\":" + published.partition())
+                && payload.contains("\"sourceOffset\":" + published.offset());
+    }
+
+    /**
+     * Reads one diagnostic payload as text.
+     *
+     * @param record the diagnostic
+     * @return the payload, read as UTF-8
+     */
+    private static String payloadOf(ConsumerRecord<String, byte[]> record) {
+        return new String(record.value(), StandardCharsets.UTF_8);
     }
 
     /**

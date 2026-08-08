@@ -585,6 +585,48 @@ public class OutboxEventEntity {
     }
 
     /**
+     * Gives up on this row now, whatever its attempt count, and records that it owes a diagnostic.
+     *
+     * <p>This is the transition a <em>permanent</em> failure needs, and its absence was a defect. A
+     * payload the schema document refuses, or one no record type reads, fails the same way on every
+     * later attempt, so spending the remaining attempts on it reaches a conclusion already reached.
+     * The relay closed such a row by calling {@link #markPublished(Instant)} instead, which recorded
+     * an event that reached no consumer as {@link RelayState#PUBLISHED} — indistinguishable in the
+     * table, in the retention sweep and in every metric from an assessment the broker acknowledged.
+     *
+     * <p>What this writes is one state change with two halves, exactly as
+     * {@link #recordFailure(String, Instant, Instant)} does at the attempt ceiling:
+     * {@link RelayState#ABANDONED}, which is terminal and which {@code claimDueRows} never returns,
+     * and {@link DeadLetterState#REQUIRED}, which is the obligation that survives the broker outage
+     * or the restart that stops a diagnostic reaching a topic. One write, so no reader can find a row
+     * the relay gave up on that owes nobody an explanation.
+     *
+     * <p>The attempt is counted, because it was made. {@code next_attempt_at} is set to {@code at} so
+     * the column carries a value and no reader reads a future retry that will never come.
+     *
+     * @param reason a short, redacted reason naming the failure class, or null when none is available
+     * @param at     when the failing attempt ran
+     * @throws NullPointerException  if {@code at} is null
+     * @throws IllegalStateException if this row is already in a terminal state
+     */
+    public void abandon(String reason, Instant at) {
+        Objects.requireNonNull(at, "at");
+        if (isTerminal()) {
+            throw new IllegalStateException("a " + relayState + " row takes no further attempt");
+        }
+        this.attemptCount = this.attemptCount + 1;
+        this.lastAttemptAt = at;
+        this.lastError = reason == null || reason.length() <= LAST_ERROR_MAX_LENGTH
+                ? reason
+                : reason.substring(0, LAST_ERROR_MAX_LENGTH);
+        this.claimedBy = null;
+        this.claimedAt = null;
+        this.relayState = RelayState.ABANDONED;
+        this.nextAttemptAt = at;
+        this.deadLetterState = DeadLetterState.REQUIRED;
+    }
+
+    /**
      * Returns whether this row still owes a terminal diagnostic.
      *
      * @return the dead-letter state, never null

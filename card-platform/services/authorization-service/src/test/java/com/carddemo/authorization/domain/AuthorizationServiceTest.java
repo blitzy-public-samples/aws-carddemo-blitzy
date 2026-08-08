@@ -28,6 +28,7 @@ import com.carddemo.authorization.repository.AccountCreditSnapshotRepository;
 import com.carddemo.authorization.repository.AuthorizationDecisionRepository;
 import com.carddemo.authorization.repository.CardCrossReferenceRepository;
 import com.carddemo.authorization.repository.OutboxEventRepository;
+import com.carddemo.authorization.repository.ReplicaGapRepository;
 import com.carddemo.authorization.repository.UnresolvedCardAttemptRepository;
 import com.carddemo.cobol.PanMasker;
 import com.carddemo.events.DeclineReason;
@@ -113,6 +114,7 @@ final class AuthorizationServiceTest {
     private List<AuthorizationDecisionEntity> audited;
     private List<OutboxEventEntity> written;
     private CycleExposureReservation cycleExposure;
+    private ReplicaGapRepository replicaGaps;
     private AuthorizationService service;
 
     /** Builds the service over stubbed repositories before each test. */
@@ -141,9 +143,12 @@ final class AuthorizationServiceTest {
         identifiers = mock(TransactionIdentifierSource.class);
         when(identifiers.nextIdentifier()).thenReturn(ALLOCATED_ID);
 
+        replicaGaps = mock(ReplicaGapRepository.class);
+        when(replicaGaps.existsForAggregate(any())).thenReturn(false);
+
         when(accountSnapshots.reserveCycleExposure(any(), any(), any(), any())).thenReturn(1);
         cycleExposure =
-                new CycleExposureReservation(accountSnapshots, properties(TOLERANT_STALENESS));
+                new CycleExposureReservation(accountSnapshots, properties());
 
         List<DeclineRule> rules = List.of(new CardCrossReferenceRule(cardCrossReferences),
                 new AccountExistsRule(accountSnapshots), new CreditLimitRule(cycleExposure),
@@ -152,8 +157,8 @@ final class AuthorizationServiceTest {
         meters = new SimpleMeterRegistry();
         service = new AuthorizationService(rules, cardCrossReferences, identifiers,
                 new OutboxWriter(outboxEvents), unresolvedCardAttempts, authorizationDecisions,
-                meters, immediateTransactions(), properties(TOLERANT_STALENESS),
-                cycleExposure);
+                meters, immediateTransactions(), properties(),
+                cycleExposure, caughtUp(), replicaGaps);
     }
 
     /** The lock-wait bound the configured decision block carries, in milliseconds. */
@@ -161,15 +166,6 @@ final class AuthorizationServiceTest {
 
     /** How long a reservation counts, wide enough that no test below reaches its expiry. */
     private static final Duration RESERVATION_TTL = Duration.ofMinutes(15);
-
-    /**
-     * A staleness ceiling wide enough that no fixture observation is ever too old.
-     *
-     * <p>The fixtures carry moments from 2022, so a production-shaped ceiling would refuse every
-     * call and these tests would measure the freshness rule rather than the rule chain. One nested
-     * class narrows the ceiling and asserts the refusal.
-     */
-    private static final Duration TOLERANT_STALENESS = Duration.ofDays(36_500L);
 
     /**
      * Runs the decision callback on the calling thread with no transaction manager.
@@ -190,19 +186,35 @@ final class AuthorizationServiceTest {
     }
 
     /**
-     * Supplies the typed replica policy the production constructor consumes.
+     * Supplies the typed configuration the production constructor consumes.
      *
-     * @param maxStaleness the ceiling {@code carddemo.replica.max-staleness} would carry
-     * @return configuration holding that ceiling and nothing else
+     * @return configuration holding the replica and decision blocks and nothing else
      */
-    private static AuthorizationProperties properties(Duration maxStaleness) {
+    private static AuthorizationProperties properties() {
         AuthorizationProperties properties = mock(AuthorizationProperties.class);
-        AuthorizationProperties.Replica replica = mock(AuthorizationProperties.Replica.class);
-        when(replica.maxStaleness()).thenReturn(maxStaleness);
-        when(properties.replica()).thenReturn(replica);
+        when(properties.replica()).thenReturn(new AuthorizationProperties.Replica(0L));
         when(properties.decision()).thenReturn(
                 new AuthorizationProperties.Decision(LOCK_WAIT_MS, RESERVATION_TTL));
         return properties;
+    }
+
+    /**
+     * A replica whose streams are caught up, which is what every test but the nested usability class
+     * assumes.
+     *
+     * @return a verdict source reporting a synchronized stream at zero lag
+     */
+    private static ReplicaSynchronization caughtUp() {
+        return () -> ReplicaSynchronization.Verdict.synchronizedAt(0L);
+    }
+
+    /**
+     * A replica whose streams are behind, which is one of the two conditions that refuse a call.
+     *
+     * @return a verdict source reporting a stream with records waiting
+     */
+    private static ReplicaSynchronization behind() {
+        return () -> ReplicaSynchronization.Verdict.behind("replica-stream-behind", 7L);
     }
 
     /** Asserts an approval names its account, allocates an identifier and writes one event. */
@@ -346,16 +358,25 @@ final class AuthorizationServiceTest {
     }
 
     /**
-     * Asserts an unresolved card declines with reject code {@code 0100}, records the attempt, and
-     * publishes the one decline event that outcome produces.
+     * Asserts an unresolved card declines with reject code {@code 0100}, records the attempt and the
+     * decision, and publishes no event.
      *
-     * <p>Version one of the decline contract requires an eleven-digit account identifier, which this
-     * outcome resolved none of. Version two, at {@code schemas/transaction-declined-v2.json}, keys the
-     * event on the transaction identifier instead, so the attempt reaches a consumer rather than
-     * ending in a table only an operator reads. One call still produces exactly one event.
+     * <p>This is the one decided outcome that publishes nothing, and the reason is the contract rather
+     * than an omission. AAP 0.1.1 puts a transaction identifier, an <em>account</em> identifier and a
+     * reject reason code in every decline event, and AAP 0.3.1 makes the account identifier the message
+     * key of every event on this platform. Reject code {@code 0100} fires exactly where the
+     * cross-reference read missed, so no account identifier exists: the three ways to publish anyway
+     * are to trust an identifier the caller supplied, to invent one inside the real account key space,
+     * or to key the event on something that is not an account, and each breaks a promise a consumer
+     * relies on.
+     *
+     * <p>The source takes the same position on its synchronous path.
+     * {@code app/cbl/COTRN02C.cbl:L620-L636} answers a card number the cross-reference does not carry
+     * with {@code 'Card Number NOT found...'} and re-sends the screen, writing no reject record and
+     * capturing nothing at all. What this service adds is the durable attempt and decision rows.
      */
     @Test
-    void anUnresolvedCardPublishesItsDeclineAndRecordsTheAttempt() {
+    void anUnresolvedCardDeclinesAndPublishesNoEvent() {
         when(cardCrossReferences.findByCardNumber(CARD_NUMBER)).thenReturn(Optional.empty());
 
         AuthorizationService.Outcome outcome = service.authorize(request("504.77"), CALLER);
@@ -366,16 +387,9 @@ final class AuthorizationServiceTest {
         assertEquals("INVALID CARD NUMBER FOUND", describe(outcome),
                 "the text comes from app/cbl/CBTRN02C.cbl:L386-L387");
         assertNull(outcome.accountId(), "no account resolved, so none is named");
-        assertEquals(1, written.size(), "one call writes one event, this one included");
-        assertEquals(TransactionDeclined.EVENT_TYPE, written.get(0).getEventType(),
-                "an unresolved card writes the declined event");
-        assertEquals(outcome.transactionId(), written.get(0).getAggregateId(),
-                "version two keys the event on the transaction identifier, because no account "
-                        + "identifier exists to key it on");
-        assertTrue(written.get(0).getPayload().contains("\"schemaVersion\":2"),
-                "the event names the contract version that declares no account identifier");
-        assertFalse(written.get(0).getPayload().contains(CARD_NUMBER),
-                "no written event carries a Primary Account Number");
+        assertTrue(written.isEmpty(),
+                "no decline event names no account and is keyed on no account, so this outcome"
+                        + " publishes none");
 
         ArgumentCaptor<UnresolvedCardAttemptEntity> attempt =
                 ArgumentCaptor.forClass(UnresolvedCardAttemptEntity.class);
@@ -384,6 +398,9 @@ final class AuthorizationServiceTest {
                 "the attempt records the masked card number and never the full one");
         assertEquals("0100", attempt.getValue().getDeclineReasonCode(),
                 "the attempt records the reject code the source assigns");
+        assertNull(audited.get(0).getEventId(),
+                "and the decision row names no event either, which"
+                        + " ck_authorization_decision_event holds it to");
     }
 
     /**
@@ -860,10 +877,12 @@ final class AuthorizationServiceTest {
 
         assertEquals(Optional.of(DeclineReason.INVALID_CARD_NUMBER), outcome.declineReason());
         assertNull(outcome.accountId(), "no account resolved, so the outcome names none");
-        assertEquals(ALLOCATED_ID, written.get(0).getAggregateId(),
-                "the unresolved event is keyed on the allocated transaction identifier");
+        assertEquals(ALLOCATED_ID, outcome.transactionId(),
+                "the decision still carries the identifier this service allocated for it");
         assertNull(audited.get(0).getAccountId(),
                 "the audit row names no account either");
+        assertTrue(written.isEmpty(),
+                "and nothing is published, because every decline contract names an account");
     }
 
     /**
@@ -916,7 +935,7 @@ final class AuthorizationServiceTest {
         AuthorizationService extended = new AuthorizationService(rules, cardCrossReferences,
                 identifiers, new OutboxWriter(outboxEvents), unresolvedCardAttempts,
                 authorizationDecisions, new SimpleMeterRegistry(),
-                immediateTransactions(), properties(TOLERANT_STALENESS), cycleExposure);
+                immediateTransactions(), properties(), cycleExposure, caughtUp(), replicaGaps);
 
         AuthorizationService.Outcome outcome = extended.authorize(request("504.77"), CALLER);
 
@@ -1009,6 +1028,32 @@ final class AuthorizationServiceTest {
                 .thenReturn(Optional.of(
                         new CardCrossReferenceEntity(CARD_NUMBER, "000000011", ACCOUNT_ID,
                                 OBSERVED_AT)));
+    }
+
+    /**
+     * Stubs the cross-reference read with an observation moment of this test's choosing.
+     *
+     * @param observedAt when the replica row was last written
+     */
+    private void resolveCardObservedAt(Instant observedAt) {
+        when(cardCrossReferences.findByCardNumber(CARD_NUMBER))
+                .thenReturn(Optional.of(
+                        new CardCrossReferenceEntity(CARD_NUMBER, "000000011", ACCOUNT_ID,
+                                observedAt)));
+    }
+
+    /**
+     * Stubs the account read with an observation moment of this test's choosing, and values every
+     * rule accepts.
+     *
+     * @param observedAt when the replica row was last written
+     */
+    private void resolveAccountObservedAt(Instant observedAt) {
+        AccountCreditSnapshotEntity snapshot = new AccountCreditSnapshotEntity(ACCOUNT_ID,
+                new BigDecimal("5000.00"), EXPIRY_AFTER_CAPTURE, new BigDecimal("0.00"),
+                new BigDecimal("0.00"), observedAt);
+        when(accountSnapshots.findForUpdateByAccountId(ACCOUNT_ID))
+                .thenReturn(Optional.of(snapshot));
     }
 
     /**
@@ -1120,23 +1165,29 @@ final class AuthorizationServiceTest {
     }
 
     /**
-     * Holds the freshness control that keeps this service from authorizing against a replica it cannot
-     * vouch for the age of.
+     * Holds the control that keeps this service from authorizing against a replica it knows may be
+     * missing a change.
      *
      * <p>ADDITIVE. The source has no equivalent: {@code app/cbl/CBTRN02C.cbl:L382} and
      * {@code app/cbl/CBTRN02C.cbl:L395} read the cross-reference and account datasets themselves, so
      * nothing they read can be out of date. This service reads copies kept current by state-change
      * events, and a copy whose events stopped arriving keeps answering with whatever it last knew.
+     *
+     * <p>What is asserted here is the shape of the question. An earlier form of this control compared
+     * the age of a replica row against a window, and the first test below is the case that made it
+     * wrong: both producers publish on a state change and on nothing else, so an untouched card is a
+     * correct copy whose last observation recedes for ever. The two conditions that do refuse follow
+     * it.
      */
     @Nested
-    @DisplayName("Replica freshness")
-    class ReplicaFreshness {
+    @DisplayName("Replica usability")
+    class ReplicaUsability {
 
-        /** A window far shorter than the age of the fixed observation instant. */
-        private static final Duration STRICT = Duration.ofMinutes(5L);
+        /** An observation older than any window a deployment would have configured. */
+        private static final Instant LONG_AGO = Instant.parse("2020-01-01T00:00:00Z");
 
-        /** Builds the service under a window that refuses the fixture observation. */
-        private AuthorizationService strictService() {
+        /** Builds the service over one verdict source, with no gap standing. */
+        private AuthorizationService serviceOver(ReplicaSynchronization synchronization) {
             List<DeclineRule> rules = List.of(new CardCrossReferenceRule(cardCrossReferences),
                     new AccountExistsRule(accountSnapshots), new CreditLimitRule(cycleExposure),
                     new AccountExpirationRule());
@@ -1145,40 +1196,72 @@ final class AuthorizationServiceTest {
 
             return new AuthorizationService(rules, cardCrossReferences, identifiers,
                     new OutboxWriter(outboxEvents), unresolvedCardAttempts, authorizationDecisions,
-                    meters, immediateTransactions(), properties(STRICT), cycleExposure);
+                    meters, immediateTransactions(), properties(), cycleExposure, synchronization,
+                    replicaGaps);
+        }
+
+        /**
+         * The regression this control was rebuilt for. A card nobody has edited since the seed load
+         * carries an observation as old as that load, and the platform has to keep authorizing it: the
+         * card service publishes {@code CardUpdated} on a change and on nothing else, so there is no
+         * event that would make the observation newer and nothing wrong with the copy.
+         */
+        @Test
+        @DisplayName("authorizes a row untouched for years while its streams are caught up")
+        void authorizesARowUntouchedForYearsWhileItsStreamsAreCaughtUp() {
+            resolveCardObservedAt(LONG_AGO);
+            resolveAccountObservedAt(LONG_AGO);
+
+            AuthorizationService.Outcome outcome =
+                    serviceOver(caughtUp()).authorize(requestWithCardNumber(CARD_NUMBER), CALLER);
+
+            assertTrue(outcome.approved(),
+                    "an unedited card is a correct copy, however long ago it was last written");
+            assertEquals(0.0d,
+                    meters.counter(AuthorizationService.FAILURES_COUNTER, "stage",
+                            AuthorizationService.REPLICA_STAGE).count(),
+                    "and nothing about its age is an infrastructure fault");
         }
 
         @Test
-        @DisplayName("refuses the call rather than declining it, and writes no event")
-        void refusesTheCallRatherThanDecliningItAndWritesNoEvent() {
+        @DisplayName("refuses the call when a replica stream has records waiting, and writes no event")
+        void refusesTheCallWhenAReplicaStreamHasRecordsWaiting() {
             resolveCard();
             resolveAccount(new BigDecimal("5000.00"), new BigDecimal("0.00"),
                     new BigDecimal("0.00"), EXPIRY_AFTER_CAPTURE);
 
-            assertThrows(AuthorizationService.StaleReplicaException.class,
-                    () -> strictService().authorize(requestWithCardNumber(CARD_NUMBER), CALLER));
+            AuthorizationService.StaleReplicaException refused = assertThrows(
+                    AuthorizationService.StaleReplicaException.class,
+                    () -> serviceOver(behind()).authorize(requestWithCardNumber(CARD_NUMBER),
+                            CALLER));
 
+            assertEquals("replica-stream-behind", refused.getReason(),
+                    "the refusal names the condition and no account");
             assertTrue(written.isEmpty(),
                     "a call this service could not answer must write no event, because an event is"
                             + " what makes a decision real to every consumer");
         }
 
         /**
-         * The reject-reason enumeration is closed at the four of
-         * {@code app/cbl/CBTRN02C.cbl:L385-L420}, and the published contract enumerates those four. A
-         * refusal reported as a decline would have to invent a fifth, and it would also be untrue: the
-         * card and the account were both valid.
+         * The half consumer lag cannot see. A record that was delivered and could not be applied has
+         * its offset advanced once its diagnostic is away, so the stream reports itself caught up while
+         * that one account's copy is behind.
          */
         @Test
-        @DisplayName("counts an infrastructure fault and no decline")
-        void countsAnInfrastructureFaultAndNoDecline() {
+        @DisplayName("refuses the one account a delivery failed to apply a change for")
+        void refusesTheOneAccountADeliveryFailedToApplyAChangeFor() {
             resolveCard();
             resolveAccount(new BigDecimal("5000.00"), new BigDecimal("0.00"),
                     new BigDecimal("0.00"), EXPIRY_AFTER_CAPTURE);
+            when(replicaGaps.existsForAggregate(ACCOUNT_ID)).thenReturn(true);
 
-            assertThrows(AuthorizationService.StaleReplicaException.class,
-                    () -> strictService().authorize(requestWithCardNumber(CARD_NUMBER), CALLER));
+            AuthorizationService.StaleReplicaException refused = assertThrows(
+                    AuthorizationService.StaleReplicaException.class,
+                    () -> serviceOver(caughtUp()).authorize(requestWithCardNumber(CARD_NUMBER),
+                            CALLER));
 
+            assertEquals(AuthorizationService.StaleReplicaException.UNAPPLIED_CHANGE,
+                    refused.getReason(), "the refusal names the unapplied change");
             assertEquals(1.0d,
                     meters.counter(AuthorizationService.FAILURES_COUNTER, "stage",
                             AuthorizationService.REPLICA_STAGE).count(),
@@ -1191,8 +1274,8 @@ final class AuthorizationServiceTest {
 
         /**
          * A card that resolves to no account is already reject reason {@code 0100} per
-         * {@code app/cbl/CBTRN02C.cbl:L385-L387}, and it read no replica row worth checking. Holding it
-         * to a freshness window would refuse a call that needs no replica to answer.
+         * {@code app/cbl/CBTRN02C.cbl:L385-L387}, and it read no replica value worth checking.
+         * Refusing it would replace a reject reason the source defines with a service fault.
          */
         @Test
         @DisplayName("does not apply to a call whose card resolves to no account")
@@ -1200,7 +1283,7 @@ final class AuthorizationServiceTest {
             when(cardCrossReferences.findByCardNumber(CARD_NUMBER)).thenReturn(Optional.empty());
 
             AuthorizationService.Outcome outcome =
-                    strictService().authorize(requestWithCardNumber(CARD_NUMBER), CALLER);
+                    serviceOver(behind()).authorize(requestWithCardNumber(CARD_NUMBER), CALLER);
 
             assertFalse(outcome.approved(), "an unresolved card is declined");
             assertEquals(Optional.of(DeclineReason.INVALID_CARD_NUMBER), outcome.declineReason(),
@@ -1210,8 +1293,7 @@ final class AuthorizationServiceTest {
         /**
          * An absent account row is reject reason {@code 0101} at
          * {@code app/cbl/CBTRN02C.cbl:L397-L399}, and that decline comes from the absence rather than
-         * from any value, so there is no observation to be too old. Refusing the call instead would
-         * replace a reject reason the source defines with a service fault.
+         * from any value this service holds a copy of.
          */
         @Test
         @DisplayName("does not apply to an absent account row, which keeps reason 0101")
@@ -1220,7 +1302,7 @@ final class AuthorizationServiceTest {
             when(accountSnapshots.findByAccountId(ACCOUNT_ID)).thenReturn(Optional.empty());
 
             AuthorizationService.Outcome outcome =
-                    strictService().authorize(requestWithCardNumber(CARD_NUMBER), CALLER);
+                    serviceOver(behind()).authorize(requestWithCardNumber(CARD_NUMBER), CALLER);
 
             assertEquals(Optional.of(DeclineReason.ACCOUNT_NOT_FOUND), outcome.declineReason(),
                     "an absent account row carries reason 0101, not a refusal");
@@ -1228,18 +1310,6 @@ final class AuthorizationServiceTest {
                     meters.counter(AuthorizationService.FAILURES_COUNTER, "stage",
                             AuthorizationService.REPLICA_STAGE).count(),
                     "and it is not counted as an infrastructure fault");
-        }
-
-        @Test
-        @DisplayName("is a positive window, because a window of zero would refuse everything")
-        void isAPositiveWindowBecauseZeroWouldRefuseEverything() {
-            TransactionIdentifierSource identifiers = mock(TransactionIdentifierSource.class);
-
-            assertThrows(IllegalArgumentException.class,
-                    () -> new AuthorizationService(List.of(), cardCrossReferences, identifiers,
-                            new OutboxWriter(outboxEvents), unresolvedCardAttempts,
-                            authorizationDecisions, meters, immediateTransactions(),
-                            properties(Duration.ZERO), cycleExposure));
         }
     }
 
@@ -1272,7 +1342,7 @@ final class AuthorizationServiceTest {
 
             return new AuthorizationService(rules, cardCrossReferences, identifiers,
                     new OutboxWriter(outboxEvents), unresolvedCardAttempts, authorizationDecisions,
-                    meters, failing, properties(TOLERANT_STALENESS), cycleExposure);
+                    meters, failing, properties(), cycleExposure, caughtUp(), replicaGaps);
         }
 
         @Test
@@ -1378,7 +1448,6 @@ final class AuthorizationServiceTest {
             when(row.getAccountExpirationDate()).thenReturn(EXPIRY_AFTER_CAPTURE);
             when(row.getCurrentCycleCredit()).thenReturn(new BigDecimal("0.00"));
             when(row.getCurrentCycleDebit()).thenReturn(new BigDecimal("0.00"));
-            when(row.isFreshAt(any(), any())).thenReturn(true);
             when(row.effectivePendingCycleCredit(any())).thenAnswer(call -> reservedCredit.get());
             when(row.effectivePendingCycleDebit(any())).thenAnswer(call -> reservedDebit.get());
 

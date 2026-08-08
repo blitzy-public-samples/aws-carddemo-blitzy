@@ -65,6 +65,15 @@ class ComposeEnvironmentIsolationContractTest {
 
     private static final Map<String, Set<String>> REQUIRED_SERVICE_KEYS = requiredServiceKeys();
 
+    /** The six service Deployments, in the order their file names number them. */
+    private static final List<String> DEPLOYMENT_MANIFESTS = List.of(
+            "40-authorization-service.yaml",
+            "41-ledger-posting-service.yaml",
+            "42-fraud-detection-service.yaml",
+            "43-notification-service.yaml",
+            "44-account-service.yaml",
+            "45-card-service.yaml");
+
     private static final Pattern ENVIRONMENT_KEY =
             Pattern.compile("(?m)^ {6}([A-Z][A-Z0-9_]*):");
 
@@ -90,6 +99,80 @@ class ComposeEnvironmentIsolationContractTest {
                     OWN_DATABASE_PASSWORD.get(service));
             assertOnlyOwnSecretSource(service, block, KAFKA_PASSWORD_SOURCES,
                     OWN_KAFKA_PASSWORD.get(service));
+        }
+    }
+
+    /**
+     * The acquirer verifier reaches the one service that verifies a password against it.
+     *
+     * <p>ACQUIRER is the machine identity a point-of-sale network presents. It is the one role
+     * besides ADMIN that reaches {@code POST /authorizations}, and that route names its card in
+     * the request body, so no path variable carries an identifier an ownership scope could be
+     * compared against: the identity reaches every card the platform holds.
+     * {@code services/authorization-service/src/main/resources/application.yml} is the only file
+     * on the platform that reads either the username or the hash.
+     *
+     * <p>Both deployment paths are asserted, because the value travels differently on each. In
+     * Compose a shared YAML anchor injects into every container, so the pair belongs in the
+     * authorization service's own block. In Kubernetes a Secret is pulled whole through
+     * {@code envFrom.secretRef}, so the hash belongs in a Secret of its own. A bcrypt digest
+     * mounted into a service with no code that checks it is a value an attacker who reaches any
+     * one of six containers can take away and grind offline at leisure.
+     */
+    @Test
+    @DisplayName("the acquirer verifier reaches the authorization service and no other")
+    void theAcquirerVerifierReachesTheAuthorizationServiceAndNoOther() {
+        Path root = repositoryRoot();
+        String compose = read(root.resolve("card-platform/docker-compose.yml"));
+
+        for (String service : SERVICES) {
+            String block = serviceBlock(compose, service);
+            boolean carriesTheVerifier = block.contains("ACQUIRER_PASSWORD_HASH");
+            boolean carriesTheUsername = block.contains("ACQUIRER_USERNAME");
+            if ("authorization-service".equals(service)) {
+                assertThat(carriesTheVerifier)
+                        .as("the authorization service verifies against the acquirer hash, so its"
+                                + " own block has to bind it")
+                        .isTrue();
+                assertThat(carriesTheUsername)
+                        .as("and the username it is verified against")
+                        .isTrue();
+            } else {
+                assertThat(carriesTheVerifier)
+                        .as("%s has no code that reads the acquirer hash", service)
+                        .isFalse();
+                assertThat(carriesTheUsername)
+                        .as("%s has no code that reads the acquirer username", service)
+                        .isFalse();
+            }
+        }
+
+        String sharedAnchor = compose.substring(0, compose.indexOf("\nservices:"));
+        assertThat(sharedAnchor)
+                .as("the shared anchor injects into all six containers, so the acquirer pair"
+                        + " cannot sit in it")
+                .doesNotContain("ACQUIRER_PASSWORD_HASH", "ACQUIRER_USERNAME");
+
+        String secrets = read(root.resolve("card-platform/deploy/k8s/31-secret.example.yaml"));
+        assertThat(secrets)
+                .as("the acquirer hash is a Secret of its own in the cluster path")
+                .contains("name: carddemo-authorization-identity-secret");
+        int sharedIdentity = secrets.indexOf("name: carddemo-identity-secret");
+        int authorizationIdentity = secrets.indexOf("name: carddemo-authorization-identity-secret");
+        String sharedIdentityDocument =
+                secrets.substring(sharedIdentity, authorizationIdentity);
+        assertThat(sharedIdentityDocument)
+                .as("the Secret all six Deployments pull carries the three shared hashes only")
+                .contains("ADMIN_PASSWORD_HASH", "USER_PASSWORD_HASH", "MONITORING_PASSWORD_HASH")
+                .doesNotContain("ACQUIRER_PASSWORD_HASH:");
+
+        for (int manifest = 40; manifest <= 45; manifest++) {
+            String name = DEPLOYMENT_MANIFESTS.get(manifest - 40);
+            String deployment = read(root.resolve("card-platform/deploy/k8s/" + name));
+            boolean pullsIt = deployment.contains("name: carddemo-authorization-identity-secret");
+            assertThat(pullsIt)
+                    .as("%s pulls the acquirer Secret", name)
+                    .isEqualTo(manifest == 40);
         }
     }
 

@@ -174,7 +174,7 @@ class NotificationOpenApiContractTest {
      * returns the same {@code ApiError} shape every other refusal returns.
      */
     private static final List<String> UNDECLARED_STATUSES =
-            List.of("404", "409", "422", "default");
+            List.of("409", "422", "default");
 
     /** Statuses the filter chain writes, as a problem document rather than as the record shape. */
     private static final List<String> SECURITY_WRITTEN_STATUSES = List.of("401", "403");
@@ -346,7 +346,7 @@ class NotificationOpenApiContractTest {
         void theDocumentDeclaresTheOneRouteTheControllerMaps() {
             assertEquals(NotificationHistoryController.ROUTE_TEMPLATE, routeKey(),
                     "the route the document declares against the route the controller maps");
-            assertEquals("/notifications/{cardNumber}", routeKey(), "the route template");
+            assertEquals("/notifications/{cardToken}", routeKey(), "the route template");
         }
 
         /** Asserts the document carries no gateway prefix and no version segment. */
@@ -390,33 +390,39 @@ class NotificationOpenApiContractTest {
                     + namesOf(parameters()));
         }
 
-        /** Asserts the path parameter names the card number and is required. */
+        /** Asserts the path parameter names the card token and is required. */
         @Test
-        void thePathParameterIsTheRequiredCardNumber() {
-            Map<String, Object> cardNumber = pathParameter();
-            assertEquals("cardNumber", textAt(cardNumber, "name", "the path parameter"),
+        void thePathParameterIsTheRequiredCardToken() {
+            Map<String, Object> cardToken = pathParameter();
+            assertEquals("cardToken", textAt(cardToken, "name", "the path parameter"),
                     "its name");
-            assertEquals("path", textAt(cardNumber, "in", "the path parameter"),
+            assertEquals("path", textAt(cardToken, "in", "the path parameter"),
                     "where it is carried");
-            assertEquals(Boolean.TRUE, cardNumber.get("required"),
+            assertEquals(Boolean.TRUE, cardToken.get("required"),
                     "the path parameter is required");
+            assertNotEquals("cardNumber", textAt(cardToken, "name", "the path parameter"),
+                    "no card number names a resource of this service");
         }
 
         /**
-         * Asserts the path parameter is text at the card-number width, and never a number. The width
-         * is {@link PanMasker#CARD_NUMBER_LENGTH}, from {@code TRNX-CARD-NUM PIC X(16)} at
-         * {@code app/cpy/COSTM01.CPY:L22}.
+         * Asserts the path parameter is text at the card-token width, and never at the card-number
+         * width and never a number. The width is {@link PanMasker#CARD_TOKEN_LENGTH}; the token stands
+         * for {@code TRNX-CARD-NUM PIC X(16)} at {@code app/cpy/COSTM01.CPY:L22} and is not that
+         * field, so its width is its own.
          */
         @Test
-        void thePathParameterIsTextAtTheCardNumberWidth() {
+        void thePathParameterIsTextAtTheCardTokenWidth() {
             Map<String, Object> schema = mapAt(pathParameter(), "schema", "the path parameter");
             assertEquals("string", textAt(schema, TYPE, "the path parameter schema"), "its type");
-            assertEquals(PanMasker.CARD_NUMBER_LENGTH,
-                    intAt(schema, MIN_LENGTH, "the card-number schema"),
-                    "the lower character bound of the card number");
-            assertEquals(PanMasker.CARD_NUMBER_LENGTH,
-                    intAt(schema, MAX_LENGTH, "the card-number schema"),
-                    "the upper character bound of the card number");
+            assertEquals(PanMasker.CARD_TOKEN_LENGTH,
+                    intAt(schema, MIN_LENGTH, "the card-token schema"),
+                    "the lower character bound of the card token");
+            assertEquals(PanMasker.CARD_TOKEN_LENGTH,
+                    intAt(schema, MAX_LENGTH, "the card-token schema"),
+                    "the upper character bound of the card token");
+            assertNotEquals(PanMasker.CARD_NUMBER_LENGTH,
+                    intAt(schema, MIN_LENGTH, "the card-token schema"),
+                    "a value of the card-number width is refused by the width alone");
         }
 
         /**
@@ -428,16 +434,18 @@ class NotificationOpenApiContractTest {
             String declared =
                     textAt(mapAt(pathParameter(), "schema", "the path parameter"), PATTERN,
                             "the path parameter schema");
-            assertEquals("^[0-9]{" + PanMasker.CARD_NUMBER_LENGTH + "}$", declared,
-                    "the shape the document declares against the width the source field declares");
-            assertEquals(NotificationHistoryController.CARD_NUMBER_PATTERN, declared,
+            assertEquals("^[0-9a-f]{" + PanMasker.CARD_TOKEN_LENGTH + "}$", declared,
+                    "the shape the document declares against the shape a card token takes");
+            assertEquals(PanMasker.CARD_TOKEN_PATTERN, declared,
+                    "one declaration of that shape across the platform");
+            assertEquals(NotificationHistoryController.CARD_TOKEN_PATTERN, declared,
                     "the shape the document declares against the shape the controller enforces");
         }
 
         /** Asserts the operation declares the path parameter alone, and no query parameter. */
         @Test
         void theOperationDeclaresThePathParameterAlone() {
-            assertEquals(List.of("cardNumber"), namesOf(parameters()),
+            assertEquals(List.of("cardToken"), namesOf(parameters()),
                     "the parameters the operation declares");
             for (Map<String, Object> parameter : parameters()) {
                 assertEquals("path", parameter.get("in"),
@@ -471,24 +479,32 @@ class NotificationOpenApiContractTest {
         @Test
         void theOperationDeclaresTheDocumentedStatusSet() {
             assertEquals(
-                    List.of("200", "400", "401", "403", "405", "406", "429", "500"), statusKeys(),
-                    "the statuses the operation documents");
+                    List.of("200", "400", "401", "403", "404", "405", "406", "429", "500"),
+                    statusKeys(), "the statuses the operation documents");
         }
 
         /**
-         * Asserts no missing-resource status appears as a key anywhere in the document. A card
-         * holding no entry answers with the successful status, an entry count of zero and an empty
-         * array. The prose of the refusal at {@code 403} records the same absence in words, so the
-         * scan below reads keys and never prose.
+         * Asserts the missing-resource status is documented and carries the failure shape.
+         *
+         * <p>A token holding no entry answers {@code 404}. The masked card number the successful body
+         * names its card by is column {@code masked_card_number} of an entry, so a card with no entry
+         * has none to read and no truthful successful body exists for it. A caller reaches this route
+         * only for a token it holds a {@code SCOPE_CARD_} authority for, and the chain answers
+         * {@code 403} before the read otherwise, so the status discloses nothing the caller did not
+         * already hold.
          */
         @Test
-        void noMissingResourceStatusAppears() {
-            assertFalse(statusKeys().contains("404"),
-                    "the operation documents a missing-resource status");
-            assertFalse(everyKey().contains("404"),
-                    "a missing-resource status appears as a key of the document");
-            assertFalse(document.contains("'404':"),
-                    "a missing-resource status appears as a response key of the document");
+        void theMissingResourceStatusIsDocumentedAndCarriesTheFailureShape() {
+            assertTrue(statusKeys().contains("404"),
+                    "the operation documents the missing-resource status");
+            Map<String, Object> schema =
+                    resolve(textAt(bodySchemaOf("404"), REFERENCE, "the body of 404"));
+            assertEquals(Set.copyOf(componentNamesOf(ApiErrorResponse.class)),
+                    propertiesOf(schema, "the error schema").keySet(),
+                    "the missing-resource answer carries the shape every refusal this endpoint "
+                            + "writes carries");
+            assertTrue(document.contains(NotificationHistoryController.NO_HISTORY_MESSAGE),
+                    "the document publishes the text the answer carries");
         }
 
         /** Asserts the operation documents none of the remaining statuses. */
@@ -649,9 +665,10 @@ class NotificationOpenApiContractTest {
         }
 
         /**
-         * Asserts the envelope carries no card identity beyond the masked display value. The card
-         * token keys the read model and reaches no response: it names one card for as long as its
-         * key stands.
+         * Asserts the envelope carries no card identity beyond the masked display value. The token
+         * names the resource on the request line and reaches no response body: it names one card for
+         * as long as its key stands, so a body carrying it would let a reader of a log follow that
+         * card across every request that touched it. A caller already holds the token it asked with.
          */
         @Test
         void theEnvelopeCarriesNoCardIdentity() {
@@ -661,10 +678,10 @@ class NotificationOpenApiContractTest {
                             .filter(name -> name.toLowerCase(Locale.ROOT).contains("card"))
                             .toList(),
                     "the card-bearing properties of the envelope");
-            assertFalse(document.contains("cardToken:"),
-                    "the storage key appears as a property of the document");
-            assertFalse(document.contains("name: cardToken"),
-                    "the storage key appears as a parameter of the document");
+            assertFalse(everyPropertyName().contains("cardToken"),
+                    "a schema of the document declares cardToken");
+            assertEquals(List.of("cardToken"), namesOf(parameters()),
+                    "the token names the resource, and it does so in the path alone");
         }
 
         /**
@@ -1162,29 +1179,33 @@ class NotificationOpenApiContractTest {
         }
 
         /**
-         * Asserts every run of sixteen digits in the document is the all-zero placeholder of the
-         * path parameter example.
+         * Asserts the document carries no run of sixteen digits at all, and that the one value it
+         * publishes for the path is the all-zero placeholder token.
          *
-         * <p>The route reads a card number, so its example has to be sixteen digits. No card of
-         * {@code app/data/ASCII/carddata.txt} carries that value, so the document publishes no card
-         * number that exists, and no response example carries a run at all: a response names a card
-         * by its masked form. The message counts the runs and prints none of them.
+         * <p>The route reads a card token rather than a card number, so nothing the document
+         * publishes needs the shape of a card number and no example carries one. A response names a
+         * card by its masked form, which is twelve mask characters and four digits. The message
+         * counts the runs and prints none of them.
+         *
+         * <p>The published token is sixty-four zeros. A real token is the keyed code over a number
+         * under a deployment-supplied key, so no token this document could publish resolves under a
+         * reader's key, and one derived under the build key would name a seeded card to anyone
+         * holding that key.
          */
         @Test
-        void everySixteenDigitRunIsThePlaceholderExample() {
+        void theDocumentCarriesNoSixteenDigitRunAndPublishesThePlaceholderToken() {
             Matcher run = SIXTEEN_DIGIT_RUN.matcher(document);
             int runs = 0;
             while (run.find()) {
                 runs++;
-                assertEquals("0".repeat(16), run.group(),
-                        "a sixteen-digit run other than the placeholder");
             }
-            assertEquals(1, runs, "the document carries " + runs + " runs of sixteen digits");
+            assertEquals(0, runs, "the document carries " + runs + " runs of sixteen digits");
 
             Map<String, Object> examples = mapAt(pathParameter(), "examples", "the path parameter");
             Map<String, Object> example =
-                    mapAt(examples, "number", "the path parameter examples");
-            assertEquals("0".repeat(16), textAt(example, "value", "the path parameter example"),
+                    mapAt(examples, "token", "the path parameter examples");
+            assertEquals(PanMasker.ABSENT_CARD_TOKEN,
+                    textAt(example, "value", "the path parameter example"),
                     "the example the path parameter publishes");
         }
 

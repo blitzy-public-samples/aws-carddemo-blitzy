@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://carddemo.example.com/schemas/fraud-flagged-v1.json",
   "title": "FraudFlagged",
-  "description": "The fraud detection service publishes FraudFlagged when its risk rules flag an authorized transaction. No service consumes fraud.assessed today: the notification-fraud consumer group is declared in card-platform/.env.example and no listener is registered against it. No source program scores risk, so this event has no COBOL ancestor. Evolution is additive only: inside one version no field is removed, renamed, retyped or narrowed, and a change of that kind takes a new schemaVersion and a new -v<n> document beside this one.",
+  "description": "The fraud detection service publishes FraudFlagged when its risk rules flag an authorized transaction. The notification service consumes fraud.assessed under the notification-fraud consumer group, in com.carddemo.notification.messaging.FraudFlaggedConsumer, which routes on eventType: this payload renders a cardholder alert and FraudCleared records the outcome without one. The platform integrates no delivery channel, so a rendered alert is stored rather than sent. No source program scores risk, so this event has no COBOL ancestor. Evolution is additive only: inside one version no field is removed, renamed, retyped or narrowed, and a change of that kind takes a new schemaVersion and a new -v<n> document beside this one.",
   "$comment": "aggregateId and accountId carry one account identifier, and the Kafka message key is that value, so the key and the payload cannot disagree.",
   "type": "object",
   "properties": {

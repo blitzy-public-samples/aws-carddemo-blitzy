@@ -11,6 +11,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.regex.Matcher;
@@ -38,6 +39,17 @@ class RuleThreeDocumentationContractTest {
 
     /** Markdown links, excluding an optional fragment during file resolution. */
     private static final Pattern LINK = Pattern.compile("\\[[^]]+\\]\\(([^)]+)\\)");
+
+    /** The header {@code config/CrossSiteRequestFilter} requires of every state-changing request. */
+    private static final String CROSS_SITE_HEADER = "X-CardDemo-Request";
+
+    /** The {@code curl} flags naming a method that changes state. */
+    private static final List<String> WRITE_METHODS =
+            List.of("-X POST", "-X PUT", "-X PATCH", "-X DELETE");
+
+    /** A run of exactly sixty-four hexadecimal characters, which is the shape of a card token. */
+    private static final Pattern SIXTY_FOUR_HEX_RUN =
+            Pattern.compile("(?<![0-9a-f])[0-9a-f]{64}(?![0-9a-f])");
 
     /** The six independently deployable service module directories. */
     private static final List<String> SERVICES = List.of(
@@ -250,13 +262,13 @@ class RuleThreeDocumentationContractTest {
                 "POST /authorizations",
                 "GET /balances/{accountId}",
                 "GET /fraud-assessments",
-                "GET /notifications/{cardNumber}",
+                "GET /notifications/{cardToken}",
                 "PUT /accounts/{accountId}",
                 "POST /accounts/{accountId}/cycle-close",
                 "GET /customers/{customerId}",
                 "GET /cards",
-                "GET /cards/{cardNumber}",
-                "PUT /cards/{cardNumber}")) {
+                "GET /cards/{cardToken}",
+                "PUT /cards/{cardToken}")) {
             assertTrue(platform.contains("`" + route + "`"), "missing route " + route);
         }
         for (String topic : List.of(
@@ -390,6 +402,87 @@ class RuleThreeDocumentationContractTest {
                 "the request example carrying the fixture expiry must warn about the overlay");
     }
 
+    /**
+     * Asserts every state-changing {@code curl} command any guide publishes carries the two things the
+     * shipped filters require of one, so a reader who copies a command receives the answer the guide
+     * describes rather than a refusal.
+     *
+     * <p>Two contracts are involved and each has one enforcement point in the running code.
+     * {@code config/CrossSiteRequestFilter} refuses a {@code POST}, {@code PUT}, {@code PATCH} or
+     * {@code DELETE} carrying no {@value #CROSS_SITE_HEADER} header, answering 403 before the security
+     * chain runs. And a route declaring {@code consumes = APPLICATION_JSON_VALUE} answers 415 to a body
+     * arriving without {@code Content-Type: application/json}, which {@code curl} does not set by
+     * itself: its default for {@code -d} is a form encoding.
+     *
+     * <p>The header name is read from {@code .env.example} rather than written here, so a deployment
+     * that renamed it renames it in one place and this test follows. Continuation lines are joined
+     * before the scan, because every command in these guides spans several lines.
+     *
+     * <p>The two omissions this test exists to catch had both happened: four write commands across the
+     * guides carried no header and would have answered 403, and one carried the header but no media
+     * type and would have answered 415.
+     */
+    @Test
+    void everyStateChangingCommandInEveryGuideCarriesTheHeaderAndTheMediaType() {
+        String header = configuredCrossSiteHeader();
+        assertEquals(CROSS_SITE_HEADER, header,
+                ".env.example must document the header the guides carry");
+
+        int commands = 0;
+        for (Path guide : allGuides()) {
+            for (String command : curlCommandsOf(read(guide))) {
+                if (WRITE_METHODS.stream().noneMatch(command::contains)) {
+                    continue;
+                }
+                commands++;
+                assertTrue(command.contains(header),
+                        guide.getFileName() + " publishes a state-changing command carrying no "
+                                + header + " header, which config/CrossSiteRequestFilter answers 403"
+                                + " to: " + command);
+                if (command.contains("-d ") || command.contains("--data")) {
+                    assertTrue(command.contains("Content-Type: application/json"),
+                            guide.getFileName() + " publishes a state-changing command sending a body"
+                                    + " with no JSON media type, which a consuming route answers 415"
+                                    + " to: " + command);
+                }
+            }
+        }
+        assertTrue(commands >= 5,
+                "the guides publish " + commands + " state-changing commands, and the delivered "
+                        + "write surface has more than that");
+    }
+
+    /**
+     * Asserts no guide passes a written-down card token into a route.
+     *
+     * <p>A card token is the keyed code over a card number under {@code CARD_TOKEN_SECRET}, so it
+     * belongs to one key. A literal published in a guide resolves under the key it was derived with and
+     * under no other, and every deployment is told to generate its own key before the first run. Such a
+     * literal therefore reads as a working value and answers 404 for the reader who copies it.
+     *
+     * <p>Each guide that names a token derives it instead, from the fixture number and the configured
+     * key, which is what makes the command correct under any key. The scan reads every run of
+     * sixty-four hexadecimal characters and admits only the all-zero placeholder, which resolves to no
+     * row by design.
+     */
+    @Test
+    void noGuidePublishesACardTokenLiteralForARoute() {
+        for (Path guide : allGuides()) {
+            Matcher run = SIXTY_FOUR_HEX_RUN.matcher(read(guide));
+            while (run.find()) {
+                assertEquals("0".repeat(64), run.group(),
+                        guide.getFileName() + " publishes a card token literal, which resolves only "
+                                + "under the key it was derived with: " + run.group());
+            }
+        }
+
+        String platform = read(platformDirectory().resolve("README.md"));
+        assertTrue(platform.contains("openssl dgst -sha256 -hmac"),
+                "the platform guide must derive the token it uses rather than publish one");
+        assertTrue(platform.contains("CardDemo/card-token/v"),
+                "the derivation must cover the label PanMasker.cardToken covers");
+    }
+
     private static List<Path> allGuides() {
         return List.of(
                 repositoryRoot().resolve("README.md"),
@@ -402,6 +495,50 @@ class RuleThreeDocumentationContractTest {
                 serviceReadme("notification-service"),
                 serviceReadme("account-service"),
                 serviceReadme("card-service"));
+    }
+
+    /**
+     * Reads the cross-site header name the delivered environment template documents.
+     *
+     * <p>The value is read rather than written here so that a deployment renaming the header renames it
+     * in one place. {@code API_CROSS_SITE_HEADER} is the key
+     * {@code carddemo.api.cross-site.required-header} binds to.
+     *
+     * @return the configured header name
+     */
+    private static String configuredCrossSiteHeader() {
+        for (String line : read(platformDirectory().resolve(".env.example")).split("\n")) {
+            if (line.startsWith("API_CROSS_SITE_HEADER=")) {
+                return line.substring("API_CROSS_SITE_HEADER=".length()).trim()
+                        .replace("'", "").replace("\"", "");
+            }
+        }
+        throw new IllegalStateException(".env.example declares no API_CROSS_SITE_HEADER");
+    }
+
+    /**
+     * Splits one guide into its {@code curl} invocations, joining every continuation line so a command
+     * spanning ten lines is scanned as one string.
+     *
+     * @param guide the guide text, newline-normalised
+     * @return one entry per {@code curl} invocation the guide publishes
+     */
+    private static List<String> curlCommandsOf(String guide) {
+        List<String> commands = new ArrayList<>();
+        String[] lines = guide.split("\n", -1);
+        for (int index = 0; index < lines.length; index++) {
+            if (!lines[index].contains("curl ")) {
+                continue;
+            }
+            StringBuilder command = new StringBuilder(lines[index].strip());
+            while (command.toString().endsWith("\\") && index + 1 < lines.length) {
+                command.setLength(command.length() - 1);
+                index++;
+                command.append(' ').append(lines[index].strip());
+            }
+            commands.add(command.toString());
+        }
+        return commands;
     }
 
     private static Path serviceReadme(String service) {

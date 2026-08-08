@@ -43,11 +43,13 @@ import org.springframework.transaction.support.TransactionTemplate;
  * state a {@code MOVE} into a {@code PIC X(n)} field leaves.
  *
  * <p>An event at schema version 1 carries four of those values and no card token, so it can key no
- * row. {@link #readModelRow(TransactionPosted)} refuses it, and
- * {@code config/KafkaConsumerConfig} routes the delivery to the dead-letter topic once the retries
- * configured under {@code carddemo.consumer.retry} are spent. Refusing is the honest answer: a row
- * keyed on an invented token, or one carrying eight blank columns, is worse than a delivery an
- * operator can see and replay.
+ * row and fill no row. This listener applies nothing for it, counts it on
+ * {@code carddemo.notification.events.unapplied}, reports it once and acknowledges it.
+ * {@link #carriesNoCardIdentity(TransactionPosted)} states why nothing is invented in its place, and
+ * why the delivery is no longer refused: a version 1 event is governed and valid against its own
+ * schema document, so refusing it spent three attempts and put a valid event on the dead-letter topic
+ * as though it were poison. Consumer groups start at the earliest offset, so a group added to a topic
+ * that retains version 1 records met that route on every one of them.
  *
  * <p>The read-model key holds the card token. {@code app/cpy/COSTM01.CPY:L22} declares
  * {@code TRNX-CARD-NUM PIC X(16)}, which carried a full Primary Account Number (PAN). This platform
@@ -179,6 +181,11 @@ public class TransactionPostedConsumer {
      * @param consumedTopic  the topic the delivery arrived on, recorded on the marker
      * @param messageKey     the key the delivery arrived under, which must name the payload's
      *                       aggregate
+     * <p>A delivery at contract version 1 carries no card token and no descriptive field, so it keys
+     * no read-model row and fills none. Such a delivery writes nothing, is counted on
+     * {@code carddemo.notification.events.unapplied}, is reported once, and is acknowledged rather
+     * than retried and dead-lettered.
+     *
      * @throws NullPointerException if {@code event} or {@code acknowledgment} is null
      * @throws IllegalArgumentException if the key names an aggregate the payload does not
      */
@@ -194,9 +201,13 @@ public class TransactionPostedConsumer {
         long startedAt = System.nanoTime();
         try {
             requireKeyNamesPayloadAggregate(messageKey, event);
-            StatementTransactionEntity row = readModelRow(event);
-            transactionTemplate
-                    .executeWithoutResult(status -> applyOneEvent(event, row, consumedTopic));
+            if (carriesNoCardIdentity(event)) {
+                recordUnappliedVersion(event.eventId(), event.schemaVersion());
+            } else {
+                StatementTransactionEntity row = readModelRow(event);
+                transactionTemplate
+                        .executeWithoutResult(status -> applyOneEvent(event, row, consumedTopic));
+            }
         } catch (RuntimeException failure) {
             reportFailure(event.eventId(), failure);
             throw failure;
@@ -314,8 +325,10 @@ public class TransactionPostedConsumer {
      *
      * @param event the validated event this delivery carries
      * @return a row carrying all fourteen column values, none of them null
-     * @throws IllegalArgumentException if the event carries no card token, which is every event at
-     *                                  schema version 1, if the card number is not masked, if the
+     * @throws IllegalArgumentException if the event carries no card token, which
+     *                                  {@link #carriesNoCardIdentity(TransactionPosted)} settles
+     *                                  before this method is reached, if the card number is not
+     *                                  masked, if the
      *                                  transaction identifier is not
      *                                  {@value PicClause#TRAN_ID_WIDTH} characters, or if a text
      *                                  value is wider than the column that holds it
@@ -341,12 +354,56 @@ public class TransactionPostedConsumer {
     }
 
     /**
-     * Returns the card token the event carries, refusing an event that carries none.
+     * Reports whether this delivery carries a contract version that keys no read-model row.
      *
      * <p>Only schema version {@value TransactionPosted#TRANSACTION_DETAIL_SCHEMA_VERSION} carries a
-     * token. An event at version 1 predates the card identity this read model is keyed on, and no
-     * token can be recovered from the masked card number it carries: masking discards twelve of the
-     * sixteen digits the derivation reads.
+     * token, and version 1 declares no such property. Two independent things are therefore missing
+     * from a version 1 event, not one: the token the composite key holds, and nine of the fourteen
+     * column values the row carries.
+     *
+     * <p><strong>Neither is invented.</strong> No token can be recovered from the masked card number
+     * a version 1 event does carry, because masking discards twelve of the sixteen digits the
+     * derivation reads, and two cards sharing their last four digits mask to one value. A row keyed on
+     * a derived value would merge two cardholders' histories under a key no card resolves to, and a
+     * row carrying nine blank columns would answer a history query with a transaction that reports
+     * nothing about itself.
+     *
+     * @param event the validated event this delivery carries
+     * @return {@code true} when the event carries no card token
+     */
+    private static boolean carriesNoCardIdentity(TransactionPosted event) {
+        return event.cardToken() == null;
+    }
+
+    /**
+     * Counts and reports one governed delivery this listener deliberately applied nothing for.
+     *
+     * <p>No marker is written. {@code processed_event} guards side effects and there are none to
+     * guard, so a marker would assert that this event had been applied. A redelivery is counted here
+     * again, which is truthful, because the delivery did happen again.
+     *
+     * <p>Reported at {@code WARN}, because a stream of these means a producer is publishing an older
+     * contract version than this read model can be built from. The line names the event identifier and
+     * the version, and no field of the payload.
+     *
+     * @param eventId       the identifier the ledger service assigned
+     * @param schemaVersion the contract version the delivery reported
+     */
+    private void recordUnappliedVersion(UUID eventId, int schemaVersion) {
+        metrics.eventsUnapplied(NotificationMetrics.EVENT_TRANSACTION_POSTED).increment();
+        LOG.warn("Event {} reports contract version {} and carries no card token, so this service"
+                + " writes no read-model row and renders nothing for it. Version {} carries the"
+                + " token and the fourteen values one row holds.", eventId, schemaVersion,
+                TransactionPosted.TRANSACTION_DETAIL_SCHEMA_VERSION);
+    }
+
+    /**
+     * Returns the card token the event carries, refusing an event that carries none.
+     *
+     * <p>Reached only for a delivery {@link #carriesNoCardIdentity(TransactionPosted)} answered false
+     * for, so the value is present. The check remains because this method's contract is a non-null
+     * token, and a caller that stopped asking the question first would otherwise build a row with a
+     * null key component.
      *
      * <p>The refusal names the field by its JavaScript Object Notation (JSON) pointer and the
      * version that carries it, and no card number or event value reaches the message.

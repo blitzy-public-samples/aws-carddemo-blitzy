@@ -1586,7 +1586,7 @@ class NotificationServiceTest {
      * {@code WS-TOTAL-AMT} as its receiving field and carries no {@code ON SIZE ERROR} phrase, so a
      * sum needing a tenth integer digit loses that digit at the addition and every later addition
      * works from the truncated value. The total this service reports through
-     * {@code GET /notifications/{cardNumber}} is therefore the same truncated value the statement
+     * {@code GET /notifications/{cardToken}} is therefore the same truncated value the statement
      * renders, which is the whole point: an endpoint that answered with an untruncated total would
      * disagree with the statement for the same rows, and one that tried to serialize ten integer
      * digits into the nine-digit contract would fail the request outright.</p>
@@ -1660,7 +1660,7 @@ class NotificationServiceTest {
          * Holds that the total an API response reports equals the total a statement renders.
          *
          * <p>Both come from the one accumulation, so a caller reading
-         * {@code GET /notifications/{cardNumber}} and a cardholder reading the statement see the same
+         * {@code GET /notifications/{cardToken}} and a cardholder reading the statement see the same
          * digits. This is the property that failed before the store was performed where the source
          * performs it: the endpoint assembled an untruncated ten-digit total, the response contract
          * of nine integer digits refused it, and the request answered {@code 500} for as long as

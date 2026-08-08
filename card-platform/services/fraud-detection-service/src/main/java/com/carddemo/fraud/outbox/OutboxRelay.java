@@ -6,6 +6,7 @@ import com.carddemo.fraud.config.FraudProperties;
 import com.carddemo.fraud.config.ObservabilityConfig.FraudMeters;
 import com.carddemo.fraud.entity.OutboxEventEntity;
 import com.carddemo.fraud.messaging.DeadLetterMetadata;
+import com.carddemo.fraud.messaging.EventPublisherPort;
 import com.carddemo.fraud.repository.OutboxEventRepository;
 import java.time.Duration;
 import java.time.Instant;
@@ -20,10 +21,8 @@ import java.util.regex.Pattern;
 import org.apache.kafka.common.errors.SerializationException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Limit;
-import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -132,10 +131,16 @@ public class OutboxRelay {
     private final OutboxEventRepository outboxEvents;
 
     /**
-     * Sends one event record under one message key. {@code config/KafkaProducerConfig} builds this
-     * template, and its value serializer takes a registered event record and no other value.
+     * The one seam this relay reaches a broker through.
+     *
+     * <p>{@code messaging/KafkaEventPublisher} is the shipped implementation and the only class in this
+     * service that holds a broker client. This relay used to hold the {@code KafkaTemplate} itself,
+     * which named Kafka in its own signature and made the broker a compile-time dependency of the
+     * relay; every other producing service on this platform already published through a port. The
+     * payload is written, validated against its schema document and checked against its topic inside
+     * the configured serializer, which is why an event record travels through here rather than text.
      */
-    private final KafkaTemplate<String, Object> kafkaTemplate;
+    private final EventPublisherPort publisher;
 
     /** Counts one failed row, under {@code carddemo.fraud.failures} with stage publish. */
     private final FraudMeters meters;
@@ -191,7 +196,7 @@ public class OutboxRelay {
      * deployment sets any of them.
      *
      * @param outboxEvents       store of unpublished events
-     * @param kafkaTemplate      the template both topics are reached through
+     * @param publisher          the one seam both topics are reached through
      * @param meters             the recording surface of this service
      * @param fraudAssessedTopic topic both assessment outcomes travel on, from
      *                           {@code carddemo.kafka.topics.fraud-assessed}
@@ -199,12 +204,12 @@ public class OutboxRelay {
      *                           {@code carddemo.kafka.topics.dead-letter}
      * @param transactionTemplate the boundary one tick runs inside
      * @param properties          the bound {@code carddemo} block, read for the relay settings
-     * @throws NullPointerException     if the store, the template or the meters is null
+     * @throws NullPointerException     if the store, the publisher or the meters is null
      * @throws IllegalArgumentException if the batch size or duration is outside its accepted range,
      *                                  or if either topic name resolves to no usable value
      */
     public OutboxRelay(OutboxEventRepository outboxEvents,
-            @Qualifier("fraudEventKafkaTemplate") KafkaTemplate<String, Object> kafkaTemplate,
+            EventPublisherPort publisher,
             FraudMeters meters,
             @Value("${carddemo.kafka.topics.fraud-assessed:fraud.assessed}")
                     String fraudAssessedTopic,
@@ -213,7 +218,7 @@ public class OutboxRelay {
             TransactionTemplate transactionTemplate,
             FraudProperties properties) {
         this.outboxEvents = Objects.requireNonNull(outboxEvents, "outboxEvents must be present");
-        this.kafkaTemplate = Objects.requireNonNull(kafkaTemplate, "kafkaTemplate must be present");
+        this.publisher = Objects.requireNonNull(publisher, "publisher must be present");
         this.meters = Objects.requireNonNull(meters, "meters must be present");
         this.transactionTemplate =
                 Objects.requireNonNull(transactionTemplate, "transactionTemplate must be present");
@@ -290,8 +295,10 @@ public class OutboxRelay {
             Class<?> recordType = recordTypesByEventType.get(row.getEventType());
             if (recordType == null) {
                 failed++;
+                abandoned++;
                 if (routeToDeadLetter(row, DeadLetterMetadata.of(ABEND_CODE, CULPRIT,
-                        UNKNOWN_TYPE_REASON, UNKNOWN_TYPE_MESSAGE), deadline)) {
+                        UNKNOWN_TYPE_REASON, UNKNOWN_TYPE_MESSAGE), UNKNOWN_TYPE_REASON,
+                        deadline)) {
                     deadLettersPublished++;
                 } else {
                     deadLettersFailed++;
@@ -482,18 +489,20 @@ public class OutboxRelay {
      * in exactly one of the two dead-letter components. Nothing is counted twice, and a reader can
      * tell a retry from a permanent loss without opening a log.
      *
-     * <p>{@code abandoned} counts the rows whose attempts ran out on this tick, and it is deliberately
-     * independent of the two dead-letter components rather than derived from them. An abandonment whose
-     * diagnostic the broker refused raises {@code abandoned} and {@code deadLettersFailed}, and a later
-     * pass that finally names it raises {@code deadLettersPublished} and not {@code abandoned} again.
-     * Comparing the two readings over time therefore answers whether every row this service gave up on
-     * has been named somewhere, which one combined total could not.
+     * <p>{@code abandoned} counts the rows this tick gave up on, by either of the two routes: one whose
+     * attempts ran out, and one whose failure is permanent and which is therefore given up on outright.
+     * It is deliberately independent of the two dead-letter components rather than derived from them. An
+     * abandonment whose diagnostic the broker refused raises {@code abandoned} and
+     * {@code deadLettersFailed}, and a later pass that finally names it raises
+     * {@code deadLettersPublished} and not {@code abandoned} again. Comparing the two readings over time
+     * therefore answers whether every row this service gave up on has been named somewhere, which one
+     * combined total could not.
      *
      * @param published            rows the broker accepted and this tick marked
      * @param failed               publish attempts this tick could not complete
      * @param deadLettersPublished rows this relay gave up on whose diagnostic the broker acknowledged
      * @param deadLettersFailed    rows this relay gave up on whose diagnostic the broker refused
-     * @param abandoned            rows whose attempts this tick spent, whether named or still owing
+     * @param abandoned            rows this tick gave up on, whether named or still owing
      */
     private record TickResult(int published, int failed, int deadLettersPublished,
             int deadLettersFailed, int abandoned) {
@@ -570,9 +579,9 @@ public class OutboxRelay {
         Throwable cause = rootCause(failure);
         if (isPermanent(failure)) {
             return routeToDeadLetter(row, DeadLetterMetadata.fromFailure(ABEND_CODE, cause,
-                    CONTRACT_REASON, CONTRACT_MESSAGE), deadline)
-                    ? Terminal.DEAD_LETTER_PUBLISHED
-                    : Terminal.DEAD_LETTER_FAILED;
+                    CONTRACT_REASON, CONTRACT_MESSAGE), cause.getClass().getSimpleName(), deadline)
+                    ? Terminal.ABANDONED_NAMED
+                    : Terminal.ABANDONED_UNNAMED;
         }
         String failureClass = cause.getClass().getSimpleName();
         row.recordFailure(failureClass, now, now.plus(backoffAfter(row.getAttemptCount())));
@@ -613,22 +622,22 @@ public class OutboxRelay {
         /** The row stays open and becomes due again after a backoff. */
         private static final Terminal RETRY = new Terminal(0, 0, 0, false);
 
-        /** The row is closed and its diagnostic reached the broker. */
-        private static final Terminal DEAD_LETTER_PUBLISHED = new Terminal(1, 0, 0, true);
-
-        /** The row is closed to this tick and its diagnostic was refused. */
-        private static final Terminal DEAD_LETTER_FAILED = new Terminal(0, 1, 0, true);
-
         /**
-         * The row spent its last attempt and its diagnostic reached the broker.
+         * The row was given up on and its diagnostic reached the broker.
          *
-         * <p>Closed, so the tick carries on. The ordering the message key protects is already lost
-         * once a row is abandoned, and holding the rows behind it would lose them too.
+         * <p>Reached two ways, and both are abandonments. A row at its attempt ceiling is abandoned by
+         * the failure it just recorded; a row whose failure is permanent is abandoned outright, because
+         * a payload its schema refuses fails the same way every later time. Both count here: an event
+         * that reaches no consumer is an abandonment whichever of the two closed it, and reporting one
+         * of them as a publish is what made the metric untrue.
+         *
+         * <p>Closed, so the tick carries on. The ordering the message key protects is already lost once
+         * a row is abandoned, and holding the rows behind it would lose them too.
          */
         private static final Terminal ABANDONED_NAMED = new Terminal(1, 0, 1, true);
 
         /**
-         * The row spent its last attempt and its diagnostic was refused.
+         * The row was given up on and its diagnostic was refused.
          *
          * <p>Closed to this tick, and the obligation stands. The head of a later pass offers the
          * diagnostic again, which is what the durable {@code dead_letter_state} column buys.
@@ -644,33 +653,46 @@ public class OutboxRelay {
      * payload. Its message key is the account identifier of the row, so a dead letter lands on the
      * partition of the account it concerns.
      *
-     * <p>The row is marked published once the send returns, which takes it out of every later
-     * batch. A send that does not return leaves the row unpublished, and the next tick attempts the
-     * row and this dead letter again.
+     * <p><strong>The row is abandoned before the diagnostic is sent, and it is never marked
+     * published.</strong> This method used to call {@code markPublished} once the send returned, which
+     * recorded an event that reached no consumer as {@link OutboxEventEntity.RelayState#PUBLISHED}: in
+     * the table, in the retention sweep and in every metric it was then indistinguishable from an
+     * assessment the broker acknowledged, and the only thing that had actually been published was the
+     * diagnostic saying it had not been. {@link OutboxEventEntity#abandon(String, Instant)} writes the
+     * truthful state instead, and it writes it first, so the obligation is durable before anything is
+     * attempted. A diagnostic the broker refuses therefore leaves
+     * {@link OutboxEventEntity.DeadLetterState#REQUIRED} standing and
+     * {@link #dischargeOwedDiagnostics(long)} offers it again at the head of a later pass; a crash
+     * between the two writes lands in the same place. Only an acknowledgement clears it.
      *
-     * @param row      the row this relay cannot publish
-     * @param metadata the four diagnostic values, each already held to its own width
-     * @param deadline the pass deadline on the monotonic clock
+     * @param row          the row this relay cannot publish
+     * @param metadata     the four diagnostic values, each already held to its own width
+     * @param failureClass the failure recorded on the row, naming a type and never a value
+     * @param deadline     the pass deadline on the monotonic clock
      * @return {@code true} when the dead letter reached the broker
      */
-    private boolean routeToDeadLetter(
-            OutboxEventEntity row, DeadLetterMetadata metadata, long deadline) {
+    private boolean routeToDeadLetter(OutboxEventEntity row, DeadLetterMetadata metadata,
+            String failureClass, long deadline) {
+
+        row.abandon(failureClass, Instant.now());
+        outboxEvents.save(row);
         try {
             Object deadLetter = metadata.toEnvelope(row.getAggregateId(), fraudAssessedTopic,
                     NO_SOURCE_PARTITION, NO_SOURCE_OFFSET, row.getEventId().toString(),
-                    reportableEventType(row.getEventType()), row.getAttemptCount() + 1);
+                    reportableEventType(row.getEventType()), row.getAttemptCount());
 
             sendWithinDeadline(deadLetterTopic, row.getAggregateId(), deadLetter, deadline);
         } catch (RuntimeException undelivered) {
-            log.error("The dead letter for an outbox row of type {} did not reach topic {} after "
-                    + "{}, and the row stays unpublished", row.getEventType(), deadLetterTopic,
+            log.error("An outbox row of type {} is abandoned and its dead letter did not reach topic"
+                            + " {} after {}. The row still owes one and a later pass offers it"
+                            + " again.", row.getEventType(), deadLetterTopic,
                     rootCause(undelivered).getClass().getSimpleName());
             return false;
         }
-        row.markPublished(Instant.now());
+        row.markDeadLetterPublished(Instant.now());
         outboxEvents.save(row);
-        log.error("An outbox row of type {} reached topic {} and takes no further attempt",
-                row.getEventType(), deadLetterTopic);
+        log.error("An outbox row of type {} is abandoned and named on topic {}. Its assessment"
+                + " reaches no consumer.", row.getEventType(), deadLetterTopic);
         return true;
     }
 
@@ -698,7 +720,8 @@ public class OutboxRelay {
             throw new RelayDeadlineExceededException();
         }
         try {
-            kafkaTemplate.send(topic, key, event).get(remaining, TimeUnit.NANOSECONDS);
+            publisher.publish(topic, key, event).toCompletableFuture()
+                    .get(remaining, TimeUnit.NANOSECONDS);
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
             throw new CompletionException(interrupted);

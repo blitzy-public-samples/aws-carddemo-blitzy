@@ -98,6 +98,16 @@ class CardControllerTest {
     /** The masked form of {@link #CARD_NUMBER}, which every response carries in its place. */
     private static final String MASKED_CARD_NUMBER = "************5740";
 
+    /**
+     * The token of {@link #CARD_NUMBER}, which is the value the two card routes carry in their path.
+     *
+     * <p>Derived under the build-scope card-token key {@code card-platform/pom.xml} supplies, so it is
+     * the same value {@code entity/CardEntity} stores for that row in this build. A path carries this
+     * and never the number: a path reaches an access log, a proxy log, a distributed trace and a
+     * browser history, and none of the four is reachable by this application's redaction.
+     */
+    private static final String CARD_TOKEN = PanMasker.cardToken(CARD_NUMBER);
+
     /** Twelve mask characters and the last four digits, which total the sixteen of the column. */
     private static final String MASKED_CARD_NUMBER_PATTERN = "^\\*{12}[0-9]{4}$";
 
@@ -155,6 +165,9 @@ class CardControllerTest {
      * assertion read the highest row as the lowest.</p>
      */
     private static final String SECOND_CARD_NUMBER = "0500024453765741";
+
+    /** The token of {@link #SECOND_CARD_NUMBER}, the path value that names that second card. */
+    private static final String SECOND_CARD_TOKEN = PanMasker.cardToken(SECOND_CARD_NUMBER);
 
     /** An account identifier the stubbed card does not belong to, eleven digits like the column. */
     private static final String OTHER_ACCOUNT_ID = "00000000099";
@@ -564,37 +577,46 @@ class CardControllerTest {
     class ReadingOneCard {
 
         /**
-         * Asserts the lookup runs on the full card number and the body carries the masked one.
+         * Asserts the lookup runs on the token the path carried and the body carries the masked
+         * number read from the row.
          *
          * <p>{@code app/bms/COCRDSL.bms} renders all sixteen digits in the clear: the field carries
          * {@code ATTRB=(FSET,NORM,UNPROT)} at L96, {@code HILIGHT=UNDERLINE} at L98,
-         * {@code LENGTH=16} at L99 and {@code POS=(8,45)} at L100. Masking is additive, and the
-         * lookup keeps the key the source keys on.
+         * {@code LENGTH=16} at L99 and {@code POS=(8,45)} at L100. Masking is additive, and so is the
+         * token: {@code card_token} carries a unique constraint, so it selects the single row
+         * {@code app/cbl/COCRDSLC.cbl:L740} selects by the number.
+         *
+         * <p>The masked value is derived from the number the row holds and never from the path, which
+         * is what makes it a value the caller could not have supplied.
          */
         @Test
-        void theLookupRunsOnTheFullNumberAndTheBodyCarriesTheMaskedOne() {
-            when(cardQueries.findByCardNumber(CARD_NUMBER)).thenReturn(Optional.of(storedCard()));
+        void theLookupRunsOnTheTokenAndTheBodyCarriesTheMaskedNumberOfTheRow() {
+            when(cardQueries.findByCardToken(CARD_TOKEN)).thenReturn(Optional.of(storedCard()));
             ArgumentCaptor<String> looked = ArgumentCaptor.forClass(String.class);
 
             ResponseEntity<?> response = readFixtureCard();
 
-            verify(cardQueries).findByCardNumber(looked.capture());
+            verify(cardQueries).findByCardToken(looked.capture());
+            verify(cardQueries, never()).findByCardNumber(any());
             CardDetailResponse detail =
                     assertInstanceOf(CardDetailResponse.class, response.getBody());
             assertAll(
                     () -> assertEquals(HttpStatus.OK, response.getStatusCode(),
                             "a stored row answers 200"),
-                    () -> assertEquals(CARD_NUMBER, looked.getValue(),
-                            "the lookup received a value other than the full sixteen digits"),
-                    () -> assertEquals(16, looked.getValue().length(),
-                            "the lookup key holds the width CARD-NUM PIC X(16) declares"),
+                    () -> assertEquals(CARD_TOKEN, looked.getValue(),
+                            "the lookup received the token the path carried"),
+                    () -> assertEquals(PanMasker.CARD_TOKEN_LENGTH, looked.getValue().length(),
+                            "the lookup key holds the width a card token declares"),
+                    () -> assertNotEquals(CARD_NUMBER, looked.getValue(),
+                            "no card number reached the lookup, so none reached the request line"),
                     () -> assertEquals(MASKED_CARD_NUMBER, detail.maskedCardNumber(),
                             "the body carries the masked form"),
                     () -> assertTrue(detail.maskedCardNumber().matches(MASKED_CARD_NUMBER_PATTERN),
                             "the masked form is twelve mask characters and four digits: "
                                     + detail.maskedCardNumber()),
                     () -> assertEquals(MASKED_CARD_NUMBER, PanMasker.maskCardNumber(CARD_NUMBER),
-                            "the expected value is the one the production masker produces"));
+                            "the expected value is the one the production masker produces, taken "
+                                    + "over the number the row holds"));
         }
 
         /**
@@ -606,7 +628,7 @@ class CardControllerTest {
          */
         @Test
         void theReadBodyCarriesExactlyFiveProperties() {
-            when(cardQueries.findByCardNumber(CARD_NUMBER)).thenReturn(Optional.of(storedCard()));
+            when(cardQueries.findByCardToken(CARD_TOKEN)).thenReturn(Optional.of(storedCard()));
 
             JsonNode body = serialize(readFixtureCard().getBody());
             Set<String> written = propertyNames(body);
@@ -630,7 +652,7 @@ class CardControllerTest {
          */
         @Test
         void theReadBodyCarriesTheStoredValues() {
-            when(cardQueries.findByCardNumber(CARD_NUMBER)).thenReturn(Optional.of(storedCard()));
+            when(cardQueries.findByCardToken(CARD_TOKEN)).thenReturn(Optional.of(storedCard()));
 
             CardDetailResponse detail = assertInstanceOf(CardDetailResponse.class,
                     readFixtureCard().getBody());
@@ -655,7 +677,7 @@ class CardControllerTest {
          */
         @Test
         void aReadThatFoundNoRowAnswersNotFound() {
-            when(cardQueries.findByCardNumber(CARD_NUMBER)).thenReturn(Optional.empty());
+            when(cardQueries.findByCardToken(CARD_TOKEN)).thenReturn(Optional.empty());
 
             ResponseEntity<?> response = readFixtureCard();
             ApiErrorResponse body = assertInstanceOf(ApiErrorResponse.class, response.getBody());
@@ -682,13 +704,13 @@ class CardControllerTest {
          */
         @Test
         void theReadKeysOnTheCardNumberAlone() {
-            when(cardQueries.findByCardNumber(CARD_NUMBER)).thenReturn(Optional.of(storedCard()));
+            when(cardQueries.findByCardToken(CARD_TOKEN)).thenReturn(Optional.of(storedCard()));
 
-            ResponseEntity<?> response = controller.readCard(CARD_NUMBER);
+            ResponseEntity<?> response = controller.readCard(CARD_TOKEN);
             CardDetailResponse detail =
                     assertInstanceOf(CardDetailResponse.class, response.getBody());
 
-            verify(cardQueries).findByCardNumber(CARD_NUMBER);
+            verify(cardQueries).findByCardToken(CARD_TOKEN);
             verify(cardQueries, never()).findByAccountId(any());
             assertAll(
                     () -> assertEquals(HttpStatus.OK, response.getStatusCode(),
@@ -729,7 +751,7 @@ class CardControllerTest {
 
         /** Reads the fixture card. */
         private ResponseEntity<?> readFixtureCard() {
-            return controller.readCard(CARD_NUMBER);
+            return controller.readCard(CARD_TOKEN);
         }
     }
 
@@ -1014,10 +1036,11 @@ class CardControllerTest {
         @Test
         void theOutcomeReachesTheCallerUnchanged() {
             CardUpdateRequest submitted = submittedUpdate();
+            when(cardQueries.findByCardToken(CARD_TOKEN)).thenReturn(Optional.of(storedCard()));
             when(cardUpdates.updateCard(CARD_NUMBER, submitted))
                     .thenReturn(CardUpdateResponse.updated());
 
-            ResponseEntity<?> response = controller.updateCard(CARD_NUMBER, submitted);
+            ResponseEntity<?> response = controller.updateCard(CARD_TOKEN, submitted);
             CardUpdateResponse body =
                     assertInstanceOf(CardUpdateResponse.class, response.getBody());
 
@@ -1039,17 +1062,48 @@ class CardControllerTest {
         @Test
         void theCardThePathNamesReachesTheUpdateSide() {
             CardUpdateRequest submitted = submittedUpdate();
+            when(cardQueries.findByCardToken(SECOND_CARD_TOKEN))
+                    .thenReturn(Optional.of(storedCard(SECOND_CARD_NUMBER)));
             when(cardUpdates.updateCard(any(), any())).thenReturn(CardUpdateResponse.updated());
             ArgumentCaptor<String> named = ArgumentCaptor.forClass(String.class);
 
-            controller.updateCard(SECOND_CARD_NUMBER, submitted);
+            controller.updateCard(SECOND_CARD_TOKEN, submitted);
 
             verify(cardUpdates).updateCard(named.capture(), eq(submitted));
             assertAll(
                     () -> assertEquals(SECOND_CARD_NUMBER, named.getValue(),
-                            "the update side received the card the path named"),
+                            "the update side received the number of the card the path's token named,"
+                                    + " read from the row rather than from the request"),
                     () -> assertEquals(16, named.getValue().length(),
-                            "the key holds the width CARD-NUM PIC X(16) declares"));
+                            "the key holds the width CARD-NUM PIC X(16) declares"),
+                    () -> assertNotEquals(SECOND_CARD_TOKEN, named.getValue(),
+                            "the token itself never reaches the update side, which edits a number"));
+        }
+
+        /**
+         * Asserts a token naming no row answers the not-found outcome without reaching the update
+         * side, so the seven outcomes of this route stay seven.
+         *
+         * <p>A caller cannot tell this answer from the one the update service reaches for a number
+         * naming no row, which is the point: the two lookups are one resource to a caller.
+         */
+        @Test
+        void aTokenNamingNoRowAnswersTheNotFoundOutcomeAndReachesNoUpdate() {
+            when(cardQueries.findByCardToken(CARD_TOKEN)).thenReturn(Optional.empty());
+
+            ResponseEntity<?> response = controller.updateCard(CARD_TOKEN, submittedUpdate());
+            CardUpdateResponse body =
+                    assertInstanceOf(CardUpdateResponse.class, response.getBody());
+
+            verify(cardUpdates, never()).updateCard(any(), any());
+            assertAll(
+                    () -> assertEquals(HttpStatus.NOT_FOUND, response.getStatusCode(),
+                            "a token naming no row answers 404"),
+                    () -> assertEquals(UpdateOutcome.CARD_NOT_FOUND, body.outcome(),
+                            "the outcome is the one the update service reaches for a number naming "
+                                    + "no row"),
+                    () -> assertEquals(DID_NOT_FIND_CARD, body.message(),
+                            "the text app/cbl/COCRDUPC.cbl:L1400 sets"));
         }
 
         /**
@@ -1086,8 +1140,9 @@ class CardControllerTest {
 
         /** Sends one submitted update whose outcome the update side reports. */
         private ResponseEntity<?> answerFor(CardUpdateResponse outcome) {
+            when(cardQueries.findByCardToken(CARD_TOKEN)).thenReturn(Optional.of(storedCard()));
             when(cardUpdates.updateCard(any(), any())).thenReturn(outcome);
-            return controller.updateCard(CARD_NUMBER, submittedUpdate());
+            return controller.updateCard(CARD_TOKEN, submittedUpdate());
         }
     }
 
@@ -1097,27 +1152,32 @@ class CardControllerTest {
     class WhatThisSurfaceNeverAdds {
 
         /**
-         * Asserts a card number whose Luhn check digit fails still reaches the read side.
+         * Asserts the token of a card whose Luhn check digit fails still reaches the read side.
          *
          * <p>{@code app/cbl/COCRDUPC.cbl:L784} tests {@code IF CC-CARD-NUM IS NOT NUMERIC} and
          * nothing else. The comments above it at L782-L783 name a numeric test and a
          * sixteen-character test, and the field is {@code PIC X(16)} with no length test present.
          *
+         * <p>The token is derived from that number the same way every other token is, so a checksum
+         * rule could not be applied on this route even if one were wanted: nothing here reads a card
+         * number at all. The read side is what would have refused, and it does not.
+         *
          * <p>What the stub answers afterwards is not the subject. The subject is the argument that
          * arrived and the absence of a refusal on a checksum ground.
          */
         @Test
-        void aCardNumberFailingTheLuhnCheckStillReachesTheReadSide() {
-            when(cardQueries.findByCardNumber(CARD_NUMBER_FAILING_LUHN))
+        void theTokenOfACardFailingTheLuhnCheckStillReachesTheReadSide() {
+            String tokenOfTheFailingCard = cardToken(CARD_NUMBER_FAILING_LUHN);
+            when(cardQueries.findByCardToken(tokenOfTheFailingCard))
                     .thenReturn(Optional.empty());
             ArgumentCaptor<String> looked = ArgumentCaptor.forClass(String.class);
 
-            ResponseEntity<?> response = controller.readCard(CARD_NUMBER_FAILING_LUHN);
+            ResponseEntity<?> response = controller.readCard(tokenOfTheFailingCard);
 
-            verify(cardQueries).findByCardNumber(looked.capture());
+            verify(cardQueries).findByCardToken(looked.capture());
             assertAll(
-                    () -> assertEquals(CARD_NUMBER_FAILING_LUHN, looked.getValue(),
-                            "the full value reached the read side"),
+                    () -> assertEquals(tokenOfTheFailingCard, looked.getValue(),
+                            "the token reached the read side"),
                     () -> assertNotEquals(HttpStatus.BAD_REQUEST, response.getStatusCode(),
                             "no checksum refusal was added"),
                     () -> assertNotEquals(HttpStatus.UNPROCESSABLE_CONTENT,
@@ -1191,7 +1251,7 @@ class CardControllerTest {
             }
             assertEquals(Set.of(CardController.BASE_PATH, CardController.CARD_ROUTE), mappedPaths(),
                     "the mapped path set changed");
-            assertEquals("/cards/{cardNumber}", CardController.CARD_ROUTE,
+            assertEquals("/cards/{cardToken}", CardController.CARD_ROUTE,
                     "the two card-numbered routes carry the variable the source keys on at "
                             + "app/cbl/COCRDSLC.cbl:L740");
         }
@@ -1210,14 +1270,14 @@ class CardControllerTest {
         @Test
         void theCardVerificationValueReachesNoBody() {
             when(cardQueries.listForward(any(), any(), any(), any())).thenReturn(oneRowPage());
-            when(cardQueries.findByCardNumber(CARD_NUMBER)).thenReturn(Optional.of(storedCard()));
+            when(cardQueries.findByCardToken(CARD_TOKEN)).thenReturn(Optional.of(storedCard()));
             when(cardUpdates.updateCard(any(), any())).thenReturn(lostRace());
 
             String listBody = rendered(controller.listCards(ACCOUNT_ID, null,
                     CardController.FORWARD_DIRECTION, null));
-            String readBody = rendered(controller.readCard(CARD_NUMBER).getBody());
+            String readBody = rendered(controller.readCard(CARD_TOKEN).getBody());
             String updateBody =
-                    rendered(controller.updateCard(CARD_NUMBER, submittedUpdate()).getBody());
+                    rendered(controller.updateCard(CARD_TOKEN, submittedUpdate()).getBody());
 
             assertAll(
                     () -> assertTrue(listBody.contains(MASKED_CARD_NUMBER),
@@ -1251,11 +1311,11 @@ class CardControllerTest {
         @Test
         void noBodyCarriesTheFullCardNumber() {
             when(cardQueries.listForward(any(), any(), any(), any())).thenReturn(oneRowPage());
-            when(cardQueries.findByCardNumber(CARD_NUMBER)).thenReturn(Optional.of(storedCard()));
+            when(cardQueries.findByCardToken(CARD_TOKEN)).thenReturn(Optional.of(storedCard()));
 
             String listBody = rendered(controller.listCards(ACCOUNT_ID, null,
                     CardController.FORWARD_DIRECTION, null));
-            String readBody = rendered(controller.readCard(CARD_NUMBER).getBody());
+            String readBody = rendered(controller.readCard(CARD_TOKEN).getBody());
 
             assertAll(
                     () -> assertFalse(listBody.contains(CARD_NUMBER),
@@ -1277,9 +1337,9 @@ class CardControllerTest {
          */
         @Test
         void aFailingReadBodyCarriesThreePropertiesAndOneText() {
-            when(cardQueries.findByCardNumber(CARD_NUMBER)).thenReturn(Optional.empty());
+            when(cardQueries.findByCardToken(CARD_TOKEN)).thenReturn(Optional.empty());
 
-            JsonNode body = serialize(controller.readCard(CARD_NUMBER).getBody());
+            JsonNode body = serialize(controller.readCard(CARD_TOKEN).getBody());
             Set<String> written = propertyNames(body);
 
             assertAll(
@@ -1304,15 +1364,17 @@ class CardControllerTest {
          */
         @Test
         void aFailingBodyEchoesNoSubmittedValue() {
-            when(cardQueries.findByCardNumber(SECOND_CARD_NUMBER)).thenReturn(Optional.empty());
+            when(cardQueries.findByCardToken(SECOND_CARD_TOKEN)).thenReturn(Optional.empty());
 
             ApiErrorResponse body = assertInstanceOf(ApiErrorResponse.class,
-                    controller.readCard(SECOND_CARD_NUMBER).getBody());
+                    controller.readCard(SECOND_CARD_TOKEN).getBody());
             String rendered = rendered(body);
 
             assertAll(
+                    () -> assertFalse(rendered.contains(SECOND_CARD_TOKEN),
+                            "the refusal echoed the token the path named: " + rendered),
                     () -> assertFalse(rendered.contains(SECOND_CARD_NUMBER),
-                            "the refusal echoed the card the path named: " + rendered),
+                            "the refusal named the card number of that token: " + rendered),
                     () -> assertEquals(DID_NOT_FIND_CARD, body.message(),
                             "the literal app/cbl/COCRDSLC.cbl:L760 sets"),
                     () -> assertEquals(CardController.CARD_ROUTE, body.route(),
@@ -1320,28 +1382,44 @@ class CardControllerTest {
         }
 
         /**
-         * Asserts the shape of the card-number path constraint is the source's one test.
+         * Asserts the path constraint admits a card token and refuses a card number.
          *
-         * <p>{@code app/cbl/COCRDUPC.cbl:L784} reads {@code IF CC-CARD-NUM IS NOT NUMERIC} over a
-         * {@code PIC X(16)} field, so sixteen digits is the whole rule. The text a refusal carries
-         * is the one {@code app/cbl/COCRDUPC.cbl:L789} declares.
+         * <p>The path variable is the token, so the constraint is the one shape
+         * {@link PanMasker#CARD_TOKEN_PATTERN} declares and the text is additive. The source edit is
+         * not replaced by it: {@code app/cbl/COCRDUPC.cbl:L784} reads
+         * {@code IF CC-CARD-NUM IS NOT NUMERIC} over a {@code PIC X(16)} field and
+         * {@code app/cbl/COCRDUPC.cbl:L789} declares its text, and both still run in
+         * {@code domain/CardUpdateService} on the number a token resolved to. A full card number in
+         * the path fails this constraint, which is the property that keeps a Primary Account Number
+         * out of a request line even where a caller sends one.
          */
         @Test
-        void thePathConstraintCarriesTheSourceShapeAndText() {
+        void thePathConstraintAdmitsATokenAndRefusesACardNumber() {
             assertAll(
-                    () -> assertEquals("^[0-9]{16}$", CardController.CARD_NUMBER_PATTERN,
-                            "sixteen digits, the width CARD-NUM PIC X(16) declares"),
-                    () -> assertTrue(CARD_NUMBER.matches(CardController.CARD_NUMBER_PATTERN),
-                            "the fixture card passes"),
-                    () -> assertFalse("050002445376574X"
-                                    .matches(CardController.CARD_NUMBER_PATTERN),
-                            "a non-digit fails"),
-                    () -> assertFalse("050002445376574"
-                                    .matches(CardController.CARD_NUMBER_PATTERN),
-                            "fifteen digits fail"),
+                    () -> assertEquals(PanMasker.CARD_TOKEN_PATTERN,
+                            CardController.CARD_TOKEN_PATTERN,
+                            "one declaration of the token shape across the platform"),
+                    () -> assertEquals("^[0-9a-f]{64}$", CardController.CARD_TOKEN_PATTERN,
+                            "sixty-four lower-case hexadecimal characters"),
+                    () -> assertTrue(PanMasker.cardToken(CARD_NUMBER)
+                                    .matches(CardController.CARD_TOKEN_PATTERN),
+                            "the fixture card's token passes"),
+                    () -> assertFalse(CARD_NUMBER.matches(CardController.CARD_TOKEN_PATTERN),
+                            "a full sixteen-digit card number fails, so no Primary Account Number "
+                                    + "reaches the handler through this path"),
+                    () -> assertFalse(PanMasker.cardToken(CARD_NUMBER).toUpperCase(Locale.ROOT)
+                                    .matches(CardController.CARD_TOKEN_PATTERN),
+                            "an upper-case rendering fails, so one card has one path value"),
+                    () -> assertFalse(PanMasker.cardToken(CARD_NUMBER).substring(1)
+                                    .matches(CardController.CARD_TOKEN_PATTERN),
+                            "sixty-three characters fail"),
+                    () -> assertEquals(CardValidationMessages.ADDITIVE_CARD_TOKEN_MALFORMED,
+                            CardController.CARD_TOKEN_MESSAGE,
+                            "the refusal names the shape it required and no value"),
                     () -> assertEquals(CARD_FILTER_NOT_NUMERIC,
                             CardValidationMessages.CARD_FILTER_NOT_NUMERIC,
-                            "the text app/cbl/COCRDUPC.cbl:L789 declares"));
+                            "the source text app/cbl/COCRDUPC.cbl:L789 declares is still held, and "
+                                    + "domain/CardUpdateServiceTest is where it is exercised"));
         }
 
         /** Reports whether one rendered body names the card verification value. */
@@ -1375,7 +1453,20 @@ class CardControllerTest {
      * @return the stored card
      */
     private static CardEntity storedCard() {
-        return new CardEntity(CARD_NUMBER, ACCOUNT_ID, CARD_VERIFICATION_VALUE, EMBOSSED_NAME,
+        return storedCard(CARD_NUMBER);
+    }
+
+    /**
+     * Builds a stored card carrying one card number and the other five values of fixture row one.
+     *
+     * <p>The row is what a token resolves to, and the number it holds is what reaches the update
+     * side, so a test that names a second card needs a row carrying that second number.
+     *
+     * @param cardNumber the card number the row holds
+     * @return the stored card
+     */
+    private static CardEntity storedCard(String cardNumber) {
+        return new CardEntity(cardNumber, ACCOUNT_ID, CARD_VERIFICATION_VALUE, EMBOSSED_NAME,
                 EXPIRATION_DATE, ACTIVE_STATUS);
     }
 

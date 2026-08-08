@@ -15,7 +15,7 @@ package com.carddemo.notification.api;
  * @param status the status code of the failing response
  * @param message one text describing the failure, naming no value read from the request
  * @param route the route template of the failing endpoint, for example
- *        {@code /notifications/{cardNumber}}
+ *        {@code /notifications/{cardToken}}
  */
 public record ApiErrorResponse(int status, String message, String route) {
 

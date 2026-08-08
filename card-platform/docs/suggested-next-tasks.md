@@ -109,7 +109,7 @@ These checks are reasonable improvements, but each changes source-equivalent out
 
 ### Give the account service the retryable status the card and ledger services answer
 
-- **Change:** Map a dependency the account service cannot reach to `503` and document it, as `card-service` and `ledger-posting-service` already do. Measured live against the running stack with the database paused: `GET /cards/{cardNumber}` answers `503` with `The card store is not reachable, so this request may be retried`, and `GET /accounts/{accountId}` answers `500` with `This request could not be completed. Nothing was changed.`
+- **Change:** Map a dependency the account service cannot reach to `503` and document it, as `card-service` and `ledger-posting-service` already do. Measured live against the running stack with the database paused: `GET /cards/{cardToken}` answers `503` with `The card store is not reachable, so this request may be retried`, and `GET /accounts/{accountId}` answers `500` with `This request could not be completed. Nothing was changed.`
 - **Where:** `CardApiExceptionHandler.onDatastoreUnreachable` and `LedgerApiExceptionHandler.onDatastoreUnreachable` name `DataAccessResourceFailureException`, `CannotCreateTransactionException` and `QueryTimeoutException`. `AccountApiExceptionHandler` has no equivalent arm, so those three reach its fault arm.
 - **Check:** Pause the database container and call each read of the account service. Each must answer `503`, `openapi.yaml` must declare that status on all four operations, and `ApiProblem.title` must admit its reason phrase.
 - **Behavior change:** Yes for a caller that retried on `500`. The account document currently declares `500` and the service answers `500`, so nothing published is untrue today.
@@ -155,7 +155,7 @@ These checks are reasonable improvements, but each changes source-equivalent out
 - **Change:** Give the two read models and the diagnostic column a way to survive a card-token rollover. The key itself no longer needs turning over: `.env.example` and `deploy/k8s/31-secret.example.yaml` ship placeholders, the authorization and card services refuse to start without a generated key, and `CardTokenReconciler` re-derives the fifty seeded `card_token` literals under that key before the card service accepts traffic. What has no owner is every token stored somewhere else.
 - **Where:** `com.carddemo.cobol.PanMasker.cardToken` derives a token, and three tables and one authority hold one: `statement_transaction.card_token` and `notification_log.card_token` in the notification service, `authorization_decision.card_token` in the authorization service, and the `SCOPE_CARD` authority an operator appends to `USER_SCOPES` in `.env` or `deploy/k8s/30-configmap.yaml`. None of the three tables holds a card number, so none of them can re-derive its own rows.
 - **Procedure:** Decide per table. The notification read model and the notification log are rebuilt from replayed events, so a rollover can discard and replay rather than re-key. `authorization_decision.card_token` is a diagnostic column, so an operator may leave it at its previous version provided the version is recorded beside it — which needs a column the table does not have yet. The authority is derived again from the card number using the command in `.env.example`. Raise `CARD_TOKEN_VERSION` in the same change as the key, so a stored value can be told from a current one.
-- **Check:** After a rollover with a new key, `GET /notifications/{cardNumber}` must reach the rows an earlier run wrote for that card. It does not today: the route derives the token under the current key while the stored rows carry the previous one, and that is the gap.
+- **Check:** After a rollover with a new key, a caller must reach the rows an earlier run wrote for a card. It does not today: `GET /notifications/{cardToken}` reads by the token the caller supplies, a caller deriving one under the current key asks for a value the stored rows do not carry, and nothing re-derives those rows. That is the gap.
 - **Behavior change:** None to any business rule. Card identity is ADDITIVE in full: `app/cpy/CVACT02Y.cpy` declares no token field and no source program derives one.
 
 ### Encrypt the cardholder stores at rest, and back them up
@@ -384,19 +384,14 @@ log](decision-log.md) carries the reasoning for every choice named here.
 
 One item was measured while reconciling the Rule 1 and Rule 2 documents against the delivered code. It is a real gap in the platform rather than a wording problem, so it belongs here instead of in a document.
 
-### Give the authorization relay a terminal diagnostic, or accept the silent unpublished row
+### Extend the durable dead-letter obligation to the remaining two relays
 
-- **Change:** Decide whether `authorization-service` should publish a governed `DeadLetterEnvelope` for an outbox row it gives up on, as the other four publishing relays do. The alternative is that the counter and the log line are sufficient for that service.
-- **Where:** `services/authorization-service/src/main/java/com/carddemo/authorization/outbox/OutboxRelay.java` states at its class comment that a row whose event type has no bound topic "records an attempt and stays unpublished, reaching no topic at all". The class holds no dead-letter topic, template or envelope. The relays of the ledger, fraud, account and card services each send an envelope to `carddemo.dead-letter` instead. The listener side of the authorization service already routes a refused replica record to that same topic through `config/KafkaConsumerConfig`. The topic, the principal and the broker access-control entry therefore all exist, and only the relay path is missing.
-- **Check:** Bind an outbox row to an event type with no topic property, then run the relay until its attempts are spent. Assert either that one envelope naming the row reaches `carddemo.dead-letter`, or that the documented behaviour is the counter alone.
-- **Behavior change:** Publishing the envelope adds one diagnostic record per abandoned row and changes no business outcome. Leaving it changes nothing, and the gap stays recorded in [event flow](event-flow.md) and in the [authorization service guide](../services/authorization-service/README.md).
-
-### Extend the durable dead-letter obligation to the remaining three relays
-
-- **Change:** Give the card, ledger-posting and notification outbox relays the durable terminal obligation the authorization, account and fraud relays now carry, so an abandoned row of any service names itself on the dead-letter topic.
-- **Where:** `services/card-service`, `services/ledger-posting-service` and `services/notification-service`, each needing the two columns of `V5__outbox_dead_letter_state.sql` in the fraud service, the `owesDeadLetter` and `markDeadLetterPublished` pair on its own `OutboxEventEntity`, a finder ordered by last attempt, and an owed-diagnostic pass at the head of its relay tick. Three of the six services answer this way today and three do not, which is why the two shipped migration headers say so rather than claiming the platform is uniform.
+- **Change:** Give the card and ledger-posting outbox relays the durable terminal obligation the authorization, account and fraud relays now carry, so an abandoned row of any service names itself on the dead-letter topic.
+- **Where:** `services/card-service` and `services/ledger-posting-service`, each needing the two columns of `V5__outbox_dead_letter_state.sql` in the fraud service, the `owesDeadLetter` and `markDeadLetterPublished` pair on its own `OutboxEventEntity`, a finder ordered by last attempt, and an owed-diagnostic pass at the head of its relay tick. Three of the five relays answer this way today and two do not, which is why the shipped migration headers say so rather than claiming the platform is uniform. The notification service is not in this list and never will be: it publishes nothing, so it holds no `outbox_event` table and no relay.
 - **Check:** Drive one row of each service past `MAX_DELIVERY_ATTEMPTS` with the broker refusing, restore the broker, and confirm a diagnostic naming that row reaches `carddemo.dead-letter` on a later pass.
-- **Behavior change:** None to any successful path. It adds two columns and one indexed read of no rows per pass to each of the three services, and it turns an abandoned row from a log line that dies with the container into a record an operator can find.
+- **Behavior change:** None to any successful path. It adds two columns and one indexed read of no rows per pass to each of the two services, and it turns an abandoned row from a log line that dies with the container into a record an operator can find.
+
+**The authorization relay's terminal diagnostic is delivered and no longer a task here.** This section previously asked whether `authorization-service` should publish a governed `DeadLetterEnvelope` for a row it gives up on, on the evidence that its relay held no dead-letter topic, template or envelope. It holds all three today: `outbox/OutboxRelay.publishDeadLetter` sends one envelope to `carddemo.kafka.topics.dead-letter` naming the row through `failedEventId` and `failedEventType` and carrying no field of the payload, and the obligation that survives a refusal is the `dead_letter_state` column `owesDeadLetter` reads. A row keyed by a transaction identifier is named under the aggregate identifier `00000000000`, because the dead-letter document accepts eleven digits, so no shape of row is left unnamed.
 
 ## Work the backend review pass surfaced
 
@@ -445,6 +440,18 @@ One item was measured while reconciling the Rule 1 and Rule 2 documents against 
 - **Where:** the six `runs-on: ubuntu-24.04` keys in `.github/workflows/ci.yml`, and `RUNNER_IMAGE` in `ContinuousIntegrationWorkflowContractTest`, which asserts all six agree and refuses `ubuntu-latest`.
 - **Check:** Run the whole workflow on the new image and read the integration and container stages, which are the two that start Compose. A missing or older Compose is what breaks first.
 - **Behavior change:** No, provided the new image carries the same container tooling. It is listed because a retired image stops the pipeline outright rather than degrading it.
+
+## Work the integration reconciliation pass surfaced
+
+One item was measured while reconciling the five producing relays against each other and left outside
+the scope of that pass, because closing it changes a service no finding named.
+
+### Give the ledger relay the publisher port the other four producing services declare
+
+- **Change:** Declare `messaging/EventPublisherPort` in `ledger-posting-service` with a Kafka adapter behind it, and inject the port into `outbox/OutboxRelay` in place of the template it holds today. Four of the five producing services answer this way; this one does not.
+- **Where:** `services/ledger-posting-service/src/main/java/com/carddemo/ledger/outbox/OutboxRelay.java` holds `@Qualifier("ledgerEventKafkaTemplate") KafkaTemplate<String, Object>` and sends from two call sites, one for the business event and one for the abandonment diagnostic. The adapter to copy is `services/fraud-detection-service/src/main/java/com/carddemo/fraud/messaging/KafkaEventPublisher.java`, which checks the eleven-digit key and the two producer reliability settings at construction and hands the event record to the schema-validating serializer.
+- **Check:** The relay's own tests keep every existing assertion about what reaches the broker client, because the adapter sits over the same template. Add the sibling assertion that the relay declares no field of a broker type, which every other producing service's test already makes.
+- **Behavior change:** None. It moves one dependency behind the seam that exists so a managed event service can replace Kafka, and the reason the ledger was previously excused — that nothing there publishes outside its relay — is equally true of the fraud service, which now declares the port.
 
 ## Informational register items
 

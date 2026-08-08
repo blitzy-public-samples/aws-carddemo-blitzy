@@ -58,10 +58,10 @@ import tools.jackson.databind.json.JsonMapper;
  * <p>The rules under test are declared at {@code config/SecurityConfig}:
  * <ul><li>{@code GET /cards} requires the account-ownership authority for the {@code accountId}
  *     request parameter. An absent parameter denies.</li>
- * <li>{@code GET /cards/{cardNumber}} requires the card authority the path value derives, which is
+ * <li>{@code GET /cards/{cardToken}} requires the card authority naming the path value, which is
  *     {@code SCOPE_CARD_} followed by the token of that number. Holding the account the card
  *     belongs to is not the same authority.</li>
- * <li>{@code PUT /cards/{cardNumber}} requires {@code ROLE_ADMIN} alone, so neither account
+ * <li>{@code PUT /cards/{cardToken}} requires {@code ROLE_ADMIN} alone, so neither account
  *     ownership nor card ownership is a way to update a card.</li>
  * <li>Every other path and method is denied.</li></ul>
  *
@@ -502,13 +502,17 @@ class CardRouteSecurityIT {
     }
 
     /**
-     * Builds the route of one card, with the number in the path the mapping declares.
+     * Builds the route of one card, naming it by the token the mapping declares.
      *
-     * @param cardNumber the sixteen digits the path carries
+     * <p>The number is tokenized here rather than sent, so no request of this class carries a card
+     * number in a request line. The authority granted to the ordinary identity names the same token,
+     * which is what lets the ownership rule compare the two directly.
+     *
+     * @param cardNumber the sixteen digits this method tokenizes
      * @return the request path
      */
     private static String cardRoute(String cardNumber) {
-        return "/cards/" + cardNumber;
+        return "/cards/" + PanMasker.cardToken(cardNumber);
     }
 
     /**

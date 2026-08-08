@@ -615,16 +615,16 @@ class ApiSurfaceSecurityContractTest {
             "fraud-detection-service", List.of(
                     "GET /fraud-assessments/** -> hasRole(ADMIN)"),
             "notification-service", List.of(
-                    "GET /notifications/{cardNumber} -> "
-                            + "access(ownsCardNumberPathVariable(cardNumber))"),
+                    "GET /notifications/{cardToken} -> "
+                            + "access(ownsPathVariable(CARD, cardToken))"),
             "account-service", List.of(
                     "POST /accounts/{accountId}/cycle-close -> hasRole(ADMIN)",
                     "PUT /accounts/{accountId} -> hasRole(ADMIN)",
                     "GET /accounts/{accountId} -> access(ownsPathVariable(ACCOUNT, accountId))",
                     "GET /customers/{customerId} -> access(ownsPathVariable(CUSTOMER, customerId))"),
             "card-service", List.of(
-                    "GET /cards/{cardNumber} -> access(ownsCardNumberPathVariable(cardNumber))",
-                    "PUT /cards/{cardNumber} -> hasRole(ADMIN)",
+                    "GET /cards/{cardToken} -> access(ownsPathVariable(CARD, cardToken))",
+                    "PUT /cards/{cardToken} -> hasRole(ADMIN)",
                     "GET /cards -> access(ownsRequestParameter(ACCOUNT, accountId))"));
 
     /** Constant names the route inventory above reads as the value each one holds. */
@@ -823,7 +823,7 @@ class ApiSurfaceSecurityContractTest {
                 SHAPED_ACCOUNT_ID, false, DeclineReason.OVER_CREDIT_LIMIT,
                 DeclineReason.OVER_CREDIT_LIMIT.description()));
         instances.put("ApiErrorResponse",
-                new ApiErrorResponse(404, "DID NOT FIND THIS CARD", "/cards/{cardNumber}"));
+                new ApiErrorResponse(404, "DID NOT FIND THIS CARD", "/cards/{cardToken}"));
         instances.put("CardDetailResponse", new CardDetailResponse(masked, SHAPED_ACCOUNT_ID,
                 "EMBOSSED NAME", LocalDate.of(2026, 12, 31), "Y"));
         instances.put("CardListResponse",
@@ -1782,8 +1782,8 @@ class ApiSurfaceSecurityContractTest {
                     "a route is required");
 
             ApiErrorResponse template =
-                    new ApiErrorResponse(404, "DID NOT FIND THIS CARD", "/cards/{cardNumber}");
-            assertEquals("/cards/{cardNumber}", template.route(),
+                    new ApiErrorResponse(404, "DID NOT FIND THIS CARD", "/cards/{cardToken}");
+            assertEquals("/cards/{cardToken}", template.route(),
                     "a template keeps the path variable as its name");
 
             JsonNode tree = mapper().valueToTree(template);
@@ -2691,7 +2691,7 @@ class ApiSurfaceSecurityContractTest {
         @DisplayName("the serialized-key reader reports the keys of an object in order")
         void theSerializedKeyReaderReportsTheKeysOfAnObjectInOrder() {
             JsonNode tree = mapper().valueToTree(
-                    new ApiErrorResponse(422, "message text", "/cards/{cardNumber}"));
+                    new ApiErrorResponse(422, "message text", "/cards/{cardToken}"));
 
             assertEquals(List.of("status", "message", "route"), keysOf(tree),
                     "the keys are reported in declaration order");

@@ -60,17 +60,23 @@ paths:
         carrying the one reject code that stands. No decline answers 500 or 503.
 
 
-        One event is published for every request that reaches a decision, and none for a request
-        refused before the rule chain is entered. 401, 403 and a body the reader or the bean
-        constraints reject all leave the outbox untouched.
+        At most one event is published per request, and never more than one. An approval publishes
+        TransactionAuthorized and a decline carrying reason 0101, 0102 or 0103 publishes
+        TransactionDeclined. Reason 0100 publishes nothing: it fires where the cross-reference read
+        missed, so no account identifier exists, and every event here names an account and is keyed on
+        one. That outcome is still answered to the caller as a 422 decline and still recorded, in
+        unresolved_card_attempt and authorization_decision. A request refused before the rule chain is
+        entered records nothing at all: 401, 403 and a body the reader or the bean constraints reject
+        all leave every table untouched.
 
 
-        Access is decided by role alone. Any authenticated USER or ADMIN may authorize any card the
-        platform holds, and no ownership scope applies: an acquirer legitimately presents a card it
-        did not issue, and the card is named in the request body rather than in a path a caller could
-        own. The control that applies instead is reason 0100 from app/cbl/CBTRN02C.cbl:L385-L387,
-        which refuses a card the cross-reference does not carry. Every other service in this platform
-        does apply ownership scopes.
+        Access is decided by role alone. ACQUIRER and ADMIN are the two roles this operation admits,
+        and every other identity is refused with 403, a cardholder USER included. No ownership scope
+        applies, because the card is named in the request body rather than in a path a caller could be
+        said to own, which leaves the role as the whole access decision: an operation reaching every
+        card the platform holds must not be reachable by an identity entitled to one card. ACQUIRER is
+        the machine identity a point-of-sale network presents and it owns no account, no customer and
+        no card. Every other service in this platform does apply ownership scopes.
 
 
         A card number travels in the request body alone. No path parameter and no query parameter
@@ -958,6 +964,12 @@ components:
         accountId is null on the 0100 branch alone. The keyed read at app/cbl/CBTRN02C.cbl:L383-L384
         took its INVALID KEY branch, so no account was resolved to name; every other branch resolved
         one.
+
+
+        The 0100 branch is also the one decided outcome that publishes no event, for the same reason:
+        every event here names an account and is keyed on one, and this branch resolved none. The
+        outcome is still recorded, in unresolved_card_attempt and in authorization_decision with a
+        null event identifier, so a body carrying 0100 is a decision and not a lost request.
       allOf:
         - $ref: '#/components/schemas/AuthorizationResponse'
         - type: object

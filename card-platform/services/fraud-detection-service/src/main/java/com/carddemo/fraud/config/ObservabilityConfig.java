@@ -275,7 +275,12 @@ public class ObservabilityConfig {
         }
 
         /**
-         * Counts one outbox row this relay gave up on after spending its attempts.
+         * Counts one outbox row this relay gave up on.
+         *
+         * <p>Two things reach this counter, and both are abandonments. A row whose attempts ran out is
+         * one. A row whose failure is permanent — a payload the schema document refuses, or one no
+         * record type reads — is the other, and it is given up on outright rather than after ten
+         * identical refusals.
          *
          * <p>One increment per ROW, and separate from {@link #recordPublishFailure()} because that
          * series counts attempts: ten refused attempts on one row read as ten there and as one
@@ -283,6 +288,11 @@ public class ObservabilityConfig {
          * that matters once a row is spent, which is whether the assessment nobody will receive is
          * at least named somewhere. The two readings agree while every abandonment is named, and
          * this one runs ahead while diagnostics are owed.
+         *
+         * <p>Reading it beside {@code carddemo.fraud.events.published} is what the {@code abandon}
+         * transition made meaningful. A permanent failure used to close its row with
+         * {@code markPublished}, so an assessment that reached nobody was counted and stored as one
+         * the broker had accepted, and this counter never moved for it.
          */
         public void recordOutboxAbandoned() {
             outboxAbandoned.increment();

@@ -79,7 +79,7 @@ Legend for Figure 1:
 
 - Thick arrow: an asynchronous Kafka consume or publish, and therefore a decoupling point.
 - Plain arrow: in-process control flow, a database write, or a database read.
-- Dotted arrow: dead-letter routing. There are two, and they are not the same route. A consumed record spent after its retries goes to the source topic's `.DLT`. An outbox row the relay abandons goes to the shared `carddemo.dead-letter` topic.
+- Dotted arrow: dead-letter routing. There are two, and they are not the same route. A consumed record spent after its retries goes to the source topic's `.DLT`. An outbox row the relay abandons goes to the shared `carddemo.dead-letter` topic, and that row is recorded as `ABANDONED` rather than published, because the only thing published on that route is the diagnostic saying the verdict reached nobody.
 - Hexagon: a Kafka topic, always outside the boundary. Cylinder: the private `fraud_service` schema, whose four tables commit inside one local transaction. Diamond: the duplicate-delivery check, keyed on the event identifier together with the topic the delivery arrived on, where a repeat delivery leaves by the branch that writes nothing. Labelled box: the service boundary, inside which no other service's datastore appears.
 
 Figure 2 shows what is absent. Three services read `transaction.authorized` directly, each under a consumer group of its own: this one, the ledger, and the notification service. The notification service reads it in addition to the two topics the other two publish, which is why it appears with three groups below. No arrow joins any two of the three consumers, and none returns to the authorization service. That absence is the architectural claim, and nothing in this service may create such an arrow.
@@ -178,12 +178,14 @@ Nine meters carry this service. **None of them has a source ancestor.** This ser
 | `carddemo.fraud.events.published` | Counter | One outbox row the broker acknowledged, counted after the tick commits |
 | `carddemo.fraud.failures` | Counter | One failed attempt, tagged by stage |
 | `carddemo.fraud.dead.letters` | Counter | One spent record, tagged `outcome=published` or `outcome=failed` |
-| `carddemo.fraud.outbox.abandoned` | Counter | One outbox row the relay gave up on after ten attempts |
+| `carddemo.fraud.outbox.abandoned` | Counter | One outbox row the relay gave up on, either because its attempts ran out or because its failure is permanent |
 | `carddemo.fraud.processing.latency` | Timer | Consumer duration to commit |
 
 `failures` counts attempts and `dead.letters` counts records, so summing the two is never meaningful. A fourth `stage` value would have overlapped `deserialize`, because a record spent at deserialization is also a terminal record.
 
 `outbox.abandoned` counts rows and answers the one question the other two cannot: whether a row this service gave up on was actually named anywhere. Read beside the `published` series of `dead.letters`, the two agree while every abandonment reaches the topic, and `abandoned` runs ahead while a diagnostic is still owed. A row that owes one is offered again at the head of every later pass, so `abandoned` running ahead means delayed rather than lost.
+
+Two things reach that counter, and both are abandonments. A row whose ten attempts ran out is one. A row whose failure is permanent — a payload the schema document refuses, or one no record type reads — is the other, and it is given up on outright rather than after ten identical refusals. Reading `abandoned` beside `events.published` is what makes the pair meaningful: a permanent failure used to close its row as published, so an assessment that reached nobody was counted and stored as one the broker had accepted, and this counter never moved for it.
 
 <br/>
 
@@ -210,7 +212,7 @@ The private database is `carddemo_fraud`, and the schema inside it is `fraud_ser
 | `fraud_assessment` | One verdict per transaction: transaction and account identifiers, risk score, triggered rule identifiers, assessment time |
 | `velocity_window` | The per-account, per-hour counters `VelocityRule` reads: an authorization count and an accumulated amount magnitude. A PostgreSQL table, not a cache, reached through `VelocityWindowRepository` |
 | `processed_event` | Event identifier and consumed topic as the composite primary key, with the time the marker was written. `V4__processed_event_topic_key.sql` widened the key so an identifier another service assigned on another topic cannot claim this one |
-| `outbox_event` | The verdict event, stored in the same local transaction as the assessment and published later. Two further columns record whether a row the relay abandoned still owes the dead-letter topic a diagnostic |
+| `outbox_event` | The verdict event, stored in the same local transaction as the assessment and published later. `relay_state` reaches `PUBLISHED` only when the broker acknowledged the verdict on `fraud.assessed`, and `ABANDONED` for a row no attempt can publish; two further columns record whether an abandoned row still owes the dead-letter topic a diagnostic |
 
 No other service reads this schema, and this service reads no other schema. The login it connects with owns `carddemo_fraud` and can reach none of the other five databases.
 
@@ -219,7 +221,7 @@ All three growing tables are swept. `RetentionSweep` runs hourly and issues a bo
 `fraud_assessment` and `velocity_window` are the two business tables here, and each declared its horizon in a `COMMENT ON TABLE` before any code applied it. `FRAUD_ASSESSMENT_RETENTION_DAYS` supplies the first and defaults to ninety days, measured from `assessed_at`. `FRAUD_VELOCITY_RETENTION_DAYS` supplies the second and defaults to seven days, measured from `window_start`, and it is the one setting here that is not free to be any value: nothing reads a window once its span elapses, so every authorization otherwise leaves a row behind for ever, and a horizon shorter than `carddemo.fraud.risk.velocity-window-minutes` would delete the bucket a live authorization is counting into. The symptom would be a burst that quietly stopped triggering the velocity rule rather than an error anyone could see, so the service refuses to start when it does not, which is the only moment at which refusing costs nothing. Both rows are pseudonymous rather than anonymous, because their account and transaction identifiers resolve to a named customer through the account and ledger services, so both horizons are privacy horizons and not only housekeeping.
 
 Flyway owns schema creation. The entity model is validated against the migrated schema and never generates it, so the column types derived from the source copybooks survive. Why the velocity window is a relational table rather than a cache sits in the [Decision Log](../../docs/decision-log.md). That log carries the reasoning behind every choice this document merely states.
-Flyway owns schema creation and runs three migrations on every start, in this order:
+Flyway owns schema creation and runs four migrations on every start, in this order:
 
 | Migration | What it does |
 | :--- | :--- |
@@ -269,6 +271,10 @@ For the fuller domain background, including the four decline codes and their sou
 Adding a risk rule means adding a class. `RiskRule` declares two methods: `evaluate`, which returns a `Contribution` carrying whether the rule triggered and how many points it contributed, and `ruleId`, which names it. `RiskScoringService` receives every rule the container supplies and refuses two rules that report one identifier, so nothing existing is edited. The shape matches the authorization service's decline chain, so a reader who has seen one recognises the other.
 
 Adding a consumer of `fraud.assessed` needs no change to this service. Subscribe under a new consumer group and read. The platform is built for that extension.
+
+Swapping the event bus means one new implementation of `messaging/EventPublisherPort` and nothing else. That interface is the platform's single event-bus seam, and `messaging/KafkaEventPublisher` is the shipped implementation of it: `outbox/OutboxRelay` holds the port and no broker type at all, so the relay, the outbox contract, the claim protocol and the abandonment route all survive the substitution. The port takes the event record rather than serialized text, because this service's producer is built with `JsonSchemaValidatingSerializer` and that serializer is where the payload is written, validated against the schema document its event type names, and checked against the topic it is bound to.
+
+Running a second replica needs no change either. Each relay instance records its own identity in `outbox_event.claimed_by`, and the identity defaults to the container hostname — a Pod name under Kubernetes, a container identifier under Compose — so two replicas never claim rows under one name. `OUTBOX_RELAY_INSTANCE_ID` overrides it, and pinning one value across replicas is the one way to reintroduce the collision.
 
 Follow-up work found while building this service, including the owner decisions that would change outcomes, is recorded in [Suggested Next Tasks](../../docs/suggested-next-tasks.md).
 
@@ -338,7 +344,7 @@ docker compose up -d --build --wait postgres kafka fraud-detection-service
 curl -fsS http://localhost:9083/actuator/health
 ```
 
-Watch the fan-out. One authorization request that reaches a decision produces one event — a request refused before the decision, by authentication or by validation, produces none — and the verdict appears on `fraud.assessed` a moment later without the caller having waited for it:
+Watch the fan-out. An approved authorization publishes one `TransactionAuthorized` — a request refused before the decision, by authentication or by validation, publishes none, and so does a decline whose card resolved no account — and the verdict appears on `fraud.assessed` a moment later without the caller having waited for it:
 
 ```bash
 docker compose exec kafka /opt/kafka/bin/kafka-console-consumer.sh \

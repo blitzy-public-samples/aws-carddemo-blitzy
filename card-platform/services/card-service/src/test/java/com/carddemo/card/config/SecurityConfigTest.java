@@ -15,6 +15,7 @@ import com.carddemo.card.config.SecurityConfig.SecurityIdentities.Identity;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -291,42 +292,35 @@ class SecurityConfigTest {
         }
 
         @Test
-        @DisplayName("the card path variable is read as a full number and compared as a token")
-        void theCardPathVariableDerivesTheTokenFromTheFullNumber() {
+        @DisplayName("the card path variable is compared as it stands, and nothing is derived from it")
+        void theCardPathVariableIsComparedAsItStands() {
             AuthorizationManager<RequestAuthorizationContext> rule =
-                    SecurityConfig.ownsCardNumberPathVariable("cardNumber");
+                    SecurityConfig.ownsPathVariable(SecurityConfig.CARD_SCOPE, "cardToken");
 
             assertAll(
                     () -> assertTrue(rule.authorize(SecurityConfigTest::cardholder,
-                                    pathContext("cardNumber", OWNED_CARD_NUMBER)).isGranted(),
-                            "the rule derives the token of the number the path carries, so the "
-                                    + "authority the platform grants is the authority it compares"),
+                                    pathContext("cardToken", OWNED_CARD)).isGranted(),
+                            "the path value is the authority value, so the authority the platform "
+                                    + "grants is the authority it compares"),
                     () -> assertFalse(rule.authorize(SecurityConfigTest::cardholder,
-                                    pathContext("cardNumber", OTHER_CARD_NUMBER)).isGranted(),
-                            "another card's number derives another token"),
+                                    pathContext("cardToken", OWNED_CARD_NUMBER)).isGranted(),
+                            "the full number of the caller's own card owns nothing: the rule "
+                                    + "derives no token, so a number never resolves to one"),
                     () -> assertFalse(rule.authorize(SecurityConfigTest::cardholder,
-                                    pathContext("cardNumber", COLLIDING_CARD_NUMBER)).isGranted(),
-                            "a card sharing the last four digits derives a different token, so one "
-                                    + "authority admits one card and not a group of them"),
-                    () -> assertFalse(rule.authorize(SecurityConfigTest::cardholder,
-                                    pathContext("cardNumber",
-                                            PanMasker.maskCardNumber(OWNED_CARD_NUMBER)))
+                                    pathContext("cardToken", OWNED_CARD.toUpperCase(Locale.ROOT)))
                                     .isGranted(),
-                            "the masked form is refused, because it names every card ending in "
-                                    + "those four digits"),
-                    () -> assertFalse(rule.authorize(SecurityConfigTest::cardholder,
-                                    pathContext("cardNumber", OWNED_CARD)).isGranted(),
-                            "the derived token is refused too: the rule derives one from a full "
-                                    + "number and nothing else"),
+                            "the comparison is exact, so the upper-case rendering of the caller's "
+                                    + "own token owns nothing either"),
                     () -> assertFalse(rule.authorize(SecurityConfigTest::cardholder,
                                     new RequestAuthorizationContext(new MockHttpServletRequest(),
                                             Map.of())).isGranted(),
                             "an absent path variable owns nothing"),
                     () -> assertFalse(rule.authorize(SecurityConfigTest::cardholder,
-                                    pathContext("cardNumber", "   ")).isGranted(),
+                                    pathContext("cardToken", "   ")).isGranted(),
                             "a blank value owns nothing"),
                     () -> assertTrue(rule.authorize(SecurityConfigTest::administrator,
-                                    pathContext("cardNumber", OTHER_CARD_NUMBER)).isGranted(),
+                                    pathContext("cardToken",
+                                            PanMasker.cardToken(OTHER_CARD_NUMBER))).isGranted(),
                             "an administrator owns every card, which is COSGN00C L232-L236 "
                                     + "expressed as an entitlement"));
         }

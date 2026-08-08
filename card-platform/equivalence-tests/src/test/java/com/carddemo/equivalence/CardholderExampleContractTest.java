@@ -10,6 +10,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -72,6 +73,19 @@ class CardholderExampleContractTest {
      */
     private static final List<String> SYNTHETIC_EXAMPLES =
             List.of("4000000000000000", "4000000000000010");
+
+    /**
+     * A run of exactly sixteen digits, which is the shape every card-number field declares at
+     * {@code app/cpy/CVACT02Y.cpy:L5}.
+     *
+     * <p>The boundaries refuse a longer run, so a seventeen-digit identifier is not read as a card
+     * number. The pattern is deliberately not applied to every document: a transaction identifier is
+     * {@code TRAN-ID PIC X(16)} at {@code app/cpy/CVTRA05Y.cpy:L5} and renders as sixteen digits
+     * too, so a run alone proves nothing. It is used only to recognize a file that publishes no run
+     * at all.
+     */
+    private static final Pattern SIXTEEN_DIGIT_RUN =
+            Pattern.compile("(?<![0-9])[0-9]{16}(?![0-9])");
 
     /** Extensions worth reading. A binary carries no example a reader copies. */
     private static final Set<String> READABLE_SUFFIXES =
@@ -174,8 +188,21 @@ class CardholderExampleContractTest {
                     .isEmpty();
         }
 
+        /**
+         * Each of the four files the review named accounts for the number it no longer prints.
+         *
+         * <p>Three answers satisfy the requirement, and the third is the strongest of them. A file
+         * may publish a synthetic value, which a reader copies and which resolves to no row. It may
+         * read a real number out of the fixture into a shell variable, which keeps the value out of
+         * the text while leaving the command runnable. Or it may publish no sixteen-digit run at
+         * all, which is what a document describing a surface that accepts no card number does:
+         * {@code services/card-service/src/main/resources/openapi.yaml} names both of its routes by
+         * card token and declares no request member carrying a number, so it has no card-number
+         * example to make synthetic. Naming where a real number is read from is required of all
+         * four either way, because a reader who needs one has to be told where it lives.
+         */
         @Test
-        @DisplayName("the two guides and the two contracts the review named carry a synthetic value")
+        @DisplayName("each of the four named files accounts for the number it no longer prints")
         void theFourNamedFilesCarryASyntheticValue() {
             List<String> named = List.of(
                     "services/authorization-service/README.md",
@@ -190,12 +217,16 @@ class CardholderExampleContractTest {
                         || text.contains("app/data/ASCII/cardxref.txt");
                 boolean carriesASyntheticValue =
                         SYNTHETIC_EXAMPLES.stream().anyMatch(text::contains);
+                boolean readsTheFixtureIntoAVariable = text.contains("CARD_NUMBER");
+                boolean publishesNoSixteenDigitRun =
+                        !SIXTEEN_DIGIT_RUN.matcher(text).find();
                 if (!readsTheFixture) {
                     failures.add(relative + " does not name where a real number is read from");
                 }
-                if (!carriesASyntheticValue && !text.contains("CARD_NUMBER")) {
-                    failures.add(relative + " carries neither a synthetic value nor a shell"
-                            + " variable read from the fixture");
+                if (!carriesASyntheticValue && !readsTheFixtureIntoAVariable
+                        && !publishesNoSixteenDigitRun) {
+                    failures.add(relative + " publishes a sixteen-digit run that is neither a"
+                            + " synthetic value nor a shell variable read from the fixture");
                 }
             }
 

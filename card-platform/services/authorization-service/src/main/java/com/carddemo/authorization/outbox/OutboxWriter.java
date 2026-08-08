@@ -137,18 +137,25 @@ public class OutboxWriter {
      * {@code app/cbl/CBTRN02C.cbl:L446-L465} stays out of this row. The ledger posting service owns
      * it, in its own {@code rejected_transaction} table.
      *
-     * <p>Two contract versions reach this method. Version 1 keys on the eleven-digit account
-     * identifier the cross-reference resolved. Version 2 keys on the sixteen-character transaction
-     * identifier, and it is the contract for the one decline that resolved no account: reject code
-     * {@code 0100} at {@code app/cbl/CBTRN02C.cbl:L385} fires inside the {@code INVALID KEY} branch
-     * of the cross-reference read at {@code :L383}, and the short-circuit at {@code :L376-L378}
-     * stops the account read from running. Both keys are stored in {@code aggregate_id} and both are
-     * published as the message key.
+     * <p>ONE VERSION REACHES THIS METHOD IN THE DELIVERED SERVICE. Version 1 keys on the
+     * eleven-digit account identifier the cross-reference resolved, and reasons {@code 0101},
+     * {@code 0102} and {@code 0103} are the three that reach it, because each fires after that read
+     * succeeded.
      *
-     * <p>A decline whose card resolved no account is keyed on its transaction identifier rather
-     * than on an account, and this method stores it as readily as the account-keyed form. Refusing
-     * the event would leave that one outcome with no event at all while every other outcome
-     * published one.
+     * <p>Reject code {@code 0100} does not. It is assigned at {@code app/cbl/CBTRN02C.cbl:L385},
+     * inside the {@code INVALID KEY} branch of the cross-reference read at {@code :L383}, and the
+     * short-circuit at {@code :L376-L378} stops the account read from running, so no account
+     * identifier exists to key an event on. {@code domain/AuthorizationService} records that outcome
+     * in {@code unresolved_card_attempt} and {@code authorization_decision} and calls this method not
+     * at all, which is why one authorization call writes at most one outbox row and never a row keyed
+     * on something that is not an account.
+     *
+     * <p>The transaction-keyed form of {@code schemas/transaction-declined-v2.json} is still accepted
+     * here, and {@code aggregate_id} still holds sixteen characters as readily as eleven. That is the
+     * retained contract rather than a live path: a record written under version 2 before the decision
+     * above stays on the topic for as long as its retention holds, and this method is what a
+     * reinstated producer would write through. {@code OutboxWriterTest} is the only caller that
+     * exercises it.
      *
      * @param event the decline event, carrying its own envelope, its reject code and its masked card
      *              number

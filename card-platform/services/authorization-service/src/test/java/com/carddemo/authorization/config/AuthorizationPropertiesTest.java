@@ -65,7 +65,9 @@ class AuthorizationPropertiesTest {
                     .isEqualTo(720L);
             assertThat(properties.processedEvent().brokerRetentionHours()).isEqualTo(168L);
             assertThat(properties.retention().sweepIntervalMs()).isEqualTo(3_600_000L);
-            assertThat(properties.replica().maxStaleness()).isEqualTo(java.time.Duration.ofDays(1L));
+            assertThat(properties.replica().lagCeiling())
+                    .as("a replica stream is authorized against only while it is fully caught up")
+                    .isZero();
             assertThat(properties.outbox().relay().maxDurationMs()).isEqualTo(5_000L);
         });
     }
@@ -178,20 +180,22 @@ class AuthorizationPropertiesTest {
     }
 
     /**
-     * Asserts a replica window of zero stops start-up.
+     * Asserts a negative replica lag ceiling stops start-up.
      *
-     * <p>No observation can be newer than the moment it is compared against, so a window of zero would
-     * refuse every authorization. Failing at start-up names the property; failing at the first request
-     * would look like a broken replica.
+     * <p>A ceiling counts records waiting, so a negative one describes nothing and would make the
+     * comparison always true, silently authorizing against a stream with any backlog at all. Failing
+     * at start-up names the property; failing at the first request would look like a broken replica.
+     *
+     * <p>Zero is valid and is the shipped value: it requires a consumer that is fully caught up.
      */
     @Test
-    @DisplayName("a replica window of zero stops start-up")
-    void aReplicaWindowOfZeroStopsStartUp() {
-        shipped.withPropertyValues("carddemo.replica.max-staleness=PT0S")
+    @DisplayName("a negative replica lag ceiling stops start-up")
+    void aNegativeReplicaLagCeilingStopsStartUp() {
+        shipped.withPropertyValues("carddemo.replica.lag-ceiling=-1")
                 .run(context -> {
                     assertThat(context).hasFailed();
                     assertThat(context.getStartupFailure())
-                            .hasStackTraceContaining("max-staleness");
+                            .hasStackTraceContaining("lagCeiling");
                 });
     }
 

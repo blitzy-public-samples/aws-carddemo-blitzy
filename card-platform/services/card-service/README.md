@@ -69,24 +69,24 @@ No file under `app/` is modified by this work. The binding constraint reads: *"D
 | Method and path | Source program | Notes |
 | :--- | :--- | :--- |
 | `GET /cards` | `app/cbl/COCRDLIC.cbl` | Paginated list. **Default page size seven**, and a caller may name any size from 1 through 100. A required `accountId` query parameter and an optional `direction` of `forward` or `backward` reproduce the filter at `app/cbl/COCRDLIC.cbl:L1382-L1409` and the forward and backward browse paragraphs. Keyset pagination on the card number. The response carries a next-page flag derived by a lookahead, plus the cursor for the next request |
-| `GET /cards/{cardNumber}` | `app/cbl/COCRDSLC.cbl` | Card detail, reproducing transaction `CCDL` at `app/csd/CARDDEMO.CSD:L347-L348`. The path carries the full sixteen-character card number, which is the key `app/cbl/COCRDSLC.cbl:L740` moves into the read. The read keys on that value alone: the account move above it at `:L739` is commented out, so no account accompanies the card and no relationship between the two is tested |
-| `PUT /cards/{cardNumber}` | `app/cbl/COCRDUPC.cbl` | Update, reproducing transaction `CCUP` at `app/csd/CARDDEMO.CSD:L367-L369`. The path names the row and the body carries the five values `CCUP-NEW-CARDDATA` holds at `app/cbl/COCRDUPC.cbl:L307-L313`. A committed change writes one `CardUpdated` row to the outbox in the same local transaction |
+| `GET /cards/{cardToken}` | `app/cbl/COCRDSLC.cbl` | Card detail, reproducing transaction `CCDL` at `app/csd/CARDDEMO.CSD:L347-L348`. The path carries that card's 64-character token, which `column card_token` holds under a unique constraint, so it reaches at most one row exactly as the card number `app/cbl/COCRDSLC.cbl:L740` moves into the read does. The read keys on one card value alone: the account move above it at `:L739` is commented out, so no account accompanies the card and no relationship between the two is tested. The masked number in the response is read from the row, never derived from the path |
+| `PUT /cards/{cardToken}` | `app/cbl/COCRDUPC.cbl` | Update, reproducing transaction `CCUP` at `app/csd/CARDDEMO.CSD:L367-L369`. The path names the row by its token and the body carries the five values `CCUP-NEW-CARDDATA` holds at `app/cbl/COCRDUPC.cbl:L307-L313`. `api/CardController` resolves the token to the row and hands the number the row holds to `domain/CardUpdateService`, so the source rule at `app/cbl/COCRDUPC.cbl:L193-L194` runs on a stored number. A committed change writes one `CardUpdated` row to the outbox in the same local transaction |
 
 Seven is a default and not a hard limit. A request that names no size receives seven rows, which is what `WS-MAX-SCREEN-LINES` gave the 3270 screen.
 
-The card number that names a card is the full sixteen digits, exactly as the source keys its reads. Masking happens at the serialization boundary: every response, event payload, and log line carries the masked form, and the domain works on the full value. The list cursor is a card token rather than a card number, so no continuation key carries a digit of a card number.
+No request to this service carries a card number. The value that names a card on every route is its token: 64 lower-case hexadecimal characters, `HMAC-SHA-256` over the full number under `CARD_TOKEN_SECRET` prefixed by `CARD_TOKEN_VERSION`, which `PanMasker.cardToken` derives and column `card_token` holds under a unique constraint. Inside the service the domain still works on the full sixteen digits, exactly as the source keys its reads: the token resolves to one row and the number is read from it. Masking happens at the serialization boundary, so every response, event payload and log line carries the masked form. The list cursor is a token for the same reason, so no continuation key carries a digit of a card number either.
 
 The `direction` parameter replaces a program function key. `app/cbl/COCRDLIC.cbl:L486-L497` pages down on `CCARD-AID-PFK08` and performs the forward browse, and `:L501-L512` pages up on `CCARD-AID-PFK07` and performs the backward browse. The parameter selects between the same two paragraphs.
 
 The hand-written interface description is [openapi.yaml](src/main/resources/openapi.yaml). No documentation generator produces it, so the file is edited by hand when a contract changes.
 
-The two routes that name one card carry the full card number in their path, which is what the plan's file-by-file table specifies and what each source transaction addresses. A path reaches an access log, a reverse proxy log, a distributed trace and a browser history, so [Suggested next tasks](../../docs/suggested-next-tasks.md) carries the deployment guidance that follows.
+The two routes that name one card carry that card's token in their path and never its number. Each still addresses exactly one card, which is what each source transaction addresses. The reason the token stands there is that a path is written to a container access log, to a reverse proxy log, into a distributed trace as the span name and into a browser history by the client, and none of those four is reachable by this application's redaction: masking a number in a response body while putting it in the request line would minimise nothing. A token is irreversible, so a reader of any of those four logs learns which card was touched only for as long as the configured key stands. [Decision log](../../docs/decision-log.md) records the choice.
 
 A request body is read strictly. `config/RequestJsonStrictnessConfig` refuses a body naming a property this contract does not declare, and refuses a property declared as text that arrives as a JSON number or a JSON boolean. Both answer `400`. Left at its defaults the reader bound a misspelled property to nothing and then refused it as absent, and read `7` for an `expiryMonth` of `07`.
 
 ### Two controls in front of every route
 
-`config/CrossSiteRequestFilter` guards state change. A `PUT /cards/{cardNumber}` must carry `X-CardDemo-Request` with any non-blank value, must not declare a `Sec-Fetch-Site` other than `same-origin` or `same-site`, and must not carry an `Origin` naming anything but this service. HTTP Basic is a credential a browser attaches by itself, so without this check a page on any other site could submit a form against a route above and the browser would authenticate it. An HTML form cannot set a request header at all, which is what makes one header the control. A refusal answers 403 with the same problem document every other refusal of this service answers and counts `carddemo.card.requests.cross.site.refused`. `GET`, `HEAD`, `OPTIONS` and `TRACE` pass untouched, so the container health check and every read need nothing.
+`config/CrossSiteRequestFilter` guards state change. A `PUT /cards/{cardToken}` must carry `X-CardDemo-Request` with any non-blank value, must not declare a `Sec-Fetch-Site` other than `same-origin` or `same-site`, and must not carry an `Origin` naming anything but this service. HTTP Basic is a credential a browser attaches by itself, so without this check a page on any other site could submit a form against a route above and the browser would authenticate it. An HTML form cannot set a request header at all, which is what makes one header the control. A refusal answers 403 with the same problem document every other refusal of this service answers and counts `carddemo.card.requests.cross.site.refused`. `GET`, `HEAD`, `OPTIONS` and `TRACE` pass untouched, so the container health check and every read need nothing.
 
 `config/RequestRateCeilingFilter` bounds volume. It runs one place ahead of the security chain, because a refusal has to cost less than the attempt it refuses and an attempt that reached the chain would already have paid for a bcrypt verification.
 
@@ -305,7 +305,8 @@ One call per endpoint, against the host port. Each example uses the administrato
 
 > **Synthetic data only.** `CARD_NUMBER` below is read out of the public repository fixture
 > `app/data/ASCII/carddata.txt`, which holds made-up numbers and identifies no real card. This guide
-> carries no card number of its own, so nothing here can be replayed. Never substitute a real card
+> carries no card number of its own, so nothing here can be replayed. The number is read only to
+> derive the token the routes name, and is discarded on the next line. Never substitute a real card
 > number into these commands: the demonstration binds its ports to the loopback address and carries
 > none of the controls real card data requires.
 
@@ -316,13 +317,23 @@ One call per endpoint, against the host port. Each example uses the administrato
 # repository root, where app/ is.
 CARD_NUMBER="$(cut -c1-16 app/data/ASCII/carddata.txt | sed -n '1p')"
 
+# Derive that card's token. This is the same keyed code PanMasker.cardToken takes:
+# HMAC-SHA-256 over the label, the configured version and the number, under
+# CARD_TOKEN_SECRET. CardTokenReconciler derived the stored value the same way as
+# this service started, so the two agree. The number is not needed past this point.
+CARD_TOKEN_SECRET="$(grep '^CARD_TOKEN_SECRET=' card-platform/.env | cut -d= -f2- | tr -d "'\"")"
+CARD_TOKEN_VERSION="$(grep '^CARD_TOKEN_VERSION=' card-platform/.env | cut -d= -f2- | tr -d "'\"")"
+CARD_TOKEN="$(printf 'CardDemo/card-token/v%s:%s' "$CARD_TOKEN_VERSION" "$CARD_NUMBER" \
+  | openssl dgst -sha256 -hmac "$CARD_TOKEN_SECRET" -r | cut -d' ' -f1)"
+unset CARD_NUMBER CARD_TOKEN_SECRET
+
 # List the first page for one account. Seven rows unless pageSize names another.
 curl -fsS -u admin001 \
   "http://localhost:8086/cards?accountId=00000000050"
 
-# Read one card. The path carries the full card number.
+# Read one card. The path carries that card's token and no digit of its number.
 curl -fsS -u "$ADMIN_USERNAME:the password you chose" \
-  "http://localhost:8086/cards/${CARD_NUMBER}"
+  "http://localhost:8086/cards/${CARD_TOKEN}"
 
 # Update one card. A committed change publishes one CardUpdated event. The header is what
 # config/CrossSiteRequestFilter requires of every state-changing call.
@@ -330,7 +341,7 @@ curl -fsS -u "$ADMIN_USERNAME:the password you chose" -X PUT \
   -H 'X-CardDemo-Request: card-cli' \
   -H 'Content-Type: application/json' \
   -d '{"embossedName":"ANIYA VON","expiryYear":"2026","expiryMonth":"03","expiryDay":"09","activeStatus":"Y"}' \
-  "http://localhost:8086/cards/${CARD_NUMBER}"
+  "http://localhost:8086/cards/${CARD_TOKEN}"
 ```
 
 **The update example moves the expiry forward to 2031-03-09, and the choice needs explaining.** The
@@ -347,7 +358,7 @@ the card file at all.
 
 The Compose file sets these properties, and each one is overridable: `SPRING_DATASOURCE_URL`, `SPRING_DATASOURCE_USERNAME`, `SPRING_DATASOURCE_PASSWORD`, `SPRING_JPA_PROPERTIES_HIBERNATE_DEFAULT_SCHEMA`, `SPRING_FLYWAY_SCHEMAS`, and `SPRING_KAFKA_BOOTSTRAP_SERVERS`.
 
-Flyway owns schema creation and runs three migrations on every start, in this order:
+Flyway owns schema creation and runs four migrations on every start, in this order:
 
 | Migration | What it does |
 | :--- | :--- |
@@ -356,7 +367,7 @@ Flyway owns schema creation and runs three migrations on every start, in this or
 | `V3__processed_event_topic_key.sql` | Makes the consumed topic part of the duplicate-delivery marker's identity, keeping the marker table's shape uniform with the other five services even though this module consumes nothing |
 | `V4__subject_request_posture.sql` | Corrects the `card_xref` comment, which described an erasure workflow this platform does not implement |
 
-There is no fourth, and this module ships no `db/demo` overlay — the demo expiry extension exists only for the account and authorization schemas, because reason 0103 reads an account expiry and nothing reads a card expiry.
+There is no fifth, and this module ships no `db/demo` overlay — the demo expiry extension exists only for the account and authorization schemas, because reason 0103 reads an account expiry and nothing reads a card expiry.
 
 Hibernate runs with `ddl-auto: validate`, never `update` and never `create`, so the `DATE` expiry column and the non-unique index on `account_id` survive every restart. A mapping that disagrees with the migration stops start-up instead of quietly altering a table.
 

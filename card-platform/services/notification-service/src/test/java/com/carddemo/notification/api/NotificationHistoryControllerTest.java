@@ -113,7 +113,7 @@ import tools.jackson.databind.json.JsonMapper;
  *
  * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  *
- * <p>A refusal of this route carries {@code NotificationHistoryController.CARD_NUMBER_MESSAGE},
+ * <p>A refusal of this route carries {@code NotificationHistoryController.CARD_TOKEN_MESSAGE},
  * which names the shape the path variable requires and never the characters submitted.
  * {@code ApiErrorResponseTest} holds every text of this service to letters and punctuation, so none
  * can carry a digit run.
@@ -124,7 +124,7 @@ final class NotificationHistoryControllerTest {
     private static final ObjectMapper MAPPER = JsonMapper.builder().build();
 
     /** The route template the description declares, and the one this endpoint answers on. */
-    private static final String ROUTE = "/notifications/{cardNumber}";
+    private static final String ROUTE = "/notifications/{cardToken}";
 
     /** The collection segment of that route. */
     private static final String COLLECTION = "/notifications";
@@ -355,8 +355,8 @@ final class NotificationHistoryControllerTest {
          */
         @Test
         void aWriteToTheSamePathAnswersMethodNotAllowedAndReachesNoLookup() throws Exception {
-            for (RequestBuilder write : List.of(post(ROUTE, FULL_CARD_NUMBER), put(ROUTE, FULL_CARD_NUMBER),
-                    patch(ROUTE, FULL_CARD_NUMBER), delete(ROUTE, FULL_CARD_NUMBER))) {
+            for (RequestBuilder write : List.of(post(ROUTE, CARD_TOKEN), put(ROUTE, CARD_TOKEN),
+                    patch(ROUTE, CARD_TOKEN), delete(ROUTE, CARD_TOKEN))) {
 
                 MockHttpServletResponse answered = mockMvc.perform(write).andReturn().getResponse();
 
@@ -431,7 +431,7 @@ final class NotificationHistoryControllerTest {
         /** Asserts a card number with rows answers 200 carrying its count, total and items. */
         @Test
         void aCardNumberWithRowsAnswersTwoHundredCarryingItsHistory() throws Exception {
-            mockMvc.perform(get(ROUTE, FULL_CARD_NUMBER))
+            mockMvc.perform(get(ROUTE, CARD_TOKEN))
                     .andExpect(status().isOk())
                     .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
                     .andExpect(jsonPath("$.cardNumber").value(MASKED_CARD_NUMBER))
@@ -474,7 +474,7 @@ final class NotificationHistoryControllerTest {
          */
         @Test
         void theItemsFollowTheAscendingOrderTheRowsArrivedIn() throws Exception {
-            mockMvc.perform(get(ROUTE, FULL_CARD_NUMBER))
+            mockMvc.perform(get(ROUTE, CARD_TOKEN))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.transactions[0].transactionId")
                             .value(FIRST_TRANSACTION_ID))
@@ -549,7 +549,7 @@ final class NotificationHistoryControllerTest {
          * @throws Exception when the request cannot be performed
          */
         private String historyBody() throws Exception {
-            return mockMvc.perform(get(ROUTE, FULL_CARD_NUMBER))
+            return mockMvc.perform(get(ROUTE, CARD_TOKEN))
                     .andExpect(status().isOk())
                     .andReturn().getResponse().getContentAsString();
         }
@@ -558,39 +558,45 @@ final class NotificationHistoryControllerTest {
     /**
      * Path values outside the declared shape.
      *
-     * <p>The path variable is a {@code String} constrained by Jakarta Bean Validation to sixteen
-     * digits, the width {@code TRNX-CARD-NUM PIC X(16)} at {@code app/cpy/COSTM01.CPY:L22} declares.
-     * Each value below answers 400, leaks no envelope property, echoes nothing the caller sent, and
-     * reaches neither collaborator.</p>
+     * <p>The path variable is a {@code String} constrained by Jakarta Bean Validation to a card
+     * token: exactly {@value PanMasker#CARD_TOKEN_LENGTH} lower-case hexadecimal characters, the
+     * shape column {@code statement_transaction.card_token} holds. Each value below answers 400,
+     * leaks no envelope property, echoes nothing the caller sent, and reaches neither
+     * collaborator.</p>
+     *
+     * <p>The first two are what the shape exists to refuse. A full card number in a path is written
+     * to an access log, a proxy log, a trace and a browser history that this application cannot
+     * redact, so the constraint refuses one rather than reading it. A masked number names every card
+     * sharing four digits, so it names no single row.</p>
      */
     @Nested
     class RefusedPathValues {
 
-        /** Asserts a card token is refused and reaches no lookup. */
+        /** Asserts a full card number is refused and reaches no lookup. */
         @Test
-        void aCardTokenIsRefused() throws Exception {
-            assertRefused(CARD_TOKEN);
+        void aFullCardNumberIsRefused() throws Exception {
+            assertRefused(FULL_CARD_NUMBER);
         }
 
         /**
          * Asserts a masked card number is refused and reaches no lookup. The declared shape admits
-         * digits alone, and a masked value carries mask characters.
+         * sixty-four hexadecimal characters, and a masked value carries mask characters.
          */
         @Test
         void aMaskedCardNumberIsRefused() throws Exception {
             assertRefused(MASKED_CARD_NUMBER);
         }
 
-        /** Asserts a card number one digit under its width is refused. */
+        /** Asserts a token one character under its width is refused. */
         @Test
-        void aCardNumberUnderItsWidthIsRefused() throws Exception {
-            assertRefused(FULL_CARD_NUMBER.substring(1));
+        void aTokenUnderItsWidthIsRefused() throws Exception {
+            assertRefused(CARD_TOKEN.substring(1));
         }
 
-        /** Asserts a card number one digit over its width is refused. */
+        /** Asserts a token one character over its width is refused. */
         @Test
-        void aCardNumberOverItsWidthIsRefused() throws Exception {
-            assertRefused(FULL_CARD_NUMBER + "7");
+        void aTokenOverItsWidthIsRefused() throws Exception {
+            assertRefused(CARD_TOKEN + "7");
         }
 
         /**
@@ -598,19 +604,28 @@ final class NotificationHistoryControllerTest {
          */
         @Test
         void aValueCarryingACharacterOutsideTheShapeIsRefused() throws Exception {
-            assertRefused("z" + FULL_CARD_NUMBER.substring(1));
+            assertRefused("z" + CARD_TOKEN.substring(1));
         }
 
         /** Asserts a value carrying a separator at the declared width is refused. */
         @Test
         void aValueCarryingASeparatorIsRefused() throws Exception {
-            assertRefused(FULL_CARD_NUMBER.substring(0, 15) + "-");
+            assertRefused(CARD_TOKEN.substring(0, CARD_TOKEN.length() - 1) + "-");
         }
 
-        /** Asserts a sixteen-character alphabetic value is refused. */
+        /**
+         * Asserts the upper-case rendering of a real token is refused, so one card has one path
+         * value and a caller cannot reach a row by a second spelling of its key.
+         */
         @Test
-        void anAlphabeticValueIsRefused() throws Exception {
-            assertRefused("ABCDEFGHIJKLMNOP");
+        void anUpperCaseRenderingOfATokenIsRefused() throws Exception {
+            assertRefused(CARD_TOKEN.toUpperCase(Locale.ROOT));
+        }
+
+        /** Asserts a value of the declared width holding no hexadecimal character is refused. */
+        @Test
+        void anAlphabeticValueAtTheDeclaredWidthIsRefused() throws Exception {
+            assertRefused("z".repeat(PanMasker.CARD_TOKEN_LENGTH));
         }
 
         /**
@@ -689,7 +704,7 @@ final class NotificationHistoryControllerTest {
             }
             assertFalse(body.contains(pathValue), "a refusal echoes the value the caller sent");
             assertTrue(body.contains(ROUTE), "a refusal carries the route template");
-            assertTrue(body.contains(NotificationHistoryController.CARD_NUMBER_MESSAGE),
+            assertTrue(body.contains(NotificationHistoryController.CARD_TOKEN_MESSAGE),
                     "the path value was refused, so the card-number text answers: " + body);
             assertFalse(body.contains("Account identifier"),
                     "this route carries a card number and no account identifier");
@@ -701,74 +716,78 @@ final class NotificationHistoryControllerTest {
     /**
      * The history of a card holding no row.
      *
-     * <p>The read model answers with no row for a card it holds none for. The endpoint then answers
-     * 200 with an empty array, a count of {@code 0} and a total of {@code "0.00"}.</p>
+     * <p>The read model answers with no row for a card it holds none for, and the endpoint answers
+     * 404 carrying {@link NotificationHistoryController#NO_HISTORY_MESSAGE}. The masked number the
+     * 200 body carries is column {@code masked_card_number} of a row, so with no row there is none to
+     * read: the source put the card in its statement header before reading a row of it at
+     * {@code app/cbl/CBSTM03A.CBL:L318-L325}, which a path carrying a token cannot reproduce and
+     * which inventing a value would only pretend to.</p>
+     *
+     * <p>A caller reaches this route only for a token it already holds, and an identity holding no
+     * matching {@code SCOPE_CARD_} authority is refused 403 by the filter chain before the read runs,
+     * so the status distinguishes a card this service has posted nothing for from one it has and
+     * discloses nothing else.</p>
      */
     @Nested
     class HistoryOfACardWithNoRow {
 
-        /** The empty row set the lookup answers with, held for the comparison below. */
-        private List<StatementTransactionEntity> rowsInTheReadModel;
-
-        /** Places no row behind the read model and the derived total behind the service. */
+        /** Places no row behind the read model. */
         @BeforeEach
         void noRowInTheReadModel() {
-            rowsInTheReadModel = List.of();
             when(statementTransactions
                     .findByIdCardTokenOrderByIdTransactionIdAsc(CARD_TOKEN, WHOLE_HISTORY))
                     .thenReturn(List.of());
-            when(notifications.totalOf(anyList())).thenReturn(NO_ROW_TOTAL);
         }
 
-        /** Asserts a card number with no row answers 200 carrying an empty history. */
+        /** Asserts a token with no row answers 404 carrying the documented text and the template. */
         @Test
-        void aCardNumberWithNoRowAnswersTwoHundred() throws Exception {
-            mockMvc.perform(get(ROUTE, FULL_CARD_NUMBER))
-                    .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.cardNumber").value(MASKED_CARD_NUMBER))
-                    .andExpect(jsonPath("$.transactionCount").value(0))
-                    .andExpect(jsonPath("$.totalAmount").value("0.00"));
+        void aTokenWithNoRowAnswersNotFound() throws Exception {
+            mockMvc.perform(get(ROUTE, CARD_TOKEN))
+                    .andExpect(status().isNotFound())
+                    .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+                    .andExpect(jsonPath("$.status").value(404))
+                    .andExpect(jsonPath("$.message")
+                            .value(NotificationHistoryController.NO_HISTORY_MESSAGE))
+                    .andExpect(jsonPath("$.route").value(ROUTE));
         }
 
-        /** Asserts the empty history carries an array that is present and holds no item. */
+        /** Asserts the refusal carries no envelope member, so no caller reads an empty history. */
         @Test
-        void theEmptyHistoryCarriesAnArrayThatIsPresentAndHoldsNoItem() throws Exception {
-            JsonNode body = MAPPER.readTree(mockMvc.perform(get(ROUTE, FULL_CARD_NUMBER))
-                    .andExpect(status().isOk())
+        void theRefusalCarriesNoEnvelopeMember() throws Exception {
+            JsonNode body = MAPPER.readTree(mockMvc.perform(get(ROUTE, CARD_TOKEN))
+                    .andExpect(status().isNotFound())
                     .andReturn().getResponse().getContentAsString());
 
-            assertTrue(body.has("transactions"), "the array is present");
-            assertNotNull(body.get("transactions"), "the array is not null");
-            assertTrue(body.get("transactions").isArray(), "the array travels as an array");
-            assertEquals(0, body.get("transactions").size(), "item count");
+            assertEquals(List.of("status", "message", "route"), List.copyOf(body.propertyNames()),
+                    "the failing body carries the three members every refusal of this service does");
+            for (String property : ENVELOPE_DATA_PROPERTIES) {
+                assertFalse(body.has(property),
+                        "a missing history carries no " + property + " member");
+            }
+        }
+
+        /** Asserts the refusal names no card, in any form, and echoes no value the caller sent. */
+        @Test
+        void theRefusalNamesNoCard() throws Exception {
+            String body = mockMvc.perform(get(ROUTE, CARD_TOKEN))
+                    .andExpect(status().isNotFound())
+                    .andReturn().getResponse().getContentAsString();
+
+            assertFalse(body.contains(CARD_TOKEN), "the refusal echoes the token the caller sent");
+            assertFalse(body.contains(MASKED_CARD_NUMBER), "the refusal names a masked card number");
+            assertFalse(SIXTEEN_DIGIT_RUN.matcher(body).find(),
+                    "the refusal carries a sixteen-digit run");
         }
 
         /**
-         * Asserts the empty history carries the same four properties and still names its card. The
-         * masked form comes from the path value, so a card with no row names its card too, as the
-         * statement header does at {@code app/cbl/CBSTM03A.CBL:L318-L325}.
+         * Asserts the total is never taken for a history with no row, since there is nothing to
+         * total and the answer carries no total member.
          */
         @Test
-        void theEmptyHistoryStillNamesItsCard() throws Exception {
-            JsonNode body = MAPPER.readTree(mockMvc.perform(get(ROUTE, FULL_CARD_NUMBER))
-                    .andExpect(status().isOk())
-                    .andReturn().getResponse().getContentAsString());
+        void noTotalIsTakenForAHistoryWithNoRow() throws Exception {
+            mockMvc.perform(get(ROUTE, CARD_TOKEN)).andExpect(status().isNotFound());
 
-            assertEquals(ENVELOPE_PROPERTIES, List.copyOf(body.propertyNames()),
-                    "envelope property names, in that order");
-            assertEquals(4, body.size(), "envelope property count");
-            assertEquals(MASKED_CARD_NUMBER, body.get("cardNumber").stringValue(),
-                    "the display value is present");
-        }
-
-        /** Asserts the empty history answers 200 and not 404. */
-        @Test
-        void theEmptyHistoryIsNotAMissingResource() throws Exception {
-            int status = mockMvc.perform(get(ROUTE, FULL_CARD_NUMBER))
-                    .andReturn().getResponse().getStatus();
-
-            assertEquals(200, status, "status");
-            assertNotEquals(404, status, "status");
+            verifyNoInteractions(notifications);
         }
     }
 
@@ -791,7 +810,7 @@ final class NotificationHistoryControllerTest {
                     .thenReturn(threeRows());
             when(notifications.totalOf(anyList())).thenReturn(THREE_ROW_TOTAL);
 
-            mockMvc.perform(get(ROUTE, FULL_CARD_NUMBER)).andExpect(status().isOk());
+            mockMvc.perform(get(ROUTE, CARD_TOKEN)).andExpect(status().isOk());
 
             ArgumentCaptor<String> reached = ArgumentCaptor.forClass(String.class);
             verify(statementTransactions).findByIdCardTokenOrderByIdTransactionIdAsc(
@@ -861,7 +880,7 @@ final class NotificationHistoryControllerTest {
                     .thenReturn(threeRows());
             when(notifications.totalOf(anyList())).thenReturn(THREE_ROW_TOTAL);
 
-            mockMvc.perform(get(ROUTE, FULL_CARD_NUMBER))
+            mockMvc.perform(get(ROUTE, CARD_TOKEN))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.transactionCount").value(3));
 
@@ -950,7 +969,7 @@ final class NotificationHistoryControllerTest {
                     .thenReturn(threeRows());
             when(notifications.totalOf(anyList())).thenReturn(THREE_ROW_TOTAL);
 
-            mockMvc.perform(get(ROUTE, FULL_CARD_NUMBER)).andExpect(status().isOk());
+            mockMvc.perform(get(ROUTE, CARD_TOKEN)).andExpect(status().isOk());
 
             assertEquals(Limit.unlimited(), appliedLimit(), "the limit applied");
             assertFalse(appliedLimit().isLimited(), "the limit applied names a row count");
@@ -1006,7 +1025,7 @@ final class NotificationHistoryControllerTest {
                     .thenReturn(threeRows());
             when(notifications.totalOf(anyList())).thenReturn(THREE_ROW_TOTAL);
 
-            mockMvc.perform(get(ROUTE, FULL_CARD_NUMBER).param(parameter, "1"))
+            mockMvc.perform(get(ROUTE, CARD_TOKEN).param(parameter, "1"))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.transactionCount").value(3));
 
@@ -1061,7 +1080,7 @@ final class NotificationHistoryControllerTest {
                     .findByIdCardTokenOrderByIdTransactionIdAsc(CARD_TOKEN, WHOLE_HISTORY))
                     .thenThrow(new IllegalStateException("connection refused to host 6 port 4"));
 
-            mockMvc.perform(get(ROUTE, FULL_CARD_NUMBER))
+            mockMvc.perform(get(ROUTE, CARD_TOKEN))
                     .andExpect(status().isInternalServerError());
 
             String logged = output.getAll();
@@ -1087,7 +1106,7 @@ final class NotificationHistoryControllerTest {
                     .findByIdCardTokenOrderByIdTransactionIdAsc(CARD_TOKEN, WHOLE_HISTORY))
                     .thenThrow(new IllegalStateException("connection refused to host 6 port 4"));
 
-            String body = mockMvc.perform(get(ROUTE, FULL_CARD_NUMBER))
+            String body = mockMvc.perform(get(ROUTE, CARD_TOKEN))
                     .andExpect(status().isInternalServerError())
                     .andExpect(jsonPath("$.status").value(500))
                     .andExpect(jsonPath("$.route").value(ROUTE))
@@ -1103,13 +1122,13 @@ final class NotificationHistoryControllerTest {
         /** Asserts a failing body carries the route template and no resolved request path. */
         @Test
         void aFailingBodyCarriesTheRouteTemplateAndNoResolvedPath() throws Exception {
-            String refusedValue = CARD_TOKEN;
+            String refusedValue = FULL_CARD_NUMBER;
 
             String body = mockMvc.perform(get(ROUTE, refusedValue))
                     .andExpect(status().isBadRequest())
                     .andReturn().getResponse().getContentAsString();
 
-            assertTrue(body.contains("{cardNumber}"), "the body carries the route template");
+            assertTrue(body.contains("{cardToken}"), "the body carries the route template");
             assertFalse(body.contains(refusedValue), "the body echoes what the caller sent");
             assertFalse(body.contains("instance"), "the body carries a resolved request path");
             assertFalse(body.contains("\"path\""), "the body carries a resolved request path");
@@ -1162,7 +1181,7 @@ final class NotificationHistoryControllerTest {
          */
         @Test
         void theTotalIsTheTotalOfTheRowsTheLookupReturned() throws Exception {
-            mockMvc.perform(get(ROUTE, FULL_CARD_NUMBER))
+            mockMvc.perform(get(ROUTE, CARD_TOKEN))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.transactionCount").value(rowsInTheReadModel.size()))
                     .andExpect(jsonPath("$.totalAmount").value(THREE_ROW_TOTAL.toPlainString()));
@@ -1178,7 +1197,7 @@ final class NotificationHistoryControllerTest {
          */
         @Test
         void theCapturedListIsTheLookupsOwnRowsInOrder() throws Exception {
-            mockMvc.perform(get(ROUTE, FULL_CARD_NUMBER)).andExpect(status().isOk());
+            mockMvc.perform(get(ROUTE, CARD_TOKEN)).andExpect(status().isOk());
 
             @SuppressWarnings("unchecked")
             ArgumentCaptor<List<StatementTransactionEntity>> totalled =
@@ -1190,29 +1209,41 @@ final class NotificationHistoryControllerTest {
         }
 
         /**
-         * Asserts an empty read model still has its total taken over the empty list.
+         * Asserts a total is taken over the rows read and over nothing else, so an empty read model
+         * has no total taken at all.
          *
-         * <p>A handler writing a zero of its own would answer the same body while never asking, so
-         * the interaction is asserted rather than the value alone.
+         * <p>A handler that wrote a zero of its own would answer a body it never asked the domain
+         * for, and the endpoint answers no body at all for a card with no row: the masked number that
+         * body carries is read from a row. Both halves are asserted as interactions rather than as
+         * values, because a value alone cannot tell the two apart.
          */
         @Test
-        void anEmptyReadModelStillHasItsTotalTaken() throws Exception {
+        void aTotalIsTakenOverTheRowsReadAndOverNothingElse() throws Exception {
             when(statementTransactions
                     .findByIdCardTokenOrderByIdTransactionIdAsc(CARD_TOKEN, WHOLE_HISTORY))
                     .thenReturn(List.of());
 
-            mockMvc.perform(get(ROUTE, FULL_CARD_NUMBER))
+            mockMvc.perform(get(ROUTE, CARD_TOKEN)).andExpect(status().isNotFound());
+
+            verify(notifications, never()).totalOf(anyList());
+
+            when(statementTransactions
+                    .findByIdCardTokenOrderByIdTransactionIdAsc(CARD_TOKEN, WHOLE_HISTORY))
+                    .thenReturn(threeRows());
+            when(notifications.totalOf(anyList())).thenReturn(THREE_ROW_TOTAL);
+
+            mockMvc.perform(get(ROUTE, CARD_TOKEN))
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.totalAmount").value(NO_ROW_TOTAL.toPlainString()));
+                    .andExpect(jsonPath("$.totalAmount").value(THREE_ROW_TOTAL.toPlainString()));
 
             @SuppressWarnings("unchecked")
             ArgumentCaptor<List<StatementTransactionEntity>> totalled =
                     ArgumentCaptor.forClass(List.class);
             verify(notifications).totalOf(totalled.capture());
 
-            assertEquals(List.of(), totalled.getValue(),
-                    "the endpoint asked for a total over the empty row set rather than writing a"
-                            + " zero of its own");
+            assertEquals(threeRows(), totalled.getValue(),
+                    "the endpoint asked for a total over the rows the lookup returned rather than "
+                            + "writing one of its own");
         }
     }
 

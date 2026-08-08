@@ -133,6 +133,78 @@ final class OpenApiContractTest {
     }
 
     /**
+     * Asserts the operation prose names the roles {@code config/SecurityConfig} actually admits.
+     *
+     * <p>This is the assertion a review found missing. The operation description said access was
+     * decided by role alone and then named the wrong pair, {@code USER} and {@code ADMIN}, while the
+     * chain matched {@code hasAnyRole(ROLE_ACQUIRER, ROLE_ADMIN)}. Two paragraphs further down the
+     * same document, and the {@code 403} description beside it, had the pair right, so the file
+     * contradicted itself and a reader integrating from the top of the operation provisioned an
+     * identity the service refuses.
+     *
+     * <p>The roles are read from {@code config/SecurityConfig} rather than repeated here. A rule
+     * changed there and not in the prose fails this test with the new role named, which is what
+     * makes the document follow the chain instead of drifting from it. The refused role is asserted
+     * as well: naming only who is admitted leaves a cardholder identity looking like an omission
+     * rather than a decision.
+     */
+    @Test
+    void theOperationProseNamesTheRolesTheChainAdmitsAndTheOneItRefuses() throws Exception {
+        String description = String.valueOf(postOperation().get("description"));
+        List<String> admitted = rolesAdmittedByTheChain();
+
+        assertEquals(List.of("ACQUIRER", "ADMIN"), admitted,
+                "config/SecurityConfig matches POST /authorizations with these two roles, and this"
+                        + " test reads them from there so the document cannot drift from the chain");
+        for (String role : admitted) {
+            assertTrue(description.contains(role),
+                    "the operation description has to name " + role + ", because that is a role"
+                            + " config/SecurityConfig admits on this route");
+        }
+        assertTrue(description.contains("every other identity is refused with 403, a cardholder USER"
+                        + " included"),
+                "and it has to say outright that a cardholder identity is refused, so a reader"
+                        + " provisions an acquirer rather than reading the omission as an oversight");
+        assertFalse(description.contains("Any authenticated USER or ADMIN"),
+                "the wording a review found, which named the wrong pair while the paragraphs below"
+                        + " named the right one");
+    }
+
+    /**
+     * Reads which roles {@code config/SecurityConfig} admits on {@code POST /authorizations}.
+     *
+     * <p>The source is parsed rather than the chain executed, because building the chain needs an
+     * application context and this class deliberately starts none. The rule is one line, and the
+     * constants it names are resolved from the same file.
+     *
+     * @return the role names, in the order the rule lists them
+     * @throws Exception when the source cannot be read
+     */
+    private static List<String> rolesAdmittedByTheChain() throws Exception {
+        String source = Files.readString(Path.of("src", "main", "java", "com", "carddemo",
+                "authorization", "config", "SecurityConfig.java"));
+        java.util.regex.Matcher rule = java.util.regex.Pattern
+                .compile("\\.requestMatchers\\(HttpMethod\\.POST, \"/authorizations\"\\)"
+                        + "\\s*\\.hasAnyRole\\(([^)]*)\\)")
+                .matcher(source);
+        assertTrue(rule.find(),
+                "config/SecurityConfig declares one hasAnyRole rule for POST /authorizations, and"
+                        + " this test reads it; a rewrite of that rule has to be reflected here");
+
+        List<String> roles = new ArrayList<>();
+        for (String constant : rule.group(1).split(",")) {
+            String name = constant.trim();
+            java.util.regex.Matcher value = java.util.regex.Pattern
+                    .compile("String " + java.util.regex.Pattern.quote(name)
+                            + " = \"([A-Z_]+)\";")
+                    .matcher(source);
+            assertTrue(value.find(), name + " is declared in config/SecurityConfig as a constant");
+            roles.add(value.group(1));
+        }
+        return roles;
+    }
+
+    /**
      * Asserts both statuses the filter chain writes carry the problem document and the challenge.
      *
      * <p>{@code config/SecurityConfig} writes {@code WWW-Authenticate} on a {@code 401} and writes
@@ -327,12 +399,17 @@ final class OpenApiContractTest {
      * Asserts the response contract names the event an unresolved card publishes.
      */
     @Test
-    void theDocumentDescribesTheUnresolvedCardEvent() {
+    void theDocumentDescribesTheUnresolvedCardOutcome() {
         String declined = String.valueOf(schemaOf("DeclinedAuthorization").get("description"));
         assertTrue(declined.contains("INVALID KEY"),
                 "the 0100 branch follows a keyed read that resolved no account");
-        assertFalse(declined.contains("publishes no event"),
-                "the document must not describe the pre-S-11 audit gap");
+        assertTrue(declined.contains("publishes no event"),
+                "the one decided outcome that publishes nothing has to say so, or a reader plans a"
+                        + " consumer around an event that never arrives");
+        assertTrue(declined.contains("unresolved_card_attempt")
+                        && declined.contains("authorization_decision"),
+                "and it has to name where the outcome is recorded instead, so publishing nothing"
+                        + " does not read as losing the request");
     }
 
     /**
@@ -1034,8 +1111,17 @@ final class OpenApiContractTest {
      */
     @SuppressWarnings("unchecked")
     private static Map<String, Object> responses() {
-        Map<String, Object> post = (Map<String, Object>) operation().get("post");
-        return (Map<String, Object>) post.get("responses");
+        return (Map<String, Object>) postOperation().get("responses");
+    }
+
+    /**
+     * Returns the one {@code post} operation of the one path.
+     *
+     * @return the operation map
+     */
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> postOperation() {
+        return (Map<String, Object>) operation().get("post");
     }
 
     /**

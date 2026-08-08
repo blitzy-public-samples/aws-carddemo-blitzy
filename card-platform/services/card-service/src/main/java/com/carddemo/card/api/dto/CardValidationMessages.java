@@ -303,6 +303,24 @@ public final class CardValidationMessages {
             "Card cursor must be a 64-character lower-case hexadecimal token";
 
     /**
+     * ADDITIVE. Reported when the token in a card path is not the shape a card token takes.
+     *
+     * <p>The two routes that name one card carry the card token rather than the card number, so no
+     * Primary Account Number reaches an access log, a proxy log, a distributed trace or a browser
+     * history. The source carried the number itself, in the search key
+     * {@code app/cbl/COCRDSLC.cbl:L740} reads by, and its only edit on that value is
+     * {@code Card number if supplied must be a 16 digit number} at
+     * {@code app/cbl/COCRDUPC.cbl:L193-L194}. That edit still runs, on the number this service
+     * resolves from the token, so the source rule is reproduced where the source applied it.
+     *
+     * <p>No source message corresponds, because the source has no token-shaped input. The wording
+     * matches {@link #ADDITIVE_CARD_CURSOR_MALFORMED}, which refuses the same shape in the paging
+     * cursor.
+     */
+    public static final String ADDITIVE_CARD_TOKEN_MALFORMED =
+            "Card token must be a 64-character lower-case hexadecimal token";
+
+    /**
      * ADDITIVE. Reported when a requested row count falls outside the range the card list admits.
      *
      * <p>{@code WS-MAX-SCREEN-LINES PIC S9(4) COMP VALUE 7} at

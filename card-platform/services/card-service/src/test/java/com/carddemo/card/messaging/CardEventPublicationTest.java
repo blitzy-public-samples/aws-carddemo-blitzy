@@ -696,24 +696,35 @@ class CardEventPublicationTest {
     }
 
     /**
-     * Reads one card over the real route, naming the full Primary Account Number in the path.
+     * Reads one card over the real route, naming it by its token in the path.
      *
-     * <p>{@code GET /cards/{cardNumber}} takes the sixteen characters the read keys on, which is the
-     * value {@code app/cbl/COCRDSLC.cbl:L740} moves into the read key.
-     * {@code app/bms/COCRDSL.bms:L99} declares the source screen field at the same sixteen, and no
-     * source program masks the value.
+     * <p>{@code GET /cards/{cardToken}} takes the token of the card, derived here the same way
+     * {@code entity/CardEntity} derives the stored value, so no Primary Account Number reaches the
+     * request line. The token stands for the value {@code app/cbl/COCRDSLC.cbl:L740} moves into the
+     * read key, and column {@code card_token} carries a unique constraint so it selects the same
+     * single row. {@code app/bms/COCRDSL.bms:L99} declares the source screen field at all sixteen
+     * digits and no source program masks the value, which is why both the mask and the token are
+     * recorded as additive.
      *
-     * @param cardNumber the full sixteen-digit card number
+     * @param cardNumber the full sixteen-digit card number, which this method tokenizes rather than
+     *                   sending
      * @return the status and the body the service answered with
      */
     private HttpResponse<String> readCard(String cardNumber) {
-        return send(authorized(CardController.BASE_PATH + "/" + cardNumber).GET().build());
+        return send(authorized(CardController.BASE_PATH + "/" + PanMasker.cardToken(cardNumber))
+                .GET().build());
     }
 
     /**
-     * Updates one card over the real route, naming the full Primary Account Number in the path.
+     * Updates one card over the real route, naming it by its token in the path.
      *
-     * @param cardNumber   the full sixteen-digit card number
+     * <p>The service reads the row the token names and hands that row's number to
+     * {@code domain/CardUpdateService}, so the source edit at
+     * {@code app/cbl/COCRDUPC.cbl:L193-L194} still runs on a sixteen-digit number while no such
+     * number reaches the request line.
+     *
+     * @param cardNumber   the full sixteen-digit card number, which this method tokenizes rather
+     *                     than sending
      * @param embossedName the cardholder name to write
      * @param expiryYear   the four-character expiry year
      * @param expiryMonth  the two-character expiry month
@@ -728,7 +739,7 @@ class CardEventPublicationTest {
                 + "\",\"expiryMonth\":\"" + expiryMonth
                 + "\",\"expiryDay\":\"" + expiryDay
                 + "\",\"activeStatus\":\"" + activeStatus + "\"}";
-        return send(authorized(CardController.BASE_PATH + "/" + cardNumber)
+        return send(authorized(CardController.BASE_PATH + "/" + PanMasker.cardToken(cardNumber))
                 .PUT(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8)).build());
     }
 

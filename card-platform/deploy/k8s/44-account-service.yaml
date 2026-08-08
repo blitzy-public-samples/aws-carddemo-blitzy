@@ -99,7 +99,8 @@ spec:
               containerPort: 9080
           envFrom:
             # Database address, broker address, topic names, log levels, the
-            # three request-identity usernames and the transport settings.
+            # four request-identity usernames (the acquirer one read by the
+            # authorization service alone) and the transport settings.
             # No credential appears there.
             - configMapRef:
                 name: carddemo-config
@@ -187,14 +188,19 @@ spec:
                 configMapKeyRef:
                   name: carddemo-config
                   key: GROUP_ACCOUNT_POSTED
-            # Two Flyway locations, for the same reason 40-authorization-service.yaml names
-            # two. db/migration reproduces app/data/ASCII/acctdata.txt value for value and all
-            # 50 of its expiries fall in 2025; db/demo extends them to 2099-12-31 and touches
+            # Flyway locations, read from the ConfigMap for the same reason
+            # 40-authorization-service.yaml reads its own: the opt-out belongs beside the value
+            # rather than inside a Deployment. The shipped value names two locations.
+            # db/migration reproduces app/data/ASCII/acctdata.txt value for value and all 50 of
+            # its expiries fall in 2023 to 2025; db/demo extends them to 2099-12-31 and touches
             # nothing else. This service publishes its expiry on every state change and the
             # authorization replica applies it, so the two copies of one record carry one
-            # overlay or neither.
+            # overlay or neither, which is why 30-configmap.yaml sets the two keys together.
             - name: SPRING_FLYWAY_LOCATIONS
-              value: "classpath:db/migration,classpath:db/demo"
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: ACCOUNT_FLYWAY_LOCATIONS
             # The server keystore is private to this service; trust material is shared.
             - name: SERVER_SSL_KEYSTORE_PASSWORD
               valueFrom:

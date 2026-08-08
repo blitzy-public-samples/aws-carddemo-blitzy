@@ -7,7 +7,7 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Pattern;
 
 /**
- * Inbound payload for {@code PUT /cards/{cardNumber}}.
+ * Inbound payload for {@code PUT /cards/{cardToken}}.
  *
  * <p>Five components carry the update. They appear in the order the source payload group declares
  * them. That group is {@code CCUP-NEW-CARDDATA}, opened at {@code app/cbl/COCRDUPC.cbl:L307}, and

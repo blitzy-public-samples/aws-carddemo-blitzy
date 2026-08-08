@@ -201,7 +201,7 @@ class TransactionPostedConsumerTest {
     @DisplayName("a failure inside the transaction is rethrown, counted, and never acknowledged")
     void aFailureIsRethrownAndNeverAcknowledged() {
         when(processedEvents.claimEvent(any(), any(), anyString())).thenReturn(CLAIMED);
-        AccountRowMissingException absent = new AccountRowMissingException(ACCOUNT_ID);
+        AccountRowMissingException absent = new AccountRowMissingException();
         when(postedTransactionService.applyPostedAmount(anyString(), any(BigDecimal.class),
                 anyString())).thenThrow(absent);
 

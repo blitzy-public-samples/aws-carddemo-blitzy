@@ -19,6 +19,10 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
+import com.carddemo.events.DeadLetterEnvelope;
+import com.carddemo.events.serde.EventContracts;
+import tools.jackson.databind.json.JsonMapper;
+
 import java.lang.reflect.Method;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -70,6 +74,17 @@ class KafkaEventPublisherTest {
     private static final String TOPIC = "card.updated";
 
     /**
+     * The dead-letter destination, renamed away from the registry default on purpose.
+     *
+     * <p>{@code carddemo.kafka.topics.dead-letter} is configurable in {@code docker-compose.yml} and
+     * in {@code deploy/k8s/30-configmap.yaml}, so a deployment may rename it. Using a renamed value
+     * here is what proves the publisher follows configuration rather than the default: the publisher
+     * used to bind the card-update topic alone, so every terminal diagnostic of an abandoned outbox
+     * row was refused before it was sent under exactly this configuration.
+     */
+    private static final String RENAMED_DEAD_LETTER_TOPIC = "carddemo.dead-letter.v2";
+
+    /**
      * Message key, the eleven-digit account identifier of
      * {@code XREF-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT03Y.cpy:L7}, leading zeros included.
      */
@@ -116,7 +131,8 @@ class KafkaEventPublisherTest {
     @BeforeEach
     void setUp() {
         template = new KafkaTemplateStub();
-        publisher = new KafkaEventPublisher(template.template(), TOPIC, PUBLISH_TIMEOUT);
+        publisher = new KafkaEventPublisher(template.template(), TOPIC,
+                RENAMED_DEAD_LETTER_TOPIC, PUBLISH_TIMEOUT);
     }
 
     // Forwarding. Every assertion reads a captured argument.
@@ -206,6 +222,58 @@ class KafkaEventPublisherTest {
                 "the rejection names the event type that was published");
         assertTrue(thrown.getMessage().contains(TOPIC),
                 "the rejection names the topic the event type belongs on");
+        template.verifyNothingSent();
+    }
+
+    /**
+     * Asserts a terminal diagnostic reaches the dead-letter topic this deployment configures.
+     *
+     * <p>This is the assertion a review found missing, and the defect it stands over was total for one
+     * configuration. The publisher bound the card-update topic alone, so
+     * {@link com.carddemo.events.EventContracts#isBoundToTopic} was asked to confirm
+     * {@code DeadLetterEnvelope} against a configured name of {@code null} and confirmed it only
+     * against the registry default. A deployment that renamed {@code carddemo.kafka.topics.dead-letter}
+     * — which {@code docker-compose.yml} and {@code deploy/k8s/30-configmap.yaml} both allow — had
+     * every diagnostic refused before it was sent, and the one broker-side record of an outbox row the
+     * relay gave up on was lost.
+     *
+     * <p>{@link #RENAMED_DEAD_LETTER_TOPIC} is deliberately not the default, so binding by default
+     * cannot make this pass.
+     */
+    @Test
+    void aTerminalDiagnosticReachesTheConfiguredDeadLetterTopic() {
+        template.acknowledge();
+        String diagnostic = terminalDiagnostic();
+
+        assertDoesNotThrow(
+                () -> publisher.publish(RENAMED_DEAD_LETTER_TOPIC, ACCOUNT_KEY, diagnostic),
+                "the publisher follows the configured dead-letter name rather than the default");
+
+        template.captureOneSend();
+        assertEquals(List.of(RENAMED_DEAD_LETTER_TOPIC), template.capturedTopics(),
+                "the diagnostic reaches the renamed topic");
+        assertEquals(List.of(ACCOUNT_KEY), template.capturedKeys(),
+                "and it is keyed on the account, as every event on this platform is");
+    }
+
+    /**
+     * Asserts a diagnostic still reaches no topic other than the dead-letter one.
+     *
+     * <p>Adding the second entry widens what the publisher accepts, so this holds the widening to
+     * exactly one destination: a diagnostic sent to the card-update topic would reach consumers
+     * reading it as a card change.
+     */
+    @Test
+    void aTerminalDiagnosticReachesNoOtherTopic() {
+        template.acknowledge();
+        String diagnostic = terminalDiagnostic();
+
+        IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class,
+                () -> publisher.publish(TOPIC, ACCOUNT_KEY, diagnostic),
+                "a diagnostic must not reach the card-update topic");
+
+        assertTrue(thrown.getMessage().contains(DeadLetterEnvelope.EVENT_TYPE),
+                "the rejection names the event type that was published");
         template.verifyNothingSent();
     }
 
@@ -310,7 +378,8 @@ class KafkaEventPublisherTest {
         KafkaTemplateStub silent = new KafkaTemplateStub();
         silent.neverAcknowledge();
         KafkaEventPublisher bounded =
-                new KafkaEventPublisher(silent.template(), TOPIC, BRIEF_TIMEOUT);
+                new KafkaEventPublisher(silent.template(), TOPIC,
+                        RENAMED_DEAD_LETTER_TOPIC, BRIEF_TIMEOUT);
 
         CompletionStage<Void> pending = assertTimeout(RETURNS_PROMPTLY,
                 () -> bounded.publish(TOPIC, ACCOUNT_KEY, PAYLOAD),
@@ -337,7 +406,8 @@ class KafkaEventPublisherTest {
             KafkaTemplateStub failing = new KafkaTemplateStub();
             failing.fail(cause);
             KafkaEventPublisher failingPublisher =
-                    new KafkaEventPublisher(failing.template(), TOPIC, PUBLISH_TIMEOUT);
+                    new KafkaEventPublisher(failing.template(), TOPIC,
+                            RENAMED_DEAD_LETTER_TOPIC, PUBLISH_TIMEOUT);
 
             Throwable reported = failureOf(
                     failingPublisher.publish(TOPIC, ACCOUNT_KEY, PAYLOAD));
@@ -518,6 +588,22 @@ class KafkaEventPublisherTest {
      * @param eventId    the identifier of this event
      * @return one JSON object, on one line
      */
+    /**
+     * Serializes one terminal diagnostic the way {@code outbox/OutboxRelay} does.
+     *
+     * <p>The relay renders the envelope with an {@code ObjectMapper} and hands the text to the publish
+     * port, so building it the same way here means the publisher validates the same bytes it would see
+     * in production.
+     *
+     * @return one serialized {@link DeadLetterEnvelope}
+     */
+    private static String terminalDiagnostic() {
+        return JsonMapper.builder().build().writeValueAsString(DeadLetterEnvelope.fromFailure(
+                ACCOUNT_KEY, "0999", new IllegalStateException("held, never read"),
+                "PUBLISH-ABANDONED", "The relay abandoned this row.", TOPIC, 0, 41L, EVENT_ID,
+                EventContracts.CARD_UPDATED, 5));
+    }
+
     private static String cardUpdated(String accountKey, String eventId) {
         return "{\"eventId\":\"" + eventId + "\",\"eventType\":\"CardUpdated\","
                 + "\"schemaVersion\":2,\"occurredAt\":\"2022-06-10T19:27:53.412Z\","

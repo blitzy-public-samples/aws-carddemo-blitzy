@@ -393,12 +393,18 @@ class ContinuousIntegrationWorkflowContractTest {
                     "stage " + job + " has to run " + tool);
         });
 
-        assertTrue(workflow.contains("gitleaks dir . --config .gitleaks.toml"),
+        assertTrue(workflow.contains("gitleaks dir . --config card-platform/.gitleaks.toml"),
                 "the working tree is scanned against the allowlist that names the known-safe"
-                        + " values this repository ships");
-        assertTrue(workflow.contains("gitleaks git . --config .gitleaks.toml"),
+                        + " values this repository ships, which sits under card-platform/ so the"
+                        + " scope of this engagement stays mechanically auditable");
+        assertTrue(workflow.contains("gitleaks git . --config card-platform/.gitleaks.toml"),
                 "and so is the history, because a secret removed in a later commit is still"
                         + " published");
+        assertTrue(Files.isRegularFile(platformRoot.resolve(".gitleaks.toml")),
+                "the allowlist the two scans name has to exist at that path");
+        assertFalse(Files.exists(platformRoot.getParent().resolve(".gitleaks.toml")),
+                "a second copy at the repository root would sit outside the two directories this"
+                        + " engagement adds to");
         assertEquals(2, occurrences(workflow, "--exit-code 1"),
                 "both scans fail the run on a finding");
 
@@ -775,6 +781,44 @@ class ContinuousIntegrationWorkflowContractTest {
                         .find());
         assertFalse(workflow.contains("|| true"));
         assertFalse(workflow.contains("exit 0"));
+    }
+
+    /**
+     * The integration count the decision log publishes is the count the tree holds.
+     *
+     * <p>That row said fifteen while the six service modules carried 23, which is the failure mode
+     * of a count written into prose: it is right the day it is typed and silently wrong afterwards.
+     * The row now argues its point with a figure this test derives, so the next integration class
+     * added fails the build here rather than making a published number wrong.
+     *
+     * <p>The stage itself is left alone deliberately. It selects by Failsafe's naming pattern, so
+     * nothing about the workflow depends on the number, and that separation is the row's actual
+     * argument: the count is evidence for why the stage exists, not an input to it.
+     */
+    @Test
+    @DisplayName("the published integration-class count matches the delivered service modules")
+    void thePublishedIntegrationClassCountMatchesTheServiceModules() throws IOException {
+        int delivered = 0;
+        for (String service : SERVICES) {
+            Path tests = platformRoot.resolve("services").resolve(service).resolve("src/test/java");
+            try (var walk = Files.walk(tests)) {
+                delivered += (int) walk.filter(Files::isRegularFile)
+                        .filter(path -> path.getFileName().toString().endsWith("IT.java"))
+                        .count();
+            }
+        }
+
+        assertTrue(delivered > 0, "the service modules must carry integration classes at all");
+        String decisionLog = Files.readString(platformRoot.resolve("docs/decision-log.md"));
+        assertTrue(decisionLog.contains("— " + delivered + " of them today,"),
+                "the decision log has to state the " + delivered + " integration classes the six"
+                        + " service modules carry, and no other figure");
+        assertFalse(decisionLog.contains("there are 15 of them today"),
+                "the superseded count may not survive");
+
+        // The stage selects by pattern, so the count is evidence rather than configuration.
+        assertTrue(workflow.contains("-pl \"${modules}\" -am verify"),
+                "the integration stage runs the six service modules under Failsafe by pattern");
     }
 
     /** Answers with the pin recorded for one action, failing when the name is unknown. */

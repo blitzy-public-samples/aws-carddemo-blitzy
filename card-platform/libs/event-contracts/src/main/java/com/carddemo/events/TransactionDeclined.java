@@ -43,22 +43,37 @@ import tools.jackson.databind.ser.std.ToStringSerializer;
  * at {@code schemas/transaction-declined-v1.json} validates the result on serialize and on
  * deserialize.
  *
- * <p>TWO CONTRACTS, ONE RECORD. Reject reason {@code 0100} fires precisely when the keyed read of
- * the cross-reference file misses at {@code app/cbl/CBTRN02C.cbl:L382-L387}, so at that moment the
- * platform holds no account identifier it established itself. Version 1 requires one. That one
- * decline therefore travels under its own contract:
+ * <p>TWO CONTRACTS, ONE RECORD, AND ONE PUBLISHER.
  *
- * <p>Reject reason {@code 0100} fires when the keyed read of the cross-reference file misses at
- * {@code app/cbl/CBTRN02C.cbl:L382-L387}, and at that moment no account identifier exists.
- * {@link DeclineReason#resolvesAccount()} answers {@code false} for it, and the canonical
- * constructor refuses it. The authorization service records that attempt in its own
- * {@code unresolved_card_attempt} table and publishes no event, so no decline on a topic can name
- * the wrong account and none can key on anything other than an account.
+ * <p>Version 1, at {@code schemas/transaction-declined-v1.json}, governs the three declines that
+ * resolved an account: reasons {@code 0101}, {@code 0102} and {@code 0103}. It requires an
+ * eleven-digit {@code accountId} and keys the event on it, which is what every event on this
+ * platform is keyed on. {@link #of(EventEnvelope, String, DeclineReason, BigDecimal, String)} builds
+ * it, and the authorization service publishes it.
  *
- * <p>Only the first is on a publish path today. The authorization service records an unresolved
- * card in {@code unresolved_card_attempt} and writes no outbox row for it, so {@link
- * #ofUnresolvedAccount(String, BigDecimal, String)} and version 2 make that decline representable
- * rather than published.
+ * <p>Version 2, at {@code schemas/transaction-declined-v2.json}, governs the fourth. Reject reason
+ * {@code 0100} fires precisely when the keyed read of the cross-reference file misses at
+ * {@code app/cbl/CBTRN02C.cbl:L382-L387}, so at that moment the platform holds no account identifier
+ * it established itself. {@link DeclineReason#resolvesAccount()} answers {@code false} for it and
+ * the canonical constructor refuses it, so version 2 declares no {@code accountId} and keys on
+ * {@code transactionId} instead.
+ *
+ * <p>NO PRODUCER PUBLISHES VERSION 2. An unresolved card is recorded by the authorization service in
+ * its own {@code unresolved_card_attempt} and {@code authorization_decision} tables, answered to the
+ * caller as a decline carrying reason {@code 0100}, and no outbox row is written for it. Every
+ * published alternative breaks a promise a consumer relies on. An {@code accountId} taken from the
+ * request attributes one caller's declined attempt to an account the platform never resolved; an
+ * invented one collides with the real key space of {@code XREF-ACCT-ID PIC 9(11)}; and a key that is
+ * not an account puts a record on a topic whose partitioning every consumer reads as per-account
+ * ordering. The source takes the same position on its own synchronous path, answering a card number
+ * the cross-reference does not carry at {@code app/cbl/COTRN02C.cbl:L620-L636} with a screen message
+ * and no reject record at all.
+ *
+ * <p>Version 2 is kept rather than removed, because a record written under it stays readable for as
+ * long as the topic retains it and a consumer that meets one has to be able to read it.
+ * {@link #ofUnresolvedAccount(String, BigDecimal, String)} is the only way to build one and is
+ * reached only by the contract tests that hold this document and this record in step. Putting a
+ * producer back means changing this paragraph, not this record.
  *
  * <p>{@code maskedCardNumber} has no source ancestor. No CardDemo program masks a Primary Account
  * Number (PAN), and {@code app/bms/COCRDSL.bms:L96-L99} defines the card detail field at the full
@@ -70,19 +85,27 @@ import tools.jackson.databind.ser.std.ToStringSerializer;
  * source marks the same extension point with the comment {@code * ADD MORE VALIDATIONS HERE} at
  * {@code app/cbl/CBTRN02C.cbl:L377}.
  *
- * <p>The authorization service publishes this event to the {@code transaction.declined} topic, and
- * no service consumes it in the demo topology.
+ * <p>The authorization service publishes version 1 of this event to the {@code transaction.declined}
+ * topic. The ledger posting service consumes that topic under consumer group {@code ledger-reject}
+ * and records each decline as a rejected transaction, which is where the 430-byte reject record of
+ * {@code app/cbl/CBTRN02C.cbl:L446-L465} lands in the target.
  *
  * @param eventId                  the idempotency key each consumer commits alongside the side
  *                                 effects it guards, a Universally Unique Identifier (UUID)
  * @param eventType                the routing discriminator, always {@link #EVENT_TYPE}
- * @param schemaVersion            the contract version, always
- *                                 {@link EventEnvelope#SCHEMA_VERSION}
+ * @param schemaVersion            the contract version: {@link EventEnvelope#SCHEMA_VERSION} for a
+ *                                 decline that resolved an account,
+ *                                 {@link #UNRESOLVED_ACCOUNT_SCHEMA_VERSION} for one that did not,
+ *                                 and {@link #TRANSACTION_DETAIL_SCHEMA_VERSION} for one carrying
+ *                                 the refused transaction record
  * @param occurredAt               the moment the producer wrote the event, in Coordinated
  *                                 Universal Time
- * @param aggregateId              the eleven-digit account identifier, and the Kafka message key.
- *                                 From {@code XREF-ACCT-ID PIC 9(11)} at
- *                                 {@code app/cpy/CVACT03Y.cpy:L7}
+ * @param aggregateId              the Kafka message key. Under every version but
+ *                                 {@link #UNRESOLVED_ACCOUNT_SCHEMA_VERSION} this is the
+ *                                 eleven-digit account identifier, from
+ *                                 {@code XREF-ACCT-ID PIC 9(11)} at
+ *                                 {@code app/cpy/CVACT03Y.cpy:L7}; under that one version it is the
+ *                                 transaction identifier, because no account was resolved
  * @param transactionId            the transaction identifier, exactly
  *                                 {@link #TRANSACTION_ID_LENGTH} characters. From
  *                                 {@code TRAN-ID PIC X(16)} at {@code app/cpy/CVTRA05Y.cpy:L5} and
@@ -93,7 +116,9 @@ import tools.jackson.databind.ser.std.ToStringSerializer;
  *                                 cross-reference row carried, never one a caller supplied, and
  *                                 always equal to the {@code aggregateId} of {@code envelope}, so
  *                                 the message key and the payload cannot disagree. Leading zeros
- *                                 belong to the value
+ *                                 belong to the value. Absent under
+ *                                 {@link #UNRESOLVED_ACCOUNT_SCHEMA_VERSION} alone, which no
+ *                                 producer publishes
  * @param declineReasonCode        the reason the authorization service rejected the transaction,
  *                                 serialized as four zero-padded digits
  * @param declineReasonDescription the reason text, character for character from the source, and

@@ -46,13 +46,20 @@ import org.springframework.transaction.support.TransactionTemplate;
  * <h2>What this listener acknowledges without recording</h2>
  *
  * <p>A declined event at contract version 1 or 2 carries the reason and the amount and none of the
- * nine descriptive values of {@code app/cpy/CVTRA06Y.cpy:L5-L18}. Version 2 is the unresolved-account
- * variant of reject reason {@code 0100} and names no account at all. Neither can produce the
- * 350-byte {@code REJECT-TRAN-DATA} the source copies, and inventing the values that were not sent is
- * the one outcome equivalence forbids. Such a delivery is therefore acknowledged with no row written,
- * and the fact is logged once. The 38 reject records the fixture
- * {@code app/data/ASCII/dailytran.txt} produces are all reject reason {@code 0102}, which resolves an
- * account, so this boundary costs the parity evidence nothing.
+ * nine descriptive values of {@code app/cpy/CVTRA06Y.cpy:L5-L18}. Neither can produce the 350-byte
+ * {@code REJECT-TRAN-DATA} the source copies, and inventing the values that were not sent is the one
+ * outcome equivalence forbids. Such a delivery is therefore acknowledged with no row written, and the
+ * fact is logged once. The 38 reject records the fixture {@code app/data/ASCII/dailytran.txt} produces
+ * are all reject reason {@code 0102}, which resolves an account, so this boundary costs the parity
+ * evidence nothing.
+ *
+ * <p>Version 2 is the unresolved-account variant of reject reason {@code 0100}, and <b>no producer
+ * publishes it</b>. The authorization service records that outcome in its own
+ * {@code unresolved_card_attempt} and {@code authorization_decision} tables and writes no outbox row,
+ * because the contract names an account and is keyed on one and that outcome resolved none. This
+ * listener keeps reading the shape anyway, for the same reason the contract is retained: a record
+ * published under it before that decision stays on the topic for as long as its retention holds, and
+ * a consumer that meets one must account for it rather than dead-letter it.
  *
  * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */

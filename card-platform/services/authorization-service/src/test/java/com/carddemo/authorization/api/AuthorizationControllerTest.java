@@ -26,6 +26,7 @@ import com.carddemo.authorization.api.GlobalExceptionHandler.ApiErrorResponse;
 import com.carddemo.authorization.config.AuthorizationProperties;
 import com.carddemo.authorization.domain.AuthenticatedActor;
 import com.carddemo.authorization.domain.AuthorizationService;
+import com.carddemo.authorization.domain.ReplicaSynchronization;
 import com.carddemo.authorization.domain.CallerNotEntitledException;
 import com.carddemo.authorization.domain.CycleExposureReservation;
 import com.carddemo.authorization.domain.DeclineRule;
@@ -43,6 +44,7 @@ import com.carddemo.authorization.repository.AccountCreditSnapshotRepository;
 import com.carddemo.authorization.repository.AuthorizationDecisionRepository;
 import com.carddemo.authorization.repository.CardCrossReferenceRepository;
 import com.carddemo.authorization.repository.OutboxEventRepository;
+import com.carddemo.authorization.repository.ReplicaGapRepository;
 import com.carddemo.authorization.repository.UnresolvedCardAttemptRepository;
 import com.carddemo.cobol.CobolDateValidator;
 import com.carddemo.cobol.NumvalParser;
@@ -276,9 +278,6 @@ final class AuthorizationControllerTest {
     /** Path of the one route this service publishes. */
     private static final String ROUTE = "/authorizations";
 
-    /** A freshness ceiling wide enough that no observation below is ever too old. */
-    private static final Duration TOLERANT_STALENESS = Duration.ofDays(36500);
-
     /**
      * Builds the members of a complete request body, in the order
      * {@code app/cpy/CVTRA06Y.cpy:L5-L18} declares them.
@@ -381,15 +380,28 @@ final class AuthorizationControllerTest {
     }
 
     /**
-     * @return configuration holding {@link #TOLERANT_STALENESS} and nothing else
+     * @return configuration holding the replica and decision blocks and nothing else
      */
     private static AuthorizationProperties tolerantProperties() {
         AuthorizationProperties properties = mock(AuthorizationProperties.class);
-        when(properties.replica())
-                .thenReturn(new AuthorizationProperties.Replica(TOLERANT_STALENESS));
+        when(properties.replica()).thenReturn(new AuthorizationProperties.Replica(0L));
         when(properties.decision())
                 .thenReturn(new AuthorizationProperties.Decision(3_000L, Duration.ofMinutes(15)));
         return properties;
+    }
+
+    /**
+     * Supplies a gap store that owes no account a change.
+     *
+     * <p>What a decision does with a standing gap belongs to {@code domain/AuthorizationServiceTest}.
+     * This file exercises the route, so the replica is held usable throughout.
+     *
+     * @return a store reporting no gap for any account
+     */
+    private static ReplicaGapRepository noReplicaGaps() {
+        ReplicaGapRepository gaps = mock(ReplicaGapRepository.class);
+        when(gaps.existsForAggregate(any())).thenReturn(false);
+        return gaps;
     }
 
     /**
@@ -514,7 +526,8 @@ final class AuthorizationControllerTest {
                 mock(UnresolvedCardAttemptRepository.class),
                 mock(AuthorizationDecisionRepository.class),
                 Metrics.globalRegistry, immediateTransactions(), tolerantProperties(),
-                cycleExposure);
+                cycleExposure, () -> ReplicaSynchronization.Verdict.synchronizedAt(0L),
+                noReplicaGaps());
 
         decisionPath = MockMvcBuilders
                 .standaloneSetup(new AuthorizationController(service))
@@ -1070,8 +1083,7 @@ final class AuthorizationControllerTest {
         @Test
         void aProjectionTooOldToReadAnswersFiveHundredAndThree() throws Exception {
             when(authorizations.authorize(any(), any())).thenThrow(
-                    new AuthorizationService.StaleReplicaException(WORKED_EXAMPLE_ACCOUNT,
-                            Duration.ofMinutes(5)));
+                    new AuthorizationService.StaleReplicaException("replica-stream-behind"));
 
             mockMvc.perform(post(ROUTE).contentType(MediaType.APPLICATION_JSON)
                             .content(json(completeBody())))

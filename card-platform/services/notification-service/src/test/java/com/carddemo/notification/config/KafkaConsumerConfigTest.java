@@ -234,7 +234,15 @@ final class KafkaConsumerConfigTest {
                     .containsEntry(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG,
                             StringSerializer.class)
                     .containsEntry(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG,
-                            ByteArraySerializer.class);
+                            ByteArraySerializer.class)
+                    // The two reliability settings a review found missing. This module declares
+                    // no spring.kafka.producer block, so a bean that builds a factory by hand
+                    // has to pin them by hand or inherit the client defaults: acknowledgement
+                    // from the leader alone, and internal retries that can write one diagnostic
+                    // twice. That diagnostic is the only trace of a delivery this service gave
+                    // up on.
+                    .containsEntry(ProducerConfig.ACKS_CONFIG, "all")
+                    .containsEntry(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, true);
 
             Method method = beanMethods().stream()
                     .filter(candidate -> candidate.getName().equals("deadLetterKafkaTemplate"))

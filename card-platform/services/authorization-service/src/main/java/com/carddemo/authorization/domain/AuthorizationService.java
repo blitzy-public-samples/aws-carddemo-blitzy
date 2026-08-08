@@ -9,6 +9,7 @@ import com.carddemo.authorization.entity.UnresolvedCardAttemptEntity;
 import com.carddemo.authorization.outbox.OutboxWriter;
 import com.carddemo.authorization.repository.AuthorizationDecisionRepository;
 import com.carddemo.authorization.repository.CardCrossReferenceRepository;
+import com.carddemo.authorization.repository.ReplicaGapRepository;
 import com.carddemo.authorization.repository.UnresolvedCardAttemptRepository;
 import com.carddemo.cobol.PanMasker;
 import com.carddemo.cobol.PicClause;
@@ -20,7 +21,6 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import java.math.BigDecimal;
 import java.time.Clock;
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -245,14 +245,24 @@ public class AuthorizationService {
     private final MeterRegistry meters;
 
     /**
-     * How old the observation on a replica row may be and still be authorized against.
+     * Reports whether the replica streams are caught up with their producers.
      *
-     * <p>{@code carddemo.replica.max-staleness} supplies it. Past that age the call is refused as an
-     * infrastructure fault rather than declined, because a stale replica is not a decision the source
-     * ever took: {@code app/cbl/CBTRN02C.cbl:L382} and {@code app/cbl/CBTRN02C.cbl:L395} read the
-     * cross-reference and account datasets themselves.
+     * <p>A stream that is behind means this service holds a copy its owner has already moved on
+     * from, and a decision taken against it is an infrastructure fault rather than a decline:
+     * {@code app/cbl/CBTRN02C.cbl:L382} and {@code app/cbl/CBTRN02C.cbl:L395} read the
+     * cross-reference and account datasets themselves, so the source has no such outcome.
      */
-    private final Duration replicaMaxStaleness;
+    private final ReplicaSynchronization replicaSynchronization;
+
+    /**
+     * The accounts whose replica copy is missing a change a delivery failed to apply.
+     *
+     * <p>The companion to {@link #replicaSynchronization} and not a duplicate of it. Lag says
+     * whether records are waiting; this says whether one was delivered and lost. A recovered poison
+     * record advances its offset, so lag alone reports a stream as caught up while one account's copy
+     * is behind.
+     */
+    private final ReplicaGapRepository replicaGaps;
 
     /**
      * Opens the one transaction a decision commits in.
@@ -291,9 +301,12 @@ public class AuthorizationService {
      * @param meters                 registry the three measurements register with
      * @param transactionTemplate    opens the one transaction a decision commits in, so every meter
      *                               is touched after that transaction has committed
-     * @param properties             the validated service configuration, including replica freshness
+     * @param properties             the validated service configuration
      * @param cycleExposure          bound on the lock wait of one decision, and recorder of the
      *                               exposure an approval commits
+     * @param replicaSynchronization reports whether the replica streams are caught up with their
+     *                               producers
+     * @param replicaGaps            the accounts a delivery failed to apply a change for
      * @throws NullPointerException     when an argument or a rule of {@code rules} is {@code null}
      * @throws IllegalArgumentException when a rule declares a segment this class cannot place
      */
@@ -303,7 +316,8 @@ public class AuthorizationService {
             UnresolvedCardAttemptRepository unresolvedCardAttempts,
             AuthorizationDecisionRepository authorizationDecisions, MeterRegistry meters,
             TransactionTemplate transactionTemplate, AuthorizationProperties properties,
-            CycleExposureReservation cycleExposure) {
+            CycleExposureReservation cycleExposure, ReplicaSynchronization replicaSynchronization,
+            ReplicaGapRepository replicaGaps) {
         Objects.requireNonNull(rules, "rules must be present");
 
         List<DeclineRule> stopping = new ArrayList<>();
@@ -342,17 +356,12 @@ public class AuthorizationService {
         this.cycleExposure =
                 Objects.requireNonNull(cycleExposure, "cycleExposure must be present");
 
-        AuthorizationProperties.Replica replica =
-                Objects.requireNonNull(
-                        Objects.requireNonNull(properties, "properties must be present").replica(),
-                        "properties.replica must be present");
-        this.replicaMaxStaleness = Objects.requireNonNull(replica.maxStaleness(),
-                "properties.replica.maxStaleness must be present");
-
-        if (replicaMaxStaleness.isNegative() || replicaMaxStaleness.isZero()) {
-            throw new IllegalArgumentException("replicaMaxStaleness must be positive, found "
-                    + replicaMaxStaleness);
-        }
+        Objects.requireNonNull(
+                Objects.requireNonNull(properties, "properties must be present").replica(),
+                "properties.replica must be present");
+        this.replicaSynchronization = Objects.requireNonNull(replicaSynchronization,
+                "replicaSynchronization must be present");
+        this.replicaGaps = Objects.requireNonNull(replicaGaps, "replicaGaps must be present");
     }
 
     /**
@@ -524,7 +533,7 @@ public class AuthorizationService {
                     request.recordProcessingTimestamp());
         }
 
-        requireFreshReplicaData(context, resolvedAccountId);
+        requireUsableReplica(context, resolvedAccountId);
 
         if (standing == null) {
             return approve(request, context, transactionId, resolvedAccountId, amount, actor);
@@ -534,9 +543,9 @@ public class AuthorizationService {
     }
 
     /**
-     * Refuses to authorize against a replica that has not been observed recently enough.
+     * Refuses to authorize against a replica this service knows is behind its producer.
      *
-     * <p>ADDITIVE, and it has no COBOL ancestor because the source has nothing that can go stale.
+     * <p>ADDITIVE, and it has no COBOL ancestor because the source has nothing that can fall behind.
      * {@code app/cbl/CBTRN02C.cbl:L382} and {@code app/cbl/CBTRN02C.cbl:L395} issue keyed reads
      * against the cross-reference and account datasets themselves. This service reads
      * {@code card_xref} and {@code account_credit_snapshot}, which are replicas kept current by
@@ -549,34 +558,61 @@ public class AuthorizationService {
      * transaction the current numbers would have declined. Refusing the call is the only outcome that
      * does not silently authorize against numbers this service cannot vouch for.
      *
+     * <p><strong>What is measured, and what deliberately is not.</strong> This check reads two
+     * properties of the <em>streams</em> and no property of the rows. An earlier form of it bounded
+     * how old a row's last observation could be, and that bound was wrong about the ordinary case
+     * rather than the failing one: the account and card services publish on a state change and on
+     * nothing else, so a card nobody edits is a perfectly correct copy whose last observation recedes
+     * for ever. Every such card crossed the bound within a day and every call for it was then refused,
+     * while readiness still reported the service up. The two measurements that replace it separate the
+     * correct copy from the damaged one:
+     *
+     * <ul>
+     *   <li>{@link ReplicaSynchronization} reports whether each replica listener exists, runs, holds
+     *       partitions, and reports lag within its ceiling. A caught-up consumer of a quiet topic
+     *       reports zero lag, so an unedited card stays authorizable for as long as it stays
+     *       unedited.</li>
+     *   <li>{@link ReplicaGapRepository} reports whether a delivery for this account failed to apply.
+     *       A recovered poison record advances its offset once its diagnostic is away, so lag returns
+     *       to zero while that one account's copy is missing a change; the gap row is what makes that
+     *       account, and only that account, unauthorizable.</li>
+     * </ul>
+     *
      * <p>The check applies to the rows the decision was computed from, and only to those. Where a rule
      * declined because a row is absent, the decline came from the absence and not from any value, so
-     * there is no observation to be too old: an absent cross-reference row is reject reason
-     * {@link DeclineReason#INVALID_CARD_NUMBER} at {@code app/cbl/CBTRN02C.cbl:L385-L387} and an absent
-     * account row is {@link DeclineReason#ACCOUNT_NOT_FOUND} at
-     * {@code app/cbl/CBTRN02C.cbl:L397-L399}. Both are reject reasons the source defines, and refusing
-     * those calls instead would replace a defined outcome with a service fault and break equivalence.
-     * The same holds for a chain that stopped early: a rule that never ran read nothing.
+     * there is nothing this service could be holding an obsolete copy of: an absent cross-reference
+     * row is reject reason {@link DeclineReason#INVALID_CARD_NUMBER} at
+     * {@code app/cbl/CBTRN02C.cbl:L385-L387} and an absent account row is
+     * {@link DeclineReason#ACCOUNT_NOT_FOUND} at {@code app/cbl/CBTRN02C.cbl:L397-L399}. Both are
+     * reject reasons the source defines, and refusing those calls instead would replace a defined
+     * outcome with a service fault and break equivalence. The same holds for a chain that stopped
+     * early: a rule that never ran read nothing.
      *
      * <p>Both rows present means the decision did read replica values. That covers every approval,
      * every over-limit decline computed at {@code app/cbl/CBTRN02C.cbl:L403-L413} and every expiry
-     * decline at {@code app/cbl/CBTRN02C.cbl:L414-L420}, which is the whole set of outcomes an obsolete
-     * copy could get wrong.
+     * decline at {@code app/cbl/CBTRN02C.cbl:L414-L420}, which is the whole set of outcomes an
+     * obsolete copy could get wrong.
      *
      * @param context           the resolved values for this call
      * @param resolvedAccountId the account the cross-reference named
-     * @throws StaleReplicaException when both rows were read and either one is missing an observation
-     *                               or carries one older than {@link #replicaMaxStaleness}
+     * @throws StaleReplicaException when the decision read both replica rows and either a replica
+     *                               stream is behind or this account is missing a change
      */
-    private void requireFreshReplicaData(DeclineRule.Context context, String resolvedAccountId) {
+    private void requireUsableReplica(DeclineRule.Context context, String resolvedAccountId) {
         boolean decisionReadReplicaValues = context.getCardCrossReference() != null
                 && context.getAccountCreditSnapshot() != null;
 
-        if (!decisionReadReplicaValues
-                || context.isReplicaDataFresh(clock.instant(), replicaMaxStaleness)) {
+        if (!decisionReadReplicaValues) {
             return;
         }
-        throw new StaleReplicaException(resolvedAccountId, replicaMaxStaleness);
+
+        ReplicaSynchronization.Verdict verdict = replicaSynchronization.verdict();
+        if (!verdict.usable()) {
+            throw new StaleReplicaException(verdict.reason());
+        }
+        if (replicaGaps.existsForAggregate(resolvedAccountId)) {
+            throw new StaleReplicaException(StaleReplicaException.UNAPPLIED_CHANGE);
+        }
     }
 
     /**
@@ -701,23 +737,41 @@ public class AuthorizationService {
     }
 
     /**
-     * Records the one outcome that names no account, publishes its decline event, and answers with
-     * it.
+     * Records the one decided outcome that names no account, and answers with it.
      *
      * <p>The attempt lands in {@code unresolved_card_attempt}, which carries the reject reason
-     * {@code app/cbl/CBTRN02C.cbl:L385-L387} assigns, and the event row lands in the outbox beside
-     * it. Both writes and the decision row join the transaction
-     * {@link #authorize(AuthorizationRequest, String)} opened, so a committed attempt always has
-     * exactly one outbox row. Broker delivery is the relay's obligation, not this transaction's:
-     * {@code outbox/OutboxRelay} publishes the row and retries until it succeeds.
+     * {@code app/cbl/CBTRN02C.cbl:L385-L387} assigns, and the decision lands in
+     * {@code authorization_decision} beside it. Both writes join the transaction
+     * {@link #authorize(AuthorizationRequest, String)} opened, so a committed attempt always has a
+     * committed decision.
      *
-     * <p>The event is version {@value TransactionDeclined#UNRESOLVED_ACCOUNT_SCHEMA_VERSION}, which
-     * {@code schemas/transaction-declined-v2.json} governs. That contract declares no
-     * {@code accountId} and keys the event on the transaction identifier, because no account
-     * identifier exists to key it on: the cross-reference read missed and the short-circuit at
-     * {@code app/cbl/CBTRN02C.cbl:L376-L378} stops the account read from running. Version one, which
-     * carries an account identifier, is untouched, so a consumer reading only version one keeps
-     * working.
+     * <p><strong>This outcome publishes no event, and it is the only one that does not.</strong> AAP
+     * 0.1.1 fixes the decline payload at transaction identifier, account identifier and reject reason
+     * code, and AAP 0.3.1 makes the account identifier the message key of every event on this
+     * platform. Reject code {@code 0100} fires precisely where the keyed read of the cross-reference
+     * missed, and the short-circuit at {@code app/cbl/CBTRN02C.cbl:L376-L378} stops the account read
+     * from running, so no account identifier exists at that moment. There are only three ways to
+     * publish anyway, and each is worse than publishing nothing: trust an identifier the caller sent
+     * beside the card number, which attributes one caller's declined attempt to another caller's
+     * account; invent an identifier inside the real account key space; or key the event on something
+     * that is not an account, which breaks the ordering unit every consumer relies on and the
+     * account-identifier floor the contract declares.
+     *
+     * <p>The source takes the same position on its synchronous path. {@code READ-CCXREF-FILE} at
+     * {@code app/cbl/COTRN02C.cbl:L620-L636} answers a card number the cross-reference does not carry
+     * with {@code 'Card Number NOT found...'} and re-sends the screen: no reject record is written and
+     * nothing at all is captured. The account branch at {@code :L586-L596} does the same, and reaches
+     * this service as {@link AccountNotFoundInCrossReferenceException}, which publishes nothing
+     * either. What this method adds to the source is the durable record of the attempt.
+     *
+     * <p>The outcome is still a decline and not an exception, which is what AAP 0.4.1 requires of a
+     * keyed lookup miss: the caller receives reject code {@code 0100} and its verbatim text, and
+     * {@code api/AuthorizationController} answers {@code 422}.
+     *
+     * <p>{@code schemas/transaction-declined-v2.json} remains the governed contract for a decline
+     * carrying no account identifier, and no producer publishes it. It is retained so a consumer that
+     * reads a record retained from before this change still has a document to validate against, and
+     * {@code libs/event-contracts} states in the schema itself that nothing produces it.
      *
      * @param transactionId the identifier this decision applies to
      * @param cardNumber    the card number the lookup missed on
@@ -736,15 +790,10 @@ public class AuthorizationService {
 
         unresolvedCardAttempts.save(new UnresolvedCardAttemptEntity(transactionId,
                 maskedCardNumber, amount, reason.code(), reason.description(), clock.instant()));
-        TransactionDeclined event = TransactionDeclined.ofUnresolvedAccount(transactionId, amount,
-                maskedCardNumber);
-        outboxWriter.writeDeclined(event);
         authorizationDecisions.save(AuthorizationDecisionEntity.declined(transactionId, actor, null,
                 maskedCardNumber, PanMasker.tokenOf(cardNumber), amount, reason.code(),
-                reason.description(), clock.instant(), event.eventId(),
-                declaredProcessingTimestamp));
-        return new Decision(Outcome.declined(reason, null, transactionId), reason.code(),
-                TransactionDeclined.EVENT_TYPE);
+                reason.description(), clock.instant(), null, declaredProcessingTimestamp));
+        return new Decision(Outcome.declined(reason, null, transactionId), reason.code(), null);
     }
 
     /**
@@ -925,7 +974,14 @@ public class AuthorizationService {
     }
 
     /**
-     * Raised when a rule resolved a replica row this service cannot vouch for the age of.
+     * Raised when a rule resolved a replica row this service knows may be missing a change.
+     *
+     * <p>Two conditions raise it, and both are statements about the stream rather than about the age
+     * of a row: a replica listener that is missing, stopped, unassigned or reporting lag above its
+     * ceiling, or a delivery for this account that failed to apply and left a gap. An earlier form
+     * fired on the elapsed time since a row was last written, which refused every unedited card once
+     * the window lapsed and never detected a failed delivery at all, because a failed application
+     * leaves {@code observed_at} exactly as recent as a successful one.
      *
      * <p>This is not a reject reason, and it must never become one.
      * {@code app/cbl/CBTRN02C.cbl:L385-L420} defines exactly four, {@link DeclineReason} holds
@@ -936,22 +992,47 @@ public class AuthorizationService {
      * service is the component that is unfit to answer.
      *
      * <p>It is therefore an infrastructure fault, which the exception handler turns into a retryable
-     * response. A caller retrying after the replica catches up gets a real decision. A caller told
+     * response. A caller retrying once the replica has caught up gets a real decision. A caller told
      * "declined" would have been told something false about the cardholder.
+     *
+     * <p>The message names the condition by a fixed phrase and carries no account identifier, no card
+     * number and no value read from any record, so a caller or a log that repeats it records no
+     * cardholder value. The earlier form named the account, which put an identifier into every
+     * message this exception produced.
      */
     public static class StaleReplicaException extends RuntimeException {
 
         private static final long serialVersionUID = 1L;
 
+        /** The condition a gap row names: a delivery for this account failed to apply. */
+        public static final String UNAPPLIED_CHANGE = "replica-change-unapplied";
+
+        /** The fixed phrase naming why the replica could not be read. */
+        private final String reason;
+
         /**
-         * Names the account and the window, and never the card number.
+         * Names the condition by its fixed phrase, and nothing else.
          *
-         * @param accountId the account whose replica rows were too old, eleven digits
-         * @param maxAge    the window the observation had to fall within
+         * @param reason the phrase naming what is wrong, from
+         *               {@link ReplicaSynchronization.Verdict#reason()} or
+         *               {@link #UNAPPLIED_CHANGE}
+         * @throws NullPointerException when the phrase is absent
          */
-        public StaleReplicaException(String accountId, Duration maxAge) {
-            super("Replica data for account " + accountId + " was not observed within " + maxAge
-                    + ", so this service cannot authorize against it");
+        public StaleReplicaException(String reason) {
+            super("the card_xref and account_credit_snapshot rows this decision reads cannot be"
+                    + " authorized against (" + Objects.requireNonNull(reason, "reason") + "), so"
+                    + " this call is refused rather than decided against a replica that may be"
+                    + " missing a change its owner has already published");
+            this.reason = reason;
+        }
+
+        /**
+         * Returns the fixed phrase naming why the replica could not be read.
+         *
+         * @return the phrase, carrying no cardholder value
+         */
+        public String getReason() {
+            return reason;
         }
     }
 

@@ -2,6 +2,7 @@ package com.carddemo.authorization.api;
 
 import com.carddemo.authorization.TestIdentityPasswords;
 import com.carddemo.authorization.config.CrossSiteRequestFilter;
+import com.carddemo.authorization.domain.ReplicaSynchronization;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -21,7 +22,11 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Primary;
+import org.springframework.test.context.ContextConfiguration;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.junit.jupiter.Container;
@@ -79,6 +84,7 @@ import tools.jackson.databind.json.JsonMapper;
                 "carddemo.retention.sweep-interval-ms=3600000"
         })
 @Testcontainers
+@ContextConfiguration(classes = AuthorizationRouteSecurityIT.SynchronizedReplicaConfiguration.class)
 @DisplayName("Every authorization business route through the real filter chain")
 class AuthorizationRouteSecurityIT {
 
@@ -474,6 +480,43 @@ class AuthorizationRouteSecurityIT {
             throw new IllegalStateException("the request was interrupted", interrupted);
         } catch (java.io.IOException failed) {
             throw new IllegalStateException("the request did not complete", failed);
+        }
+    }
+
+    /**
+     * Declares the replica streams caught up, which this context cannot measure.
+     *
+     * <p>{@code messaging/KafkaReplicaSynchronization} reads the two replica listener containers, and
+     * this context starts neither: {@code spring.kafka.listener.auto-startup=false} is set above
+     * because {@link #UNREACHABLE_BROKER} is where the client points. A stopped container is a
+     * refusal in production and correctly so, since nothing applies what the owners publish while it
+     * is stopped, and every authorized call below would then read {@code 503} where it asserts
+     * {@code 200}.
+     *
+     * <p>The substitution keeps this class measuring one thing. What the chain answers an identity is
+     * decided by {@code config/SecurityConfig} ahead of the handler, and a replica verdict is decided
+     * inside the handler, so declaring the verdict here leaves every assertion below about the chain.
+     * {@code messaging/KafkaReplicaSynchronizationTest} measures the verdict itself.
+     */
+    /**
+     * Named by {@code @ContextConfiguration} on this class rather than left to be detected.
+     *
+     * <p>Every test here lives in a {@code @Nested} class, and a nested class treats a configuration
+     * class declared on its enclosing class as a <em>default</em> configuration class, which the
+     * framework detects and then ignores. The bean below would silently not apply, and every
+     * authorized call would read {@code 503} where it asserts {@code 200}. Naming the class removes
+     * the guess.
+     */
+    @TestConfiguration
+    static class SynchronizedReplicaConfiguration {
+
+        /**
+         * @return a verdict reporting a stream with nothing waiting on it
+         */
+        @Bean
+        @Primary
+        ReplicaSynchronization synchronizedReplicaStreams() {
+            return () -> ReplicaSynchronization.Verdict.synchronizedAt(0L);
         }
     }
 }

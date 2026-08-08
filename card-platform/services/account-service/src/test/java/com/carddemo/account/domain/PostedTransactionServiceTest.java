@@ -380,7 +380,8 @@ class PostedTransactionServiceTest extends AbstractAccountPostgresTest {
                 service.applyPostedAmount(ABSENT_ACCOUNT_ID, POSTED_AMOUNT, TRANSACTION_ID)))
                 .as("answer to a posting whose account is absent")
                 .isInstanceOf(AccountRowMissingException.class)
-                .hasMessageContaining(ABSENT_ACCOUNT_ID);
+                .hasMessage(AccountRowMissingException.MESSAGE)
+                .hasMessageNotContaining(ABSENT_ACCOUNT_ID);
         assertThat(outboxRowsFor(ABSENT_ACCOUNT_ID))
                 .as("outbox rows a refused posting stored")
                 .isEmpty();

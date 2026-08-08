@@ -6,7 +6,6 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Index;
 import jakarta.persistence.Table;
-import java.time.Duration;
 import java.time.Instant;
 import java.util.Objects;
 import java.util.UUID;
@@ -196,8 +195,10 @@ public class CardCrossReferenceEntity {
      *                   {@value PicClause#XREF_CUST_ID_WIDTH} digits
      * @param accountId  the account identifier, exactly
      *                   {@value PicClause#XREF_ACCT_ID_WIDTH} digits
-     * @param observedAt when this service wrote the row, the moment a freshness check measures
-     *                   staleness against
+     * @param observedAt when this service last wrote the row. It is the provenance stamp an
+     *                   operator reads and the ordering column a report scans; no decision compares
+     *                   it against a window, because an owner that publishes only on a state change
+     *                   leaves an untouched row's stamp receding while the copy stays correct
      * @throws NullPointerException     if any argument is {@code null}
      * @throws IllegalArgumentException if the card number is not
      *                                  {@value PicClause#XREF_CARD_NUM_WIDTH} characters wide,
@@ -339,25 +340,6 @@ public class CardCrossReferenceEntity {
         return observedAt;
     }
 
-    /**
-     * Reports whether this row was observed recently enough to authorize against.
-     *
-     * <p>The caller supplies the window, so the policy lives in configuration and not here. A row
-     * with no observation time is reported stale.
-     *
-     * @param now       the current time
-     * @param maxAge    how old an observation may be and still count as fresh
-     * @return true when this row was observed within {@code maxAge} of {@code now}
-     * @throws NullPointerException if {@code now} or {@code maxAge} is null
-     */
-    public boolean isFreshAt(Instant now, Duration maxAge) {
-        Objects.requireNonNull(now, "now");
-        Objects.requireNonNull(maxAge, "maxAge");
-        if (observedAt == null) {
-            return false;
-        }
-        return !observedAt.isBefore(now.minus(maxAge));
-    }
 
     /**
      * Records that a state-change event wrote this row, unless that event is not newer than the one

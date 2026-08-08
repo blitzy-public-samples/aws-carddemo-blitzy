@@ -2,6 +2,7 @@ package com.carddemo.notification.messaging;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assertions.assertAll;
 
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.spi.ILoggingEvent;
@@ -47,6 +48,7 @@ import java.util.regex.Pattern;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
 import org.slf4j.event.KeyValuePair;
@@ -206,6 +208,9 @@ class TransactionPostedConsumerTest {
     /** The meters {@code config/ObservabilityConfig} registers, over a registry held in memory. */
     private NotificationMetrics metrics;
 
+    /** The registry those meters register into, read by the assertions that count deliveries. */
+    private SimpleMeterRegistry registry;
+
     /** Every diagnostic line the listener wrote during one test. */
     private ListAppender<ILoggingEvent> logRecords;
 
@@ -222,7 +227,8 @@ class TransactionPostedConsumerTest {
     void buildListenerOverFakes() {
         this.statementTransactions = new FakeStatementTransactions(this.sequence);
         this.processedEvents = new FakeProcessedEvents(this.sequence);
-        this.metrics = new ObservabilityConfig().notificationMetrics(new SimpleMeterRegistry());
+        this.registry = new SimpleMeterRegistry();
+        this.metrics = new ObservabilityConfig().notificationMetrics(this.registry);
         this.notificationService = new FakeNotificationService(this.sequence,
                 this.statementTransactions, this.metrics);
         this.transactionManager = new FakeTransactionManager(this.sequence);
@@ -609,9 +615,118 @@ class TransactionPostedConsumerTest {
                 || type.getPackageName().startsWith("org.springframework.transaction"));
     }
 
+    /**
+     * A contract version this read model cannot be built from is accounted for, not refused.
+     *
+     * <p>Version 1 of {@code TransactionPosted} carries neither the card token the composite key holds
+     * nor nine of the fourteen column values a row carries. The listener used to throw from
+     * {@code readModelRow}, which spent three delivery attempts and put a governed, schema-valid event
+     * on the dead-letter topic. Every consumer group starts at the earliest offset, so a group added to
+     * a topic that still retains version 1 records met that route on every one of them.
+     */
+    @Nested
+    @DisplayName("A contract version this read model cannot be built from")
+    class VersionsThatBuildNoRow {
+
+        @Test
+        @DisplayName("a version 1 delivery writes no row, renders nothing, and is acknowledged")
+        void aVersionOneDeliveryIsAcknowledgedWithoutWriting() {
+            deliver(postedEventAtVersionOne());
+
+            assertAll(
+                    () -> assertThat(statementTransactions.storedRows())
+                            .as("read-model rows written").isEmpty(),
+                    () -> assertThat(notificationService.alerts())
+                            .as("alerts rendered").isEmpty(),
+                    () -> assertThat(processedEvents.claimedEvents())
+                            .as("markers claimed for an event nothing was applied for").isEmpty(),
+                    () -> assertThat(sequence).as("the calls the listener made")
+                            .containsExactly(OFFSET_COMMITTED));
+        }
+
+        @Test
+        @DisplayName("a version 1 delivery is counted as consumed and as unapplied, not as a failure")
+        void aVersionOneDeliveryIsCountedAsUnapplied() {
+            deliver(postedEventAtVersionOne());
+
+            assertAll(
+                    () -> assertThat(counter("carddemo.notification.events.unapplied"))
+                            .as("one delivery this listener applied nothing for").isEqualTo(1.0d),
+                    () -> assertThat(counter("carddemo.notification.events.consumed"))
+                            .as("the delivery was still consumed").isEqualTo(1.0d),
+                    () -> assertThat(untaggedCounter("carddemo.notification.duplicates.skipped"))
+                            .as("nothing was skipped as a duplicate").isEqualTo(0.0d));
+        }
+
+        @Test
+        @DisplayName("a version 1 delivery is reported once, naming the version and no payload field")
+        void aVersionOneDeliveryIsReportedWithoutAPayloadField() {
+            deliver(postedEventAtVersionOne());
+
+            List<String> warnings = logRecords.list.stream()
+                    .filter(record -> record.getLevel() == Level.WARN)
+                    .map(ILoggingEvent::getFormattedMessage)
+                    .toList();
+
+            assertThat(warnings).hasSize(1);
+            assertThat(warnings.get(0))
+                    .contains("contract version 1")
+                    .doesNotContain(MASKED_CARD)
+                    .doesNotContain(TRANSACTION_ID);
+        }
+
+        @Test
+        @DisplayName("a version 2 delivery moves no unapplied counter")
+        void aVersionTwoDeliveryMovesNoUnappliedCounter() {
+            deliver(postedEvent());
+
+            assertThat(counter("carddemo.notification.events.unapplied"))
+                    .as("a delivery this listener did apply").isEqualTo(0.0d);
+            assertThat(statementTransactions.storedRows()).hasSize(1);
+        }
+    }
+
     /** Hands one delivery to the listener under the account identifier its payload names. */
     private void deliver(TransactionPosted event) {
         this.consumer.onTransactionPosted(event, this.acknowledgment, TOPIC, event.aggregateId());
+    }
+
+    /**
+     * Builds one event at the contract version that predates the card identity this model is keyed on.
+     *
+     * <p>Version 1 declares six values and none of the nine descriptive fields, so every component the
+     * schema document omits is null here. The record's own compact constructor refuses a token at this
+     * version, which is why the token is null rather than blank.
+     *
+     * @return the version 1 event
+     */
+    private static TransactionPosted postedEventAtVersionOne() {
+        return new TransactionPosted(UUID.randomUUID(), TransactionPosted.EVENT_TYPE,
+                EventEnvelope.SCHEMA_VERSION, Instant.parse("2022-07-19T23:16:01Z"),
+                ACCOUNT_ID, TRANSACTION_ID,
+                ACCOUNT_ID, NEW_BALANCE, POSTED_AT, AMOUNT, MASKED_CARD, null, null, null, null,
+                null, null, null, null, null, null);
+    }
+
+    /**
+     * Reads one counter tagged with the posted event type.
+     *
+     * @param name the meter name
+     * @return the count
+     */
+    private double counter(String name) {
+        return this.registry.get(name).tag("event.type", TransactionPosted.EVENT_TYPE).counter()
+                .count();
+    }
+
+    /**
+     * Reads one counter carrying no tag.
+     *
+     * @param name the meter name
+     * @return the count
+     */
+    private double untaggedCounter(String name) {
+        return this.registry.get(name).counter().count();
     }
 
     private static TransactionPosted postedEvent() {

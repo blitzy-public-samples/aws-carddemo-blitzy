@@ -34,9 +34,9 @@ import tools.jackson.databind.JsonNode;
  * @param occurredAt         the producer's clock, which orders two changes to one account
  * @param accountId          the account this change describes, eleven digits
  * @param creditLimit        {@code ACCT-CREDIT-LIMIT} at {@code app/cpy/CVACT01Y.cpy:L8}, scale 2
- * @param currentCycleCredit {@code ACCT-CURR-CYC-CREDIT} at {@code app/cpy/CVACT01Y.cpy:L12},
+ * @param currentCycleCredit {@code ACCT-CURR-CYC-CREDIT} at {@code app/cpy/CVACT01Y.cpy:L13},
  *                           scale 2
- * @param currentCycleDebit  {@code ACCT-CURR-CYC-DEBIT} at {@code app/cpy/CVACT01Y.cpy:L13},
+ * @param currentCycleDebit  {@code ACCT-CURR-CYC-DEBIT} at {@code app/cpy/CVACT01Y.cpy:L14},
  *                           scale 2
  * @param expirationDate     {@code ACCT-EXPIRAION-DATE} at {@code app/cpy/CVACT01Y.cpy:L11}, ten
  *                           characters held as text because

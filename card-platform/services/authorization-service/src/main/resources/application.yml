@@ -235,12 +235,32 @@ carddemo:
     # the attribution record of a financial decision, so it outlives its outbox row.
     decision-retention-days: ${DECISION_RETENTION_DAYS:365}
 
-  # How old the observation on a card_xref or account_credit_snapshot row may be and
-  # still be authorized against. Past it, domain/AuthorizationService refuses the call as
-  # an infrastructure fault rather than declining it, and counts
+  # When the two replica tables may be authorized against. The question is asked of the
+  # streams that maintain them and never of the age of a row, and the difference is not a
+  # refinement: the account and card services publish on a state change and on nothing
+  # else, so a card nobody edits is a correct copy whose last observation recedes for ever.
+  # An earlier form of this block bounded that recession, which refused every unedited card
+  # a day after it was seeded while readiness still reported the service up.
+  #
+  # messaging/KafkaReplicaSynchronization reads, per replica topic, whether a listener
+  # exists, is running, holds partitions, and reports records-lag-max at or under the
+  # ceiling below. A caught-up consumer of a quiet topic reports zero, so an unedited card
+  # stays authorizable for as long as it stays unedited.
+  #
+  # Lag cannot see the other half. A record that is delivered and cannot be applied has its
+  # offset advanced once its diagnostic is away -- config/KafkaConsumerConfig sets
+  # commitRecovered rather than redelivering a poison record for ever -- so the stream reads
+  # as caught up while one account is missing a change. domain/ReplicaGapLog records that
+  # account in replica_gap and domain/AuthorizationService refuses that account alone.
+  #
+  # Either refusal is an infrastructure fault rather than a decline, answers 503, and counts
   # carddemo.authorization.failures{stage="replica"}.
   replica:
-    max-staleness: ${REPLICA_MAX_STALENESS:P1D}
+    # Records a replica stream may have waiting and still be authorized against. Zero
+    # requires a consumer that is fully caught up, which is the position this demo takes: a
+    # waiting AccountStateChanged carries the credit limit and the cycle accumulators the
+    # credit-limit rule at app/cbl/CBTRN02C.cbl:L403-L407 computes from.
+    lag-ceiling: ${REPLICA_LAG_CEILING:0}
 
   # One decision at a time per account, and an approval the next decision can see.
   #
@@ -344,7 +364,7 @@ management:
         liveness:
           include: livenessState
         readiness:
-          include: readinessState,db,kafka,listeners,outbox
+          include: readinessState,db,kafka,listeners,outbox,replica
   prometheus:
     metrics:
       export:

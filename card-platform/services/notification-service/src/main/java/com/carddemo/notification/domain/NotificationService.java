@@ -441,7 +441,7 @@ public class NotificationService {
      * rows than {@value NotificationRenderer#MAXIMUM_STATEMENT_ROWS} costs one read of that many rows
      * and not a whole history. {@link NotificationRenderer#requireRenderableRowCount(List)} refuses
      * more than that many rows, and this method cannot return more, so the two agree by construction.
-     * {@code GET /notifications/{cardNumber}} reads the same rows without a ceiling, so a history
+     * {@code GET /notifications/{cardToken}} reads the same rows without a ceiling, so a history
      * larger than one alert answers in full there.</p>
      *
      * @param cardToken the card token the key column holds

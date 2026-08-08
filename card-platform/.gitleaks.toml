@@ -13,6 +13,11 @@
 # The rule pack is gitleaks' own default set, extended by nothing. Adding a rule is a change
 # to what this repository considers a secret and belongs in
 # card-platform/docs/decision-log.md alongside this file.
+#
+# This file sits under card-platform/ rather than at the repository root because card-platform/
+# and .github/ are the only directories this engagement adds to, so `git diff --name-only`
+# stays a complete audit of its scope. The scan itself still reads the whole repository: the
+# workflow passes `dir .` and `git .` and scopes only --config to this path.
 
 [extend]
 useDefault = true

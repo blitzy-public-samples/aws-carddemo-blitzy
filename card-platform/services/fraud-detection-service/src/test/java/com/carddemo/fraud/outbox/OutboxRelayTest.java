@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
@@ -28,6 +29,8 @@ import com.carddemo.fraud.config.FraudProperties;
 import com.carddemo.fraud.config.ObservabilityConfig.FraudMeters;
 import com.carddemo.fraud.entity.OutboxEventEntity;
 import com.carddemo.fraud.messaging.DeadLetterMetadata;
+import com.carddemo.fraud.messaging.EventPublisherPort;
+import com.carddemo.fraud.messaging.KafkaEventPublisher;
 import com.carddemo.fraud.messaging.TransactionAuthorizedConsumer;
 import com.carddemo.fraud.repository.OutboxEventRepository;
 import java.io.IOException;
@@ -52,11 +55,13 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Pattern;
+import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.errors.SerializationException;
 import org.apache.kafka.common.errors.TimeoutException;
@@ -73,6 +78,7 @@ import org.springframework.data.domain.Limit;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.kafka.core.ProducerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.transaction.TransactionStatus;
 import org.springframework.transaction.support.TransactionCallback;
@@ -232,6 +238,10 @@ public class OutboxRelayTest {
     private static final String CONSUMER_SOURCE =
             "src/main/java/com/carddemo/fraud/messaging/TransactionAuthorizedConsumer.java";
 
+    /** Module-relative path of the one class in this service that names a broker template. */
+    private static final String PUBLISHER_SOURCE =
+            "src/main/java/com/carddemo/fraud/messaging/KafkaEventPublisher.java";
+
     /** Eleven decimal digits, the shape every message key holds. */
     private static final Pattern ELEVEN_DIGITS = Pattern.compile("^[0-9]{11}$");
 
@@ -258,6 +268,7 @@ public class OutboxRelayTest {
 
     private OutboxEventRepository outboxEvents;
     private KafkaTemplate<String, Object> kafkaTemplate;
+    private KafkaEventPublisher publisher;
     private FraudMeters meters;
     private TransactionTemplate transactionTemplate;
     private AtomicBoolean insideTransaction;
@@ -267,6 +278,18 @@ public class OutboxRelayTest {
     void setUpCollaborators() {
         outboxEvents = mock(OutboxEventRepository.class);
         kafkaTemplate = mock(KafkaTemplate.class);
+        // The relay reaches the broker through messaging/EventPublisherPort, and the shipped
+        // adapter is what these cases run: publisher below is the real
+        // messaging/KafkaEventPublisher over this mocked template, so every verify(kafkaTemplate)
+        // below still measures what actually reaches a broker client, and the adapter's own
+        // checks — the eleven-digit message key, and the two producer settings it reads at
+        // construction — are exercised on the same path rather than in isolation.
+        ProducerFactory<String, Object> producerFactory = mock(ProducerFactory.class);
+        when(kafkaTemplate.getProducerFactory()).thenReturn(producerFactory);
+        when(producerFactory.getConfigurationProperties())
+                .thenReturn(Map.of(ProducerConfig.ACKS_CONFIG, "all",
+                        ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, "true"));
+        publisher = new KafkaEventPublisher(kafkaTemplate);
         meters = mock(FraudMeters.class);
         transactionTemplate = mock(TransactionTemplate.class);
         insideTransaction = new AtomicBoolean();
@@ -296,7 +319,7 @@ public class OutboxRelayTest {
 
     /** A relay reaching {@code assessedTopic}, built with the shipped batch size. */
     private OutboxRelay relayPublishingTo(String assessedTopic) {
-        return new OutboxRelay(outboxEvents, kafkaTemplate, meters, assessedTopic,
+        return new OutboxRelay(outboxEvents, publisher, meters, assessedTopic,
                 DEAD_LETTER_TOPIC, transactionTemplate, properties(DEFAULT_BATCH_SIZE));
     }
 
@@ -791,6 +814,9 @@ public class OutboxRelayTest {
             relay().publishPendingEvents();
 
             verify(kafkaTemplate).send(eq(ASSESSED_TOPIC), eq(ACCOUNT_IDENTIFIER), any());
+            // messaging/KafkaEventPublisher reads the producer settings once at construction, so
+            // the template answers this before any send is made.
+            verify(kafkaTemplate, atLeastOnce()).getProducerFactory();
             verify(kafkaTemplate, never()).send(anyString(), any());
             verify(kafkaTemplate, never())
                     .send(ArgumentMatchers.<ProducerRecord<String, Object>>any());
@@ -1271,10 +1297,33 @@ public class OutboxRelayTest {
             }
         }
 
+        /**
+         * Asserts a row the relay gave up on is recorded as abandoned, never as published.
+         *
+         * <p>This is the property a review found broken. The relay closed such a row by calling
+         * {@code markPublished}, so an event that reached no consumer was
+         * {@link OutboxEventEntity.RelayState#PUBLISHED}: indistinguishable in the table, in the
+         * retention sweep and in every metric from an assessment the broker acknowledged. The only
+         * thing that had been published was the diagnostic saying it had not been.
+         *
+         * <p>What the row carries now is the truth in three parts. {@code ABANDONED} is terminal, and
+         * {@code claimDueRows} never returns it, so the row is closed exactly as before.
+         * {@code published} stays false and {@code published_at} stays absent, because nothing was
+         * published. {@code dead_letter_state} reads {@code PUBLISHED} with a moment beside it, which
+         * records that the diagnostic — and only the diagnostic — reached the broker.
+         *
+         * @param row the row the relay gave up on
+         */
         private void assertRowIsTerminal(OutboxEventEntity row) {
-            assertThat(row.isPublished()).isTrue();
-            assertThat(row.getPublishedAt()).isNotNull();
-            assertThat(row.getRelayState()).isEqualTo(OutboxEventEntity.RelayState.PUBLISHED);
+            assertThat(row.getRelayState()).isEqualTo(OutboxEventEntity.RelayState.ABANDONED);
+            assertThat(row.isPublished())
+                    .as("an event that reached no consumer is not published")
+                    .isFalse();
+            assertThat(row.getPublishedAt()).isNull();
+            assertThat(row.getDeadLetterState())
+                    .as("the diagnostic reached the broker, so the obligation is discharged")
+                    .isEqualTo(OutboxEventEntity.DeadLetterState.PUBLISHED);
+            assertThat(row.getDeadLetterPublishedAt()).isNotNull();
         }
     }
 
@@ -1299,11 +1348,21 @@ public class OutboxRelayTest {
             assertThat(topics.getAllValues())
                     .containsExactly(ASSESSED_TOPIC, DEAD_LETTER_TOPIC, ASSESSED_TOPIC);
             assertThat(first.isPublished()).isTrue();
-            assertThat(middle.isPublished()).isTrue();
-            assertThat(middle.getPublishedAt()).isNotNull();
+            assertThat(middle.isPublished())
+                    .as("the middle row's event reached no consumer, so it is abandoned rather than"
+                            + " published; only its diagnostic was sent")
+                    .isFalse();
+            assertThat(middle.getRelayState())
+                    .isEqualTo(OutboxEventEntity.RelayState.ABANDONED);
+            assertThat(middle.getDeadLetterState())
+                    .isEqualTo(OutboxEventEntity.DeadLetterState.PUBLISHED);
             assertThat(last.isPublished()).isTrue();
             verify(outboxEvents, times(1)).save(first);
-            verify(outboxEvents, times(1)).save(middle);
+            // Two writes for the abandoned row, in this order: the abandonment with its
+            // obligation, then the discharge once the broker acknowledged the diagnostic. One
+            // write cannot express both, because a diagnostic the broker refuses has to leave the
+            // obligation standing for a later pass to offer again.
+            verify(outboxEvents, times(2)).save(middle);
             verify(outboxEvents, times(1)).save(last);
         }
     }
@@ -1336,7 +1395,7 @@ public class OutboxRelayTest {
             OutboxEventEntity second = clearedRow();
             dueRowsFrom(List.of(first, second));
             everySendSucceeds();
-            OutboxRelay bounded = new OutboxRelay(outboxEvents, kafkaTemplate, meters,
+            OutboxRelay bounded = new OutboxRelay(outboxEvents, publisher, meters,
                     ASSESSED_TOPIC, DEAD_LETTER_TOPIC, transactionTemplate, properties(1));
 
             bounded.publishPendingEvents();
@@ -1570,13 +1629,18 @@ public class OutboxRelayTest {
         }
     }
 
+    /**
+     * The row exposes no setter, so every state change it can undergo is one of a closed set of named
+     * transitions. Enumerating that set here is what keeps it closed: a sixth mutator arriving without
+     * a decision behind it fails this test rather than reaching the table.
+     */
     @Nested
     @DisplayName("Row mutator surface")
     class RowMutatorSurface {
 
         @Test
-        @DisplayName("the row declares no setter and four named mutators")
-        void rowDeclaresNoSetterAndFourNamedMutators() {
+        @DisplayName("the row declares no setter and five named mutators")
+        void rowDeclaresNoSetterAndFiveNamedMutators() {
             List<String> setters = Arrays.stream(OutboxEventEntity.class.getDeclaredMethods())
                     .map(Method::getName)
                     .filter(name -> name.startsWith("set"))
@@ -1591,7 +1655,47 @@ public class OutboxRelayTest {
 
             assertThat(setters).as("setters on the row").isEmpty();
             assertThat(mutators).containsExactly(
-                    "claim", "markDeadLetterPublished", "markPublished", "recordFailure");
+                    "abandon",
+                    "claim",
+                    "markDeadLetterPublished",
+                    "markPublished",
+                    "recordFailure");
+        }
+
+        @Test
+        @DisplayName("abandon is the transition a permanent failure takes, and it is not markPublished")
+        void abandonIsTheTransitionAPermanentFailureTakesAndItIsNotMarkPublished() {
+            OutboxEventEntity row = flaggedRow();
+            Instant when = Instant.parse("2025-02-01T10:15:30Z");
+
+            row.abandon("SerializationException", when);
+
+            assertAll(
+                    () -> assertThat(row.getRelayState())
+                            .as("a row given up on is terminal, and not PUBLISHED")
+                            .isEqualTo(OutboxEventEntity.RelayState.ABANDONED),
+                    () -> assertFalse(row.isPublished(), "nothing reached a consumer"),
+                    () -> assertThat(row.getPublishedAt()).as("published_at").isNull(),
+                    () -> assertThat(row.getDeadLetterState())
+                            .as("the obligation the same write records")
+                            .isEqualTo(OutboxEventEntity.DeadLetterState.REQUIRED),
+                    () -> assertThat(row.getAttemptCount()).as("the attempt that failed").isEqualTo(1),
+                    () -> assertThat(row.getLastAttemptAt()).isEqualTo(when),
+                    () -> assertThat(row.getNextAttemptAt()).as("no future retry is advertised")
+                            .isEqualTo(when),
+                    () -> assertThat(row.getClaimedBy()).as("the claim is released").isNull(),
+                    () -> assertThat(row.getClaimedAt()).isNull());
+        }
+
+        @Test
+        @DisplayName("a row already given up on takes no further attempt")
+        void aRowAlreadyGivenUpOnTakesNoFurtherAttempt() {
+            OutboxEventEntity row = flaggedRow();
+            row.abandon("SerializationException", Instant.parse("2025-02-01T10:15:30Z"));
+
+            assertThatThrownBy(() -> row.abandon("again", Instant.parse("2025-02-01T10:16:30Z")))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("ABANDONED");
         }
     }
 
@@ -1633,6 +1737,86 @@ public class OutboxRelayTest {
 
             assertThat(source).doesNotContain("KafkaTemplate");
             assertThat(source).doesNotContain(".send(");
+        }
+
+        /**
+         * Holds the relay to the seam as well as the listener.
+         *
+         * <p>The relay reached the broker through {@code KafkaTemplate} directly, so the broker choice
+         * was a compile-time dependency of the one component that decides what gets published. It now
+         * depends on {@code messaging/EventPublisherPort}, which is the one swappable seam this platform
+         * declares, and the adapter behind it is the only class here that names a broker type.
+         *
+         * <p>Asserted over the declared members rather than the source text, because a field whose type
+         * is imported and a field whose type is fully qualified read differently in text and identically
+         * to the container.
+         */
+        @Test
+        @DisplayName("the relay holds the publisher port and no broker member at all")
+        void relayHoldsThePublisherPortAndNoBrokerMemberAtAll() {
+            List<String> brokerFields = Arrays.stream(OutboxRelay.class.getDeclaredFields())
+                    .filter(field -> isBrokerType(field.getType()))
+                    .map(Field::getName)
+                    .toList();
+            List<String> brokerParameters = new ArrayList<>();
+            for (Constructor<?> constructor : OutboxRelay.class.getDeclaredConstructors()) {
+                Arrays.stream(constructor.getParameterTypes())
+                        .filter(ListenerPublishesNothing::isBrokerType)
+                        .map(Class::getName)
+                        .forEach(brokerParameters::add);
+            }
+            List<String> ports = Arrays.stream(OutboxRelay.class.getDeclaredFields())
+                    .map(Field::getType)
+                    .map(Class::getName)
+                    .filter(EventPublisherPort.class.getName()::equals)
+                    .toList();
+
+            assertThat(brokerFields).as("broker members of the relay").isEmpty();
+            assertThat(brokerParameters).as("broker constructor arguments of the relay").isEmpty();
+            assertThat(ports).as("the seam the relay publishes through").hasSize(1);
+        }
+
+        /**
+         * The adapter is the only class in this service that may name a broker client or template, and it
+         * is required to pin the two settings a terminal diagnostic depends on.
+         *
+         * <p>The relay is read for its imports rather than its whole text, because its class comment
+         * names the template it used to hold and explains why it no longer does. Documenting a removed
+         * dependency is not holding one, and the assertion above this one is what proves the structure.
+         *
+         * <p>One broker-package import is admitted and it is not a transport dependency:
+         * {@code org.apache.kafka.common.errors.SerializationException} is the failure
+         * {@code libs/event-contracts}' own {@code JsonSchemaValidatingSerializer} raises for a payload
+         * its schema document refuses, and that classification is what tells the relay a failure is
+         * permanent. Any adapter behind the port writes through the same serializer, so the type travels
+         * with the contract library rather than with the choice of broker. What may not appear is a
+         * client, a producer or a template.
+         */
+        @Test
+        @DisplayName("the relay imports no broker client or template, and the adapter checks the producer")
+        void relayImportsNoBrokerClientOrTemplateAndTheAdapterChecksTheProducer() throws Exception {
+            List<String> transportImports = sourceTextOf(RELAY_SOURCE).lines()
+                    .map(String::strip)
+                    .filter(line -> line.startsWith("import org.springframework.kafka")
+                            || line.startsWith("import org.apache.kafka.clients")
+                            || line.startsWith("import org.apache.kafka.common.serialization"))
+                    .toList();
+            List<String> otherBrokerImports = sourceTextOf(RELAY_SOURCE).lines()
+                    .map(String::strip)
+                    .filter(line -> line.startsWith("import org.apache.kafka"))
+                    .filter(line -> !transportImports.contains(line))
+                    .toList();
+
+            assertThat(transportImports)
+                    .as("the relay reaches the broker through the port alone")
+                    .isEmpty();
+            assertThat(otherBrokerImports)
+                    .as("the one admitted broker import, which the contract library raises")
+                    .containsExactly("import org.apache.kafka.common.errors.SerializationException;");
+            assertThat(sourceTextOf(PUBLISHER_SOURCE))
+                    .as("the adapter refuses a producer that could lose an acknowledged send")
+                    .contains("ACKS_CONFIG")
+                    .contains("ENABLE_IDEMPOTENCE_CONFIG");
         }
 
         private static boolean isBrokerType(Class<?> type) {
@@ -1691,7 +1875,7 @@ public class OutboxRelayTest {
             long sendMs = 400L;
             OutboxEventEntity first = clearedRow();
             OutboxEventEntity second = thirdClearedRow();
-            OutboxRelay relayUnderBudget = new OutboxRelay(outboxEvents, kafkaTemplate, meters,
+            OutboxRelay relayUnderBudget = new OutboxRelay(outboxEvents, publisher, meters,
                     ASSESSED_TOPIC, DEAD_LETTER_TOPIC, transactionTemplate,
                     propertiesWithPassBudget(passBudgetMs));
             dueRows(first, second);
@@ -1725,14 +1909,22 @@ public class OutboxRelayTest {
          * Asserts each send is granted what the pass has left, never the whole budget again.
          *
          * <p>The assertion above reads the wall clock, which is what a slow send needs. This one
-         * reads the timeout the relay asked for instead, so it needs no delay at all: each stubbed
-         * send is already acknowledged and records the value it was granted.
+         * reads the timeout the relay asked for instead, so it needs no delay at all: each send is
+         * already acknowledged and the port it travels through records the value it was granted.
          *
          * <p>{@code sendWithinDeadline} computes {@code deadline - System.nanoTime()} per send, so a
          * later send in the same pass is always granted strictly less than an earlier one. A relay
          * that passed the configured value to every send would grant the same figure twice, which is
          * the defect this discriminates: it would let a pass admitted a moment before its deadline
          * run for another whole window.
+         *
+         * <p>The recording sits at {@code messaging/EventPublisherPort}, which is the type the relay
+         * holds, and not inside the future the mocked template answers with. The shipped adapter
+         * composes that future with {@code thenApply}, and composition builds a <em>new</em>
+         * {@link CompletableFuture} rather than returning the one it was given, so a recording
+         * subclass handed to the template is never the object the relay waits on. Decorating the port
+         * records the wait the relay actually issues, and the decorator still delegates to the real
+         * adapter so the send reaches the mocked template exactly as it does in production.
          */
         @Test
         @DisplayName("each send is granted the remainder of the pass, never the whole budget")
@@ -1742,12 +1934,12 @@ public class OutboxRelayTest {
             List<Long> grantedNanos = new CopyOnWriteArrayList<>();
             OutboxEventEntity first = clearedRow();
             OutboxEventEntity second = thirdClearedRow();
-            OutboxRelay relayUnderBudget = new OutboxRelay(outboxEvents, kafkaTemplate, meters,
+            OutboxRelay relayUnderBudget = new OutboxRelay(outboxEvents,
+                    recordingPublisher(publisher, grantedNanos), meters,
                     ASSESSED_TOPIC, DEAD_LETTER_TOPIC, transactionTemplate,
                     propertiesWithPassBudget(passBudgetMs));
             dueRows(first, second);
-            when(kafkaTemplate.send(eq(ASSESSED_TOPIC), eq(ACCOUNT_IDENTIFIER), any()))
-                    .thenAnswer(call -> recordingAcknowledgement(grantedNanos));
+            everySendSucceeds();
 
             relayUnderBudget.publishPendingEvents();
 
@@ -1765,6 +1957,8 @@ public class OutboxRelayTest {
                             .isLessThan(grantedNanos.getFirst()),
                     () -> assertTrue(first.isPublished() && second.isPublished(),
                             "both sends resolved inside the pass, so both rows are published"));
+            verify(kafkaTemplate, times(2))
+                    .send(eq(ASSESSED_TOPIC), eq(ACCOUNT_IDENTIFIER), any());
         }
     }
 
@@ -1781,25 +1975,44 @@ public class OutboxRelayTest {
     }
 
     /**
-     * Builds an already-acknowledged send that records the timeout each wait was granted.
+     * Wraps one publisher so the timeout the relay grants each send is recorded.
      *
-     * <p>Already complete, so the relay's wait returns without pausing and the recorded value is the
-     * timeout the relay asked for rather than the time the wait took.
+     * <p>Every send still travels through {@code delegate}, which is the shipped
+     * {@code messaging/KafkaEventPublisher} over the mocked template, so the topic, the key and the
+     * payload that reach the broker client are the ones production sends. What this adds is a stage
+     * the relay's wait is measurable through: {@link CompletableFuture#toCompletableFuture()} answers
+     * with the instance itself, so overriding {@code get(long, TimeUnit)} here observes the exact
+     * bound {@code sendWithinDeadline} asks for.
      *
+     * <p>The returned stage resolves the way the delegate's does, and it carries the delegate's
+     * failure unchanged, so a decorated send is indistinguishable from an undecorated one apart from
+     * the recording.
+     *
+     * @param delegate     the publisher every send is issued through
      * @param grantedNanos collects one entry per wait, in nanoseconds
-     * @return the future the stubbed send hands back
+     * @return the recording publisher the relay under test holds
      */
-    private static CompletableFuture<Object> recordingAcknowledgement(List<Long> grantedNanos) {
-        CompletableFuture<Object> acknowledged = new CompletableFuture<>() {
-            @Override
-            public Object get(long timeout, TimeUnit unit) throws InterruptedException,
-                    ExecutionException, java.util.concurrent.TimeoutException {
-                grantedNanos.add(unit.toNanos(timeout));
-                return super.get(timeout, unit);
-            }
+    private static EventPublisherPort recordingPublisher(EventPublisherPort delegate,
+            List<Long> grantedNanos) {
+        return (topic, aggregateId, event) -> {
+            CompletionStage<Void> issued = delegate.publish(topic, aggregateId, event);
+            CompletableFuture<Void> recorded = new CompletableFuture<>() {
+                @Override
+                public Void get(long timeout, TimeUnit unit) throws InterruptedException,
+                        ExecutionException, java.util.concurrent.TimeoutException {
+                    grantedNanos.add(unit.toNanos(timeout));
+                    return super.get(timeout, unit);
+                }
+            };
+            issued.whenComplete((ignored, failure) -> {
+                if (failure == null) {
+                    recorded.complete(null);
+                } else {
+                    recorded.completeExceptionally(failure);
+                }
+            });
+            return recorded;
         };
-        acknowledged.complete(null);
-        return acknowledged;
     }
 
     /** Builds the shipped settings with one chosen relay pass budget in milliseconds. */

@@ -521,8 +521,10 @@ not applied by default.
 expiry to `2099-12-31`, because the latest expiry in `app/data/ASCII/acctdata.txt` is 2025-12-28 and
 reason 0103 at `app/cbl/CBTRN02C.cbl:L414-L420` would otherwise decline every live call carrying
 today's date. It runs only when `spring.flyway.locations` names `classpath:db/demo` beside
-`classpath:db/migration`, which `card-platform/docker-compose.yml` does through
-`ACCOUNT_FLYWAY_LOCATIONS` and nothing else does. The authorization service ships the matching overlay
+`classpath:db/migration`, which both deployment paths do through `ACCOUNT_FLYWAY_LOCATIONS` —
+`card-platform/docker-compose.yml` and `card-platform/deploy/k8s/30-configmap.yaml`, the latter read by
+`44-account-service.yaml` — and nothing else does. Both are demo profiles, and setting that key to
+`classpath:db/migration` on either path is the base-profile opt-out. The authorization service ships the matching overlay
 under `AUTHORIZATION_FLYWAY_LOCATIONS`, and both have to be enabled together: `AccountStateChanged`
 carries the expiry, so extending one copy and not the other would write the 2025 value back over the
 extended one. `mvn verify` therefore measures the untouched fixture and the demonstration gets the
@@ -804,6 +806,7 @@ type, so it names every component the schema declares and no component it does n
 
 ```bash
 curl -fsS -u admin001 -X PUT \
+  -H 'X-CardDemo-Request: account-cli' \
   -H 'Content-Type: application/json' \
   http://localhost:8085/accounts/00000000050 \
   -d '{

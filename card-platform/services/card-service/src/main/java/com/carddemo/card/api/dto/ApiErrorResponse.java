@@ -16,7 +16,7 @@ package com.carddemo.card.api.dto;
  *        no other.
  * @param route the route template of the failing endpoint, with each path variable left as its
  *        brace-delimited name. The caller supplies the mapping pattern, for example
- *        {@code /cards} or {@code /cards/{cardNumber}}, so no card number and no account identifier
+ *        {@code /cards} or {@code /cards/{cardToken}}, so no card number and no account identifier
  *        reaches the response body or a log line that copies it. The two routes that name one card
  *        carry it as a path variable, and the template holds the name {@code cardNumber} in place of
  *        the value.

@@ -51,7 +51,7 @@ class NotificationOpenApiExampleValidationTest {
     private static final String DOCUMENT_URI = "https://carddemo.example/notification-openapi";
 
     /** The one route the document declares. */
-    private static final String ROUTE = "/notifications/{cardNumber}";
+    private static final String ROUTE = "/notifications/{cardToken}";
 
     /** A masked card number, the form every response names its card by. */
     private static final String MASKED_CARD_NUMBER = "*".repeat(12) + "0000";
@@ -119,14 +119,17 @@ class NotificationOpenApiExampleValidationTest {
                 }
             }
         }
-        assertEquals(6, validated, "every documented body carries an example that validates");
+        assertEquals(7, validated, "every documented body carries an example that validates");
     }
 
     /**
      * Asserts the path parameter example matches the shape the parameter declares.
      *
      * <p>The example is a placeholder rather than a value, so the assertion also holds it apart from
-     * every masked form the document publishes.
+     * every masked form the document publishes. The two values a caller might reach for instead of a
+     * token are both asserted invalid: a full card number, which is what keeps a Primary Account
+     * Number out of a request line, and a masked number, which names every card sharing four digits
+     * and therefore names no single row.
      */
     @Test
     @DisplayName("the path parameter example matches the parameter schema")
@@ -135,15 +138,17 @@ class NotificationOpenApiExampleValidationTest {
         Map<String, Object> parameter = ((List<Map<String, Object>>) node(
                 (Map<String, Object>) openApi.get("paths"), ROUTE, "get", "parameters")).getFirst();
         Map<String, Object> schema = (Map<String, Object>) parameter.get("schema");
-        Object published = valueOf(((Map<String, Object>) parameter.get("examples")).get("number"));
+        Object published = valueOf(((Map<String, Object>) parameter.get("examples")).get("token"));
 
         Schema compiled = registry.getSchema(JSON.writeValueAsString(schema), InputFormat.JSON);
 
-        assertEquals("cardNumber", parameter.get("name"), "the parameter this route reads");
+        assertEquals("cardToken", parameter.get("name"), "the parameter this route reads");
         assertValid(compiled, published, "the path parameter example");
         assertInvalid(compiled, MASKED_CARD_NUMBER, "a masked card number in the path");
-        assertInvalid(compiled, "0".repeat(15), "a card number one digit under its width");
-        assertInvalid(compiled, "0".repeat(17), "a card number one digit over its width");
+        assertInvalid(compiled, "0".repeat(16), "a full card number in the path");
+        assertInvalid(compiled, "0".repeat(63), "a token one character under its width");
+        assertInvalid(compiled, "0".repeat(65), "a token one character over its width");
+        assertInvalid(compiled, "A".repeat(64), "an upper-case rendering of a token");
     }
 
     /**

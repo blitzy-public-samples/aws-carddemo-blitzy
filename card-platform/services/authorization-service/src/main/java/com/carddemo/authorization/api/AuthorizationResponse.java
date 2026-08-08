@@ -250,11 +250,15 @@ public record AuthorizationResponse(
      * here substitutes a sentinel, a zero-filled identifier or a value the caller supplied, because
      * each of those would name an account that was never resolved.
      *
-     * <p>A caller therefore has no account identifier to key an event on, and publishes
-     * {@code TransactionDeclined} version 2 for this outcome: that contract declares no
-     * {@code accountId} and keys on the transaction identifier. The attempt is also recorded
-     * durably in {@code unresolved_card_attempt}, as {@code app/cbl/CBTRN02C.cbl:L446-L465} writes a
-     * reject row for the same condition.
+     * <p>This outcome publishes nothing. Every decline event on this platform names an account and is
+     * keyed on one, and this is the outcome that resolved none, so
+     * {@code domain/AuthorizationService} records it durably instead: one row in
+     * {@code unresolved_card_attempt} carrying the masked card number and the reject code, and one in
+     * {@code authorization_decision} carrying no event identifier. The source answers the same
+     * condition on its own synchronous path the same way, returning the screen message at
+     * {@code app/cbl/COTRN02C.cbl:L620-L636} and writing no reject record; the durable rows are what
+     * this service adds, standing where {@code app/cbl/CBTRN02C.cbl:L446-L465} writes a reject row on
+     * the batch path.
      *
      * @param transactionId identifier of the transaction this decision applies to, at most
      *                      {@value #TRANSACTION_ID_MAX_LENGTH} characters

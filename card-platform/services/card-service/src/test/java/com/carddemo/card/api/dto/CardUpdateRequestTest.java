@@ -25,6 +25,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -215,6 +216,15 @@ final class CardUpdateRequestTest {
             "Source app/cbl/COCRDUPC.cbl:L784 reads IF CC-CARD-NUM IS NOT NUMERIC and nothing "
                     + "more, over CC-CARD-NUM PIC X(16) at app/cpy/CVCRD01Y.cpy:L37.";
 
+    /**
+     * The shape step one of the edit chain requires of a card number.
+     *
+     * <p>{@code domain/CardUpdateService#SEARCH_KEY_SHAPE} compiles this pattern and is
+     * package-private to its own package, so this constant states the same shape rather than widening
+     * that field for a test. {@code domain/CardUpdateServiceTest} is what holds the two together.
+     */
+    private static final String SIXTEEN_DIGIT_SHAPE = "^[0-9]{16}$";
+
     /** Tokens that name a card number under any spelling the source or the target uses. */
     private static final String[] CARD_NUMBER_TOKENS = {
         "cardnum", "cardnumber", "cardid", "pan", "primaryaccountnumber"
@@ -346,13 +356,13 @@ final class CardUpdateRequestTest {
      * items at L308, L310, L311, L312 and L313. {@code CCUP-NEW-CARDID PIC X(16)} at
      * {@code app/cbl/COCRDUPC.cbl:L305} sits above that group, and it names the row the update
      * rewrites rather than a value the update writes. It arrives as the path variable of
-     * {@code PUT /cards/{cardNumber}}, which reproduces transaction {@code CCUP} at
+     * {@code PUT /cards/{cardToken}}, which reproduces transaction {@code CCUP} at
      * {@code app/csd/CARDDEMO.CSD:L367-L369}.
      *
-     * <p>{@code api/CardController#CARD_NUMBER_PATTERN} holds the path value to the sixteen digits
-     * the source tests at {@code app/cbl/COCRDUPC.cbl:L784}, and
-     * {@code domain/CardUpdateService#SEARCH_KEY_SHAPE} applies the same shape as step one of the
-     * edit chain.
+     * <p>{@code api/CardController#CARD_TOKEN_PATTERN} holds the path value to a card token, and
+     * {@code domain/CardUpdateService#SEARCH_KEY_SHAPE} applies the sixteen-digit shape the source
+     * tests at {@code app/cbl/COCRDUPC.cbl:L784} to the number that token resolved to, as step one of
+     * the edit chain.
      */
     @Test
     void noComponentNamesACardNumber() {
@@ -361,9 +371,11 @@ final class CardUpdateRequestTest {
                         + ". The card number names the row and arrives in the path, so no "
                         + "component of the payload group at app/cbl/COCRDUPC.cbl:L307-L313 "
                         + "carries it. " + CARD_NUMBER_TEST_LOCATOR);
-        assertEquals("^[0-9]{16}$", CardController.CARD_NUMBER_PATTERN,
-                "the path variable carries the sixteen-digit shape the source tests at "
-                        + "app/cbl/COCRDUPC.cbl:L784");
+        assertNotEquals(SIXTEEN_DIGIT_SHAPE, CardController.CARD_TOKEN_PATTERN,
+                "the path variable carries a card token and not the sixteen-digit shape, so no card "
+                        + "number reaches a request line of this service at all. The shape itself is "
+                        + "applied by step one of the edit chain, on the number the token resolved "
+                        + "to. " + CARD_NUMBER_TEST_LOCATOR);
     }
 
     /**
@@ -848,9 +860,10 @@ final class CardUpdateRequestTest {
                 "the Luhn-failing sample of width " + LUHN_FAILING_CARD_NUMBER.length()
                         + " fails a Luhn check");
 
-        assertTrue(LUHN_FAILING_CARD_NUMBER.matches(CardController.CARD_NUMBER_PATTERN),
-                "the Luhn-failing card number passes the path shape. " + CARD_NUMBER_TEST_LOCATOR);
-        assertTrue(LUHN_PASSING_CARD_NUMBER.matches(CardController.CARD_NUMBER_PATTERN),
+        assertTrue(LUHN_FAILING_CARD_NUMBER.matches(SIXTEEN_DIGIT_SHAPE),
+                "the Luhn-failing card number passes step one of the edit chain. "
+                        + CARD_NUMBER_TEST_LOCATOR);
+        assertTrue(LUHN_PASSING_CARD_NUMBER.matches(SIXTEEN_DIGIT_SHAPE),
                 "the Luhn-passing card number passes the same shape, so the two outcomes are "
                         + "indistinguishable to this platform. " + CARD_NUMBER_TEST_LOCATOR);
         assertEquals(List.of(), componentsNaming(CARD_NUMBER_TOKENS),

@@ -385,13 +385,14 @@ public class SecurityConfig {
      * <p>Three routes answer, and the first one is shaped by where a card number may appear.
      *
      * <ul>
-     * <li>{@code GET /cards/{cardNumber}} reads one card, named by the full card number in the
-     * path. Transaction {@code CCDL} at {@code app/csd/CARDDEMO.CSD:L347-L348} runs
-     * {@code app/cbl/COCRDSLC.cbl}, which keys the read on the card number at
-     * {@code app/cbl/COCRDSLC.cbl:L740}. {@link #ownsCardNumberPathVariable(String)} derives the
-     * card token from the path value and requires the matching {@code SCOPE_CARD_} authority, so
-     * the whole of the access control is decided in this chain and no handler carries a rule.</li>
-     * <li>{@code PUT /cards/{cardNumber}} updates one card and is administrator-only. Transaction
+     * <li>{@code GET /cards/{cardToken}} reads one card, named by its token in the path. Transaction
+     * {@code CCDL} at {@code app/csd/CARDDEMO.CSD:L347-L348} runs {@code app/cbl/COCRDSLC.cbl}, which
+     * keys the read on the card number at {@code app/cbl/COCRDSLC.cbl:L740}; the target keys it on the
+     * token, which carries a unique constraint and reaches the same single row.
+     * {@link #ownsPathVariable(String, String)} compares the path value against the caller's
+     * {@code SCOPE_CARD_} authorities directly, so the whole of the access control is decided in this
+     * chain and no handler carries a rule.</li>
+     * <li>{@code PUT /cards/{cardToken}} updates one card and is administrator-only. Transaction
      * {@code CCUP} at {@code app/csd/CARDDEMO.CSD:L367-L369} runs {@code app/cbl/COCRDUPC.cbl},
      * which the source reaches through the administrator path.</li>
      * <li>{@code GET /cards} lists the cards of one account, which arrives as the
@@ -400,9 +401,11 @@ public class SecurityConfig {
      * {@code app/cbl/COCRDLIC.cbl}.</li>
      * </ul>
      *
-     * <p>A card number in a path reaches an access log, a proxy log, a trace and a browser history.
-     * {@code card-platform/docs/suggested-next-tasks.md} carries the deployment guidance that
-     * follows.
+     * <p><strong>No card number appears in any path of this service.</strong> A path reaches an access
+     * log, a proxy log, a distributed trace and a browser history, none of which this application's
+     * redaction reaches, so the two card-named routes carry the token and {@code api/CardController}
+     * resolves it to the row. The authority a caller holds already names the token, so this chain now
+     * compares two values of the same kind instead of deriving one from the other.
      *
      * @param http the builder Spring Security supplies
      * @return the chain covering every request that is not an actuator endpoint
@@ -422,9 +425,9 @@ public class SecurityConfig {
                         // server.error.include-* key at a value that reveals no detail.
                         .dispatcherTypeMatchers(DispatcherType.ERROR, DispatcherType.ASYNC)
                             .permitAll()
-                        .requestMatchers(HttpMethod.GET, "/cards/{cardNumber}")
-                            .access(ownsCardNumberPathVariable("cardNumber"))
-                        .requestMatchers(HttpMethod.PUT, "/cards/{cardNumber}")
+                        .requestMatchers(HttpMethod.GET, "/cards/{cardToken}")
+                            .access(ownsPathVariable(CARD_SCOPE, "cardToken"))
+                        .requestMatchers(HttpMethod.PUT, "/cards/{cardToken}")
                             .hasRole(ROLE_ADMIN)
                         .requestMatchers(HttpMethod.GET, "/cards")
                             .access(ownsRequestParameter(ACCOUNT_SCOPE, "accountId"))
@@ -492,50 +495,6 @@ public class SecurityConfig {
             boolean granted = value != null
                     && holds(authentication.get(), SCOPE_PREFIX + kind + "_" + value);
             return new AuthorizationDecision(granted);
-        };
-    }
-
-    /**
-     * Grants a request only when the caller owns the card the path names.
-     *
-     * <p>The path carries the full card number, which is the key
-     * {@code 9100-GETCARD-BYACCTCARD} reads by at {@code app/cbl/COCRDSLC.cbl:L740}. This manager
-     * derives the card token from that value and looks for the authority
-     * {@code SCOPE_CARD_<token>}. {@link PanMasker#cardToken} is a keyed one-way derivation, so a
-     * configured authority names one card and discloses no card number.
-     *
-     * <p>The authority names one card rather than every card sharing four digits. A masked number
-     * would name every card ending in those four digits, so one authority would admit a caller to
-     * all of them. The fifty cards of {@code app/data/ASCII/carddata.txt} end in fifty different
-     * groups of four, which is why a demo never showed that collision.
-     *
-     * <p>A path value that is not a card number denies. A caller holding no authority then learns
-     * nothing about which values exist. A missing deployment key raises instead, because an absent
-     * key is a fault of the deployment and not a decision about the caller.
-     *
-     * <p>The check is the one {@link #ownsPathVariable(String, String)} performs, including the
-     * administrator fork: {@code ROLE_ADMIN} owns every card, which is
-     * {@code app/cbl/COSGN00C.cbl:L232-L236} expressed as an entitlement.
-     *
-     * @param variable name of the path variable carrying the full card number
-     * @return the manager the rule applies
-     */
-    static AuthorizationManager<RequestAuthorizationContext> ownsCardNumberPathVariable(
-            String variable) {
-
-        return (authentication, context) -> {
-            String cardNumber = context.getVariables().get(variable);
-            if (cardNumber == null) {
-                return new AuthorizationDecision(false);
-            }
-            String token;
-            try {
-                token = PanMasker.cardToken(cardNumber);
-            } catch (IllegalArgumentException noCardNamed) {
-                return new AuthorizationDecision(false);
-            }
-            return new AuthorizationDecision(
-                    holds(authentication.get(), SCOPE_PREFIX + CARD_SCOPE + "_" + token));
         };
     }
 

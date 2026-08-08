@@ -395,8 +395,16 @@ public class KafkaConsumerConfig {
         }
 
         /**
-         * Returns a record carrying the governed envelope, the refused record's coordinates as its
-         * key, and the three headers this service generates.
+         * Returns a record carrying the governed envelope, the envelope's own aggregate identifier as
+         * its key, and the three headers this service generates.
+         *
+         * <p>The key is {@value #UNRESOLVED_ACCOUNT_KEY}, which is the {@code aggregateId} the
+         * envelope below declares. {@code schemas/dead-letter-v1.json} describes that field as the
+         * Kafka message key of the envelope, so keying on anything else makes the payload contradict
+         * the record carrying it and scatters one shared topic across as many partitions as there are
+         * source offsets. Where the record came from is not lost: {@code sourceTopic},
+         * {@code sourcePartition} and {@code sourceOffset} are declared fields of the same document
+         * and are filled in below.
          *
          * <p>{@code key} and {@code value} are the refused bytes the superclass supplies. Neither is
          * read. {@code headers} is not passed through either: {@code setHeadersFunction} adds to the
@@ -410,7 +418,7 @@ public class KafkaConsumerConfig {
                 byte[] key, byte[] value) {
 
             return new ProducerRecord<>(topicPartition.topic(), partitionOf(topicPartition),
-                    recordCoordinates(failedRecord), governedEnvelope(failedRecord, headers),
+                    UNRESOLVED_ACCOUNT_KEY, governedEnvelope(failedRecord, headers),
                     allowedHeaders(headers));
         }
 
@@ -459,16 +467,6 @@ public class KafkaConsumerConfig {
             }
             return json.getBytes(StandardCharsets.UTF_8);
         }
-    }
-
-    /**
-     * Names the refused record inside its source topic, without retaining the key a producer chose.
-     *
-     * @param failedRecord the record no attempt could apply
-     * @return the topic, partition and offset of the record, separated by hyphens
-     */
-    static String recordCoordinates(ConsumerRecord<?, ?> failedRecord) {
-        return failedRecord.topic() + "-" + failedRecord.partition() + "-" + failedRecord.offset();
     }
 
     /**

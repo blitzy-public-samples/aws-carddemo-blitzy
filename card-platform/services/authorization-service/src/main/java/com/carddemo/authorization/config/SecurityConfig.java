@@ -431,8 +431,9 @@ public class SecurityConfig {
      * is refused here: a route that reaches every card the platform holds must not be reachable by
      * an identity entitled to one card. The decision rules themselves refuse a card the
      * cross-reference does not carry, with reason 0100 from
-     * {@code app/cbl/CBTRN02C.cbl:L385-L387}, but a refusal is still a durable decision and a
-     * published event, so the rules are not a substitute for the role check.
+     * {@code app/cbl/CBTRN02C.cbl:L385-L387}, but a refusal is still a durable decision in
+     * {@code unresolved_card_attempt} and {@code authorization_decision}, so the rules are not a
+     * substitute for the role check.
      *
      * <p>{@code ROLE_ADMIN} keeps the route because {@code app/cbl/COSGN00C.cbl:L232-L236} forks an
      * administrator onto every function the region offers, and this platform expresses that fork as
@@ -446,6 +447,14 @@ public class SecurityConfig {
      * {@code domain/AuthorizationService} after the card and the account are resolved and before a
      * transaction identifier is allocated. A refused caller receives the same 403
      * {@link #forbidden()} writes, and no decision row, attempt row or event is produced for it.
+     *
+     * <p>In this configuration that second gate refuses nobody, and saying so is more useful than
+     * implying otherwise. It admits any caller
+     * {@code domain/RequestCaller#reachesEverySubject()} answers true for, which is
+     * {@code ROLE_ADMIN} or {@code ROLE_ACQUIRER}, and the rule above admits only those two. The gate
+     * is the structural guard that keeps the ownership comparison in place for the day a scoped
+     * identity is admitted here; {@code domain/CallerEntitlementTest} measures the refusal it would
+     * then produce.
      *
      * <p>Nothing else is reachable. This service exposes no query surface: a caller that wants a
      * balance reads the ledger service and a caller that wants a card reads the card service.

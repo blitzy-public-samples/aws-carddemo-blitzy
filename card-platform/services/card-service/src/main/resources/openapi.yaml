@@ -9,24 +9,27 @@
 # Three properties of these routes are security decisions rather than style, and each is
 # stated on the operation it governs.
 #
-# The two routes that name one card carry the full card number as a path variable. Each
-# reproduces one Customer Information Control System (CICS) transaction that addresses one
-# card: CCDL at app/csd/CARDDEMO.CSD:L347-L348 reads it and CCUP at
-# app/csd/CARDDEMO.CSD:L367-L369 updates it. A path reaches an access log, a reverse proxy
-# log, a distributed trace and a browser history, so a deployment carrying a full Primary
-# Account Number (PAN) there has the guidance in
-# card-platform/docs/suggested-next-tasks.md to follow. No route carries a card number in
-# a query string: the list route filters by account alone, and its paging cursor travels in
-# a request header as the irreversible card token of a row.
+# The two routes that name one card carry that card's token as a path variable, never its
+# number. Each reproduces one Customer Information Control System (CICS) transaction that
+# addresses one card: CCDL at app/csd/CARDDEMO.CSD:L347-L348 reads it and CCUP at
+# app/csd/CARDDEMO.CSD:L367-L369 updates it, so each is still one addressable resource. A
+# path reaches an access log, a reverse proxy log, a distributed trace and a browser
+# history, and none of those is reachable by this application's redaction, so a full
+# Primary Account Number (PAN) does not go there. The token is a keyed one-way code over
+# the number, held by column card_token under a unique constraint, so it reaches at most
+# one row; api/CardController resolves it to that row and the number never leaves this
+# service. No route carries a card number in a query string either: the list route filters
+# by account alone, and its paging cursor travels in a request header as the irreversible
+# card token of a row.
 #
 # Every card number that leaves this service is masked. api/dto/CardSummary and
 # api/dto/CardDetailResponse both refuse an unmasked value in their own constructors.
-# Lookups and filters run on the full sixteen characters before a response is built,
-# which is what app/cbl/CBTRN02C.cbl:L383-L387 keys its cross-reference read on and what
-# section 0.6.4 of the plan requires. One logical field therefore carries two shapes: a
-# request property admits the sixteen digits and a response property admits the masked
-# form. card-platform/docs/decision-log.md records the reasoning for that asymmetry and
-# for every other deviation this document describes.
+# Lookups run on the full sixteen characters after the token has resolved to a row, which
+# is what app/cbl/CBTRN02C.cbl:L383-L387 keys its cross-reference read on and what section
+# 0.6.4 of the plan requires. One logical field therefore carries two shapes: the stored
+# column holds the sixteen digits and every response property admits only the masked form.
+# card-platform/docs/decision-log.md records the reasoning for that asymmetry and for every
+# other deviation this document describes.
 #
 # The card verification value is stored and never returned. app/cpy/CVACT02Y.cpy:L7
 # declares it, column card_verification_value holds it, entity/CardEntity publishes no
@@ -433,66 +436,76 @@ paths:
                   The card store is not reachable, so this request may be retried
                 route: '/cards'
 
-  /cards/{cardNumber}:
+  /cards/{cardToken}:
 
     parameters:
 
-      - name: cardNumber
+      - name: cardToken
         in: path
         required: true
         description: >-
-          The card this route names: sixteen digits, from CARD-NUM PIC X(16) at
-          app/cpy/CVACT02Y.cpy:L5. app/cbl/COCRDSLC.cbl:L740 moves the same value
-          into the read key, and app/cbl/COCRDUPC.cbl:L784 applies the only rule
-          the source has for it, which is sixteen numeric digits and no checksum.
+          The card this route names: sixty-four lower-case hexadecimal characters,
+          which PanMasker.cardToken in card-platform/libs/cobol-compat derives from
+          the whole card number under a deployment-supplied key. It is the value
+          column card_token CHAR(64) holds under a unique constraint, so it reaches
+          at most one row, exactly as KEYS(16 0) at app/jcl/CARDFILE.jcl:L54 makes
+          one card number reach at most one row.
 
 
-          The value is the full number and never the masked form, because
-          app/cbl/COCRDSLC.cbl:L742-L750 reads the card file by it. A masked value
-          matches no row. Every card number this service writes back is masked.
+          No card number appears in this path. A path is written to an access log by
+          the container, to a proxy log by whatever sits in front of it, into a
+          distributed trace as the span name, and into a browser history by the
+          client, and none of those is reachable by this application's redaction, so
+          masking a number in a response body while putting it in the request line
+          would minimise nothing. api/CardController resolves the token to the row
+          and hands the number it holds to the update service, so the full number
+          never leaves this service. card-platform/docs/decision-log.md records the
+          choice; transaction CCDL at app/csd/CARDDEMO.CSD:L347-L348 and transaction
+          CCUP at app/csd/CARDDEMO.CSD:L367-L369 each address one card, so each is
+          still one addressable resource.
 
 
-          A path reaches an access log, a proxy log, a trace and a browser
-          history. card-platform/docs/suggested-next-tasks.md carries the
-          deployment guidance that follows from that, and
-          card-platform/docs/decision-log.md records why the identifier sits here:
-          transaction CCDL at app/csd/CARDDEMO.CSD:L347-L348 and transaction CCUP
-          at app/csd/CARDDEMO.CSD:L367-L369 each address one card, so each is one
-          addressable resource.
+          The source rule on a card number is not replaced by this shape. Card
+          number if supplied must be a 16 digit number at
+          app/cbl/COCRDUPC.cbl:L193-L194 still runs in domain/CardUpdateService, on
+          the number resolved from the token.
         schema:
           type: string
-          minLength: 16
-          maxLength: 16
-          pattern: '^[0-9]{16}$'
+          minLength: 64
+          maxLength: 64
+          pattern: '^[0-9a-f]{64}$'
         examples:
           placeholder:
             summary: >-
-              A synthetic number standing in for a full sixteen-digit card number,
-              and the same value the authorization contract publishes. No row of
-              app/data/ASCII/carddata.txt and no row of app/data/ASCII/cardxref.txt
-              carries it, so this document publishes no number that names a stored
-              card, and a reader who pastes it is answered 404 rather than reaching
-              one. Read a real one from record 1 of app/data/ASCII/carddata.txt
-              with `cut -c1-16 app/data/ASCII/carddata.txt | sed -n '1p'`.
-            value: '4000000000000000'
+              A placeholder rather than a value. A real token is derived under the
+              deployment key, so this document publishes none that resolves, and a
+              reader who pastes it is answered 404 rather than reaching a row. Three
+              places carry one that does: the nextCursor member of a GET /cards page,
+              which is the token of that page's last card; a SCOPE_CARD_ authority the
+              deployment granted the caller; and the derivation
+              card-platform/docs/onboarding.md gives, which takes the code over the
+              number under the configured key.
+            value: '0000000000000000000000000000000000000000000000000000000000000000'
 
     get:
       tags:
         - Cards
       operationId: readCard
-      summary: Read one card, named by the full card number in the path.
+      summary: Read one card, named by its card token in the path.
       description: >-
         Returns one card. Reproduces transaction CCDL at
         app/csd/CARDDEMO.CSD:L347-L348, which runs app/cbl/COCRDSLC.cbl.
 
 
-        The read keys on the card number alone. 9100-GETCARD-BYACCTCARD at
+        The read keys on one card value alone. 9100-GETCARD-BYACCTCARD at
         app/cbl/COCRDSLC.cbl:L736 moves the card number into the read key at
         app/cbl/COCRDSLC.cbl:L740 and reads the card file by it at
         app/cbl/COCRDSLC.cbl:L742-L750. The account move above the key at
-        app/cbl/COCRDSLC.cbl:L739 is commented out, so the card number is the
-        whole key and this route reads by it alone. No account accompanies the
-        card and no relationship between the two is tested.
+        app/cbl/COCRDSLC.cbl:L739 is commented out, so one card value is the whole
+        key and this route reads by one card value too: the token, which carries a
+        unique constraint and selects the same single row. No account accompanies
+        the card and no relationship between the two is tested. The masked number in
+        the response is derived from the number the row holds, not from the path.
 
 
         The not-found branch at app/cbl/COCRDSLC.cbl:L755-L761 sets
@@ -503,12 +516,12 @@ paths:
         never answers it.
 
 
-        Ownership is decided by the chain in config/SecurityConfig, which derives
-        the card token from the path value and requires the matching SCOPE_CARD_
-        authority. One entitlement admits one card and not every card ending in
-        the same four digits. A caller holding no such authority reads 403 whether
-        or not the row exists, so a refusal discloses nothing about which cards
-        this service holds.
+        Ownership is decided by the chain in config/SecurityConfig, which compares
+        the path value against the caller's SCOPE_CARD_ authorities directly, both
+        being card tokens. One entitlement admits one card and not every card ending
+        in the same four digits. A caller holding no such authority reads 403 whether
+        or not the row exists, so a refusal discloses nothing about which cards this
+        service holds.
       responses:
 
         '200':
@@ -525,9 +538,10 @@ paths:
                 seededCard:
                   summary: >-
                     The card record 1 of app/data/ASCII/carddata.txt holds. The
-                    path carries that card's full sixteen digits and the response
-                    carries the masked form, so the last four digits are all the
-                    response discloses. Record 1 supplies the account, the name
+                    path carries that card's token and the response carries the
+                    masked number read from the row, so the last four digits are
+                    all the response discloses and no digit of the number appears
+                    in the request line. Record 1 supplies the account, the name
                     padded to fifty characters, the expiry and the status.
                   value:
                     maskedCardNumber: '************5740'
@@ -538,7 +552,7 @@ paths:
 
         '400':
           description: >-
-            The path names a value that is not sixteen digits. The body carries one
+            The path names a value that is not a card token. The body carries one
             text and the route template, and the submitted value reaches neither
             member.
           content:
@@ -546,17 +560,19 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApiError'
               examples:
-                cardNumberNotSixteenDigits:
+                cardTokenMalformed:
                   summary: >-
-                    The answer to a path segment of another width or holding a
-                    character that is no digit. The text is the one
-                    app/cbl/COCRDUPC.cbl:L789 declares, which
-                    app/cbl/COCRDSLC.cbl:L706 sets under the test at
-                    app/cbl/COCRDSLC.cbl:L706.
+                    The answer to a path segment of another width, or one holding an
+                    upper-case letter or a character that is no hexadecimal digit. The
+                    text is additive, because the source screen reads a card number
+                    where this route reads its token. The source edit on a number is
+                    not replaced: the text app/cbl/COCRDUPC.cbl:L789 declares still
+                    answers a number that is not sixteen digits, on the number
+                    domain/CardUpdateService works on.
                   value:
                     status: 400
-                    message: 'CARD ID FILTER,IF SUPPLIED MUST BE A 16 DIGIT NUMBER'
-                    route: '/cards/{cardNumber}'
+                    message: 'Card token must be a 64-character lower-case hexadecimal token'
+                    route: '/cards/{cardToken}'
 
         '401':
           description: >-
@@ -578,11 +594,11 @@ paths:
 
         '403':
           description: >-
-            The identity holds no SCOPE_CARD_ authority for the card token of the
-            card named in the path, and is no administrator. The refusal is written
-            by config/SecurityConfig, so it carries the same four members and the
-            same media type as every other refusal of that chain, and it names
-            neither the card nor the route.
+            The identity holds no SCOPE_CARD_ authority equal to the card token the
+            path names, and is no administrator. The refusal is written by
+            config/SecurityConfig, so it carries the same four members and the same
+            media type as every other refusal of that chain, and it names neither the
+            card nor the route.
             A method this route does not serve is refused here too, since config/SecurityConfig
             declares one rule per method and path and admits no request a rule does not name.
           content:
@@ -592,7 +608,7 @@ paths:
 
         '404':
           description: >-
-            The table holds no card carrying that number. The text is
+            The table holds no card carrying that token. The text is
             "Did not find cards for this search condition", the one
             app/cbl/COCRDSLC.cbl:L760 sets.
           content:
@@ -602,13 +618,15 @@ paths:
               examples:
                 absentCard:
                   summary: >-
-                    The answer to a card number no row carries. A caller that does
-                    not own the card reads 403 instead, and that answer carries a
-                    Problem rather than these three members.
+                    The answer to a card token no row carries. A well-formed token
+                    resolves to at most one row, and to none where no card was
+                    tokenized under the configured key. A caller that does not own the
+                    card reads 403 instead, and that answer carries a Problem rather
+                    than these three members.
                   value:
                     status: 404
                     message: 'Did not find cards for this search condition'
-                    route: '/cards/{cardNumber}'
+                    route: '/cards/{cardToken}'
 
         '405':
           description: >-
@@ -635,7 +653,7 @@ paths:
                 message: >-
                   This route does not serve the method, path or media type the
                   request named
-                route: '/cards/{cardNumber}'
+                route: '/cards/{cardToken}'
 
         '406':
           description: >-
@@ -694,7 +712,7 @@ paths:
                 status: 503
                 message: >-
                   The card store is not reachable, so this request may be retried
-                route: '/cards/{cardNumber}'
+                route: '/cards/{cardToken}'
 
     put:
       tags:
@@ -723,7 +741,13 @@ paths:
         The card the update names arrives in the path and is no property of the
         body. CCUP-NEW-CARDID PIC X(16) at app/cbl/COCRDUPC.cbl:L305 names it in
         the source, and CCUP-NEW-CARDDATA at app/cbl/COCRDUPC.cbl:L307-L313 holds
-        the five values the body carries.
+        the five values the body carries. The path value is that card's token, not
+        its number: api/CardController reads the row the token names and hands the
+        number the row holds to domain/CardUpdateService in the same call, so the
+        number the source rule works on is a stored value and never a submitted
+        one. A token naming no row answers the same not-found outcome a number
+        naming no row answers, so a caller cannot tell which of the two lookups
+        missed and the seven outcomes stay seven.
 
 
         The checks run in the order app/cbl/COCRDUPC.cbl performs them, because
@@ -732,8 +756,11 @@ paths:
         compared against the stored ones third. The four field edits run fourth
         and the row is locked fifth. The locked row is then compared against what
         the caller last saw, and the rewrite runs last. A caller that submits a
-        bad month for a card number that names no row therefore reads the
-        not-found text and not the month text.
+        bad month for a card that names no row therefore reads the not-found text
+        and not the month text. The first of those steps is the edit at
+        app/cbl/COCRDUPC.cbl:L193-L194, which a resolved number always satisfies,
+        so a caller of this route never reads its text and
+        domain/CardUpdateServiceTest is where it is exercised.
 
 
         No checksum rule, no card-status test and no account-status test.
@@ -830,7 +857,7 @@ paths:
 
         '400':
           description: >-
-            The path names a value that is not sixteen digits, or the request body
+            The path names a value that is not a card token, or the request body
             could not be read as one card update. A body naming a property this
             contract does not declare, and a property declared as text that arrives
             as a JSON number or a JSON boolean, are both bodies this route could
@@ -849,7 +876,7 @@ paths:
                     message: >-
                       The request body holds one card in JavaScript Object Notation
                       (JSON) and could not be read as one
-                    route: '/cards/{cardNumber}'
+                    route: '/cards/{cardToken}'
 
         '401':
           description: The request carried no usable credential.
@@ -888,17 +915,19 @@ paths:
 
         '404':
           description: >-
-            The table holds no card carrying that number. The outcome property
+            The table holds no card carrying that token. The outcome property
             reads CARD_NOT_FOUND and the message is
             "Did not find cards for this search condition", the text
-            app/cbl/COCRDUPC.cbl:L1400 sets. The refreshed card is null.
+            app/cbl/COCRDUPC.cbl:L1400 sets. The refreshed card is null. A token
+            naming no row and a resolved number naming no row answer the same
+            outcome, so a caller cannot tell which lookup missed.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/CardUpdateNotFound'
               examples:
                 absentCard:
-                  summary: The answer to a card number no row carries.
+                  summary: The answer to a card token no row carries.
                   value:
                     outcome: 'CARD_NOT_FOUND'
                     message: 'Did not find cards for this search condition'
@@ -985,6 +1014,19 @@ paths:
             the value is refused here. card-platform/docs/business-rule-flags.md
             carries this divergence as D3 with the decision it asks of the project
             owner.
+
+
+            Two further texts of this outcome are unreachable through this route, and
+            are named here so a caller reading domain/CardUpdateService does not
+            expect them: "Card number not provided", the text
+            app/cbl/COCRDUPC.cbl:L180 declares, and
+            "CARD ID FILTER,IF SUPPLIED MUST BE A 16 DIGIT NUMBER", the text
+            app/cbl/COCRDUPC.cbl:L789 declares under the test at
+            app/cbl/COCRDUPC.cbl:L784. Both edit the card number, which is step one
+            of the source edit chain. The number reaching that step is read from the
+            row the path token named rather than submitted, so it is always present
+            and always sixteen digits, and neither text can answer a request.
+            domain/CardUpdateServiceTest exercises both directly.
           content:
             application/json:
               schema:
@@ -1033,7 +1075,7 @@ paths:
                 message: >-
                   This route does not serve the method, path or media type the
                   request named
-                route: '/cards/{cardNumber}'
+                route: '/cards/{cardToken}'
 
         '406':
           description: >-
@@ -1054,7 +1096,7 @@ paths:
                 message: >-
                   This route does not serve the method, path or media type the
                   request named
-                route: '/cards/{cardNumber}'
+                route: '/cards/{cardToken}'
 
         '500':
           description: >-
@@ -1120,7 +1162,7 @@ paths:
                   value:
                     status: 503
                     message: 'Update of record failed'
-                    route: '/cards/{cardNumber}'
+                    route: '/cards/{cardToken}'
                 cardStoreUnreachable:
                   summary: >-
                     The connection could not be opened, the transaction could not be
@@ -1129,7 +1171,7 @@ paths:
                     status: 503
                     message: >-
                       The card store is not reachable, so this request may be retried
-                    route: '/cards/{cardNumber}'
+                    route: '/cards/{cardToken}'
 
 components:
 
@@ -1189,7 +1231,7 @@ components:
           maxLength: 200
           description: The route template of the failing endpoint.
           examples:
-            - '/cards/{cardNumber}'
+            - '/cards/{cardToken}'
 
     Problem:
       type: object
@@ -1409,8 +1451,10 @@ components:
         declares no field for it and entity/CardEntity never writes it.
 
 
-        The card number is no property of this schema. It names the row the update
-        rewrites and arrives as the path variable of the operation.
+        The card number is no property of this schema and reaches no request at all.
+        The row the update rewrites is named by the path variable of the operation,
+        which carries that card's token, and the service reads the number from the
+        row the token resolves to.
 
 
         Every property is required and no other property is admitted.

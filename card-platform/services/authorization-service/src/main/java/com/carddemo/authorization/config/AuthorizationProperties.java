@@ -2,6 +2,7 @@ package com.carddemo.authorization.config;
 
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Positive;
@@ -245,35 +246,27 @@ public record AuthorizationProperties(
     }
 
     /**
-     * The freshness policy applied to the two replica tables.
+     * The synchronization policy applied to the two replica tables.
      *
      * <p>ADDITIVE. The source has no equivalent because it has no replica:
      * {@code app/cbl/CBTRN02C.cbl:L382} and {@code app/cbl/CBTRN02C.cbl:L395} read the
      * cross-reference and account datasets themselves, so nothing they read can be out of date.
      *
-     * @param maxStaleness how old a replica observation may be and still be authorized against
+     * <p>The policy is a property of the <strong>stream</strong> and deliberately not of a row. An
+     * earlier form of this block bounded how old a row's last observation could be, and it was wrong
+     * in the ordinary case rather than the failing one: both producers publish on a state change and
+     * on nothing else, so a card nobody edits is a correct copy whose last observation recedes for
+     * ever, and every call for it was refused once the bound elapsed. Consumer lag is the measurement
+     * that separates the two situations, because a caught-up consumer of a quiet topic reports zero.
+     *
+     * @param lagCeiling how many records a replica stream may have waiting before this service stops
+     *                   authorizing against the tables that stream maintains. Zero requires a
+     *                   consumer that is fully caught up
      */
     public record Replica(
 
-            @NotNull
-            @DurationUnit(ChronoUnit.SECONDS)
-            Duration maxStaleness) {
-
-        /**
-         * Holds the window above zero.
-         *
-         * <p>A zero or negative window would refuse every call, because no observation can be newer
-         * than the moment it is compared against.
-         *
-         * @throws IllegalArgumentException when the window is not positive
-         */
-        public Replica {
-            if (maxStaleness != null
-                    && (maxStaleness.isZero() || maxStaleness.isNegative())) {
-                throw new IllegalArgumentException(
-                        "carddemo.replica.max-staleness must be positive, found " + maxStaleness);
-            }
-        }
+            @Min(0)
+            long lagCeiling) {
     }
 
     /**

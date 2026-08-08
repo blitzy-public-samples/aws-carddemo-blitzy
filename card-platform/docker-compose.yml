@@ -165,15 +165,17 @@ x-service-environment: &service-environment
   # variable stops the stack rather than admitting a password this repository
   # publishes. .env.example documents each one and how to generate a hash.
   #
-  # ACQUIRER is read by the authorization service alone: it is the one role besides
-  # ADMIN that reaches POST /authorizations, and no cardholder identity holds it.
+  # Three identities are shared, and the acquirer is not among them. ACQUIRER is read by
+  # the authorization service alone, so its username and its verifier are bound in that
+  # service's own environment block rather than here. A hash reaching a service that never
+  # verifies a password against it is a bcrypt digest an attacker who reaches any one
+  # container can take away and grind offline, for the one identity that authorizes every
+  # card the platform holds.
   ADMIN_USERNAME: ${ADMIN_USERNAME:-admin001}
-  ACQUIRER_USERNAME: ${ACQUIRER_USERNAME:-acquirer1}
   USER_USERNAME: ${USER_USERNAME:-user0001}
   MONITORING_USERNAME: ${MONITORING_USERNAME:-monitor01}
   USER_SCOPES: ${USER_SCOPES:-}
   ADMIN_PASSWORD_HASH: ${ADMIN_PASSWORD_HASH:?ADMIN_PASSWORD_HASH must be set; copy .env.example to .env and generate a hash}
-  ACQUIRER_PASSWORD_HASH: ${ACQUIRER_PASSWORD_HASH:?ACQUIRER_PASSWORD_HASH must be set; copy .env.example to .env and generate a hash}
   USER_PASSWORD_HASH: ${USER_PASSWORD_HASH:?USER_PASSWORD_HASH must be set; copy .env.example to .env and generate a hash}
   MONITORING_PASSWORD_HASH: ${MONITORING_PASSWORD_HASH:?MONITORING_PASSWORD_HASH must be set; copy .env.example to .env and generate a hash}
 
@@ -750,6 +752,14 @@ services:
       # against and verify-full would refuse it. deploy/k8s/30-configmap.yaml uses
       # verify-full, because a cluster has a certificate authority and a network path
       # worth protecting; here the whole path is one Docker bridge on one machine.
+      # The acquirer identity, delivered to this service and to no other. It is the one
+      # role besides ADMIN that reaches POST /authorizations, no cardholder identity holds
+      # it, and services/authorization-service/src/main/resources/application.yml is the
+      # only file on the platform that reads either value. Keeping the verifier out of the
+      # shared block above is deliberate: a service that never checks a password against
+      # this hash has no use for it and every reason not to hold it.
+      ACQUIRER_USERNAME: ${ACQUIRER_USERNAME:-acquirer1}
+      ACQUIRER_PASSWORD_HASH: ${ACQUIRER_PASSWORD_HASH:?ACQUIRER_PASSWORD_HASH must be set; copy .env.example to .env and generate a hash}
       # The card-token key, delivered to this service and to card-service alone. A card
       # token is an HmacSHA256 code over the card number under this key, and the key is
       # what stops a holder of one token recomputing tokens across the sixteen-digit
@@ -806,9 +816,12 @@ services:
       # in its own schema, and two listeners keep those two tables current from
       # account.state-changed and card.updated.
       #
-      # How old a card_xref or account_credit_snapshot row may be and still be authorized
-      # against. A whole day, so a demo that fires no account or card mutation still authorizes.
-      REPLICA_MAX_STALENESS: ${REPLICA_MAX_STALENESS:-P1D}
+      # When those two tables may be authorized against, asked of the streams and never of the
+      # age of a row. Both producers publish on a state change and on nothing else, so a card
+      # nobody edits is a correct copy whose last observation recedes for ever; the bound this
+      # setting replaces refused every such card a day after the seed load. Records a replica
+      # stream may have waiting instead, with zero requiring a consumer that is fully caught up.
+      REPLICA_LAG_CEILING: ${REPLICA_LAG_CEILING:-0}
       # An approval reserves its own amount on its account_credit_snapshot row in the same
       # transaction as the decision, because the account service reports the authoritative
       # accumulators back only after the posting path has run. The batch program had no such
@@ -1293,16 +1306,23 @@ services:
       # factory at construction and refuses to start unless every one holds.
       # acks all waits for every in-sync replica. Idempotent production plus an
       # in-flight ceiling of five keeps one account's events in publish order
-      # through a retry. The three timeouts bound a send rather than blocking a
-      # request thread until the broker answers.
+      # through a retry.
       SPRING_KAFKA_PRODUCER_ACKS: all
       SPRING_KAFKA_PRODUCER_KEY_SERIALIZER: org.apache.kafka.common.serialization.StringSerializer
       SPRING_KAFKA_PRODUCER_VALUE_SERIALIZER: org.apache.kafka.common.serialization.StringSerializer
       SPRING_KAFKA_PRODUCER_PROPERTIES_ENABLE_IDEMPOTENCE: "true"
       SPRING_KAFKA_PRODUCER_PROPERTIES_MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION: "5"
-      SPRING_KAFKA_PRODUCER_PROPERTIES_DELIVERY_TIMEOUT_MS: "120000"
-      SPRING_KAFKA_PRODUCER_PROPERTIES_REQUEST_TIMEOUT_MS: "30000"
-      SPRING_KAFKA_PRODUCER_PROPERTIES_MAX_BLOCK_MS: "5000"
+      # The three send timeouts are deliberately NOT set here, and a review found
+      # why it matters. This block used to carry DELIVERY_TIMEOUT_MS 120000,
+      # REQUEST_TIMEOUT_MS 30000 and MAX_BLOCK_MS 5000, which made the window of one
+      # send MAX_BLOCK_MS + DELIVERY_TIMEOUT_MS = 125 seconds while
+      # OUTBOX_RELAY_MAX_DURATION_MS below bounds the whole sweep at 5 seconds. Every
+      # send then outlived the deadline that was meant to bound it: the relay gave up
+      # waiting while the producer kept trying, so a row could be published by an
+      # abandoned send and republished by the next sweep. No other service block
+      # overrode them. src/main/resources/application.yml pins 2000 / 2000 / 2000, a
+      # 4-second window that fits inside the 5-second sweep, and leaving these unset is
+      # what lets that hold.
       OUTBOX_RELAY_INTERVAL_MS: ${OUTBOX_RELAY_INTERVAL_MS:-500}
       OUTBOX_RELAY_BATCH_SIZE: ${OUTBOX_RELAY_BATCH_SIZE:-100}
       OUTBOX_RELAY_CLAIM_TIMEOUT: ${OUTBOX_RELAY_CLAIM_TIMEOUT:-PT2M}

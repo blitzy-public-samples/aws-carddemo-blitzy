@@ -10,21 +10,22 @@ import java.util.Objects;
 import java.util.regex.Pattern;
 
 /**
- * The response body of {@code GET /notifications/{cardNumber}}.
+ * The response body of {@code GET /notifications/{cardToken}}.
  *
  * <p>Four components carry one card's alert history: the masked card number, the count of
  * transactions, the per-card total and the transactions. The schema {@code NotificationHistory} in
  * {@code src/main/resources/openapi.yaml} declares those four properties in this order and sets
  * {@code additionalProperties: false}.
  *
- * <p>The card is named once, by the masked form of the number the request path carried. The card
- * token that keys the read model is a storage key and reaches no response: it names one card for as
- * long as its key stands, so publishing it would let a reader of a log follow that card across every
- * request that touched it.
+ * <p>The card is named once, by the masked form the read-model rows already hold in column
+ * {@code masked_card_number}. The request path carries that card's token and no digit of its number,
+ * so nothing here is derived from the path. The token itself reaches no response either: it names one
+ * card for as long as its key stands, so publishing it would let a reader of a log follow that card
+ * across every request that touched it.
  *
- * <p>Every component is always present. A card with no row in the read model carries an empty array,
- * a count of {@code 0} and a total of {@code "0.00"}, and it still names its card: the masked form is
- * derived from the path value rather than read from a row, so a card with no rows has one too.
+ * <p>Every component is always present, and this record is built only where at least one row was
+ * read. A card with no row has no stored masked number to name it with, so
+ * {@code api/NotificationHistoryController} answers {@code 404} there rather than inventing one.
  *
  * <p>The array covers the whole history of one card and carries no bound.
  * {@code app/cbl/CBSTM03A.CBL} reads every row of one card between two key breaks and
@@ -35,8 +36,9 @@ import java.util.regex.Pattern;
  * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  *
  * @param cardNumber the masked card number: twelve mask characters then the last four digits, and
- *        never a full Primary Account Number. Display data alone, derived from the path value by
- *        {@link PanMasker#maskCardNumber(String)}. Width from {@code TRNX-CARD-NUM PIC X(16)} at
+ *        never a full Primary Account Number. Display data alone, read from column
+ *        {@code masked_card_number} of the rows, which {@link PanMasker#maskCardNumber(String)}
+ *        produced upstream. Width from {@code TRNX-CARD-NUM PIC X(16)} at
  *        {@code app/cpy/COSTM01.CPY:L22}. ADDITIVE. The source masks nothing.
  *        {@code app/bms/COCRDSL.bms:L99} shows the card field at {@code LENGTH=16},
  *        {@code CARD-NUM PIC X(16)} at {@code app/cpy/CVACT02Y.cpy:L5} is plain character data, and
@@ -122,10 +124,11 @@ public record NotificationHistoryResponse(String cardNumber, int transactionCoun
      * Builds one response from every read-model row of one card and the total the domain computed
      * over those rows.
      *
-     * <p>The masked card number arrives derived from the request path value and is returned as it
-     * stands. Deriving it from the path rather than from a row lets a card with no row name its card
-     * too, which is what {@code app/cbl/CBSTM03A.CBL:L318-L325} does: the statement header carries
-     * the card before any row of that card is read.</p>
+     * <p>The masked card number arrives read from the first row of the card and is returned as it
+     * stands. The source put the card in the statement header before reading any row of it at
+     * {@code app/cbl/CBSTM03A.CBL:L318-L325}, which a path carrying the number could reproduce and a
+     * path carrying a token cannot, so a card with no row is answered {@code 404} by the controller
+     * instead of an invented header.</p>
      *
      * <p>Each row maps through
      * {@link NotificationTransactionItem#from(StatementTransactionEntity)} in the order supplied,
@@ -137,8 +140,9 @@ public record NotificationHistoryResponse(String cardNumber, int transactionCoun
      * {@code domain/NotificationService.java} accumulates it, truncating toward zero at every step.
      * A total at any other scale is refused here.</p>
      *
-     * @param maskedCardNumber the card this history covers, masked to twelve mask characters then
-     *        four digits by {@link PanMasker#maskCardNumber(String)}; must not be null
+     * @param maskedCardNumber the card this history covers, read from column
+     *        {@code masked_card_number} of a row of it, which holds twelve mask characters then four
+     *        digits; must not be null
      * @param total the total of the rows supplied, at scale {@value PicClause#TRAN_AMT_SCALE}; must
      *        not be null
      * @param rows every row of the card in ascending transaction-identifier order; must not be null

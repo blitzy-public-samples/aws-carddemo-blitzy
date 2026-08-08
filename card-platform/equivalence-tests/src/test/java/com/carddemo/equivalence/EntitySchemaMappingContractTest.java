@@ -87,7 +87,7 @@ import org.junit.jupiter.api.Test;
 class EntitySchemaMappingContractTest {
 
     /** Entities the six services declare between them. */
-    private static final int ENTITY_COUNT = 30;
+    private static final int ENTITY_COUNT = 31;
 
     /**
      * Persistent attributes those entities map between them.
@@ -135,8 +135,15 @@ class EntitySchemaMappingContractTest {
      * seventy-six-character text and the moment. That is what the source writes: a four-hundred-and
      * -thirty-byte record of the daily-transaction block followed by an eighty-byte trailer, and a
      * block re-parsed on demand cannot disagree with the bytes the reject dataset held.</p>
+     *
+     * <p>The six most recent belong to the authorization service's {@code replica_gap}, created by
+     * {@code V12__replica_gap.sql}: the account and the stream that make up its key, the first and
+     * last moments a change for that account failed to apply, how many times, and the fixed phrase
+     * naming the last failure. That table is what lets replica currency be measured as consumer lag
+     * without missing the one case lag cannot see, a delivery whose offset advanced after its
+     * diagnostic was away.</p>
      */
-    private static final int MAPPED_COLUMN_COUNT = 255;
+    private static final int MAPPED_COLUMN_COUNT = 261;
 
     /** Dialect the mapping model renders SQL types for, matching the shipped database. */
     private static final String POSTGRES_DIALECT = "org.hibernate.dialect.PostgreSQLDialect";
@@ -409,6 +416,7 @@ class EntitySchemaMappingContractTest {
                     com.carddemo.authorization.entity.CardCrossReferenceEntity.class,
                     com.carddemo.authorization.entity.OutboxEventEntity.class,
                     com.carddemo.authorization.entity.ProcessedEventEntity.class,
+                    com.carddemo.authorization.entity.ReplicaGapEntity.class,
                     com.carddemo.authorization.entity.UnresolvedCardAttemptEntity.class)),
             new ServiceModule("ledger-posting-service", "ledger", List.of(
                     com.carddemo.ledger.entity.AccountBalanceProjectionEntity.class,
@@ -1065,7 +1073,7 @@ class EntitySchemaMappingContractTest {
     }
 
     @Nested
-    @DisplayName("Column mapping of all 30 entities")
+    @DisplayName("Column mapping of all 31 entities")
     class ColumnMapping {
 
         /** Every attribute of every entity maps a column its migration declares. */
@@ -1292,7 +1300,7 @@ class EntitySchemaMappingContractTest {
     }
 
     @Nested
-    @DisplayName("Keys and indexes of all 30 entities")
+    @DisplayName("Keys and indexes of all 31 entities")
     class KeysAndIndexes {
 
         /** Every entity's identifier maps exactly the primary key columns its migration declares. */

@@ -93,7 +93,8 @@ spec:
               containerPort: 9080
           envFrom:
             # Broker address, topic names, consumer group names, service
-            # addresses, log levels, the three request-identity usernames and
+            # addresses, log levels, the four request-identity usernames
+            # (the acquirer one read by the authorization service alone) and
             # the transport settings. No credential appears there.
             - configMapRef:
                 name: carddemo-config

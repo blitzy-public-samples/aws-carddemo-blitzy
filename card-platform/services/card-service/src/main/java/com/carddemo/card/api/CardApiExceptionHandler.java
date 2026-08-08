@@ -71,13 +71,13 @@ import org.springframework.web.servlet.resource.NoResourceFoundException;
  * it is one of the two templates this service declares, chosen by the dispatcher, and it holds no
  * value a caller sent. Reporting the collection template for every failure was wrong on the two
  * routes that name one card, where a caller reading {@code /cards} for a failure of
- * {@code /cards/{cardNumber}} is told the wrong endpoint failed.
+ * {@code /cards/{cardToken}} is told the wrong endpoint failed.
  *
  * <p>{@link #routeOf} falls back to the collection template when no pattern is available, which is
  * the case when a failure arises before the dispatcher matched one and the case when this class is
  * called outside a request. It also falls back when a pattern would not satisfy
  * {@link ApiErrorResponse}, whose constructor refuses a run of more than four digits. The template of
- * the two routes that carry a path variable is {@code /cards/{cardNumber}}, which holds the variable
+ * the two routes that carry a path variable is {@code /cards/{cardToken}}, which holds the variable
  * name and no digit, and the check is there so that a route added later cannot turn a handled failure
  * into an unhandled one.
  *
@@ -393,7 +393,7 @@ public class CardApiExceptionHandler {
      * attribute {@link HandlerMapping#BEST_MATCHING_PATTERN_ATTRIBUTE}. A pattern is one of the two
      * templates this service declares and holds no value a caller sent, so reporting it discloses
      * nothing. Reporting the collection template for every failure told a caller of
-     * {@code GET /cards/{cardNumber}} that {@code /cards} had failed.
+     * {@code GET /cards/{cardToken}} that {@code /cards} had failed.
      *
      * <p>Three cases fall back to the collection template, and each is a case where no pattern is
      * available or usable rather than a case where one is ignored: a null request, which is how this
@@ -402,7 +402,7 @@ public class CardApiExceptionHandler {
      * That last check exists because the constructor of that record throws on a run of more than four
      * digits, and an exception thrown inside an exception handler reaches a caller as an unhandled
      * failure. Two routes of this service carry a path variable, and the template of both is
-     * {@code /cards/{cardNumber}}, which holds the variable name and no digit. The check reads the
+     * {@code /cards/{cardToken}}, which holds the variable name and no digit. The check reads the
      * template the dispatcher matched and never the path a caller sent, so no card number can reach a
      * body through it, and a route added later cannot turn a handled failure into one this class
      * cannot answer.

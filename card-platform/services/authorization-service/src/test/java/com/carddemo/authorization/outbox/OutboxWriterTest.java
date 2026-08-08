@@ -111,9 +111,20 @@ class OutboxWriterTest {
         }
     }
 
-    /** The sixteen-character form, which reason {@code 0100} alone uses. */
+    /**
+     * The sixteen-character form, which no producer writes and this writer still accepts.
+     *
+     * <p>{@code domain/AuthorizationService} records an unresolved card in
+     * {@code unresolved_card_attempt} and {@code authorization_decision} and writes no outbox row,
+     * because reject code {@code 0100} fires where the cross-reference read missed and no account
+     * identifier exists to key an event on. What these assertions hold is the writer's side of the
+     * retained contract at {@code schemas/transaction-declined-v2.json}: a record written under it
+     * before that decision stays readable, and a reinstated producer would write through here. They
+     * are therefore about this class and not about what the service publishes, which
+     * {@code domain/AuthorizationServiceTest} measures.
+     */
     @Nested
-    @DisplayName("the transaction key form")
+    @DisplayName("the transaction key form, retained and unpublished")
     class TransactionKeyForm {
 
         /** Asserts an unresolved-card decline keys its row on the transaction identifier. */

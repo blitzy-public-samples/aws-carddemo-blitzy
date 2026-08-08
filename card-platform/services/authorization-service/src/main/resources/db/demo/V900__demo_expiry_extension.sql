@@ -1,6 +1,17 @@
 -- Authorization service, DEMO-ONLY migration. This file lives in db/demo and NOT in
 -- db/migration, so it is applied only when spring.flyway.locations names both
--- locations. card-platform/docker-compose.yml names both; nothing else does.
+-- locations. Two deployment paths name both, and both are demo profiles:
+-- card-platform/docker-compose.yml through AUTHORIZATION_FLYWAY_LOCATIONS, and
+-- card-platform/deploy/k8s/30-configmap.yaml through the key of the same name, which
+-- 40-authorization-service.yaml reads. Setting that key to classpath:db/migration on either
+-- path is the base-profile opt-out, and it is set together with the account key or not at
+-- all. Nothing else names both: this service's own application.yml defaults the property to
+-- classpath:db/migration alone, so mvn verify measures the fixture rather than the overlay.
+--
+-- No line of this file may carry a dollar sign followed by a brace. Flyway substitutes
+-- placeholders across the whole text of a migration, comments included, and answers an
+-- unknown one by refusing to start. An earlier revision of the sentence above quoted the
+-- property with its default in that form and stopped every service that applies this overlay.
 --
 -- WHY THIS FILE EXISTS
 -- Reason code 103 approves only while the account expiry is greater than or equal to

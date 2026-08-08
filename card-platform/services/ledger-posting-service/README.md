@@ -340,7 +340,7 @@ Legend for Figure 1:
 - **Adding a consumer of `TransactionPosted` changes nothing here.** A new service subscribes to `transaction.posted` under its own group and starts receiving events. The notification service already does exactly that.
 - **Adding a posting step means adding a component**, then placing it explicitly in the ordered chain in `domain/PostingService`. The source marks the seam itself with `* ADD MORE VALIDATIONS HERE` at `app/cbl/CBTRN02C.cbl:L377`, which is why the updaters stay separate classes instead of one method.
 - **Repository methods follow the source operation-code contract** at `app/cbl/CBSTM03B.CBL:L100`–`L112`: `K` becomes find by identifier, `R` becomes stream all, `W` becomes insert and `Z` becomes update. `O` and `C` are dropped, because the framework owns the connection lifecycle.
-- **Swapping the event bus touches two files, and this module ships no publisher port.** The authorization, account and card services each declare a `messaging/EventPublisherPort`; this one does not, because nothing here publishes outside the relay. The seam is instead `outbox/OutboxRelay`, which reads claimed rows and hands each to the `KafkaTemplate` that `config/KafkaProducerConfig.ledgerEventKafkaTemplate` declares. To publish onto another transport, replace that bean with one wrapping the new client and leave `OutboxRelay` untouched — it depends on the template alone, so the outbox contract, the claim protocol and the abandonment route all survive the substitution. Introducing a port here would be a second abstraction over a single call site, which is the kind of layer the brief asked this platform not to add.
+- **Swapping the event bus touches two files, and this module ships no publisher port.** The authorization, account, card and fraud detection services each declare a `messaging/EventPublisherPort`. This one does not, and it is the only producing module that does not. The seam is instead `outbox/OutboxRelay`, which reads claimed rows and hands each to the `KafkaTemplate` that `config/KafkaProducerConfig.ledgerEventKafkaTemplate` declares. To publish onto another transport, replace that bean with one wrapping the new client and leave `OutboxRelay` untouched — it depends on the template alone, so the outbox contract, the claim protocol and the abandonment route all survive the substitution. The difference from the other four is recorded rather than defended: the reason once given here, that nothing in this module publishes outside its relay, is equally true of the fraud detection service, which does declare the port. [Suggested next tasks](../../docs/suggested-next-tasks.md) carries the alignment, and the [Decision Log](../../docs/decision-log.md) carries the position.
 
 [Suggested next tasks](../../docs/suggested-next-tasks.md) lists work found during this build and deliberately left out of scope.
 
@@ -367,7 +367,7 @@ Use these versions. They are the tested set, not a floor.
 | Outbox relay | every 500 ms, up to 100 rows, claim timeout `PT2M` |
 | Migrations | Five, listed below |
 
-Flyway owns this schema and runs five migrations on every start, in this order:
+Flyway owns this schema and runs six migrations on every start, in this order:
 
 | Migration | What it does |
 | :--- | :--- |
@@ -376,6 +376,7 @@ Flyway owns this schema and runs five migrations on every start, in this order:
 | `V3__account_state_replica.sql` | Adds the provenance columns the `AccountStateChanged` listener compares against |
 | `V4__account_state_ownership.sql` | Records which writer owns each value column of `account_balance_projection`, correcting the table comment `V3` set: an arriving account change no longer replaces a column the posting path advances |
 | `V5__processed_event_topic_key.sql` | Makes the consumed topic part of the duplicate-delivery marker's identity, so the two listener groups sharing the table can each claim the same event identifier once |
+| `V6__cycle_column_locators.sql` | Re-issues the `cycle_credit` and `cycle_debit` comments with the copybook lines they actually come from, `app/cpy/CVACT01Y.cpy:L13` and `:L14`. `V4` cited `:L12` and `:L13`, one line above each field, and `:L12` is a date. It is a migration rather than an edit because `V4` has run |
 
 Run the four steps in this order. The Dockerfile copies the packaged archive out of `target/`, and the compose build context is this module directory alone. It reaches neither the parent POM nor the two shared libraries, so Maven has to finish first.
 

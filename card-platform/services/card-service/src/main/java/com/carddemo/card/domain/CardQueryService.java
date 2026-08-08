@@ -341,6 +341,45 @@ public class CardQueryService {
     }
 
     /**
+     * Returns one card named by its token rather than by its number.
+     *
+     * <p>This is the read the two card-numbered routes now take, and it exists so that no Primary
+     * Account Number (PAN) travels in a request path. A path reaches an access log, a proxy log, a
+     * distributed trace and a browser history, none of which this application's redaction can reach.
+     * The token names the same row: {@code card_token} is {@code CHAR(64) NOT NULL} and carries a
+     * unique constraint, so one token reaches at most one row, exactly as {@code KEYS(16 0)} at
+     * {@code app/jcl/CARDFILE.jcl:L54} makes one card number reach at most one row.
+     *
+     * <p>The value is derived, not stored anywhere a caller can read it back into a number:
+     * {@link PanMasker#cardToken(String)} is a keyed one-way derivation over the whole sixteen
+     * digits, and {@code domain/CardTokenReconciler} re-derives every row's token at start-up so a
+     * rotated key cannot leave a row unreachable.
+     *
+     * <p>The source has no equivalent, because a 3270 screen carried the number itself. The lookup
+     * this reproduces is still {@code 9100-GETCARD-BYACCTCARD} at {@code app/cbl/COCRDSLC.cbl:L736}
+     * reading the card file by its primary key; only the value a caller quotes has changed, and the
+     * row it reaches has not.
+     *
+     * <p>A missing row yields an empty {@link Optional} and throws nothing, which is the outcome
+     * {@link #findByCardNumber(String)} reports for a card number naming no row.
+     *
+     * @param cardToken the card token, {@value PanMasker#CARD_TOKEN_LENGTH} lower-case hexadecimal
+     *                  characters
+     * @return the matching card, or an empty {@link Optional} when the table holds none
+     * @throws NullPointerException     if {@code cardToken} is {@code null}
+     * @throws IllegalArgumentException if {@code cardToken} does not match
+     *                                  {@link PanMasker#CARD_TOKEN_PATTERN}
+     */
+    public Optional<CardEntity> findByCardToken(String cardToken) {
+        Objects.requireNonNull(cardToken, "cardToken is required");
+        if (!CARD_TOKEN_SHAPE.matcher(cardToken).matches()) {
+            throw new IllegalArgumentException("cardToken must be "
+                    + PanMasker.CARD_TOKEN_LENGTH + " lower-case hexadecimal characters");
+        }
+        return cardRepository.findByCardToken(cardToken);
+    }
+
+    /**
      * Returns every card belonging to one account.
      *
      * <p>Reproduces {@code 9150-GETCARD-BYACCT} at {@code app/cbl/COCRDSLC.cbl:L779}, whose

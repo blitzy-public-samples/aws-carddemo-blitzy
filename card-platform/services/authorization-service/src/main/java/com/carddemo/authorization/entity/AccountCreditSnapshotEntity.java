@@ -7,7 +7,6 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Index;
 import jakarta.persistence.Table;
-import java.time.Duration;
 import java.time.Instant;
 import java.math.BigDecimal;
 import java.util.Objects;
@@ -554,25 +553,6 @@ public class AccountCreditSnapshotEntity {
         return observedAt;
     }
 
-    /**
-     * Reports whether this row was observed recently enough to authorize against.
-     *
-     * <p>The caller supplies the window, so the policy lives in configuration and not here. A row
-     * with no observation time is reported stale.
-     *
-     * @param now       the current time
-     * @param maxAge    how old an observation may be and still count as fresh
-     * @return true when this row was observed within {@code maxAge} of {@code now}
-     * @throws NullPointerException if {@code now} or {@code maxAge} is null
-     */
-    public boolean isFreshAt(Instant now, Duration maxAge) {
-        Objects.requireNonNull(now, "now");
-        Objects.requireNonNull(maxAge, "maxAge");
-        if (observedAt == null) {
-            return false;
-        }
-        return !observedAt.isBefore(now.minus(maxAge));
-    }
 
     /**
      * Records that a state-change event wrote this row, unless that event is not newer than the one

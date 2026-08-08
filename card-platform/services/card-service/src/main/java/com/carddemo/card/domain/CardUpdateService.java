@@ -131,8 +131,11 @@ public class CardUpdateService {
      * {@code app/cbl/COCRDUPC.cbl:L762-L800}.
      *
      * <p>{@code app/cbl/COCRDUPC.cbl:L784} tests the value for sixteen numeric digits and nothing
-     * more. The card number arrives from the request path and is therefore not a component of
-     * {@link CardUpdateRequest}, so step one reads this shape rather than a constraint on a bean.
+     * more. The card number is no component of {@link CardUpdateRequest} and no path value either:
+     * {@code api/CardController} resolves the card token the path carries to a row and hands that
+     * row's number in, so step one reads this shape rather than a constraint on a bean. A resolved
+     * number always satisfies it, which is why {@code domain/CardUpdateServiceTest} is where the
+     * refusal is exercised.
      */
     static final java.util.regex.Pattern SEARCH_KEY_SHAPE =
             java.util.regex.Pattern.compile("^[0-9]{" + PicClause.CARD_NUM_WIDTH + "}$");
@@ -696,7 +699,7 @@ public class CardUpdateService {
      * race reads what the row holds, so that resubmitting the body it is given is a body the
      * comparison accepts. {@code app/data/ASCII/carddata.txt} carries mixed-case names such as
      * {@code Aniya Von}, and answering {@code ANIYA VON} told a caller the row held a value it did
-     * not: {@code GET /cards/{cardNumber}} returns the mixed-case name for the same row, so two routes of
+     * not: {@code GET /cards/{cardToken}} returns the mixed-case name for the same row, so two routes of
      * one service disagreed about one column.
      *
      * <p>The fold belongs to the comparison alone. {@code 9300-CHECK-CHANGE-IN-REC.} at

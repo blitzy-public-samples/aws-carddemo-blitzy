@@ -15,6 +15,7 @@ import com.carddemo.authorization.entity.OutboxEventEntity;
 import com.carddemo.authorization.entity.ProcessedEventEntity.ProcessedEventId;
 import com.carddemo.authorization.entity.ProcessedEventEntity;
 import java.math.BigDecimal;
+import java.sql.Timestamp;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
@@ -891,13 +892,23 @@ class NativeStatementIT {
                     "the source description is stored as written");
         }
 
+        /**
+         * Asserts the one decided outcome that names neither an account nor an event is stored.
+         *
+         * <p>Reason {@code 0100} fires where the cross-reference read missed, so there is no account
+         * identifier, and every event this platform publishes names an account and is keyed on one.
+         * That outcome therefore publishes nothing, and its row carries a null {@code event_id} as
+         * well as a null {@code account_id}. {@code V13__decision_without_event.sql} dropped the
+         * {@code NOT NULL} that used to force an identifier here and added
+         * {@code ck_authorization_decision_event} so the two columns can only be absent together.
+         */
         @Test
-        @DisplayName("a decline resolving no account is stored without one")
+        @DisplayName("a decline resolving no account is stored naming neither account nor event")
         void aDeclineResolvingNoAccountIsStored() {
             AuthorizationDecisionEntity unresolved = AuthorizationDecisionEntity.declined(
                     "TRAN000000000003", ACTOR, null, "****************",
                     "72e0699beda9afd3f6677b683462371d1648c559acbb5e14a6022d76293dbf5b", new BigDecimal("5.00"),
-                    "0100", "INVALID CARD NUMBER FOUND", BASE_MOMENT, UUID.randomUUID(),
+                    "0100", "INVALID CARD NUMBER FOUND", BASE_MOMENT, null,
                     DECLARED_PROCESSING_TIMESTAMP);
 
             transactionTemplate.execute(status -> decisions.save(unresolved));
@@ -906,8 +917,50 @@ class NativeStatementIT {
                     decisions.findByTransactionId("TRAN000000000003").orElseThrow();
             assertNull(stored.getAccountId(),
                     "reason 0100 resolved no cross-reference row, so it names no account");
+            assertNull(stored.getEventId(),
+                    "and with no account to key an event on, it publishes none and names none");
             assertEquals("0100", stored.getDeclineReasonCode(),
                     "the reject code of app/cbl/CBTRN02C.cbl:L385-L387 is stored");
+        }
+
+        /**
+         * Asserts the database refuses the two half-filled shapes the entity also refuses.
+         *
+         * <p>The constraint is what keeps a row from claiming an account with no event or an event
+         * with no account. The entity refuses both in its constructor, and asserting the column
+         * constraint as well means a native insert or a later mapping change cannot slip past it.
+         */
+        @Test
+        @DisplayName("a row naming an account without an event, or the reverse, is refused")
+        void aHalfFilledDecisionRowIsRefused() {
+            assertThrows(DataIntegrityViolationException.class,
+                    () -> transactionTemplate.execute(status -> jdbcTemplate.update(
+                            "INSERT INTO authorization_decision (transaction_id, actor, account_id,"
+                                    + " masked_card_number, card_token, amount, approved,"
+                                    + " decline_reason_code, decline_reason_description, decided_at,"
+                                    + " event_id, declared_processing_timestamp)"
+                                    + " VALUES (?, ?, ?, ?, ?, ?, false, ?, ?, ?, NULL, ?)",
+                            "TRAN000000000009", ACTOR, SEEDED_ACCOUNT, "************5740",
+                            "72e0699beda9afd3f6677b683462371d1648c559acbb5e14a6022d76293dbf5b",
+                            new BigDecimal("5.00"), "0102", "OVERLIMIT TRANSACTION",
+                            Timestamp.from(BASE_MOMENT), DECLARED_PROCESSING_TIMESTAMP)),
+                    "ck_authorization_decision_event refuses an account with no event: a resolved"
+                            + " outcome always publishes one");
+
+            assertThrows(DataIntegrityViolationException.class,
+                    () -> transactionTemplate.execute(status -> jdbcTemplate.update(
+                            "INSERT INTO authorization_decision (transaction_id, actor, account_id,"
+                                    + " masked_card_number, card_token, amount, approved,"
+                                    + " decline_reason_code, decline_reason_description, decided_at,"
+                                    + " event_id, declared_processing_timestamp)"
+                                    + " VALUES (?, ?, NULL, ?, ?, ?, false, ?, ?, ?, ?, ?)",
+                            "TRAN000000000010", ACTOR, "****************",
+                            "72e0699beda9afd3f6677b683462371d1648c559acbb5e14a6022d76293dbf5b",
+                            new BigDecimal("5.00"), "0100", "INVALID CARD NUMBER FOUND",
+                            Timestamp.from(BASE_MOMENT), UUID.randomUUID(),
+                            DECLARED_PROCESSING_TIMESTAMP)),
+                    "and it refuses an event with no account: no event on this platform is keyed on"
+                            + " anything but an account");
         }
 
         @Test

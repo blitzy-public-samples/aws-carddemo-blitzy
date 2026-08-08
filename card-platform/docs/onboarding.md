@@ -41,6 +41,8 @@ The four demo passwords the script generates are written to `card-platform/.demo
 
 To prepare `.env` without starting anything, run `scripts/generate-env.sh` on its own. It reads the credential names out of `.env.example`, so adding a credential there extends it with no edit.
 
+Run it again after every `git pull`. An existing `.env` is reconciled rather than replaced: every assignment `.env.example` declares and your file does not carry is appended with the example's value, any credential among them is generated in the same run, and no value you already have is read or rewritten. Assignments your file carries that the example no longer declares are named in the output and left in place, because the script cannot tell a retired setting from one you chose. Two kinds of value get more than that. An assignment holding a key this repository publishes is replaced with a generated one, because the authorization and card services refuse to start on a published key and no placeholder marks it. An assignment whose value differs from the example's is reported with both values and left as you set it, which is where a start-up refusal after an upgrade usually comes from: a default this platform tightened looks like a working value in your file. The run ends by proving your file declares all 133 assignments, so a variable Compose requires cannot be silently absent — which is the failure that used to stop `docker compose config` on the first command after an upgrade.
+
 The rest of this section is the same work performed by hand. Read it to understand what the script does, or follow it when you want to set a value yourself.
 
 ### Clone to a configured working tree
@@ -455,7 +457,7 @@ The account and card updates read the row they rewrite under a lock, and Postgre
 
 ### 10. Resubmitting the fixture expiry declines the account you just updated
 
-The demo stack applies `classpath:db/demo` in the account service and in the authorization service, which extends all 50 account expiries to 2099-12-31 so a live request is not declined by reason code 103 before anything else happens. `GET /accounts/{accountId}` therefore returns `2099-12-31`, while `app/data/ASCII/acctdata.txt` and the request example in `services/account-service/src/main/resources/openapi.yaml` both carry the fixture value `20230309`.
+Both deployment paths are demo profiles, so both apply `classpath:db/demo` in the account service and in the authorization service, which extends all 50 account expiries to 2099-12-31 so a live request is not declined by reason code 103 before anything else happens. Compose reads `AUTHORIZATION_FLYWAY_LOCATIONS` and `ACCOUNT_FLYWAY_LOCATIONS` from `.env`; Kubernetes reads the two keys of the same name from `deploy/k8s/30-configmap.yaml`. Setting both to `classpath:db/migration` is the base-profile opt-out on either path. `GET /accounts/{accountId}` therefore returns `2099-12-31`, while `app/data/ASCII/acctdata.txt` and the request example in `services/account-service/src/main/resources/openapi.yaml` both carry the fixture value `20230309`.
 
 Submit that fixture value and the extension is gone. The account service writes it, publishes `AccountStateChanged` carrying it, the authorization service applies it to the credit snapshot reason code 103 reads, and every later authorization on that account answers 422 with `0103 TRANSACTION RECEIVED AFTER ACCT EXPIRATION`. Nothing failed: one write moved the expiry into the past and the rule read what the write left.
 

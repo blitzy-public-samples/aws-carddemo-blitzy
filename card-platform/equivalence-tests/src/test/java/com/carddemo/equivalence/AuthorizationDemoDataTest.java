@@ -10,6 +10,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Pattern;
+import java.util.stream.Stream;
 import java.util.Set;
 import java.util.stream.Collectors;
 import org.junit.jupiter.api.DisplayName;
@@ -208,6 +210,16 @@ class AuthorizationDemoDataTest {
         }
     }
 
+    /**
+     * The two Deployments that carry the overlay, each with the ConfigMap key it reads.
+     *
+     * <p>No other Deployment sets {@code SPRING_FLYWAY_LOCATIONS} at all: the four remaining
+     * modules ship one migration folder, so their images' own default is the only value.
+     */
+    private static final Map<String, String> OVERLAY_DEPLOYMENTS = Map.of(
+            "40-authorization-service.yaml", "AUTHORIZATION_FLYWAY_LOCATIONS",
+            "44-account-service.yaml", "ACCOUNT_FLYWAY_LOCATIONS");
+
     @Test
     @DisplayName("The composition and the ConfigMap enable the overlay for both modules together")
     void theCompositionEnablesBothOverlaysTogether() {
@@ -227,12 +239,75 @@ class AuthorizationDemoDataTest {
                 "the documented environment must carry the account locations beside the "
                         + "authorization ones, since the two are changed together or not at all");
 
-        String accountManifest =
-                read(platformDirectory().resolve(Path.of("deploy", "k8s",
-                        "44-account-service.yaml")));
-        assertTrue(accountManifest.contains("classpath:db/migration,classpath:db/demo"),
-                "the account Deployment must name both locations, matching "
-                        + "40-authorization-service.yaml");
+        String configMap = read(platformDirectory()
+                .resolve(Path.of("deploy", "k8s", "30-configmap.yaml")));
+        assertTrue(configMap.contains(
+                        "AUTHORIZATION_FLYWAY_LOCATIONS: \"classpath:db/migration,classpath:db/demo\""),
+                "the ConfigMap must carry the authorization locations, because a Deployment that "
+                        + "fixes the value offers no base-profile opt-out");
+        assertTrue(configMap.contains(
+                        "ACCOUNT_FLYWAY_LOCATIONS: \"classpath:db/migration,classpath:db/demo\""),
+                "and the account locations beside them, since the two change together or not at "
+                        + "all");
+        assertTrue(configMap.contains("classpath:db/migration\" for a run whose output"),
+                "the ConfigMap must state the base-profile opt-out where the value is set, so an "
+                        + "operator can tell which profile a cluster runs");
+
+        for (Map.Entry<String, String> deployment : OVERLAY_DEPLOYMENTS.entrySet()) {
+            String manifest = read(platformDirectory()
+                    .resolve(Path.of("deploy", "k8s", deployment.getKey())));
+            assertTrue(manifest.contains("key: " + deployment.getValue()),
+                    deployment.getKey() + " must read " + deployment.getValue()
+                            + " from the ConfigMap, so the cluster path carries the same opt-out "
+                            + "the composition carries");
+            assertFalse(manifest.contains("value: \"classpath:db/migration,classpath:db/demo\""),
+                    deployment.getKey() + " fixes the locations in the Deployment, which is what "
+                            + "made the two deployment paths disagree about the profile");
+        }
+    }
+
+    /**
+     * No migration may write a placeholder expression, comments included.
+     *
+     * <p>Flyway substitutes placeholders across the whole text of a migration before parsing it,
+     * so a dollar sign followed by a brace is a placeholder wherever it appears, and an unresolved
+     * one answers with a refusal to start rather than a warning. A comment is the likely place for
+     * one, because a comment is where a file explains which property selects it, and naming that
+     * property with its default is the natural way to write the sentence.
+     *
+     * <p>This is not hypothetical. A revision of the overlay's own header quoted
+     * {@code SPRING_FLYWAY_LOCATIONS} with its default in that form, and every service that
+     * applies the overlay then failed at start-up with "No value provided for placeholder", while
+     * no test noticed: the suites run against {@code classpath:db/migration} alone, which is the
+     * one location that never reads the file carrying the comment.
+     */
+    @Test
+    @DisplayName("No migration or overlay file carries a placeholder expression")
+    void noMigrationCarriesAPlaceholderExpression() {
+        Pattern placeholder = Pattern.compile("\\$\\{");
+        for (String module : List.of("authorization-service", "ledger-posting-service",
+                "fraud-detection-service", "notification-service", "account-service",
+                "card-service")) {
+            Path resources = moduleDirectory(module).resolve(Path.of("src", "main", "resources"));
+            for (String location : List.of("db/migration", "db/demo")) {
+                Path directory = resources.resolve(location);
+                if (!Files.isDirectory(directory)) {
+                    continue;
+                }
+                try (Stream<Path> files = Files.list(directory)) {
+                    for (Path file : files.filter(Files::isRegularFile).sorted().toList()) {
+                        assertFalse(placeholder.matcher(read(file)).find(),
+                                module + "/" + location + "/" + file.getFileName()
+                                        + " carries a placeholder expression. Flyway resolves one"
+                                        + " anywhere in the text, comments included, and refuses to"
+                                        + " start when it cannot. Name the property without its"
+                                        + " braces.");
+                    }
+                } catch (IOException unreadable) {
+                    throw new UncheckedIOException("cannot list " + directory, unreadable);
+                }
+            }
+        }
     }
 
     /**

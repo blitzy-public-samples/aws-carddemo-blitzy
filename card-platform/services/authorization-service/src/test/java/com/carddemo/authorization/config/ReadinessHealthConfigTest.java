@@ -44,7 +44,7 @@ class ReadinessHealthConfigTest {
                 .run(context -> {
                     assertThat(context.getEnvironment().getProperty(
                             "management.endpoint.health.group.readiness.include"))
-                            .isEqualTo("readinessState,db,kafka,listeners,outbox");
+                            .isEqualTo("readinessState,db,kafka,listeners,outbox,replica");
                     assertThat(context.getEnvironment().getProperty(
                             "management.endpoint.health.group.liveness.include"))
                             .isEqualTo("livenessState");

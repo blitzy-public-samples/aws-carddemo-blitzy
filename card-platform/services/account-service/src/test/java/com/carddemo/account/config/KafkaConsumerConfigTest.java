@@ -85,6 +85,15 @@ class KafkaConsumerConfigTest {
     /** The offset the refused record arrived at. */
     private static final long SOURCE_OFFSET = 4_117L;
 
+    /**
+     * The aggregate identifier every diagnostic of this service declares and is keyed on.
+     *
+     * <p>Eleven zeros. {@code schemas/dead-letter-v1.json} requires an account-shaped value and a
+     * record this service could not read carries no account it can be trusted to name. It matches the
+     * value {@code config/KafkaConsumerConfig} declares.
+     */
+    private static final String UNRESOLVED_ACCOUNT_KEY = "00000000000";
+
     /** Deliveries of one record the policy under test allows, counting the first. */
     private static final int MAX_ATTEMPTS = 3;
 
@@ -242,6 +251,40 @@ class KafkaConsumerConfigTest {
                 .contains(String.valueOf(SOURCE_OFFSET));
     }
 
+    /**
+     * Asserts the outgoing key is the aggregate identifier the envelope declares.
+     *
+     * <p>Two properties at once, and a review found the second broken.
+     *
+     * <p>Sanitization: a producer controls the key, so the sentinel {@value #UNRESOLVED_ACCOUNT_KEY}
+     * replaces it — eleven zeros, a value no producer can influence and no account this platform seeds
+     * or issues.
+     *
+     * <p>Agreement with the contract: {@code schemas/dead-letter-v1.json} describes
+     * {@code aggregateId} as the Kafka message key of the envelope. The key used to be
+     * {@code topic-partition-offset}, so every diagnostic contradicted the payload it carried and one
+     * shared topic was scattered across as many partitions as there were source offsets. The
+     * coordinates are still reachable, as three declared fields of the same document, which
+     * {@code aProducerChosenHeaderIsDroppedAndTheGovernedEnvelopeTravelsInstead} asserts.
+     */
+    @Test
+    @DisplayName("the outgoing key is the aggregate the envelope declares, on every refusal")
+    void theOutgoingKeyIsTheDeclaredAggregate() {
+        handle(deliveredRecord(), deserializationFailure());
+        handle(deliveredRecord(SOURCE_OFFSET + 1), deserializationFailure());
+
+        assertThat(published)
+                .as("both refusals were routed")
+                .hasSize(2);
+        assertThat(published).extracting(ProducerRecord::key)
+                .as("one key form for every diagnostic, so the record agrees with its payload and"
+                        + " the shared topic stays in publish order on one partition")
+                .containsExactly(UNRESOLVED_ACCOUNT_KEY, UNRESOLVED_ACCOUNT_KEY);
+        assertThat(new String(published.getFirst().value(), StandardCharsets.UTF_8))
+                .as("and the payload declares the same value the record is keyed on")
+                .contains("\"aggregateId\":\"" + UNRESOLVED_ACCOUNT_KEY + "\"");
+    }
+
     @Test
     @DisplayName("the route publishes to the one shared dead-letter topic, not a derived one")
     void theRoutePublishesToTheOneSharedDeadLetterTopic() {
@@ -291,7 +334,17 @@ class KafkaConsumerConfigTest {
      * @return the record every case here refuses
      */
     private static ConsumerRecord<String, String> deliveredRecord() {
-        return new ConsumerRecord<>(SOURCE_TOPIC, SOURCE_PARTITION, SOURCE_OFFSET,
+        return deliveredRecord(SOURCE_OFFSET);
+    }
+
+    /**
+     * Builds one delivery at a named offset, carrying a sentinel in both its key and its value.
+     *
+     * @param offset the offset the record arrived at, which two diagnostics differ by
+     * @return the record the case refuses
+     */
+    private static ConsumerRecord<String, String> deliveredRecord(long offset) {
+        return new ConsumerRecord<>(SOURCE_TOPIC, SOURCE_PARTITION, offset,
                 0L, TimestampType.CREATE_TIME, 0, 0, SENTINEL_PAN,
                 "{\"cardNumber\":\"" + SENTINEL_PAN + "\",\"cvv\":\"" + SENTINEL_CVV + "\"}",
                 new org.apache.kafka.common.header.internals.RecordHeaders(), java.util.Optional.empty());

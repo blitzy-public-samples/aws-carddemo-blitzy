@@ -209,7 +209,7 @@ data:
   # No key here names one service to another, because no service calls another. The
   # authorization service applies its decline rules against card_xref and
   # account_credit_snapshot in its own schema, and its two listeners keep those tables
-  # current from account.state-changed and card.updated. REPLICA_MAX_STALENESS below is
+  # current from account.state-changed and card.updated. REPLICA_LAG_CEILING below is
   # what bounds how far behind those replicas may fall.
 
   # Outbox relay
@@ -261,13 +261,15 @@ data:
   # Replica freshness
   # How old an observation of card_xref or account_credit_snapshot may be and still
   # count as fresh, as an ISO-8601 duration. AccountStateChangedConsumer and
-  # CardUpdatedConsumer keep those copies current after the seed load. A stale credit
-  # limit does not raise an error: it
-  # approves a transaction the current limit would have declined. A whole day rather
-  # than minutes, since this demo runs without account or card mutation. A short
-  # window would decline everything after a few minutes.
+  # CardUpdatedConsumer keep those copies current after the seed load. A copy that is
+  # missing a change does not raise an error: it approves a transaction the current limit
+  # would have declined. What is bounded is the number of records a replica stream may have
+  # waiting, and deliberately not the age of a row: both producers publish on a state change
+  # and on nothing else, so an unedited card is a correct copy whose last observation recedes
+  # for ever, and the age bound this replaces refused every one of them a day after the seed
+  # load. Zero requires a consumer that is fully caught up.
   # card-platform/.env.example carries the same value.
-  REPLICA_MAX_STALENESS: "P1D"
+  REPLICA_LAG_CEILING: "0"
 
 # Decision serialization and reserved exposure
   # Only the authorization service reads these two, and the whole-ConfigMap pull carries
@@ -359,8 +361,12 @@ data:
   # Request identities
   # Each service maps the entries below onto one Spring Security user, and start-up
   # fails when the list is empty. A username is not a credential and belongs here;
-  # the matching password hashes are keys of the Secret in 31-secret.example.yaml
-  # and appear nowhere in this file.
+  # the matching password hashes are keys of a Secret in 31-secret.example.yaml
+  # and appear nowhere in this file. Three of the four sit in
+  # carddemo-identity-secret, which all six Deployments pull. The acquirer hash sits
+  # in carddemo-authorization-identity-secret, which 40-authorization-service.yaml
+  # alone pulls, because that service is the only one that verifies a password
+  # against it.
   #
   # ADMIN and USER are the two outcomes of the SEC-USR-TYPE fork at
   # app/cbl/COSGN00C.cbl:L232-L236. ACQUIRER and MONITORING are additive.
@@ -461,3 +467,27 @@ data:
   # six databases above and one schema inside it, so each Deployment builds its own URL from
   # its own <SERVICE>_DB_NAME and <SERVICE>_DB_SCHEMA and appends these options.
   SPRING_DATASOURCE_OPTIONS: "sslmode=verify-full&sslrootcert=/etc/carddemo/tls/ca.crt"
+
+  # Flyway locations of the two services that ship a demo overlay
+  # Both keys carry the demo overlay, so this deployment path is a demo profile exactly as
+  # card-platform/docker-compose.yml is. That is deliberate rather than incidental: the
+  # manifests exist so the same demonstration runs on a standard cluster, and a cluster that
+  # declined every authorization would demonstrate nothing.
+  #
+  # Why the overlay is needed. db/migration reproduces app/data/ASCII/acctdata.txt value for
+  # value, and all 50 account expiries fall in 2023 to 2025, so reason code 103 at
+  # app/cbl/CBTRN02C.cbl:L414-L420 declines a request carrying today's date. db/demo holds one
+  # migration, V900__demo_expiry_extension.sql, that lifts those expiries to 2099-12-31 and
+  # changes nothing else.
+  #
+  # The base-profile opt-out. Set BOTH keys to "classpath:db/migration" for a run whose output
+  # is compared against the fixture. Change them together or not at all: the account service
+  # owns the record the authorization service replicates and publishes its expiry on every
+  # state change, so extending one copy alone has the first posted transaction write a 2025
+  # expiry back over the extended replica and decline every later call on that account.
+  #
+  # Neither service image carries the overlay as its own default. Each application.yml ships
+  # ${SPRING_FLYWAY_LOCATIONS:classpath:db/migration}, so a module started without these keys
+  # gets the fixture, which is what mvn verify measures against.
+  AUTHORIZATION_FLYWAY_LOCATIONS: "classpath:db/migration,classpath:db/demo"
+  ACCOUNT_FLYWAY_LOCATIONS: "classpath:db/migration,classpath:db/demo"

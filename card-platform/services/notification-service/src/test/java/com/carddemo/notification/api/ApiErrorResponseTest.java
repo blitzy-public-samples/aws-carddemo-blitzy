@@ -1,6 +1,7 @@
 package com.carddemo.notification.api;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -19,7 +20,7 @@ import org.junit.jupiter.api.Test;
 final class ApiErrorResponseTest {
 
     /** The route template this service's one endpoint reports. */
-    private static final String ROUTE = "/notifications/{cardNumber}";
+    private static final String ROUTE = "/notifications/{cardToken}";
 
     /**
      * A refusal text of this route, used where a method needs any message at all.
@@ -28,7 +29,7 @@ final class ApiErrorResponseTest {
      * the wording cannot leave this file naming a text no response carries.
      */
     private static final String SAMPLE_MESSAGE =
-            NotificationHistoryController.CARD_NUMBER_MESSAGE;
+            NotificationHistoryController.CARD_TOKEN_MESSAGE;
 
     @Test
     void theRecordCarriesTheThreeComponentsTheCardServiceCarries() {
@@ -83,7 +84,7 @@ final class ApiErrorResponseTest {
      * because a text naming a shape reads better with one, as in sixty-four lower-case hexadecimal
      * characters, and a hyphen carries no value.
      *
-     * <p>{@code NotificationHistoryController.CARD_NUMBER_MESSAGE} is the one bad-request text this
+     * <p>{@code NotificationHistoryController.CARD_TOKEN_MESSAGE} is the one bad-request text this
      * route answers, and it names the shape the path variable requires. A text naming the value
      * submitted would copy a card number into a response body and into every log line built from
      * one.
@@ -91,7 +92,8 @@ final class ApiErrorResponseTest {
     @Test
     void everyTextAResponseCanCarryNamesNoValueReadFromARequest() {
         List<String> texts = List.of(
-                NotificationHistoryController.CARD_NUMBER_MESSAGE,
+                NotificationHistoryController.CARD_TOKEN_MESSAGE,
+                NotificationHistoryController.NO_HISTORY_MESSAGE,
                 NotificationApiExceptionHandler.INVALID_REQUEST_MESSAGE,
                 NotificationApiExceptionHandler.SERVICE_FAULT_MESSAGE,
                 NotificationApiExceptionHandler.UNSUPPORTED_REQUEST_MESSAGE);
@@ -102,8 +104,10 @@ final class ApiErrorResponseTest {
         }
         assertEquals(texts.size(), texts.stream().distinct().count(),
                 "each cause carries its own wording, so no two of these texts are the same");
-        assertTrue(NotificationHistoryController.CARD_NUMBER_MESSAGE.contains("Card number"),
-                "the path value of this route is a card number, so its refusal names one");
+        assertTrue(NotificationHistoryController.CARD_TOKEN_MESSAGE.contains("Card token"),
+                "the path value of this route is a card token, so its refusal names one");
+        assertFalse(NotificationHistoryController.CARD_TOKEN_MESSAGE.contains("Card number"),
+                "no text of this route names a card number, which no request of it carries");
         assertTrue(texts.stream().noneMatch(text -> text.contains("Account identifier")),
                 "no text of this route names an account identifier, which it does not carry");
     }

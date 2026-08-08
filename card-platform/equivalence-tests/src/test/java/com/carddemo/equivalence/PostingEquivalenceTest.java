@@ -73,6 +73,7 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -3698,7 +3699,15 @@ class PostingEquivalenceTest {
                     // default by design, because a horizon that binds silently is a horizon nobody
                     // chose, which is the defect app/jcl/DALYREJS.jcl:L24-L28 avoids by naming
                     // LIMIT(5) in the catalogue definition itself.
-                    "carddemo.retention.rejected-transaction-retention-days=90"
+                    "carddemo.retention.rejected-transaction-retention-days=90",
+                    // The readiness group this service declares for itself, named for the third time
+                    // for the reason the two comments above give: the application.yml this context
+                    // loads is whichever copy the classpath orders first, which is the authorization
+                    // service's, and that group names the replica contributor only the authorization
+                    // service defines. Naming the ledger's own group keeps membership validation on,
+                    // so a contributor that disappears still stops start-up.
+                    "management.endpoint.health.group.readiness.include="
+                            + "readinessState,db,kafka,listeners,outbox"
             })
     @Testcontainers
     class DeployablePostingPath {
@@ -3787,6 +3796,31 @@ class PostingEquivalenceTest {
                     .resolve("card-platform/services/ledger-posting-service/src/main/resources"
                             + "/db/migration")
                     .toAbsolutePath();
+        }
+
+        /**
+         * The migration versions the ledger service ships, in the order Flyway applies them.
+         *
+         * <p>Read from the same directory {@link #ledgerMigrationLocation()} points Flyway at, so
+         * the assertion below compares what the container applied against what the module
+         * delivers. A literal list here would go stale the next time a correction ships as a
+         * migration, which is how it went stale: correcting two column citations added V6 and left
+         * this comparison expecting five.
+         *
+         * @return each version as Flyway records it in {@code flyway_schema_history}
+         */
+        private static List<String> shippedLedgerMigrationVersions() {
+            Path directory = Path.of(ledgerMigrationLocation().substring("filesystem:".length()));
+            try (Stream<Path> files = Files.list(directory)) {
+                return files.filter(Files::isRegularFile)
+                        .map(file -> file.getFileName().toString())
+                        .filter(name -> name.startsWith("V") && name.endsWith(".sql"))
+                        .map(name -> name.substring(1, name.indexOf("__")))
+                        .sorted(Comparator.comparingInt(Integer::parseInt))
+                        .toList();
+            } catch (IOException unreadable) {
+                throw new UncheckedIOException("cannot list " + directory, unreadable);
+            }
         }
 
         /** Restores the migrated tables to their seed state before each case. */
@@ -3907,21 +3941,27 @@ class PostingEquivalenceTest {
                             + result.getString("category_code") + ","
                             + money(result.getBigDecimal("category_balance")));
 
-            assertEquals(List.of("1", "2", "3", "4", "5"), jdbc.queryForList(
+            assertEquals(shippedLedgerMigrationVersions(), jdbc.queryForList(
                             "SELECT version FROM flyway_schema_history "
                                     + "WHERE success AND version IS NOT NULL "
                                     + "ORDER BY installed_rank",
                             String.class),
                     "Flyway must apply every shipped ledger migration, so this comparison runs "
-                            + "against the schema the service really starts on. V3 adds the two "
-                            + "provenance columns that order a replica refresh against the change "
-                            + "the row already carries, and it must be present here even though "
-                            + "the posting path this test drives writes neither of them. V4 writes "
-                            + "only comments, recording that the three value columns this "
+                            + "against the schema the service really starts on. The expected list "
+                            + "is read from the migration directory rather than written here, "
+                            + "because a migration added without this assertion following it fails "
+                            + "for a reason that says nothing about the posting path. V3 adds the "
+                            + "two provenance columns that order a replica refresh against the "
+                            + "change the row already carries, and it must be present here even "
+                            + "though the posting path this test drives writes neither of them. V4 "
+                            + "writes only comments, recording that the three value columns this "
                             + "comparison reads are derived by the posting arithmetic and that no "
                             + "arriving account change replaces them. V5 re-keys processed_event on "
                             + "the event and the topic together, which is the guard the consumer "
-                            + "this test drives writes on every delivery");
+                            + "this test drives writes on every delivery. V6 corrects the copybook "
+                            + "line two of V4's comments cited, which is why a comment-only "
+                            + "correction arrives as a migration at all: V4 has run, and Flyway "
+                            + "compares the checksum of an applied file at every start");
             assertEquals(expectedCount("posting", "record_count"), offset,
                     "the real path must inspect the whole feed");
             assertEquals(expectedCount("posting", "approved_count"), approvedIds.size(),

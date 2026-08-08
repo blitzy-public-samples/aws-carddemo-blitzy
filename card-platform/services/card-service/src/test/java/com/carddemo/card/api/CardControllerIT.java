@@ -8,6 +8,7 @@ import com.carddemo.card.TestIdentityPasswords;
 import com.carddemo.card.config.CrossSiteRequestFilter;
 import com.carddemo.card.entity.CardEntity;
 import com.carddemo.card.repository.CardRepository;
+import com.carddemo.cobol.PanMasker;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -123,8 +124,9 @@ import tools.jackson.databind.json.JsonMapper;
  * field {@code ATTRB=(FSET,NORM,UNPROT)} at {@code app/bms/COCRDSL.bms:L96},
  * {@code HILIGHT=UNDERLINE} at {@code app/bms/COCRDSL.bms:L98}, {@code LENGTH=16} at
  * {@code app/bms/COCRDSL.bms:L99} and {@code POS=(8,45)} at {@code app/bms/COCRDSL.bms:L100}.
- * All sixteen digits therefore render in the clear. A read that succeeds against the seeded row
- * proves the lookup ran on the full value, and the answer proves the mask applies at the
+ * All sixteen digits therefore render in the clear. The route here names its card by the token
+ * {@code PanMasker.cardToken} derives, so a read that succeeds against the seeded row proves the
+ * token resolved to the row the number seeded, and the answer proves the mask applies at the
  * serialization boundary alone.
  *
  * <p>Absences this class asserts. {@code app/cbl/COCRDUPC.cbl:L784} tests
@@ -156,8 +158,8 @@ import tools.jackson.databind.json.JsonMapper;
  * no client-side test artifact carrying {@code TestRestTemplate} either, and Spring Boot 4.1.0
  * ships that type outside {@code spring-boot-test}.
  *
- * <p>The read route is {@code GET /cards/{cardNumber}} and the update route is
- * {@code PUT /cards/{cardNumber}}, each reproducing one Customer Information Control System (CICS)
+ * <p>The read route is {@code GET /cards/{cardToken}} and the update route is
+ * {@code PUT /cards/{cardToken}}, each reproducing one Customer Information Control System (CICS)
  * transaction that addresses one card: {@code CCDL} at {@code app/csd/CARDDEMO.CSD:L347-L348} and
  * {@code CCUP} at {@code app/csd/CARDDEMO.CSD:L367-L369}. The list route requires the account
  * identifier and takes its paging position in header {@code X-Card-Cursor}.
@@ -666,7 +668,7 @@ class CardControllerIT {
     }
 
     /**
-     * {@code GET /cards/{cardNumber}}, where the order of the lookup and the mask becomes observable.
+     * {@code GET /cards/{cardToken}}, where the order of the lookup and the mask becomes observable.
      *
      * <p>The route replaces the Customer Information Control System (CICS) transaction
      * {@code CCDL}, which dispatches into {@code COCRDSLC}.
@@ -676,24 +678,32 @@ class CardControllerIT {
     class ReadingOneCard {
 
         /**
-         * A read keyed on the full sixteen-digit Primary Account Number succeeds and answers the
-         * masked form.
+         * A read keyed on the token of the seeded card succeeds and answers the masked form.
          *
-         * <p>The lookup keys on the full value, as {@code app/cbl/COCRDSLC.cbl:L740} moves it into
-         * the read key. A masked key would match no row, so a successful read is what proves the
-         * order. {@code app/bms/COCRDSL.bms:L99} gives the screen field {@code LENGTH=16} and
-         * {@code app/bms/COCRDSL.bms:L96} gives it {@code ATTRB=(FSET,NORM,UNPROT)}, so the source
-         * renders every digit and the mask is additive.
+         * <p>The source lookup keys on the full value, as {@code app/cbl/COCRDSLC.cbl:L740} moves it
+         * into the read key. The route here carries that card's token instead, and the service
+         * resolves the token to the same row before the read key is built, so a successful read is
+         * what proves the resolution ran. {@code app/bms/COCRDSL.bms:L99} gives the screen field
+         * {@code LENGTH=16} and {@code app/bms/COCRDSL.bms:L96} gives it
+         * {@code ATTRB=(FSET,NORM,UNPROT)}, so the source renders every digit and the mask is
+         * additive.
+         *
+         * <p>The request line is asserted as well as the answer. Neither carries a digit of the
+         * number, which is the property that keeps a Primary Account Number out of every access log
+         * and every referrer header a proxy on the path may write.
          */
         @Test
-        @DisplayName("the lookup runs on the full card number and the answer carries the mask")
-        void theLookupRunsOnTheFullCardNumber() {
+        @DisplayName("the token of the seeded card resolves to its row and the answer carries the mask")
+        void theTokenOfTheSeededCardResolvesToItsRow() {
             HttpResponse<String> answer = readCard(ROW_1_CARD_NUMBER);
             JsonNode body = bodyOf(answer);
 
-            assertAll("the masked answer to a full-number read",
+            assertAll("the masked answer to a token-keyed read",
                     () -> assertEquals(200, answer.statusCode(),
-                            "the full card number reaches the seeded row"),
+                            "the token of the seeded card reaches the seeded row"),
+                    () -> assertEquals(PanMasker.cardToken(ROW_1_CARD_NUMBER),
+                            answer.uri().getPath().substring("/cards/".length()),
+                            "the request line carried the token and nothing else"),
                     () -> assertEquals(ROW_1_MASKED_CARD_NUMBER,
                             body.get("maskedCardNumber").asString(),
                             "the answer carries the masked form"),
@@ -761,22 +771,24 @@ class CardControllerIT {
         }
 
         /**
-         * A card number whose Luhn check digit is wrong reaches the lookup and is not refused at
-         * the boundary.
+         * A card whose Luhn check digit is wrong reaches the lookup and is not refused at the
+         * boundary.
          *
-         * <p>The 404 is the proof: the value passed every edit and was looked up.
-         * {@code app/cbl/COCRDUPC.cbl:L784} tests {@code IF CC-CARD-NUM IS NOT NUMERIC} and nothing
-         * else, while the comments at {@code app/cbl/COCRDUPC.cbl:L782-L783} claim a numeric check
-         * and a sixteen-character check. No checksum rule exists to add without changing outcomes.
+         * <p>The 404 is the proof: the token of that number is as well formed as any other token,
+         * so it passed the path edit and reached the lookup. {@code app/cbl/COCRDUPC.cbl:L784} tests
+         * {@code IF CC-CARD-NUM IS NOT NUMERIC} and nothing else, while the comments at
+         * {@code app/cbl/COCRDUPC.cbl:L782-L783} claim a numeric check and a sixteen-character
+         * check. No checksum rule exists to add without changing outcomes, and tokenizing the
+         * request line adds none: the token is derived from whatever digits it is given.
          */
         @Test
-        @DisplayName("a wrong check digit reaches the lookup and answers the absent-row arm")
+        @DisplayName("the token of a wrong check digit reaches the lookup and answers the absent-row arm")
         void aWrongCheckDigitReachesTheLookup() {
             HttpResponse<String> answer = readCard(WRONG_CHECK_DIGIT_CARD_NUMBER);
 
             assertAll("the answer to a value no checksum admits",
                     () -> assertEquals(404, answer.statusCode(),
-                            "the value reached the lookup and matched no row"),
+                            "the token reached the lookup and matched no row"),
                     () -> assertEquals("Did not find cards for this search condition",
                             messageOf(answer), "the answer carries the absent-row text"));
         }
@@ -1117,7 +1129,7 @@ class CardControllerIT {
                             "the answer carries the failed-write text"),
                     () -> assertEquals(503, body.get("status").asInt(),
                             "the failure body reports the status it was sent with"),
-                    () -> assertEquals("/cards/{cardNumber}", body.get("route").asString(),
+                    () -> assertEquals("/cards/{cardToken}", body.get("route").asString(),
                             "the failure body carries the route template and no resolved path"),
                     () -> assertEquals(ROW_1_EMBOSSED_NAME,
                             storedValueOf("embossed_name", ROW_1_CARD_NUMBER),
@@ -1371,7 +1383,8 @@ class CardControllerIT {
         @DisplayName("the chain also refuses the absent path")
         void theChainAlsoRefusesTheAbsentPath() {
             HttpResponse<String> answer =
-                    send(authorized("/cards/" + ROW_1_CARD_NUMBER + "/status").GET().build());
+                    send(authorized("/cards/" + PanMasker.cardToken(ROW_1_CARD_NUMBER) + "/status")
+                            .GET().build());
 
             assertEquals(403, answer.statusCode(),
                     "an authenticated caller reaches nothing on an undeclared route");
@@ -1434,20 +1447,27 @@ class CardControllerIT {
     }
 
     /**
-     * Reads one card by its full card number, which the path carries.
+     * Reads one card, naming it by its token in the path.
      *
-     * @param cardNumber the full sixteen-digit card number
+     * <p>The number is tokenized here rather than sent. A path is written to a container access log, a
+     * reverse proxy log, a distributed trace and a browser history, and none of the four is reachable
+     * by this application's redaction, so no request of this service carries a card number in its
+     * request line. {@code card_token} carries a unique constraint, so the token selects the same
+     * single row the number selects.
+     *
+     * @param cardNumber the full sixteen-digit card number, which this method tokenizes
      * @return the answer, body included as served text
      */
     private HttpResponse<String> readCard(String cardNumber) {
-        return send(authorized("/cards/" + cardNumber).GET().build());
+        return send(authorized("/cards/" + PanMasker.cardToken(cardNumber)).GET().build());
     }
 
     /**
      * Submits one card update, with the expiry in the three parts
      * {@code app/cbl/COCRDUPC.cbl:L115-L123} declares.
      *
-     * @param cardNumber   the full sixteen-digit card number
+     * @param cardNumber   the full sixteen-digit card number, which this method tokenizes rather
+     *                     than sending
      * @param embossedName the cardholder name to write
      * @param expiryYear   four characters
      * @param expiryMonth  two characters
@@ -1462,7 +1482,7 @@ class CardControllerIT {
                 + ",\"expiryMonth\":\"" + expiryMonth + "\""
                 + ",\"expiryDay\":\"" + expiryDay + "\""
                 + ",\"activeStatus\":\"" + activeStatus + "\"}";
-        return send(authorized("/cards/" + cardNumber)
+        return send(authorized("/cards/" + PanMasker.cardToken(cardNumber))
                 .header("Content-Type", "application/json")
                 .PUT(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
                 .build());

@@ -88,7 +88,7 @@ class CardValidationMessagesTest {
     private static final String ADDITIVE_FIELD_PREFIX = "ADDITIVE_";
 
     /** Declarations carrying {@link #ADDITIVE_FIELD_PREFIX}. */
-    private static final int ADDITIVE_FIELD_COUNT = 7;
+    private static final int ADDITIVE_FIELD_COUNT = 8;
 
     /**
      * Count of declarations carrying the {@value #NEVER_EMITTED_FIELD_PREFIX} prefix. Six
@@ -468,7 +468,7 @@ class CardValidationMessagesTest {
         assertEquals(NEVER_EMITTED_FIELD_COUNT, neverEmitted.size(),
                 "the never-emitted class names six constants");
         assertEquals(ADDITIVE_FIELD_COUNT, additive.size(),
-                "the additive class names seven constants");
+                "the additive class names eight constants");
 
         Set<String> classified = new LinkedHashSet<>();
         classified.addAll(reachable.keySet());
@@ -583,7 +583,9 @@ class CardValidationMessagesTest {
                 "ADDITIVE_CARD_EXPIRY_NOT_A_CALENDAR_DATE",
                 "Card expiry year, month and day must name a day of the calendar",
                 "ADDITIVE_PAGE_SIZE_NOT_A_NUMBER", "Page size must be a whole number",
-                "ADDITIVE_CARD_CURSOR_UNKNOWN", "Card cursor names no card of this list");
+                "ADDITIVE_CARD_CURSOR_UNKNOWN", "Card cursor names no card of this list",
+                "ADDITIVE_CARD_TOKEN_MALFORMED",
+                "Card token must be a 64-character lower-case hexadecimal token");
     }
 
     /**

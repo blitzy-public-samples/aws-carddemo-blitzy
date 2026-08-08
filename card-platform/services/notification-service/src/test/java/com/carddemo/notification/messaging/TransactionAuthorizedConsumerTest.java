@@ -2,6 +2,7 @@ package com.carddemo.notification.messaging;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -139,7 +140,17 @@ class TransactionAuthorizedConsumerTest {
     }
 
     /**
-     * Reads one counter.
+     * Reads one untagged counter.
+     *
+     * @param name the meter name
+     * @return the count
+     */
+    private double counter(String name) {
+        return registry.get(name).counter().count();
+    }
+
+    /**
+     * Reads one tagged counter.
      *
      * @param name     the meter name
      * @param tagKey   the tag key
@@ -210,6 +221,75 @@ class TransactionAuthorizedConsumerTest {
         }
     }
 
+    /**
+     * A contract version this service can apply nothing for is accounted for, not refused.
+     *
+     * <p>Version 1 of {@code TransactionAuthorized} declares no {@code cardToken}, and
+     * {@code notification_log} is keyed on that token. The listener used to throw, which spent three
+     * delivery attempts and put a governed, schema-valid event on the dead-letter topic as though it
+     * were poison. Since every consumer group starts at the earliest offset, a group added to a topic
+     * that still retains version 1 records met that route on every one of them, and the backward
+     * compatibility the platform's versioning exists to provide did not hold.
+     */
+    @Nested
+    @DisplayName("A contract version that names no card")
+    class VersionsThatNameNoCard {
+
+        @Test
+        @DisplayName("a version 1 delivery renders nothing, writes nothing, and is acknowledged")
+        void aVersionOneDeliveryIsAcknowledgedWithoutRendering() {
+            consumer.onTransactionAuthorized(authorizedWithToken(null), acknowledgment, ACCOUNT_ID,
+                    TOPIC);
+
+            verify(acknowledgment).acknowledge();
+            verifyNoInteractions(notificationService);
+            verifyNoInteractions(processedEvents);
+        }
+
+        @Test
+        @DisplayName("a version 1 delivery is counted as consumed and as unapplied, not as a failure")
+        void aVersionOneDeliveryIsCountedAsUnapplied() {
+            consumer.onTransactionAuthorized(authorizedWithToken(null), acknowledgment, ACCOUNT_ID,
+                    TOPIC);
+
+            assertAll(
+                    () -> assertThat(counter("carddemo.notification.events.unapplied", "event.type",
+                            "TransactionAuthorized"))
+                            .as("one delivery this listener applied nothing for")
+                            .isEqualTo(1.0d),
+                    () -> assertThat(counter("carddemo.notification.events.consumed", "event.type",
+                            "TransactionAuthorized"))
+                            .as("the delivery was still consumed")
+                            .isEqualTo(1.0d),
+                    () -> assertThat(counter("carddemo.notification.duplicates.skipped"))
+                            .as("nothing was skipped as a duplicate: the event was never applied")
+                            .isEqualTo(0.0d));
+        }
+
+        @Test
+        @DisplayName("a version 2 delivery moves no unapplied counter")
+        void aVersionTwoDeliveryMovesNoUnappliedCounter() {
+            consumer.onTransactionAuthorized(authorized(), acknowledgment, ACCOUNT_ID, TOPIC);
+
+            assertThat(counter("carddemo.notification.events.unapplied", "event.type",
+                    "TransactionAuthorized"))
+                    .as("a delivery this listener did apply")
+                    .isEqualTo(0.0d);
+            verify(acknowledgment).acknowledge();
+        }
+
+        @Test
+        @DisplayName("a version 1 delivery under a key naming another aggregate is still refused")
+        void aVersionOneDeliveryUnderAWrongKeyIsStillRefused() {
+            assertThatThrownBy(() -> consumer.onTransactionAuthorized(authorizedWithToken(null),
+                    acknowledgment, "00000000099", TOPIC))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("does not name the aggregate");
+
+            verify(acknowledgment, never()).acknowledge();
+        }
+    }
+
     @Nested
     @DisplayName("Refusals, each leaving the offset uncommitted")
     class Refusals {
@@ -237,17 +317,6 @@ class TransactionAuthorizedConsumerTest {
                     ACCOUNT_ID, TOPIC))
                     .hasMessageNotContaining(ACCOUNT_ID)
                     .hasMessageNotContaining("Kessler");
-        }
-
-        @Test
-        @DisplayName("an event carrying no card token names no card to record against")
-        void anEventCarryingNoCardTokenIsRefused() {
-            assertThatThrownBy(() -> consumer.onTransactionAuthorized(authorizedWithToken(null),
-                    acknowledgment, ACCOUNT_ID, TOPIC))
-                    .isInstanceOf(IllegalArgumentException.class)
-                    .hasMessageContaining("/cardToken");
-
-            verify(acknowledgment, never()).acknowledge();
         }
 
         @Test

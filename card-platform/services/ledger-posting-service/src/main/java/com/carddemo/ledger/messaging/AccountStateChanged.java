@@ -67,9 +67,9 @@ import tools.jackson.databind.JsonNode;
  *                           {@value #CHANGE_KIND_BILLING_CYCLE_CLOSED}. ADDITIVE: no source field
  *                           carries it
  * @param currentBalance     {@code ACCT-CURR-BAL} at {@code app/cpy/CVACT01Y.cpy:L7}, scale 2
- * @param currentCycleCredit {@code ACCT-CURR-CYC-CREDIT} at {@code app/cpy/CVACT01Y.cpy:L12},
+ * @param currentCycleCredit {@code ACCT-CURR-CYC-CREDIT} at {@code app/cpy/CVACT01Y.cpy:L13},
  *                           scale 2
- * @param currentCycleDebit  {@code ACCT-CURR-CYC-DEBIT} at {@code app/cpy/CVACT01Y.cpy:L13},
+ * @param currentCycleDebit  {@code ACCT-CURR-CYC-DEBIT} at {@code app/cpy/CVACT01Y.cpy:L14},
  *                           scale 2
  */
 public record AccountStateChanged(

@@ -14,7 +14,7 @@ Every event carries one flat envelope beside its payload. A consumer can route, 
 | `occurredAt` | Producer timestamp |
 | `aggregateId` | Kafka message key, normally the 11-digit account identifier |
 
-A reason-0100 decline has no resolved account. Its envelope uses the 16-character transaction identifier as the sanctioned aggregate key.
+A reason-0100 decline resolves no account, so it publishes no event at all: the outcome is recorded in `unresolved_card_attempt` and in `authorization_decision` with a null `event_id`, and nothing reaches a topic. Every published event on this platform therefore carries the 11-digit account identifier as its `aggregateId` and its Kafka key, without exception. `outbox_event.aggregate_id` still admits a 16-character transaction identifier, because records published under `transaction-declined-v2` before that decision are retained and stay readable; migration `V14__unresolved_decline_is_unpublished.sql` records that no producer writes one.
 
 ## Payload conventions
 
@@ -28,7 +28,7 @@ The card verification value at `app/cpy/CVACT02Y.cpy:L7` is three numeric digits
 
 ## Topics and consumer groups
 
-The delivered runtime creates seven business topics, five source-specific dead-letter topics, and one shared fallback. A dead-letter topic holds records that could not complete processing after validation and retry handling. A consumer group is the named set of listener instances that share one subscription.
+The delivered runtime creates seven business topics, six source-specific dead-letter topics, and one shared fallback, fourteen names in all. A dead-letter topic holds records that could not complete processing after validation and retry handling. A consumer group is the named set of listener instances that share one subscription.
 
 | Topic | Events carried | Producer | Consumer groups |
 | --- | --- | --- | --- |
@@ -42,7 +42,7 @@ The delivered runtime creates seven business topics, five source-specific dead-l
 | `<source>.DLT` | 134-character fixed-width abend diagnostic | Ledger, fraud, and notification listener error handlers | Human inspection and replay tooling |
 | `carddemo.dead-letter` | `DeadLetterEnvelope` | Authorization and account listener error handlers, the five business-event relays on abandonment, and any handler whose source topic cannot be resolved | Human inspection and replay tooling |
 
-The five source-specific dead-letter topics are `transaction.authorized.DLT`, `account.state-changed.DLT`, `transaction.posted.DLT`, `fraud.assessed.DLT`, and `customer.context-changed.DLT`. `card.updated` needs none, because its one consumer routes a spent record to the shared fallback as a governed envelope.
+The six source-specific dead-letter topics are `transaction.authorized.DLT`, `transaction.declined.DLT`, `account.state-changed.DLT`, `transaction.posted.DLT`, `fraud.assessed.DLT`, and `customer.context-changed.DLT`. Each belongs to a source the ledger, fraud or notification listeners read, because those three append the configured suffix to the source topic. `card.updated` needs none: its one consumer is an authorization listener, and authorization and account both route a spent record to the shared fallback as a governed envelope instead.
 
 Ten groups serve five listening services. Authorization takes two for its replicas, and ledger takes one for the authorization stream and one for its balance replica. Fraud takes one, notification four for four independent inputs, and account one for the posted amount it applies. The card service registers no listener.
 
@@ -107,7 +107,7 @@ Version 1 contains transaction identifier, account identifier, amount, masked ca
 | Merchant identifier, name, city, and ZIP | Authorized event merchant fields |
 | `originTimestamp` | Authorized event origin timestamp |
 
-The new balance is the value after `app/cbl/CBTRN02C.cbl:L547`. Notification refuses version 1 for statement insertion rather than fabricating the missing columns.
+The new balance is the value after `app/cbl/CBTRN02C.cbl:L547`. Notification inserts no statement row for a version 1 event rather than fabricating the missing columns, and it no longer refuses the delivery either: the record is acknowledged and counted on `carddemo.notification.events.unapplied`. What a version 1 delivery cannot supply is the card token the read model is keyed on plus nine of its fourteen column values, and neither is recoverable from the masked card number, which has discarded twelve of the sixteen digits the token derivation reads.
 
 The processing timestamp carries two significant fractional digits and four zeros. [Business-rule flag 8](business-rule-flags.md) and the [equivalence results](equivalence-results.md) define the comparison tolerance.
 
@@ -344,17 +344,17 @@ The demo permits three processing attempts with a one-second backoff. Two termin
 
 A spent consumer record takes the listener route, and the five listening services take it in two different forms. Ledger, fraud, and notification send a 134-character fixed-width abend diagnostic to the source topic name plus the `.DLT` suffix, short for dead-letter topic. Each falls back to `carddemo.dead-letter` when the source topic cannot be resolved. Authorization and account each send a governed `DeadLetterEnvelope` to `carddemo.dead-letter` directly.
 
-The account listener is worth naming on its own, because its recovery semantics differ from authorization's. `TransactionPostedConsumer` on group `account-posted` retries a failure under the shared retry policy, then hands the record to a sanitizing recoverer that publishes one `DeadLetterEnvelope` and nothing the record carried. Its error handler sets `commitRecovered(true)`, so the offset advances once the diagnostic is away and the same poison record is not redelivered forever. Four of the five listening services do that: account, fraud, ledger and notification. Authorization leaves the flag at its default, so a recovered replica record is redelivered until it succeeds.
+The account listener is worth naming on its own, because its recovery semantics differ from authorization's. `TransactionPostedConsumer` on group `account-posted` retries a failure under the shared retry policy, then hands the record to a sanitizing recoverer that publishes one `DeadLetterEnvelope` and nothing the record carried. Its error handler sets `commitRecovered(true)`, so the offset advances once the diagnostic is away and the same poison record is not redelivered forever. All five listening services do that: account, authorization, fraud, ledger and notification. What differs is the destination rather than the offset. Account and authorization publish one `DeadLetterEnvelope` to the shared `carddemo.dead-letter` topic, so a refused record's own bytes never travel; ledger, fraud and notification address the source topic plus the configured suffix, so one stream carries one source wire shape.
 
-A spent outbox row takes the producer route, and all five relays now take it. Each publishes one governed `DeadLetterEnvelope` naming the row it gave up on, so an event no consumer will ever see is a message on the dead-letter topic rather than one more warning line. The diagnostic is published inside the sweep that abandons the row and waited for, so a broker that refuses it rolls the abandonment back and a later sweep offers the row again. One row cannot be named this way: a decline whose card resolved to no cross-reference row is keyed on its sixteen-character transaction identifier, and `schemas/dead-letter-v1.json` keys a diagnostic on an eleven-digit account. That row is still abandoned, reported at `ERROR` with its identifier, and counted on `carddemo.authorization.dead.letters` under `outcome=failed`.
+A spent outbox row takes the producer route, and all five relays now take it. Each publishes one governed `DeadLetterEnvelope` naming the row it gave up on, so an event no consumer will ever see is a message on the dead-letter topic rather than one more warning line. The diagnostic is published inside the sweep that abandons the row and waited for. Every row can be named this way, whichever key it carries: a diagnostic declares the account identifier where the row has one and `00000000000` where it does not, which is the substitution the next paragraph but one describes.
 
 Neither form republishes the failed payload, the failed key, or any inbound header outside a fixed allowlist. A poison record therefore cannot carry a card number or a card verification value onto a dead-letter topic. Malformed schema input reaches the same sanitized route without unsafe business processing.
 
 An abandoned outbox row takes the relay route. Five relays publish business events: authorization, ledger, fraud, account, and card. Notification has none, because it publishes nothing. Each sends a governed `DeadLetterEnvelope` to `carddemo.dead-letter` once a row is spent. A change that can never be published therefore still leaves a durable diagnostic, naming the row, the event type, the attempt count, and the reason.
 
-The authorization and account relays record that diagnostic as an obligation rather than attempting it once. Abandoning a row writes `dead_letter_state = 'REQUIRED'` in the same transaction that abandons it, and the state moves to `PUBLISHED` only once the broker has acknowledged the diagnostic. This matters because an abandoned row is terminal: the claim query never returns it again, so a diagnostic dispatched at the moment of abandonment and not awaited leaves an unreachable broker looking exactly like a healthy one. A refused diagnostic is offered again at the head of every later pass, for as long as it takes.
+Three of the five relays record that diagnostic as an obligation rather than attempting it once: authorization, account and fraud detection. Abandoning a row writes `dead_letter_state = 'REQUIRED'` in the same transaction that abandons it, and the state moves to `PUBLISHED` only once the broker has acknowledged the diagnostic. The ledger and card relays instead publish inside the transaction that abandons the row, so a refusal rolls the abandonment back and the row returns to the claim query unchanged; both models are recorded in the [decision log](decision-log.md), and extending the durable form to the remaining two is a [next task](suggested-next-tasks.md). This matters because an abandoned row is terminal: the claim query never returns it again, so a diagnostic dispatched at the moment of abandonment and not awaited leaves an unreachable broker looking exactly like a healthy one. A refused diagnostic is offered again at the head of every later pass, for as long as it takes.
 
-A diagnostic for a row keyed by a transaction identifier — a decline whose card resolved no account — travels under the aggregate identifier `00000000000`, because `schemas/dead-letter-v1.json` accepts eleven digits and the real key holds sixteen characters. `failedEventId` still names the row exactly.
+A diagnostic for a row keyed by a transaction identifier travels under the aggregate identifier `00000000000`, because `schemas/dead-letter-v1.json` accepts eleven digits and such a key holds sixteen characters. `failedEventId` still names the row exactly. No producer writes such a row today, and the substitution is retained for records stored before that decision. The same `00000000000` is the key of every diagnostic a deserializer refused, for the same reason: a record that never deserialized names no account.
 
 Each terminal outcome increments a counter distinct from the per-attempt failure counter, so retries and permanently spent work are never summed together.
 
@@ -423,6 +423,22 @@ The contract library governs eight business event types and the dead-letter enve
 One caution about that numbering. For `TransactionDeclined` the version axis carries two orthogonal facts rather than one: version 2 is the unresolved-account variant and is not a superset of version 1, while version 3 is version 1 plus the nine descriptive values. A reader who assumes each version enriches the last will be wrong about version 2, and each document's own `$comment` says which fact it carries.
 
 Compatibility tests enforce additive evolution, and they fail the build rather than warn. An older payload stays valid under the document that first governed it, so a new consumer can be added without breaking an existing one.
+
+### What a consumer does with a version it cannot act on
+
+A schema document that still accepts an older payload is only half of backward compatibility. The other half is what the listener does when one arrives, and every consumer group on this platform sets `auto-offset-reset` to `earliest`, so a group added today reads whatever the topic still retains — including versions published before the group existed.
+
+The rule is that such a delivery is **accounted for and acknowledged, never refused.** A listener that cannot act on a version consumes the record, counts it on a series of its own, reports it once naming the version, and commits the offset. It writes nothing, invents nothing, and writes no duplicate-delivery marker, because a marker guards side effects and there are none to guard.
+
+| Consumer | Version it cannot act on | What is missing | What it does |
+| --- | --- | --- | --- |
+| notification `notification-authorized` | `TransactionAuthorized` v1 | `cardToken`, the key of `notification_log` | Counts `carddemo.notification.events.unapplied`, reports once, acknowledges |
+| notification `notification-posted` | `TransactionPosted` v1 | `cardToken` plus nine of fourteen column values | Counts `carddemo.notification.events.unapplied`, reports once, acknowledges |
+| ledger `ledger-reject` | `TransactionDeclined` v1 and v2 | the nine descriptive values the 430-byte reject record needs | Acknowledges with no row written |
+
+Refusing was the earlier behaviour on the two notification paths, and it defeated the guarantee this section describes: a governed, schema-valid event spent three delivery attempts and reached the dead-letter topic as though it were poison, on every retained record a new group read. There is deliberately no replay boundary, no offset skip and no migration job: the records are read, accounted for, and passed over.
+
+The cost of a replay is therefore one counter increment and one log line per record, and what a replay of only older records produces is an empty read model with a non-zero unapplied reading — visible rather than hidden.
 
 ## The source ancestor
 

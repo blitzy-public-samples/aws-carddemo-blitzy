@@ -46,9 +46,16 @@ import java.util.regex.Pattern;
  * {@code TransactionPosted} carry.
  *
  * <p>The fraud detection service reads {@code transaction.authorized} and publishes this event
- * afterwards, so it never sits in the authorization response path. No service consumes
- * {@code fraud.assessed} today: the {@code notification-fraud} consumer group is declared in
- * {@code card-platform/.env.example} and no listener is registered against it.
+ * afterwards, so it never sits in the authorization response path. The notification service
+ * consumes {@code fraud.assessed} under the {@code notification-fraud} consumer group, in
+ * {@code com.carddemo.notification.messaging.FraudFlaggedConsumer}, which routes on
+ * {@code eventType}: this payload renders a cardholder alert and {@code FraudCleared} records the
+ * outcome without one. Rendering is the whole of it, because the platform integrates no delivery
+ * channel, so a rendered alert is stored rather than sent.
+ *
+ * <p>That consumer reaches this record through the fraud service's published event and never
+ * through a call, which is what keeps the two consumers of {@code transaction.authorized}
+ * independent of each other.
  *
  * @param eventId        the idempotency key, a Universally Unique Identifier (UUID). A consumer
  *                       records it in its own marker table inside the same local transaction as

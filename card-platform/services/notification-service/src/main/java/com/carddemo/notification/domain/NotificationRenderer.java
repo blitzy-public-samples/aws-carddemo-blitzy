@@ -132,7 +132,7 @@ public interface NotificationRenderer {
      * sequential file and held one at a time.
      *
      * <p>This number bounds one rendered alert alone.
-     * {@code GET /notifications/{cardNumber}} returns every row of one card and reads no ceiling from
+     * {@code GET /notifications/{cardToken}} returns every row of one card and reads no ceiling from
      * here, matching {@code app/cbl/CBSTM03A.CBL:L429}, which totals every row of one card between
      * two key breaks.
      */

@@ -104,6 +104,24 @@ class ThreeConsumerAuthorizationFlowIT {
     /** Transport the container broker offers, in place of the shipped authenticated one. */
     private static final String BROKER_SECURITY_PROTOCOL = "PLAINTEXT";
 
+    /**
+     * Readiness group each context below declares for itself, in place of the one it would inherit.
+     *
+     * <p>Six services each ship {@code src/main/resources/application.yml} at the root of their own
+     * artifact, and this module depends on all six, so exactly one of the six is the
+     * {@code application.yml} every context here reads. The authorization service is the first
+     * service dependency in {@code equivalence-tests/pom.xml}, so its file wins, and its readiness
+     * group names {@code replica}, a contributor only the authorization service defines. A context
+     * booting another application would fail start-up on a group member it cannot have.
+     *
+     * <p>The value is the group the ledger, fraud and notification services each declare in their own
+     * {@code application.yml}. Stating it keeps membership validation switched on, so a contributor
+     * that disappears still stops start-up; switching the validation off instead would hide that.
+     */
+    static final String CONSUMER_READINESS_GROUP =
+            "management.endpoint.health.group.readiness.include="
+                    + "readinessState,db,kafka,listeners,outbox";
+
     /** The one topic the authorization service publishes on and all three services read. */
     static final String AUTHORIZED_TOPIC = "transaction.authorized";
 
@@ -425,7 +443,8 @@ class ThreeConsumerAuthorizationFlowIT {
                     "carddemo.outbox.relay.claim-timeout=PT2M",
                     "carddemo.outbox.published-retention-hours=168",
                     "carddemo.outbox.relay.fixed-delay-ms=3600000",
-                    "carddemo.retention.sweep-interval-ms=3600000"
+                    "carddemo.retention.sweep-interval-ms=3600000",
+                    CONSUMER_READINESS_GROUP
             })
     @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
     class LedgerReadsTheEvent {
@@ -533,7 +552,8 @@ class ThreeConsumerAuthorizationFlowIT {
                     "carddemo.retention.assessment-retention-days=90",
                     "carddemo.retention.velocity-retention-days=7",
                     "carddemo.outbox.relay.fixed-delay-ms=3600000",
-                    "carddemo.retention.sweep-interval-ms=3600000"
+                    "carddemo.retention.sweep-interval-ms=3600000",
+                    CONSUMER_READINESS_GROUP
             })
     @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
     class FraudReadsTheEvent {
@@ -633,7 +653,8 @@ class ThreeConsumerAuthorizationFlowIT {
                     "carddemo.history.log-retention-days=90",
                     "carddemo.history.default-page-size=50",
                     "carddemo.history.maximum-page-size=200",
-                    "carddemo.history.sweep-interval-ms=3600000"
+                    "carddemo.history.sweep-interval-ms=3600000",
+                    CONSUMER_READINESS_GROUP
             })
     @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
     class NotificationReadsTheEvent {

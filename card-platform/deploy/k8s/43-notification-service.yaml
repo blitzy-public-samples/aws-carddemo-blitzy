@@ -8,7 +8,7 @@
 # card-keyed read model comes from app/cpy/COSTM01.CPY:L20-L36, and its key
 # comes from the sort step of app/jcl/CREASTMT.JCL.
 #
-# The container starts all four consumers, serves GET /notifications/{cardNumber}
+# The container starts all four consumers, serves GET /notifications/{cardToken}
 # and answers /actuator.
 #
 # Rationale for every choice in this folder: card-platform/docs/decision-log.md
@@ -86,7 +86,7 @@ spec:
             # their work directories there. The one writable path is the volume below.
             readOnlyRootFilesystem: true
           ports:
-            # 8080 carries GET /notifications/{cardNumber}, and the Service below
+            # 8080 carries GET /notifications/{cardToken}, and the Service below
             # targets it. 9080 carries /actuator and matches MANAGEMENT_PORT in
             # 30-configmap.yaml. No Service exposes 9080, and the NetworkPolicy below
             # admits it from monitoring pods alone. Both ports are encrypted, because
@@ -96,8 +96,9 @@ spec:
             - name: management
               containerPort: 9080
           envFrom:
-            # Broker address, topic names, consumer group names, log levels, the three
-            # request-identity usernames, and the transport settings. No credential appears
+            # Broker address, topic names, consumer group names, log levels, the four
+            # request-identity usernames (the acquirer one is read by the authorization
+            # service alone), and the transport settings. No credential appears
             # there.
             - configMapRef:
                 name: carddemo-config
@@ -336,7 +337,7 @@ spec:
 # management surfaces. Egress admits only Domain Name System (DNS), PostgreSQL
 # and Kafka.
 #
-# 8080 carries GET /notifications/{cardNumber}, and the module
+# 8080 carries GET /notifications/{cardToken}, and the module
 # config/SecurityConfig authenticates every request that arrives. 9080 carries
 # /actuator, where health answers with no credential so a probe can read it, and
 # every other endpoint requires ROLE_MONITORING. This policy closes the same gap

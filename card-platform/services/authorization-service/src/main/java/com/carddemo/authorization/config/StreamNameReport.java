@@ -33,10 +33,10 @@ import org.springframework.stereotype.Component;
  *
  * <h2>What is reported, and what is not</h2>
  *
- * <p>Stream names only. The relay sweep, the claim timeout and the replica staleness window arrive
- * the same way, and a wrong value there changes throughput or freshness; a wrong stream name costs
- * every event. Those values stay in the bound {@link AuthorizationProperties} record, which fails
- * start-up when one of them is invalid.
+ * <p>Stream names only. The relay sweep, the claim timeout and the replica lag ceiling arrive the
+ * same way, and a wrong value there changes throughput or how much backlog a decision tolerates; a
+ * wrong stream name costs every event. Those values stay in the bound
+ * {@link AuthorizationProperties} record, which fails start-up when one of them is invalid.
  *
  * <p>No credential is reported here, and none can be: a topic name is not a credential, and the
  * class reads nothing else. No card number reaches this class either.

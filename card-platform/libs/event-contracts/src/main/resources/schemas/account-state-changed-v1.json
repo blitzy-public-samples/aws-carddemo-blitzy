@@ -80,7 +80,7 @@
     "currentCycleCredit": {
       "type": "string",
       "pattern": "^-?\\d{1,10}\\.\\d{2}$",
-      "description": "The cycle credit accumulator, as a decimal string with two fractional digits. From ACCT-CURR-CYC-CREDIT PIC S9(10)V99 at app/cpy/CVACT01Y.cpy:L12. app/cbl/CBTRN02C.cbl:L548-L549 adds a non-negative transaction amount here, and app/cbl/CBACT04C.cbl:L353 zeroes it at cycle close.",
+      "description": "The cycle credit accumulator, as a decimal string with two fractional digits. From ACCT-CURR-CYC-CREDIT PIC S9(10)V99 at app/cpy/CVACT01Y.cpy:L13. app/cbl/CBTRN02C.cbl:L548-L549 adds a non-negative transaction amount here, and app/cbl/CBACT04C.cbl:L353 zeroes it at cycle close.",
       "examples": [
         "250.00",
         "0.00"
@@ -89,7 +89,7 @@
     "currentCycleDebit": {
       "type": "string",
       "pattern": "^-?\\d{1,10}\\.\\d{2}$",
-      "description": "The cycle debit accumulator, as a decimal string with two fractional digits. From ACCT-CURR-CYC-DEBIT PIC S9(10)V99 at app/cpy/CVACT01Y.cpy:L13. app/cbl/CBTRN02C.cbl:L550-L551 adds a negative transaction amount here, and app/cbl/CBACT04C.cbl:L354 zeroes it at cycle close.",
+      "description": "The cycle debit accumulator, as a decimal string with two fractional digits. From ACCT-CURR-CYC-DEBIT PIC S9(10)V99 at app/cpy/CVACT01Y.cpy:L14. app/cbl/CBTRN02C.cbl:L550-L551 adds a negative transaction amount here, and app/cbl/CBACT04C.cbl:L354 zeroes it at cycle close.",
       "examples": [
         "-125.00",
         "0.00"

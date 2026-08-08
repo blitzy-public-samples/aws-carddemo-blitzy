@@ -27,7 +27,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * <p>The ceiling is enforced by one static method on the shared interface, and both implementations
  * call it. These tests run against both, so an implementation that stops calling it fails here.
  *
- * <p>The ceiling bounds one rendered alert alone. {@code GET /notifications/{cardNumber}} reads
+ * <p>The ceiling bounds one rendered alert alone. {@code GET /notifications/{cardToken}} reads
  * every row of one card and applies no ceiling, matching {@code app/cbl/CBSTM03A.CBL:L429}, which
  * totals every row of one card between two key breaks. One test below holds the ceiling to the
  * number {@code NotificationRenderer} declares.

@@ -232,7 +232,7 @@ carddemo:
     log-retention-days: ${NOTIFICATION_LOG_RETENTION_DAYS:90}
     sweep-interval-ms: ${RETENTION_SWEEP_INTERVAL_MS:3600000}
 
-    # No page size is configured. GET /notifications/{cardNumber} returns every row of one
+    # No page size is configured. GET /notifications/{cardToken} returns every row of one
     # card, matching app/cbl/CBSTM03A.CBL:L429, which totals every row of one card between
     # two key breaks. MAXIMUM_STATEMENT_ROWS on NotificationRenderer bounds one rendered
     # alert and is a constant of that class rather than a property here.

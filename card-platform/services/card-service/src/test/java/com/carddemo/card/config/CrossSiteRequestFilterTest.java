@@ -24,7 +24,7 @@ import org.springframework.mock.web.MockHttpServletResponse;
 /**
  * Measures the cross-site refusal of the card service.
  *
- * <p>The one write of {@code api/CardController}, {@code PUT /cards/{cardNumber}}, declares
+ * <p>The one write of {@code api/CardController}, {@code PUT /cards/{cardToken}}, declares
  * {@code application/json}, so an HTML form reaches it with 415 rather than with an update. That is
  * a property of what the route consumes and not a control, so the refusal below is measured all the
  * same: a forged card update rewrites the row every decline rule of the authorization service reads

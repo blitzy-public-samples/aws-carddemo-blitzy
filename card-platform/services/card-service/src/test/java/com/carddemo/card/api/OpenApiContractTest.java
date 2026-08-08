@@ -56,7 +56,7 @@ final class OpenApiContractTest {
     private static final String COLLECTION_PATH = "/cards";
 
     /** The route that names one card, which carries the read and the update. */
-    private static final String CARD_PATH = "/cards/{cardNumber}";
+    private static final String CARD_PATH = "/cards/{cardToken}";
 
     /** Keys of a route block that are operations rather than shared declarations. */
     private static final Set<String> HTTP_METHODS =
@@ -167,22 +167,25 @@ final class OpenApiContractTest {
         }
 
         /**
-         * Asserts the card number appears as a path variable and never as a query parameter.
+         * Asserts the card token is the path variable and no parameter of this service names a card
+         * number.
          *
          * <p>Transaction {@code CCDL} at {@code app/csd/CARDDEMO.CSD:L347-L348} and transaction
          * {@code CCUP} at {@code app/csd/CARDDEMO.CSD:L367-L369} each address one card, so each is
-         * one addressable resource and the card number is the path variable that names it. A query
-         * string is different: it is not part of the resource identity, and the list route filters by
-         * account rather than by card, so no query parameter of this service names a card.
+         * one addressable resource and one path variable names it. That variable is the card token
+         * rather than the card number: a path is written to an access log, a proxy log, a trace and a
+         * browser history, and none of the four is reachable by this application's redaction. A query
+         * string is different again: it is not part of the resource identity, and the list route
+         * filters by account, so no query parameter of this service names a card at all.
          */
         @Test
-        void theCardNumberIsAPathVariableAndNeverAQueryParameter() {
-            Map<String, Object> variable = pathVariableOf(CARD_PATH, "cardNumber");
+        void theCardTokenIsThePathVariableAndNoQueryParameterNamesACard() {
+            Map<String, Object> variable = pathVariableOf(CARD_PATH, "cardToken");
             assertEquals(Boolean.TRUE, variable.get("required"),
                     "a path variable cannot be omitted");
-            assertEquals(CardController.CARD_NUMBER_PATTERN,
+            assertEquals(CardController.CARD_TOKEN_PATTERN,
                     asMap(variable.get("schema")).get("pattern"),
-                    "the shape app/cbl/COCRDUPC.cbl:L784 tests");
+                    "the token shape PanMasker declares once");
 
             for (Map<String, Object> operations : paths().values()) {
                 for (Object operation : operationsOf(operations).values()) {
@@ -898,9 +901,13 @@ final class OpenApiContractTest {
          * Asserts the document reproduces the four search-condition texts and says in what order they
          * are applied.
          *
-         * <p>{@link CardController#firstSearchFailure} answers one of five texts, and the order
-         * decides which, so a document listing them without the order would describe five answers and
-         * predict none.
+         * <p>{@code domain/CardQueryService} and {@code domain/CardUpdateService} answer one of these
+         * texts each, and the order decides which, so a document listing them without the order would
+         * describe four answers and predict none.
+         *
+         * <p>One of the four is unreachable through any route: the card-number edit runs on a number
+         * read from a row rather than submitted, so it always passes. The document names it as
+         * unreachable rather than omitting it, because a reader of the service code finds it there.
          */
         @Test
         void theDocumentReproducesTheSearchConditionTextsAndTheirOrder() {

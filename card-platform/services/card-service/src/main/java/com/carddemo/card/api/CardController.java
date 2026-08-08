@@ -46,12 +46,19 @@ import org.springframework.web.bind.annotation.RestController;
  *
  * <h2>Where an identifier may appear</h2>
  *
- * <p>The two routes that name one card carry the full card number as a path variable, which is the
- * key {@code app/cbl/COCRDSLC.cbl:L740} reads by. Transaction {@code CCDL} at
- * {@code app/csd/CARDDEMO.CSD:L347-L348} is the read and transaction {@code CCUP} at
- * {@code app/csd/CARDDEMO.CSD:L367-L369} is the update. A path reaches an access log, a proxy log, a
- * trace and a browser history, and {@code card-platform/docs/suggested-next-tasks.md} carries the
- * deployment guidance that follows.
+ * <p><strong>No card number appears in any path of this service.</strong> The two routes that name one
+ * card carry the irreversible card token, and this controller resolves that token to the row before
+ * anything else happens. Transaction {@code CCDL} at {@code app/csd/CARDDEMO.CSD:L347-L348} is the
+ * read and transaction {@code CCUP} at {@code app/csd/CARDDEMO.CSD:L367-L369} is the update; both
+ * still reach the row by the primary key {@code app/cbl/COCRDSLC.cbl:L740} reads by, and only the
+ * value a caller quotes has changed.
+ *
+ * <p>The reason is that a path is the one part of a request this application's redaction cannot
+ * reach. It is written to an access log by the container, to a proxy log by whatever sits in front of
+ * it, into a distributed trace as the span name, and into a browser history by the client. Masking a
+ * number in a response body while putting it in the request line minimises nothing. The token is
+ * derived by {@link PanMasker#cardToken} under a deployment-supplied key, is stored in
+ * {@code card.card_token} under a unique constraint, and reaches at most one row.
  *
  * <p>The paging cursor of the list route travels in the {@value #CURSOR_HEADER} request header. That
  * cursor is the irreversible card token of a row. {@link CardQueryService} resolves the token to
@@ -91,26 +98,33 @@ public class CardController {
     /** The collection all three routes sit under. */
     public static final String BASE_PATH = "/cards";
 
-    /** Path of the two card-numbered routes, below {@link #BASE_PATH}. */
-    public static final String CARD_PATH = "/{cardNumber}";
+    /** Path of the two routes that name one card, below {@link #BASE_PATH}. */
+    public static final String CARD_PATH = "/{cardToken}";
 
-    /** Name of the path variable the two card-numbered routes capture. */
-    public static final String CARD_NUMBER_VARIABLE = "cardNumber";
+    /** Name of the path variable the two card-named routes capture. */
+    public static final String CARD_TOKEN_VARIABLE = "cardToken";
 
     /** Route template the list route reports in a failing response. */
     public static final String COLLECTION_ROUTE = BASE_PATH;
 
-    /** Route template the two card-numbered routes report in a failing response. */
+    /** Route template the two card-named routes report in a failing response. */
     public static final String CARD_ROUTE = BASE_PATH + CARD_PATH;
 
     /**
-     * Shape of the card number a path carries, from {@code CARD-NUM PIC X(16)} at
-     * {@code app/cpy/CVACT02Y.cpy:L5}.
+     * Shape of the card token a path carries: exactly {@value PanMasker#CARD_TOKEN_LENGTH} lower-case
+     * hexadecimal characters.
      *
-     * <p>All sixteen digits are required. {@code app/cbl/COCRDUPC.cbl:L194} applies the only rule
-     * the source has for a card number, which is sixteen numeric digits.
+     * <p>The source edit on a card number, {@code Card number if supplied must be a 16 digit number}
+     * at {@code app/cbl/COCRDUPC.cbl:L193-L194}, is not replaced by this pattern. It still runs, in
+     * {@link CardUpdateService}, on the number this controller resolves from the token, so a source
+     * rule is applied where the source applied it and the target adds one shape check of its own in
+     * front of it.
      */
-    public static final String CARD_NUMBER_PATTERN = "^[0-9]{16}$";
+    public static final String CARD_TOKEN_PATTERN = PanMasker.CARD_TOKEN_PATTERN;
+
+    /** Text a caller reads when the token in the path is not a card token. */
+    public static final String CARD_TOKEN_MESSAGE =
+            CardValidationMessages.ADDITIVE_CARD_TOKEN_MALFORMED;
 
     /**
      * Query parameter carrying the account whose cards a caller lists.
@@ -311,15 +325,20 @@ public class CardController {
     }
 
     /**
-     * Reads one card, named by the full card number in the path.
+     * Reads one card, named by its token in the path.
      *
      * <p>Reproduces {@code app/cbl/COCRDSLC.cbl}, transaction {@code CCDL} at
      * {@code app/csd/CARDDEMO.CSD:L347-L348}. {@code 9100-GETCARD-BYACCTCARD} at
      * {@code app/cbl/COCRDSLC.cbl:L736} moves the card number into the read key at
      * {@code app/cbl/COCRDSLC.cbl:L740} and reads the card file by card number at
      * {@code app/cbl/COCRDSLC.cbl:L742-L750}. The account move above the key at
-     * {@code app/cbl/COCRDSLC.cbl:L739} is commented out, so the card number is the whole key and
-     * this method reads by it alone.
+     * {@code app/cbl/COCRDSLC.cbl:L739} is commented out, so one card value is the whole key and this
+     * method reads by one card value too. That value is the token rather than the number, so no
+     * Primary Account Number reaches a request line; {@code card_token} carries a unique constraint,
+     * so it selects the same single row the primary key selects.
+     *
+     * <p>The masked number in the response is derived from the number the row holds, not from the
+     * path. The path carries no digit of it.
      *
      * <p>The not-found branch at {@code app/cbl/COCRDSLC.cbl:L755-L761} sets
      * {@code DID-NOT-FIND-ACCTCARD-COMBO} at {@code app/cbl/COCRDSLC.cbl:L760}, whose text
@@ -328,22 +347,22 @@ public class CardController {
      * {@code app/cbl/COCRDSLC.cbl:L779-L810}, which no {@code PERFORM} reaches, so it is
      * unreachable and this route never answers it.
      *
-     * <p>Ownership is decided by the filter chain of {@code config/SecurityConfig}, which derives
-     * the card token from this path value. A caller holding no matching authority reads {@code 403}
-     * whether or not the row exists.
+     * <p>Ownership is decided by the filter chain of {@code config/SecurityConfig}, which compares
+     * this path value against the caller's {@code SCOPE_CARD_} authorities directly. A caller holding
+     * no matching authority reads {@code 403} whether or not the row exists.
      *
-     * @param cardNumber the full sixteen-digit card number
+     * @param cardToken the card token, {@value PanMasker#CARD_TOKEN_LENGTH} lower-case hexadecimal
+     *                  characters
      * @return {@code 200} with the card, or {@code 404} carrying the text of
      *         {@code app/cbl/COCRDUPC.cbl:L204}
      */
     @GetMapping(path = CARD_PATH, produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<?> readCard(
-            @PathVariable(name = CARD_NUMBER_VARIABLE)
-            @Pattern(regexp = CARD_NUMBER_PATTERN,
-                    message = CardValidationMessages.CARD_FILTER_NOT_NUMERIC)
-            String cardNumber) {
+            @PathVariable(name = CARD_TOKEN_VARIABLE)
+            @Pattern(regexp = CARD_TOKEN_PATTERN, message = CARD_TOKEN_MESSAGE)
+            String cardToken) {
 
-        Optional<CardEntity> card = cardQueries.findByCardNumber(cardNumber);
+        Optional<CardEntity> card = cardQueries.findByCardToken(cardToken);
         if (card.isEmpty()) {
             log.info("A card read named no stored card");
             return failure(HttpStatus.NOT_FOUND,
@@ -351,15 +370,30 @@ public class CardController {
         }
 
         log.info("A card read answered one card");
-        return ResponseEntity.ok(detailOf(card.get(), PanMasker.maskCardNumber(cardNumber)));
+        return ResponseEntity.ok(detailOf(card.get(),
+                PanMasker.maskCardNumber(card.get().getCardNumber())));
     }
 
     /**
-     * Updates one card, named by the full card number in the request path.
+     * Updates one card, named by its token in the request path.
      *
      * <p>Reproduces {@code app/cbl/COCRDUPC.cbl}. {@link CardUpdateService} owns the order of the
      * checks, and the order decides which of seven answers a caller receives. This method owns only
-     * the status code each answer carries.
+     * the status code each answer carries, and the one read that turns a token into the number the
+     * update service works on.
+     *
+     * <p><strong>Token-to-number resolution happens here and nowhere else.</strong> The full number
+     * never leaves this service: it is read from the row, handed to
+     * {@link CardUpdateService#updateCard(String, CardUpdateRequest)} in the same call, and masked in
+     * every response and log line. A token that names no row answers the same
+     * {@code cardNotFound()} outcome the update service reaches for a number that names no row, so a
+     * caller cannot tell which of the two lookups missed and the seven outcomes stay seven.
+     *
+     * <p>The two card-number edits of the source remain reachable through the update service, on the
+     * number resolved here: {@code PROMPT_FOR_CARD} at {@code app/cbl/COCRDUPC.cbl:L180} and
+     * {@code Card number if supplied must be a 16 digit number} at
+     * {@code app/cbl/COCRDUPC.cbl:L193-L194}. A stored row always satisfies both, so a caller of this
+     * route reaches neither, and {@code domain/CardUpdateServiceTest} is where both are exercised.
      *
      * <p>No {@code @Valid} sits on this body. The source runs its read and its no-change comparison
      * before its field edits. A boundary validation answers a field message where the source
@@ -373,19 +407,26 @@ public class CardController {
      * The text {@code app/cbl/COCRDUPC.cbl:L210} declares travels in the message member of that
      * body.
      *
-     * @param cardNumber the full sixteen-digit card number, from the path
-     * @param request    the five values the update carries
+     * @param cardToken the card token, {@value PanMasker#CARD_TOKEN_LENGTH} lower-case hexadecimal
+     *                  characters
+     * @param request   the five values the update carries
      * @return the outcome, with the status {@link #statusOf(CardUpdateResponse)} names
      */
     @PutMapping(path = CARD_PATH, consumes = MediaType.APPLICATION_JSON_VALUE,
             produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<?> updateCard(
-            @PathVariable(name = CARD_NUMBER_VARIABLE)
-            @Pattern(regexp = CARD_NUMBER_PATTERN,
-                    message = CardValidationMessages.CARD_FILTER_NOT_NUMERIC)
-            String cardNumber,
+            @PathVariable(name = CARD_TOKEN_VARIABLE)
+            @Pattern(regexp = CARD_TOKEN_PATTERN, message = CARD_TOKEN_MESSAGE)
+            String cardToken,
             @RequestBody CardUpdateRequest request) {
-        CardUpdateResponse outcome = cardUpdates.updateCard(cardNumber, request);
+        Optional<CardEntity> named = cardQueries.findByCardToken(cardToken);
+        if (named.isEmpty()) {
+            log.info("A card update named no stored card");
+            CardUpdateResponse missing = CardUpdateResponse.cardNotFound();
+            return ResponseEntity.status(statusOf(missing)).body(missing);
+        }
+
+        CardUpdateResponse outcome = cardUpdates.updateCard(named.get().getCardNumber(), request);
         log.info("A card update answered outcome {}", outcome.outcome());
 
         HttpStatus status = statusOf(outcome);

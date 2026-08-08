@@ -394,15 +394,22 @@ public class KafkaConsumerConfig {
      * delivery attempts it took. The envelope is validated against its own document before it is
      * published, so a malformed diagnostic fails here rather than on a topic.
      *
-     * <p>The outgoing key is the coordinates of the refused record, which name it inside its source
-     * topic under the access controls that topic already carries, and which no producer controls.
-     * The outgoing headers are rebuilt from the three this service generates, so a header a producer
-     * chose is dropped along with the key that carried it.
+     * <p>The outgoing key is {@value #UNRESOLVED_ACCOUNT_KEY}, the aggregate identifier the envelope
+     * itself declares. {@code schemas/dead-letter-v1.json} describes {@code aggregateId} as the Kafka
+     * message key of the envelope, so keying on anything else makes the payload contradict the record
+     * carrying it. It also splits the shared dead-letter topic across as many partitions as there are
+     * distinct source offsets, which loses the ordering the topic's single key form gives an operator
+     * replaying it. Where the record came from is not lost by this: {@code sourceTopic},
+     * {@code sourcePartition} and {@code sourceOffset} are declared fields of that document and are
+     * filled in below, which is where an operator reads them.
      *
-     * <p>The aggregate identifier the envelope declares is {@value #UNRESOLVED_ACCOUNT_KEY}. The
-     * contract requires an account-shaped value and a record this service could not read carries no
-     * account it can be trusted to name, so the sentinel says exactly that: eleven zeros are not an
-     * account this platform seeds or issues.
+     * <p>The contract requires an account-shaped value and a record this service could not read
+     * carries no account it can be trusted to name, so the sentinel says exactly that: eleven zeros
+     * are not an account this platform seeds or issues. No producer controls it, which is the property
+     * the coordinates were reached for.
+     *
+     * <p>The outgoing headers are rebuilt from the three this service generates, so a header a
+     * producer chose is dropped along with the key that carried it.
      *
      * <p>An instance holds no mutable state, so consumer threads may share one.
      */
@@ -427,8 +434,8 @@ public class KafkaConsumerConfig {
         }
 
         /**
-         * Returns a record carrying the governed envelope, the refused record's coordinates as its
-         * key, and the three headers this service generates.
+         * Returns a record carrying the governed envelope, the envelope's own aggregate identifier as
+         * its key, and the three headers this service generates.
          *
          * <p>{@code key} and {@code value} are the refused bytes the superclass supplies. Neither is
          * read.
@@ -447,7 +454,7 @@ public class KafkaConsumerConfig {
                 byte[] key, byte[] value) {
 
             return new ProducerRecord<>(topicPartition.topic(), partitionOf(topicPartition),
-                    recordCoordinates(failedRecord), governedEnvelope(failedRecord, headers),
+                    UNRESOLVED_ACCOUNT_KEY, governedEnvelope(failedRecord, headers),
                     allowedHeaders(headers));
         }
 
@@ -499,17 +506,6 @@ public class KafkaConsumerConfig {
             }
             return json.getBytes(StandardCharsets.UTF_8);
         }
-    }
-
-    /**
-     * Names the refused record inside its source topic, without retaining the key a producer chose.
-     *
-     * @param failedRecord the record no attempt could apply
-     * @return the topic, partition and offset of the record, separated by hyphens
-     */
-    static String recordCoordinates(ConsumerRecord<?, ?> failedRecord) {
-        return failedRecord.topic() + "-" + failedRecord.partition() + "-"
-                + failedRecord.offset();
     }
 
     /** The resolved partition, and {@code null} where the resolver named a negative one. */

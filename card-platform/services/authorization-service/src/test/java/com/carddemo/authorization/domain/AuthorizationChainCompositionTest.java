@@ -23,6 +23,7 @@ import com.carddemo.authorization.outbox.OutboxWriter;
 import com.carddemo.authorization.repository.AccountCreditSnapshotRepository;
 import com.carddemo.authorization.repository.AuthorizationDecisionRepository;
 import com.carddemo.authorization.repository.CardCrossReferenceRepository;
+import com.carddemo.authorization.repository.ReplicaGapRepository;
 import com.carddemo.authorization.repository.UnresolvedCardAttemptRepository;
 import com.carddemo.events.DeclineReason;
 import com.carddemo.events.TransactionAuthorized;
@@ -213,7 +214,6 @@ final class AuthorizationChainCompositionTest {
 
         crossReferenceRow = mock(CardCrossReferenceEntity.class);
         when(crossReferenceRow.getAccountId()).thenReturn(ACCOUNT_ID);
-        when(crossReferenceRow.isFreshAt(any(), any())).thenReturn(true);
 
         accountRow = mock(AccountCreditSnapshotEntity.class);
         when(accountRow.getAccountId()).thenReturn(ACCOUNT_ID);
@@ -223,7 +223,6 @@ final class AuthorizationChainCompositionTest {
         when(accountRow.getCurrentCycleDebit()).thenReturn(ZERO_MONEY);
         when(accountRow.effectivePendingCycleCredit(any())).thenReturn(ZERO_MONEY);
         when(accountRow.effectivePendingCycleDebit(any())).thenReturn(ZERO_MONEY);
-        when(accountRow.isFreshAt(any(), any())).thenReturn(true);
     }
 
     /**
@@ -700,7 +699,8 @@ final class AuthorizationChainCompositionTest {
     private AuthorizationService serviceOver(List<DeclineRule> rules) {
         return new AuthorizationService(rules, cardCrossReferences, identifiers, outboxWriter,
                 unresolvedCardAttempts, authorizationDecisions, new SimpleMeterRegistry(),
-                immediateTransactions(), replicaPolicy(), cycleExposure());
+                immediateTransactions(), replicaPolicy(), cycleExposure(),
+                () -> ReplicaSynchronization.Verdict.synchronizedAt(0L), noReplicaGaps());
     }
 
     /**
@@ -728,6 +728,20 @@ final class AuthorizationChainCompositionTest {
      */
     private static AuthorizationProperties replicaPolicy() {
         return mock(AuthorizationProperties.class, RETURNS_DEEP_STUBS);
+    }
+
+    /**
+     * Supplies a gap store that owes no account a change, which is what every test here assumes.
+     *
+     * <p>The two conditions that refuse a call on replica grounds belong to
+     * {@code AuthorizationServiceTest}. What this file composes is the chain, so both are held open.
+     *
+     * @return a store reporting no gap for any account
+     */
+    private static ReplicaGapRepository noReplicaGaps() {
+        ReplicaGapRepository gaps = mock(ReplicaGapRepository.class);
+        when(gaps.existsForAggregate(any())).thenReturn(false);
+        return gaps;
     }
 
     /**

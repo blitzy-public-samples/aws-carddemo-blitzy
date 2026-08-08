@@ -14,6 +14,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 
 import com.carddemo.card.api.dto.CardUpdateResponse;
+import com.carddemo.card.api.dto.CardValidationMessages;
 import com.carddemo.card.domain.CardQueryService;
 import com.carddemo.card.domain.CardQueryService.CardListRow;
 import com.carddemo.card.domain.CardQueryService.CardPage;
@@ -28,6 +29,7 @@ import java.nio.file.Path;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
 import java.util.TreeSet;
@@ -80,7 +82,10 @@ class CardRouteWiringTest {
     /** The account the card belongs to, eleven digits. */
     private static final String ACCOUNT_ID = "00000000050";
 
-    /** The irreversible paging token of {@link #CARD_NUMBER}. */
+    /**
+     * The irreversible token of {@link #CARD_NUMBER}, which names that card in a path and in a paging
+     * cursor alike.
+     */
     private static final String CARD_TOKEN = PanMasker.cardToken(CARD_NUMBER);
 
     /** A complete update body, which the update route accepts whole. */
@@ -88,8 +93,8 @@ class CardRouteWiringTest {
             {"embossedName":"ALEXANDER J MORGAN",\
             "expiryYear":"2029","expiryMonth":"12","expiryDay":"31","activeStatus":"N"}""";
 
-    /** The path of the two routes that name one card. */
-    private static final String CARD_PATH = "/cards/" + CARD_NUMBER;
+    /** The path of the two routes that name one card, which carries that card's token. */
+    private static final String CARD_PATH = "/cards/" + CARD_TOKEN;
 
     private CardQueryService cardQueries;
     private CardUpdateService cardUpdates;
@@ -103,7 +108,7 @@ class CardRouteWiringTest {
 
         when(cardQueries.listForward(any(), any(), any(), any())).thenReturn(page());
         when(cardQueries.listBackward(any(), any(), any(), any())).thenReturn(page());
-        when(cardQueries.findByCardNumber(any())).thenReturn(Optional.of(storedCard()));
+        when(cardQueries.findByCardToken(any())).thenReturn(Optional.of(storedCard()));
         when(cardUpdates.updateCard(any(), any())).thenReturn(CardUpdateResponse.updated());
 
         mockMvc = MockMvcBuilders
@@ -184,7 +189,7 @@ class CardRouteWiringTest {
             assertEquals(200, result.getResponse().getStatus(), "the route exists");
             assertTrue(result.getResponse().getContentAsString().contains("************1150"),
                     "the handler ran and its masked card reached the response");
-            verify(cardQueries).findByCardNumber(CARD_NUMBER);
+            verify(cardQueries).findByCardToken(CARD_TOKEN);
         }
 
         /**
@@ -207,10 +212,10 @@ class CardRouteWiringTest {
         /**
          * Asserts every mapping holds a variable name and no resolved identifier.
          *
-         * <p>Two routes carry the card number as a path variable, reproducing transaction
+         * <p>Two routes carry the card token as a path variable, reproducing transaction
          * {@code CCDL} at {@code app/csd/CARDDEMO.CSD:L347-L348} and transaction {@code CCUP} at
-         * {@code app/csd/CARDDEMO.CSD:L367-L369}. A mapping is a template, so it holds the variable
-         * name and never a value a caller sent.
+         * {@code app/csd/CARDDEMO.CSD:L367-L369}, each of which addresses one card. A mapping is a
+         * template, so it holds the variable name and never a value a caller sent.
          */
         @Test
         void everyMappingHoldsAVariableNameAndNoResolvedIdentifier() {
@@ -219,9 +224,9 @@ class CardRouteWiringTest {
                         "a mapping holding a run of five digits would be a resolved key: "
                                 + mapping);
             }
-            assertTrue(declaredMappings().contains("/cards/{cardNumber}"),
-                    "the two card-numbered routes carry the variable the source keys on at "
-                            + "app/cbl/COCRDSLC.cbl:L740: " + declaredMappings());
+            assertTrue(declaredMappings().contains("/cards/{cardToken}"),
+                    "the two routes that name one card carry the token standing for the value the "
+                            + "source keys on at app/cbl/COCRDSLC.cbl:L740: " + declaredMappings());
         }
     }
 
@@ -288,17 +293,28 @@ class CardRouteWiringTest {
                             + result.getResponse().getContentAsString());
         }
 
-        /** Asserts a card number of another shape in the path answers 400 through the chain. */
+        /**
+         * Asserts a path value of another shape answers 400 through the chain, and that a full card
+         * number is one such value.
+         *
+         * <p>The refusal is what keeps a Primary Account Number out of a request line even where a
+         * caller sends one: the constraint reads the value, refuses it, and the handler never runs.
+         */
         @Test
         void aPathValueOfAnotherShapeAnswersBadRequest() throws Exception {
-            MvcResult result = mockMvc.perform(get("/cards/411111111111115X")).andReturn();
+            for (String refused : List.of(CARD_TOKEN.substring(1), CARD_NUMBER,
+                    CARD_TOKEN.toUpperCase(Locale.ROOT))) {
+                MvcResult result = mockMvc.perform(get("/cards/" + refused)).andReturn();
+                String body = result.getResponse().getContentAsString();
 
-            assertEquals(400, result.getResponse().getStatus(),
-                    "the constraint on the path variable refused the request");
-            assertTrue(result.getResponse().getContentAsString()
-                            .contains("CARD ID FILTER,IF SUPPLIED MUST BE A 16 DIGIT NUMBER"),
-                    "the text app/cbl/COCRDUPC.cbl:L789 declares reaches the caller: "
-                            + result.getResponse().getContentAsString());
+                assertEquals(400, result.getResponse().getStatus(),
+                        "the constraint on the path variable refused " + refused);
+                assertTrue(body.contains(CardValidationMessages.ADDITIVE_CARD_TOKEN_MALFORMED),
+                        "the token refusal text reaches the caller: " + body);
+                assertFalse(body.contains(refused),
+                        "the refusal echoes the value the caller sent: " + body);
+            }
+            verify(cardQueries, never()).findByCardToken(any());
         }
     }
 
@@ -354,7 +370,7 @@ class CardRouteWiringTest {
         /** Asserts the two mapped paths are the exact set, so neither side carries a third. */
         @Test
         void theTwoMappedPathsAreTheExactSet() {
-            assertEquals(new TreeSet<>(List.of("/cards", "/cards/{cardNumber}")),
+            assertEquals(new TreeSet<>(List.of("/cards", "/cards/{cardToken}")),
                     new TreeSet<>(declaredMappings()),
                     "three Customer Information Control System transactions over two paths");
         }

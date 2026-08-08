@@ -109,8 +109,9 @@ spec:
             - name: management
               containerPort: 9080
           envFrom:
-            # Broker address, topic names, service addresses, log levels, the three
-            # request-identity usernames, and the transport settings. No credential appears
+            # Broker address, topic names, service addresses, log levels, the four
+            # request-identity usernames (the acquirer one is read by the authorization
+            # service alone), and the transport settings. No credential appears
             # there.
             - configMapRef:
                 name: carddemo-config
@@ -125,6 +126,14 @@ spec:
             # platform-wide identity store is the faithful shape; a database login is not.
             - secretRef:
                 name: carddemo-identity-secret
+            # The acquirer verifier, pulled by this Deployment alone. It is the fourth
+            # request identity, and it is not in the Secret above because only this service
+            # verifies a password against it: application.yml of this module is the one
+            # reader on the platform. A hash in five Pods that never check it is a digest an
+            # attacker reaching any of them can grind offline, for the identity that
+            # authorizes every card.
+            - secretRef:
+                name: carddemo-authorization-identity-secret
             # The card-token key, pulled by this Deployment and 45-card-service.yaml alone.
             # Both derive a card token; the other four services read one that arrives in an
             # event or a request and derive none, so the key reaches two Pods and not six.
@@ -186,12 +195,20 @@ spec:
                   key: SPRING_DATASOURCE_OPTIONS
             - name: SPRING_DATASOURCE_URL
               value: "jdbc:postgresql://$(POSTGRES_HOST):$(POSTGRES_PORT)/$(AUTHORIZATION_DB_NAME)?currentSchema=$(AUTHORIZATION_DB_SCHEMA)&$(SPRING_DATASOURCE_OPTIONS)"
-            # Two Flyway locations. db/migration reproduces app/data/ASCII/acctdata.txt value for
-            # value, and all 50 of its account expiries fall in 2025, so reason code 103 at
+            # Flyway locations, read from the ConfigMap rather than fixed here, so this path
+            # offers the same base-profile opt-out card-platform/docker-compose.yml offers
+            # through AUTHORIZATION_FLYWAY_LOCATIONS. The shipped value names two locations:
+            # db/migration reproduces app/data/ASCII/acctdata.txt value for value, and all 50
+            # of its account expiries fall in 2023 to 2025, so reason code 103 at
             # app/cbl/CBTRN02C.cbl:L414-L420 declines a request carrying today's date. db/demo
-            # extends those expiries to 2099-12-31 and touches nothing else.
+            # extends those expiries to 2099-12-31 and touches nothing else. 30-configmap.yaml
+            # carries the reason, the opt-out and the rule that this key and the account one
+            # change together.
             - name: SPRING_FLYWAY_LOCATIONS
-              value: "classpath:db/migration,classpath:db/demo"
+              valueFrom:
+                configMapKeyRef:
+                  name: carddemo-config
+                  key: AUTHORIZATION_FLYWAY_LOCATIONS
             - name: KAFKA_SASL_USERNAME
               valueFrom:
                 configMapKeyRef:

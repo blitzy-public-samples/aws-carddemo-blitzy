@@ -431,7 +431,7 @@ class CardApiExceptionHandlerTest {
          * Asserts a failure of the read route reports the read route.
          *
          * <p>The handler reported the collection template for every failure, so a caller sending an
-         * unreadable body to {@code PUT /cards/{cardNumber}} was told {@code /cards} had failed. Two
+         * unreadable body to {@code PUT /cards/{cardToken}} was told {@code /cards} had failed. Two
          * routes sit under one collection and a caller cannot tell which one it reached from a body
          * naming the prefix of both. The published example of the member carries the template of the
          * two routes that name one card.

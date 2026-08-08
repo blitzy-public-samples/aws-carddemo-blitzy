@@ -1,5 +1,6 @@
 package com.carddemo.notification.messaging;
 
+import com.carddemo.events.EventEnvelope;
 import com.carddemo.events.TransactionAuthorized;
 import com.carddemo.notification.config.ObservabilityConfig.NotificationMetrics;
 import com.carddemo.notification.domain.CardholderContextReader;
@@ -122,9 +123,15 @@ public class TransactionAuthorizedConsumer {
      * @param acknowledgment the offset commit, invoked once the transaction has committed
      * @param messageKey     the key the record arrived under, which must name the aggregate
      * @param consumedTopic  the topic the delivery arrived on, recorded on the marker
+     * <p>A delivery at contract version {@link EventEnvelope#SCHEMA_VERSION} carries no card token,
+     * and this service is keyed on that token. Such a delivery renders nothing, is counted on
+     * {@code carddemo.notification.events.unapplied}, is reported once, and is acknowledged.
+     * {@link #carriesNoCardIdentity(TransactionAuthorized)} states why that is the handling and why
+     * nothing is invented in its place.
+     *
      * @throws NullPointerException     if {@code event} or {@code acknowledgment} is null
-     * @throws IllegalArgumentException if the event carries no card token, or if the message key does
-     *                                  not name the aggregate the payload names
+     * @throws IllegalArgumentException if the message key does not name the aggregate the payload
+     *                                  names
      */
     @KafkaListener(topics = "${carddemo.kafka.topics.transaction-authorized}",
             groupId = "${carddemo.kafka.groups.transaction-authorized}")
@@ -138,17 +145,22 @@ public class TransactionAuthorizedConsumer {
         long startedAt = System.nanoTime();
         try {
             requireKeyNamesAggregate(messageKey, event);
-            String cardToken = requireCardToken(event);
 
-            transactionTemplate.executeWithoutResult(status -> {
-                if (claimed(event.eventId(), consumedTopic)) {
-                    notificationService.renderAuthorizationAlert(cardToken,
-                            event.maskedCardNumber(), event.transactionId(), event.accountId(),
-                            event.description(), event.amount(),
-                            cardholderContextReader.require(event.accountId()),
-                            RenderedFormat.PLAIN_TEXT);
-                }
-            });
+            if (carriesNoCardIdentity(event)) {
+                recordUnappliedVersion(event.eventId(), event.schemaVersion());
+            } else {
+                String cardToken = requireCardToken(event);
+
+                transactionTemplate.executeWithoutResult(status -> {
+                    if (claimed(event.eventId(), consumedTopic)) {
+                        notificationService.renderAuthorizationAlert(cardToken,
+                                event.maskedCardNumber(), event.transactionId(), event.accountId(),
+                                event.description(), event.amount(),
+                                cardholderContextReader.require(event.accountId()),
+                                RenderedFormat.PLAIN_TEXT);
+                    }
+                });
+            }
         } catch (RuntimeException failure) {
             reportFailure(event.eventId(), failure);
             throw failure;
@@ -184,12 +196,66 @@ public class TransactionAuthorizedConsumer {
     }
 
     /**
-     * Reads the card token the alert is recorded against, refusing an event that carries none.
+     * Reports whether this delivery carries a contract version that names no card.
      *
      * <p>{@code notification_log} is keyed by card token, and the token is the only card identifier
-     * this service holds: it stores no card number, masked or otherwise, as an identity. An event
-     * without one names no card to record the attempt against, so it is refused rather than recorded
-     * against a placeholder.
+     * this service holds: it stores no card number, masked or otherwise, as an identity. Version
+     * {@link TransactionAuthorized#CARD_TOKEN_SCHEMA_VERSION} carries the token and version
+     * {@link EventEnvelope#SCHEMA_VERSION} declares no such property at all, so a version 1 event
+     * names no card for an alert to be recorded against.
+     *
+     * <p><strong>Nothing is invented in its place, and nothing is refused either.</strong> The token
+     * is the hexadecimal rendering of a digest over the whole card number, and the masked number a
+     * version 1 event does carry has discarded twelve of the sixteen digits that derivation reads, so
+     * no token can be recovered from it. Deriving one from the account identifier, the transaction
+     * identifier or the masked form would key a row on a value no card resolves to, and every later
+     * read of that row would report an alert for a card that never had one.
+     *
+     * <p>Refusing it was the previous handling and it was worse. A version 1 event is governed, valid
+     * against its own schema document, and accepted by the deserializer; refusing it in the listener
+     * spent three delivery attempts and put it on the dead-letter topic, which reports a valid event
+     * as a poison record. Consumer groups start at the earliest offset, so a group added to a topic
+     * that retains version 1 records met that route on every one of them, and the backward
+     * compatibility this platform's versioning exists to provide did not hold in practice.
+     *
+     * @param event the authorization this delivery carries
+     * @return {@code true} when the event carries no card token
+     */
+    private static boolean carriesNoCardIdentity(TransactionAuthorized event) {
+        String cardToken = event.cardToken();
+        return cardToken == null || cardToken.isBlank();
+    }
+
+    /**
+     * Counts and reports one governed delivery this listener deliberately applied nothing for.
+     *
+     * <p>No marker is written. {@code processed_event} guards side effects, and there are none to
+     * guard: a marker would assert that this event had been applied. A redelivery is therefore counted
+     * here again, which is truthful, because the delivery did happen again.
+     *
+     * <p>Reported at {@code WARN} rather than {@code INFO}, because a stream of these means a producer
+     * is publishing an older contract version than this service can act on, which is an operational
+     * fact rather than a routine one. The line names the event identifier and the version, and no
+     * field of the payload.
+     *
+     * @param eventId       the identifier the authorization service assigned
+     * @param schemaVersion the contract version the delivery reported
+     */
+    private void recordUnappliedVersion(UUID eventId, int schemaVersion) {
+        metrics.eventsUnapplied(NotificationMetrics.EVENT_TRANSACTION_AUTHORIZED).increment();
+        LOG.warn("Event {} reports contract version {} and carries no card token, so this service"
+                + " renders nothing for it and applies nothing. Version {} carries the token every"
+                + " row here is keyed on.", eventId, schemaVersion,
+                TransactionAuthorized.CARD_TOKEN_SCHEMA_VERSION);
+    }
+
+    /**
+     * Reads the card token the alert is recorded against.
+     *
+     * <p>Reached only for a delivery {@link #carriesNoCardIdentity(TransactionAuthorized)} answered
+     * false for, so the value is present. The check remains because this method's contract is a
+     * non-null token and a caller that stopped asking the question first would otherwise pass one
+     * silently.
      *
      * @param event the authorization this delivery carries
      * @return the card token

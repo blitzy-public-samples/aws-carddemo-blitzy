@@ -131,7 +131,7 @@ public class PostedTransactionService {
         Objects.requireNonNull(transactionId, "transactionId must be present");
 
         AccountEntity account = accountRepository.findForUpdateByAccountId(accountId)
-                .orElseThrow(() -> new AccountRowMissingException(accountId));
+                .orElseThrow(AccountRowMissingException::new);
 
         account.setCurrentBalance(CobolDecimal.add(account.getCurrentBalance(), amount,
                 PicClause.ACCT_CURR_BAL_SCALE));
@@ -173,17 +173,29 @@ public class PostedTransactionService {
         private static final long serialVersionUID = 1L;
 
         /**
-         * Names the account, and no amount.
+         * The whole text this exception carries. It names no account, no amount and no card.
          *
          * <p>An account identifier is pseudonymous rather than absent: the customer record of this
-         * service resolves one to a named cardholder. It is carried because a failure nothing
-         * identifies cannot be investigated, and the message holds no monetary value.
-         *
-         * @param accountId the identifier no row carries
+         * service resolves one to a named cardholder, so an identifier in an exception message is an
+         * identifier in every place an exception message reaches. A message is written to a log by
+         * whatever logs the failure, attached to a span by an instrumentation agent, and captured by
+         * an error-reporting integration, and none of those three is a surface this service redacts.
          */
-        public AccountRowMissingException(String accountId) {
-            super("no account row carries identifier " + accountId + ", so the posted amount"
-                    + " reached no account record");
+        public static final String MESSAGE =
+                "no account row carries the identifier this posting named, so the posted amount"
+                        + " reached no account record";
+
+        /**
+         * Carries the constant text and no value read from the event.
+         *
+         * <p>The identifier is not lost by being absent here. It is the message key of the delivery
+         * and the {@code aggregateId} of the envelope, so {@code config/KafkaConsumerConfig} carries
+         * it into the dead-letter record every exhausted delivery reaches, where an operator reads it
+         * beside the source topic, partition and offset. That record is a surface this service
+         * governs; an exception message is not.
+         */
+        public AccountRowMissingException() {
+            super(MESSAGE);
         }
     }
 }

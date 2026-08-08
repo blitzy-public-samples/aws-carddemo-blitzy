@@ -225,8 +225,15 @@ carddemo:
       fixed-delay-ms: "${OUTBOX_RELAY_INTERVAL_MS:500}"
       batch-size: "${OUTBOX_RELAY_BATCH_SIZE:100}"
       # Name this process writes into outbox_event.claimed_by, so a claim left behind by a
-      # restart can be told from one a running process still holds.
-      instance-id: "${OUTBOX_RELAY_INSTANCE_ID:fraud-relay-1}"
+      # restart can be told from one a running process still holds. That distinction only
+      # works while the value differs per replica, which is why the fallback is HOSTNAME
+      # rather than a literal: a container's HOSTNAME is its Pod name under Kubernetes and
+      # its container id under Compose, both distinct per replica. This key used to default
+      # to the literal fraud-relay-1, so two replicas claimed rows under one identity and
+      # recoverStrandedClaims could not tell a stranded claim from a live one — it would
+      # recover a row another running instance was still publishing, and publish it twice.
+      # The literal also read as an instance number that nothing ever incremented.
+      instance-id: "${OUTBOX_RELAY_INSTANCE_ID:${HOSTNAME:fraud-relay}}"
       # How long a claim may stand before another tick recovers the row.
       claim-timeout: "${OUTBOX_RELAY_CLAIM_TIMEOUT:PT30S}"
       max-duration-ms: "${OUTBOX_RELAY_MAX_DURATION_MS:5000}"

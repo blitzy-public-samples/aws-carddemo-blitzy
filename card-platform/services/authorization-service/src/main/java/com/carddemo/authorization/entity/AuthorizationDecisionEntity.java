@@ -157,7 +157,9 @@ public class AuthorizationDecisionEntity implements Persistable<String> {
     @Column(name = "decided_at", nullable = false)
     private Instant decidedAt;
 
-    @Column(name = "event_id", nullable = false)
+    // Nullable since V13__decision_without_event.sql, for the one decided outcome that publishes no
+    // event. ck_authorization_decision_event ties the absence to that outcome alone.
+    @Column(name = "event_id")
     private UUID eventId;
 
     /**
@@ -189,7 +191,9 @@ public class AuthorizationDecisionEntity implements Persistable<String> {
      * @param declineReasonCode        four characters on a decline, {@code null} on an approval
      * @param declineReasonDescription the text that reject code carries, {@code null} on an approval
      * @param decidedAt                the moment the decision was taken
-     * @param eventId                  the outbox row this decision published through
+     * @param eventId                  the outbox row this decision published through, {@code null}
+     *                                 exactly when {@code accountId} is, because a decision that
+     *                                 resolved no account publishes no event
      * @param declaredProcessingTimestamp the processing moment the caller declared, or {@code null}
      */
     private AuthorizationDecisionEntity(String transactionId, String actor, String accountId,
@@ -230,6 +234,18 @@ public class AuthorizationDecisionEntity implements Persistable<String> {
                     "an approval names the account the cross-reference resolved and the supplied"
                             + " value is absent");
         }
+        // ck_authorization_decision_event in V13__decision_without_event.sql, held here as well so a
+        // caller learns of the mismatch at the call rather than at the flush. A decision that
+        // resolved an account published one event; the one outcome that resolved none published
+        // nothing, because every event contract on this platform requires an account identifier and
+        // is keyed on it.
+        if ((accountId == null) != (eventId == null)) {
+            throw new IllegalArgumentException(accountId == null
+                    ? "a decision that resolved no account publishes no event and names no event"
+                            + " identifier"
+                    : "a decision that resolved an account publishes one event and names its"
+                            + " identifier");
+        }
 
         this.transactionId = transactionId;
         this.actor = actor;
@@ -241,7 +257,7 @@ public class AuthorizationDecisionEntity implements Persistable<String> {
         this.declineReasonCode = declineReasonCode;
         this.declineReasonDescription = declineReasonDescription;
         this.decidedAt = Objects.requireNonNull(decidedAt, "decidedAt must be present");
-        this.eventId = Objects.requireNonNull(eventId, "eventId must be present");
+        this.eventId = eventId;
         if (declaredProcessingTimestamp != null
                 && declaredProcessingTimestamp.length() != PicClause.TRAN_PROC_TS_WIDTH) {
             throw new IllegalArgumentException("declaredProcessingTimestamp holds "
@@ -298,7 +314,9 @@ public class AuthorizationDecisionEntity implements Persistable<String> {
      * @param declineReasonCode        the four-character reject code that stands
      * @param declineReasonDescription the text that reject code carries
      * @param decidedAt                the moment the decision was taken
-     * @param eventId                  the outbox row this decision published through
+     * @param eventId                  the outbox row this decision published through, and
+     *                                 {@code null} for the one outcome that publishes none, which is
+     *                                 the reject code {@code 0100} row above
      * @param declaredProcessingTimestamp the processing moment the caller declared, at the record
      *                                    width, or {@code null}
      * @return the declined row

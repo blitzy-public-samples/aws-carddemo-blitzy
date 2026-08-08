@@ -140,6 +140,14 @@ public class KafkaConsumerConfig {
     /** A negative partition lets the broker select one. */
     private static final int BROKER_SELECTS_PARTITION = -1;
 
+    /**
+     * Acknowledgement every producer on this platform pins, including the one this class builds.
+     *
+     * <p>{@code all} waits for every in-sync replica. The client default acknowledges on the leader
+     * alone, which loses a record when that leader fails before its followers have caught up.
+     */
+    static final String REQUIRED_ACKS = "all";
+
     /** {@link FixedBackOff} counts retries, and the first delivery is an attempt. */
     private static final long FIRST_DELIVERY = 1L;
 
@@ -149,13 +157,22 @@ public class KafkaConsumerConfig {
     /**
      * Builds the template one failed record travels to the dead-letter topic through.
      *
-     * <p>Three settings are pinned: the bootstrap servers, text serialization on the key, and byte
-     * serialization on the value. Every value on this route is already bytes, either the refused
-     * payload or the diagnostic record, and a byte serializer writes it onward unchanged. The
-     * connection address, the security protocol and the login settings arrive from the common
-     * {@code spring.kafka} block, which both broker client listeners require. This module declares
-     * no producer block and no setting here reads one. The factory opens no connection until the
-     * first send.
+     * <p>Five settings are pinned. Three are wiring: the bootstrap servers, text serialization on the
+     * key, and byte serialization on the value. Every value on this route is already bytes, either the
+     * refused payload or the diagnostic record, and a byte serializer writes it onward unchanged.
+     *
+     * <p>Two are the reliability settings every other producer on this platform pins, and a review
+     * found them missing here. {@code acks=all} waits for every in-sync replica, and without it the
+     * client default acknowledges on the leader alone, so a leader failing before its followers caught
+     * up loses the diagnostic silently — and this record is the only trace of a delivery the platform
+     * gave up on, so losing it leaves nothing to investigate. {@code enable.idempotence=true} stops an
+     * internal producer retry from writing the same diagnostic twice, which would make one failure read
+     * as several. This module declares no {@code spring.kafka.producer} block, so nothing else would
+     * have supplied either value: what a bean builds by hand it has to pin by hand.
+     *
+     * <p>The connection address, the security protocol and the login settings arrive from the common
+     * {@code spring.kafka} block, which both broker client listeners require. The factory opens no
+     * connection until the first send.
      *
      * @param kafkaProperties   the bound common {@code spring.kafka} block
      * @param connectionDetails the broker address and security protocol this deployment resolved
@@ -176,6 +193,11 @@ public class KafkaConsumerConfig {
         }
         settings.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
         settings.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class);
+        // The diagnostic is the only trace of a delivery this service gave up on, so it is
+        // acknowledged by every in-sync replica and written once. Both values are pinned
+        // rather than inherited: this module declares no spring.kafka.producer block.
+        settings.put(ProducerConfig.ACKS_CONFIG, REQUIRED_ACKS);
+        settings.put(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, true);
 
         KafkaTemplate<String, byte[]> template =
                 new KafkaTemplate<>(new DefaultKafkaProducerFactory<>(settings));
