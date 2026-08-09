@@ -263,25 +263,51 @@ class SecurityConfigTest {
 
     /**
      * :purpose: Every route other than the sign-on endpoint and the permitted probes is
-     *   closed to an unauthenticated caller with ``401`` and an empty body, so no handler
-     *   runs and nothing about the application is disclosed. The challenge is the
-     *   authoritative answer for an anonymous caller; ``403`` is reserved for a principal
-     *   that is authenticated but lacks the authority.
+     *   closed to an unauthenticated caller with ``401``, no handler runs, and the answer
+     *   arrives in the same ``ErrorResponse`` envelope the application's own errors use — a
+     *   status, a machine-readable ``errorCode`` and one fixed operator sentence — so the
+     *   SPA can tell the operator what happened instead of clearing the screen on a
+     *   zero-length body. The challenge is the authoritative answer for an anonymous caller;
+     *   ``403`` is reserved for a principal that is authenticated but lacks the authority.
+     * :note: The body is fixed text and carries nothing about the application: no exception
+     *   class, no stack frame, no filter or check name, no credential echo. That is what
+     *   "without leaking" means here — a uniform envelope, not an empty one.
      */
     @Test
-    @DisplayName("an unauthenticated non-public route -> 401 with an empty body")
+    @DisplayName("an unauthenticated non-public route -> 401 in the shared envelope")
     void protectedRouteIsRejectedWithoutLeakingABody() throws Exception {
         mockMvc.perform(get("/auth/profile"))
                 .andExpect(status().isUnauthorized())
-                .andExpect(result -> assertThat(result.getResponse().getContentAsString()).isEmpty());
+                .andExpect(jsonPath("$.status").value(401))
+                .andExpect(jsonPath("$.error").value("Unauthorized"))
+                .andExpect(jsonPath("$.errorCode").value("AUTHENTICATION_REQUIRED"))
+                .andExpect(jsonPath("$.message").value("Your session has ended. Please sign on again."))
+                .andExpect(jsonPath("$.path").value("/auth/profile"))
+                .andExpect(jsonPath("$.timestamp").exists())
+                .andExpect(result -> assertThat(result.getResponse().getContentAsString())
+                        .doesNotContain("Exception", "org.springframework", "PASSWORD", "ADMIN001"));
 
         mockMvc.perform(post("/auth/wrong")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(signonJson("ADMIN001", "PASSWORD")))
                 .andExpect(status().isUnauthorized())
-                .andExpect(result -> assertThat(result.getResponse().getContentAsString()).isEmpty());
+                .andExpect(jsonPath("$.errorCode").value("AUTHENTICATION_REQUIRED"))
+                .andExpect(result -> assertThat(result.getResponse().getContentAsString())
+                        .doesNotContain("Exception", "org.springframework", "PASSWORD", "ADMIN001"));
 
         verify(authenticationService, never()).signon(any(SignonRequestDto.class), any());
+    }
+
+    /**
+     * :purpose: Assert a challenge body is the shared envelope reporting only the status,
+     *   with no exception detail, resource name, or framework internal.
+     * :param body: the response body written by the challenge.
+     */
+    private static void assertUnauthorizedEnvelope(String body) {
+        assertThat(body).contains("\"status\":401")
+                .contains("\"message\":\"Unauthorized\"")
+                .doesNotContain("Exception")
+                .doesNotContain("org.springframework");
     }
 
     /**
@@ -289,6 +315,9 @@ class SecurityConfigTest {
      *   a rejected request: ``nosniff``, frame denial, the no-store cache directives and the
      *   disabled legacy XSS auditor. These were observed in the running service but asserted
      *   by no test.
+     * :note: The cache assertion also pins that the refusal envelope writer leaves the
+     *   stronger directive Spring Security already emitted in place rather than replacing it
+     *   with a bare ``no-store``.
      */
     @Test
     @DisplayName("security response headers are emitted on a rejected request")

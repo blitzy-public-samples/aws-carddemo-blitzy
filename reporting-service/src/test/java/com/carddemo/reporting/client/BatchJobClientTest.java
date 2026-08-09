@@ -21,8 +21,12 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import com.carddemo.common.config.CorrelationIdContext;
+import com.carddemo.common.config.CorrelationIdFilter;
 import com.carddemo.common.dto.BatchJobExecutionDto;
 import com.carddemo.common.exception.CardDemoException;
+import com.carddemo.common.exception.UpstreamUnavailableException;
+import com.sun.net.httpserver.Headers;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import jakarta.servlet.http.Cookie;
@@ -35,6 +39,7 @@ import java.nio.charset.StandardCharsets;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.web.client.RestClient;
 
 /**
  * :purpose: Tests how the report hand-off reports its outcome. ``CORPT00C``'s
@@ -53,6 +58,9 @@ class BatchJobClientTest {
 
     /** Loopback server standing in for batch-service; started per test. */
     private HttpServer server;
+
+    /** Request headers recorded by {@link #startCapturingServer()}. */
+    private Headers capturedHeaders;
 
     /**
      * :purpose: Stop the loopback server after each case so no port is left bound.
@@ -117,7 +125,7 @@ class BatchJobClientTest {
     private static BatchJobClient clientFor(String baseUri) {
         HttpServletRequest request = mock(HttpServletRequest.class);
         when(request.getCookies()).thenReturn(new Cookie[] {new Cookie("SESSION", "abc123")});
-        return new BatchJobClient(request, baseUri);
+        return new BatchJobClient(RestClient.builder(), request, baseUri);
     }
 
     /**
@@ -176,18 +184,38 @@ class BatchJobClientTest {
 
     /**
      * :purpose: An unreachable batch-service means the hand-off never landed, which is exactly
-     *     what the frozen ``CORPT00C`` literal reports.
+     *     what the frozen ``CORPT00C`` literal reports, and it is raised as an
+     *     {@link UpstreamUnavailableException} so the outcome reports ``503`` rather than the
+     *     ``400`` a caller-fault would report -- while the message stays byte-identical.
      * :raises IOException: if no free port can be reserved.
      */
     @Test
-    @DisplayName("an unreachable batch-service keeps the frozen TDQ literal")
+    @DisplayName("an unreachable batch-service keeps the frozen TDQ literal and reports it as unavailable")
     void unreachableBatchServiceKeepsTheFrozenLiteral() throws IOException {
         String baseUri = unusedBaseUri();
 
         assertThatThrownBy(() -> clientFor(baseUri)
                 .submitTransactionDetailReport("2026-08-01", "2026-08-31"))
+                .isInstanceOf(UpstreamUnavailableException.class)
                 .isInstanceOf(CardDemoException.class)
                 .hasMessage(BatchJobClient.SUBMIT_FAILURE_MESSAGE);
+    }
+
+    /**
+     * :purpose: A refusal is NOT an unavailable upstream: batch-service answered, so the
+     *     outcome stays a caller-facing ``400`` and must not be widened to the ``503``
+     *     mapping.
+     * :raises IOException: if the loopback server cannot be started.
+     */
+    @Test
+    @DisplayName("a refusal is not reported as an unavailable upstream")
+    void refusalIsNotReportedAsUnavailable() throws IOException {
+        String baseUri = startServer(400, "{\"status\":400,\"message\":\"Unusable parameters\"}");
+
+        assertThatThrownBy(() -> clientFor(baseUri)
+                .submitTransactionDetailReport("2026-08-01", "2026-08-31"))
+                .isInstanceOf(CardDemoException.class)
+                .isNotInstanceOf(UpstreamUnavailableException.class);
     }
 
     /**
@@ -204,5 +232,65 @@ class BatchJobClientTest {
                 .submitTransactionDetailReport("2026-08-01", "2026-08-31"))
                 .isInstanceOf(CardDemoException.class)
                 .hasMessage(BatchJobClient.SUBMIT_FAILURE_MESSAGE);
+    }
+
+    /**
+     * :purpose: The submission must carry the correlation id that is in scope for the report
+     *     request, so batch-service logs the run it launches under the SAME business
+     *     identifier the caller was given. Without it the two sides of the only hop that
+     *     crosses a service boundary could not be tied together in the log stream.
+     * :raises IOException: if the loopback server cannot be started.
+     */
+    @Test
+    @DisplayName("the submission carries the in-scope X-Correlation-Id")
+    void submissionCarriesTheInScopeCorrelationId() throws IOException {
+        String baseUri = startCapturingServer();
+        CorrelationIdContext.setCorrelationId("report-corr-42");
+        try {
+            clientFor(baseUri).submitTransactionDetailReport("2026-08-01", "2026-08-31");
+        } finally {
+            CorrelationIdContext.clear();
+        }
+
+        assertThat(capturedHeaders.getFirst(CorrelationIdFilter.CORRELATION_ID_HEADER))
+                .as("outbound %s", CorrelationIdFilter.CORRELATION_ID_HEADER)
+                .isEqualTo("report-corr-42");
+        // The forwarded session cookie must survive alongside the new header.
+        assertThat(capturedHeaders.getFirst("Cookie")).contains("SESSION=abc123");
+    }
+
+    /**
+     * :purpose: With no correlation id in scope the header is omitted entirely rather than
+     *     sent empty, so batch-service's own filter mints a real id instead of adopting a
+     *     blank one.
+     * :raises IOException: if the loopback server cannot be started.
+     */
+    @Test
+    @DisplayName("no correlation id in scope sends no correlation header")
+    void absentCorrelationIdSendsNoHeader() throws IOException {
+        String baseUri = startCapturingServer();
+        CorrelationIdContext.clear();
+
+        clientFor(baseUri).submitTransactionDetailReport("2026-08-01", "2026-08-31");
+
+        assertThat(capturedHeaders.get(CorrelationIdFilter.CORRELATION_ID_HEADER)).isNull();
+    }
+
+    /**
+     * :purpose: Start a loopback server that records the inbound request headers and accepts
+     *     the submission, so the outbound header set is observable.
+     * :returns: the base URI of the running server.
+     * :raises IOException: if the server cannot be started.
+     */
+    private String startCapturingServer() throws IOException {
+        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/", exchange -> {
+            capturedHeaders = exchange.getRequestHeaders();
+            respond(exchange, 202, "{\"jobName\":\"transactionDetailReportJob\","
+                    + "\"jobExecutionId\":9,\"jobInstanceId\":4,\"status\":\"STARTING\","
+                    + "\"exitCode\":\"UNKNOWN\",\"exitMessage\":\"\"}");
+        });
+        server.start();
+        return "http://127.0.0.1:" + server.getAddress().getPort();
     }
 }

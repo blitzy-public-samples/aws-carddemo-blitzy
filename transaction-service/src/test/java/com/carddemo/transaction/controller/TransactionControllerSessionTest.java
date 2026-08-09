@@ -103,7 +103,7 @@ class TransactionControllerSessionTest {
         // session and never reaches the service.
         assertThatThrownBy(() -> mockMvc.perform(get("/transactions")))
                 .hasRootCauseInstanceOf(IllegalStateException.class);
-        assertThatThrownBy(() -> mockMvc.perform(get("/transactions/{id}", TRAN_ID)))
+        assertThatThrownBy(() -> mockMvc.perform(get("/transactions/detail").param("tranId", TRAN_ID)))
                 .hasRootCauseInstanceOf(IllegalStateException.class);
 
         verify(transactionService, never()).listTransactions(any(), any());

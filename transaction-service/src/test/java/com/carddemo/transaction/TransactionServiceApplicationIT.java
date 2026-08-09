@@ -51,14 +51,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *  ``transactionPostingJob`` bean whose name matches its frozen identifier while
  *  reporting zero job instances at boot.
  */
-@SpringBootTest(properties = {
-        // Create the scanned entity tables not owned by transaction-service migrations.
-        "spring.jpa.hibernate.ddl-auto=update"
-        // The BATCH_* metadata tables are provisioned by JdbcBatchConfiguration.
-        // spring.batch.jdbc.initialize-schema is NOT set here: BatchProperties in
-        // Spring Boot 4.1 exposes only the `job` group, so the key was inert and the
-        // JobRepository query below only passed because the repository was in-memory.
-})
+@SpringBootTest
 @ActiveProfiles("test")
 public class TransactionServiceApplicationIT {
 
@@ -70,6 +63,12 @@ public class TransactionServiceApplicationIT {
      *  the ``test`` profile's ``ddl-auto: validate`` asserts the entity-to-migration contract
      *  rather than letting Hibernate create whatever the entities imply.
      * :param registry: the dynamic property registry supplied by the Spring Test context.
+     * :note: No ``ddl-auto`` or ``spring.batch.jdbc.initialize-schema`` override is declared by
+     *  this class. The former would have let Hibernate manufacture the very schema the class
+     *  claims to validate, and the latter is inert under Spring Boot 4.1 - the ``BATCH_*``
+     *  metadata tables come from ``V5__batch_metadata.sql`` and, on an empty database, from
+     *  :java:class:`com.carddemo.common.batch.JdbcBatchConfiguration`
+     *  (docs/decision-log.md, section 53.3).
      */
     @DynamicPropertySource
     static void datasourceProperties(DynamicPropertyRegistry registry) {

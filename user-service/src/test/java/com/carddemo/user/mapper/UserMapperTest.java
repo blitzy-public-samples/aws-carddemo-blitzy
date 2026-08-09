@@ -159,4 +159,20 @@ class UserMapperTest {
         UserResponseDto response = userMapper.toResponse(entity);
         assertThat(response.getUserType()).isEqualTo("A");
     }
+    @Test
+    @DisplayName("toEntity folds the user id to its canonical upper-case stored form")
+    void toEntityFoldsUserIdToCanonicalForm() {
+        // The id this mapper writes IS the primary key the sign-on path reads by, so an
+        // un-normalized value here produces a user that cannot authenticate
+        // [app/cbl/COSGN00C.cbl:L132].
+        AddUserRequestDto request = new AddUserRequestDto();
+        request.setUserId("  qat0001 ");
+        request.setFirstName("Qa");
+        request.setLastName("One");
+        request.setUserType("U");
+
+        SecurityUser entity = userMapper.toEntity(request);
+
+        assertThat(entity.getSecUsrId()).isEqualTo("QAT0001");
+    }
 }

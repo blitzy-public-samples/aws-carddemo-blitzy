@@ -99,6 +99,15 @@ x-backend-service: &backend-service
     # service as the bootstrap owner). The bootstrap owner is used by the postgres
     # container only.
     SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:?set POSTGRES_DB in .env}
+    # Flyway is OFF for every service here; batch-service, the single migration owner,
+    # overrides it back to "true" in its own environment block below. This is the setting
+    # that makes the x-schema-dependencies gate documented above actually mean something:
+    # without it every backend ran its own migration on startup, so the schema was
+    # provisioned by whichever container won the race and concurrent migrators contended
+    # on the shared flyway_schema_history table and on cross-table foreign keys. Each
+    # service's application.yml defaults this to TRUE so a standalone `mvn verify`, whose
+    # Testcontainers PostgreSQL is private to that module, still provisions its own schema.
+    SPRING_FLYWAY_ENABLED: "false"
     # Spring Session state store (externalized COMMAREA equivalent). Redis
     # requires authentication; the same secret is presented here.
     SPRING_DATA_REDIS_HOST: redis
@@ -159,6 +168,23 @@ x-backend-service: &backend-service
     timeout: 5s
     retries: 5
     start_period: 60s
+  # Resource budget, mirroring `resources` in every k8s/deployment-*.yaml so one
+  # image has one footprint in both runtimes. The memory limit is what each
+  # image's JAVA_OPTS percentages resolve against: with no limit declared the JVM
+  # reads the HOST instead and sizes a 2 GiB initial / ~30 GiB maximum heap per
+  # service, which is what made the footprint unbounded here while the same image
+  # ran inside 1 GiB under Kubernetes. The CPU figure is sized from the CPU cost
+  # per request measured at the AAP 150-user profile (9.2 ms for the tier, 105.5 ms
+  # for a sign-on of which ~72.8 ms is the password encoder).
+  # Measurements and rationale: docs/decision-log.md section 50.
+  deploy:
+    resources:
+      limits:
+        cpus: "2"
+        memory: 1g
+      reservations:
+        cpus: "0.5"
+        memory: 512m
   # Runtime hardening. The read-only root filesystem forces all writable
   # state onto the tmpfs mount; a Spring Boot fat-jar only needs /tmp.
   # Every tmpfs pins mode=1777 explicitly: left implicit, Docker mounts it 1777 when
@@ -240,6 +266,15 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
+    # Mirrors resources in k8s/deployment-postgres.yaml.
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 1g
+        reservations:
+          cpus: "0.25"
+          memory: 512m
     # The official image's entrypoint chowns the data dir and drops to the
     # unprivileged postgres user on its own, so only no-new-privileges is added
     # here (dropping all caps would break first-run initialization).
@@ -256,13 +291,37 @@ services:
       # $$ escaping keeps the literal out of the rendered config; the value is
       # expanded inside the container from its own environment.
       REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
+    # --maxmemory bounds the session store. Left at the default of 0 (unlimited)
+    # Redis grows until the container limit is reached and is then OOM-killed,
+    # which discards EVERY live session at once - the externalized COMMAREA
+    # equivalent (AAP 0.6.3) - instead of shedding the sessions closest to their
+    # own expiry. volatile-ttl evicts only keys that carry a TTL, which is every
+    # key Spring Session writes, and evicts the nearest-to-expire first, so an
+    # operator whose session was about to lapse anyway is the one displaced. A
+    # write that cannot be satisfied without evicting a NON-expiring key still
+    # fails loudly rather than silently dropping durable data. The budget is set
+    # below the container memory limit to leave room for the AOF buffer, client
+    # buffers and allocator fragmentation, which are not counted by maxmemory.
+    # k8s/deployment-redis.yaml carries the same two settings.
+    # Measurements and rationale: docs/decision-log.md section 50.
     command:
       - sh
       - -c
-      - exec redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD"
+      - >-
+        exec redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD"
+        --maxmemory ${REDIS_MAXMEMORY:-192mb} --maxmemory-policy volatile-ttl
     # No host port: Redis is reachable only on carddemo-net.
     volumes:
       - redisdata:/data
+    # Mirrors resources in k8s/deployment-redis.yaml.
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256m
+        reservations:
+          cpus: "0.1"
+          memory: 128m
     healthcheck:
       test:
         - CMD-SHELL
@@ -520,6 +579,11 @@ services:
       # matching the carddemo-batch-service-db Secret in k8s/secret.yaml.
       SPRING_DATASOURCE_USERNAME: carddemo_batch
       SPRING_DATASOURCE_PASSWORD: ${CARDDEMO_BATCH_DB_PASSWORD:?set CARDDEMO_BATCH_DB_PASSWORD in .env}
+      # THE single Flyway migration owner: the shared environment above disables Flyway
+      # for every service, and this one key re-enables it here. Every other backend waits
+      # on this container's healthcheck, which reports UP only once these migrations have
+      # been applied (see x-schema-dependencies).
+      SPRING_FLYWAY_ENABLED: "true"
       # Writable report/dump root for the nine data-management jobs.
       CARDDEMO_BATCH_OUTPUT_DIR: /var/carddemo/batch/output
       # Read-only feed root. The daily-transaction validation job (CBTRN01C)
@@ -555,22 +619,35 @@ services:
       context: ./frontend
       args:
         VITE_API_BASE_URL: /api
-        # Sign-on header AppID: field (legacy EXEC CICS ASSIGN APPLID). CARDDEMO is
-        # the application's own name in app/csd/CARDDEMO.CSD and fits the mapset's
-        # 8-character APPLID field exactly.
+        # Sign-on header AppID:/SysID: fields (legacy EXEC CICS ASSIGN APPLID / ASSIGN
+        # SYSID, COSGN00C L198-L203 — the program fills both before its first SEND, so
+        # neither caption is ever shown without a value). CARDDEMO is the application's
+        # own name in app/csd/CARDDEMO.CSD and fits either 8-character field exactly.
         VITE_APP_ID: CARDDEMO
+        VITE_SYS_ID: CARDDEMO
     # Tag the built image exactly as k8s/deployment-frontend.yaml references it, so
     # `docker compose build` produces the artifact the manifests apply against.
     # Registry and tag are overridable for a private registry or a
     # side-by-side build; the defaults ARE the manifest values.
     image: ${CARDDEMO_IMAGE_REGISTRY:-carddemo}/frontend:${CARDDEMO_IMAGE_TAG:-1.0.0}
-    environment:
-      VITE_API_BASE_URL: /api
-      VITE_APP_ID: CARDDEMO
     ports:
       - "3000:80"
+    # Wait for the gateway to be HEALTHY, not merely started: nginx must have a
+    # reachable upstream on its first proxied request. The upstream address itself
+    # is re-resolved per request (frontend/nginx.conf resolver), so a gateway
+    # recreated later is picked up without recreating this container.
     depends_on:
-      - api-gateway
+      api-gateway:
+        condition: service_healthy
+    # Mirrors resources in k8s/deployment-frontend.yaml.
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 128m
+        reservations:
+          cpus: "0.05"
+          memory: 64m
     # nginx needs a few writable paths; everything else is read-only.
     security_opt:
       - no-new-privileges:true
@@ -606,6 +683,17 @@ services:
     # the private carddemo-net bridge exactly like the datastores.
     ports:
       - "127.0.0.1:16686:16686"
+    # Mirrors resources in k8s/deployment-jaeger.yaml. In-memory span storage is
+    # bounded by the collector's own retention, so the limit is what stops an
+    # unbounded trace buffer competing with the services for host memory.
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 768m
+        reservations:
+          cpus: "0.1"
+          memory: 256m
     security_opt:
       - no-new-privileges:true
     # No healthcheck: the image is a minimal distroless-style rootfs without bash,
@@ -625,6 +713,10 @@ services:
     image: prom/prometheus:v3.13.2
     volumes:
       - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # Alerting rules referenced by the `rule_files` entry in prometheus.yml. The
+      # container path is the one that file names, so a missing mount would fail the
+      # configuration load loudly rather than leaving the rules silently unloaded.
+      - ./observability/alert-rules.yml:/etc/prometheus/alert-rules.yml:ro
       - prometheusdata:/prometheus
     # The scrape authenticates as the least-privilege `monitoring` principal that
     # every service's ManagementSecurityConfig seeds from MONITORING_PASSWORD.
@@ -648,6 +740,18 @@ services:
     # bridge, while the projected credential above authenticates every scrape.
     ports:
       - "127.0.0.1:9090:9090"
+    # No Kubernetes manifest exists for the monitoring backends, so these bounds
+    # are local-stack figures: enough for a 15s scrape of ten targets with the
+    # default 15-day retention, and low enough that the TSDB cannot crowd out the
+    # services it is measuring.
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512m
+        reservations:
+          cpus: "0.1"
+          memory: 128m
     security_opt:
       - no-new-privileges:true
     networks:
@@ -677,6 +781,16 @@ services:
     # Container port 3000; published on loopback 3001 (frontend uses 3000).
     ports:
       - "127.0.0.1:3001:3000"
+    # Local-stack bounds (no Kubernetes manifest for the monitoring backends):
+    # one provisioned datasource and one dashboard need no more.
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 384m
+        reservations:
+          cpus: "0.1"
+          memory: 128m
     security_opt:
       - no-new-privileges:true
     depends_on:

@@ -56,6 +56,26 @@ public class CorrelationIdFilter extends OncePerRequestFilter {
     public static final String TRACEPARENT_HEADER = "traceparent";
 
     /**
+     * :purpose: Request attribute holding the correlation id resolved for the request.
+     *     Unlike the MDC entry, a request attribute survives across servlet dispatches, so
+     *     the container's ``ERROR`` dispatch can re-install the SAME id and the error body
+     *     it renders carries the id the caller already holds.
+     */
+    public static final String CORRELATION_ID_ATTRIBUTE =
+            CorrelationIdFilter.class.getName() + ".correlationId";
+
+    /**
+     * :purpose: Run this filter on the container's ``ERROR`` dispatch as well as on the
+     *     original request, so the correlation scope is present while the error body is
+     *     rendered.
+     * :returns: ``false`` -- the error dispatch MUST be filtered.
+     */
+    @Override
+    protected boolean shouldNotFilterErrorDispatch() {
+        return false;
+    }
+
+    /**
      * :purpose: Resolve, install, expose, and finally clear the request
      *     correlation id around the remainder of the filter chain.
      * :param request: the current HTTP request, inspected for correlation
@@ -73,6 +93,10 @@ public class CorrelationIdFilter extends OncePerRequestFilter {
                                     FilterChain filterChain) throws ServletException, IOException {
         String correlationId = resolveCorrelationId(request);
         CorrelationIdContext.setCorrelationId(correlationId);
+        // Published as a request attribute so the SAME id is re-installed on the container's
+        // ERROR dispatch, whose thread reaches this filter after the original dispatch's
+        // finally-block has already cleared the MDC.
+        request.setAttribute(CORRELATION_ID_ATTRIBUTE, CorrelationIdContext.getCorrelationId());
         // Read back the value actually stored (post-sanitization) so the header
         // and the MDC always agree.
         String stored = CorrelationIdContext.getCorrelationId();
@@ -95,6 +119,15 @@ public class CorrelationIdFilter extends OncePerRequestFilter {
      *     generated correlation id.
      */
     private String resolveCorrelationId(HttpServletRequest request) {
+        // A re-dispatch (ERROR, ASYNC) of a request that already has an id must keep it: the
+        // caller was given that id on the response header and in the audit record.
+        Object established = request.getAttribute(CORRELATION_ID_ATTRIBUTE);
+        if (established instanceof String existing) {
+            String sanitized = CorrelationIdContext.sanitize(existing);
+            if (sanitized != null) {
+                return sanitized;
+            }
+        }
         String fromHeader = CorrelationIdContext.sanitize(request.getHeader(CORRELATION_ID_HEADER));
         if (fromHeader != null) {
             return fromHeader;

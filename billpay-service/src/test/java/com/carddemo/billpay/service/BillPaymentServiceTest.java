@@ -134,10 +134,16 @@ public class BillPaymentServiceTest {
     // --- Fixture identifiers and values. ---
 
     /** Numeric account key used for the repository lookups (ACCT-ID PIC 9(11)). */
-    private static final Long ACCT_ID = 100000000001L;
+    private static final Long ACCT_ID = 10000000001L;
 
-    /** Account id as entered on the screen (COBIL00 ``ACTIDIN``); parses to {@link #ACCT_ID}. */
-    private static final String ACCT_ID_INPUT = "100000000001";
+    /**
+     * Account id as entered on the screen (COBIL00 ``ACTIDIN``); parses to {@link #ACCT_ID}.
+     * ELEVEN digits, because that is the whole width there is: ``ACCT-ID`` is ``PIC 9(11)``,
+     * the map field is ``LENGTH=11``, and the VSAM catalogue records ``KEYLEN 11``. An
+     * earlier revision of this fixture used a twelve-digit value, which no legacy key could
+     * hold and no eleven-column map field could accept.
+     */
+    private static final String ACCT_ID_INPUT = "10000000001";
 
     /** Card cross-reference number (XREF-CARD-NUM X(16)); never printed to test output. */
     private static final String CARD_NUM = "4111111111111111";
@@ -301,21 +307,29 @@ public class BillPaymentServiceTest {
     }
 
     /**
-     * :purpose: A zero or negative balance is rejected by the nothing-to-pay guard
-     *  (COBIL00C L197-206) with the verbatim message, even when the payment is confirmed, and
+     * :purpose: A zero or negative balance stops the payment with the verbatim message on
+     *  the ERROR channel and the BALANCE beside it, even when the payment is confirmed, and
      *  no cross-reference, id sequence, mapper or save runs.
-     * :raises CardDemoException: with message {@link #MSG_NOTHING_TO_PAY}.
+     * :note: The balance travels with the message because ``COBIL00C`` moves
+     *  ``ACCT-CURR-BAL`` into ``CURBALI`` at L193-194, BEFORE the ``IF ACCT-CURR-BAL <=
+     *  ZEROS`` test at L198 -- so the map send that carries this message carries the
+     *  balance too. Refusing with an error STATUS instead withheld it, and left the screen
+     *  showing the previous account's money beside this account's id.
      */
     @ParameterizedTest
     @ValueSource(strings = {"0.00", "-5.00", "-0.01"})
-    void nothingToPayThrowsCardDemoException(String balance) {
+    void nothingToPayReturnsTheBalanceOnTheErrorChannel(String balance) {
         when(accountRepository.findById(ACCT_ID))
                 .thenReturn(Optional.of(payableAccount(new BigDecimal(balance))));
         BillPaymentRequestDto req = request(ACCT_ID_INPUT, "Y");
 
-        assertThatThrownBy(() -> billPaymentService.processBillPayment(req, null))
-                .isExactlyInstanceOf(CardDemoException.class)
-                .hasMessage(MSG_NOTHING_TO_PAY);
+        BillPaymentResponseDto response = billPaymentService.processBillPayment(req, null);
+
+        assertThat(response.getErrorMessage()).isEqualTo(MSG_NOTHING_TO_PAY);
+        assertThat(response.getMessage()).isNull();
+        assertThat(response.getCurrentBalance()).isEqualByComparingTo(new BigDecimal(balance));
+        assertThat(response.getAccountId()).isEqualTo(ACCT_ID_INPUT);
+        assertThat(response.getTransactionId()).isNull();
 
         verify(accountRepository).findById(ACCT_ID);
         verify(accountRepository, never()).save(any(Account.class));
@@ -323,23 +337,110 @@ public class BillPaymentServiceTest {
     }
 
     /**
-     * :purpose: The nothing-to-pay guard (COBOL L197-206) fires ahead of the blank-confirm
-     *  preview, so a zero balance is rejected rather than previewed.
-     * :raises CardDemoException: with message {@link #MSG_NOTHING_TO_PAY}.
+     * :purpose: The three in-band outcomes are told apart WITHOUT reading the message text:
+     *  the refusal is the one on ``errorMessage``; of the two that reached the account, the
+     *  acknowledgement is the one carrying a ``transactionId`` and the confirm prompt is the
+     *  one without.
+     * :note: This is what carries the ``ERRMSGC`` colour and the cursor target across the
+     *  wire. ``COBIL00`` declares one message field, ``ERRMSG POS=(23,1) COLOR=RED``, and
+     *  ``COBIL00C`` overrides it at exactly one site, ``MOVE DFHGREEN TO ERRMSGC`` (L526) on
+     *  the acknowledgement branch -- the same branch, and the only one, that produces a
+     *  ``TRAN-ID``. The cursor differs too: the refusal moves ``-1`` to ``ACTIDINL`` (L203)
+     *  while the prompt moves it to ``CONFIRML`` (L239), which is why the prompt is NOT
+     *  folded onto ``errorMessage``.
      */
     @Test
-    void nothingToPayWithBlankConfirmThrowsBeforePreview() {
+    void theThreeInBandOutcomesAreDistinguishableWithoutReadingTheText() {
+        // 1. the refusal -- errorMessage populated, message null, no transaction id.
+        when(accountRepository.findById(ACCT_ID))
+                .thenReturn(Optional.of(payableAccount(ZERO_BALANCE)));
+        BillPaymentResponseDto refusal =
+                billPaymentService.processBillPayment(request(ACCT_ID_INPUT, ""), null);
+        assertThat(refusal.getErrorMessage()).isNotNull();
+        assertThat(refusal.getMessage()).isNull();
+        assertThat(refusal.getTransactionId()).isNull();
+
+        // 2. the confirm prompt -- message populated, errorMessage null, no transaction id.
+        when(accountRepository.findById(ACCT_ID))
+                .thenReturn(Optional.of(payableAccount(new BigDecimal("100.00"))));
+        BillPaymentResponseDto prompt =
+                billPaymentService.processBillPayment(request(ACCT_ID_INPUT, ""), null);
+        assertThat(prompt.getMessage()).isNotNull();
+        assertThat(prompt.getErrorMessage()).isNull();
+        assertThat(prompt.getTransactionId()).isNull();
+    }
+
+    /**
+     * :purpose: A zero balance reaches the screen on the blank-confirm turn as well, so the
+     *  balance is DISPLAYED with the message instead of the confirm prompt: the legacy moves
+     *  it into the map before it decides which message to send.
+     */
+    @Test
+    void nothingToPayOnTheBlankConfirmTurnAlsoCarriesTheBalance() {
         when(accountRepository.findById(ACCT_ID))
                 .thenReturn(Optional.of(payableAccount(ZERO_BALANCE)));
         BillPaymentRequestDto req = request(ACCT_ID_INPUT, "");
 
-        assertThatThrownBy(() -> billPaymentService.processBillPayment(req, null))
-                .isExactlyInstanceOf(CardDemoException.class)
-                .hasMessage(MSG_NOTHING_TO_PAY);
+        BillPaymentResponseDto response = billPaymentService.processBillPayment(req, null);
+
+        assertThat(response.getErrorMessage()).isEqualTo(MSG_NOTHING_TO_PAY);
+        assertThat(response.getCurrentBalance()).isEqualByComparingTo(ZERO_BALANCE);
 
         verify(accountRepository).findById(ACCT_ID);
         verify(accountRepository, never()).save(any(Account.class));
         verifyNoInteractions(cardXrefRepository, transactionRepository, billPaymentMapper);
+    }
+
+    /**
+     * :purpose: An account id that is not exactly eleven ASCII digits cannot be the stored
+     *  key, so it takes the not-found path without a lookup ever being attempted.
+     * :note: ``COBIL00C`` has no numeric edit -- only the blank test -- so a malformed entry
+     *  reaches the read and fails it; this is that failure, reached without the read. The
+     *  cases are: shorter than the key (an unpadded id, which previously resolved to a real
+     *  account and disclosed its balance), longer than the key, non-digits, a value wide
+     *  enough to overflow ``long``, full-width Unicode digits (``Character.digit`` accepts
+     *  them, so they too previously resolved to a real account), and a signed value.
+     */
+    @ParameterizedTest
+    @ValueSource(strings = {
+        "1",
+        "01",
+        "0000000001",
+        "000000000011",
+        "9999999999999999999999",
+        "abcdefghijk",
+        "!!!!!!!!!!!",
+        "0000000001a",
+        "\uFF10\uFF10\uFF10\uFF10\uFF10\uFF10\uFF10\uFF10\uFF10\uFF10\uFF11",
+        "+0000000001",
+        "-0000000001",
+    })
+    void anAccountIdThatIsNotTheKeyWidthIsNotFound(String accountId) {
+        BillPaymentRequestDto req = request(accountId, "");
+
+        assertThatThrownBy(() -> billPaymentService.processBillPayment(req, null))
+                .isExactlyInstanceOf(RecordNotFoundException.class)
+                .hasMessage(MSG_ACCOUNT_NOT_FOUND);
+
+        verifyNoInteractions(accountRepository, cardXrefRepository, transactionRepository,
+                billPaymentMapper);
+    }
+
+    /**
+     * :purpose: A zero-padded eleven-digit id IS the key and resolves normally, so the guard
+     *  above rejects only what the legacy key could never hold.
+     */
+    @Test
+    void aZeroPaddedElevenDigitIdResolvesToTheStoredKey() {
+        when(accountRepository.findById(1L))
+                .thenReturn(Optional.of(payableAccount(new BigDecimal("194.00"))));
+
+        BillPaymentResponseDto response =
+                billPaymentService.processBillPayment(request("00000000001", ""), null);
+
+        assertThat(response.getCurrentBalance()).isEqualByComparingTo("194.00");
+        assertThat(response.getAccountId()).isEqualTo("00000000001");
+        verify(accountRepository).findById(1L);
     }
 
     /**

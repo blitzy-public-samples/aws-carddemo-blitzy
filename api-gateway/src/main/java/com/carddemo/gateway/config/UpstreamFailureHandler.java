@@ -17,10 +17,12 @@
 package com.carddemo.gateway.config;
 
 import com.carddemo.common.dto.ErrorResponse;
+import com.carddemo.common.config.CorrelationIdContext;
 import com.carddemo.common.security.SensitiveDataMasker;
 import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
 import org.springframework.http.HttpStatus;
@@ -50,6 +52,9 @@ public class UpstreamFailureHandler {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(UpstreamFailureHandler.class);
 
+    /** MDC key holding the Micrometer Tracing trace id, mirrored into the envelope. */
+    private static final String MDC_TRACE_ID = "traceId";
+
     /** Seconds a client is advised to wait before retrying a routed request. */
     private static final String RETRY_AFTER_SECONDS = "5";
 
@@ -66,23 +71,24 @@ public class UpstreamFailureHandler {
     @ExceptionHandler(ResourceAccessException.class)
     public ResponseEntity<ErrorResponse> handleUpstreamUnavailable(ResourceAccessException exception,
                                                                    HttpServletRequest request) {
-        String path = request.getRequestURI();
         // The upstream target and the underlying cause are operator information: logged
-        // here, never placed in the response body. A card path embeds the PAN, so the path is
-        // redacted for both the log record and the envelope.
-        String redactedPath = SensitiveDataMasker.maskPan(path);
+        // here, never placed in the response body. A card path embeds the PAN, so the
+        // card-number segment is redacted for both the log record and the envelope.
+        // ONE record per failure: the same line was emitted twice, so every unreachable
+        // upstream was counted twice by any log-based alert.
+        String redactedPath = SensitiveDataMasker.maskPath(request.getRequestURI());
         LOGGER.error("Upstream service unavailable for {}: {}",
                 redactedPath, exception.getMessage());
-        // here, never placed in the response body.
-        // Masked for the LOG only: a card path embeds the PAN and must not be retained in a
-        // log file; the response body keeps the URI the caller supplied.
-        LOGGER.error("Upstream service unavailable for {}: {}",
-                SensitiveDataMasker.maskPan(path), exception.getMessage());
         ErrorResponse body = new ErrorResponse(
                 HttpStatus.SERVICE_UNAVAILABLE.value(),
                 HttpStatus.SERVICE_UNAVAILABLE.getReasonPhrase(),
                 UPSTREAM_UNAVAILABLE_MESSAGE,
                 redactedPath);
+        // Without these the 503 body carried correlationId/traceId null while the
+        // X-Correlation-Id response header carried a real value, so the identifier a
+        // caller is told to quote was absent from exactly the body that asks for it.
+        body.setTraceId(MDC.get(MDC_TRACE_ID));
+        body.setCorrelationId(CorrelationIdContext.getCorrelationId());
         return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
                 .header(org.springframework.http.HttpHeaders.RETRY_AFTER, RETRY_AFTER_SECONDS)
                 .body(body);

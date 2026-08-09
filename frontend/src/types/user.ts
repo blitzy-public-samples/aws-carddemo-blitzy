@@ -131,14 +131,20 @@ export interface UserAddRequestDto {
  * :field firstName: first name (``SEC-USR-FNAME``).
  * :field lastName: last name (``SEC-USR-LNAME``).
  * :field userType: role code (``SEC-USR-TYPE``), a :ts:type:`Role`.
- * :field password: raw password (``SEC-USR-PWD``); request-only, required — the
- *   service verifies it against the stored hash and re-encodes it when changed.
+ * :field password: raw password (``SEC-USR-PWD``); request-only and OPTIONAL. Omit it
+ *   to change the profile fields while leaving the stored credential untouched; supply
+ *   it to set a new one, which the service verifies against the stored hash and
+ *   re-encodes when it differs. Absence carries the meaning ``COUSR02C`` gave the
+ *   pre-filled field: that program filled ``PASSWD`` from ``SEC-USR-PWD`` (L169) and
+ *   rewrote the credential only when the returned value differed, whereas a hashed
+ *   credential cannot be pre-filled and the update route never returns it -- so the
+ *   screen cannot repopulate the field after a fetch and must be able to save without it.
  */
 export interface UserUpdateRequestDto {
   firstName: string;
   lastName: string;
   userType: Role;
-  password: string;
+  password?: string;
 }
 
 /**

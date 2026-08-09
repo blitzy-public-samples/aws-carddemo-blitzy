@@ -16,6 +16,7 @@
     "lint": "eslint .",
     "audit": "npm audit --audit-level=high",
     "test": "NODE_OPTIONS=--experimental-vm-modules jest",
+    "test:coverage": "NODE_OPTIONS=--experimental-vm-modules jest --coverage",
     "test:watch": "NODE_OPTIONS=--experimental-vm-modules jest --watch"
   },
   "dependencies": {
@@ -77,6 +78,30 @@
     "testMatch": [
       "<rootDir>/src/**/*.test.ts?(x)",
       "<rootDir>/src/**/__tests__/**/*.ts?(x)"
-    ]
+    ],
+    "coverageProvider": "v8",
+    "collectCoverageFrom": [
+      "src/**/*.{ts,tsx}",
+      "!src/**/*.test.{ts,tsx}",
+      "!src/**/__tests__/**",
+      "!src/**/__mocks__/**",
+      "!src/setupTests.ts",
+      "!src/testing/**",
+      "!src/vite-env.d.ts"
+    ],
+    "coverageDirectory": "<rootDir>/coverage",
+    "coverageReporters": [
+      "text-summary",
+      "lcov",
+      "json-summary"
+    ],
+    "coverageThreshold": {
+      "global": {
+        "statements": 95,
+        "branches": 85,
+        "functions": 88,
+        "lines": 95
+      }
+    }
   }
 }

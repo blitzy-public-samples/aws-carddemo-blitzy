@@ -14,7 +14,7 @@
  *   ``Header``, ``ErrorBanner``, or ``PFKeyBar`` itself.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { ChangeEvent, FormEvent, ReactElement } from 'react';
 import { useLocation, useNavigate } from 'react-router';
 import { useScreenChrome } from '../components/Layout';
@@ -24,7 +24,14 @@ import { PfKeyAction, CCDA_TITLE01, CCDA_TITLE02 } from '../types';
 import type { UserDto } from '../types';
 import { ApiError, deleteUser, getUser } from '../api';
 import OutputField from '../components/OutputField';
-import { useApi, useFocusOnChange, useFocusOnSettled, useInitialFocus } from '../hooks';
+import {
+  useApi,
+  useFocusOnChange,
+  useFocusOnSettled,
+  useInitialFocus,
+  useScreenAction,
+  useSelfRevocationExit,
+} from '../hooks';
 
 /** CICS transaction id of the delete-user screen (``WS-TRANID``). */
 const TRANSACTION_ID = 'CU03';
@@ -106,11 +113,11 @@ const PFKEY_LABEL_PF5 = 'F5=Delete';
  */
 const PFKEY_LABEL_PF12 = 'F12=Cancel';
 
-/** In-body caption of the read-for-display action. */
-const BUTTON_LABEL_FETCH = 'Fetch';
-
-/** In-body caption of the delete action. */
-const BUTTON_LABEL_DELETE = 'Delete';
+/* ``COUSR03.bms`` declares no button anywhere in the screen body: ENTER fetches and F5
+   deletes, both from line 24. Captions for an in-body Fetch and Delete control are
+   therefore not declared here -- rendering them put an irreversible action in the tab
+   order, reachable by a single click, and gave it the same weight as the harmless
+   lookup. */
 
 /** HTTP status the backend returns for ``RecordNotFoundException``. */
 const HTTP_NOT_FOUND = 404;
@@ -245,11 +252,27 @@ export default function UserDeletePage(): ReactElement {
   const { loading: fetching, run: runFetch } = useApi(fetchUserOutcome);
   const { loading: deleting, run: runDelete } = useApi(deleteUserOutcome);
   const busy = fetching || deleting;
+  const exitOnSelfRevocation = useSelfRevocationExit();
+
+  /**
+   * :purpose: Whether a DELETE is already in flight, tracked synchronously so a repeated
+   *   F5 in the same task cannot issue a second one (see :func:`removeUser`).
+   */
+  const deletingRef = useRef(false);
 
   // Latches the id the entry read has already been performed for, so the read
   // happens exactly once per pre-selected id however often the effect is
   // re-invoked (React StrictMode remounts it in development).
   const autoReadUserIdRef = useRef<string | null>(null);
+
+  /**
+   * :purpose: Keyboard-lock latch: ``true`` from the instant a read or a delete is
+   *     dispatched until its answer has been applied. A 3270 locked the keyboard for
+   *     exactly that interval, so one intent could never be sent twice. The latch is a
+   *     ref rather than ``busy`` because two activations in the same task both observe
+   *     the state as it was before either of them, and both would be admitted.
+   */
+  const requestLatch = useRef<boolean>(false);
 
   /**
    * :purpose: ``PROCESS-ENTER-KEY`` — read the record for display. The display
@@ -290,6 +313,17 @@ export default function UserDeletePage(): ReactElement {
    */
   const removeUser = useCallback(
     async (id: string): Promise<void> => {
+      /*
+       * Set synchronously, before anything can yield. A 3270 keyboard is locked from the
+       * moment an AID is sent until the program replies, so a second F5 struck in the
+       * meantime is discarded rather than queued. `deleting` alone could not enforce that:
+       * it is React state, so several activations dispatched within one JavaScript task
+       * all observe it still false and each issues its own DELETE -- the first removing
+       * the record and the rest reporting it missing.
+       */
+      if (deletingRef.current) {
+        return;
+      }
       const key = id.trim();
       if (key === '') {
         setErrorMessage(MSG_USER_ID_EMPTY);
@@ -298,34 +332,63 @@ export default function UserDeletePage(): ReactElement {
       }
       setErrorMessage('');
       setInfoMessage('');
-      const outcome = await runDelete(key);
+      deletingRef.current = true;
+      let outcome;
+      try {
+        outcome = await runDelete(key);
+      } finally {
+        deletingRef.current = false;
+      }
       if (outcome === undefined) {
         setErrorMessage(MSG_UNABLE_UPDATE);
         return;
       }
       if ('deleted' in outcome) {
+        // Name the user the way the service STORES it (upper-cased per COSGN00C L132 /
+        // 3270 UCTRAN) rather than the way it was typed, so the banner identifies the
+        // row that was actually removed. The delete route returns no body, so the id
+        // comes from the record fetched for confirmation.
+        const deletedId = detail?.userId ?? key;
         setUserId('');
         setDetail(null);
-        setInfoMessage(MSG_USER_PREFIX + key + MSG_DELETED_SUFFIX);
+        const confirmation = MSG_USER_PREFIX + deletedId + MSG_DELETED_SUFFIX;
+        // Deleting one's own record revokes one's own session: report that with the
+        // action that caused it rather than letting the next action be refused blankly.
+        if (await exitOnSelfRevocation(key, confirmation)) {
+          return;
+        }
+        setInfoMessage(confirmation);
         return;
       }
       setErrorMessage(outcome.message);
     },
-    [runDelete],
+    [detail, exitOnSelfRevocation, runDelete],
   );
 
   /**
    * :purpose: ENTER handler bound to the key bar and to the lookup form.
    */
   const handleFetch = useCallback((): void => {
-    void fetchUser(userId);
+    if (requestLatch.current) {
+      return;
+    }
+    requestLatch.current = true;
+    void fetchUser(userId).finally(() => {
+      requestLatch.current = false;
+    });
   }, [fetchUser, userId]);
 
   /**
    * :purpose: F5 handler; the only path that removes a record.
    */
   const handleDelete = useCallback((): void => {
-    void removeUser(userId);
+    if (requestLatch.current) {
+      return;
+    }
+    requestLatch.current = true;
+    void removeUser(userId).finally(() => {
+      requestLatch.current = false;
+    });
   }, [removeUser, userId]);
 
   /**
@@ -401,12 +464,25 @@ export default function UserDeletePage(): ReactElement {
 
   // Publish this screen's chrome into the shared shell: header ids and titles, the
   // line-23 message, and the line-24 function-key legend.
-  useEffect(() => {
+  // The activators published to the shared frame are identity-stable and always
+  // dispatch to the newest render's handler, so the line-24 legend is not rebuilt on
+  // every keystroke and an AID can never act on a value the screen has replaced.
+  const activateFetch = useScreenAction(handleFetch);
+  const activateExit = useScreenAction(handleExit);
+  const activateClear = useScreenAction(handleClear);
+  const activateDelete = useScreenAction(handleDelete);
+
+  // The frame's header, line-23 message region and line-24 key legend belong to the
+  // SAME map as this body, so they are published in a LAYOUT effect: a CICS program
+  // moved every field into the symbolic map before its one SEND, and nothing
+  // half-built ever reached the terminal. A passive effect would paint the frame
+  // once without them and then move it.
+  useLayoutEffect(() => {
     const pfKeys: PFKeyDef[] = [
       {
         action: PfKeyAction.Enter,
         label: PFKEY_LABEL_ENTER,
-        onActivate: handleFetch,
+        onActivate: activateFetch,
         enabled: !busy,
       },
       // A pending DELETE must not be abandoned by navigating away: unmounting the
@@ -416,25 +492,25 @@ export default function UserDeletePage(): ReactElement {
       {
         action: PfKeyAction.PF3,
         label: PFKEY_LABEL_PF3,
-        onActivate: handleExit,
+        onActivate: activateExit,
         enabled: !busy,
       },
       {
         action: PfKeyAction.PF4,
         label: PFKEY_LABEL_PF4,
-        onActivate: handleClear,
+        onActivate: activateClear,
         enabled: !busy,
       },
       {
         action: PfKeyAction.PF5,
         label: PFKEY_LABEL_PF5,
-        onActivate: handleDelete,
+        onActivate: activateDelete,
         enabled: !busy,
       },
       {
         action: PfKeyAction.PF12,
         label: PFKEY_LABEL_PF12,
-        onActivate: handleExit,
+        onActivate: activateExit,
         enabled: !busy,
         dark: true,
       },
@@ -450,14 +526,14 @@ export default function UserDeletePage(): ReactElement {
       pfKeys,
     });
   }, [
-    setChrome,
+    activateClear,
+    activateDelete,
+    activateExit,
+    activateFetch,
+    busy,
     errorMessage,
     infoMessage,
-    busy,
-    handleFetch,
-    handleDelete,
-    handleClear,
-    handleExit,
+    setChrome,
   ]);
 
   return (
@@ -467,7 +543,8 @@ export default function UserDeletePage(): ReactElement {
       </h3>
 
       <form className="userDelete__lookup" onSubmit={handleSubmit}>
-        <label className="label" htmlFor="usridin">
+        {/* COUSR03.bms:L80-L84 -- LENGTH=14 POS=(6,6) COLOR=GREEN. */}
+        <label className="green" htmlFor="usridin">
           {LABEL_USER_ID}
         </label>{' '}
         <input
@@ -485,10 +562,11 @@ export default function UserDeletePage(): ReactElement {
           ref={userIdRef}
           disabled={busy}
           onChange={handleUserIdChange}
-        />{' '}
-        <button type="submit" data-testid="fetch-button" disabled={busy}>
-          {BUTTON_LABEL_FETCH}
-        </button>
+        />
+        {/* ENTER submits the lookup. The mapset places no button in the screen
+            body, so this control is hidden from sight, from assistive technology
+            and from keyboard navigation. */}
+        <button type="submit" hidden aria-hidden="true" tabIndex={-1} />
       </form>
 
       <div className="userDelete__rule title" aria-hidden="true">
@@ -514,27 +592,34 @@ export default function UserDeletePage(): ReactElement {
           />
         </dl>
 
-        <dl className="userDelete__row">
-          <OutputField
-            label={LABEL_USER_TYPE}
-            value={detail?.userType ?? ''}
-            testId="user-type"
-            width={USER_TYPE_LENGTH}
-          />
-          <div className="label">{USER_TYPE_HINT}</div>
-        </dl>
+        {/*
+          COUSR03 row 15 paints the caption at column 6, the value at column 17 and the
+          `(A=Admin, U=User)` BLUE literal at column 19, so all three share one terminal
+          row. The hint is a literal of its own and belongs OUTSIDE the description
+          list: a `dl` may contain only `dt`/`dd` groups, and a bare `div` between them
+          is the structure violation an audit reports.
+        */}
+        <div className="userDelete__row">
+          <dl className="userDelete__typeRow">
+            <OutputField
+              label={LABEL_USER_TYPE}
+              value={detail?.userType ?? ''}
+              testId="user-type"
+              width={USER_TYPE_LENGTH}
+            />
+          </dl>
+          <span className="label">{USER_TYPE_HINT}</span>
+        </div>
       </div>
 
-      <div className="userDelete__actions">
-        <button
-          type="button"
-          data-testid="delete-button"
-          disabled={busy}
-          onClick={handleDelete}
-        >
-          {BUTTON_LABEL_DELETE}
-        </button>
-      </div>
+      {/*
+        No Delete control is rendered in the screen body. `COUSR03.bms` declares the key
+        field, three protected display fields, the `(A=Admin, U=User)` literal and one
+        row-24 legend field -- nothing else. The deletion affordance is the `F5=Delete` key
+        the shell renders on line 24, which the physical F5 key also activates; a second
+        control duplicated it as observable output the mapset does not declare. Both paths
+        run the same `handleDelete`, so the in-flight guard covers either one.
+      */}
     </section>
   );
 }

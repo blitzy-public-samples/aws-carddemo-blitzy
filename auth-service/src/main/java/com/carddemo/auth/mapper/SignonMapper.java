@@ -19,7 +19,8 @@ import com.carddemo.auth.dto.SignonResponseDto;
 import com.carddemo.common.domain.SecurityUser;
 import com.carddemo.common.dto.SessionContext;
 import org.springframework.stereotype.Component;
-import java.util.Locale;
+import com.carddemo.common.security.UserIdNormalizer;
+
 
 /**
  * :purpose: Maps a verified {@link SecurityUser} to the sign-on response DTO and the
@@ -49,6 +50,23 @@ public class SignonMapper {
     }
 
     /**
+     * :purpose: Build the ``POST /auth/signon`` success-response body from the context a
+     *  live session already carries, for the idempotent re-sign-on of the principal who
+     *  is already signed on. The redirect target is resolved the same way as for a fresh
+     *  verification, so the answer is byte-identical to the one that established the
+     *  session.
+     * :param context: the externalized session context held by the live session.
+     * :returns: a response carrying the session's userId, its userType, and the
+     *  redirectTarget (``CA00`` administrator menu / ``CM00`` regular-user menu).
+     */
+    public SignonResponseDto toSignonResponse(SessionContext context) {
+        SessionContext.UserType userType = context.getUserType();
+        boolean admin = (userType == SessionContext.UserType.CDEMO_USRTYP_ADMIN);
+        String redirectTarget = admin ? "CA00" : "CM00";
+        return new SignonResponseDto(context.getUserId(), userType, redirectTarget);
+    }
+
+    /**
      * :purpose: Assemble the externalized COMMAREA replacement seeded by the ``COSGN00C``
      *  sign-on SUCCESS branch, reproducing the moves to ``CDEMO-FROM-TRANID``,
      *  ``CDEMO-FROM-PROGRAM``, ``CDEMO-USER-ID``, ``CDEMO-USER-TYPE``, and
@@ -62,7 +80,7 @@ public class SignonMapper {
         SessionContext ctx = new SessionContext();
         ctx.setFromTranid("CC00");
         ctx.setFromProgram("COSGN00C");
-        ctx.setUserId(user.getSecUsrId() == null ? null : user.getSecUsrId().toUpperCase(Locale.ROOT));
+        ctx.setUserId(UserIdNormalizer.normalize(user.getSecUsrId()));
         ctx.setUserType(SessionContext.UserType.fromCode(user.getSecUsrType()));
         ctx.setProgramContext(SessionContext.ProgramContext.CDEMO_PGM_ENTER);
         return ctx;

@@ -16,14 +16,14 @@
  * :purpose: A single selectable menu entry (``MenuController.MenuOptionView``).
  * :field optionNumber: one-based option number the user types.
  * :field optionName: display label for the option.
- * :field programName: legacy target program name.
- * :field targetRoute: resolved gateway route, or ``null`` when unmapped.
+ * :field programName: legacy target program name (``CDEMO-MENU-OPT-PGMNAME``); the
+ *   client resolves it to one of its own screens through
+ *   :data:`PROGRAM_SCREEN_ROUTES`.
  */
 export interface MenuOption {
   optionNumber: number;
   optionName: string;
   programName: string;
-  targetRoute: string | null;
 }
 
 /**
@@ -57,16 +57,15 @@ export interface MenuResponseDto {
 /**
  * :purpose: Response body for the two ``/select`` endpoints
  *   (``MenuController.MenuSelectionResponse``).
- * :field dispatched: ``true`` when the client should navigate to ``targetRoute``.
- * :field programName: resolved target program name, or ``null`` for a PF3 back.
- * :field targetRoute: downstream route to navigate to, or ``null`` for a
- *   coming-soon result.
+ * :field dispatched: ``true`` when the selection resolved to a program to open.
+ * :field programName: resolved target program name — the ``XCTL PROGRAM`` target and the
+ *   whole dispatch instruction, resolved to a route through
+ *   :data:`PROGRAM_SCREEN_ROUTES`; ``null`` only when nothing was dispatched.
  * :field message: the coming-soon message, or ``null`` when a dispatch occurred.
  */
 export interface MenuSelectionResponseDto {
   dispatched: boolean;
   programName: string | null;
-  targetRoute: string | null;
   message: string | null;
 }
 

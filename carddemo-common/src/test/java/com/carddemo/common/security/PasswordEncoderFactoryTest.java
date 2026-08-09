@@ -40,7 +40,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class PasswordEncoderFactoryTest {
 
     /**
-     * :purpose: The exact bare BCrypt hash the committed ``V2__seed_security_users.sql``
+     * :purpose: The exact bare BCrypt hash the committed ``V3__seed_test_data.sql``
      *   stores for all ten migrated users. It has no ``{id}`` prefix and was produced at
      *   BCrypt cost 10, matching {@link PasswordEncoderFactory#BCRYPT_STRENGTH} so a verified
      *   credential is never rehashed on sign-on.

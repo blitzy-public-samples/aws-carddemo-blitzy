@@ -14,7 +14,7 @@
  *     handler is the one a keystroke reaches; and that the ENTER double-invoke guard
  *     suppresses the document handler when the keydown target is a legend button.
  */
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, createEvent } from '@testing-library/react';
 // Jest's ESM runtime does not inject ``jest`` as a global (unlike describe/it/
 // expect), so it is imported explicitly.
 import { jest } from '@jest/globals';
@@ -30,7 +30,7 @@ describe('PFKeyBar', () => {
     ];
     render(<PFKeyBar keys={keys} />);
 
-    const toolbar = screen.getByRole('toolbar', { name: 'Function keys' });
+    const toolbar = screen.getByRole('group', { name: 'Function keys' });
     expect(toolbar).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'ENTER=Sign-on' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'F3=Exit' })).toBeInTheDocument();
@@ -208,5 +208,50 @@ describe('PFKeyBar', () => {
     // listener does not fire (the button's own native click already handles it).
     fireEvent.keyDown(screen.getByRole('button', { name: 'ENTER=Continue' }), { key: 'Enter' });
     expect(onEnter).not.toHaveBeenCalled();
+  });
+
+  it('leaves ENTER to the skip link, so the link is operable without a pointer', () => {
+    const onEnter = jest.fn();
+    const keys: PFKeyDef[] = [
+      { action: PfKeyAction.Enter, label: 'ENTER=Fetch', onActivate: onEnter },
+    ];
+    render(
+      <>
+        <a className="screen__skipLink" href="#screenStatusRegion">
+          Skip to message line and function keys
+        </a>
+        <PFKeyBar keys={keys} />
+      </>,
+    );
+
+    // The shell's skip link is the one anchor the application renders, and ENTER is the
+    // only key that activates a link. Claiming the key for the screen called
+    // `preventDefault` on that activation, so the link worked by pointer alone -- for
+    // the one operator who has no pointer.
+    const link = screen.getByRole('link', {
+      name: 'Skip to message line and function keys',
+    });
+    const event = createEvent.keyDown(link, { key: 'Enter' });
+    fireEvent(link, event);
+
+    expect(onEnter).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(false);
+  });
+
+  it('still claims ENTER for the screen when a field holds focus', () => {
+    const onEnter = jest.fn();
+    const keys: PFKeyDef[] = [
+      { action: PfKeyAction.Enter, label: 'ENTER=Fetch', onActivate: onEnter },
+    ];
+    render(
+      <>
+        <input aria-label="Enter User ID:" />
+        <PFKeyBar keys={keys} />
+      </>,
+    );
+
+    // The exemption must not reach a screen field: ENTER in an entry field is the AID.
+    fireEvent.keyDown(screen.getByLabelText('Enter User ID:'), { key: 'Enter' });
+    expect(onEnter).toHaveBeenCalledTimes(1);
   });
 });

@@ -7,9 +7,9 @@
  *   pages) import from a single specifier (``../hooks``) rather than reaching into
  *   individual modules.
  * :output: The merged named-export namespace of the sibling modules: the ``useApi``,
- *   ``useInitialFocus``, ``useFocusOnChange``, ``useFocusOnSettled`` and ``useSession``
- *   hooks together with their ``UseApiResult`` and ``UseSessionResult`` return
- *   contracts.
+ *   ``useInitialFocus``, ``useFocusOnChange``, ``useFocusOnSettled``,
+ *   ``useScreenAction`` and ``useSession`` hooks together with their
+ *   ``UseApiResult`` and ``UseSessionResult`` return contracts.
  * :note: ``useSession`` is re-exported by name, not by wildcard: the barrel is the
  *   application-facing surface and must expose only the hook and its return
  *   contract, never any store mutator.
@@ -18,6 +18,8 @@
  */
 
 export * from './useApi';
+export * from './useScreenAction';
 export * from './useScreenFocus';
+export * from './useSelfRevocationExit';
 export { useSession } from './useSession';
 export type { UseSessionResult } from './useSession';

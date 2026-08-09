@@ -102,6 +102,13 @@ spec:
             - name: batch-work
               mountPath: /var/carddemo/batch
           env:
+            # THE single Flyway migration owner. carddemo-config disables Flyway for every
+            # service; this Deployment-level entry re-enables it here, and a `env` entry
+            # takes precedence over the same key arriving through `envFrom`. Every other
+            # Deployment's await-schema init container waits for the schema this pod
+            # creates, so ownership is declared in exactly one place.
+            - name: SPRING_FLYWAY_ENABLED
+              value: "true"
             # Batch file roots consumed by carddemo-common's
             # BatchOutputPathResolver, pointing at the writable emptyDir above.
             # Substituting a PersistentVolumeClaim for the emptyDir needs no image
@@ -132,6 +139,18 @@ spec:
                 name: carddemo-monitoring-secret
           # Batch is CPU-heavier than the online services; limits stay
           # generous so jobs complete inside their window (AAP 0.7.6).
+          # `limits.memory` is what the image's JAVA_OPTS percentages resolve
+          # against, so this figure - not a JVM flag - is what bounds the heap.
+          # Measured working set for the whole nine-service stack under the AAP
+          # 150-user load: 462-618 MiB resident per service, so 1Gi is held with
+          # headroom.
+          # `limits.cpu` is sized from the CPU cost per request measured over that
+          # same load: 9.2 ms for the tier as a whole, and 105.5 ms for a sign-on,
+          # of which ~72.8 ms is the password encoder alone. Two cores keeps every
+          # service at or below half utilisation at the measured request rate, and
+          # keeps the JVM's own ergonomics multi-core in every runtime.
+          # docker-compose.yml declares the same budget.
+          # Measurements and rationale: docs/decision-log.md section 50.
           resources:
             requests:
               cpu: 500m

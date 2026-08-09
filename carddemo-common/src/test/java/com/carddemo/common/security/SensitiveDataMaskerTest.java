@@ -89,4 +89,60 @@ class SensitiveDataMaskerTest {
         String message = "Card name can only contain alphabets and spaces";
         assertThat(SensitiveDataMasker.maskPan(message)).isSameAs(message);
     }
+
+    /**
+     * :purpose: The card-number path variable is the one path position that carries a PAN,
+     *   and it is redacted to its last four digits in both the detail and the sub-resource
+     *   form.
+     */
+    @Test
+    @DisplayName("maskPath redacts the /cards/{cardNumber} segment")
+    void maskPath_masksCardNumberSegment() {
+        assertThat(SensitiveDataMasker.maskPath("/cards/0500024453765740"))
+                .isEqualTo("/cards/************5740");
+        assertThat(SensitiveDataMasker.maskPath("/api/cards/0500024453765740"))
+                .isEqualTo("/api/cards/************5740");
+    }
+
+    /**
+     * :purpose: A 16-character transaction id has the same shape as a PAN but is NOT one, so
+     *   the reported path must match the URI the caller actually requested. Masking it made a
+     *   404 report ``/transactions/QS**********0001`` -- a path that never existed -- while
+     *   the 11-digit account id came back intact, which no support engineer could reconcile.
+     */
+    @Test
+    @DisplayName("maskPath leaves a non-card identifier segment intact")
+    void maskPath_leavesNonCardIdentifiersIntact() {
+        assertThat(SensitiveDataMasker.maskPath("/transactions/QS00000000000001"))
+                .isEqualTo("/transactions/QS00000000000001");
+        assertThat(SensitiveDataMasker.maskPath("/transactions/0000000000683580"))
+                .isEqualTo("/transactions/0000000000683580");
+        assertThat(SensitiveDataMasker.maskPath("/accounts/90000000001"))
+                .isEqualTo("/accounts/90000000001");
+    }
+
+    /**
+     * :purpose: ``cards`` is matched as a WHOLE path segment, so a path that merely contains
+     *   the letters is never treated as the card endpoint.
+     */
+    @Test
+    @DisplayName("maskPath matches cards as a whole segment only")
+    void maskPath_matchesWholeSegmentOnly() {
+        assertThat(SensitiveDataMasker.maskPath("/discards/0500024453765740"))
+                .isEqualTo("/discards/0500024453765740");
+    }
+
+    /**
+     * :purpose: A card path that carries something other than a bare PAN in the card-number
+     *   position is returned unchanged, and ``null``/empty pass through.
+     */
+    @Test
+    @DisplayName("maskPath passes through a non-PAN card segment, null and empty")
+    void maskPath_passesThroughNonPanAndNull() {
+        assertThat(SensitiveDataMasker.maskPath("/cards")).isEqualTo("/cards");
+        assertThat(SensitiveDataMasker.maskPath("/cards/not-a-number"))
+                .isEqualTo("/cards/not-a-number");
+        assertThat(SensitiveDataMasker.maskPath(null)).isNull();
+        assertThat(SensitiveDataMasker.maskPath("")).isEmpty();
+    }
 }

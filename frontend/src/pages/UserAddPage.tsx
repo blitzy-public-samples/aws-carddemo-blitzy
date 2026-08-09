@@ -14,7 +14,7 @@
  *     and the line-24 function-key bar are rendered by ``Layout`` from the chrome
  *     this page publishes through :func:`useScreenChrome`.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useState, useRef } from 'react';
 import type { ChangeEvent, FormEvent, ReactElement } from 'react';
 import { useNavigate } from 'react-router';
 import { useScreenChrome } from '../components/Layout';
@@ -27,9 +27,15 @@ import {
 } from '../types';
 import type { Role, UserAddRequestDto, UserAddResponseDto } from '../types';
 import { addUser } from '../api';
-import { useApi, useInitialFocus } from '../hooks';
+import {
+  placeCursor,
+  useApi,
+  useFocusOnSettled,
+  useInitialFocus,
+  useScreenAction,
+} from '../hooks';
 import { invalidFieldProps } from '../components/ErrorBanner';
-import { isBlank } from '../components/display';
+import { isBlank, resolveFaultedField } from '../components/display';
 
 /** :purpose: CICS transaction id of the add-user screen. */
 const TRANSACTION_ID = 'CU01';
@@ -105,6 +111,19 @@ interface UserAddFields {
 /**
  * :purpose: Element id of each entry field, so a cursor target resolves to a node.
  */
+/**
+ * :purpose: Map a request-payload property named in ``ErrorResponse.fieldErrors`` back to
+ *     the screen field that carries it, so the marker and the cursor land on the control
+ *     the service refused. The names are the DTO property names the service publishes.
+ */
+const FIELD_BY_PAYLOAD_PROPERTY: Readonly<Partial<Record<string, keyof UserAddFields>>> = {
+  firstName: 'firstName',
+  lastName: 'lastName',
+  userId: 'userId',
+  password: 'password',
+  userType: 'userType',
+};
+
 const FIELD_ELEMENT_ID: Readonly<Record<keyof UserAddFields, string>> = {
   firstName: 'fname',
   lastName: 'lname',
@@ -183,7 +202,8 @@ function firstBlankMessage(fields: UserAddFields): string | null {
 
 /**
  * :purpose: Build the ``COUSR01C`` confirmation message for a created user.
- * :param userId: The entered user id (``SEC-USR-ID``).
+ * :param userId: The user id as STORED by the service (``SEC-USR-ID``), which is
+ *     upper-cased; never the raw text the operator typed.
  * :returns: The message ``User <id> has been added ...``.
  */
 function addedMessage(userId: string): string {
@@ -202,7 +222,7 @@ export default function UserAddPage(): ReactElement {
   const [errorMessage, setErrorMessage] = useState('');
   const [infoMessage, setInfoMessage] = useState('');
 
-  const { loading, error, run } = useApi(addUser);
+  const { loading, error, run, reset } = useApi(addUser);
 
   const updateField = useCallback(
     (name: keyof UserAddFields) => (event: ChangeEvent<HTMLInputElement>): void => {
@@ -219,32 +239,55 @@ export default function UserAddPage(): ReactElement {
     }
   }, [error]);
 
+  /**
+   * :purpose: Keyboard-lock latch: ``true`` from the instant the request is dispatched
+   *     until its answer has been applied. A 3270 locked the keyboard for exactly that
+   *     interval, so one intent could never be sent twice. The latch is a ref rather
+   *     than the request state because two activations in the same task both observe
+   *     the state as it was before either of them and both would be admitted.
+   */
+  const addLatch = useRef<boolean>(false);
+
   const handleEnter = useCallback(async (): Promise<void> => {
-    if (loading) {
+    if (addLatch.current) {
       return;
     }
-    setErrorMessage('');
-    setInfoMessage('');
+    addLatch.current = true;
+    try {
+      setErrorMessage('');
+      setInfoMessage('');
+      // Discard the previous answer before this send is edited. The screen's own edits
+      // run first and return without calling the service, so a field the SERVICE named
+      // on an earlier send would otherwise still be the newest named field: the marker
+      // and the cursor would sit on the control that was refused last time instead of
+      // the one refused now.
+      reset();
 
-    const blankMessage = firstBlankMessage(fields);
-    if (blankMessage !== null) {
-      setErrorMessage(blankMessage);
-      return;
-    }
+      const blankMessage = firstBlankMessage(fields);
+      if (blankMessage !== null) {
+        setErrorMessage(blankMessage);
+        return;
+      }
 
-    const request: UserAddRequestDto = {
-      userId: fields.userId,
-      firstName: fields.firstName,
-      lastName: fields.lastName,
-      userType: fields.userType as Role,
-      password: fields.password,
-    };
-    const created: UserAddResponseDto | undefined = await run(request);
-    if (created !== undefined) {
-      setInfoMessage(addedMessage(fields.userId));
-      setFields(EMPTY_FIELDS);
+      const request: UserAddRequestDto = {
+        userId: fields.userId,
+        firstName: fields.firstName,
+        lastName: fields.lastName,
+        userType: fields.userType as Role,
+        password: fields.password,
+      };
+      const created: UserAddResponseDto | undefined = await run(request);
+      if (created !== undefined) {
+        // The banner comes from the RESPONSE, never from the entered text: the service
+        // upper-cases the user id (COSGN00C L132 / 3270 UCTRAN), so echoing what was
+        // typed would report an id that differs from the one actually stored.
+        setInfoMessage(created.message ?? addedMessage(created.userId));
+        setFields(EMPTY_FIELDS);
+      }
+    } finally {
+      addLatch.current = false;
     }
-  }, [fields, loading, run]);
+  }, [fields, reset, run]);
 
   const handleExit = useCallback((): void => {
     void navigate(ADMIN_MENU_ROUTE);
@@ -267,23 +310,34 @@ export default function UserAddPage(): ReactElement {
   // COUSR01 marks FNAME ``ATTRB=(FSET,IC,NORM,UNPROT)`` and COUSR01C returns the
   // cursor there for an unhandled key, so the first name carries the cursor.
   const firstNameRef = useInitialFocus<HTMLInputElement>();
+  // The entry fields are disabled while the add is in flight, which blurs the focused one
+  // to the document body; `COUSR01.bms` gives FNAME the IC attribute, so the cursor
+  // returns to it once the write settles.
+  useFocusOnSettled(loading, firstNameRef);
 
   // CICS honours the insert cursor on every send, so it is re-placed after each
   // request settles as well as on entry: a control disabled while the request was in
   // flight has been blurred by the browser by then. The target is the field the
   // outcome names, defaulting to the mapset's ``ATTRB=IC`` field.
-  const cursorField: keyof UserAddFields =
+  const messageCursorField: keyof UserAddFields =
     errorMessage === '' ? 'firstName' : (CURSOR_BY_MESSAGE[errorMessage] ?? 'firstName');
 
+  // The service names the property its edit refused in the error envelope, and that is
+  // preferred over matching the message text: the edit was performed there, so it knows
+  // which field failed, and a message the map has never seen -- 'User Type must be A or
+  // U' among them -- still marks and cursors to the right control.
+  const serverField = FIELD_BY_PAYLOAD_PROPERTY[resolveFaultedField(error) ?? ''];
+
+  const cursorField: keyof UserAddFields = serverField ?? messageCursorField;
+
   // The cursor moves for every outcome, but only a rejected value is invalid.
-  const faultedField: keyof UserAddFields | null = FIELD_FAULT_MESSAGES.has(errorMessage)
-    ? cursorField
-    : null;
+  const faultedField: keyof UserAddFields | null =
+    serverField ?? (FIELD_FAULT_MESSAGES.has(errorMessage) ? cursorField : null);
   useEffect(() => {
     if (loading) {
       return;
     }
-    document.getElementById(FIELD_ELEMENT_ID[cursorField])?.focus();
+    placeCursor(document.getElementById(FIELD_ELEMENT_ID[cursorField]));
   }, [loading, cursorField, errorMessage, infoMessage]);
 
   const handleUnhandledKey = useCallback((): void => {
@@ -291,21 +345,34 @@ export default function UserAddPage(): ReactElement {
     setErrorMessage(CCDA_MSG_INVALID_KEY);
   }, []);
 
-  useEffect(() => {
+  // The activators published to the shared frame are identity-stable and always
+  // dispatch to the newest render's handler, so the line-24 legend is not rebuilt on
+  // every keystroke and an AID can never act on a value the screen has replaced.
+  const activateExit = useScreenAction(handleExit);
+  const activateClear = useScreenAction(handleClear);
+  const activateUnhandledKey = useScreenAction(handleUnhandledKey);
+  const activateEnter = useScreenAction((): void => {
+    void handleEnter();
+  });
+
+  // The frame's header, line-23 message region and line-24 key legend belong to the
+  // SAME map as this body, so they are published in a LAYOUT effect: a CICS program
+  // moved every field into the symbolic map before its one SEND, and nothing
+  // half-built ever reached the terminal. A passive effect would paint the frame
+  // once without them and then move it.
+  useLayoutEffect(() => {
     const pfKeys: PFKeyDef[] = [
       {
         action: PfKeyAction.Enter,
         label: PF_ENTER_LABEL,
-        onActivate: () => {
-          void handleEnter();
-        },
+        onActivate: activateEnter,
       },
-      { action: PfKeyAction.PF3, label: PF3_LABEL, onActivate: handleExit },
-      { action: PfKeyAction.PF4, label: PF4_LABEL, onActivate: handleClear },
+      { action: PfKeyAction.PF3, label: PF3_LABEL, onActivate: activateExit },
+      { action: PfKeyAction.PF4, label: PF4_LABEL, onActivate: activateClear },
       {
         action: PfKeyAction.PF12,
         label: PF12_LABEL,
-        onActivate: handleUnhandledKey,
+        onActivate: activateUnhandledKey,
       },
     ];
     setChrome({
@@ -319,19 +386,23 @@ export default function UserAddPage(): ReactElement {
       busy: loading,
     });
   }, [
-    setChrome,
+    activateClear,
+    activateEnter,
+    activateExit,
+    activateUnhandledKey,
     errorMessage,
     infoMessage,
     loading,
-    handleEnter,
-    handleExit,
-    handleClear,
-    handleUnhandledKey,
+    setChrome,
   ]);
 
   return (
-    <>
-      <h3 className="neutral">Add User</h3>
+    // The screen body is a labelled region, as every other screen's body is: without one
+    // the five entry rows sit directly in `main` with no programmatic grouping.
+    <section className="userAdd__screen" aria-labelledby="userAddHeading">
+      <h3 id="userAddHeading" className="neutral">
+        Add User
+      </h3>
       <form className="userAdd" onSubmit={handleSubmit}>
         <div className="userAdd__row">
           <label className="prompt" htmlFor="fname">
@@ -437,6 +508,6 @@ export default function UserAddPage(): ReactElement {
           </span>
         </div>
       </form>
-    </>
+    </section>
   );
 }

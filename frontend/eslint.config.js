@@ -67,6 +67,18 @@ export default tseslint.config(
       // Off. Rationale: docs/decision-log.md, section 19.2.
       'security/detect-object-injection': 'off',
 
+      // A horizontally scrolling region must be operable from the keyboard (WCAG
+      // 2.1.1). The browse tables of the three list screens are exactly that: on a
+      // narrow viewport the trailing BMS columns fall outside the frame and hold no
+      // focusable field of their own, so the scroll container itself carries the tab
+      // stop. The rule's default allow-list covers only `tabpanel`, so the two roles
+      // used for those containers are added to it. Rationale:
+      // docs/decision-log.md, section 44.3.
+      'jsx-a11y/no-noninteractive-tabindex': [
+        'error',
+        { tags: [], roles: ['tabpanel', 'group', 'region'], allowExpressionValues: true },
+      ],
+
       // A floating promise in an event handler silently swallows a rejected request,
       // so an explicit `void` or `await` is required at every call site.
       '@typescript-eslint/no-floating-promises': 'error',

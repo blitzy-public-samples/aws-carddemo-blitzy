@@ -205,4 +205,52 @@ class BatchOutputPathResolverTest {
 
         inputRoot.toFile().setWritable(true, false);
     }
+
+    /**
+     * :purpose: A deliverable resolved per RUN carries the legacy ``Gnnnnvnn`` generation
+     *  qualifier before its extension, so two runs never write the same file. The legacy
+     *  ``DALYREJS`` DD allocated a new generation per run
+     *  (``DSN=AWS.M2.CARDDEMO.DALYREJS(+1)``, ``DISP=(NEW,CATLG,DELETE)``), and a single
+     *  fixed name let one run destroy another run's deliverable [app/jcl/POSTTRAN.jcl].
+     * :param tempDir: JUnit-managed directory standing in for the mounted batch root.
+     */
+    @Test
+    @DisplayName("a generation-qualified name is unique per run and keeps its extension")
+    void generationQualifiedNameIsUniquePerRun(@TempDir Path tempDir) {
+        BatchOutputPathResolver resolver = new BatchOutputPathResolver(
+                tempDir.resolve("out").toString(), tempDir.resolve("in").toString());
+
+        assertThat(resolver.resolveOutputGeneration("dalyrejs.txt", 33L).getFileName())
+                .hasToString("dalyrejs.G0033V00.txt");
+        assertThat(resolver.resolveOutputGeneration("dalyrejs.txt", 1L).getFileName())
+                .hasToString("dalyrejs.G0001V00.txt");
+        // A five-digit execution id widens the field rather than wrapping onto an earlier
+        // generation, so a long-lived JobRepository can never collide.
+        assertThat(resolver.resolveOutputGeneration("dalyrejs.txt", 12345L).getFileName())
+                .hasToString("dalyrejs.G12345V00.txt");
+        // No extension: the qualifier is appended.
+        assertThat(resolver.resolveOutputGeneration("dalyrejs", 7L).getFileName())
+                .hasToString("dalyrejs.G0007V00");
+        assertThat(resolver.resolveOutputGeneration("dalyrejs.txt", 1L))
+                .isNotEqualTo(resolver.resolveOutputGeneration("dalyrejs.txt", 2L));
+    }
+
+    /**
+     * :purpose: A generation is confined to the output root exactly as an unqualified name
+     *  is, so the per-run naming cannot become a traversal escape.
+     * :param tempDir: JUnit-managed directory standing in for the mounted batch root.
+     */
+    @Test
+    @DisplayName("a generation-qualified name is still confined to the output root")
+    void generationQualifiedNameIsStillConfined(@TempDir Path tempDir) {
+        BatchOutputPathResolver resolver = new BatchOutputPathResolver(
+                tempDir.resolve("out").toString(), tempDir.resolve("in").toString());
+
+        assertThatExceptionOfType(IllegalArgumentException.class)
+                .isThrownBy(() -> resolver.resolveOutputGeneration("../escaped.txt", 1L))
+                .withMessageContaining("escapes the allowed directory");
+        assertThatExceptionOfType(IllegalArgumentException.class)
+                .isThrownBy(() -> resolver.resolveOutputGeneration("   ", 1L))
+                .withMessageContaining("must not be blank");
+    }
 }

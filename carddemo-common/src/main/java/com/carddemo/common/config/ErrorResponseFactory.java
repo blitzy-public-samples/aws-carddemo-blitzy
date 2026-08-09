@@ -62,11 +62,15 @@ final class ErrorResponseFactory {
 
     /**
      * :purpose: Derive the request URI from a {@link WebRequest} without the servlet API and
-     *  redact any PAN-shaped segment it carries, so the envelope's ``path`` can never echo a
-     *  card number back to a client, a proxy log, or a browser history entry.
+     *  redact the card-number segment it may carry, so the envelope's ``path`` can never echo
+     *  a card number back to a client, a proxy log, or a browser history entry.
      * :param request: the current web request; may be ``null``.
-     * :returns: the request path with the leading ``"uri="`` stripped and every PAN reduced
-     *  to its last four digits, or the raw description when the prefix is absent.
+     * :returns: the request path with the leading ``"uri="`` stripped and a
+     *  ``/cards/{cardNumber}`` segment reduced to its last four digits, or the raw
+     *  description when the prefix is absent.
+     * :note: Only the card-number position is redacted. Masking every PAN-shaped digit run
+     *  also hit the 16-character transaction id of ``/transactions/{id}``, so a ``404``
+     *  reported a path that had never been requested.
      */
     static String path(WebRequest request) {
         if (request == null) {
@@ -76,7 +80,7 @@ final class ErrorResponseFactory {
         String uri = description != null && description.startsWith(URI_PREFIX)
                 ? description.substring(URI_PREFIX.length())
                 : description;
-        return SensitiveDataMasker.maskPan(uri);
+        return SensitiveDataMasker.maskPath(uri);
     }
 
     /**

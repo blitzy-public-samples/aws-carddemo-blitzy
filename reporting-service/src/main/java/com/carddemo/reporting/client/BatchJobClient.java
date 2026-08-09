@@ -16,14 +16,18 @@
  */
 package com.carddemo.reporting.client;
 
+import com.carddemo.common.config.CorrelationIdContext;
+import com.carddemo.common.config.CorrelationIdFilter;
 import com.carddemo.common.dto.BatchJobExecutionDto;
 import com.carddemo.common.exception.CardDemoException;
+import com.carddemo.common.exception.UpstreamUnavailableException;
 import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.client.ClientHttpRequestInterceptor;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
@@ -37,8 +41,9 @@ import org.springframework.web.client.RestClientResponseException;
  *  whether the hand-off itself had succeeded. Report requests previously launched the
  *  statement job instead, leaving the transaction-detail report with no caller at all.
  * :output: A {@link BatchJobExecutionDto} carrying the accepted run's durable execution
- *  handle, or a {@link CardDemoException} bearing the frozen ``Unable to Write TDQ
- *  (JOBS)...`` message for every hand-off failure.
+ *  handle; a {@link CardDemoException} when batch-service answers and refuses the run; or an
+ *  {@link UpstreamUnavailableException} bearing the frozen ``Unable to Write TDQ (JOBS)...``
+ *  message when batch-service cannot be reached at all.
  * :note: The caller's ``SESSION`` cookie is forwarded so the launch is authorized as the
  *  signed-on user against batch-service's own authorization boundary; the shared Redis
  *  session makes that cookie meaningful in either service. The hand-off is synchronous
@@ -74,15 +79,54 @@ public class BatchJobClient {
     private final HttpServletRequest httpRequest;
 
     /**
-     * :purpose: Build the client against the configured batch-service base URI.
+     * :purpose: Build the client against the configured batch-service base URI, on the
+     *  application's own instrumented HTTP client builder, and attach the correlation-id
+     *  propagation interceptor.
+     * :param restClientBuilder: the Spring Boot managed {@link RestClient.Builder}.
      * :param httpRequest: the current request, injected as a scoped proxy.
      * :param batchServiceUri: base URI of batch-service (``BATCH_SERVICE_URI``).
+     * :note: The MANAGED builder must be used rather than ``RestClient.builder()``. Only the
+     *  managed one carries the observation registry that Boot's client instrumentation
+     *  configures, and that instrumentation is what writes the ``traceparent`` header onto
+     *  the outbound request. Built from a bare builder, this hop left no trace context at
+     *  all: batch-service opened a brand-new trace for the run, so the report submission and
+     *  the run it launched could not be connected in Jaeger, and the AAP's requirement for
+     *  distributed tracing ACROSS SERVICE BOUNDARIES was unmet on the one hop that crosses a
+     *  service boundary (AAP 0.7.5).
+     * :note: ``traceparent`` identifies the trace; ``X-Correlation-Id`` is the BUSINESS
+     *  identifier the whole estate logs and returns to callers, and it is not a tracing
+     *  header, so the instrumentation does not carry it. The interceptor below propagates it
+     *  explicitly, matching what the gateway does for every inbound request.
      */
-    public BatchJobClient(HttpServletRequest httpRequest,
+    public BatchJobClient(RestClient.Builder restClientBuilder,
+                          HttpServletRequest httpRequest,
                           @Value("${carddemo.batch-service.uri:http://batch-service:8080}")
                           String batchServiceUri) {
-        this.restClient = RestClient.builder().baseUrl(batchServiceUri).build();
+        this.restClient = restClientBuilder
+                .baseUrl(batchServiceUri)
+                .requestInterceptor(correlationIdPropagatingInterceptor())
+                .build();
         this.httpRequest = httpRequest;
+    }
+
+    /**
+     * :purpose: Copy the in-scope correlation id onto every outbound submission so
+     *  batch-service logs the run under the same business identifier as the report request
+     *  that asked for it.
+     * :returns: an interceptor setting ``X-Correlation-Id`` when an id is in scope.
+     * :note: ``setIfAbsent`` is not used: the id is SET, so a stale value can never survive,
+     *  and an absent id leaves the header off entirely rather than sending an empty one,
+     *  which would make batch-service's own filter adopt a blank id.
+     */
+    private static ClientHttpRequestInterceptor correlationIdPropagatingInterceptor() {
+        return (request, body, execution) -> {
+            String correlationId = CorrelationIdContext.getCorrelationId();
+            if (correlationId != null && !correlationId.isBlank()) {
+                request.getHeaders()
+                        .set(CorrelationIdFilter.CORRELATION_ID_HEADER, correlationId);
+            }
+            return execution.execute(request, body);
+        };
     }
 
     /**
@@ -92,10 +136,12 @@ public class BatchJobClient {
      * :param endDate: inclusive window end in ``YYYY-MM-DD`` wire form
      *  (``PARM-END-DATE``).
      * :returns: the accepted run's durable execution handle.
-     * :raises CardDemoException: with the frozen ``Unable to Write TDQ (JOBS)...``
-     *  message whenever batch-service refuses the run or cannot be reached, so a failed
-     *  hand-off is never reported to the user as a successful submission and no message
-     *  other than the one ``CORPT00C`` emits ever reaches the screen.
+     * :raises CardDemoException: when batch-service ANSWERS and refuses the run, carrying the
+     *  refusal reason, so a failed hand-off is never reported to the user as a successful
+     *  submission and no message other than the one ``CORPT00C`` emits ever reaches the screen.
+     * :raises UpstreamUnavailableException: with the frozen ``Unable to Write TDQ (JOBS)...``
+     *  message when batch-service cannot be reached at all, which reports ``503`` rather than
+     *  ``400`` because the request may be retried unchanged.
      */
     public BatchJobExecutionDto submitTransactionDetailReport(String startDate, String endDate) {
         LOGGER.info("Submitting {} to batch-service (startDate={}, endDate={})",
@@ -126,9 +172,12 @@ public class BatchJobClient {
         } catch (RestClientException e) {
             // No answer at all (batch-service unreachable, timeout, unreadable response):
             // the hand-off never landed, which is exactly what the frozen literal reports.
+            // Raised as UpstreamUnavailableException so the outcome reports 503 with a
+            // Retry-After rather than 400: the request itself was well formed and may be
+            // retried unchanged once batch-service is reachable. The MESSAGE is unchanged.
             LOGGER.error("Submission of {} could not be handed off: {}",
                     TRANSACTION_DETAIL_REPORT_JOB, e.getMessage());
-            throw new CardDemoException(SUBMIT_FAILURE_MESSAGE, e);
+            throw new UpstreamUnavailableException(SUBMIT_FAILURE_MESSAGE, e);
         }
     }
 

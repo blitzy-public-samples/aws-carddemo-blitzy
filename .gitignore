@@ -86,6 +86,33 @@ bin/
 .env.*
 # Allow a committed, non-secret template
 !.env.example
+
+# ---- Private keys, certificates & keystores ----
+# A key or keystore that reaches history is compromised permanently, so these are
+# refused by name and by extension at any depth. The repository legitimately
+# tracks NO key material of any kind: the AES PII key and every password are
+# supplied through the environment (.env / k8s Secrets), and k8s/secret.yaml holds
+# placeholder TEMPLATE values only.
+id_rsa
+id_rsa*
+id_dsa*
+id_ecdsa*
+id_ed25519*
+*.pem
+*.key
+*.p8
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.truststore
+*.crt
+*.cer
+*.der
+*.asc
+*.gpg
+*.kdbx
+.ssh/
 # Local-only overrides (e.g., Vite *.local, application-local.*)
 *.local
 
@@ -204,6 +231,28 @@ blitzy/
 *.cookies
 cookies.txt
 cookie-jar*.txt
+# `nohup ... &` — the shape used to start the stack or a long build from a shell —
+# drops its combined output here; it is transient run output, never a deliverable.
+nohup.out
+
+# ---- Archives ----
+# Build outputs, database dumps and evidence bundles get tarred or zipped for
+# transport; none of that belongs in the tree. The two committed legacy runtime
+# bundles under samples/ are re-included immediately below, and app/** is already
+# re-included further up, so no tracked source is hidden by these patterns.
+*.tar
+*.tar.gz
+*.tgz
+*.tar.bz2
+*.tar.xz
+*.zip
+*.7z
+*.rar
+*.gz
+*.bz2
+*.xz
+# Legacy runtime bundles that ARE tracked sources (Micro Focus / UniKix samples).
+!samples/**/*.zip
 
 # ---- Do NOT ignore (intentionally tracked config, templates & sources) ----
 # The patterns above deliberately do NOT match the following committed files;

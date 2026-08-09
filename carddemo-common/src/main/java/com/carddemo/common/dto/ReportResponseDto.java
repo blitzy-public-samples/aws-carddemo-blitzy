@@ -71,9 +71,27 @@ public class ReportResponseDto {
     @Size(max = 1)
     private String confirm;
 
-    /** :purpose: Error / status message set by the service (CORPT00 ``ERRMSGO`` PIC X(78)). */
+    /**
+     * :purpose: Verbatim message for an outcome the screen reports as an ERROR
+     *  (CORPT00 ``ERRMSGO`` PIC X(78) sent with its declared ``COLOR=RED``).
+     */
     @Size(max = 78)
     private String errorMessage;
+
+    /**
+     * :purpose: Verbatim message for an outcome the screen reports as a SUCCESS — the
+     *  ``<Name> report submitted for printing ...`` acknowledgement.
+     * :note: ``CORPT00`` declares ONE message field, ``ERRMSG POS=(23,1) COLOR=RED``,
+     *  and ``CORPT00C`` overrides its colour with ``MOVE DFHGREEN TO ERRMSGC`` before
+     *  the submission acknowledgement alone. That colour carries information the text
+     *  does not, so it travels as the CHOICE of member: text here is the GREEN send,
+     *  text in ``errorMessage`` is the RED one, and at most one is ever populated.
+     *  Carrying both on one member left the client deciding the colour by comparing the
+     *  text against a locally composed copy of the expected acknowledgement, so any
+     *  wording drift would have rendered a failure in success green.
+     */
+    @Size(max = 78)
+    private String message;
 
     /** :purpose: Screen title line 1 (CORPT00 ``TITLE01O`` PIC X(40)). */
     @Size(max = 40)
@@ -98,6 +116,15 @@ public class ReportResponseDto {
     /** :purpose: Current time shown in the header (CORPT00 ``CURTIMEO`` PIC X(08)). */
     @Size(max = 8)
     private String currentTime;
+
+    /**
+     * :purpose: Identity of the batch execution a confirmed submission launched. The
+     *  legacy hand-off writes to the TDQ and JES answers with a job id the operator never
+     *  sees on this map, so this is not screen text; it is the reference that makes a
+     *  launched report traceable from the response to its log and trace records. Null on
+     *  every outcome that launched nothing.
+     */
+    private String jobExecutionId;
 
     /**
      * :purpose: Create an empty response. Required for JSON (Jackson) deserialization.
@@ -274,6 +301,22 @@ public class ReportResponseDto {
     }
 
     /**
+     * :purpose: Return the verbatim message of an outcome reported as a success.
+     * :output: the ``message`` value shown on the screen.
+     */
+    public String getMessage() {
+        return message;
+    }
+
+    /**
+     * :purpose: Set the verbatim message of an outcome reported as a success.
+     * :param message: the ``message`` value shown on the screen.
+     */
+    public void setMessage(String message) {
+        this.message = message;
+    }
+
+    /**
      * :purpose: Set the error / status message.
      * :param errorMessage: the message shown on the screen.
      */
@@ -375,5 +418,21 @@ public class ReportResponseDto {
      */
     public void setCurrentTime(String currentTime) {
         this.currentTime = currentTime;
+    }
+
+    /**
+     * :purpose: Return the launched batch execution id.
+     * :output: the ``jobExecutionId`` value, or ``null`` when nothing was launched.
+     */
+    public String getJobExecutionId() {
+        return jobExecutionId;
+    }
+
+    /**
+     * :purpose: Set the launched batch execution id.
+     * :param jobExecutionId: the execution id reported by the submission.
+     */
+    public void setJobExecutionId(String jobExecutionId) {
+        this.jobExecutionId = jobExecutionId;
     }
 }

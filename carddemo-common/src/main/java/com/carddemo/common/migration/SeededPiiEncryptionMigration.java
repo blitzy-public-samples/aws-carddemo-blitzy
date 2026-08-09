@@ -193,38 +193,33 @@ public class SeededPiiEncryptionMigration implements JavaMigration {
     }
 
     /**
-     * :purpose: Return the ciphertext form of a stored value, leaving values that already
-     *     decrypt (and ``null`` / empty values, which the converter passes through)
-     *     untouched.
+     * :purpose: Return the ciphertext form of a stored value, leaving values that are
+     *     already protected at rest (and ``null`` / empty values, which the converter
+     *     passes through) untouched.
      * :param stored: the value currently held in the column.
-     * :returns: the value to store: the original when it is already ciphertext or has
-     *     nothing to encrypt, otherwise a freshly encrypted token.
+     * :returns: the value to store: the original when it is already an encrypted token or
+     *     has nothing to encrypt, otherwise a freshly encrypted token.
+     * :note: Protection is decided by {@link CryptoConverter#isProtected(String)}, which
+     *     recognises the ``gcm1:`` envelope and an unmarked token this key still
+     *     authenticates. Asking the decrypter to convert the value instead would NOT work
+     *     here: ``convertToEntityAttribute`` deliberately passes an unrecognised value
+     *     through unchanged for pre-encryption compatibility, so a plaintext fixture value
+     *     would be misread as already encrypted and the rewrite would be skipped. That was the
+     *     defect: the earlier test — "``convertToEntityAttribute`` did not throw" — could never
+     *     answer the question, so every value looked like ciphertext and this sweep rewrote
+     *     nothing while still recording SUCCESS, reporting ``rewritten=0`` on a database full of
+     *     plaintext. (No data was ever exposed, because the separate runtime initializer encrypts
+     *     the columns at service startup; the defect was that this migration's report was untrue
+     *     and its idempotence accidental rather than designed.)
      */
     private String toCiphertext(String stored) {
         if (stored == null || stored.isEmpty()) {
             return stored;
         }
-        if (isCiphertext(stored)) {
+        if (cryptoConverter.isProtected(stored)) {
             return stored;
         }
         return cryptoConverter.convertToDatabaseColumn(stored);
-    }
-
-    /**
-     * :purpose: Decide whether a stored value is already an AES-256-GCM token by offering
-     *     it to the decrypter under the deployment key.
-     * :param stored: the non-empty value currently held in the column.
-     * :returns: ``true`` when the value decrypts successfully, ``false`` when it does not
-     *     (a plaintext fixture value) — a missing or invalid key still fails the migration
-     *     because encryption of the plaintext value will then fail too.
-     */
-    private boolean isCiphertext(String stored) {
-        try {
-            cryptoConverter.convertToEntityAttribute(stored);
-            return true;
-        } catch (IllegalStateException ex) {
-            return false;
-        }
     }
 
     /**

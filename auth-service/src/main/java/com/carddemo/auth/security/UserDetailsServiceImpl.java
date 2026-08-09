@@ -18,8 +18,8 @@ package com.carddemo.auth.security;
 
 import com.carddemo.auth.repository.SecurityUserRepository;
 import com.carddemo.common.domain.SecurityUser;
+import com.carddemo.common.security.UserIdNormalizer;
 import java.util.Collections;
-import java.util.Locale;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.userdetails.User;
@@ -53,15 +53,16 @@ public class UserDetailsServiceImpl implements UserDetailsService {
     /**
      * :purpose: Loads the security user identified by the entered id and adapts it
      *     to a Spring Security ``UserDetails``.
-     * :param username: the entered user id; upper-cased with ``Locale.ROOT`` before
-     *     the keyed lookup.
+     * :param username: the entered user id; folded to its canonical stored form by
+     *     {@link UserIdNormalizer} before the keyed lookup, so it matches an id written
+     *     by any other service.
      * :returns: a ``UserDetails`` carrying the stored BCrypt hash and the mapped
      *     role authority.
      * :raises UsernameNotFoundException: when no user matches the upper-cased id.
      */
     @Override
     public UserDetails loadUserByUsername(String username) throws UsernameNotFoundException {
-        String userId = username == null ? "" : username.toUpperCase(Locale.ROOT);
+        String userId = UserIdNormalizer.normalizeToKey(username);
         SecurityUser user = securityUserRepository.findBySecUsrId(userId)
                 .orElseThrow(() -> new UsernameNotFoundException("User not found"));
         return new User(

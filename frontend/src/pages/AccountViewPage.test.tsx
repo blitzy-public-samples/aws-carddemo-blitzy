@@ -41,7 +41,7 @@ const ACCOUNT_ID = '00000000011';
  * Line-23 filter-edit message of ``COACTVWC`` (``SEARCHED-ACCT-ZEROES`` and
  * ``SEARCHED-ACCT-NOT-NUMERIC`` share one text).
  */
-const ACCOUNT_NUMBER_ERROR = 'Account number must be a non zero 11 digit number';
+const ACCOUNT_NUMBER_ERROR = 'Account Filter must  be a non-zero 11 digit number';
 
 /** Line-23 message of ``COACTVWC`` ``DID-NOT-FIND-ACCT-IN-ACCTDAT``. */
 const ACCOUNT_NOT_FOUND_ERROR = 'Did not find this account in account master file';
@@ -112,6 +112,10 @@ class ApiError extends Error {
 }
 
 jest.unstable_mockModule('../api', () => ({
+  // The request-cancellation contract ``useApi`` binds to: the real scope hands the
+  // caller's AbortSignal to axios, and the double simply invokes the call.
+  runWithRequestSignal: (_signal: AbortSignal, call: () => unknown): unknown => call(),
+  isCancelledRequest: (): boolean => false,
   // The session store and the REST hook this screen's module graph loads bind to
   // these barrel exports as well. ``getSessionIdentity`` is the production
   // ``GET /session`` probe the session harness drives; unanswered by this suite it
@@ -411,10 +415,10 @@ describe('AccountViewPage — BMS captions (COACTVW.bms)', () => {
     const main = await renderLoaded();
 
     expect(
-      within(main).getByRole('heading', { level: 2, name: 'View Account' }),
+      within(main).getByRole('heading', { level: 3, name: 'View Account' }),
     ).toBeInTheDocument();
     expect(
-      within(main).getByRole('heading', { level: 3, name: 'Customer Details' }),
+      within(main).getByRole('heading', { level: 4, name: 'Customer Details' }),
     ).toBeInTheDocument();
   });
 });
@@ -559,13 +563,39 @@ describe('AccountViewPage — account-number filter edit (verbatim message)', ()
       account.acctCreditLimit,
     );
   });
+
+  it('clears the displayed record when a following account number is rejected', async () => {
+    // COACTVWC sends every screen through 1000-SEND-MAP, whose 1100-SCREEN-INIT
+    // does MOVE LOW-VALUES TO CACTVWAO first, so a rejected edit repaints an EMPTY
+    // account and customer block - never the previous account's figures beside the
+    // newly typed number.
+    const main = renderAt(`/accounts/${ACCOUNT_ID}`);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('acct-credit-limit').textContent).toBe(
+        account.acctCreditLimit,
+      );
+    });
+
+    fireEvent.change(acctInput(), { target: { value: '51' } });
+    const form = main.querySelector('form.accountView__search');
+    expect(form).not.toBeNull();
+    fireEvent.submit(form as HTMLFormElement);
+
+    expect(screen.getByRole('alert').textContent).toBe(ACCOUNT_NUMBER_ERROR);
+    expect(screen.getByTestId('acct-credit-limit').textContent).toBe('');
+    expect(screen.getByTestId('acct-curr-bal').textContent).toBe('');
+    expect(screen.getByTestId('cust-ssn').textContent).toBe('');
+    expect(screen.getByTestId('cust-last-name').textContent).toBe('');
+    expect(getAccountMock).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('AccountViewPage — function keys (BMS line 24)', () => {
   it('offers F3=Exit as the only function key', async () => {
     await renderLoaded();
 
-    const toolbar = screen.getByRole('toolbar', { name: 'Function keys' });
+    const toolbar = screen.getByRole('group', { name: 'Function keys' });
     const keys = within(toolbar).getAllByRole('button');
 
     expect(keys).toHaveLength(1);
@@ -603,6 +633,25 @@ describe('AccountViewPage — service failures', () => {
     expect(banner.textContent).toBe(ACCOUNT_NOT_FOUND_ERROR);
     expect(screen.getByTestId('cust-id').textContent).toBe('');
     expect(screen.getByTestId('acct-credit-limit').textContent).toBe('');
+    // 9200-GETCARDXREF-BYACCT / 9300-GETACCTDATA-BYACCT set FLG-ACCTFILTER-NOT-OK on a
+    // NOTFND read, and 1300-SETUP-SCREEN-ATTRS (L556-558) then moves DFHRED into ACCTSIDC,
+    // so an absent record faults the search key exactly as a rejected value does.
+    expect(acctInput()).toHaveAttribute('aria-invalid', 'true');
+    expect(acctInput().className).toContain('fieldError');
+  });
+
+  it('faults the search key in red when the value itself is rejected', () => {
+    renderAt('/accounts');
+
+    submitAccountNumber('1234ABCD567');
+
+    expect(acctInput()).toHaveAttribute('aria-invalid', 'true');
+    expect(acctInput().className).toContain('fieldError');
+
+    // 1300 moves DFHDFCOL back before the RED test, so a passing filter is not faulted.
+    submitAccountNumber(ACCOUNT_ID);
+    expect(acctInput().className).not.toContain('fieldError');
+    expect(acctInput()).not.toHaveAttribute('aria-invalid');
   });
 
   it('recovers on the next submission after a failed fetch', async () => {

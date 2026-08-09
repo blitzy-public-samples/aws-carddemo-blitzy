@@ -238,6 +238,42 @@ class ReportServiceTest {
      * :purpose: With no report-type selector set, the service redisplays the
      *   report-type prompt and launches nothing.
      */
+    /**
+     * :purpose: The submission acknowledgement is the ONE message this screen sends on the
+     *  SUCCESS channel, and it never appears on the error channel; every other outcome is
+     *  the reverse.
+     * :note: ``CORPT00`` declares one message field, ``ERRMSG POS=(23,1) COLOR=RED``, and
+     *  ``CORPT00C`` performs ``MOVE DFHGREEN TO ERRMSGC`` immediately before the
+     *  acknowledgement and on no other branch. The choice of member is how that colour
+     *  reaches the client; carrying both outcomes on one member had left it comparing the
+     *  text against its own copy of the expected wording to guess the colour.
+     */
+    @Test
+    void theAcknowledgementAndTheRefusalsUseOppositeChannels() {
+        stubLaunchCompleted();
+
+        // The mapper stub hands every turn the same response instance, so each
+        // assertion below also proves the opposite member is actively cleared
+        // rather than merely never having been set.
+        ReportRequestDto monthly = new ReportRequestDto();
+        monthly.setMonthly("Y");
+        monthly.setConfirm("Y");
+
+        ReportResponseDto submitted = reportService.requestReport(monthly);
+        assertThat(submitted.getMessage()).isEqualTo("Monthly report submitted for printing ...");
+        assertThat(submitted.getErrorMessage()).isNull();
+
+        ReportResponseDto noType = reportService.requestReport(new ReportRequestDto());
+        assertThat(noType.getErrorMessage()).isEqualTo("Select a report type to print report...");
+        assertThat(noType.getMessage()).isNull();
+
+        ReportRequestDto prompt = new ReportRequestDto();
+        prompt.setMonthly("Y");
+        ReportResponseDto confirmPrompt = reportService.requestReport(prompt);
+        assertThat(confirmPrompt.getErrorMessage()).isNotNull();
+        assertThat(confirmPrompt.getMessage()).isNull();
+    }
+
     @Test
     void noReportTypeSelected() {
         ReportResponseDto result = reportService.requestReport(emptyTypeRequest());
@@ -272,7 +308,7 @@ class ReportServiceTest {
         // Literal expected dates for the baseline frozen clock (2026-03-17): the
         // assertion no longer re-runs the service's own algorithm.
         verify(batchJobClient).submitTransactionDetailReport("2026-03-01", "2026-03-31");
-        assertThat(result.getErrorMessage()).isEqualTo("Monthly report submitted for printing ...");
+        assertThat(result.getMessage()).isEqualTo("Monthly report submitted for printing ...");
     }
 
     /**
@@ -286,7 +322,7 @@ class ReportServiceTest {
         ReportResponseDto result = reportService.requestReport(monthlyRequest("y"));
 
         verify(batchJobClient).submitTransactionDetailReport("2026-03-01", "2026-03-31");
-        assertThat(result.getErrorMessage()).isEqualTo("Monthly report submitted for printing ...");
+        assertThat(result.getMessage()).isEqualTo("Monthly report submitted for printing ...");
     }
 
     /**
@@ -303,7 +339,7 @@ class ReportServiceTest {
                 serviceWithClock(FIXED_NON_LEAP_MONTH_END).requestReport(monthlyRequest("Y"));
 
         verify(batchJobClient).submitTransactionDetailReport("2026-02-01", "2026-02-28");
-        assertThat(result.getErrorMessage()).isEqualTo("Monthly report submitted for printing ...");
+        assertThat(result.getMessage()).isEqualTo("Monthly report submitted for printing ...");
     }
 
     /**
@@ -319,7 +355,7 @@ class ReportServiceTest {
                 serviceWithClock(FIXED_LEAP_MONTH_END).requestReport(monthlyRequest("Y"));
 
         verify(batchJobClient).submitTransactionDetailReport("2024-02-01", "2024-02-29");
-        assertThat(result.getErrorMessage()).isEqualTo("Monthly report submitted for printing ...");
+        assertThat(result.getMessage()).isEqualTo("Monthly report submitted for printing ...");
     }
 
     /**
@@ -334,7 +370,7 @@ class ReportServiceTest {
         ReportResponseDto result = serviceWithClock(FIXED_YEAR_END).requestReport(monthlyRequest("Y"));
 
         verify(batchJobClient).submitTransactionDetailReport("2026-12-01", "2026-12-31");
-        assertThat(result.getErrorMessage()).isEqualTo("Monthly report submitted for printing ...");
+        assertThat(result.getMessage()).isEqualTo("Monthly report submitted for printing ...");
     }
 
     /**
@@ -390,7 +426,7 @@ class ReportServiceTest {
 
         // Literal calendar-year range for the baseline frozen clock (2026-03-17).
         verify(batchJobClient).submitTransactionDetailReport("2026-01-01", "2026-12-31");
-        assertThat(result.getErrorMessage()).isEqualTo("Yearly report submitted for printing ...");
+        assertThat(result.getMessage()).isEqualTo("Yearly report submitted for printing ...");
     }
 
     /**
@@ -406,7 +442,7 @@ class ReportServiceTest {
         ReportResponseDto result = serviceWithClock(FIXED_YEAR_END).requestReport(yearlyRequest("Y"));
 
         verify(batchJobClient).submitTransactionDetailReport("2026-01-01", "2026-12-31");
-        assertThat(result.getErrorMessage()).isEqualTo("Yearly report submitted for printing ...");
+        assertThat(result.getMessage()).isEqualTo("Yearly report submitted for printing ...");
     }
 
     /**
@@ -420,7 +456,7 @@ class ReportServiceTest {
         ReportResponseDto result = serviceWithClock(FIXED_LEAP_MONTH_END).requestReport(yearlyRequest("Y"));
 
         verify(batchJobClient).submitTransactionDetailReport("2024-01-01", "2024-12-31");
-        assertThat(result.getErrorMessage()).isEqualTo("Yearly report submitted for printing ...");
+        assertThat(result.getMessage()).isEqualTo("Yearly report submitted for printing ...");
     }
 
     /**
@@ -448,7 +484,7 @@ class ReportServiceTest {
                 customRequest("03", "01", "2024", "03", "31", "2024", "Y"));
 
         verify(batchJobClient).submitTransactionDetailReport("2024-03-01", "2024-03-31");
-        assertThat(result.getErrorMessage()).isEqualTo("Custom report submitted for printing ...");
+        assertThat(result.getMessage()).isEqualTo("Custom report submitted for printing ...");
     }
 
     /**
@@ -682,7 +718,7 @@ class ReportServiceTest {
         ReportResponseDto result = reportService.requestReport(monthlyRequest("Y"));
 
         verify(batchJobClient).submitTransactionDetailReport(any(), any());
-        assertThat(result.getErrorMessage()).isEqualTo("Monthly report submitted for printing ...");
+        assertThat(result.getMessage()).isEqualTo("Monthly report submitted for printing ...");
     }
 
 
@@ -717,7 +753,7 @@ class ReportServiceTest {
 
         ReportResponseDto result = reportService.requestReport(monthlyRequest("Y"));
 
-        assertThat(result.getErrorMessage()).isEqualTo("Monthly report submitted for printing ...");
+        assertThat(result.getMessage()).isEqualTo("Monthly report submitted for printing ...");
     }
 
     /**

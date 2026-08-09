@@ -146,6 +146,10 @@ const deleteUserMock = jest.fn<(userId: string) => Promise<void>>();
 const signonMock = jest.fn();
 
 jest.unstable_mockModule('../api', () => ({
+  // The request-cancellation contract ``useApi`` binds to: the real scope hands the
+  // caller's AbortSignal to axios, and the double simply invokes the call.
+  runWithRequestSignal: (_signal: AbortSignal, call: () => unknown): unknown => call(),
+  isCancelledRequest: (): boolean => false,
   // The session store and the REST hook this screen's module graph loads bind to
   // these barrel exports as well. ``getSessionIdentity`` is the production
   // ``GET /session`` probe the session harness drives; unanswered by this suite it
@@ -303,7 +307,7 @@ describe('UserDeletePage — read for display', () => {
     renderScreen(DELETE_ROUTE);
 
     keyUserId(targetUser.userId);
-    fireEvent.click(screen.getByTestId('fetch-button'));
+    fireEvent.click(screen.getByRole('button', { name: PFKEY_LABEL_ENTER }));
 
     await waitForRecordDisplayed(targetUser);
     expect(getUserMock).toHaveBeenCalledWith(targetUser.userId);
@@ -349,14 +353,14 @@ describe('UserDeletePage — read for display', () => {
   it('refuses an empty user id with the verbatim message and issues no read', async () => {
     renderScreen(DELETE_ROUTE);
 
-    fireEvent.click(screen.getByTestId('fetch-button'));
+    fireEvent.click(screen.getByRole('button', { name: PFKEY_LABEL_ENTER }));
 
     expect(await screen.findByRole('alert')).toHaveTextContent(MSG_USER_ID_EMPTY);
     expect(getUserMock).not.toHaveBeenCalled();
 
     // A key of only spaces is refused identically.
     keyUserId('   ');
-    fireEvent.click(screen.getByTestId('fetch-button'));
+    fireEvent.click(screen.getByRole('button', { name: PFKEY_LABEL_ENTER }));
 
     expect(await screen.findByRole('alert')).toHaveTextContent(MSG_USER_ID_EMPTY);
     expect(getUserMock).not.toHaveBeenCalled();
@@ -367,7 +371,7 @@ describe('UserDeletePage — read for display', () => {
     renderScreen(DELETE_ROUTE);
 
     keyUserId(MISSING_USER_ID);
-    fireEvent.click(screen.getByTestId('fetch-button'));
+    fireEvent.click(screen.getByRole('button', { name: PFKEY_LABEL_ENTER }));
 
     expect(await screen.findByRole('alert')).toHaveTextContent(MSG_USER_NOT_FOUND);
     expect(getUserMock).toHaveBeenCalledWith(MISSING_USER_ID);
@@ -383,14 +387,14 @@ describe('UserDeletePage — deliberate delete', () => {
     renderScreen(DELETE_ROUTE);
 
     keyUserId(targetUser.userId);
-    fireEvent.click(screen.getByTestId('fetch-button'));
+    fireEvent.click(screen.getByRole('button', { name: PFKEY_LABEL_ENTER }));
     await waitForRecordDisplayed(targetUser);
 
     // The read alone never removes the record; line 23 asks for the deliberate key.
     expect(deleteUserMock).not.toHaveBeenCalled();
     expect(infoBanner()).toHaveTextContent(MSG_PRESS_PF5_DELETE);
 
-    fireEvent.click(screen.getByTestId('delete-button'));
+    fireEvent.click(screen.getByRole('button', { name: PFKEY_LABEL_PF5 }));
 
     await waitFor(() => {
       expect(infoBanner()).toHaveTextContent(deletedMessage(targetUser.userId));
@@ -428,19 +432,19 @@ describe('UserDeletePage — deliberate delete', () => {
     renderScreen({ pathname: DELETE_ROUTE, state: { userId: targetUser.userId } });
     await waitForRecordDisplayed(targetUser);
 
-    fireEvent.click(screen.getByTestId('delete-button'));
+    fireEvent.click(screen.getByRole('button', { name: PFKEY_LABEL_PF5 }));
 
     // ``ATTRB=ASKIP`` for the whole in-flight interval: neither the key field nor
-    // either action is live while the DELETE is outstanding.
+    // either legend action is live while the DELETE is outstanding.
     await waitFor(() => {
       expect(screen.getByTestId('user-id')).toBeDisabled();
     });
-    expect(screen.getByTestId('fetch-button')).toBeDisabled();
-    expect(screen.getByTestId('delete-button')).toBeDisabled();
+    expect(screen.getByRole('button', { name: PFKEY_LABEL_ENTER })).toBeDisabled();
     expect(screen.getByRole('button', { name: PFKEY_LABEL_PF5 })).toBeDisabled();
 
-    // A second delete, from the button and from the physical F5, must not delete twice.
-    fireEvent.click(screen.getByTestId('delete-button'));
+    // A second delete, from the legend key and from the physical F5, must not delete
+    // twice.
+    fireEvent.click(screen.getByRole('button', { name: PFKEY_LABEL_PF5 }));
     fireEvent.keyDown(document, { key: 'F5' });
     expect(deleteUserMock).toHaveBeenCalledTimes(1);
 
@@ -458,7 +462,7 @@ describe('UserDeletePage — deliberate delete', () => {
   it('refuses an empty user id on the delete action and issues no delete', async () => {
     renderScreen(DELETE_ROUTE);
 
-    fireEvent.click(screen.getByTestId('delete-button'));
+    fireEvent.click(screen.getByRole('button', { name: PFKEY_LABEL_PF5 }));
 
     expect(await screen.findByRole('alert')).toHaveTextContent(MSG_USER_ID_EMPTY);
     expect(deleteUserMock).not.toHaveBeenCalled();
@@ -469,7 +473,7 @@ describe('UserDeletePage — deliberate delete', () => {
     renderScreen({ pathname: DELETE_ROUTE, state: { userId: targetUser.userId } });
     await waitForRecordDisplayed(targetUser);
 
-    fireEvent.click(screen.getByTestId('delete-button'));
+    fireEvent.click(screen.getByRole('button', { name: PFKEY_LABEL_PF5 }));
 
     expect(await screen.findByRole('alert')).toHaveTextContent(MSG_USER_NOT_FOUND);
     expect(deleteUserMock).toHaveBeenCalledWith(targetUser.userId);
@@ -482,7 +486,7 @@ describe('UserDeletePage — line-24 function keys', () => {
   it('legends exactly the four keys of COUSR03.bms line 24, in order', () => {
     renderScreen(DELETE_ROUTE);
 
-    const keyBar = screen.getByRole('toolbar', { name: 'Function keys' });
+    const keyBar = screen.getByRole('group', { name: 'Function keys' });
     expect(
       within(keyBar)
         .getAllByRole('button')

@@ -85,12 +85,20 @@ class CombineTransactionsTaskletTest {
 
     private CombineTransactionsTasklet tasklet;
 
+    /**
+     * Configured combined-print name the tasklet falls back to when the run carries no
+     * ``outputFile`` job parameter, mirroring
+     * ``carddemo.batch.combined-transaction-file``.
+     */
+    private static final String DEFAULT_OUTPUT_FILE = "combined-transactions.txt";
+
     @BeforeEach
     void createTasklet() throws IOException {
         outputRoot = Files.createDirectories(tempDir.resolve("out"));
         Path inputRoot = Files.createDirectories(tempDir.resolve("in"));
         pathResolver = new BatchOutputPathResolver(outputRoot.toString(), inputRoot.toString());
-        tasklet = new CombineTransactionsTasklet(transactionRepository, pathResolver);
+        tasklet = new CombineTransactionsTasklet(transactionRepository, pathResolver,
+                DEFAULT_OUTPUT_FILE);
     }
 
     /**
@@ -215,11 +223,16 @@ class CombineTransactionsTaskletTest {
     }
 
     @Test
-    @DisplayName("a missing outputFile job parameter is rejected")
-    void missingOutputFileParameterIsRejected() {
-        assertThatThrownBy(() -> tasklet.execute(null, chunkContext(null)))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("must not be blank");
-        verifyNoInteractions(transactionRepository);
+    @DisplayName("a missing outputFile job parameter falls back to the configured default name")
+    void missingOutputFileParameterUsesConfiguredDefault() throws Exception {
+        org.mockito.Mockito.when(transactionRepository.findAllByOrderByTranIdAsc(any(Pageable.class)))
+                .thenReturn(List.of());
+
+        assertThat(tasklet.execute(null, chunkContext(null))).isEqualTo(RepeatStatus.FINISHED);
+
+        // The COMBTRAN combined print must be produced by EVERY launch path, including the
+        // --spring.batch.job.name command-line runner the Kubernetes CronJob uses, which
+        // supplies no job parameters at all.
+        assertThat(outputRoot.resolve(DEFAULT_OUTPUT_FILE)).exists();
     }
 }

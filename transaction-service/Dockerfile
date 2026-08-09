@@ -24,8 +24,15 @@ USER spring:spring
 
 EXPOSE 8080
 
-# Tunable JVM flags (heap/GC) without rebuilding the image.
-ENV JAVA_OPTS=""
+# Container-aware memory and GC policy. The value is IDENTICAL in all nine
+# service images and resolves against the memory limit the runtime declares
+# (docker-compose `deploy.resources.limits.memory`, Kubernetes
+# `resources.limits.memory`), so one artifact has one footprint everywhere.
+# k8s/cronjob-transaction-posting.yaml overrides the command but expands this
+# same variable, so the scheduled posting run inherits the identical policy.
+# Overridable at run time for a differently sized deployment.
+# Measurements and rationale: docs/decision-log.md section 40.
+ENV JAVA_OPTS="-XX:+UseContainerSupport -XX:InitialRAMPercentage=25.0 -XX:MaxRAMPercentage=60.0 -XX:+UseG1GC -XX:MaxGCPauseMillis=100"
 
 # Exec-form via `sh -c` expands $JAVA_OPTS; `exec` makes the JVM PID 1 for correct
 # SIGTERM handling / graceful shutdown.

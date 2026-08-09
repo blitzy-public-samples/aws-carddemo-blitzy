@@ -337,7 +337,6 @@ class SessionRedisRoundTripIT {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.dispatched").value(true))
                 .andExpect(jsonPath("$.programName").value("COACTVWC"))
-                .andExpect(jsonPath("$.targetRoute").value("/accounts"))
                 .andReturn();
 
         // No new session was minted for the second request.
@@ -383,7 +382,7 @@ class SessionRedisRoundTripIT {
                         .with(user("USER0001").roles("USER")))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.dispatched").value(true))
-                .andExpect(jsonPath("$.targetRoute").value("/auth"));
+                .andExpect(jsonPath("$.programName").value("COSGN00C"));
 
         Session stored = sessionRepository.findById(sessionId);
         assertThat(stored).isNotNull();

@@ -24,6 +24,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
+import org.springframework.dao.DataAccessException;
+import org.springframework.transaction.TransactionException;
 import org.springframework.boot.webmvc.error.ErrorAttributes;
 import org.springframework.boot.webmvc.error.ErrorController;
 import org.springframework.http.HttpStatus;
@@ -85,23 +87,50 @@ public class CardDemoErrorController implements ErrorController {
             produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<ErrorResponse> handleError(HttpServletRequest request) {
         HttpStatus status = resolveStatus(request);
-        ErrorResponse body = new ErrorResponse(status.value(), status.getReasonPhrase(),
-                status.getReasonPhrase(), SensitiveDataMasker.maskPan(resolvePath(request)));
-        body.setTraceId(ErrorResponseFactory.traceId());
         // Consume the recorded error so it is not re-reported downstream; the
         // exception itself is deliberately not surfaced to the caller.
         ErrorAttributes attributes = errorAttributes.getIfAvailable();
         Throwable error = (attributes == null) ? null
                 : attributes.getError(new org.springframework.web.context.request.ServletWebRequest(request));
+        ErrorResponse body = new ErrorResponse(status.value(), status.getReasonPhrase(),
+                dispatchMessage(status, error), SensitiveDataMasker.maskPath(resolvePath(request)));
+        body.setTraceId(ErrorResponseFactory.traceId());
+        // The envelope's correlation id was left null on this path alone, so exactly the
+        // failures that never reached an advice - a filter-level fault, a sendError - came
+        // back without the one identifier an operator can search the logs by, even though
+        // the X-Correlation-Id response header carried it. It is read from the SAME source as
+        // every handled failure, and it is non-null here only because the correlation-id
+        // filter registration in WebObservabilityConfig covers the ERROR dispatch; a
+        // REQUEST-only registration would leave the correlation scope empty on this path.
+        body.setCorrelationId(CorrelationIdContext.getCorrelationId());
         if (error != null) {
             log.warn("Error dispatch for {} resolved to {}: {}",
                     body.getPath(), status.value(),
                     error.getClass().getSimpleName());
         } else {
-            log.warn("Error dispatch for {} resolved to {}",
-                    SensitiveDataMasker.maskPan(body.getPath()), status.value());
+            log.warn("Error dispatch for {} resolved to {}", body.getPath(), status.value());
         }
         return ResponseEntity.status(status).body(body);
+    }
+
+    /**
+     * :purpose: Choose the caller-facing message for a dispatched error, so a dependency
+     *  outage reads the same here as it does from the advices.
+     * :param status: the status the container resolved.
+     * :param error: the recorded error, or ``null`` when the dispatch carried none.
+     * :returns: the shared dependency-failure text when the dispatch was caused by a
+     *  data-access, transaction-infrastructure or session-store failure, otherwise the status
+     *  reason phrase.
+     * :note: No exception message is ever used: it can carry SQL, bind values or host
+     *  names. Only the CLASSIFICATION of the recorded error influences the wording.
+     */
+    private static String dispatchMessage(HttpStatus status, Throwable error) {
+        for (Throwable cause = error; cause != null; cause = cause.getCause()) {
+            if (cause instanceof DataAccessException || cause instanceof TransactionException) {
+                return GlobalExceptionHandler.DEPENDENCY_FAILURE_MESSAGE;
+            }
+        }
+        return status.getReasonPhrase();
     }
 
     /**

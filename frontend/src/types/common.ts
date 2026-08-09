@@ -89,8 +89,9 @@ export type FieldErrorMap = Record<string, FieldErrorState>;
  *   log record for the request, so it resolves in the log stream even when
  *   tracing is disabled or the request was not sampled.
  * :field fieldErrors: field name to message map driving per-field messages,
- *   combined by pages with the client ``FieldErrorMap`` highlight state; absent
- *   when the error is not field-specific.
+ *   combined by pages with the client ``FieldErrorMap`` highlight state. Serialised
+ *   as an explicit ``null`` -- not omitted -- when the refusal names no field, which
+ *   is every whole-submission refusal, so a consumer must read it as nullable.
  */
 export interface ApiErrorResponse {
   timestamp: string;
@@ -101,7 +102,7 @@ export interface ApiErrorResponse {
   path: string;
   traceId?: string;
   correlationId?: string;
-  fieldErrors?: Record<string, string>;
+  fieldErrors?: Record<string, string> | null;
 }
 
 /**

@@ -19,7 +19,7 @@
  *     ``FUNCTION CURRENT-DATE`` formatting in ``app/cpy/CSDAT01Y.cpy``.
  *     Captions/values are BLUE; the titles are YELLOW.
  */
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ReactElement } from 'react';
 
 /**
@@ -83,6 +83,10 @@ export type HeaderCaptionStyle = 'signon' | 'standard';
  *     ``LENGTH=8``); rendered only for the ``'signon'`` caption style.
  * :param sysId: System id shown after ``SysID:`` (``COSGN00.bms`` ``SYSID``,
  *     ``LENGTH=8``); rendered only for the ``'signon'`` caption style.
+ * :param sendCount: How many attention identifiers the screen has sent. Every program
+ *     runs ``POPULATE-HEADER-INFO`` before each ``SEND MAP``, so the client snapshot is
+ *     re-captured whenever this advances rather than showing the moment the screen was
+ *     first mounted.
  */
 export interface HeaderProps {
   transactionId?: string;
@@ -94,6 +98,7 @@ export interface HeaderProps {
   captionStyle?: HeaderCaptionStyle;
   appId?: string;
   sysId?: string;
+  sendCount?: number;
 }
 
 /**
@@ -143,16 +148,28 @@ export default function Header({
   captionStyle = 'standard',
   appId,
   sysId,
+  sendCount = 0,
 }: HeaderProps): ReactElement {
-  // Legacy POPULATE-HEADER-INFO captures FUNCTION CURRENT-DATE once when the map
-  // is sent, so the server-supplied props are authoritative. When they are
-  // absent, capture a single client snapshot at mount rather than a live clock.
-  const [snapshot] = useState<Date>(() => new Date());
+  // Legacy POPULATE-HEADER-INFO captures FUNCTION CURRENT-DATE once per SEND MAP, so
+  // the server-supplied props are authoritative. When they are absent, a client
+  // snapshot stands in — re-captured on each send rather than left at the moment the
+  // screen was mounted, which is not a live clock and drifts no further than one send.
+  const [snapshot, setSnapshot] = useState<Date>(() => new Date());
+  const lastSend = useRef<number>(sendCount);
+  useEffect(() => {
+    if (sendCount === lastSend.current) {
+      return;
+    }
+    lastSend.current = sendCount;
+    setSnapshot(new Date());
+  }, [sendCount]);
   const dateText = currentDate ?? formatDate(snapshot);
   const timeText = currentTime ?? formatTime(snapshot);
   const captions = captionStyle === 'signon' ? SIGNON_CAPTIONS : STANDARD_CAPTIONS;
-  // Only COSGN00.bms carries the row; its APPLID field has no INITIAL and its SYSID
-  // field is INITIAL='        ', so blank values are the mapset's own defaults.
+  // Only COSGN00.bms carries the row. Both of its fields are filled by the program before
+  // the first send -- `EXEC CICS ASSIGN APPLID` and `ASSIGN SYSID`, COSGN00C L198-L203 --
+  // so the mapset's blank INITIALs are what the map holds before that, not what the
+  // operator sees. The deployment supplies both values in their place.
   const showAppRow = captionStyle === 'signon';
 
   return (
@@ -185,7 +202,6 @@ export default function Header({
             <span className="label">AppID:</span>{' '}
             <span className="label" data-testid="app-id">{appId ?? ''}</span>
           </span>
-          <span className="appHeader__center" aria-hidden="true" />
           <span className="appHeader__right">
             <span className="label">SysID:</span>{' '}
             <span className="label" data-testid="sys-id">{sysId ?? ''}</span>

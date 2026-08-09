@@ -81,7 +81,6 @@ class UserServiceTest {
     private static final String MSG_PWD_EMPTY = "Password can NOT be empty...";
     private static final String MSG_TYPE_EMPTY = "User Type can NOT be empty...";
     private static final String MSG_DUP = "User ID already exist...";
-    private static final String MSG_TYPE_INVALID = "User Type must be A or U";
     private static final String MSG_ADD_ERR = "Unable to Add User...";
     private static final String MSG_NOT_FOUND = "User ID NOT found...";
     private static final String MSG_LOOKUP_ERR = "Unable to lookup User...";
@@ -374,16 +373,31 @@ class UserServiceTest {
         verify(userMapper, never()).toResponse(any());
     }
 
+    /**
+     * :purpose: The service applies NO value-set edit to the user type, because
+     *     ``COUSR01C`` applies none: its ``PROCESS-ENTER-KEY`` is a five-way
+     *     ``EVALUATE TRUE`` that tests every field for ``SPACES OR LOW-VALUES`` and
+     *     nothing else (L117-L151). A code outside the pair the role model recognises
+     *     therefore reaches the write, where the ``chk_sec_usr_type`` database constraint
+     *     refuses it and the reachable ``'Unable to Add User...'`` literal reports it.
+     * :note: The message this test used to assert, ``'User Type must be A or U'``, existed
+     *     in no legacy program: it was invented output, and so was the edit that raised it.
+     */
     @Test
-    @DisplayName("addUser rejects a user type outside {A,U} with 'User Type must be A or U' and never saves")
-    void addUser_unknownUserType_throwsInvalidType() {
+    @DisplayName("addUser applies no value-set edit to the user type; the write refuses it")
+    void addUser_unknownUserType_reachesTheWrite() {
         AddUserRequestDto request = addReq("USER0001", "John", "Doe", "X");
+        when(userRepository.existsBySecUsrId("USER0001")).thenReturn(false);
+        when(passwordEncoder.encode("rawPass")).thenReturn("$2a$encoded");
+        when(userMapper.toEntity(any(AddUserRequestDto.class))).thenReturn(storedUser);
+        when(userRepository.saveAndFlush(any(SecurityUser.class)))
+                .thenThrow(new DataIntegrityViolationException("chk_sec_usr_type"));
 
         assertThatThrownBy(() -> userService.addUser(withPwd(request, "rawPass")))
                 .isExactlyInstanceOf(CardDemoException.class)
-                .hasMessage(MSG_TYPE_INVALID);
+                .hasMessage(MSG_ADD_ERR);
 
-        verifyNoInteractions(userRepository, userMapper, passwordEncoder);
+        verify(userRepository).saveAndFlush(any(SecurityUser.class));
     }
 
     @Test
@@ -531,16 +545,116 @@ class UserServiceTest {
         verifyNoInteractions(userRepository, userMapper, passwordEncoder);
     }
 
+    /**
+     * :purpose: An absent password leaves the stored credential untouched, so a name-only
+     *     edit succeeds and the encoder is never consulted.
+     * :note: ``COUSR02C`` re-displayed ``SEC-USR-PWD`` in ``PASSWDO`` on the ENTER turn, so
+     *     by the time PF5 ran its ``PASSWDI`` was always populated and its
+     *     ``'Password can NOT be empty...'`` edit (L198-L202) guarded a field the program
+     *     itself had filled; the field-by-field compare at L227 then found it equal. The
+     *     credential is a one-way hash here and is deliberately never sent to a client, so
+     *     an empty field is the same statement of intent. Reproducing the edit literally
+     *     made a name-only or role-only edit impossible and put the no-change guard out of
+     *     reach. The literal stays reachable on the ADD screen.
+     */
     @Test
-    @DisplayName("updateUser rejects an empty password with 'Password can NOT be empty...'")
-    void updateUser_passwordEmpty_throwsPasswordEmpty() {
+    @DisplayName("updateUser accepts a BLANK password and leaves the stored credential untouched")
+    void updateUser_blankPassword_leavesCredentialUntouched() {
+        // The password is optional on update: a blank value means "change the profile, not the
+        // credential". Requiring it made every name or role edit a forced credential reset, and no
+        // read path returns the hash, so the caller cannot round-trip the existing value to avoid
+        // one.
+        UpdateUserRequestDto request = updReq("Johnny", "Doe", "U");
+        SecurityUser savedUser = user("USER0001", "Johnny", "Doe", "U", "$2a$storedHash");
+
+        when(userRepository.findBySecUsrId("USER0001")).thenReturn(Optional.of(storedUser));
+        when(userRepository.saveAndFlush(any(SecurityUser.class))).thenReturn(savedUser);
+
+        UserWriteResponseDto result = userService.updateUser("USER0001", withPwd(request, ""));
+
+        assertThat(result.getMessage()).isEqualTo("User USER0001 has been updated ...");
+        // Never encoded, so the stored hash survives; and never compared, because comparing a
+        // blank against the stored hash would report "changed" and re-encode the blank as the new
+        // credential, locking the user out.
+        verify(passwordEncoder, never()).encode(any());
+        verify(passwordEncoder, never()).matches(any(), any());
+
+        ArgumentCaptor<SecurityUser> captor = ArgumentCaptor.forClass(SecurityUser.class);
+        verify(userRepository).saveAndFlush(captor.capture());
+        assertThat(captor.getValue().getSecUsrPwd()).isEqualTo("$2a$storedHash");
+    }
+
+    @Test
+    @DisplayName("updateUser accepts an OMITTED password identically to a blank one")
+    void updateUser_omittedPassword_leavesCredentialUntouched() {
+        UpdateUserRequestDto request = updReq("Johnny", "Doe", "U");
+        SecurityUser savedUser = user("USER0001", "Johnny", "Doe", "U", "$2a$storedHash");
+
+        when(userRepository.findBySecUsrId("USER0001")).thenReturn(Optional.of(storedUser));
+        when(userRepository.saveAndFlush(any(SecurityUser.class))).thenReturn(savedUser);
+
+        // password left null -- the field is absent from the request body entirely.
+        UserWriteResponseDto result = userService.updateUser("USER0001", request);
+
+        assertThat(result.getMessage()).isEqualTo("User USER0001 has been updated ...");
+        verify(passwordEncoder, never()).encode(any());
+        verify(passwordEncoder, never()).matches(any(), any());
+    }
+
+    @Test
+    @DisplayName("updateUser with no password changes the name and leaves the credential alone")
+    void updateUser_passwordAbsent_updatesNameAndKeepsCredential() {
+        UpdateUserRequestDto request = updReq("Johnny", "Doe", "U");
+        when(userRepository.findBySecUsrId("USER0001")).thenReturn(Optional.of(storedUser));
+        when(userRepository.saveAndFlush(any(SecurityUser.class))).thenReturn(storedUser);
+
+        UserWriteResponseDto result = userService.updateUser("USER0001", withPwd(request, null));
+
+        assertThat(result.getMessage()).isEqualTo("User USER0001 has been updated ...");
+        // The mapper is mocked, so the edited names are proved by the call, not by the entity.
+        verify(userMapper).apply(any(UpdateUserRequestDto.class), eq(storedUser));
+        assertThat(storedUser.getSecUsrPwd()).isEqualTo("$2a$storedHash");
+        verify(passwordEncoder, never()).encode(any());
+        verify(passwordEncoder, never()).matches(any(), any());
+        verify(userRepository).saveAndFlush(storedUser);
+    }
+
+    /**
+     * :purpose: With the password absent, a turn that changes nothing else now reaches the
+     *     no-change guard, which the blank-password edit had made unreachable.
+     */
+    @Test
+    @DisplayName("updateUser with an absent password and no other change still reports 'Please modify to update ...'")
+    void updateUser_absentPasswordAndNoOtherChange_stillReportsPleaseModify() {
+        // An absent password must not be mistaken for a change, or a request that alters nothing
+        // would silently report success and bump the version.
         UpdateUserRequestDto request = updReq("John", "Doe", "U");
+        when(userRepository.findBySecUsrId("USER0001")).thenReturn(Optional.of(storedUser));
 
-        assertThatThrownBy(() -> userService.updateUser("USER0001", withPwd(request, "")))
+        assertThatThrownBy(() -> userService.updateUser("USER0001", request))
                 .isExactlyInstanceOf(CardDemoException.class)
-                .hasMessage(MSG_PWD_EMPTY);
+                .hasMessage(MSG_NO_CHANGE);
 
-        verifyNoInteractions(userRepository, userMapper, passwordEncoder);
+        verify(userRepository, never()).saveAndFlush(any());
+        verify(passwordEncoder, never()).encode(any());
+    }
+
+    /**
+     * :purpose: A password of nothing but spaces is the same statement of intent as an absent
+     *     one, so it too reaches the no-change guard rather than counting as an edit.
+     */
+    @Test
+    @DisplayName("updateUser with a BLANK password and no edits reports 'Please modify to update ...'")
+    void updateUser_passwordBlankNoEdits_reportsPleaseModify() {
+        UpdateUserRequestDto request = updReq("John", "Doe", "U");
+        when(userRepository.findBySecUsrId("USER0001")).thenReturn(Optional.of(storedUser));
+
+        assertThatThrownBy(() -> userService.updateUser("USER0001", withPwd(request, "  ")))
+                .isExactlyInstanceOf(CardDemoException.class)
+                .hasMessage(MSG_NO_CHANGE);
+
+        verify(userRepository, never()).saveAndFlush(any());
+        verify(passwordEncoder, never()).encode(any());
     }
 
     @Test
@@ -599,16 +713,25 @@ class UserServiceTest {
         verify(userMapper, never()).toResponse(any());
     }
 
+    /**
+     * :purpose: ``COUSR02C``'s ``UPDATE-USER-INFO`` tests every field for presence and
+     *     nothing else (L179-L213), so the service applies no value-set edit either: an
+     *     unrecognised code reaches the write and the ``chk_sec_usr_type`` constraint
+     *     refuses it with the reachable ``'Unable to Update User...'`` literal.
+     */
     @Test
-    @DisplayName("updateUser rejects a user type outside {A,U} with 'User Type must be A or U'")
-    void updateUser_unknownUserType_throwsInvalidType() {
+    @DisplayName("updateUser applies no value-set edit to the user type; the write refuses it")
+    void updateUser_unknownUserType_reachesTheWrite() {
         UpdateUserRequestDto request = updReq("Johnny", "Doer", "Z");
+        when(userRepository.findBySecUsrId("USER0001")).thenReturn(Optional.of(storedUser));
+        when(userRepository.saveAndFlush(any(SecurityUser.class)))
+                .thenThrow(new DataIntegrityViolationException("chk_sec_usr_type"));
 
-        assertThatThrownBy(() -> userService.updateUser("USER0001", withPwd(request, "rawPass")))
+        assertThatThrownBy(() -> userService.updateUser("USER0001", withPwd(request, null)))
                 .isExactlyInstanceOf(CardDemoException.class)
-                .hasMessage(MSG_TYPE_INVALID);
+                .hasMessage(MSG_UPDATE_ERR);
 
-        verifyNoInteractions(userRepository, userMapper);
+        verify(userRepository).saveAndFlush(any(SecurityUser.class));
     }
 
     @Test
@@ -860,8 +983,10 @@ class UserServiceTest {
     @DisplayName("listUsersFrom positions the browse inclusively at the entered search key")
     void listUsersFrom_searchKey_browsesGreaterThanEqual() {
         List<UserResponseDto> dtos = dtosList(10);
+        // Eleven rows exist from the key, so the screen shows ten and a forward page
+        // follows -- the look-ahead record PROCESS-PAGE-FORWARD reads (L307-L316).
         when(userRepository.findBySecUsrIdGreaterThanEqualOrderBySecUsrIdAsc(eq("USER0003"), any(Pageable.class)))
-                .thenReturn(usersList(10));
+                .thenReturn(usersList(11));
         when(userMapper.toResponseList(anyList())).thenReturn(dtos);
 
         UserListResponseDto result = userService.listUsersFrom("  USER0003  ");
@@ -874,8 +999,32 @@ class UserServiceTest {
         ArgumentCaptor<Pageable> pageableCaptor = ArgumentCaptor.forClass(Pageable.class);
         verify(userRepository)
                 .findBySecUsrIdGreaterThanEqualOrderBySecUsrIdAsc(eq("USER0003"), pageableCaptor.capture());
-        assertThat(pageableCaptor.getValue().getPageSize()).isEqualTo(10);
+        assertThat(pageableCaptor.getValue().getPageSize()).isEqualTo(11);
         verify(userRepository, never()).findAllByOrderBySecUsrIdAsc(any(Pageable.class));
+    }
+
+    /**
+     * :purpose: A search whose result ends EXACTLY on a page boundary reports no forward
+     *     page, so the screen answers PF8 itself instead of asking for a page that is not
+     *     there.
+     * :note: ``PROCESS-PAGE-FORWARD`` fills ten rows and then performs one further
+     *     ``READNEXT``, setting ``NEXT-PAGE-YES`` only when that eleventh record exists
+     *     (L307-L316). Inferring the flag from the page being full instead reported a
+     *     forward page here; the screen then issued PF8, the service refused it with the
+     *     bottom-boundary literal, and the client's failure handling dropped the rows.
+     */
+    @Test
+    @DisplayName("listUsersFrom reports no forward page when the result ends on a page boundary")
+    void listUsersFrom_exactlyOnePage_reportsNoFurtherPage() {
+        when(userRepository.findBySecUsrIdGreaterThanEqualOrderBySecUsrIdAsc(eq("USER0001"), any(Pageable.class)))
+                .thenReturn(usersList(10));
+        when(userMapper.toResponseList(anyList())).thenReturn(dtosList(10));
+
+        UserListResponseDto result = userService.listUsersFrom("USER0001");
+
+        assertThat(result.getUsers()).hasSize(10);
+        assertThat(result.isNextPage()).isFalse();
+        assertThat(result.getMessage()).isNull();
     }
 
     @Test
@@ -913,7 +1062,7 @@ class UserServiceTest {
     void pageForward_hasNext_returnsNextBatch() {
         List<UserResponseDto> dtos = dtosList(10);
         when(userRepository.findBySecUsrIdGreaterThanOrderBySecUsrIdAsc(eq("USER0010"), any(Pageable.class)))
-                .thenReturn(usersList(10));
+                .thenReturn(usersList(11));
         when(userMapper.toResponseList(anyList())).thenReturn(dtos);
 
         UserListResponseDto result = userService.pageForward("USER0010");
@@ -924,7 +1073,25 @@ class UserServiceTest {
         ArgumentCaptor<Pageable> pageableCaptor = ArgumentCaptor.forClass(Pageable.class);
         verify(userRepository)
                 .findBySecUsrIdGreaterThanOrderBySecUsrIdAsc(eq("USER0010"), pageableCaptor.capture());
-        assertThat(pageableCaptor.getValue().getPageSize()).isEqualTo(10);
+        assertThat(pageableCaptor.getValue().getPageSize()).isEqualTo(11);
+    }
+
+    /**
+     * :purpose: A forward page that ends exactly on a page boundary reports no further
+     *     page, so PF8 is never issued again from it.
+     */
+    @Test
+    @DisplayName("pageForward reports no further page when the slice ends on a page boundary")
+    void pageForward_exactlyOnePage_reportsNoFurtherPage() {
+        when(userRepository.findBySecUsrIdGreaterThanOrderBySecUsrIdAsc(eq("USER0010"), any(Pageable.class)))
+                .thenReturn(usersList(10));
+        when(userMapper.toResponseList(anyList())).thenReturn(dtosList(10));
+
+        UserListResponseDto result = userService.pageForward("USER0010");
+
+        assertThat(result.getUsers()).hasSize(10);
+        assertThat(result.isNextPage()).isFalse();
+        assertThat(result.getMessage()).isNull();
     }
 
     @Test
@@ -1089,5 +1256,67 @@ class UserServiceTest {
         assertThat(result.getUsers()).hasSize(4);
         assertThat(result.getMessage()).isEqualTo("You have reached the bottom of the page...");
         assertThat(result.isNextPage()).isFalse();
+    }
+    @Test
+    @DisplayName("addUser stores the user id UPPER-CASED so sign-on can find it")
+    void addUser_lowerCaseId_isStoredUpperCased() {
+        // The legacy terminal's UCTRAN attribute made a lower-case id unrepresentable and
+        // COSGN00C upper-cases the entered id [app/cbl/COSGN00C.cbl:L132]. Storing one verbatim
+        // produced a user that could never authenticate.
+        AddUserRequestDto request = addReq("qat0001", "Qa", "One", "U");
+        request.setPassword("rawPass");
+        SecurityUser mapped = user("QAT0001", "Qa", "One", "U", null);
+        SecurityUser savedUser = user("QAT0001", "Qa", "One", "U", "$2a$new");
+
+        when(userRepository.existsBySecUsrId("QAT0001")).thenReturn(false);
+        when(userMapper.toEntity(request)).thenReturn(mapped);
+        when(passwordEncoder.encode("rawPass")).thenReturn("$2a$new");
+        when(userRepository.saveAndFlush(any(SecurityUser.class))).thenReturn(savedUser);
+
+        UserWriteResponseDto result = userService.addUser(request);
+
+        // The duplicate check runs against the canonical form, so 'qat0001' and 'QAT0001' cannot
+        // become two rows the authentication path is unable to tell apart.
+        verify(userRepository).existsBySecUsrId("QAT0001");
+        assertThat(result.getMessage()).isEqualTo("User QAT0001 has been added ...");
+    }
+
+    @Test
+    @DisplayName("getUser resolves a lower-case id to the stored upper-case record")
+    void getUser_lowerCaseId_resolvesToStoredRecord() {
+        when(userRepository.findBySecUsrId("USER0001")).thenReturn(Optional.of(storedUser));
+        when(userMapper.toResponse(storedUser)).thenReturn(respDto("USER0001", "John", "Doe", "U"));
+
+        UserResponseDto result = userService.getUser("user0001");
+
+        assertThat(result.getUserId()).isEqualTo("USER0001");
+        verify(userRepository).findBySecUsrId("USER0001");
+    }
+
+    @Test
+    @DisplayName("updateUser resolves a lower-case id and revokes sessions under the canonical key")
+    void updateUser_lowerCaseId_usesCanonicalIdThroughout() {
+        UpdateUserRequestDto request = updReq("Johnny", "Doe", "U");
+        SecurityUser savedUser = user("USER0001", "Johnny", "Doe", "U", "$2a$storedHash");
+
+        when(userRepository.findBySecUsrId("USER0001")).thenReturn(Optional.of(storedUser));
+        when(userRepository.saveAndFlush(any(SecurityUser.class))).thenReturn(savedUser);
+
+        UserWriteResponseDto result = userService.updateUser("  user0001  ", request);
+
+        // The outcome message reports the canonical id, not the casing the caller happened to use.
+        assertThat(result.getMessage()).isEqualTo("User USER0001 has been updated ...");
+        verify(userRepository).findBySecUsrId("USER0001");
+    }
+
+    @Test
+    @DisplayName("deleteUser resolves a lower-case id to the stored upper-case record")
+    void deleteUser_lowerCaseId_resolvesToStoredRecord() {
+        when(userRepository.findBySecUsrId("USER0001")).thenReturn(Optional.of(storedUser));
+
+        userService.deleteUser("user0001");
+
+        verify(userRepository).findBySecUsrId("USER0001");
+        verify(userRepository).delete(storedUser);
     }
 }

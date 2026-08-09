@@ -78,6 +78,14 @@ const updateAccountMock =
     ) => Promise<AccountUpdateResponseDto>
   >();
 
+/**
+ * ``POST /accounts/{id}/validate`` — the ENTER edit pass. It resolves by default, so a
+ * test that does not care about the semantic edits sees ENTER succeed as before; a test
+ * that does care makes it reject with the envelope the service would have returned.
+ */
+const validateAccountUpdateMock =
+  jest.fn<(accountId: string, request: AccountUpdateRequestDto) => Promise<void>>();
+
 const signonMock = jest.fn();
 
 /**
@@ -105,6 +113,10 @@ class ApiError extends Error {
 }
 
 jest.unstable_mockModule('../api', () => ({
+  // The request-cancellation contract ``useApi`` binds to: the real scope hands the
+  // caller's AbortSignal to axios, and the double simply invokes the call.
+  runWithRequestSignal: (_signal: AbortSignal, call: () => unknown): unknown => call(),
+  isCancelledRequest: (): boolean => false,
   // The session store and the REST hook this screen's module graph loads bind to
   // these barrel exports as well. ``getSessionIdentity`` is the production
   // ``GET /session`` probe the session harness drives; unanswered by this suite it
@@ -115,6 +127,7 @@ jest.unstable_mockModule('../api', () => ({
   __esModule: true,
   getAccount: getAccountMock,
   updateAccount: updateAccountMock,
+  validateAccountUpdate: validateAccountUpdateMock,
   signon: signonMock,
   ApiError,
 }));
@@ -340,9 +353,12 @@ function submittedRequest(index: number): AccountUpdateRequestDto {
 beforeEach(() => {
   getAccountMock.mockReset();
   updateAccountMock.mockReset();
+  validateAccountUpdateMock.mockReset();
   signonMock.mockReset();
   getAccountMock.mockResolvedValue(ACCOUNT);
   updateAccountMock.mockResolvedValue(COMMITTED_ACCOUNT);
+  // The service accepts the submission unless a test says otherwise.
+  validateAccountUpdateMock.mockResolvedValue(undefined);
 });
 
 afterEach(async () => {
@@ -355,14 +371,15 @@ afterEach(async () => {
 /* ------------------------------------------------------------------ */
 
 /**
- * :purpose: The line-23 informational message region. The shared shell also renders a
- *     visually hidden ``role="status"`` busy announcer, so the banner is matched on its
- *     own class rather than on the role alone.
- * :returns: the informational banner, or ``null`` when line 23 carries no
- *     informational message.
+ * :purpose: The mapset's own INFOMSG field -- the NEUTRAL line the map declares ABOVE the
+ *     line-23 ERRMSG region. It is matched on that field's class rather than on the role,
+ *     both because the shared shell renders a visually hidden ``role="status"`` busy
+ *     announcer and because the ERRMSG field itself carries ``role="status"`` on the
+ *     screens whose programs green it.
+ * :returns: the INFOMSG line, or ``null`` when the field is not rendered.
  */
 function infoBanner(): HTMLElement | null {
-  return document.querySelector<HTMLElement>('.errorBanner[role="status"]');
+  return document.querySelector<HTMLElement>('.errorBanner--infoField[role="status"]');
 }
 
 /**
@@ -374,6 +391,18 @@ async function findInfoBanner(): Promise<HTMLElement> {
     expect(infoBanner()).not.toBeNull();
   });
   return infoBanner() as HTMLElement;
+}
+
+/**
+ * :purpose: Count the reserved marker columns that actually carry the blank-field `*`.
+ *     The columns themselves are always rendered, which is what keeps a failed edit
+ *     from moving any caption or entry field.
+ * :returns: the number of marker columns holding a glyph.
+ */
+function markedMarkerCount(): number {
+  return Array.from(
+    document.querySelectorAll('span.accountUpdate__marker[aria-hidden="true"]'),
+  ).filter((marker) => (marker.textContent ?? '') !== '').length;
 }
 
 describe('AccountUpdatePage — load and version snapshot', () => {
@@ -445,7 +474,7 @@ describe('AccountUpdatePage — load and version snapshot', () => {
 
     expect(getAccountMock).not.toHaveBeenCalled();
     expect(screen.getByRole('alert')).toHaveTextContent(
-      'Account number must be a non zero 11 digit number',
+      'Account Number if supplied must be a 11 digit Non-Zero Number',
     );
     expect(fieldInput('acctActiveStatus')).toHaveValue('');
   });
@@ -459,7 +488,7 @@ describe('AccountUpdatePage — load and version snapshot', () => {
     // COACTUPC L905-916 rewrites an F5 pressed outside the confirmation state back
     // to ENTER, so the unreadable key is reported and nothing is written.
     expect(screen.getByRole('alert')).toHaveTextContent(
-      'Account number must be a non zero 11 digit number',
+      'Account Number if supplied must be a 11 digit Non-Zero Number',
     );
     expect(updateAccountMock).not.toHaveBeenCalled();
   });
@@ -474,10 +503,10 @@ describe('AccountUpdatePage — editable fields and captions', () => {
     await renderScreen();
 
     expect(
-      screen.getByRole('heading', { name: 'Update Account', level: 2 }),
+      screen.getByRole('heading', { name: 'Update Account', level: 3 }),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole('heading', { name: 'Customer Details', level: 3 }),
+      screen.getByRole('heading', { name: 'Customer Details', level: 4 }),
     ).toBeInTheDocument();
   });
 
@@ -636,7 +665,7 @@ describe('AccountUpdatePage — field validation', () => {
     await commit(user, true);
 
     expect(screen.getByRole('alert')).toHaveTextContent(
-      'Account number must be a non zero 11 digit number',
+      'Account Number if supplied must be a 11 digit Non-Zero Number',
     );
     expect(updateAccountMock).not.toHaveBeenCalled();
   });
@@ -653,9 +682,17 @@ describe('AccountUpdatePage — field validation', () => {
     expect(fieldInput('custFirstName')).toBeInvalid();
     expect(fieldInput('custFirstName')).toHaveClass('field', 'fieldError');
     expect(fieldInput('custLastName')).not.toBeInvalid();
-    const markers = document.querySelectorAll('span.fieldError[aria-hidden="true"]');
-    expect(markers).toHaveLength(1);
-    expect(markers[0]).toHaveTextContent('*');
+    // The marker column is RESERVED on every field, so a failed edit moves nothing:
+    // every field still carries its column and exactly one of them holds the `*`.
+    const markers = document.querySelectorAll(
+      'span.accountUpdate__marker[aria-hidden="true"]',
+    );
+    expect(markers.length).toBeGreaterThan(1);
+    const marked = Array.from(markers).filter(
+      (marker) => (marker.textContent ?? '') !== '',
+    );
+    expect(marked).toHaveLength(1);
+    expect(marked[0]).toHaveTextContent('*');
     expect(screen.getAllByRole('alert')).toHaveLength(1);
   });
 
@@ -676,9 +713,8 @@ describe('AccountUpdatePage — field validation', () => {
       expect(updateAccountMock).toHaveBeenCalledTimes(1);
     });
     expect(fieldInput('custAddrZip')).not.toBeInvalid();
-    expect(document.querySelectorAll('span.fieldError[aria-hidden="true"]')).toHaveLength(
-      0,
-    );
+    // The reserved marker columns are still there; none of them carries the `*`.
+    expect(markedMarkerCount()).toBe(0);
   });
 });
 
@@ -699,7 +735,55 @@ describe('AccountUpdatePage — optimistic-lock conflict', () => {
     const banner = await screen.findByRole('alert');
     expect(banner.textContent).toBe('Record changed by some one else. Please review');
     expect(banner.textContent).toBe(OPTIMISTIC_LOCK_MESSAGE);
-    expect(infoBanner()).toBeNull();
+    // COACTUP.bms declares INFOMSG (L480) as well as ERRMSG (L489) and COACTUPC
+    // populates both on this outcome. The concurrency branch of 2000-DECIDE-ACTION
+    // (L2611-2612) sets ACUP-SHOW-DETAILS — not a failure state — and 3250-SETUP-INFOMSG
+    // (L2962-2963) maps SHOW-DETAILS to PROMPT-FOR-CHANGES. INFORM-FAILURE belongs to
+    // ACUP-CHANGES-OKAYED-LOCK-ERROR and ACUP-CHANGES-OKAYED-BUT-FAILED only (L2971-2974),
+    // so the record is presented for review rather than declared a failure.
+    expect(infoBanner()?.textContent).toBe('Update account details presented above.');
+  });
+
+  it('puts the record on display so the invited review has something to review', async () => {
+    // 2000-DECIDE-ACTION L2611-2612 answers the concurrency branch with ACUP-SHOW-DETAILS,
+    // and 3200-SETUP-SCREEN-VARS L2715-2717 paints that state through
+    // 3202-SHOW-ORIGINAL-VALUES — from ACUP-OLD-DETAILS, never from the edited
+    // ACUP-NEW-DETAILS. So the map that follows a conflict carries the record, and the
+    // read that produced it is the one PFK12 performs.
+    const WINNER = { ...ACCOUNT, acctCreditLimit: '4242.00', version: ACCOUNT.version + 5 };
+    getAccountMock.mockResolvedValueOnce(ACCOUNT).mockResolvedValue(WINNER);
+    updateAccountMock.mockRejectedValueOnce(new ApiError(409, OPTIMISTIC_LOCK_MESSAGE));
+    await renderScreen();
+    const user = userEvent.setup();
+
+    await commit(user);
+    await screen.findByRole('alert');
+    expect(submittedRequest(0).version).toBe(LOADED_VERSION);
+
+    // The winner's value is what the operator now sees, in place of the keystrokes that
+    // lost. Reviewing the change that beat them is the only way to re-apply an edit
+    // without silently undoing it.
+    await waitFor(() => {
+      expect(fieldInput('acctCreditLimit')).toHaveValue('4242.00');
+    });
+    expect(getAccountMock).toHaveBeenCalledTimes(2);
+
+    // The record on display and the snapshot are one set, so ENTER alone finds no change.
+    await user.keyboard('{Enter}');
+    expect((await screen.findByRole('alert')).textContent).toBe(
+      'No change detected with respect to values fetched.',
+    );
+    expect(updateAccountMock).toHaveBeenCalledTimes(1);
+
+    // Re-applying the edit on top of the reviewed record retries against the live version.
+    updateAccountMock.mockResolvedValue(COMMITTED_ACCOUNT);
+    await commit(user);
+
+    await waitFor(() => {
+      expect(updateAccountMock).toHaveBeenCalledTimes(2);
+    });
+    expect(submittedRequest(1).version).toBe(WINNER.version);
+    expect(submittedRequest(1).acctCreditLimit).toBe(EDITED_CREDIT_LIMIT);
   });
 
   it('surfaces the frozen conflict message even when the body carries another text', async () => {
@@ -721,7 +805,7 @@ describe('AccountUpdatePage — optimistic-lock conflict', () => {
     expect(banner.textContent).toBe(OPTIMISTIC_LOCK_MESSAGE);
   });
 
-  it('keeps the entered values and the version snapshot so the user can review', async () => {
+  it('leaves the stored record untouched and never retries the version that lost', async () => {
     updateAccountMock.mockRejectedValueOnce(
       new ApiError(409, OPTIMISTIC_LOCK_MESSAGE),
     );
@@ -732,16 +816,19 @@ describe('AccountUpdatePage — optimistic-lock conflict', () => {
     await commit(user, true);
     await screen.findByRole('alert');
 
-    // Nothing was overwritten: the edit survives and the same snapshot is retried.
-    expect(fieldInput('acctCreditLimit')).toHaveValue('9000.00');
+    // The refused write carried the snapshot read at display time, and nothing was stored.
     expect(submittedRequest(0).version).toBe(LOADED_VERSION);
+    // The reviewed record replaces the refused entry, so 9000.00 is gone from the screen
+    // and a second F5 cannot re-send the version that already lost.
+    await waitFor(() => {
+      expect(fieldInput('acctCreditLimit')).toHaveValue(ACCOUNT.acctCreditLimit);
+    });
 
     await commit(user, true);
-    await waitFor(() => {
-      expect(updateAccountMock).toHaveBeenCalledTimes(2);
-    });
-    expect(submittedRequest(1).version).toBe(LOADED_VERSION);
-    expect(submittedRequest(1).acctCreditLimit).toBe('9000.00');
+    expect(updateAccountMock).toHaveBeenCalledTimes(1);
+    expect((await screen.findByRole('alert')).textContent).toBe(
+      'No change detected with respect to values fetched.',
+    );
   });
 });
 
@@ -759,9 +846,8 @@ describe('AccountUpdatePage — committed update', () => {
     const banner = await findInfoBanner();
     expect(banner.textContent).toBe(UPDATE_SUCCESS_MESSAGE);
     expect(screen.queryByRole('alert')).toBeNull();
-    expect(document.querySelectorAll('span.fieldError[aria-hidden="true"]')).toHaveLength(
-      0,
-    );
+    // The reserved marker columns are still there; none of them carries the `*`.
+    expect(markedMarkerCount()).toBe(0);
   });
 
   it('refreshes the entry fields from the record the update returns', async () => {
@@ -854,7 +940,7 @@ describe('AccountUpdatePage — function keys', () => {
   it('publishes ENTER=Process, F3=Exit, F5=Save and F12=Cancel in legend order', async () => {
     await renderScreen();
 
-    const toolbar = screen.getByRole('toolbar', { name: 'Function keys' });
+    const toolbar = screen.getByRole('group', { name: 'Function keys' });
     // ``3390-SETUP-INFOMSG-ATTRS`` un-darkens FKEY05 only while the confirmation is
     // being prompted and FKEY12 only once unsaved changes exist, so a freshly
     // displayed screen legends two entries.
@@ -868,11 +954,15 @@ describe('AccountUpdatePage — function keys', () => {
     await retype(user, 'acctCreditLimit', '9999.99');
     await user.keyboard('{Enter}');
 
-    expect(
-      within(toolbar)
-        .getAllByRole('button')
-        .map((key) => key.textContent),
-    ).toEqual(['ENTER=Process', 'F3=Exit', 'F5=Save', 'F12=Cancel']);
+    // ENTER runs the program's own edit pass, which is a round trip: the legend gains
+    // F5/F12 only once the service has confirmed the submission passes every edit.
+    await waitFor(() => {
+      expect(
+        within(toolbar)
+          .getAllByRole('button')
+          .map((key) => key.textContent),
+      ).toEqual(['ENTER=Process', 'F3=Exit', 'F5=Save', 'F12=Cancel']);
+    });
   });
 
   it('validates the screen on ENTER and invites the save', async () => {
@@ -884,7 +974,11 @@ describe('AccountUpdatePage — function keys', () => {
     await retype(user, 'acctCreditLimit', '7500.00');
     await user.keyboard('{Enter}');
 
-    expect(infoBanner()).toHaveTextContent(PROMPT_FOR_CONFIRMATION_MESSAGE);
+    await waitFor(() => {
+      expect(infoBanner()).toHaveTextContent(PROMPT_FOR_CONFIRMATION_MESSAGE);
+    });
+    // The edit pass ran against the entered values, and it rewrote nothing.
+    expect(validateAccountUpdateMock).toHaveBeenCalledTimes(1);
     expect(updateAccountMock).not.toHaveBeenCalled();
   });
 
@@ -898,6 +992,29 @@ describe('AccountUpdatePage — function keys', () => {
       'No change detected with respect to values fetched.',
     );
     expect(updateAccountMock).not.toHaveBeenCalled();
+  });
+
+  it('stacks the INFOMSG line above the ERRMSG line, in the rows COACTUP declares', async () => {
+    // 3250-SETUP-INFOMSG (L2979-2981) moves WS-INFO-MSG to INFOMSGO and then
+    // WS-RETURN-MSG to ERRMSGO, so an unchanged ENTER sends both fields on one send.
+    // COACTUP.bms declares INFOMSG ATTRB=(ASKIP) COLOR=NEUTRAL LENGTH=45 POS=(22,23) and
+    // ERRMSG ATTRB=(ASKIP,BRT,FSET) COLOR=RED LENGTH=78 POS=(23,1): the informational
+    // line sits in the row ABOVE the error, and it is NEUTRAL rather than green -- the
+    // program never moves DFHGREEN anywhere.
+    await renderScreen();
+    const user = userEvent.setup();
+
+    await user.keyboard('{Enter}');
+    await screen.findByRole('alert');
+
+    const rows = Array.from(document.querySelectorAll('.errorBanner'));
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toHaveClass('errorBanner--infoField');
+    expect(rows[0]).toHaveTextContent(PROMPT_FOR_CHANGES_MESSAGE);
+    expect(rows[1]).toHaveTextContent('No change detected with respect to values fetched.');
+    expect(rows[1]).toHaveAttribute('role', 'alert');
+    // The row above the error is never the green ERRMSG variant.
+    expect(rows[1]).not.toHaveClass('errorBanner--infoField');
   });
 
   it('reports a failing edit on ENTER without submitting', async () => {
@@ -953,11 +1070,13 @@ describe('AccountUpdatePage — function keys', () => {
   it('activates the same handlers from the legend buttons', async () => {
     await renderScreen();
     const user = userEvent.setup();
-    const toolbar = screen.getByRole('toolbar', { name: 'Function keys' });
+    const toolbar = screen.getByRole('group', { name: 'Function keys' });
 
     await retype(user, 'acctCreditLimit', '7500.00');
     await user.click(within(toolbar).getByRole('button', { name: 'ENTER=Process' }));
-    expect(infoBanner()).toHaveTextContent(PROMPT_FOR_CONFIRMATION_MESSAGE);
+    await waitFor(() => {
+      expect(infoBanner()).toHaveTextContent(PROMPT_FOR_CONFIRMATION_MESSAGE);
+    });
 
     await user.click(within(toolbar).getByRole('button', { name: 'F5=Save' }));
     await waitFor(() => {
@@ -965,6 +1084,151 @@ describe('AccountUpdatePage — function keys', () => {
     });
 
     await user.click(within(toolbar).getByRole('button', { name: 'F3=Exit' }));
+    expect(screen.getByTestId('menu-route')).toBeInTheDocument();
+  });
+});
+
+describe('AccountUpdatePage — the ENTER edit pass is the program\'s own', () => {
+  it('reports a semantic edit the service performs, and does not claim validation', async () => {
+    // The FICO range, the state-code and area-code lookups and the state/zip combination
+    // are edited by the service against the one copy of those lookup tables. ENTER must
+    // therefore reach them before it publishes PROMPT-FOR-CONFIRMATION, or it would be
+    // inviting a save the rewrite is about to refuse.
+    validateAccountUpdateMock.mockRejectedValue(
+      new ApiError(400, 'FICO Score: should be between 300 and 850', {
+        timestamp: '2026-01-15T10:20:30.123456',
+        status: 400,
+        error: 'Bad Request',
+        message: 'FICO Score: should be between 300 and 850',
+        path: `/accounts/${ACCOUNT_ID}/validate`,
+        errorCode: 'VALIDATION_FAILED',
+        fieldErrors: { custFicoCreditScore: 'FICO Score: should be between 300 and 850' },
+      }),
+    );
+    await renderScreen();
+    const user = userEvent.setup();
+
+    await retype(user, 'custFicoCreditScore', '3000');
+    await user.keyboard('{Enter}');
+
+    const banner = await screen.findByRole('alert');
+    expect(banner.textContent).toBe('FICO Score: should be between 300 and 850');
+    // The confirmation is NOT published, so the operator is never told to press F5.
+    expect(infoBanner()?.textContent).toBe('Update account details presented above.');
+    expect(updateAccountMock).not.toHaveBeenCalled();
+  });
+
+  it('marks the field the service named and moves the cursor to it', async () => {
+    validateAccountUpdateMock.mockRejectedValue(
+      new ApiError(400, 'FICO Score: should be between 300 and 850', {
+        timestamp: '2026-01-15T10:20:30.123456',
+        status: 400,
+        error: 'Bad Request',
+        message: 'FICO Score: should be between 300 and 850',
+        path: `/accounts/${ACCOUNT_ID}/validate`,
+        errorCode: 'VALIDATION_FAILED',
+        fieldErrors: { custFicoCreditScore: 'FICO Score: should be between 300 and 850' },
+      }),
+    );
+    await renderScreen();
+    const user = userEvent.setup();
+
+    await retype(user, 'custFicoCreditScore', '3000');
+    await user.keyboard('{Enter}');
+
+    await screen.findByRole('alert');
+    // The client cannot know which of 43 fields a semantic edit refused; the envelope's
+    // fieldErrors names it, which is what makes the marker and the cursor possible.
+    expect(fieldInput('custFicoCreditScore')).toHaveAttribute('aria-invalid', 'true');
+    await waitFor(() => {
+      expect(fieldInput('custFicoCreditScore')).toHaveFocus();
+    });
+  });
+
+  it('edits the entered shape before spending a round trip on it', async () => {
+    await renderScreen();
+    const user = userEvent.setup();
+
+    // A malformed entry is refused by the shape pass, so no request is issued at all.
+    await retype(user, 'acctActiveStatus', 'X');
+    await user.keyboard('{Enter}');
+
+    // 1220-EDIT-YESNO composes its message from WS-EDIT-VARIABLE-NAME, which
+    // COACTUPC L1472-1475 sets to 'Account Status' for this field.
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Account Status must be Y or N.',
+    );
+    expect(validateAccountUpdateMock).not.toHaveBeenCalled();
+    expect(updateAccountMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('AccountUpdatePage — zip field width (ACSZIPC LENGTH=5)', () => {
+  it('seeds the zip with the five characters the map field holds', async () => {
+    // COACTUP.bms L382-385 declares ACSZIPC LENGTH=5 and COACTUP.CPY L572 declares
+    // ACSZIPCO PIC X(5), while CUST-ADDR-ZIP is PIC X(10). COACTUPC L2843 MOVEs the
+    // record field into the map field, which truncates on the right, so a stored ZIP+4
+    // reaches the screen as its five-digit prefix rather than as ten characters in a box
+    // that can only ever show five.
+    getAccountMock.mockResolvedValue({ ...ACCOUNT, custAddrZip: '46713-5148' });
+    await renderScreen();
+
+    const zip = fieldInput('custAddrZip');
+    expect(zip).toHaveValue('46713');
+    expect(zip).toHaveAttribute('maxLength', '5');
+    // Nothing is hidden: the value is no longer than the field that holds it.
+    expect(zip.value.length).toBeLessThanOrEqual(5);
+  });
+
+  it('registers a stored ZIP+4 as a change, so the truncation is announced', async () => {
+    // 9500-STORE-FETCHED-DATA fills ACUP-OLD-CUST-ADDR-ZIP from the record (L3875), and
+    // 1205-COMPARE-OLD-NEW L1744-1747 compares TRIM of the map's five characters against
+    // TRIM of the record's ten. They differ, so an untouched ZIP+4 account is not
+    // "unchanged": the rewrite would store the five (L4025), and the operator is told
+    // there is something to save before F5 does it.
+    getAccountMock.mockResolvedValue({ ...ACCOUNT, custAddrZip: '46713-5148' });
+    await renderScreen();
+    const user = userEvent.setup();
+
+    await user.keyboard('{Enter}');
+
+    await waitFor(() => {
+      expect(validateAccountUpdateMock).toHaveBeenCalledTimes(1);
+    });
+    expect(validateAccountUpdateMock.mock.calls[0][1].custAddrZip).toBe('46713');
+    expect((await findInfoBanner()).textContent).toBe('Changes validated.Press F5 to save');
+  });
+});
+
+describe('AccountUpdatePage — keyboard lock while the rewrite is outstanding', () => {
+  it('holds every function key until the write reports back', async () => {
+    let commitWrite!: (value: AccountUpdateResponseDto) => void;
+    updateAccountMock.mockReturnValueOnce(
+      new Promise<AccountUpdateResponseDto>((resolve) => {
+        commitWrite = resolve;
+      }),
+    );
+    await renderScreen();
+    const user = userEvent.setup();
+
+    await commit(user);
+    await waitFor(() => {
+      expect(updateAccountMock).toHaveBeenCalledTimes(1);
+    });
+
+    // A 3270 locked the keyboard from the AID until the reply, so the screen cannot be
+    // left while its write is in flight — which is what made a write that commits with
+    // nobody left to see the confirmation unreachable.
+    await user.keyboard('{F3}');
+    expect(screen.queryByTestId('menu-route')).toBeNull();
+
+    commitWrite(COMMITTED_ACCOUNT);
+    await waitFor(() => {
+      expect(infoBanner()?.textContent).toBe('Changes committed to database');
+    });
+
+    // Once the reply is in, the keys act again.
+    await user.keyboard('{F3}');
     expect(screen.getByTestId('menu-route')).toBeInTheDocument();
   });
 });

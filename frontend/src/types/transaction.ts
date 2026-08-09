@@ -166,6 +166,21 @@ export interface TranAddRequestDto {
 }
 
 /**
+ * :purpose: The two key fields of screen ``COTRN02`` -- ``ACTIDIN`` (``X(11)``) and
+ *   ``CARDNIN`` (``X(16)``) -- exchanged in BOTH directions by the key-resolution step
+ *   that re-expresses ``COTRN02C VALIDATE-INPUT-KEY-FIELDS``. The caller sends
+ *   whichever key the operator typed; the service answers with both, because that
+ *   paragraph's cross-reference read moves the counterpart key back into its own map
+ *   field (``MOVE XREF-CARD-NUM TO CARDNINI`` / ``MOVE XREF-ACCT-ID TO ACTIDINI``).
+ * :field acctId: the account id, zero-padded to eleven digits on the way back.
+ * :field tranCardNum: the card number, sixteen digits.
+ */
+export interface TranKeyDto {
+  acctId?: string;
+  tranCardNum?: string;
+}
+
+/**
  * :purpose: Response for a successful add on screen ``COTRN02``.
  * :field tranId: 16-digit zero-padded transaction identifier assigned by the server.
  * :field message: informational / error banner text, or ``null``.
@@ -173,4 +188,16 @@ export interface TranAddRequestDto {
 export interface TranAddResponseDto {
   tranId: string;
   message: string | null;
+}
+
+/**
+ * :purpose: Response for the key-field edit of screen ``COTRN02``
+ *     (``VALIDATE-INPUT-KEY-FIELDS``), which reads the card cross-reference before any
+ *     data field is examined and writes the counterpart key back onto the map.
+ * :field acctId: the resolved 11-digit account id (``XREF-ACCT-ID``).
+ * :field tranCardNum: the resolved 16-character card number (``XREF-CARD-NUM``).
+ */
+export interface TranKeyResponseDto {
+  acctId: string;
+  tranCardNum: string;
 }

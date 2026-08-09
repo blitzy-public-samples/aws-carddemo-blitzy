@@ -14,7 +14,7 @@
  *     line-23 message and the line-24 function keys are published to the shared
  *     terminal shell through :func:`useScreenChrome`.
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { ReactElement } from 'react';
 import { useNavigate } from 'react-router';
 import { useScreenChrome } from '../components/Layout';
@@ -28,7 +28,7 @@ import type {
   ReportType,
 } from '../types';
 import { requestReport, ApiError } from '../api';
-import { useApi } from '../hooks';
+import { placeCursor, useApi, useScreenAction } from '../hooks';
 
 /**
  * :purpose: Report name each screen message is built from (``WS-REPORT-NAME``).
@@ -99,30 +99,6 @@ type ReportCursorField =
   | 'endDateDay'
   | 'endDateYear'
   | 'confirm';
-
-/**
- * :purpose: The control each ``CORPT00C`` edit faults for the value it rejected.
- *     The confirmation prompt, the ``N`` reset and the submitted/TDQ outcomes report a
- *     screen state rather than a rejected value, so none of them appears here and none
- *     marks a control invalid.
- */
-const FAULTED_FIELD_BY_MESSAGE: Readonly<Record<string, ReportCursorField>> = {
-  [MSG_SELECT_REPORT_TYPE]: 'reportType-MONTHLY',
-  [MSG_START_MONTH_EMPTY]: 'startDateMonth',
-  [MSG_START_MONTH_INVALID]: 'startDateMonth',
-  [MSG_START_DATE_INVALID]: 'startDateMonth',
-  [MSG_START_DAY_EMPTY]: 'startDateDay',
-  [MSG_START_DAY_INVALID]: 'startDateDay',
-  [MSG_START_YEAR_EMPTY]: 'startDateYear',
-  [MSG_START_YEAR_INVALID]: 'startDateYear',
-  [MSG_END_MONTH_EMPTY]: 'endDateMonth',
-  [MSG_END_MONTH_INVALID]: 'endDateMonth',
-  [MSG_END_DATE_INVALID]: 'endDateMonth',
-  [MSG_END_DAY_EMPTY]: 'endDateDay',
-  [MSG_END_DAY_INVALID]: 'endDateDay',
-  [MSG_END_YEAR_EMPTY]: 'endDateYear',
-  [MSG_END_YEAR_INVALID]: 'endDateYear',
-};
 
 /**
  * :purpose: A failed edit: the message for line 23 and the field the legacy
@@ -320,9 +296,13 @@ export default function ReportPage(): ReactElement {
   const [endYear, setEndYear] = useState('');
   const [confirmInput, setConfirmInput] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
+  // The reference the published message belongs to: the execution a confirmed submission
+  // launched, or the correlation id of the envelope that refused it. Carried as an
+  // attribute on the message region rather than as screen text, because CORPT00's message
+  // field is a frozen literal contract and a launch that cannot be traced is not
+  // observable.
+  const [messageReference, setMessageReference] = useState<string | null>(null);
   const [infoMessage, setInfoMessage] = useState('');
-
-  const customSelected = reportType === 'CUSTOM';
 
   // Set synchronously for the whole submission; a second ENTER activation while it
   // is set returns without launching the report job again.
@@ -339,13 +319,25 @@ export default function ReportPage(): ReactElement {
    *     field still moves the cursor.
    * :param field: Control that receives the cursor.
    */
-  const faultedField: ReportCursorField | null = errorMessage.endsWith(
-    INVALID_CONFIRM_SUFFIX,
-  )
-    ? 'confirm'
-    : (FAULTED_FIELD_BY_MESSAGE[errorMessage] ?? null);
+  // The faulted control is the one the screen sends the cursor to. Every `CORPT00C`
+  // path that reports something ends with `MOVE -1 TO <field>L`, so the cursor target
+  // IS the control the row-23 message is about -- including the confirm prompt, which
+  // this screen reports on the error line, and the messages the SERVER produces, which
+  // no client-side table of message text can enumerate.
+  const faultedField: ReportCursorField | null =
+    errorMessage === '' ? null : cursor.field;
 
-  const placeCursor = useCallback((field: ReportCursorField): void => {
+  /**
+   * :purpose: Ask for the cursor to be placed on a field, which is the program's
+   *     ``MOVE -1 TO <field>L``. The sequence number makes a repeated request for the
+   *     same field a NEW request, because a program performs that move on every pass
+   *     that ends the same way -- the placement is not conditional on the field having
+   *     changed. The move itself happens once the screen has settled, since the entry
+   *     controls are disabled while its call is outstanding.
+   * :param field: the field the cursor is owed to.
+   * :returns: nothing.
+   */
+  const requestCursor = useCallback((field: ReportCursorField): void => {
     setCursor((previous) => ({ field, seq: previous.seq + 1 }));
   }, []);
 
@@ -355,7 +347,7 @@ export default function ReportPage(): ReactElement {
     if (submitting) {
       return;
     }
-    document.getElementById(cursor.field)?.focus();
+    placeCursor(document.getElementById(cursor.field));
   }, [cursor, submitting]);
 
   // Clears every entry field, as ``INITIALIZE-ALL-FIELDS`` does.
@@ -385,7 +377,7 @@ export default function ReportPage(): ReactElement {
     if (reportType === '') {
       setInfoMessage('');
       setErrorMessage(MSG_SELECT_REPORT_TYPE);
-      placeCursor('reportType-MONTHLY');
+      requestCursor('reportType-MONTHLY');
       return;
     }
 
@@ -401,7 +393,7 @@ export default function ReportPage(): ReactElement {
       if (failure !== null) {
         setInfoMessage('');
         setErrorMessage(failure.message);
-        placeCursor(failure.field);
+        requestCursor(failure.field);
         return;
       }
     }
@@ -412,20 +404,20 @@ export default function ReportPage(): ReactElement {
     if (confirmValue === '') {
       setInfoMessage('');
       setErrorMessage(`${CONFIRM_PROMPT_PREFIX}${reportName}${CONFIRM_PROMPT_SUFFIX}`);
-      placeCursor('confirm');
+      requestCursor('confirm');
       return;
     }
     if (confirmValue === 'N' || confirmValue === 'n') {
       resetFields();
       setInfoMessage('');
       setErrorMessage('');
-      placeCursor('reportType-MONTHLY');
+      requestCursor('reportType-MONTHLY');
       return;
     }
     if (confirmValue !== 'Y' && confirmValue !== 'y') {
       setInfoMessage('');
       setErrorMessage(`"${confirmValue}${INVALID_CONFIRM_SUFFIX}`);
-      placeCursor('confirm');
+      requestCursor('confirm');
       return;
     }
 
@@ -440,28 +432,39 @@ export default function ReportPage(): ReactElement {
     }
     if (response === undefined) {
       // The normalized failure reaches line 23 through the submission effect.
-      placeCursor('reportType-MONTHLY');
+      requestCursor('reportType-MONTHLY');
       return;
     }
 
-    const submitted = `${reportName}${SUBMIT_SUCCESS_SUFFIX}`;
-    const serverMessage = response.errorMessage?.trim() ?? '';
-    if (serverMessage !== '' && serverMessage !== submitted) {
+    // Which channel the text arrives on IS the colour CORPT00C sent it in: the service
+    // populates `message` only where the program performs `MOVE DFHGREEN TO ERRMSGC`,
+    // and `errorMessage` everywhere else. Deciding it by comparing the text against a
+    // locally composed copy of the expected acknowledgement meant any wording drift on
+    // either side would have rendered a failure in success green.
+    const refusal = response.errorMessage?.trim() ?? '';
+    if (refusal !== '') {
       setInfoMessage('');
-      setErrorMessage(serverMessage);
-      placeCursor('reportType-MONTHLY');
+      setErrorMessage(refusal);
+      setMessageReference(null);
+      requestCursor('reportType-MONTHLY');
       return;
     }
+    const acknowledgement = response.message?.trim() ?? '';
     resetFields();
     setErrorMessage('');
-    setInfoMessage(submitted);
-    placeCursor('reportType-MONTHLY');
+    setInfoMessage(
+      acknowledgement !== ''
+        ? acknowledgement
+        : `${reportName}${SUBMIT_SUCCESS_SUFFIX}`,
+    );
+    setMessageReference(response.jobExecutionId ?? null);
+    requestCursor('reportType-MONTHLY');
   }, [
     confirmInput,
     endDay,
     endMonth,
     endYear,
-    placeCursor,
+    requestCursor,
     reportType,
     resetFields,
     startDay,
@@ -480,25 +483,37 @@ export default function ReportPage(): ReactElement {
     if (submitError !== null) {
       setInfoMessage('');
       setErrorMessage(submissionErrorMessage(submitError));
+      setMessageReference(submitError.correlationId ?? null);
     }
   }, [submitError]);
 
   // Publishes the screen chrome: header fields, line-23 message and line-24 keys.
   // ENTER renders disabled while a submission is in flight.
-  useEffect(() => {
+  // The activators published to the shared frame are identity-stable and always
+  // dispatch to the newest render's handler, so the line-24 legend is not rebuilt on
+  // every keystroke and an AID can never act on a value the screen has replaced.
+  const activateExit = useScreenAction(handleExit);
+  const activateEnter = useScreenAction((): void => {
+    void handleEnter();
+  });
+
+  // The frame's header, line-23 message region and line-24 key legend belong to the
+  // SAME map as this body, so they are published in a LAYOUT effect: a CICS program
+  // moved every field into the symbolic map before its one SEND, and nothing
+  // half-built ever reached the terminal. A passive effect would paint the frame
+  // once without them and then move it.
+  useLayoutEffect(() => {
     const pfKeys: PFKeyDef[] = [
       {
         action: PfKeyAction.Enter,
         label: 'ENTER=Continue',
-        onActivate: () => {
-          void handleEnter();
-        },
+        onActivate: activateEnter,
         enabled: !submitting,
       },
       {
         action: PfKeyAction.PF3,
         label: 'F3=Back',
-        onActivate: handleExit,
+        onActivate: activateExit,
       },
     ];
     setChrome({
@@ -508,16 +523,25 @@ export default function ReportPage(): ReactElement {
       title02: CCDA_TITLE02,
       errorMessage,
       infoMessage,
+      messageReference,
       pfKeys,
       busy: submitting,
     });
-  }, [errorMessage, handleEnter, handleExit, infoMessage, setChrome, submitting]);
+  }, [
+    activateEnter,
+    activateExit,
+    messageReference,
+    errorMessage,
+    infoMessage,
+    setChrome,
+    submitting,
+  ]);
 
   return (
     <div className="reportPage">
-      <h2 className="neutral reportPage__heading" id="reportHeading">
+      <h3 className="neutral reportPage__heading" id="reportHeading">
         Transaction Reports
-      </h2>
+      </h3>
 
       <div
         className="reportPage__types"
@@ -534,8 +558,19 @@ export default function ReportPage(): ReactElement {
               value={type}
               checked={reportType === type}
               disabled={submitting}
+              {...invalidFieldProps(faultedField === `reportType-${type}`)}
               onChange={() => {
                 setReportType(type);
+                // A rejection belongs to the turn that produced it. Changing the
+                // selection changes the very input that turn rejected, so the message,
+                // the invalid marking derived from it, and the cursor placement all
+                // have to go with it -- CORPT00C clears WS-MESSAGE at the top of every
+                // turn and never redisplays a previous one. The cursor is re-placed on
+                // the control the operator just chose rather than left where the
+                // rejection put it, so it is never dropped onto the document body.
+                setErrorMessage('');
+                setInfoMessage('');
+                requestCursor(`reportType-${type}` as ReportCursorField);
               }}
             />{' '}
             <label className="prompt" htmlFor={`reportType-${type}`}>
@@ -545,18 +580,29 @@ export default function ReportPage(): ReactElement {
         ))}
       </div>
 
+      {/*
+        All six date parts stay enterable in every state of the screen. Each is
+        declared ``ATTRB=(FSET,NORM,NUM,UNPROT) COLOR=GREEN HILIGHT=UNDERLINE``
+        (app/bms/CORPT00.bms:127-193) and CORPT00C moves no attribute byte to any
+        field, so the mapset offers one entry treatment and never protects these
+        boxes. The window selection decides only whether the entered range is
+        *read*: CORPT00C:212 evaluates the selectors in order and inspects the date
+        parts under the custom branch alone, which is why buildReportRequest sends
+        them for CUSTOM only. `submitting` is the shell-wide keyboard lock.
+      */}
       <div className="reportPage__range">
         <div className="reportPage__dateRow">
           <span className="prompt">Start Date :</span>{' '}
           <input
             type="text"
             id="startDateMonth"
+            className="field"
             {...invalidFieldProps(faultedField === 'startDateMonth')}
             inputMode="numeric"
             maxLength={2}
             size={2}
             value={startMonth}
-            disabled={!customSelected || submitting}
+            disabled={submitting}
             aria-label="Start Date - Month"
             onChange={(event) => {
               setStartMonth(event.target.value);
@@ -568,12 +614,13 @@ export default function ReportPage(): ReactElement {
           <input
             type="text"
             id="startDateDay"
+            className="field"
             {...invalidFieldProps(faultedField === 'startDateDay')}
             inputMode="numeric"
             maxLength={2}
             size={2}
             value={startDay}
-            disabled={!customSelected || submitting}
+            disabled={submitting}
             aria-label="Start Date - Day"
             onChange={(event) => {
               setStartDay(event.target.value);
@@ -585,12 +632,13 @@ export default function ReportPage(): ReactElement {
           <input
             type="text"
             id="startDateYear"
+            className="field"
             {...invalidFieldProps(faultedField === 'startDateYear')}
             inputMode="numeric"
             maxLength={4}
             size={4}
             value={startYear}
-            disabled={!customSelected || submitting}
+            disabled={submitting}
             aria-label="Start Date - Year"
             onChange={(event) => {
               setStartYear(event.target.value);
@@ -604,12 +652,13 @@ export default function ReportPage(): ReactElement {
           <input
             type="text"
             id="endDateMonth"
+            className="field"
             {...invalidFieldProps(faultedField === 'endDateMonth')}
             inputMode="numeric"
             maxLength={2}
             size={2}
             value={endMonth}
-            disabled={!customSelected || submitting}
+            disabled={submitting}
             aria-label="End Date - Month"
             onChange={(event) => {
               setEndMonth(event.target.value);
@@ -621,12 +670,13 @@ export default function ReportPage(): ReactElement {
           <input
             type="text"
             id="endDateDay"
+            className="field"
             {...invalidFieldProps(faultedField === 'endDateDay')}
             inputMode="numeric"
             maxLength={2}
             size={2}
             value={endDay}
-            disabled={!customSelected || submitting}
+            disabled={submitting}
             aria-label="End Date - Day"
             onChange={(event) => {
               setEndDay(event.target.value);
@@ -638,12 +688,13 @@ export default function ReportPage(): ReactElement {
           <input
             type="text"
             id="endDateYear"
+            className="field"
             {...invalidFieldProps(faultedField === 'endDateYear')}
             inputMode="numeric"
             maxLength={4}
             size={4}
             value={endYear}
-            disabled={!customSelected || submitting}
+            disabled={submitting}
             aria-label="End Date - Year"
             onChange={(event) => {
               setEndYear(event.target.value);
@@ -660,7 +711,8 @@ export default function ReportPage(): ReactElement {
         <input
           type="text"
           id="confirm"
-          {...invalidFieldProps(faultedField === 'confirm')}
+          className="field"
+          {...invalidFieldProps(faultedField === 'confirm', 'reportConfirmValues')}
           maxLength={1}
           size={1}
           value={confirmInput}
@@ -669,7 +721,9 @@ export default function ReportPage(): ReactElement {
             setConfirmInput(event.target.value);
           }}
         />{' '}
-        <span className="neutral">(Y/N)</span>
+        <span className="neutral" id="reportConfirmValues">
+          (Y/N)
+        </span>
       </div>
     </div>
   );

@@ -17,6 +17,8 @@
 package com.carddemo.transaction.config;
 
 import com.carddemo.common.config.CorrelationIdContext;
+import com.carddemo.common.exception.CardDemoException;
+import com.carddemo.common.util.DateUtil;
 
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
@@ -74,6 +76,14 @@ public class PostingJobLaunchConfig {
      *     generation-data-group, which this parameter reproduces.
      */
     public static final String POSTING_DATE_KEY = "postingDate";
+
+    /**
+     * :purpose: Refusal reported when a submission names a business date that is not a
+     *     real calendar date in ``YYYY-MM-DD`` form. It quotes neither the submitted
+     *     value nor any internal detail, so a hostile string is never reflected back.
+     */
+    public static final String INVALID_POSTING_DATE_MESSAGE =
+            "Posting date must be a valid date in YYYY-MM-DD format.";
 
     /**
      * :purpose: Job-parameter key holding the per-launch unique run token, added as a
@@ -175,6 +185,8 @@ public class PostingJobLaunchConfig {
      *     already-running instance, an already-completed instance (the day's feed has
      *     been posted) or a restart violation — so a refused submission is never
      *     reported as an accepted one.
+     * :raises CardDemoException: when the supplied date is not a real calendar date in
+     *     ``YYYY-MM-DD`` form, so it is refused BEFORE a job instance exists.
      */
     public JobExecution launchTransactionPosting(String postingDate) throws JobExecutionException {
         String effectiveDate = effectivePostingDate(postingDate);
@@ -204,16 +216,35 @@ public class PostingJobLaunchConfig {
     }
 
     /**
-     * :purpose: Resolve the business date of a submission, defaulting to the current
-     *     date so an unattended or parameterless submission still carries the
+     * :purpose: Resolve and VALIDATE the business date of a submission, defaulting to the
+     *     current date so an unattended or parameterless submission still carries the
      *     identifying date the daily cycle needs.
      * :param postingDate: the requested date, possibly ``null`` or blank.
      * :returns: the effective ``YYYY-MM-DD`` posting date.
+     * :raises CardDemoException: when the value is not a real calendar date in
+     *     ``YYYY-MM-DD`` form.
+     * :note: ``postingDate`` is the IDENTIFYING job parameter: it is the instance key of a
+     *     posting cycle and it is persisted verbatim in ``BATCH_JOB_EXECUTION_PARAMS`` as the
+     *     audit record of the run. Unvalidated, any caller could mint unlimited instances
+     *     that re-post the same feed under names like ``NOT-A-DATE``, ``2026-13-45``, 600
+     *     nines or an injection string, and the batch audit trail carried them for good. The
+     *     legacy ``PARM`` was a real date consumed by the program, so it is validated with
+     *     the shared ``CSUTLDTC`` replacement — ``DateUtil`` with STRICT resolution, which
+     *     rejects ``2026-02-30`` as well as a malformed string [app/cbl/CSUTLDTC.cbl].
      */
     private static String effectivePostingDate(String postingDate) {
         if (postingDate == null || postingDate.isBlank()) {
             return LocalDate.now().format(POSTING_DATE_FORMAT);
         }
-        return postingDate.trim();
+        String trimmed = postingDate.trim();
+        // The ISO mask must be named explicitly: the single-argument DateUtil.isValid
+        // overload validates under MASK_CCYYMMDD ("YYYYMMDD"), which would refuse every
+        // hyphenated date this parameter is defined to carry.
+        if (!DateUtil.isValid(trimmed, DateUtil.MASK_ISO)) {
+            LOGGER.warn("Refusing transactionPostingJob submission: postingDate is not a valid"
+                    + " {} date", DateUtil.MASK_ISO);
+            throw new CardDemoException(INVALID_POSTING_DATE_MESSAGE);
+        }
+        return trimmed;
     }
 }

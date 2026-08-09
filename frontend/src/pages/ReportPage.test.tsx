@@ -68,6 +68,10 @@ jest.unstable_mockModule('../api', () => {
     signon: jest.fn(),
     ApiError,
     isApiError: (err: unknown): boolean => err instanceof ApiError,
+    // The request-cancellation contract ``useApi`` binds to: the real scope hands the
+    // caller's AbortSignal to axios, and the double simply invokes the call.
+    runWithRequestSignal: (_signal: AbortSignal, call: () => unknown): unknown => call(),
+    isCancelledRequest: (): boolean => false,
   };
 });
 
@@ -121,6 +125,16 @@ const START_YEAR_FIELD = 'Start Date - Year';
 const END_MONTH_FIELD = 'End Date - Month';
 const END_DAY_FIELD = 'End Date - Day';
 const END_YEAR_FIELD = 'End Date - Year';
+
+/* The six date components, in the order CORPT00C edits them. */
+const DATE_PART_FIELDS = [
+  START_MONTH_FIELD,
+  START_DAY_FIELD,
+  START_YEAR_FIELD,
+  END_MONTH_FIELD,
+  END_DAY_FIELD,
+  END_YEAR_FIELD,
+] as const;
 
 const SIGNED_ON_USER = 'USER01';
 
@@ -292,7 +306,7 @@ describe('ReportPage — screen (CORPT00 / transaction CR00)', () => {
     expect(screen.getByTestId('title02')).toHaveTextContent(CCDA_TITLE02);
     // The screen name lives in the body heading (BMS row 4), not in title02.
     expect(
-      screen.getByRole('heading', { level: 2, name: SCREEN_HEADING }),
+      screen.getByRole('heading', { level: 3, name: SCREEN_HEADING }),
     ).toBeInTheDocument();
     // The body heading of row 4 labels the report-window group.
     expect(screen.getByRole('radiogroup', { name: SCREEN_HEADING })).toBeInTheDocument();
@@ -359,46 +373,63 @@ describe('ReportPage — screen (CORPT00 / transaction CR00)', () => {
     expect(screen.getByLabelText(CONFIRM_CAPTION.trim())).toHaveValue('');
   });
 
-  it('leaves the six custom date components closed until a window is chosen', () => {
+  /*
+   * All six date parts are declared ``ATTRB=(FSET,NORM,NUM,UNPROT)`` at
+   * app/bms/CORPT00.bms:127-193 and CORPT00C moves no attribute byte to any field,
+   * so the mapset never protects them: they are enterable in every state of the
+   * screen, including before a window has been chosen. The window selection decides
+   * only whether the entered range is *read* — CORPT00C:212 inspects the date parts
+   * under the custom branch alone.
+   */
+  it('keeps all six date components enterable before any window is chosen', () => {
     renderReportScreen();
 
-    [
-      START_MONTH_FIELD,
-      START_DAY_FIELD,
-      START_YEAR_FIELD,
-      END_MONTH_FIELD,
-      END_DAY_FIELD,
-      END_YEAR_FIELD,
-    ].forEach((field) => {
-      expect(screen.getByLabelText(field)).toBeDisabled();
-    });
-  });
-
-  it('reveals the six custom date components when Custom (Date Range) is chosen', () => {
-    renderReportScreen();
-
-    selectReportType(CUSTOM_CAPTION);
-
-    [
-      START_MONTH_FIELD,
-      START_DAY_FIELD,
-      START_YEAR_FIELD,
-      END_MONTH_FIELD,
-      END_DAY_FIELD,
-      END_YEAR_FIELD,
-    ].forEach((field) => {
+    DATE_PART_FIELDS.forEach((field) => {
       expect(screen.getByLabelText(field)).toBeEnabled();
     });
   });
 
-  it('keeps the custom date components closed for the Monthly and Yearly windows', () => {
+  it('keeps all six date components enterable for the Custom window', () => {
+    renderReportScreen();
+
+    selectReportType(CUSTOM_CAPTION);
+
+    DATE_PART_FIELDS.forEach((field) => {
+      expect(screen.getByLabelText(field)).toBeEnabled();
+    });
+  });
+
+  it('keeps all six date components enterable for the Monthly and Yearly windows', () => {
     renderReportScreen();
 
     selectReportType(MONTHLY_CAPTION);
-    expect(screen.getByLabelText(START_MONTH_FIELD)).toBeDisabled();
+    DATE_PART_FIELDS.forEach((field) => {
+      expect(screen.getByLabelText(field)).toBeEnabled();
+    });
 
     selectReportType(YEARLY_CAPTION);
-    expect(screen.getByLabelText(END_YEAR_FIELD)).toBeDisabled();
+    DATE_PART_FIELDS.forEach((field) => {
+      expect(screen.getByLabelText(field)).toBeEnabled();
+    });
+  });
+
+  /*
+   * A range typed against a Monthly or Yearly window is ignored, not rejected:
+   * CORPT00C's EVALUATE TRUE matches the selector first and never reaches the date
+   * edits, so buildReportRequest carries the parts for CUSTOM only.
+   */
+  it('ignores a range typed against the Monthly window rather than rejecting it', async () => {
+    renderReportScreen();
+
+    enterCustomWindow(
+      { month: '13', day: '99', year: 'ABCD' },
+      { month: '13', day: '99', year: 'ABCD' },
+    );
+    selectReportType(MONTHLY_CAPTION);
+    enterConfirmation('Y');
+    await pressEnter();
+
+    expect(requestReportMock).toHaveBeenCalledWith({ monthly: 'Y', confirm: 'Y' });
   });
 });
 
@@ -410,6 +441,39 @@ describe('ReportPage — report window required', () => {
 
     expect(errorText()).toBe(MSG_SELECT_REPORT_TYPE);
     expect(requestReportMock).not.toHaveBeenCalled();
+  });
+
+  it('marks the control the rejection sends the cursor to', async () => {
+    // `CORPT00C` ends the no-window path with `MOVE -1 TO MONTHLYL`, so the report-type
+    // option is the control the row-23 message is about, and the cursor plus the
+    // accessible flag say so. The program contains no `MOVE DFHRED`, so the control is
+    // not recoloured.
+    renderReportScreen();
+
+    await pressEnter();
+
+    expect(errorText()).toBe(MSG_SELECT_REPORT_TYPE);
+    const monthly = screen.getByLabelText(MONTHLY_CAPTION);
+    expect(monthly).toBeInvalid();
+    expect(monthly).not.toHaveClass('fieldError');
+    expect(screen.getByLabelText(YEARLY_CAPTION)).not.toBeInvalid();
+    expect(document.querySelectorAll('.fieldError')).toHaveLength(0);
+  });
+
+  it('marks the confirm box while the screen is asking for confirmation', async () => {
+    // The confirmation prompt is reported on the error line and ends with
+    // `MOVE -1 TO CONFIRML`, so the confirm box is the control it is about.
+    renderReportScreen();
+
+    selectReportType(MONTHLY_CAPTION);
+    await pressEnter();
+
+    expect(errorText()).toBe(`${CONFIRM_PROMPT_PREFIX}Monthly${CONFIRM_PROMPT_SUFFIX}`);
+    const confirm = screen.getByLabelText(CONFIRM_CAPTION.trim());
+    expect(confirm).toBeInvalid();
+    expect(confirm).toHaveClass('field');
+    expect(confirm).not.toHaveClass('fieldError');
+    expect(screen.getByLabelText(MONTHLY_CAPTION)).not.toBeInvalid();
   });
 
   it('clears the rejection once a window is chosen and confirmed', async () => {
@@ -860,5 +924,133 @@ describe('ReportPage — line-24 function keys', () => {
 
     expect(requestReportMock).not.toHaveBeenCalled();
     expect(screen.getByTestId('error-banner-empty')).toBeInTheDocument();
+  });
+});
+
+describe('ReportPage — the message channel carries the colour (CORPT00C MOVE DFHGREEN)', () => {
+  it('renders an acknowledgement that arrives on the success channel as informational', async () => {
+    // CORPT00 declares ONE message field, ERRMSG POS=(23,1) COLOR=RED, and CORPT00C
+    // performs `MOVE DFHGREEN TO ERRMSGC` before the submission acknowledgement and
+    // before nothing else. The service therefore populates `message` for that one
+    // outcome and `errorMessage` for every other, so the colour travels on the contract.
+    const acknowledgement = `Monthly${SUBMIT_SUCCESS_SUFFIX}`;
+    requestReportMock.mockResolvedValueOnce({ message: acknowledgement });
+    renderReportScreen();
+
+    selectReportType(MONTHLY_CAPTION);
+    enterConfirmation('Y');
+    await pressEnter();
+
+    expect(infoText()).toBe(acknowledgement);
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('renders a refusal as an error even when its text matches the acknowledgement', async () => {
+    // The previous implementation decided the channel by comparing the text against a
+    // locally composed copy of the expected acknowledgement, so a refusal whose wording
+    // happened to coincide would have been painted in success green. The channel now
+    // decides, and the text is irrelevant to it.
+    const collidingText = `Monthly${SUBMIT_SUCCESS_SUFFIX}`;
+    requestReportMock.mockResolvedValueOnce({ errorMessage: collidingText });
+    renderReportScreen();
+
+    selectReportType(MONTHLY_CAPTION);
+    enterConfirmation('Y');
+    await pressEnter();
+
+    expect(errorText()).toBe(collidingText);
+    expect(infoBanner()).toBeNull();
+  });
+
+  it('clears a standing rejection, its marking and the cursor when the type changes', async () => {
+    // A rejection belongs to the turn that produced it. Changing the selection changes the
+    // very input that turn rejected, so the message and the marking derived from it go
+    // with it -- and the cursor lands on the control just chosen rather than being
+    // dropped onto the document body.
+    renderReportScreen();
+
+    enterConfirmation('Y');
+    await pressEnter();
+    expect(errorText()).toBe(MSG_SELECT_REPORT_TYPE);
+    const group = screen.getByRole('radiogroup');
+    expect(group).toHaveAttribute('aria-invalid', 'true');
+
+    selectReportType(YEARLY_CAPTION);
+
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(group).not.toHaveAttribute('aria-invalid');
+    expect(screen.getByRole('radio', { name: YEARLY_CAPTION })).toHaveFocus();
+    expect(document.activeElement).not.toBe(document.body);
+  });
+
+  /*
+   * CORPT00C contains no ``MOVE DFHRED`` and no ``MOVE '*'`` at all: it marks the
+   * offending date component with ``MOVE -1 TO <field>L`` -- the cursor -- and the
+   * line-23 message, and nothing else. Reddening the box would be observable output
+   * the mapset does not declare, so the accessible flag (which has no BMS analogue to
+   * contradict) travels alone and the cursor names which of the six is wrong.
+   */
+  it('marks a rejected date component by cursor and flag alone, never by colour', async () => {
+    renderReportScreen();
+
+    selectReportType(CUSTOM_CAPTION);
+    enterCustomWindow(
+      { month: '13', day: '01', year: '2026' },
+      { month: '01', day: '31', year: '2026' },
+    );
+    enterConfirmation('Y');
+    await pressEnter();
+
+    expect(errorText()).toBe('Start Date - Not a valid Month...');
+    const month = screen.getByLabelText(START_MONTH_FIELD);
+    expect(month).toHaveAttribute('aria-invalid', 'true');
+    expect(month).toHaveFocus();
+    expect(month.className).not.toContain('fieldError');
+    expect(document.querySelectorAll('.fieldError')).toHaveLength(0);
+    expect(requestReportMock).not.toHaveBeenCalled();
+  });
+
+  it('describes the confirmation field with its own (Y/N) value hint', () => {
+    renderReportScreen();
+
+    const confirm = screen.getByLabelText(CONFIRM_CAPTION.trim());
+    const described = confirm.getAttribute('aria-describedby') ?? '';
+    expect(described.split(' ')).toContain('reportConfirmValues');
+    expect(document.getElementById('reportConfirmValues')?.textContent).toBe(
+      CONFIRM_HINT,
+    );
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* Launch traceability (Observability rule, AAP 0.7.5)                */
+/* ------------------------------------------------------------------ */
+
+describe('ReportPage — a launched report is traceable', () => {
+  it('carries the launched execution id on the message region', async () => {
+    // The submission's own identity travels back with the response so a launched report
+    // can be followed into its log and trace records. It is an attribute, not screen
+    // text: CORPT00's message field is a frozen literal contract.
+    requestReportMock.mockResolvedValueOnce({ jobExecutionId: '4321' });
+    renderReportScreen();
+
+    selectReportType(MONTHLY_CAPTION);
+    enterConfirmation('Y');
+    await pressEnter();
+
+    expect(infoBanner()).toHaveAttribute('data-message-reference', '4321');
+  });
+
+  it('publishes no reference for an outcome that launched nothing', async () => {
+    const rejected = 'Report request could not be queued...';
+    requestReportMock.mockResolvedValueOnce({ errorMessage: rejected });
+    renderReportScreen();
+
+    selectReportType(MONTHLY_CAPTION);
+    enterConfirmation('Y');
+    await pressEnter();
+
+    expect(errorText()).toBe(rejected);
+    expect(screen.getByRole('alert')).not.toHaveAttribute('data-message-reference');
   });
 });

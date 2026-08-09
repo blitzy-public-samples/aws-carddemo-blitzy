@@ -15,15 +15,20 @@
  */
 package com.carddemo.account.service;
 
+import com.carddemo.common.crypto.PiiMasker;
+import com.carddemo.common.domain.Customer;
 import com.carddemo.common.dto.AccountUpdateRequestDto;
 import com.carddemo.common.exception.CardDemoException;
+import com.carddemo.common.exception.FieldValidationException;
 
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 
+import java.time.LocalDate;
 import java.math.BigDecimal;
 import java.util.function.Consumer;
 import java.util.stream.Stream;
@@ -132,11 +137,16 @@ class AccountUpdateValidatorTest {
      */
     private static Stream<Arguments> editBranches() {
         return Stream.of(
-                // 1220-EDIT-YESNO on 'Account Status' (L504).
+                // 1220-EDIT-YESNO on 'Account Status' (L1856-1893). Both messages are
+                // composed from WS-EDIT-VARIABLE-NAME, which L1472-1475 sets to
+                // 'Account Status' before performing the paragraph. The 88-level at
+                // L503-504 reading 'Account Active Status must be Y or N' is never SET
+                // anywhere in the program, so no terminal can display it. The paragraph
+                // reports absence and a wrong value with its two distinct messages.
                 Arguments.of(mutate(r -> r.setAcctActiveStatus("Z")),
-                        "Account Active Status must be Y or N"),
+                        "Account Status must be Y or N."),
                 Arguments.of(mutate(r -> r.setAcctActiveStatus(null)),
-                        "Account Active Status must be Y or N"),
+                        "Account Status must be supplied."),
                 // EDIT-DATE-CCYYMMDD on 'Open Date' (CSUTLDPY).
                 Arguments.of(mutate(r -> r.setAcctOpenDate(null)),
                         "Open Date : Year must be supplied."),
@@ -151,7 +161,10 @@ class AccountUpdateValidatorTest {
                         "Credit Limit must be supplied"),
                 Arguments.of(mutate(r -> r.setAcctCreditLimit(new BigDecimal("2020.005"))),
                         "Credit Limit is not valid"),
-                Arguments.of(mutate(r -> r.setAcctCreditLimit(new BigDecimal("1234567890.00"))),
+                // ELEVEN integer digits overflows PIC S9(10)V99 / NUMERIC(12,2) and is rejected.
+                // Ten is legal and is asserted as ACCEPTED by the boundary test below; capping at
+                // nine made an account legitimately holding a ten-digit amount impossible to update.
+                Arguments.of(mutate(r -> r.setAcctCreditLimit(new BigDecimal("12345678901.00"))),
                         "Credit Limit is not valid"),
                 // EDIT-DATE-CCYYMMDD on 'Expiry Date' (L510, L512).
                 Arguments.of(mutate(r -> r.setAcctExpiraionDate("2025-13-20")),
@@ -311,7 +324,7 @@ class AccountUpdateValidatorTest {
                 .catchThrowableOfType(CardDemoException.class, () -> validator.validate(request));
 
         assertThat(thrown).isNotNull();
-        assertThat(thrown.getMessage()).isEqualTo("Account Active Status must be Y or N");
+        assertThat(thrown.getMessage()).isEqualTo("Account Status must be Y or N.");
         assertThat(thrown.getMessage()).doesNotContain(",");
     }
 
@@ -404,6 +417,80 @@ class AccountUpdateValidatorTest {
     }
 
     /**
+     * :purpose: A rejected edit names the request member it faulted, so the calling screen can
+     *  paint that field red and park the cursor on it as ``3300-SETUP-SCREEN-ATTRS`` does.
+     */
+    @Test
+    @DisplayName("a rejected edit reports the request member it faulted")
+    void rejectedEditNamesItsField() {
+        AccountUpdateRequestDto request = validRequest();
+        request.setCustFicoCreditScore(274);
+
+        FieldValidationException failure = Assertions
+                .catchThrowableOfType(FieldValidationException.class, () -> validator.validate(request));
+
+        assertThat(failure).isNotNull();
+        assertThat(failure.getMessage()).isEqualTo("FICO Score: should be between 300 and 850");
+        assertThat(failure.getField()).isEqualTo("custFicoCreditScore");
+        assertThat(failure.getFields()).containsExactly("custFicoCreditScore");
+    }
+
+    /**
+     * :purpose: ``1280-EDIT-US-STATE-ZIP-CD`` sets FLG-STATE-NOT-OK *and* FLG-ZIPCODE-NOT-OK,
+     *  so the cross-field edit faults both members with the state code first — the field the
+     *  legacy cursor rule reaches first in screen order.
+     */
+    @Test
+    @DisplayName("the state/zip cross-field edit faults both members, state code first")
+    void zipForStateFaultsBothMembers() {
+        AccountUpdateRequestDto request = validRequest();
+        request.setCustAddrZip("99501");
+
+        FieldValidationException failure = Assertions
+                .catchThrowableOfType(FieldValidationException.class, () -> validator.validate(request));
+
+        assertThat(failure).isNotNull();
+        assertThat(failure.getMessage()).isEqualTo("Invalid zip code for state");
+        assertThat(failure.getFields()).containsExactly("custAddrStateCd", "custAddrZip");
+    }
+
+    /**
+     * :purpose: An echoed mask carries nothing new and passes; a value the operator edited
+     *  THROUGH the mask is not numeric and is refused, naming its own field.
+     */
+    @Test
+    @DisplayName("only the stored value's own mask is accepted for a masked identifier")
+    void maskedIdentifierEditIsRefused() {
+        Customer stored = new Customer();
+        stored.setCustSsn("020973888");
+        stored.setCustEftAccountId("0053581756");
+
+        AccountUpdateRequestDto echoed = validRequest();
+        echoed.setCustSsn(PiiMasker.maskSsn(stored.getCustSsn()));
+        echoed.setCustEftAccountId(PiiMasker.maskIdentifier(stored.getCustEftAccountId()));
+        assertThatNoException()
+                .isThrownBy(() -> validator.validateMaskedIdentifiers(echoed, stored));
+
+        AccountUpdateRequestDto editedSsn = validRequest();
+        editedSsn.setCustSsn("***-**-1234");
+        FieldValidationException ssnFailure = Assertions.catchThrowableOfType(
+                FieldValidationException.class,
+                () -> validator.validateMaskedIdentifiers(editedSsn, stored));
+        assertThat(ssnFailure).isNotNull();
+        assertThat(ssnFailure.getMessage()).isEqualTo("SSN: First 3 chars must be all numeric.");
+        assertThat(ssnFailure.getField()).isEqualTo("custSsn");
+
+        AccountUpdateRequestDto editedEft = validRequest();
+        editedEft.setCustEftAccountId("******9999");
+        FieldValidationException eftFailure = Assertions.catchThrowableOfType(
+                FieldValidationException.class,
+                () -> validator.validateMaskedIdentifiers(editedEft, stored));
+        assertThat(eftFailure).isNotNull();
+        assertThat(eftFailure.getMessage()).isEqualTo("EFT Account Id must be all numeric.");
+        assertThat(eftFailure.getField()).isEqualTo("custEftAccountId");
+    }
+
+    /**
      * :purpose: Apply one oversized-field mutation to an otherwise valid submission and assert
      *  the exact message the width edit reports.
      * :param mutation: the field mutation that exceeds a declared width.
@@ -426,5 +513,114 @@ class AccountUpdateValidatorTest {
      */
     private static Consumer<AccountUpdateRequestDto> mutate(Consumer<AccountUpdateRequestDto> mutation) {
         return mutation;
+    }
+    /**
+     * :purpose: Every account amount is declared ``PIC S9(10)V99`` [app/cpy/CVACT01Y.cpy:L7-L14] and
+     *   stored in a ``NUMERIC(12,2)`` column, so TEN integer digits are legal and ``9999999999.99``
+     *   is the largest representable value. All five amount fields are asserted, because the guard
+     *   is shared and a full-snapshot PUT is rejected on ANY of them -- which is why capping at nine
+     *   made an account holding a legal large amount impossible to update at all, no matter which
+     *   field the caller was actually editing.
+     * :param mutation: the single amount mutation applied to an otherwise valid submission.
+     */
+    @ParameterizedTest(name = "[{index}] ten integer digits accepted")
+    @MethodSource("tenDigitAmounts")
+    void tenIntegerDigitAmountsAreAccepted(Consumer<AccountUpdateRequestDto> mutation) {
+        AccountUpdateRequestDto request = validRequest();
+        mutation.accept(request);
+
+        assertThatNoException().isThrownBy(() -> validator.validate(request));
+    }
+
+    /**
+     * :purpose: Enumerate the maximum legal value on each of the five account amount fields.
+     * :returns: a stream of single-field mutations setting the PIC S9(10)V99 maximum.
+     */
+    private static Stream<Arguments> tenDigitAmounts() {
+        BigDecimal max = new BigDecimal("9999999999.99");
+        BigDecimal tenDigits = new BigDecimal("1234567890.00");
+        return Stream.of(
+                Arguments.of((Consumer<AccountUpdateRequestDto>) r -> r.setAcctCreditLimit(max)),
+                Arguments.of((Consumer<AccountUpdateRequestDto>) r -> r.setAcctCreditLimit(tenDigits)),
+                Arguments.of((Consumer<AccountUpdateRequestDto>) r -> r.setAcctCurrBal(max)),
+                Arguments.of((Consumer<AccountUpdateRequestDto>) r -> r.setAcctCashCreditLimit(max)),
+                Arguments.of((Consumer<AccountUpdateRequestDto>) r -> r.setAcctCurrCycCredit(max)),
+                Arguments.of((Consumer<AccountUpdateRequestDto>) r -> r.setAcctCurrCycDebit(max)));
+    }
+
+    /**
+     * :purpose: ``EDIT-DATE-OF-BIRTH`` (``app/cpy/CSUTLDPY.cpy``) rejects a date of birth that is
+     *   not strictly in the past, with the literal the legacy ``STRING`` composes. The paragraph
+     *   passes only when ``WS-CURRENT-DATE-BINARY > WS-EDIT-DATE-BINARY``, so TODAY is rejected too
+     *   and that boundary is asserted rather than assumed.
+     * :param dob: the submitted date of birth.
+     */
+    @ParameterizedTest(name = "[{index}] dob {0} rejected as future")
+    @MethodSource("nonPastDatesOfBirth")
+    void dateOfBirthMustBeStrictlyInThePast(String dob) {
+        AccountUpdateRequestDto request = validRequest();
+        request.setCustDobYyyyMmDd(dob);
+
+        assertThatExceptionOfType(CardDemoException.class)
+                .isThrownBy(() -> validator.validate(request))
+                .withMessage("Date of Birth:cannot be in the future ");
+    }
+
+    /**
+     * :purpose: Enumerate dates of birth that are not strictly in the past.
+     * :returns: today and two future dates, all real calendar dates so the calendar edit passes and
+     *   the reasonableness edit is the one that rejects them.
+     */
+    private static Stream<Arguments> nonPastDatesOfBirth() {
+        return Stream.of(
+                Arguments.of(LocalDate.now().toString()),
+                Arguments.of(LocalDate.now().plusDays(1).toString()),
+                Arguments.of("2099-01-01"));
+    }
+
+    /**
+     * :purpose: A date of birth in the past is still accepted, so the new reasonableness edit did
+     *   not turn a legitimate submission into a failure.
+     */
+    @Test
+    @DisplayName("a past date of birth is still accepted")
+    void pastDateOfBirthIsAccepted() {
+        AccountUpdateRequestDto request = validRequest();
+        request.setCustDobYyyyMmDd(LocalDate.now().minusDays(1).toString());
+
+        assertThatNoException().isThrownBy(() -> validator.validate(request));
+    }
+
+    /**
+     * :purpose: The calendar edit runs FIRST and the reasonableness edit only when the date already
+     *   parsed [app/cbl/COACTUPC.cbl:L1533-L1541], so an impossible future date reports its own
+     *   calendar message rather than the future-date one.
+     */
+    @Test
+    @DisplayName("an impossible future date reports the calendar message, not the future message")
+    void impossibleFutureDateReportsCalendarMessageFirst() {
+        AccountUpdateRequestDto request = validRequest();
+        request.setCustDobYyyyMmDd("2099-02-30");
+
+        assertThatExceptionOfType(CardDemoException.class)
+                .isThrownBy(() -> validator.validate(request))
+                .withMessage("Date of Birth:day must be a number between 1 and 31.");
+    }
+
+    /**
+     * :purpose: Every numeric property of the request must have a bind-time message, and it must be
+     *   the SAME string the edit reports, so a wrong-typed value and an out-of-range value read
+     *   identically to the caller.
+     */
+    @Test
+    @DisplayName("the type-mismatch map covers every numeric property with the edit's own message")
+    void typeMismatchMapMatchesTheEditMessages() {
+        assertThat(AccountUpdateValidator.typeMismatchMessages())
+                .containsEntry("acctCreditLimit", "Credit Limit is not valid")
+                .containsEntry("acctCurrBal", "Current Balance is not valid")
+                .containsEntry("acctCashCreditLimit", "Cash Credit Limit is not valid")
+                .containsEntry("acctCurrCycCredit", "Current Cycle Credit Limit is not valid")
+                .containsEntry("acctCurrCycDebit", "Current Cycle Debit Limit is not valid")
+                .containsEntry("custFicoCreditScore", "FICO Score: should be between 300 and 850");
     }
 }

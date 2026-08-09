@@ -77,9 +77,18 @@ class ContainerErrorReportConfigTest {
                 .contains("\"message\":\"Bad Request\"")
                 .contains("\"path\":\"/users/..%2F..%2Fetc%2Fpasswd\"")
                 .contains("\"errorCode\":null")
+                .contains("\"correlationId\":null")
                 .contains("\"traceId\":null")
+                .contains("\"correlationId\":null")
                 .contains("\"fieldErrors\":null")
                 .contains("\"timestamp\":\"");
+        // Pinned as the exact nine-member set, in the ErrorResponse declaration order: this
+        // valve is one of four components that can answer a failure, and the envelope is only
+        // a contract if a reader finds the same members whichever one answered. The valve runs
+        // after the request has unwound, so traceId and correlationId are genuinely
+        // unavailable here — written as null rather than omitted.
+        assertThat(readMemberNames(body)).containsExactly("timestamp", "status", "error",
+                "errorCode", "message", "path", "traceId", "correlationId", "fieldErrors");
         assertThat(body).doesNotContain("<html").doesNotContain("Tomcat").doesNotContain("<h1>");
         verify(response).setContentType("application/json");
     }
@@ -152,5 +161,74 @@ class ContainerErrorReportConfigTest {
 
         assertThat(valve.isShowReport()).isFalse();
         assertThat(valve.isShowServerInfo()).isFalse();
+    }
+    /**
+     * :purpose: When a filter DID run before the container took the response over, the envelope
+     *  must carry the SAME correlation id that filter published and echoed to the caller, so a
+     *  container-rendered body is correlatable against the access log.
+     * :raises Exception: propagated from the mocked reporter.
+     */
+    @Test
+    @DisplayName("the established correlation id is rendered when a filter published one")
+    void establishedCorrelationIdIsRendered() throws Exception {
+        StringWriter sink = new StringWriter();
+        Request request = mock(Request.class);
+        Response response = mock(Response.class);
+        when(request.getRequestURI()).thenReturn("/accounts/1");
+        when(request.getAttribute(CorrelationIdFilter.CORRELATION_ID_ATTRIBUTE))
+                .thenReturn("established-id-42");
+        when(response.getStatus()).thenReturn(500);
+        when(response.getContentWritten()).thenReturn(0L);
+        when(response.setErrorReported()).thenReturn(true);
+        when(response.getReporter()).thenReturn(new PrintWriter(sink));
+
+        newValve().report(request, response, null);
+
+        assertThat(sink.toString()).contains("\"correlationId\":\"established-id-42\"");
+    }
+
+    /**
+     * :purpose: A URI the container refuses while parsing the request line runs NO filter at all,
+     *  so the server never mints an id for it. A caller that supplied its own id must still get it
+     *  back, and the value must be sanitized on the way through -- the raw header is attacker
+     *  controlled and is being written into a JSON body and a log line.
+     * :raises Exception: propagated from the mocked reporter.
+     */
+    @Test
+    @DisplayName("an inbound correlation id is honoured and sanitized when no filter ran")
+    void inboundCorrelationIdIsHonouredAndSanitized() throws Exception {
+        StringWriter sink = new StringWriter();
+        Request request = mock(Request.class);
+        Response response = mock(Response.class);
+        when(request.getRequestURI()).thenReturn("/cards/..%2F..%2Fetc%2Fpasswd");
+        when(request.getAttribute(CorrelationIdFilter.CORRELATION_ID_ATTRIBUTE)).thenReturn(null);
+        when(request.getHeader(CorrelationIdFilter.CORRELATION_ID_HEADER))
+                .thenReturn("caller\r\nInjected: 1");
+        when(response.getStatus()).thenReturn(400);
+        when(response.getContentWritten()).thenReturn(0L);
+        when(response.setErrorReported()).thenReturn(true);
+        when(response.getReporter()).thenReturn(new PrintWriter(sink));
+
+        newValve().report(request, response, null);
+
+        String body = sink.toString();
+        assertThat(body).contains("\"correlationId\":\"caller")
+                .doesNotContain("\r").doesNotContain("\n")
+                .doesNotContain("Injected: 1");
+    }
+
+    /**
+     * :purpose: Read the member names of a flat JSON document in document order.
+     * :param json: the rendered envelope.
+     * :returns: the member names, in the order they were written.
+     */
+    private static java.util.List<String> readMemberNames(String json) {
+        java.util.List<String> names = new java.util.ArrayList<>();
+        java.util.regex.Matcher matcher =
+                java.util.regex.Pattern.compile("\"([A-Za-z]+)\"\\s*:").matcher(json);
+        while (matcher.find()) {
+            names.add(matcher.group(1));
+        }
+        return names;
     }
 }

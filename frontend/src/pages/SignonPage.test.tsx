@@ -26,7 +26,7 @@
  *     shared ``Layout`` (the provider that renders that chrome) within a
  *     ``MemoryRouter`` whose sibling routes act as navigation probes.
  */
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 // ``CCDA-MSG-THANK-YOU`` verbatim, the one line PF3 leaves on the erased screen.
 import { CCDA_MSG_THANK_YOU } from '../types';
 import type { RenderResult } from '@testing-library/react';
@@ -77,14 +77,34 @@ class MockApiError extends Error {
 const signonMock =
   jest.fn<(request: SignonRequestDto) => Promise<SignonResponseDto>>();
 
+/**
+ * Captures the expiry callback the session store registers, so a test can end the
+ * session the way the server does — a ``401`` on any request — and assert what the
+ * sign-on screen the operator lands on then reports.
+ */
+let expiryHandler: ((reason: 'expired' | 'refused') => void) | undefined;
+
 jest.unstable_mockModule('../api', () => ({
+  // The request-cancellation contract ``useApi`` binds to: the real scope hands the
+  // caller's AbortSignal to axios, and the double simply invokes the call.
+  runWithRequestSignal: (_signal: AbortSignal, call: () => unknown): unknown => call(),
+  isCancelledRequest: (): boolean => false,
   // The session store this screen's module graph loads binds to these barrel
   // exports as well. ``signIn`` asks the server whether a session is already live
   // before it sends credentials, so the probe must answer: it reports that there
   // is none, which is the state the sign-on screen is always reached in.
   getSessionIdentity: jest.fn(() => Promise.reject(new Error('No session'))),
   logout: jest.fn(() => Promise.resolve(undefined)),
-  registerSessionExpiryHandler: jest.fn(() => () => undefined),
+  registerSessionExpiryHandler: jest.fn(
+    (handler: (reason: 'expired' | 'refused') => void) => {
+      // Captured so a test can fire the centralized expiry path exactly as the axios
+      // response interceptor does on a ``401``.
+      expiryHandler = handler;
+      return () => {
+        expiryHandler = undefined;
+      };
+    },
+  ),
   getAppId: jest.fn(() => 'CICS'),
   getSysId: jest.fn(() => 'CDMO'),
   __esModule: true,
@@ -111,15 +131,25 @@ let seedSignedOnSession: SessionHarness['seedSignedOnSession'];
 /** Places the SPA in the server-confirmed signed-out state the screen is reached in. */
 let seedSignedOutSession: SessionHarness['seedSignedOutSession'];
 
+/** Withdraws a published session-ended notice, so it cannot leak between tests. */
+let withdrawSessionNotice: SessionHarness['withdrawSessionNotice'];
+
+/**
+ * The row-23 copy an expired session raises, read from the session module so the test
+ * asserts against the shipped literal rather than a duplicate of it.
+ */
+let SESSION_ENDED_MESSAGE: string;
+
 beforeAll(async () => {
   // Imported after the mock registration so the page, the chrome provider and the
   // session store all bind to the mocked ``signon``.
   ({ default: Layout } = await import('../components/Layout'));
   ({ default: SignonPage } = await import('./SignonPage'));
   ({ ApiError } = await import('../api'));
-  ({ seedSignedOnSession, seedSignedOutSession } = await import(
+  ({ seedSignedOnSession, seedSignedOutSession, withdrawSessionNotice } = await import(
     '../testing/sessionHarness'
   ));
+  ({ SESSION_ENDED_MESSAGE } = await import('../hooks/useSession'));
 });
 
 /** Verbatim BMS ``POS=(17,16)`` instructional prompt of mapset ``COSGN00``. */
@@ -290,7 +320,8 @@ function passwordField(): HTMLInputElement {
 }
 
 /**
- * :purpose: Fill both entry fields and activate the screen's submit control.
+ * :purpose: Fill both entry fields and send the screen's ENTER AID, which is the
+ *     line-24 ``ENTER=Sign-on`` key -- the only submit affordance the mapset declares.
  * :param userId: The user id to enter into the ``USERID`` field.
  * :param password: The password to enter into the ``PASSWD`` field.
  */
@@ -298,7 +329,9 @@ async function submitCredentials(userId: string, password: string): Promise<void
   const user = userEvent.setup();
   await user.type(userIdField(), userId);
   await user.type(passwordField(), password);
-  await user.click(screen.getByRole('button', { name: SUBMIT_LABEL }));
+  // The screen body carries no control: ENTER is the AID, published on line 24 as
+  // ``ENTER=Sign-on``.
+  await user.click(screen.getByRole('button', { name: PF_ENTER_LABEL }));
 }
 
 /**
@@ -326,14 +359,32 @@ function authenticatedFlag(view: RenderResult): string | null {
   return view.container.querySelector('.screen')?.getAttribute('data-authenticated') ?? null;
 }
 
-/** Press the physical ENTER AID (``DFHENTER``) handled by the line-24 legend. */
-function pressEnterKey(): void {
-  fireEvent.keyDown(document, { key: 'Enter' });
+/**
+ * :purpose: Press the physical ENTER AID (``DFHENTER``) handled by the line-24 legend.
+ * :note: Awaited inside ``act`` because the legend handler calls the page's ASYNC submit:
+ *  the validation state it sets lands in a promise continuation, and the chrome the page
+ *  republishes from it (``SignonPage`` effect -> ``Layout.setChrome``) is committed in a
+ *  passive effect after that continuation. A bare ``fireEvent`` opens only a synchronous
+ *  ``act`` scope, so both would settle outside it.
+ */
+async function pressEnterKey(): Promise<void> {
+  await act(async () => {
+    fireEvent.keyDown(document, { key: 'Enter' });
+    // Awaited inside the SAME scope, so the promise continuation the handler queues and
+    // the passive effect that republishes the screen chrome are both owned by it.
+    await Promise.resolve();
+  });
 }
 
-/** Press the physical PF3 AID (``DFHPF3``) handled by the line-24 legend. */
-function pressPf3Key(): void {
-  fireEvent.keyDown(document, { key: 'F3' });
+/**
+ * :purpose: Press the physical PF3 AID (``DFHPF3``) handled by the line-24 legend.
+ * :note: Awaited inside ``act`` for the same reason as :func:`pressEnterKey`.
+ */
+async function pressPf3Key(): Promise<void> {
+  await act(async () => {
+    fireEvent.keyDown(document, { key: 'F3' });
+    await Promise.resolve();
+  });
 }
 
 /**
@@ -349,6 +400,9 @@ beforeEach(async () => {
   signonMock.mockReset();
   sessionStorage.clear();
   await seedSignedOutSession();
+  // The session store outlives an individual test, so a notice raised by one must not
+  // still be standing on the next test's line-23 region.
+  withdrawSessionNotice();
 });
 
 afterEach(() => {
@@ -388,18 +442,30 @@ describe('SignonPage — COSGN00 map rendering', () => {
     expect(screen.getAllByText(FIELD_WIDTH_HINT)).toHaveLength(2);
   });
 
-  it('renders the submit control and the enabled line-24 function-key legend', () => {
+  it('renders the line-24 legend as the ONLY submit affordance, none in the body', () => {
     renderSignonPage();
 
-    const legend = screen.getByRole('toolbar', { name: 'Function keys' });
+    const legend = screen.getByRole('group', { name: 'Function keys' });
     const enterKey = screen.getByRole('button', { name: PF_ENTER_LABEL });
     const exitKey = screen.getByRole('button', { name: PF_EXIT_LABEL });
 
-    expect(screen.getByRole('button', { name: SUBMIT_LABEL })).toBeInTheDocument();
+    // `COSGN00.bms` declares two entry fields and one row-24 legend field. A `Sign-on`
+    // button beside the fields was observable output the mapset does not declare and a
+    // duplicate of the key already on line 24. The form's hidden submit control is not
+    // exposed to the accessibility tree, so it is not one of these.
+    expect(screen.queryByRole('button', { name: SUBMIT_LABEL })).toBeNull();
+    expect(
+      within(screen.getByRole('main')).queryAllByRole('button'),
+    ).toHaveLength(0);
     expect(legend).toContainElement(enterKey);
     expect(legend).toContainElement(exitKey);
     expect(enterKey).toBeEnabled();
     expect(exitKey).toBeEnabled();
+    // ``COSGN00.bms`` declares one line-24 legend and nothing else the operator can
+    // activate, so the two legend keys are the only controls the screen offers and the
+    // body's implicit-submit control is not one of them.
+    expect(screen.getAllByRole('button')).toHaveLength(2);
+    expect(screen.queryByRole('button', { name: SUBMIT_LABEL })).toBeNull();
   });
 
   it('publishes the transaction id, program name, and titles as screen chrome', () => {
@@ -465,7 +531,7 @@ describe('SignonPage — required-field validation', () => {
   it('rejects a blank user id with the verbatim message and issues no call', async () => {
     renderSignonPage();
 
-    pressEnterKey();
+    await pressEnterKey();
 
     await waitFor(() => {
       expect(messageText()).toBe(MSG_ENTER_USER_ID);
@@ -474,13 +540,53 @@ describe('SignonPage — required-field validation', () => {
     expect(currentPath()).toBe(SIGNON_ROUTE);
   });
 
+  it('marks the rejected entry field, not only the message line', async () => {
+    // `COSGN00C` sends the map back with the cursor on the field it rejected
+    // (`MOVE -1 TO USERIDL`) so the operator can see WHICH field the row-23 message is
+    // about. It contains no `MOVE DFHRED`, so the field is NOT recoloured: the cursor
+    // and the accessible invalid flag carry the mark, and nothing else does.
+    renderSignonPage();
+
+    await pressEnterKey();
+
+    await waitFor(() => {
+      expect(messageText()).toBe(MSG_ENTER_USER_ID);
+    });
+    expect(userIdField()).toBeInvalid();
+    expect(userIdField()).toHaveFocus();
+    expect(userIdField()).toHaveClass('field');
+    expect(userIdField()).not.toHaveClass('fieldError');
+    expect(passwordField()).toHaveClass('field');
+    expect(passwordField()).not.toHaveClass('fieldError');
+    expect(passwordField()).not.toBeInvalid();
+    expect(document.querySelectorAll('.fieldError')).toHaveLength(0);
+  });
+
+  it('moves the mark to the password when that is the field rejected', async () => {
+    renderSignonPage();
+    const user = userEvent.setup();
+
+    await user.type(userIdField(), ADMIN_USER_ID);
+    await pressEnterKey();
+
+    await waitFor(() => {
+      expect(messageText()).toBe(MSG_ENTER_PASSWORD);
+    });
+    expect(passwordField()).toBeInvalid();
+    expect(passwordField()).toHaveFocus();
+    expect(passwordField()).not.toHaveClass('fieldError');
+    expect(userIdField()).not.toHaveClass('fieldError');
+    expect(userIdField()).not.toBeInvalid();
+    expect(document.querySelectorAll('.fieldError')).toHaveLength(0);
+  });
+
   it('treats a whitespace-only user id as blank', async () => {
     renderSignonPage();
     const user = userEvent.setup();
 
     await user.type(userIdField(), '   ');
     await user.type(passwordField(), TEST_PASSWORD);
-    pressEnterKey();
+    await pressEnterKey();
 
     await waitFor(() => {
       expect(messageText()).toBe(MSG_ENTER_USER_ID);
@@ -493,7 +599,7 @@ describe('SignonPage — required-field validation', () => {
     const user = userEvent.setup();
 
     await user.type(userIdField(), ADMIN_USER_ID);
-    pressEnterKey();
+    await pressEnterKey();
 
     await waitFor(() => {
       expect(messageText()).toBe(MSG_ENTER_PASSWORD);
@@ -501,10 +607,46 @@ describe('SignonPage — required-field validation', () => {
     expect(signonMock).not.toHaveBeenCalled();
   });
 
+  /*
+   * Each of these is a ``MOVE -1 TO <field>L`` in COSGN00C, performed before the map is
+   * re-sent: USERIDL for the blank user id (L121), the unknown user (L250) and the failed
+   * verification (L255); PASSWDL for the blank password (L126) and the wrong password
+   * (L244). The blank-password case is the one an operator meets first, and it is what
+   * carries the cursor from the user id to the password field.
+   */
+  it('moves the cursor to the password field when only the password is blank', async () => {
+    renderSignonPage();
+    const user = userEvent.setup();
+
+    await user.type(userIdField(), ADMIN_USER_ID);
+    await pressEnterKey();
+
+    await waitFor(() => {
+      expect(messageText()).toBe(MSG_ENTER_PASSWORD);
+    });
+    expect(passwordField()).toHaveFocus();
+    expect(passwordField()).toHaveAttribute('aria-invalid', 'true');
+    expect(userIdField()).not.toHaveFocus();
+  });
+
+  it('leaves the cursor on the user id when the user id is the rejected field', async () => {
+    renderSignonPage();
+    const user = userEvent.setup();
+
+    await user.type(passwordField(), TEST_PASSWORD);
+    await pressEnterKey();
+
+    await waitFor(() => {
+      expect(messageText()).toBe(MSG_ENTER_USER_ID);
+    });
+    expect(userIdField()).toHaveFocus();
+    expect(passwordField()).not.toHaveFocus();
+  });
+
   it('reports the user id first when both entry fields are blank', async () => {
     renderSignonPage();
 
-    pressEnterKey();
+    await pressEnterKey();
 
     await waitFor(() => {
       expect(messageText()).toBe(MSG_ENTER_USER_ID);
@@ -516,7 +658,7 @@ describe('SignonPage — required-field validation', () => {
     signonMock.mockResolvedValue(standardSignonResponse);
     renderSignonPage();
 
-    pressEnterKey();
+    await pressEnterKey();
     await waitFor(() => {
       expect(messageText()).toBe(MSG_ENTER_USER_ID);
     });
@@ -689,6 +831,75 @@ describe('SignonPage — rejected sign-on', () => {
   });
 });
 
+describe('SignonPage — ended session', () => {
+  it('reports an expired session on the line-23 message region', async () => {
+    // The operator is signed on and working when the server session goes away; the
+    // centralized ``401`` path ends the session, the route guard returns them here,
+    // and the screen has to say why rather than presenting a blank sign-on.
+    await seedSignedOnSession(ADMIN_USER_ID, CDEMO_USRTYP_ADMIN);
+    renderSignonPage();
+    expect(expiryHandler).toBeDefined();
+
+    act(() => {
+      expiryHandler?.('expired');
+    });
+
+    await waitFor(() => {
+      expect(messageText()).toBe(SESSION_ENDED_MESSAGE);
+    });
+    expect(screen.getByRole('alert')).toHaveTextContent(SESSION_ENDED_MESSAGE);
+    expect(currentPath()).toBe(SIGNON_ROUTE);
+  });
+
+  it('says nothing for a refusal, which the refusing program reports itself', async () => {
+    await seedSignedOnSession(ADMIN_USER_ID, CDEMO_USRTYP_ADMIN);
+    renderSignonPage();
+
+    act(() => {
+      expiryHandler?.('refused');
+    });
+
+    expect(messageText()).toBe('');
+  });
+
+  it('withdraws the expiry message once the operator signs on again', async () => {
+    await seedSignedOnSession(ADMIN_USER_ID, CDEMO_USRTYP_ADMIN);
+    signonMock.mockResolvedValue(adminSignonResponse);
+    renderSignonPage();
+    act(() => {
+      expiryHandler?.('expired');
+    });
+    await waitFor(() => {
+      expect(messageText()).toBe(SESSION_ENDED_MESSAGE);
+    });
+
+    await submitCredentials(ADMIN_USER_ID, TEST_PASSWORD);
+
+    await waitFor(() => {
+      expect(currentPath()).toBe(ADMIN_MENU_ROUTE);
+    });
+    expect(messageText()).toBe('');
+  });
+
+  it('lets a rejected retry replace the expiry message with its own', async () => {
+    await seedSignedOnSession(ADMIN_USER_ID, CDEMO_USRTYP_ADMIN);
+    signonMock.mockRejectedValue(unauthorizedError(MSG_WRONG_PASSWORD));
+    renderSignonPage();
+    act(() => {
+      expiryHandler?.('expired');
+    });
+    await waitFor(() => {
+      expect(messageText()).toBe(SESSION_ENDED_MESSAGE);
+    });
+
+    await submitCredentials(ADMIN_USER_ID, TEST_PASSWORD);
+
+    await waitFor(() => {
+      expect(messageText()).toBe(MSG_WRONG_PASSWORD);
+    });
+  });
+});
+
 describe('SignonPage — PF-key wiring', () => {
   it('submits on the ENTER AID handled by the line-24 legend', async () => {
     signonMock.mockResolvedValue(adminSignonResponse);
@@ -697,7 +908,7 @@ describe('SignonPage — PF-key wiring', () => {
 
     await user.type(userIdField(), ADMIN_USER_ID);
     await user.type(passwordField(), TEST_PASSWORD);
-    pressEnterKey();
+    await pressEnterKey();
 
     await waitFor(() => {
       expect(currentPath()).toBe(ADMIN_MENU_ROUTE);
@@ -738,7 +949,7 @@ describe('SignonPage — PF-key wiring', () => {
   it('clears both entry fields and the message on the PF3 AID', async () => {
     renderSignonPage();
 
-    pressEnterKey();
+    await pressEnterKey();
     await waitFor(() => {
       expect(messageText()).toBe(MSG_ENTER_USER_ID);
     });
@@ -746,7 +957,7 @@ describe('SignonPage — PF-key wiring', () => {
     const user = userEvent.setup();
     await user.type(userIdField(), ADMIN_USER_ID);
     await user.type(passwordField(), TEST_PASSWORD);
-    pressPf3Key();
+    await pressPf3Key();
 
     // ``COSGN00C`` L88-89 sends CCDA-MSG-THANK-YOU with ERASE and returns without a
     // transaction id, so the erased screen carries that one line and no entry field.
@@ -780,7 +991,7 @@ describe('SignonPage — PF-key wiring', () => {
     const view = renderSignonPage();
     expect(authenticatedFlag(view)).toBe('true');
 
-    pressPf3Key();
+    await pressPf3Key();
 
     await waitFor(() => {
       expect(authenticatedFlag(view)).toBe('false');

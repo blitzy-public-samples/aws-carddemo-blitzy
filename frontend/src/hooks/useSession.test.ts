@@ -7,7 +7,8 @@
  *     ``refresh`` republishes the identity the server holds, that ``signOut`` revokes
  *     the server session BEFORE clearing local state and keeps the session when that
  *     revocation fails, that a centralized ``401``/``403`` expiry drops local
- *     authority, a surfaced failed sign-in, and the single module-level store shared
+ *     authority and raises a visible session-ended notice (while a ``403`` refusal
+ *     stays silent, because the refusing program reports that itself), a surfaced failed sign-in, and the single module-level store shared
  *     across hook instances.
  * :note: ``../api`` is mocked via ``jest.unstable_mockModule`` so no real network,
  *     axios, or Vite ``import.meta`` is touched. ``useSession`` is loaded once (sharing
@@ -39,14 +40,18 @@ const logoutMock = jest.fn<() => Promise<void>>();
  * Captures the expiry callback the hook registers, so a test can fire the centralized
  * ``401``/``403`` path exactly as the axios response interceptor would.
  */
-let expiryHandler: (() => void) | undefined;
+let expiryHandler: ((reason: 'expired' | 'refused') => void) | undefined;
 
 jest.unstable_mockModule('../api', () => ({
+  // The request-cancellation contract ``useApi`` binds to: the real scope hands the
+  // caller's AbortSignal to axios, and the double simply invokes the call.
+  runWithRequestSignal: (_signal: AbortSignal, call: () => unknown): unknown => call(),
+  isCancelledRequest: (): boolean => false,
   __esModule: true,
   signon: signonMock,
   getSessionIdentity: getSessionIdentityMock,
   logout: logoutMock,
-  registerSessionExpiryHandler: (handler: () => void) => {
+  registerSessionExpiryHandler: (handler: (reason: 'expired' | 'refused') => void) => {
     expiryHandler = handler;
     return () => {
       expiryHandler = undefined;
@@ -72,6 +77,12 @@ class FakeApiError extends Error {
 type UseSessionHook = (typeof import('./useSession'))['useSession'];
 
 let useSession: UseSessionHook;
+
+/**
+ * The row-23 copy an expired cookie session raises, read from the hook module so the
+ * test asserts against the shipped literal rather than a duplicate of it.
+ */
+let SESSION_ENDED_MESSAGE: string;
 
 /**
  * :purpose: Render the hook and wait for its one-time server identity probe to settle,
@@ -108,7 +119,7 @@ async function signedIn(userId: string, userType: Role) {
 beforeAll(async () => {
   // Imported after the mock is registered so the hook binds to the mocked API; no
   // module reset, so it shares React with Testing Library.
-  ({ useSession } = await import('./useSession'));
+  ({ useSession, SESSION_ENDED_MESSAGE } = await import('./useSession'));
 });
 
 beforeEach(() => {
@@ -382,12 +393,73 @@ describe('useSession — centralized session expiry', () => {
     expect(expiryHandler).toBeDefined();
 
     act(() => {
-      expiryHandler?.();
+      expiryHandler?.('expired');
     });
 
     expect(result.current.isAuthenticated).toBe(false);
     expect(result.current.role).toBeNull();
     expect(result.current.session).toBeNull();
+  });
+
+  it('publishes the session-ended notice for an expiry, so it is never silent', async () => {
+    const { result } = await signedIn('ADMIN001', 'A');
+    expect(result.current.sessionNotice).toBeNull();
+
+    act(() => {
+      expiryHandler?.('expired');
+    });
+
+    expect(result.current.sessionNotice).toBe(SESSION_ENDED_MESSAGE);
+    expect(result.current.isSessionResolved).toBe(true);
+  });
+
+  it('keeps the notice through the identity probe the expiry triggers', async () => {
+    // The probe that follows an expiry answers "no session"; it must confirm the
+    // signed-out state without erasing the very message the expiry raised.
+    const { result } = await signedIn('ADMIN001', 'A');
+    act(() => {
+      expiryHandler?.('expired');
+    });
+    expect(result.current.sessionNotice).toBe(SESSION_ENDED_MESSAGE);
+
+    await act(async () => {
+      await result.current.refresh();
+    });
+
+    expect(result.current.sessionNotice).toBe(SESSION_ENDED_MESSAGE);
+    expect(result.current.isAuthenticated).toBe(false);
+  });
+
+  it('publishes NO notice for a refusal — the refusing program reports that itself', async () => {
+    const { result } = await signedIn('ADMIN001', 'A');
+
+    act(() => {
+      expiryHandler?.('refused');
+    });
+
+    expect(result.current.isAuthenticated).toBe(false);
+    expect(result.current.sessionNotice).toBeNull();
+  });
+
+  it('withdraws the notice once it has been reported, and on a fresh sign-on', async () => {
+    const { result } = await signedIn('ADMIN001', 'A');
+    act(() => {
+      expiryHandler?.('expired');
+    });
+    expect(result.current.sessionNotice).toBe(SESSION_ENDED_MESSAGE);
+
+    act(() => {
+      result.current.clearSessionNotice();
+    });
+    expect(result.current.sessionNotice).toBeNull();
+
+    // And a completed sign-on leaves nothing to report either.
+    act(() => {
+      expiryHandler?.('expired');
+    });
+    expect(result.current.sessionNotice).toBe(SESSION_ENDED_MESSAGE);
+    const signedOn = await signedIn('USER0001', 'U');
+    expect(signedOn.result.current.sessionNotice).toBeNull();
   });
 });
 

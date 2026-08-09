@@ -40,7 +40,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class PasswordEncoderConfigTest {
 
     /**
-     * :purpose: The exact bare BCrypt hash ``V2__seed_security_users.sql`` stores for all ten
+     * :purpose: The exact bare BCrypt hash ``V3__seed_test_data.sql`` stores for all ten
      *   migrated users; produced at BCrypt cost 10 - the tuned
      *   {@link PasswordEncoderFactory#BCRYPT_STRENGTH} - and carrying no algorithm prefix.
      */

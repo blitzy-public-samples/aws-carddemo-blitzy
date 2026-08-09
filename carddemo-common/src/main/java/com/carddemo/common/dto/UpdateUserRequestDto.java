@@ -47,6 +47,11 @@ public class UpdateUserRequestDto {
     /**
      * :purpose: the entered raw password (``SEC-USR-PWD`` ``PIC X(08)``), compared against
      *     the stored hash and re-encoded only when it changes; never returned on a response.
+     * :note: OPTIONAL. An absent or blank value means "leave the stored credential as it
+     *     is". ``COUSR02C`` re-displayed the plaintext credential in ``PASSWDO`` on the
+     *     ENTER turn, so its ``PASSWDI`` was always populated by the time PF5 ran and its
+     *     field-by-field compare then found it equal; the hash is deliberately never sent
+     *     to a client here, so an empty field is the same statement of intent.
      */
     @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
     @Size(max = 8, message = "Password must be at most 8 characters")

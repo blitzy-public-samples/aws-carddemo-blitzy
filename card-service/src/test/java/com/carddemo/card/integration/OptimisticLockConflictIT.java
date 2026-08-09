@@ -18,6 +18,7 @@ package com.carddemo.card.integration;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -25,6 +26,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.carddemo.card.repository.CardRepository;
 import com.carddemo.card.service.CardService;
 import com.carddemo.common.domain.Card;
+import com.carddemo.common.dto.CardKeyRequestDto;
 import com.carddemo.common.dto.CardUpdateRequestDto;
 import com.carddemo.common.dto.SessionContext;
 import com.carddemo.common.testsupport.MigratedSchemaContainer;
@@ -75,6 +77,20 @@ class OptimisticLockConflictIT {
     // produced exclusively by the committed Flyway migrations of every owning module, so the
     // card-service context boots with ``ddl-auto: validate`` against the deployed schema and
     // no table definition is fabricated here.
+    /**
+     * :purpose: Build the JSON body of a card-detail read. The composite key travels in the
+     *  BODY rather than in the URL: a card number is a Primary Account Number, and a path
+     *  segment or query string is written verbatim into every access log, proxy log and
+     *  distributed trace on the request path.
+     * :param cardNumber: the card number to address.
+     * :returns: the serialized request body.
+     */
+    private String cardKeyJson(String cardNumber) throws Exception {
+        CardKeyRequestDto key = new CardKeyRequestDto();
+        key.setCardNumber(cardNumber);
+        return objectMapper.writeValueAsString(key);
+    }
+
     /**
      * :purpose: Shared, manually-managed ``postgres:18`` container (singleton pattern). It is
      *     started once in the static initializer below so its mapped port is available to
@@ -219,6 +235,8 @@ class OptimisticLockConflictIT {
     private String updateJson(String newName, String newStatus, String newExpiry,
                               String oldName, String oldStatus, String oldExpiry) throws Exception {
         CardUpdateRequestDto request = new CardUpdateRequestDto();
+        // The addressed card number rides in the BODY, never in the URL.
+        request.setCardNumber(TARGET_CARD_NUM);
         request.setCardEmbossedName(newName);
         request.setCardActiveStatus(newStatus);
         request.setCardExpiraionDate(newExpiry);
@@ -249,6 +267,7 @@ class OptimisticLockConflictIT {
      *     conflict that had not happened, and the rewrite path nulled the stored CVV.
      * :raises Exception: when the MockMvc exchange fails.
      */
+
     @Test
     void snapshotUpdateWithoutCvvSucceedsAndPreservesStoredCvv() throws Exception {
         jdbcTemplate.update("UPDATE cards SET card_cvv_cd = ? WHERE card_num = ?",
@@ -256,7 +275,9 @@ class OptimisticLockConflictIT {
         entityManager.clear();
 
         // Display-time read: exactly what a client can observe -- note there is no CVV here.
-        String body = mockMvc.perform(get("/cards/{cardNumber}", TARGET_CARD_NUM)
+        String body = mockMvc.perform(post("/cards/detail")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(cardKeyJson(TARGET_CARD_NUM))
                         .sessionAttr(SESSION_KEY, adminSession()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.cardCvvCd").doesNotExist())
@@ -268,7 +289,7 @@ class OptimisticLockConflictIT {
                 displayed.get("cardEmbossedName").asString(),
                 displayed.get("cardActiveStatus").asString(),
                 displayed.get("cardExpiraionDate").asString());
-        mockMvc.perform(put("/cards/{cardNumber}", TARGET_CARD_NUM)
+        mockMvc.perform(put("/cards")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(requestBody)
                         .sessionAttr(SESSION_KEY, adminSession()))
@@ -296,18 +317,22 @@ class OptimisticLockConflictIT {
      */
     @Test
     void versionTokenAdvancesOnceAndStaleTokenReturns409() throws Exception {
-        String body = mockMvc.perform(get("/cards/{cardNumber}", TARGET_CARD_NUM)
+        String body = mockMvc.perform(post("/cards/detail")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(cardKeyJson(TARGET_CARD_NUM))
                         .sessionAttr(SESSION_KEY, adminSession()))
                 .andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsString();
         long displayedVersion = objectMapper.readTree(body).get("version").asLong();
 
         CardUpdateRequestDto first = new CardUpdateRequestDto();
+        // The addressed card number rides in the BODY, never in the URL.
+        first.setCardNumber(TARGET_CARD_NUM);
         first.setCardEmbossedName("Aniya Vonx");
         first.setCardActiveStatus(SEED_STATUS);
         first.setCardExpiraionDate(SEED_EXPIRY);
         first.setVersion(displayedVersion);
-        mockMvc.perform(put("/cards/{cardNumber}", TARGET_CARD_NUM)
+        mockMvc.perform(put("/cards")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(first))
                         .sessionAttr(SESSION_KEY, adminSession()))
@@ -316,11 +341,13 @@ class OptimisticLockConflictIT {
 
         // Replay the stale token: the second writer must lose rather than overwrite.
         CardUpdateRequestDto replay = new CardUpdateRequestDto();
+        // The addressed card number rides in the BODY, never in the URL.
+        replay.setCardNumber(TARGET_CARD_NUM);
         replay.setCardEmbossedName("Aniya Vony");
         replay.setCardActiveStatus("N");
         replay.setCardExpiraionDate(SEED_EXPIRY);
         replay.setVersion(displayedVersion);
-        mockMvc.perform(put("/cards/{cardNumber}", TARGET_CARD_NUM)
+        mockMvc.perform(put("/cards")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(replay))
                         .sessionAttr(SESSION_KEY, adminSession()))
@@ -346,7 +373,9 @@ class OptimisticLockConflictIT {
     @Test
     void concurrentModificationReturns409WithConflictMessage() throws Exception {
         // 1. Display-time read: capture the snapshot a client would hold on screen.
-        String body = mockMvc.perform(get("/cards/{cardNumber}", TARGET_CARD_NUM)
+        String body = mockMvc.perform(post("/cards/detail")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(cardKeyJson(TARGET_CARD_NUM))
                         .sessionAttr(SESSION_KEY, adminSession()))
                 .andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsString();
@@ -366,7 +395,7 @@ class OptimisticLockConflictIT {
         // 3. Submit the update carrying the now-stale display-time snapshot -> conflict.
         String requestBody = updateJson(displayName, SEED_STATUS, displayExpiry,
                 displayName, displayStatus, displayExpiry);
-        mockMvc.perform(put("/cards/{cardNumber}", TARGET_CARD_NUM)
+        mockMvc.perform(put("/cards")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(requestBody)
                         .sessionAttr(SESSION_KEY, adminSession()))
@@ -391,7 +420,7 @@ class OptimisticLockConflictIT {
         // The seed status is 'Y'; claim the display-time status was 'N' -> snapshot mismatch.
         String requestBody = updateJson(SEED_NAME, SEED_STATUS, SEED_EXPIRY,
                 SEED_NAME, "N", SEED_EXPIRY);
-        mockMvc.perform(put("/cards/{cardNumber}", TARGET_CARD_NUM)
+        mockMvc.perform(put("/cards")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(requestBody)
                         .sessionAttr(SESSION_KEY, adminSession()))
@@ -413,6 +442,8 @@ class OptimisticLockConflictIT {
     @Test
     void serviceLayerThrowsOptimisticLockConflictException() {
         CardUpdateRequestDto request = new CardUpdateRequestDto();
+        // The addressed card number rides in the BODY, never in the URL.
+        request.setCardNumber(TARGET_CARD_NUM);
         request.setCardEmbossedName(SEED_NAME);
         request.setCardActiveStatus(SEED_STATUS);
         request.setCardExpiraionDate(SEED_EXPIRY);

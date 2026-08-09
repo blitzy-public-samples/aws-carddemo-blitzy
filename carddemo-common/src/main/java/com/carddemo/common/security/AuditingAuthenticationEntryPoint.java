@@ -16,9 +16,11 @@
  */
 package com.carddemo.common.security;
 
+
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
+import org.springframework.http.HttpStatus;
 import org.springframework.security.core.AuthenticationException;
 import org.springframework.security.web.AuthenticationEntryPoint;
 
@@ -27,12 +29,14 @@ import org.springframework.security.web.AuthenticationEntryPoint;
  *     ``401 Unauthorized`` and write one audit record for it. It replaces Spring
  *     Security's default ``Http403ForbiddenEntryPoint`` (which returns an empty
  *     ``403`` and hides genuine failures from operators) on every CardDemo chain.
- * :output: A body-less ``401`` response plus one ``WARN`` audit record naming the source
- *     address, method, path, and correlation id.
- * :note: The response deliberately carries no body. An unauthenticated caller learns
- *     nothing beyond the status, and the response still carries the shared hardened
- *     headers and the ``X-Correlation-Id`` that ties it to the audit record above, so it
- *     remains fully traceable without describing the resource it protects.
+ * :output: A ``401`` response carrying the shared refusal envelope, plus one ``WARN``
+ *     audit record naming the source address, method, path, and correlation id.
+ * :note: The envelope is minimal in CONTENT and identical in SHAPE to every other error
+ *     response: a fixed message, the request path with any PAN redacted, and the trace and
+ *     correlation ids. It names no resource and gives no reason beyond the status, so an
+ *     unauthenticated caller still learns nothing it did not already know — while a client
+ *     can finally say why the screen was returned to sign-on, and an operator has the id
+ *     that ties the refusal to the audit record above.
  */
 public class AuditingAuthenticationEntryPoint implements AuthenticationEntryPoint {
 
@@ -49,11 +53,8 @@ public class AuditingAuthenticationEntryPoint implements AuthenticationEntryPoin
                          AuthenticationException authException) throws IOException {
         SecurityAuditLogger.authenticationRequired(request,
                 authException == null ? "unauthenticated" : authException.getClass().getSimpleName());
-        if (!response.isCommitted()) {
-            // Set the status directly instead of calling sendError: sendError starts
-            // the container ERROR dispatch, which re-enters the security chain and is
-            // what previously turned a genuine failure into an empty 403.
-            response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
-        }
+        RefusalEnvelopeWriter.write(request, response, HttpStatus.UNAUTHORIZED,
+                RefusalEnvelopeWriter.CODE_AUTHENTICATION_REQUIRED,
+                RefusalEnvelopeWriter.MSG_AUTHENTICATION_REQUIRED);
     }
 }

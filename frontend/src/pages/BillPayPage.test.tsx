@@ -69,6 +69,10 @@ class MockApiError extends Error {
 }
 
 jest.unstable_mockModule('../api', () => ({
+  // The request-cancellation contract ``useApi`` binds to: the real scope hands the
+  // caller's AbortSignal to axios, and the double simply invokes the call.
+  runWithRequestSignal: (_signal: AbortSignal, call: () => unknown): unknown => call(),
+  isCancelledRequest: (): boolean => false,
   // The session store and the REST hook this screen's module graph loads bind to
   // these barrel exports as well. ``getSessionIdentity`` is the production
   // ``GET /session`` probe the session harness drives; unanswered by this suite it
@@ -140,10 +144,21 @@ const TRANSACTION_ID = '0000000000000123';
 /** Balance the service reports for :const:`ACCOUNT_ID` (``CURBAL``). */
 const CURRENT_BALANCE = '1234.56';
 
+/**
+ * The same balance as the screen displays it. ``COBIL00C`` L193-194 MOVEs
+ * ``ACCT-CURR-BAL`` through ``WS-CURR-BAL PIC +9999999999.99`` into ``CURBALI``, whose
+ * map field is declared ``LENGTH=14``, so the balance is an edited picture on the screen
+ * rather than the bare wire value.
+ */
+const CURRENT_BALANCE_PICTURE = '+0000001234.56';
+
 /** Signed-on user id seeded into the session store. */
 const SESSION_USER = 'USER0001';
 
 /** Banner text ``COBIL00C`` composes for a completed payment. */
+/** ``COBIL00C`` zero-or-negative balance message (L201). */
+const MSG_NOTHING_TO_PAY = 'You have nothing to pay...';
+
 const PAYMENT_SUCCESSFUL_BANNER =
   `${MSG_PAYMENT_SUCCESSFUL} Your Transaction ID is ${TRANSACTION_ID}.`;
 
@@ -168,6 +183,22 @@ function previewResponse(currentBalance: string): BillPayResponseDto {
  *     to the page.
  * :returns: the success :ts:type:`BillPayResponseDto`, balance paid in full.
  */
+/**
+ * :purpose: The response the service returns for the nothing-to-pay outcome: the
+ *     balance IS carried, and the message travels on the ERROR channel.
+ * :param currentBalance: the zero-or-negative balance the screen must display.
+ * :returns: a nothing-to-pay response.
+ */
+function nothingToPayResponse(currentBalance: string): BillPayResponseDto {
+  return {
+    accountId: ACCOUNT_ID,
+    currentBalance,
+    transactionId: null,
+    message: null,
+    errorMessage: MSG_NOTHING_TO_PAY,
+  };
+}
+
 function successResponse(message: string | null): BillPayResponseDto {
   return {
     accountId: ACCOUNT_ID,
@@ -381,6 +412,15 @@ describe('BillPayPage — account-id validation (COBIL00C PROCESS-ENTER-KEY)', (
       confirm: '',
     });
     expect(currBalField().textContent).toBe('');
+    // The cursor returns to ACTIDIN, so that is the field the message is about -- and a
+    // message the SERVER produced marks it exactly as a locally rejected value does:
+    // the accessible flag and the cursor, with no colour, because COBIL00C contains no
+    // `MOVE DFHRED`.
+    expect(acctIdField()).toBeInvalid();
+    expect(acctIdField()).toHaveClass('field');
+    expect(acctIdField()).not.toHaveClass('fieldError');
+    expect(confirmField()).not.toBeInvalid();
+    expect(document.querySelectorAll('.fieldError')).toHaveLength(0);
   });
 });
 
@@ -399,11 +439,11 @@ describe('BillPayPage — confirmation gate (COBIL00C CONFIRM Y/N)', () => {
       accountId: ACCOUNT_ID,
       confirm: '',
     });
-    expect(currBalField().textContent).toBe(CURRENT_BALANCE);
+    expect(currBalField().textContent).toBe(CURRENT_BALANCE_PICTURE);
     expect(confirmField()).toHaveFocus();
   });
 
-  it('displays the balance exactly as the service sent it', async () => {
+  it('edits the balance into the CURBAL picture without changing its value', async () => {
     const user = userEvent.setup();
     payBillMock.mockResolvedValue(previewResponse('1000.00'));
     renderBillPayScreen();
@@ -412,11 +452,25 @@ describe('BillPayPage — confirmation gate (COBIL00C CONFIRM Y/N)', () => {
     await user.click(pfKey('ENTER=Continue'));
 
     await waitFor(() => {
-      expect(currBalField().textContent).toBe('1000.00');
+      expect(currBalField().textContent).toBe('+0000001000.00');
     });
-    // The money string is surfaced byte-for-byte: no parsing, rounding or
-    // reformatting between the wire value and CURBAL.
-    expect(currBalField().textContent).toBe('1000.00');
+    // Sign, ten zero-padded integer digits, point, two decimals — the fourteen
+    // characters CURBAL declares. The digits are the wire value's own: nothing is
+    // parsed, rounded or rescaled between the response and the screen.
+    expect(currBalField().textContent).toHaveLength(14);
+  });
+
+  it('edits a negative balance with its sign, as PIC +9999999999.99 does', async () => {
+    const user = userEvent.setup();
+    payBillMock.mockResolvedValue(previewResponse('-919.00'));
+    renderBillPayScreen();
+
+    await user.type(acctIdField(), ACCOUNT_ID);
+    await user.click(pfKey('ENTER=Continue'));
+
+    await waitFor(() => {
+      expect(currBalField().textContent).toBe('-0000000919.00');
+    });
   });
 
   it('rejects a confirmation other than Y or N with the verbatim message', async () => {
@@ -469,6 +523,11 @@ describe('BillPayPage — in-flight duplicate-payment guard', () => {
     // account or the confirmation while the payment POST is outstanding.
     expect(acctIdField()).toBeDisabled();
     expect(confirmField()).toBeDisabled();
+    // The keyboard is locked for the same interval, so the row-24 legend renders
+    // inactive too rather than inviting an AID the screen would discard.
+    expect(pfKey('ENTER=Continue')).toBeDisabled();
+    expect(pfKey('F3=Back')).toBeDisabled();
+    expect(pfKey('F4=Clear')).toBeDisabled();
 
     // A second ENTER, from the legend and from the physical key, must not pay twice.
     act(() => {
@@ -589,7 +648,7 @@ describe('BillPayPage — cancellation (COBIL00C CLEAR-CURRENT-SCREEN)', () => {
     await user.type(acctIdField(), ACCOUNT_ID);
     await user.click(pfKey('ENTER=Continue'));
     await waitFor(() => {
-      expect(currBalField().textContent).toBe(CURRENT_BALANCE);
+      expect(currBalField().textContent).toBe(CURRENT_BALANCE_PICTURE);
     });
 
     await user.type(confirmField(), 'n');
@@ -607,7 +666,7 @@ describe('BillPayPage — line-24 function keys (COBIL00.bms FKEYS)', () => {
     renderBillPayScreen();
 
     expect(
-      screen.getByRole('toolbar', { name: 'Function keys' }),
+      screen.getByRole('group', { name: 'Function keys' }),
     ).toBeInTheDocument();
     expect(screen.getAllByRole('button').map((button) => button.textContent)).toEqual([
       'ENTER=Continue',
@@ -642,7 +701,7 @@ describe('BillPayPage — line-24 function keys (COBIL00.bms FKEYS)', () => {
     await user.type(acctIdField(), ACCOUNT_ID);
     await user.click(pfKey('ENTER=Continue'));
     await waitFor(() => {
-      expect(currBalField().textContent).toBe(CURRENT_BALANCE);
+      expect(currBalField().textContent).toBe(CURRENT_BALANCE_PICTURE);
     });
 
     await user.click(pfKey('F4=Clear'));
@@ -670,3 +729,125 @@ describe('BillPayPage — line-24 function keys (COBIL00.bms FKEYS)', () => {
   });
 });
 
+describe('BillPayPage — the balance belongs to the account beside it (COBIL00C L193-204)', () => {
+  it('displays a zero balance together with the nothing-to-pay message', async () => {
+    // COBIL00C moves ACCT-CURR-BAL into CURBALI at L193-194, BEFORE the L198
+    // `IF ACCT-CURR-BAL <= ZEROS` test, so the send that carries this message carries the
+    // balance beside it. Refusing the turn with an error status instead withheld the
+    // balance entirely, and an account paid down to zero could never show one again.
+    const user = userEvent.setup();
+    payBillMock.mockResolvedValue(nothingToPayResponse('0.00'));
+    renderBillPayScreen();
+
+    await user.type(acctIdField(), ACCOUNT_ID);
+    await user.click(pfKey('ENTER=Continue'));
+
+    expect((await screen.findByRole('alert')).textContent).toBe(MSG_NOTHING_TO_PAY);
+    // L56 declares WS-CURR-BAL as PIC +9999999999.99, so the field carries the edited
+    // picture the program moves into CURBALI, sign and zero-fill included.
+    expect(currBalField().textContent).toBe('+0000000000.00');
+    // L202 cursors ACTIDIN for this outcome, not CONFIRM.
+    expect(acctIdField()).toHaveFocus();
+  });
+
+  it('replaces the previous account balance when a second account is read', async () => {
+    // The reported defect: account 3's id displayed beside account 1's money. Both turns
+    // are answered, so both repaint the field from the account just read.
+    const user = userEvent.setup();
+    payBillMock.mockResolvedValueOnce(previewResponse('194.00'));
+    renderBillPayScreen();
+
+    await user.type(acctIdField(), '00000000001');
+    await user.click(pfKey('ENTER=Continue'));
+    expect(currBalField().textContent).toBe('+0000000194.00');
+
+    payBillMock.mockResolvedValueOnce(nothingToPayResponse('0.00'));
+    await user.clear(acctIdField());
+    await user.type(acctIdField(), '00000000003');
+    await user.click(pfKey('ENTER=Continue'));
+
+    expect(currBalField().textContent).toBe('+0000000000.00');
+    expect(acctIdField()).toHaveValue('00000000003');
+  });
+
+  it('leaves the displayed balance in place when the read itself fails', async () => {
+    // Faithful, not a leak. `CURBAL ATTRB=(ASKIP,FSET,NORM)` and `COBIL0AO REDEFINES
+    // COBIL0AI` put CURBALO and CURBALI on the same fourteen bytes, so the FSET tag
+    // returns the displayed value on RECEIVE and the send echoes it back -- and a failed
+    // read sends the map from inside READ-ACCTDAT-FILE, before the L193 move that would
+    // have replaced it.
+    const user = userEvent.setup();
+    payBillMock.mockResolvedValueOnce(previewResponse('194.00'));
+    renderBillPayScreen();
+
+    await user.type(acctIdField(), '00000000001');
+    await user.click(pfKey('ENTER=Continue'));
+    expect(currBalField().textContent).toBe('+0000000194.00');
+
+    payBillMock.mockRejectedValueOnce(
+      new ApiError(404, MSG_ACCOUNT_NOT_FOUND, errorBody(404, MSG_ACCOUNT_NOT_FOUND)),
+    );
+    await user.clear(acctIdField());
+    await user.type(acctIdField(), '99999999999');
+    await user.click(pfKey('ENTER=Continue'));
+
+    expect((await screen.findByRole('alert')).textContent).toBe(MSG_ACCOUNT_NOT_FOUND);
+    expect(currBalField().textContent).toBe('+0000000194.00');
+  });
+
+  it('paints the balance caption at its declared width of 25 characters', () => {
+    // LENGTH=25 at POS=(11,6): twenty-four visible characters plus the trailing pad
+    // column that separates the caption from CURBAL at column 32.
+    renderBillPayScreen();
+
+    // OutputField renders the pair inside its own `.detailField` wrapper, which is what
+    // the shared `white-space: pre` rule keys off -- so the trailing column survives
+    // rendering and the only thing that had dropped it was the JSX literal itself.
+    const caption = document.querySelector('.billPay__row .detailField > dt');
+    expect(caption?.textContent).toBe('Your current balance is: ');
+    expect(caption?.textContent).toHaveLength(25);
+    // Whether that column SURVIVES rendering is a stylesheet property (`white-space: pre`
+    // on `.detailField > dt`), which jsdom does not load; it is measured in the browser.
+  });
+
+  it('paints the account caption GREEN, as COBIL00 declares it', () => {
+    // `'Enter Acct ID:'` is LENGTH=14 POS=(6,6) COLOR=GREEN -- the one entry caption in
+    // the app that is not the TURQUOISE `.prompt` tone.
+    renderBillPayScreen();
+
+    const caption = document.querySelector("label[for='billPayAcctId']");
+    expect(caption?.className).toContain('green');
+    expect(caption?.className).not.toContain('prompt');
+    expect(caption?.textContent).toBe('Enter Acct ID:');
+  });
+
+  it('describes the confirmation field with its own (Y/N) value hint', () => {
+    // The one-character CONFIRM field takes 'Y' or 'N'; the `(Y/N)` literal at
+    // POS=(15,63) is what tells the operator so, and it is the accessible
+    // description of the control it sits beside.
+    renderBillPayScreen();
+
+    const described = confirmField().getAttribute('aria-describedby') ?? '';
+    expect(described.split(' ')).toContain('billPayConfirmValues');
+    expect(document.getElementById('billPayConfirmValues')?.textContent).toBe('(Y/N)');
+  });
+
+  /*
+   * COBIL00C contains no ``MOVE DFHRED`` and no ``MOVE '*'``: a rejected entry is
+   * marked by ``MOVE -1 TO ACTIDINL`` -- the cursor -- and the line-23 message. The
+   * accessible flag has no BMS analogue to contradict and is not visible output, so
+   * it travels alone; a red frame here would be output the mapset never declares.
+   */
+  it('marks a rejected entry by cursor and flag alone, never by colour', async () => {
+    const user = userEvent.setup();
+    renderBillPayScreen();
+
+    await user.click(pfKey('ENTER=Continue'));
+
+    expect((await screen.findByRole('alert')).textContent).toBe(MSG_ACCT_ID_EMPTY);
+    expect(acctIdField()).toHaveAttribute('aria-invalid', 'true');
+    expect(acctIdField()).toHaveFocus();
+    expect(acctIdField().className).not.toContain('fieldError');
+    expect(document.querySelectorAll('.fieldError')).toHaveLength(0);
+  });
+});

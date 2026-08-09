@@ -152,6 +152,63 @@ class RequestLoggingFilterTest {
         assertEquals("corr-9", event.getMDCPropertyMap().get(CorrelationIdContext.CORRELATION_ID_KEY),
                 "the ERROR record must carry the correlation id of the failing request");
         assertNotNull(event.getThrowableProxy(), "the stack trace must be attached to the record");
+
+        // One value per placeholder: an extra argument shifted the URI into the duration slot
+        // and dropped the exception class, producing "failed after /accounts/2ms: 25".
+        String formatted = event.getFormattedMessage();
+        assertTrue(formatted.startsWith("GET /accounts/2 failed after "),
+                "the method and URI must occupy the first two slots: " + formatted);
+        assertTrue(formatted.endsWith("ms: java.lang.IllegalStateException"),
+                "the failure record must end with the elapsed time and the exception class; an extra"
+                        + " argument previously pushed the duration into the exception slot: " + formatted);
+        assertEquals(1, countOccurrences(formatted, "/accounts/2"),
+                "the path must be rendered once, through the masking helper: " + formatted);
+    }
+
+    /**
+     * :purpose: The failure record must NOT carry the raw request URI: the record written when an
+     *     exception escapes the chain logs the same PAN-masked URI the success and 5xx records log,
+     *     so an exception on a card route cannot write a full PAN to disk (CWE-532).
+     */
+    @Test
+    @DisplayName("a card number in the URI is masked in the escaping-exception record")
+    void cardNumberIsMaskedWhenTheChainThrows() {
+        MockHttpServletRequest request =
+                new MockHttpServletRequest("GET", "/cards/9006000000000001");
+        FilterChain boom = new FilterChain() {
+            @Override
+            public void doFilter(ServletRequest req, ServletResponse res) {
+                throw new IllegalStateException("boom");
+            }
+        };
+
+        assertThrows(IllegalStateException.class,
+                () -> filter.doFilter(request, new MockHttpServletResponse(), boom));
+
+        String formatted = appender.list.get(0).getFormattedMessage();
+        assertFalse(formatted.contains("9006000000000001"),
+                "the full PAN must not appear in the failure record: " + formatted);
+        assertTrue(formatted.startsWith("GET /cards/************0001 failed after "),
+                "the failure record must carry the masked URI, the PAN reduced to its last four"
+                        + " digits: " + formatted);
+        assertEquals(1, countOccurrences(formatted, "/cards/"),
+                "the path must be rendered once, through the masking helper: " + formatted);
+    }
+
+    /**
+     * :purpose: Count the non-overlapping occurrences of a token in a log message.
+     * :param text: the formatted log message.
+     * :param token: the token to count.
+     * :returns: the number of occurrences.
+     */
+    private static int countOccurrences(String text, String token) {
+        int count = 0;
+        int from = text.indexOf(token);
+        while (from >= 0) {
+            count++;
+            from = text.indexOf(token, from + token.length());
+        }
+        return count;
     }
 
     /**
@@ -237,5 +294,41 @@ class RequestLoggingFilterTest {
         assertTrue(appender.list.get(0).getFormattedMessage()
                         .startsWith("GET /accounts/90000000061 -> 200 in"),
                 "an account id is not PAN-shaped and must stay readable");
+    }
+
+    /**
+     * :purpose: The ERROR record for an escaping exception on a CARD path must carry the masked
+     *     URI, the elapsed time in the duration slot and the exception class in the trailing
+     *     slot -- and no unmasked PAN anywhere.
+     * :note: This pins a defect that regulatory review would flag: a fifth argument (the RAW
+     *     request URI) was passed to the four-placeholder pattern, so the record read
+     *     ``GET /cards/************0001 failed after /cards/9000000000000001ms: 2012`` -- the
+     *     full 16-digit PAN written to disk beside its own masked form (CWE-532), the duration
+     *     rendered as the exception and the exception class dropped altogether.
+     */
+    @Test
+    @DisplayName("an escaping exception on a card path logs the masked URI, the duration and the exception class")
+    void escapingExceptionOnCardPathLogsMaskedUriDurationAndExceptionClass() {
+        MockHttpServletRequest request =
+                new MockHttpServletRequest("GET", "/cards/9000000000000001");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        FilterChain boom = new FilterChain() {
+            @Override
+            public void doFilter(ServletRequest req, ServletResponse res) {
+                throw new IllegalStateException("upstream frozen");
+            }
+        };
+
+        assertThrows(IllegalStateException.class, () -> filter.doFilter(request, response, boom));
+
+        assertEquals(1, appender.list.size(), "the failure must be reported exactly once");
+        String message = appender.list.get(0).getFormattedMessage();
+        assertFalse(message.contains("9000000000000001"),
+                "the unmasked PAN must never reach a log record: " + message);
+        assertTrue(message.startsWith("GET /cards/************0001 failed after "),
+                "the record must open with the method and the masked URI: " + message);
+        assertTrue(message.endsWith("ms: java.lang.IllegalStateException"),
+                "the duration must land in the duration slot and the exception class in the"
+                        + " trailing slot: " + message);
     }
 }

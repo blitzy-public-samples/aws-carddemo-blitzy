@@ -90,6 +90,10 @@ const signonMock =
   jest.fn<(request: SignonRequestDto) => Promise<SignonResponseDto>>();
 
 jest.unstable_mockModule('../api', () => ({
+  // The request-cancellation contract ``useApi`` binds to: the real scope hands the
+  // caller's AbortSignal to axios, and the double simply invokes the call.
+  runWithRequestSignal: (_signal: AbortSignal, call: () => unknown): unknown => call(),
+  isCancelledRequest: (): boolean => false,
   // The session store and the REST hook this screen's module graph loads bind to
   // these barrel exports as well. ``getSessionIdentity`` is the production
   // ``GET /session`` probe the session harness drives; unanswered by this suite it
@@ -484,6 +488,60 @@ describe('CardListPage — F7 backward and F8 forward paging', () => {
     expect(renderedCardNumbers()[0]).toBe(cardNumberOf(1));
   });
 
+  it('sends the PF7 attention identifier only when the page-back is refused', async () => {
+    // ``1400-SETUP-MESSAGE`` publishes NO PREVIOUS PAGES TO DISPLAY on
+    // ``WHEN CCARD-AID-PFK07 AND CA-FIRST-PAGE``: CA-FIRST-PAGE is the state of the
+    // screen BEFORE the transition, so a page-back that actually moves must not carry
+    // the AID that asks the service for the refusal banner.
+    await renderCardListScreen();
+
+    await pressPfKey('F8=Forward');
+    listCardsMock.mockClear();
+
+    await pressPfKey('F7=Backward');
+    expect(listCardsMock).toHaveBeenCalledTimes(1);
+    expect(listCardsMock.mock.calls[0][0]).toMatchObject({ page: 1 });
+    expect(listCardsMock.mock.calls[0][0].aid).toBeUndefined();
+    expect(screen.getByTestId('page-number')).toHaveTextContent('Page 1');
+
+    listCardsMock.mockClear();
+    await pressPfKey('F7=Backward');
+    expect(listCardsMock).toHaveBeenCalledTimes(1);
+    expect(listCardsMock.mock.calls[0][0]).toMatchObject({ page: 1, aid: 'PF7' });
+  });
+
+  it('sends the PF8 attention identifier only when the advance is refused', async () => {
+    await renderCardListScreen();
+
+    listCardsMock.mockClear();
+    await pressPfKey('F8=Forward');
+    expect(listCardsMock.mock.calls[0][0]).toMatchObject({ page: 2 });
+    expect(listCardsMock.mock.calls[0][0].aid).toBeUndefined();
+
+    await pressPfKey('F8=Forward');
+    expect(screen.getByTestId('page-number')).toHaveTextContent('Page 3');
+
+    listCardsMock.mockClear();
+    await pressPfKey('F8=Forward');
+    expect(listCardsMock.mock.calls[0][0]).toMatchObject({ page: 3, aid: 'PF8' });
+  });
+
+  it('issues one browse for a burst of F8 activations in the same task', async () => {
+    await renderCardListScreen();
+    listCardsMock.mockClear();
+
+    const forward = screen.getByRole('button', { name: 'F8=Forward' });
+    await act(async () => {
+      fireEvent.click(forward);
+      fireEvent.click(forward);
+      fireEvent.click(forward);
+      await Promise.resolve();
+    });
+
+    expect(listCardsMock).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId('page-number')).toHaveTextContent('Page 2');
+  });
+
   it('pages on the physical F8 and F7 attention keys', async () => {
     await renderCardListScreen();
 
@@ -596,9 +654,42 @@ describe('CardListPage — ACCTSID and CARDSID browse filters', () => {
 
     await renderCardListScreen();
 
-    expect(screen.getByRole('alert')).toHaveTextContent(
+    // A browse boundary or an empty result keeps the RED its mapset declares statically but is announced politely, so it is published with ``role="status"`` and carries the line-23 id.
+    expect(document.getElementById('screenMessageLine')).toHaveTextContent(
       'NO RECORDS FOUND FOR THIS SEARCH CONDITION.',
     );
+    expect(screen.queryAllByTestId('card-list-row')).toHaveLength(0);
+    // The body carries no invented "nothing found" literal: COCRDLIC leaves the seven row
+    // fields blank and moves its own literal into WS-ERROR-MSG for line 23, which is the
+    // message asserted above.
+    expect(screen.queryByTestId('card-list-empty-row')).toBeNull();
+    expect(screen.queryByText('No cards to display')).not.toBeInTheDocument();
+  });
+
+  it('states no result while the browse is still outstanding', async () => {
+    // The browse never settles inside this test, so every assertion below describes
+    // the screen exactly as the operator sees it while the terminal is waiting.
+    listCardsMock.mockImplementation(
+      () => new Promise<CardListResponseDto>(() => undefined),
+    );
+
+    render(
+      <MemoryRouter initialEntries={[CARD_LIST_ROUTE]}>
+        <Layout>
+          <CardListPage />
+        </Layout>
+      </MemoryRouter>,
+    );
+
+    // The row region asserts no result: the browse has not answered, so 'No cards to
+    // display' would be a false claim -- and no placeholder row exists to carry one.
+    expect(screen.queryByTestId('card-list-empty-row')).toBeNull();
+    expect(screen.queryByText('No cards to display')).not.toBeInTheDocument();
+    // Not even for the single commit before the read is issued.
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.queryByText('No cards to display')).not.toBeInTheDocument();
     expect(screen.queryAllByTestId('card-list-row')).toHaveLength(0);
   });
 });
@@ -661,7 +752,7 @@ describe('CardListPage — verbatim COCRDLI body captions', () => {
     // The frame publishes its own level-2 title line, so the screen heading is matched
     // by name; its id is what names the screen region for assistive technology.
     expect(
-      screen.getByRole('heading', { level: 2, name: SCREEN_HEADING }),
+      screen.getByRole('heading', { level: 3, name: SCREEN_HEADING }),
     ).toHaveAttribute('id', 'card-list-heading');
     // ``POS=(6,22) LENGTH=19`` and ``POS=(7,22) LENGTH=19``: the four spaces before the
     // colon of the account prompt align both captions, so the padding is part of the
@@ -682,6 +773,33 @@ describe('CardListPage — verbatim COCRDLI body captions', () => {
       .map((heading) => heading.textContent);
     expect(headings).toEqual(COLUMN_HEADINGS);
   });
+
+  it('declares the four column widths and holds the table to their total', async () => {
+    // COCRDLI row 10 paints runs of 6, 15, 15 and 8 hyphens under the captions, and on a
+    // 3270 those runs ARE the column widths. Laid out from its content instead, the table's
+    // trailing column fit depended on the data rather than on the mapset -- at the
+    // narrowest tier it cleared its container by a twentieth of a character cell.
+    await renderCardListScreen();
+
+    const table = screen.getByTestId('card-list-table');
+    expect(table.className).toContain('dataTable--fixed');
+    // 6 + 15 + 15 + 8 characters, one separator column each.
+    expect(table).toHaveStyle({ minWidth: '52ch' });
+
+    const cols = table.querySelectorAll('colgroup col');
+    expect(cols).toHaveLength(4);
+    expect(cols[0]).toHaveStyle({ width: '8ch' });
+    expect(cols[1]).toHaveStyle({ width: '17ch' });
+    expect(cols[2]).toHaveStyle({ width: '17ch' });
+    // The last column carries no width so a wider frame hands it the slack.
+    expect(cols[3].getAttribute('style')).toBeNull();
+
+    const runs = Array.from(
+      table.querySelectorAll('tr.dataTable__rule td'),
+      (cell) => cell.textContent?.length,
+    );
+    expect(runs).toEqual([6, 15, 15, 8]);
+  });
 });
 
 describe('CardListPage — screen chrome and function keys', () => {
@@ -697,7 +815,7 @@ describe('CardListPage — screen chrome and function keys', () => {
       'true',
     );
 
-    const toolbar = screen.getByRole('toolbar', { name: 'Function keys' });
+    const toolbar = screen.getByRole('group', { name: 'Function keys' });
     const legend = within(toolbar)
       .getAllByRole('button')
       .map((key) => key.textContent);

@@ -16,6 +16,8 @@
  */
 package com.carddemo.common.config;
 
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 import org.apache.catalina.Valve;
 import org.apache.catalina.core.StandardHost;
 import org.apache.catalina.valves.ErrorReportValve;
@@ -28,6 +30,9 @@ import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.Ordered;
+import org.springframework.web.servlet.DispatcherServlet;
+import org.springframework.web.servlet.FlashMap;
+import org.springframework.web.servlet.FlashMapManager;
 
 /**
  * :purpose: Apply the container-level hardening that every CardDemo servlet service
@@ -35,8 +40,10 @@ import org.springframework.core.Ordered;
  *     default HTML error page, which fingerprints the server and echoes exception text
  *     to the caller. Together with the Spring Security response headers this closes the
  *     transport-level findings of the runtime security review.
- * :output: A {@link RequestSizeLimitFilter} registration and a Tomcat customizer that
- *     silences the ``ErrorReportValve`` report and server-info banner.
+ * :output: A {@link RequestSizeLimitFilter} registration, a Tomcat customizer that
+ *     silences the ``ErrorReportValve`` report and server-info banner, and a
+ *     store-nothing {@link FlashMapManager} that keeps ``DispatcherServlet`` from
+ *     reading the shared session on every request.
  * :note: The cap is configurable through ``carddemo.http.max-request-body-bytes`` and
  *     defaults to {@link RequestSizeLimitFilter#DEFAULT_MAX_BODY_BYTES}.
  * :note: A service activates this configuration with
@@ -85,5 +92,63 @@ public class WebHardeningConfig {
                 }
             }
         });
+    }
+
+    /**
+     * :purpose: Replace the MVC default ``SessionFlashMapManager`` so
+     *     ``DispatcherServlet`` stops loading the caller's session on EVERY request to
+     *     look for flash attributes this application never produces.
+     * :returns: a {@link FlashMapManager} that reports no input flash map and keeps no
+     *     output one.
+     * :note: ``DispatcherServlet.doService`` calls the flash-map manager before routing,
+     *     and the default implementation reads the session. With a Redis-backed shared
+     *     session that read makes the hop OWN the session for the request, so Spring
+     *     Session writes it back when the response commits. That write is what turned a
+     *     successful sign-on into HTTP 500: sign-on rotates the session id — deleting the
+     *     old store entry, which is the session-fixation protection — and the gateway hop
+     *     then tried to save the entry that no longer existed
+     *     (``IllegalStateException: Session was invalidated``), outside any handler that
+     *     could recover the proxied 200. Nothing in CardDemo uses flash attributes (no
+     *     ``RedirectAttributes``, no ``RedirectView``), so the read has no purpose to
+     *     preserve, and removing it also drops one Redis round trip per request.
+     * :note: Session idle timeout is unaffected: every authenticated request still reads
+     *     the session through ``SessionContextAuthenticationFilter``, which is what
+     *     refreshes ``lastAccessedTime``.
+     */
+    @Bean(DispatcherServlet.FLASH_MAP_MANAGER_BEAN_NAME)
+    FlashMapManager flashMapManager() {
+        return new NoFlashMapManager();
+    }
+
+    /**
+     * :purpose: Flash-map manager that stores nothing, for an API that never redirects.
+     * :note: Declared as a named type rather than a lambda because ``FlashMapManager``
+     *     has two methods.
+     */
+    private static final class NoFlashMapManager implements FlashMapManager {
+
+        /**
+         * :purpose: Report that the request carries no input flash map.
+         * :param request: the current request, not read.
+         * :param response: the current response, not written.
+         * :returns: ``null``, the contract's value for "no flash map".
+         */
+        @Override
+        public FlashMap retrieveAndUpdate(HttpServletRequest request, HttpServletResponse response) {
+            return null;
+        }
+
+        /**
+         * :purpose: Discard the output flash map instead of persisting it in the session.
+         * :param flashMap: the map produced by the handler, if any.
+         * :param request: the current request, not read.
+         * :param response: the current response, not written.
+         */
+        @Override
+        public void saveOutputFlashMap(FlashMap flashMap, HttpServletRequest request,
+                                       HttpServletResponse response) {
+            // Intentionally empty: no CardDemo handler produces flash attributes, and
+            // persisting an empty map would reintroduce the per-request session write.
+        }
     }
 }

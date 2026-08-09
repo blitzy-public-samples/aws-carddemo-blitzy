@@ -24,6 +24,7 @@ import org.springframework.batch.infrastructure.item.ItemStreamWriter;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
+import com.carddemo.batch.config.JobSchedulingConfig;
 import com.carddemo.common.batch.BatchOutputPathResolver;
 import com.carddemo.common.batch.FixedWidthText;
 import com.carddemo.common.config.CorrelationIdContext;
@@ -180,7 +181,8 @@ public class TransactionDetailReportWriter implements ItemStreamWriter<Transacti
     public TransactionDetailReportWriter(
             @Value("#{jobParameters['startDate']}") String startDate,
             @Value("#{jobParameters['endDate']}") String endDate,
-            @Value("#{jobParameters['reportFile']}") String reportFile,
+            @Value("#{jobParameters['reportFile'] ?: '${carddemo.batch.transaction-detail-report-file:"
+                    + JobSchedulingConfig.DEFAULT_TRANSACTION_DETAIL_REPORT_FILE + "}'}") String reportFile,
             BatchOutputPathResolver pathResolver) {
         this.startDate = startDate;
         this.endDate = endDate;

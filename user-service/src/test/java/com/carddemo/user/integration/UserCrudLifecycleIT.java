@@ -62,7 +62,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  *     authority the chain requires, so the production chain is exercised, not stubbed.
  *     This module owns no Flyway migrations, so the fixture rows are seeded here.
  */
-class UserCrudLifecycleTest extends AbstractIntegrationTest {
+class UserCrudLifecycleIT extends AbstractIntegrationTest {
 
     /** :purpose: User id created and removed by the lifecycle; never a fixture id. */
     private static final String TEMP_USER_ID = "QATMP001";

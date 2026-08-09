@@ -5,8 +5,8 @@
  *     — the ``GET /session`` identity probe the session store exposes as
  *     ``useSession().refresh`` — so a suite never forges an identity and the
  *     shipped session module carries no seam that could.
- * :output: The named ``resolveSessionFromServer``, ``seedSignedOnSession`` and
- *     ``seedSignedOutSession`` helpers.
+ * :output: The named ``resolveSessionFromServer``, ``seedSignedOnSession``,
+ *     ``seedSignedOutSession`` and ``withdrawSessionNotice`` helpers.
  * :note: Test-only. Nothing in ``frontend/src`` outside a ``*.test.ts(x)`` file
  *     imports this module, so it reaches no production bundle. Because it binds to
  *     the ``../api`` barrel the calling suite has registered, the identity it
@@ -91,4 +91,19 @@ export async function seedSignedOnSession(
 export async function seedSignedOutSession(): Promise<void> {
   identityProbeStub().mockRejectedValue(new Error(NO_SESSION_MESSAGE));
   await resolveSessionFromServer();
+}
+
+/**
+ * :purpose: Withdraw any published session-ended notice, through the same
+ *     ``clearSessionNotice`` call the sign-on screen makes once it has reported the
+ *     notice. A suite that raises an expiry uses this so the message cannot leak into
+ *     the next test's line-23 region — the store outlives an individual test.
+ * :returns: nothing; the store publishes no notice once the call returns.
+ */
+export function withdrawSessionNotice(): void {
+  const probe = renderHook(() => useSession());
+  act(() => {
+    probe.result.current.clearSessionNotice();
+  });
+  probe.unmount();
 }

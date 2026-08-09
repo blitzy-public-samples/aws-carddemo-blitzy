@@ -16,6 +16,7 @@
 package com.carddemo.common.security;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -244,6 +245,54 @@ class SessionContextAuthenticationFilterTest {
     }
 
     /**
+     * :purpose: The anonymous sign-on route is not filtered at all, so no hop of a
+     *     sign-on request reads — and therefore no hop writes back — the session that
+     *     sign-on is about to rotate. Reading it made the gateway save a store entry the
+     *     rotation had already deleted, which returned HTTP 500 for a sign-on that had
+     *     succeeded upstream.
+     * :raises ServletException: if the filter raises a servlet error.
+     * :raises IOException: if the filter raises an I/O error.
+     */
+    @Test
+    @DisplayName("the sign-on route is not filtered even when a session exists")
+    void signonRouteIsNotFiltered() throws ServletException, IOException {
+        SessionContext context = new SessionContext();
+        context.setUserId("ADMIN001");
+        context.setUserType(SessionContext.UserType.CDEMO_USRTYP_ADMIN);
+        MockHttpSession session = new MockHttpSession();
+        session.setAttribute(SessionContext.SESSION_ATTRIBUTE_NAME, context);
+        MockHttpServletRequest request = new MockHttpServletRequest("POST", "/auth/signon");
+        request.setSession(session);
+        CapturingFilterChain chain = new CapturingFilterChain();
+
+        filter.doFilter(request, new MockHttpServletResponse(), chain);
+
+        assertNull(chain.authentication,
+                "the sign-on route must reach the chain anonymously, without the session being read");
+    }
+
+    /**
+     * :purpose: The skip is decided on the path within the application, so it holds
+     *     whether or not the service is deployed under a context path, and it never
+     *     swallows a business route that merely contains the route later in the path.
+     */
+    @Test
+    @DisplayName("only the sign-on route is skipped, context path aside")
+    void onlyTheSignonRouteIsSkipped() {
+        assertTrue(filter.shouldNotFilter(new MockHttpServletRequest("POST", "/auth/signon")));
+
+        MockHttpServletRequest behindContextPath =
+                new MockHttpServletRequest("POST", "/api/auth/signon");
+        behindContextPath.setContextPath("/api");
+        assertTrue(filter.shouldNotFilter(behindContextPath),
+                "a service deployed under a context path must skip the same route");
+
+        assertFalse(filter.shouldNotFilter(new MockHttpServletRequest("GET", "/accounts/1")));
+        assertFalse(filter.shouldNotFilter(new MockHttpServletRequest("GET", "/users/auth/signon")),
+                "the prefix must be matched at the start of the path, not anywhere in it");
+    }
+
+    /**
      * :purpose: Build a request whose existing session carries a sign-on context.
      * :param userId: the legacy ``SEC-USR-ID``.
      * :param userType: the legacy ``SEC-USR-TYPE``, or ``null`` for an incomplete context.
@@ -287,4 +336,31 @@ class SessionContextAuthenticationFilterTest {
             this.authentication = SecurityContextHolder.getContext().getAuthentication();
         }
     }
+
+    /**
+     * :purpose: The sign-on endpoint is skipped, so the filter never reads (and therefore
+     *     never causes a write-back of) the session that request replaces. This is what
+     *     keeps a re-sign-on on a still-valid session from failing: the api-gateway holds
+     *     no handle to the session ``auth-service`` rotates away underneath it.
+     */
+    @Test
+    @DisplayName("the sign-on endpoint is skipped and its session is never read")
+    void signonPathIsNotFiltered() {
+        MockHttpSession session = new MockHttpSession();
+        SessionContext context = new SessionContext();
+        context.setUserId("ADMIN001");
+        context.setUserType(SessionContext.UserType.CDEMO_USRTYP_ADMIN);
+        session.setAttribute(SessionContext.SESSION_ATTRIBUTE_NAME, context);
+        MockHttpServletRequest request =
+                new MockHttpServletRequest("POST", SessionContextAuthenticationFilter.SIGNON_PATH);
+        request.setSession(session);
+
+        assertTrue(filter.shouldNotFilter(request),
+                "the sign-on endpoint must not be filtered");
+        assertFalse(filter.shouldNotFilter(new MockHttpServletRequest("GET", "/accounts/1")),
+                "every other path must still restore the principal");
+        assertFalse(filter.shouldNotFilter(new MockHttpServletRequest("POST", "/auth/other")),
+                "only the sign-on endpoint is skipped");
+    }
+
 }

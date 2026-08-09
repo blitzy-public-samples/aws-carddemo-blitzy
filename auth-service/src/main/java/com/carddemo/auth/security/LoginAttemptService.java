@@ -19,7 +19,8 @@ package com.carddemo.auth.security;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.Locale;
+import com.carddemo.common.security.UserIdNormalizer;
+
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import org.springframework.beans.factory.annotation.Value;
@@ -141,7 +142,7 @@ public class LoginAttemptService {
      * :returns: the trimmed, upper-cased key.
      */
     private String key(String userId) {
-        return userId.trim().toUpperCase(Locale.ROOT);
+        return UserIdNormalizer.normalizeToKey(userId);
     }
 
     /**

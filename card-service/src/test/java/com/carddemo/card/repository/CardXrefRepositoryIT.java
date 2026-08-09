@@ -51,7 +51,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 })
 @ActiveProfiles("test")
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
-class CardXrefRepositoryTest {
+class CardXrefRepositoryIT {
 
     /**
      * :purpose: Bind the datasource to the shared, already-migrated ``postgres:18`` container

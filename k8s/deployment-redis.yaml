@@ -66,6 +66,17 @@ spec:
                 secretKeyRef:
                   name: carddemo-redis-secret
                   key: SPRING_DATA_REDIS_PASSWORD
+          # --maxmemory bounds the session store. Left at the default of 0
+          # (unlimited) Redis grows until it reaches the container limit below and
+          # is then OOMKilled, discarding EVERY live session at once - the
+          # externalized COMMAREA equivalent - instead of shedding the sessions
+          # closest to their own expiry. volatile-ttl evicts only keys carrying a
+          # TTL, which is every key Spring Session writes, nearest-to-expire
+          # first; a write that would require evicting a NON-expiring key still
+          # fails loudly rather than silently dropping durable data. The budget
+          # sits below `limits.memory` because the AOF buffer, client buffers and
+          # allocator fragmentation are not counted by maxmemory. docker-compose.yml
+          # carries the same two settings.
           command:
             - redis-server
           args:
@@ -73,6 +84,10 @@ spec:
             - "yes"
             - --requirepass
             - $(REDIS_PASSWORD)
+            - --maxmemory
+            - 192mb
+            - --maxmemory-policy
+            - volatile-ttl
           ports:
             - containerPort: 6379
               name: redis

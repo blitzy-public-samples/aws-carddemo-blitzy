@@ -35,9 +35,12 @@ import com.carddemo.auth.repository.SecurityUserRepository;
 import com.carddemo.common.domain.SecurityUser;
 import com.carddemo.auth.security.LoginAttemptService;
 import com.carddemo.common.dto.SessionContext;
+import com.carddemo.common.exception.CardDemoException;
 import com.carddemo.common.security.SessionPrincipalIndex;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpSession;
+import java.util.Collections;
+import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -225,8 +228,10 @@ class AuthenticationServiceTest {
         verify(passwordEncoder).matches(eq("whatever"), any());
         verifyNoInteractions(signonMapper);
         verify(session, never()).setAttribute(any(), any());
-        // Issue 9: a rejected sign-on must not create a session at all.
-        verify(httpRequest, never()).getSession(anyBoolean());
+        // Issue 9: a rejected sign-on must not create a session at all. Reading the
+        // existing session with getSession(false) creates nothing and is how a request
+        // arriving over a live session is recognised, so only creation is forbidden.
+        verify(httpRequest, never()).getSession(true);
     }
 
     /**
@@ -250,8 +255,10 @@ class AuthenticationServiceTest {
         assertThat(ex.getReason()).isEqualTo(MSG_WRONG_PASSWORD);
         verifyNoInteractions(signonMapper);
         verify(session, never()).setAttribute(any(), any());
-        // Issue 9: a rejected sign-on must not create a session at all.
-        verify(httpRequest, never()).getSession(anyBoolean());
+        // Issue 9: a rejected sign-on must not create a session at all. Reading the
+        // existing session with getSession(false) creates nothing and is how a request
+        // arriving over a live session is recognised, so only creation is forbidden.
+        verify(httpRequest, never()).getSession(true);
     }
 
     /**
@@ -275,8 +282,10 @@ class AuthenticationServiceTest {
         verify(passwordEncoder, never()).matches(anyString(), eq(STORED_HASH));
         verifyNoInteractions(signonMapper);
         verify(session, never()).setAttribute(any(), any());
-        // Issue 9: a rejected sign-on must not create a session at all.
-        verify(httpRequest, never()).getSession(anyBoolean());
+        // Issue 9: a rejected sign-on must not create a session at all. Reading the
+        // existing session with getSession(false) creates nothing and is how a request
+        // arriving over a live session is recognised, so only creation is forbidden.
+        verify(httpRequest, never()).getSession(true);
     }
 
     /**
@@ -379,22 +388,24 @@ class AuthenticationServiceTest {
         assertThat(ex.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
         assertThat(ex.getReason()).isEqualTo(MSG_WRONG_PASSWORD);
         verify(session, never()).setAttribute(any(), any());
-        // Issue 9: a rejected sign-on must not create a session at all.
-        verify(httpRequest, never()).getSession(anyBoolean());
+        // Issue 9: a rejected sign-on must not create a session at all. Reading the
+        // existing session with getSession(false) creates nothing and is how a request
+        // arriving over a live session is recognised, so only creation is forbidden.
+        verify(httpRequest, never()).getSession(true);
     }
 
     /**
-     * :purpose: A session id obtained before sign-on is rotated, so a pre-authentication
-     *  id can never become an authenticated one (session fixation, CWE-384).
+     * :purpose: A sign-on that presents NO session is given a brand-new one, so an id that
+     *  existed before this sign-on can never become the authenticated one (session
+     *  fixation, CWE-384).
      */
     @Test
-    @DisplayName("Successful sign-on rotates a pre-authentication session id")
-    void signon_success_rotatesSessionId() {
+    @DisplayName("Sign-on with no session presented creates a fresh session")
+    void signon_success_createsFreshSessionWhenNonePresented() {
         SecurityUser user = mock(SecurityUser.class);
-        HttpSession preAuthSession = mock(HttpSession.class);
-        when(preAuthSession.getId()).thenReturn("pre-auth-id");
-        when(session.getId()).thenReturn("rotated-id");
-        when(httpRequest.getSession(false)).thenReturn(preAuthSession, session);
+        when(session.getId()).thenReturn("fresh-id");
+        when(httpRequest.getSession(false)).thenReturn(null);
+        when(httpRequest.getSession(true)).thenReturn(session);
         when(securityUserRepository.findBySecUsrId("ADMIN001")).thenReturn(Optional.of(user));
         when(user.getSecUsrPwd()).thenReturn(STORED_HASH);
         when(passwordEncoder.matches("password", STORED_HASH)).thenReturn(true);
@@ -406,9 +417,50 @@ class AuthenticationServiceTest {
 
         authenticationService.signon(new SignonRequestDto("admin001", "password"), httpRequest);
 
-        verify(httpRequest).changeSessionId();
+        verify(httpRequest).getSession(true);
         verify(session).setAttribute(SESSION_KEY, ctx);
-        verify(sessionPrincipalIndex).register("ADMIN001", "rotated-id");
+        verify(sessionPrincipalIndex).register("ADMIN001", "fresh-id");
+    }
+
+    /**
+     * :purpose: A sign-on presenting a session that carries no sign-on context -- one this
+     *  service cannot recognise as signed on, because it expired or ``UserService`` revoked
+     *  it in place -- REUSES that record, emptied of every attribute, and neither rotates
+     *  nor invalidates it. Rotation deletes the store entry, and the gateway that proxied
+     *  the call still holds its own handle on it: its save then failed outside any
+     *  exception handler, the caller was answered ``500``, and because the replacement id
+     *  was never persisted every later request on it was refused, so the operator could
+     *  never sign on again. Emptying the record keeps the pre-authentication state from
+     *  surviving without breaking the other participant.
+     */
+    @Test
+    @DisplayName("Sign-on over a context-less session reuses it, emptied, without rotating")
+    void signon_success_reusesContextLessSessionWithoutRotating() {
+        SecurityUser user = mock(SecurityUser.class);
+        when(session.getId()).thenReturn("reused-id");
+        when(session.getAttributeNames())
+                .thenReturn(Collections.enumeration(List.of("stale.attribute")));
+        when(httpRequest.getSession(false)).thenReturn(session);
+        when(securityUserRepository.findBySecUsrId("ADMIN001")).thenReturn(Optional.of(user));
+        when(user.getSecUsrPwd()).thenReturn(STORED_HASH);
+        when(passwordEncoder.matches("password", STORED_HASH)).thenReturn(true);
+        SessionContext ctx = new SessionContext();
+        ctx.setUserId("ADMIN001");
+        when(signonMapper.toSignonResponse(user))
+                .thenReturn(new SignonResponseDto("ADMIN001", SessionContext.UserType.CDEMO_USRTYP_ADMIN, "CA00"));
+        when(signonMapper.toSessionContext(user)).thenReturn(ctx);
+
+        authenticationService.signon(new SignonRequestDto("admin001", "password"), httpRequest);
+
+        // The shared record is neither rotated nor destroyed, so no other participant of
+        // this request loses the entry it is holding.
+        verify(httpRequest, never()).changeSessionId();
+        verify(httpRequest, never()).getSession(true);
+        verify(session, never()).invalidate();
+        // Nothing written before sign-on survives into the authenticated session.
+        verify(session).removeAttribute("stale.attribute");
+        verify(session).setAttribute(SESSION_KEY, ctx);
+        verify(sessionPrincipalIndex).register("ADMIN001", "reused-id");
     }
 
     /**
@@ -463,6 +515,65 @@ class AuthenticationServiceTest {
         assertThat(loginAttemptService.isLocked("ADMIN001")).isFalse();
     }
 
+    /**
+     * :purpose: A sign-on arriving over a session already signed on as the SAME user is
+     *  answered idempotently from the session it already holds. Nothing about the
+     *  session is changed: the api-gateway is a second Spring Session participant
+     *  holding the same record, so rotating or invalidating it here made the gateway's
+     *  own write-back fail and destroyed a session that was valid.
+     */
+    @Test
+    @DisplayName("Re-sign-on by the same principal returns the live session unchanged")
+    void signon_alreadySignedOnSameUser_isIdempotent() {
+        SessionContext live = new SessionContext();
+        live.setUserId("ADMIN001");
+        live.setUserType(SessionContext.UserType.CDEMO_USRTYP_ADMIN);
+        when(httpRequest.getSession(false)).thenReturn(session);
+        when(session.getAttribute(SESSION_KEY)).thenReturn(live);
+        when(signonMapper.toSignonResponse(live))
+                .thenReturn(new SignonResponseDto("ADMIN001", SessionContext.UserType.CDEMO_USRTYP_ADMIN, "CA00"));
 
+        SignonResponseDto response =
+                authenticationService.signon(new SignonRequestDto("admin001", "password"), httpRequest);
 
+        assertThat(response.getUserId()).isEqualTo("ADMIN001");
+        assertThat(response.getRedirectTarget()).isEqualTo("CA00");
+        verify(httpRequest, never()).changeSessionId();
+        verify(httpRequest, never()).getSession(true);
+        verify(session, never()).invalidate();
+        verify(session, never()).setAttribute(any(), any());
+        verifyNoInteractions(securityUserRepository);
+        // The credential is not re-verified: the session already carries the identity.
+        // The encoder was used once at construction to build the timing-equalization
+        // hash, so only the verification call itself is asserted absent.
+        verify(passwordEncoder, never()).matches(any(), any());
+    }
+
+    /**
+     * :purpose: A sign-on arriving over a session already signed on as a DIFFERENT user
+     *  is refused, and the live session survives the refusal. The legacy sign-on screen
+     *  could only be reached by ending the current session first, so the sequence is
+     *  invalid rather than a re-authentication.
+     */
+    @Test
+    @DisplayName("Sign-on as another user over a live session is refused, session intact")
+    void signon_alreadySignedOnDifferentUser_isRefused() {
+        SessionContext live = new SessionContext();
+        live.setUserId("ADMIN001");
+        live.setUserType(SessionContext.UserType.CDEMO_USRTYP_ADMIN);
+        when(httpRequest.getSession(false)).thenReturn(session);
+        when(session.getAttribute(SESSION_KEY)).thenReturn(live);
+
+        Throwable thrown = catchThrowable(() ->
+                authenticationService.signon(new SignonRequestDto("user0001", "password"), httpRequest));
+
+        assertThat(thrown).isInstanceOf(CardDemoException.class);
+        assertThat(thrown).hasMessage(
+                "Already signed on. Sign off before signing on as another user.");
+        verify(httpRequest, never()).changeSessionId();
+        verify(httpRequest, never()).getSession(true);
+        verify(session, never()).invalidate();
+        verify(session, never()).setAttribute(any(), any());
+        verifyNoInteractions(securityUserRepository);
+    }
 }

@@ -98,7 +98,15 @@ class RateLimitFilterTest {
         assertThat(response.getHeader("Retry-After")).isNotNull();
         assertThat(Long.parseLong(response.getHeader("Retry-After")))
                 .isBetween(1L, RateLimitFilter.WINDOW.toSeconds());
-        assertThat(response.getContentAsString()).isEmpty();
+        // The refusal carries the shared envelope, not a zero-byte body: a throttled operator
+        // must be told that waiting is the remedy. It still names nothing about the request.
+        assertThat(response.getHeader("Cache-Control")).isEqualTo("no-store");
+        assertThat(response.getHeader("X-Content-Type-Options")).isEqualTo("nosniff");
+        assertThat(response.getContentAsString())
+                .contains("\"status\":429")
+                .contains("\"errorCode\":\"RATE_LIMITED\"")
+                .contains("\"message\":\"Too many requests. Please try again shortly.\"")
+                .doesNotContain("10.0.0.1", "Exception");
         assertThat(chain.invocations).as("the throttled request must not reach the application").isEqualTo(2);
     }
 
@@ -222,8 +230,107 @@ class RateLimitFilterTest {
                 (req, res) -> signon.doFilter(req, res, application));
 
         assertThat(markersSeenByTheApplication)
-                .contains(RateLimitFilter.class.getName() + ":/.FILTERED",
-                          RateLimitFilter.class.getName() + ":/auth/.FILTERED");
+                .contains(RateLimitFilter.class.getName() + ":/:SOURCE_ADDRESS.FILTERED",
+                          RateLimitFilter.class.getName() + ":/auth/:SOURCE_ADDRESS.FILTERED");
+    }
+
+    /**
+     * :purpose: Two budgets that share a path prefix but count different identities must BOTH
+     *     run. The marker was previously scoped by prefix alone, so the per-caller and
+     *     anonymous budgets the gateway stacks on ``/`` would have collided and only the
+     *     first would ever have been enforced.
+     */
+    @Test
+    @DisplayName("budgets sharing a prefix but counting different identities both run")
+    void scopesTheOncePerRequestMarkerByCountedIdentity() throws Exception {
+        RateLimitFilter perCaller =
+                new RateLimitFilter(1, "/", RateLimitFilter.CountedIdentity.SIGNED_ON_CALLER);
+        RateLimitFilter anonymous =
+                new RateLimitFilter(1, "/", RateLimitFilter.CountedIdentity.ANONYMOUS_SOURCE_ADDRESS);
+        java.util.List<String> markersSeenByTheApplication = new java.util.ArrayList<>();
+        FilterChain application = (req, res) ->
+                ((HttpServletRequest) req).getAttributeNames().asIterator()
+                        .forEachRemaining(markersSeenByTheApplication::add);
+
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        perCaller.doFilter(request("/menu", "10.0.0.1"), response,
+                (req, res) -> anonymous.doFilter(req, res, application));
+
+        assertThat(markersSeenByTheApplication)
+                .contains(RateLimitFilter.class.getName() + ":/:SIGNED_ON_CALLER.FILTERED",
+                          RateLimitFilter.class.getName() + ":/:ANONYMOUS_SOURCE_ADDRESS.FILTERED");
+    }
+
+    /**
+     * :purpose: A signed-on caller must get its OWN budget rather than share one with
+     *     everyone behind the same source address, which is what made the AAP 0.7.1 target
+     *     of 150 concurrent users unreachable from a single NAT address.
+     */
+    @Test
+    @DisplayName("two sessions from one address each get the full per-caller budget")
+    void perCallerBudgetIsNotSharedAcrossSessionsFromOneAddress() throws Exception {
+        RateLimitFilter filter =
+                new RateLimitFilter(1, "/", RateLimitFilter.CountedIdentity.SIGNED_ON_CALLER);
+
+        MockHttpServletRequest firstCaller = request("/menu", "10.0.0.1");
+        firstCaller.getSession(true);
+        MockHttpServletRequest secondCaller = request("/menu", "10.0.0.1");
+        secondCaller.getSession(true);
+
+        CountingChain chain = new CountingChain();
+        MockHttpServletResponse firstResponse = new MockHttpServletResponse();
+        filter.doFilter(firstCaller, firstResponse, chain);
+        MockHttpServletResponse secondResponse = new MockHttpServletResponse();
+        filter.doFilter(secondCaller, secondResponse, chain);
+
+        assertThat(firstResponse.getStatus()).isEqualTo(HttpStatus.OK.value());
+        assertThat(secondResponse.getStatus())
+                .as("a second caller from the same address must not inherit the first's spend")
+                .isEqualTo(HttpStatus.OK.value());
+        assertThat(chain.invocations).isEqualTo(2);
+
+        // The same caller's SECOND request does exhaust its own budget.
+        MockHttpServletRequest firstCallerAgain = request("/menu", "10.0.0.1");
+        firstCallerAgain.setSession(firstCaller.getSession(false));
+        MockHttpServletResponse thirdResponse = new MockHttpServletResponse();
+        filter.doFilter(firstCallerAgain, thirdResponse, chain);
+        assertThat(thirdResponse.getStatus()).isEqualTo(HttpStatus.TOO_MANY_REQUESTS.value());
+        assertThat(thirdResponse.getHeader("Retry-After")).isNotNull();
+    }
+
+    /**
+     * :purpose: The two identities are complementary: an anonymous-only budget must ignore a
+     *     signed-on request, and a per-caller budget must ignore an anonymous one, so neither
+     *     double-counts the other's traffic.
+     */
+    @Test
+    @DisplayName("the caller and anonymous budgets each ignore the other's traffic")
+    void complementaryIdentitiesDoNotCountEachOthersRequests() throws Exception {
+        RateLimitFilter anonymousOnly =
+                new RateLimitFilter(1, "/", RateLimitFilter.CountedIdentity.ANONYMOUS_SOURCE_ADDRESS);
+        CountingChain chain = new CountingChain();
+
+        MockHttpServletRequest signedOn = request("/menu", "10.0.0.1");
+        signedOn.getSession(true);
+        for (int i = 0; i < 5; i++) {
+            MockHttpServletRequest repeat = request("/menu", "10.0.0.1");
+            repeat.setSession(signedOn.getSession(false));
+            MockHttpServletResponse response = new MockHttpServletResponse();
+            anonymousOnly.doFilter(repeat, response, chain);
+            assertThat(response.getStatus())
+                    .as("a signed-on request must not spend the anonymous budget")
+                    .isEqualTo(HttpStatus.OK.value());
+        }
+
+        RateLimitFilter callerOnly =
+                new RateLimitFilter(1, "/", RateLimitFilter.CountedIdentity.SIGNED_ON_CALLER);
+        for (int i = 0; i < 5; i++) {
+            MockHttpServletResponse response = new MockHttpServletResponse();
+            callerOnly.doFilter(request("/menu", "10.0.0.1"), response, chain);
+            assertThat(response.getStatus())
+                    .as("an anonymous request must not spend a caller budget")
+                    .isEqualTo(HttpStatus.OK.value());
+        }
     }
 
     @Test

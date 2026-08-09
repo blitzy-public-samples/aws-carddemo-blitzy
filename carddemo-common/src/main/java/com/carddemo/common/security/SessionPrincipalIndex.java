@@ -204,7 +204,7 @@ public class SessionPrincipalIndex {
      * :returns: the fully qualified Redis key.
      */
     private String principalKey(String userId) {
-        return namespace + PRINCIPAL_KEY_INFIX + userId.trim().toUpperCase(java.util.Locale.ROOT);
+        return namespace + PRINCIPAL_KEY_INFIX + UserIdNormalizer.normalizeToKey(userId);
     }
 
     /**

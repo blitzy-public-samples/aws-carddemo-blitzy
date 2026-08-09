@@ -77,6 +77,19 @@ spec:
             capabilities:
               drop:
                 - ALL
+          # Bounded like every other container in this repository, init containers
+          # included: in a namespace with no LimitRange an unbounded container is
+          # admitted with no QoS guarantee and can be scheduled anywhere. The figures
+          # suit what this container does - one bash loop issuing a TCP readiness
+          # probe every 5 s - and were verified by running the same image and command
+          # under exactly these limits.
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
           command:
             - bash
             - -c
@@ -135,12 +148,24 @@ spec:
             # match the password Prometheus presents, or every scrape gets 401.
             - secretRef:
                 name: carddemo-monitoring-secret
+          # `limits.memory` is what the image's JAVA_OPTS percentages resolve
+          # against, so this figure - not a JVM flag - is what bounds the heap.
+          # Measured working set for the whole nine-service stack under the AAP
+          # 150-user load: 462-618 MiB resident per service, so 1Gi is held with
+          # headroom.
+          # `limits.cpu` is sized from the CPU cost per request measured over that
+          # same load: 9.2 ms for the tier as a whole, and 105.5 ms for a sign-on,
+          # of which ~72.8 ms is the password encoder alone. Two cores keeps every
+          # service at or below half utilisation at the measured request rate, and
+          # keeps the JVM's own ergonomics multi-core in every runtime.
+          # docker-compose.yml declares the same budget.
+          # Measurements and rationale: docs/decision-log.md section 50.
           resources:
             requests:
-              cpu: 250m
+              cpu: 500m
               memory: 512Mi
             limits:
-              cpu: "1"
+              cpu: "2"
               memory: 1Gi
           # Startup probe gives the JVM/Spring context up to 150s
           # (30 x 5s) to come up before liveness/readiness begin, so a

@@ -45,7 +45,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *     forward (PF8) and backward (PF7) keyset cursors with boundary emptiness,
  *     and the count, update, and delete operations.
  */
-class UserRepositoryTest extends AbstractIntegrationTest {
+class UserRepositoryIT extends AbstractIntegrationTest {
 
     /**
      * :purpose: Opaque ``{bcrypt}``-prefixed password placeholder stored on every

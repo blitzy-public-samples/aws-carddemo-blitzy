@@ -190,10 +190,15 @@ class ObservabilityEndpointsIT extends AbstractIntegrationTest {
      *   build metadata. Everything outside that surface stays closed, and an anonymous caller
      *   is CHALLENGED (``401``) rather than told it is forbidden: ``403`` is reserved for a
      *   principal that is authenticated but lacks the required authority.
+     * :note: The refusal carries the shared ``ErrorResponse`` envelope, the same one every other
+     *   failure carries — a status, a machine-readable code and one fixed operator sentence. It
+     *   discloses nothing about the endpoint it protected: no environment property, no bean name,
+     *   no metric, no exception and no framework internal. That is asserted directly below rather
+     *   than approximated by requiring an empty body, which is what this case previously did.
      * :raises Exception: if an HTTP exchange fails.
      */
     @Test
-    @DisplayName("info is permitted; non-permitted management endpoints -> 401 with an empty body")
+    @DisplayName("info is permitted; non-permitted management endpoints -> 401 in the shared envelope")
     void nonPermittedManagementEndpointsAreForbidden() throws Exception {
         assertThat(get("/actuator/info").statusCode())
                 .as("anonymous /actuator/info").isNotIn(401, 403);
@@ -201,11 +206,15 @@ class ObservabilityEndpointsIT extends AbstractIntegrationTest {
         for (String path : new String[]{"/actuator/metrics", "/actuator/env", "/actuator/beans"}) {
             assertThat(get(path).statusCode()).as("unauthenticated %s", path).isEqualTo(401);
         }
-        // The service chain rejects with an empty body. /actuator/metrics is matched by the
-        // management chain instead, which challenges with HTTP Basic, so its response
-        // legitimately carries the challenge rather than nothing at all.
+        // /actuator/metrics is matched by the management chain instead, which challenges with
+        // HTTP Basic, so its response legitimately carries the challenge rather than the envelope.
         for (String path : new String[]{"/actuator/env", "/actuator/beans"}) {
-            assertThat(get(path).body()).as("body of %s", path).isEmpty();
+            assertThat(get(path).body()).as("body of %s", path)
+                    .contains("\"status\":401")
+                    .contains("\"errorCode\":\"AUTHENTICATION_REQUIRED\"")
+                    .contains("\"message\":\"Your session has ended. Please sign on again.\"")
+                    .doesNotContain("Exception", "org.springframework", "spring.datasource",
+                            "CARDDEMO_PII_KEY", "requirepass", "dataSource");
         }
     }
 

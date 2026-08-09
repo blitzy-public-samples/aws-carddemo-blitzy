@@ -28,6 +28,26 @@
             <artifactId>spring-boot-starter-web</artifactId>
         </dependency>
 
+        <!--
+            Outbound HTTP client auto-configuration for BatchJobClient, which hands the
+            transaction-detail report to batch-service (the CORPT00C TDQ 'JOBS' hand-off).
+            spring-boot-starter-web supplies the RestClient TYPE but not Boot's
+            auto-configuration for it: in Spring Boot 4 that lives in this separate module,
+            which contributes both RestClientAutoConfiguration (the managed
+            RestClient.Builder bean) and RestClientObservationAutoConfiguration (the client
+            instrumentation). The instrumentation is what makes the hop write a traceparent
+            header, so without this module the launch crossed a service boundary with no
+            trace context and batch-service opened an unrelated trace for the run, leaving
+            the AAP's cross-service tracing requirement unmet (AAP 0.7.5). api-gateway
+            already receives this module transitively through Spring Cloud Gateway; this
+            service is the only other one that calls out over HTTP.
+            Version is managed by the Spring Boot BOM (AAP 0.5.1).
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-restclient</artifactId>
+        </dependency>
+
         <!-- Persistence: read-access to shared tables via carddemo-common repositories. -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -175,6 +195,21 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!--
+          Awaitility, for the two integration classes that must wait for an
+          ASYNCHRONOUSLY launched Spring Batch execution to reach a terminal status.
+          A fixed sleep either flakes on a loaded host or wastes the whole budget on a
+          fast one; Awaitility polls the execution and returns as soon as it is done,
+          and fails with the observed state rather than with a bare assertion.
+          Version managed by the Spring Boot BOM. Rationale: docs/decision-log.md,
+          section 53.4.
+        -->
+        <dependency>
+            <groupId>org.awaitility</groupId>
+            <artifactId>awaitility</artifactId>
             <scope>test</scope>
         </dependency>
 

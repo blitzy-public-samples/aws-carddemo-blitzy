@@ -38,7 +38,9 @@ interface ClientModule {
   };
   ApiError: new (...args: never[]) => Error;
   isApiError: (err: unknown) => boolean;
-  registerSessionExpiryHandler: (handler: () => void) => () => void;
+  registerSessionExpiryHandler: (
+    handler: (reason: 'expired' | 'refused') => void,
+  ) => () => void;
 }
 
 let client: ClientModule;
@@ -187,16 +189,37 @@ describe('api client session expiry', () => {
     await expect(client.default.get('/users')).rejects.toThrow();
 
     expect(onExpired).toHaveBeenCalledTimes(1);
+    // The reason lets the store tell an expiry, which the operator is told about, from
+    // a refusal, which the refusing program answers itself.
+    expect(onExpired).toHaveBeenCalledWith('expired');
   });
 
-  it('treats 403 the same as 401 — the server will not act on this session', async () => {
+  it('keeps the session on a 403 — a refused request is recoverable in place', async () => {
+    // A missing or stale double-submit token and a call the principal has no
+    // authority for both answer 403 while the session itself is still usable, so the
+    // local authority must survive and the screen must keep its entry fields.
     const onExpired = jest.fn();
     client.registerSessionExpiryHandler(onExpired);
     respond = failWith(403, { message: 'Forbidden' });
 
     await expect(client.default.get('/accounts/1')).rejects.toThrow();
 
+    expect(onExpired).not.toHaveBeenCalled();
+  });
+
+  it('navigates nowhere itself — the route guard returns the operator to sign-on', async () => {
+    // A full-document assignment would discard and re-parse the whole application on
+    // every expiry, and would take the notice the store publishes with it. The module
+    // therefore only drops the local authority; the guard does the rest, client-side.
+    const before = window.location.href;
+    const onExpired = jest.fn();
+    client.registerSessionExpiryHandler(onExpired);
+    respond = failWith(401, { message: 'Unauthorized' });
+
+    await expect(client.default.get('/cards')).rejects.toThrow();
+
     expect(onExpired).toHaveBeenCalledTimes(1);
+    expect(window.location.href).toBe(before);
   });
 
   it('honours skipAuthRedirect so sign-on, the probe and logout report their own outcome', async () => {
@@ -288,6 +311,68 @@ describe('api client error normalization', () => {
     await client.default.get('/users');
 
     expect(seen[0].withCredentials).toBe(true);
+  });
+});
+
+describe('api client message resolution for bodyless failures', () => {
+  it('explains a rejected session, whose response carries no body at all', async () => {
+    respond = failWith(401, '');
+
+    await expect(client.default.get('/accounts/1')).rejects.toMatchObject({
+      status: 401,
+      message: 'Your session has ended. Please sign on again.',
+    });
+  });
+
+  it('explains a refused request, whose response carries no body at all', async () => {
+    respond = failWith(403, '');
+
+    await expect(client.default.post('/accounts/1', {})).rejects.toMatchObject({
+      status: 403,
+      message: 'Request could not be authorized. Please try again.',
+    });
+  });
+
+  it('reports a transport failure in the register the screens use', async () => {
+    respond = (config) => Promise.reject(axiosError('Network Error', config));
+
+    await expect(client.default.get('/accounts/1')).rejects.toMatchObject({
+      status: 0,
+      message: 'Unable to reach the server. Please try again.',
+    });
+  });
+});
+
+describe('api client CSRF priming', () => {
+  it('obtains a token from the safe probe when the cookie has been cleared', async () => {
+    // ``POST /logout`` clears the cookie and only a document load used to re-issue
+    // one, which is precisely the action that discards the operator's screen.
+    respond = (config) => {
+      if (config.url === '/session') {
+        document.cookie = `${CSRF_COOKIE_NAME}=primed-token; path=/`;
+        return Promise.resolve({
+          data: {},
+          status: 200,
+          statusText: 'OK',
+          headers: {},
+          config,
+        });
+      }
+      return Promise.resolve({
+        data: {},
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        config,
+      });
+    };
+
+    await client.default.post('/users', { userId: 'QW000001' });
+
+    const probe = seen.find((config) => config.url === '/session');
+    expect(probe).toBeDefined();
+    const write = seen.find((config) => config.url === '/users');
+    expect(write?.headers[CSRF_HEADER_NAME]).toBe('primed-token');
   });
 });
 

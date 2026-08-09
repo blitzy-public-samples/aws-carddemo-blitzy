@@ -45,6 +45,81 @@ export function displayField(
 }
 
 /**
+ * :purpose: Render a number the way a COBOL ``PIC 9(n)`` field holds it — right
+ *     justified in exactly ``n`` digits with leading zeros. A display field declared
+ *     ``PIC 9(02)`` stores 1 as ``01``, so a ``STRING ... DELIMITED BY SIZE`` of it
+ *     contributes both characters and everything the program concatenates afterwards
+ *     starts at the same column for every value. Rendering the number itself instead
+ *     shortens the single-digit cases by one character and takes the text beside them
+ *     with it, which is what pulls a two-digit row out of line with the rest.
+ * :param value: the number to render.
+ * :param digits: the ``n`` of the ``PIC 9(n)`` field.
+ * :returns: the zero-padded digit string; a value already wider than ``digits`` is
+ *     returned in full rather than truncated, since a lost digit changes the value.
+ */
+export function displayZoned(value: number, digits: number): string {
+  return String(value).padStart(digits, '0');
+}
+
+/**
+ * :purpose: Apply the menu screens' own option edit, exactly as ``COMEN01C`` L118-L129
+ *     and ``COADM01C`` perform it. The entered text is right justified into
+ *     ``WS-OPTION-X PIC X(02) JUST RIGHT``, its blanks become zeros
+ *     (``INSPECT ... REPLACING ALL ' ' BY '0'``) and the result is moved to
+ *     ``WS-OPTION PIC 9(02)``; the option is then refused when it ``IS NOT NUMERIC``,
+ *     exceeds the option count, or is zero.
+ *
+ *     The edit belongs on the client as well as the server because the field it guards
+ *     admits characters that are not digits. A 3270 numeric field accepts a minus sign
+ *     and a period alongside 0-9 -- which is precisely why the program tests
+ *     ``IS NOT NUMERIC`` rather than trusting the keyboard -- so an entry like ``-1``
+ *     reaches the edit intact and has to be refused there. Stripping those characters
+ *     as they are typed instead turns ``-1`` into the valid option ``1`` and dispatches
+ *     a screen the operator never asked for.
+ * :param value: the raw text held by the ``OPTION`` field.
+ * :param optionCount: the screen's ``CDEMO-MENU-OPT-COUNT`` / ``CDEMO-ADMIN-OPT-COUNT``
+ *     -- the total the map declares, not the number of options a role can see, since
+ *     the role gate is a separate edit carrying its own message.
+ * :returns: the accepted option number, or ``null`` when the edit refuses the entry.
+ */
+export function editMenuOption(value: string, optionCount: number): number | null {
+  // MOVE OPTIONI(1:WS-IDX) TO WS-OPTION-X, a PIC X(02) JUST RIGHT field whose
+  // remaining blanks INSPECT then replaces with zeros.
+  const justified = value.trim().padStart(2, '0');
+  // IF WS-OPTION IS NOT NUMERIC: a PIC 9(02) holds two digits and nothing else.
+  if (!/^\d{2}$/.test(justified)) {
+    return null;
+  }
+  const optionNumber = Number(justified);
+  // IF WS-OPTION > CDEMO-MENU-OPT-COUNT OR WS-OPTION = ZEROS.
+  if (optionNumber === 0 || optionNumber > optionCount) {
+    return null;
+  }
+  return optionNumber;
+}
+
+/** Status the services answer with when they refuse a submitted value on its own terms. */
+const HTTP_BAD_REQUEST = 400;
+
+/**
+ * :purpose: Decide whether a failed call means the server refused the VALUE it was sent,
+ *     as opposed to failing to process the request at all. Only the former faults the
+ *     control the value came from: a program that rejects an entry re-sends its map with
+ *     the cursor on that field, while a failure to read a file leaves every entered value
+ *     unjudged and marks nothing invalid.
+ * :param error: the value a failed call rejected with, or ``null`` when it succeeded.
+ * :returns: ``true`` when the failure was the server rejecting the submitted value.
+ */
+export function isRejectedValue(error: unknown): boolean {
+  return (
+    error !== null &&
+    typeof error === 'object' &&
+    'status' in error &&
+    (error as ApiError).status === HTTP_BAD_REQUEST
+  );
+}
+
+/**
  * :purpose: Parse a wire decimal string into a number for a client-side numeric
  *     comparison, without ever writing the parsed value back onto the wire — the
  *     string form remains authoritative so no scale is lost.
@@ -99,5 +174,81 @@ export function resolveApiErrorMessage(
   if (bodyMessage !== undefined && bodyMessage.length > 0) {
     return bodyMessage;
   }
+  // ``error.message`` is already the client's own resolved text: the api client
+  // substitutes GENERIC_ERROR_MESSAGE for every failure that carried no envelope,
+  // so a library diagnostic can never reach line 23 through here either.
   return error.message.length > 0 ? error.message : fallback;
+}
+
+/**
+ * :purpose: Read the request field a failed call named, so the screen can mark that one
+ *     control and place the cursor on it — the client half of the legacy
+ *     ``MOVE -1 TO <field>L`` the programs perform beside every edit failure. The
+ *     envelope's ``fieldErrors`` map is authoritative because the SERVICE performed the
+ *     edit and therefore knows which field it refused; a screen no longer has to infer
+ *     that by matching the message text.
+ * :param error: the normalized error surfaced by ``useApi``, or ``null``.
+ * :returns: the first field name the envelope named, or ``null`` when it named none —
+ *     a whole-submission refusal, a state conflict, or a transport failure.
+ * :note: The first key is the one to act on: the services evaluate their edits in the
+ *     legacy screen order and report only the edit that failed first, exactly as a
+ *     COBOL ``EVALUATE TRUE`` would have.
+ */
+export function resolveFaultedField(error: ApiError | null): string | null {
+  const fieldErrors: unknown = error?.body?.fieldErrors;
+  // The envelope is a wire value, so its shape is read rather than trusted. A refusal
+  // that names no field serialises the member as an explicit JSON ``null`` -- every
+  // whole-submission refusal does, such as the unchanged-record outcome -- and
+  // ``Object.keys(null)`` throws, which would take the whole screen down through the
+  // error boundary instead of showing the message the service sent.
+  if (fieldErrors === null || typeof fieldErrors !== 'object') {
+    return null;
+  }
+  const [first] = Object.keys(fieldErrors);
+  return first ?? null;
+}
+
+/**
+ * :purpose: Read the line-23 message a route guard handed to the screen it bounced
+ *     the caller to. A CICS program that refused a transfer re-sent the receiving
+ *     screen with its own explanation on line 23; the router carries that explanation
+ *     in the navigation state, and this reads it back without trusting its shape.
+ * :param state: the value of ``useLocation().state``.
+ * :returns: the message, or an empty string when the navigation carried none.
+ */
+export function guardScreenMessage(state: unknown): string {
+  if (state === null || typeof state !== 'object') {
+    return '';
+  }
+  const candidate = (state as { screenMessage?: unknown }).screenMessage;
+  return typeof candidate === 'string' ? candidate : '';
+}
+
+/** Decimal digit count of every signed monetary picture the mapsets carry. */
+export const PICTURE_DECIMAL_DIGITS = 2;
+
+/**
+ * :purpose: Edit a scale-2 monetary value into a COBOL signed display picture — a leading
+ *     sign, a fixed run of zero-padded integer digits, the decimal point, then two
+ *     decimals. This is what a ``MOVE`` into a ``PIC +9(n)V99`` receiver produces, and
+ *     the mapsets carry several such fields at different widths: ``COTRN02C``'s
+ *     ``WS-TRAN-AMT-E`` is ``PIC +99999999.99`` and ``COBIL00C``'s ``WS-CURR-BAL`` is
+ *     ``PIC +9999999999.99``, whose map field ``CURBAL`` is declared ``LENGTH=14``.
+ * :param value: the value in its wire form, for example ``560.00`` or ``-919``.
+ * :param integerDigits: the integer digit count the picture declares.
+ * :returns: the edited value, for example ``+0000000560.00`` at ten integer digits.
+ */
+export function toSignedAmountPicture(value: string, integerDigits: number): string {
+  const trimmed = value.trim();
+  const sign = trimmed.startsWith('-') ? '-' : '+';
+  const [whole = '', fraction = ''] = trimmed.replace(/^[-+]/, '').split('.');
+  const integerPart = whole
+    .replace(/\D/g, '')
+    .padStart(integerDigits, '0')
+    .slice(-integerDigits);
+  const fractionPart = fraction
+    .replace(/\D/g, '')
+    .padEnd(PICTURE_DECIMAL_DIGITS, '0')
+    .slice(0, PICTURE_DECIMAL_DIGITS);
+  return `${sign}${integerPart}.${fractionPart}`;
 }

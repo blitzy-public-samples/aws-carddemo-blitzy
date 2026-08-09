@@ -32,7 +32,6 @@ import java.util.List;
 import java.util.Map;
 
 import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -69,20 +68,30 @@ class SeededPiiEncryptionMigratorTest {
 
     /**
      * :purpose: Install the test key, remembering any key already configured.
+     * :output: ``carddemo.pii.key`` holds {@link #TEST_KEY} and no process-wide key is
+     *     installed, so the converter this suite exercises resolves that key.
+     * :note: No assumption guards this class. The build blanks ``CARDDEMO_PII_KEY`` in
+     *     every test fork, and the installed key is cleared here because
+     *     :java:meth:`PiiEncryptionKey.require` prefers it over the property - together
+     *     that makes the key deterministic instead of letting an ambient environment
+     *     silently reduce this suite to zero executed tests
+     *     (docs/decision-log.md, section 53.2).
      */
     @BeforeAll
     static void configureKey() {
-        Assumptions.assumeTrue(System.getenv(CryptoConverter.KEY_ENV) == null,
-                CryptoConverter.KEY_ENV + " is set in the environment and takes precedence over the test key");
         previousKey = System.getProperty(CryptoConverter.KEY_PROPERTY);
+        PiiEncryptionKey.clear();
         System.setProperty(CryptoConverter.KEY_PROPERTY, TEST_KEY);
     }
 
     /**
      * :purpose: Restore the previous key so the property does not leak between suites.
+     * :output: the previous ``carddemo.pii.key`` value (or its absence) is restored and no
+     *     process-wide key remains installed.
      */
     @AfterAll
     static void restoreKey() {
+        PiiEncryptionKey.clear();
         if (previousKey == null) {
             System.clearProperty(CryptoConverter.KEY_PROPERTY);
         } else {

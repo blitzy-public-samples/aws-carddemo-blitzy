@@ -188,6 +188,37 @@ public class AccountService {
     }
 
     /**
+     * :purpose: Run the ``COACTUPC`` edit pass over a submission WITHOUT rewriting anything
+     *  -- the ENTER half of the legacy screen. ``1200-EDIT-MAP-INPUTS`` runs inside the
+     *  program, so the edits and their frozen literals live here rather than being
+     *  reproduced a second time in the client; this exposes that same pass so the screen can
+     *  only report ``Changes validated`` once the edits it names have actually run.
+     *  Nothing is read for update, no lock is taken and no record is written.
+     * :param acctId: the account id the submission is aimed at, edited as for a rewrite.
+     * :param request: the editable account and customer fields as currently entered.
+     * :raises CardDemoException: when the submission carries no field at all, when it
+     *  matches the display-time snapshot (``No change detected with respect to values
+     *  fetched.``), or when any field edit fails; the first failing edit's message and
+     *  field are reported, in COBOL ``PERFORM`` order.
+     */
+    @Transactional(readOnly = true)
+    public void validateAccountUpdate(Long acctId, AccountUpdateRequestDto request) {
+        log.debug("Account update edit pass requested for acctId={}", acctId);
+
+        // Step 1 -- 1205-COMPARE-OLD-NEW, exactly as the rewrite path orders it: an
+        // unchanged submission is reported before any field edit runs.
+        if (snapshotPresent(request) && !hasSubmittedChangeAgainstSnapshot(request)) {
+            throw new CardDemoException(AccountUpdateValidator.MSG_NO_CHANGES);
+        }
+
+        // Step 2 -- 1200-EDIT-MAP-INPUTS. The concurrency comparison (step 3 of the rewrite)
+        // is deliberately NOT performed: the legacy screen reaches it only on PF5, and
+        // reporting a conflict for a record the operator has not yet asked to save would
+        // invent an outcome the legacy never produces at this point.
+        accountUpdateValidator.validate(request);
+    }
+
+    /**
      * :purpose: Apply an account update as a single atomic transaction, reproducing
      *  ``COACTUPC`` (transaction ``CAUP``). Re-reads the same three records in the
      *  same ordered short-circuit fashion as the view path, compares the version the
@@ -226,6 +257,15 @@ public class AccountService {
         // BEFORE any field edit runs, and an identical submission reports
         // NO-CHANGES-FOUND without rewriting anything.
         if (snapshotSupplied && !hasSubmittedChangeAgainstSnapshot(request)) {
+            // ...but only for an account that EXISTS. On the mainframe an ACUP-OLD-* snapshot could
+            // only exist BECAUSE the record had already been read and displayed, so "an unchanged
+            // snapshot for an account that does not exist" is not a state the legacy program could
+            // reach and it has no legacy message of its own. Reporting no-change without this check
+            // told the caller their edit was a no-op when in truth there was nothing there to edit,
+            // and contradicted the 404 that the very same id returns as soon as one field differs.
+            // The read is confined to this branch so the edit sequence still precedes every file
+            // read on every other path, which is the legacy order (L1028 edits, L2575 read).
+            readAccountRecords(acctId);
             log.debug("Account update no-op for acctId={}: submitted values match the snapshot", acctId);
             throw new CardDemoException(AccountUpdateValidator.MSG_NO_CHANGES);
         }
@@ -262,6 +302,12 @@ public class AccountService {
             log.debug("Account update no-op for acctId={}: submitted values match the record", acctId);
             throw new CardDemoException(AccountUpdateValidator.MSG_NO_CHANGES);
         }
+
+        // Step 4b -- the two masked identifiers cannot be edited THROUGH their mask. The
+        // numeric edits of 1265-EDIT-US-SSN and 1245-EDIT-NUM-REQD are completed here, where
+        // the stored values are available to tell an echoed mask from an edit that kept a
+        // mask character, so an attempted edit is refused rather than silently discarded.
+        accountUpdateValidator.validateMaskedIdentifiers(request, customer);
 
         // Step 5 -- apply the submitted edits onto the managed entities in place so their
         // JPA @Version and primary keys are preserved for optimistic-lock detection.

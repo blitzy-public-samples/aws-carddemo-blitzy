@@ -67,3 +67,25 @@ export async function updateAccount(
   );
   return response.data;
 }
+
+/**
+ * :purpose: Run the ``COACTUPC`` edit pass over the entered values without rewriting
+ *   anything, via ``POST /accounts/{id}/validate`` — the ENTER half of CICS ``CAUP``.
+ *   ``1200-EDIT-MAP-INPUTS`` runs inside the legacy program, so the edits and their
+ *   frozen literals live in the service and are exercised here rather than reproduced a
+ *   second time in the browser, where the two copies could drift.
+ * :param accountId: the 11-digit account identifier as a ``string``; leading zeros and
+ *   field width are preserved (never coerced to ``number``).
+ * :param request: the :ts:type:`AccountUpdateRequestDto` body — the same shape the
+ *   rewrite sends, so the pass edits exactly the submission that would be written.
+ * :returns: a ``Promise`` resolving to ``void`` when every edit passes (HTTP ``204``).
+ * :raises ApiError: HTTP ``400``/``422`` carrying the first failing edit's message and,
+ *   in ``fieldErrors``, the property it faulted; propagated unchanged so
+ *   ``AccountUpdatePage`` can publish the legacy literal and mark that field.
+ */
+export async function validateAccountUpdate(
+  accountId: string,
+  request: AccountUpdateRequestDto,
+): Promise<void> {
+  await apiClient.post<void>(`/accounts/${accountId}/validate`, request);
+}

@@ -26,6 +26,8 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.web.context.request.ServletWebRequest;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.exc.MismatchedInputException;
 
 /**
  * :purpose: Verifies how an unreadable request body is classified. A body refused by the
@@ -111,5 +113,114 @@ class GlobalExceptionHandlerUnreadableBodyTest {
         ResponseEntity<ErrorResponse> response = handler.handleUnreadableRequestBody(ex, request());
 
         assertThat(response.getStatusCode().value()).isEqualTo(HttpStatus.BAD_REQUEST.value());
+    }
+    /**
+     * :purpose: A value that is PRESENT but of the wrong type is a field edit failure, not a
+     *   malformed document: the JSON parsed and exactly one property could not be converted. The
+     *   response must name that property and carry the legacy message its edit owns, because the
+     *   generic malformed-body message named no field and silently replaced a frozen literal.
+     */
+    @Test
+    @DisplayName("a type mismatch reports the resolver's legacy message and names the field")
+    void typeMismatchReportsTheLegacyFieldMessage() {
+        GlobalExceptionHandler advice = new GlobalExceptionHandler();
+        advice.setTypeMismatchMessageResolver(
+                property -> "acctCreditLimit".equals(property) ? "Credit Limit is not valid" : null);
+
+        ResponseEntity<ErrorResponse> response =
+                advice.handleUnreadableRequestBody(mismatchOn("acctCreditLimit"), webRequest());
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        ErrorResponse body = response.getBody();
+        assertThat(body).isNotNull();
+        assertThat(body.getMessage()).isEqualTo("Credit Limit is not valid");
+        assertThat(body.getFieldErrors()).containsEntry("acctCreditLimit", "Credit Limit is not valid");
+    }
+
+    /**
+     * :purpose: A property the resolver does not own keeps the generic message, so contributing a
+     *   resolver cannot invent a message for a field it knows nothing about.
+     */
+    @Test
+    @DisplayName("an unowned property falls back to the generic malformed-body message")
+    void unownedPropertyFallsBackToGenericMessage() {
+        GlobalExceptionHandler advice = new GlobalExceptionHandler();
+        advice.setTypeMismatchMessageResolver(property -> null);
+
+        ResponseEntity<ErrorResponse> response =
+                advice.handleUnreadableRequestBody(mismatchOn("somethingElse"), webRequest());
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(response.getBody()).isNotNull();
+        assertThat(response.getBody().getMessage()).isEqualTo("Malformed request body");
+        assertThat(response.getBody().getFieldErrors()).isNull();
+    }
+
+    /**
+     * :purpose: With no resolver contributed at all the behaviour is unchanged, so a service that
+     *   opts out is unaffected.
+     */
+    @Test
+    @DisplayName("with no resolver the generic malformed-body message is unchanged")
+    void withoutResolverGenericMessageIsUnchanged() {
+        ResponseEntity<ErrorResponse> response =
+                new GlobalExceptionHandler()
+                        .handleUnreadableRequestBody(mismatchOn("acctCreditLimit"), webRequest());
+
+        assertThat(response.getBody()).isNotNull();
+        assertThat(response.getBody().getMessage()).isEqualTo("Malformed request body");
+    }
+
+    /**
+     * :purpose: A syntax error carries no property path, so it must keep reporting the generic
+     *   message rather than being attributed to some field.
+     */
+    @Test
+    @DisplayName("a body with no property path keeps the generic message")
+    void bodyWithoutPropertyPathKeepsGenericMessage() {
+        GlobalExceptionHandler advice = new GlobalExceptionHandler();
+        advice.setTypeMismatchMessageResolver(property -> "should not be consulted");
+
+        ResponseEntity<ErrorResponse> response = advice.handleUnreadableRequestBody(
+                unreadable("truncated", new java.io.IOException("eof")), webRequest());
+
+        assertThat(response.getBody()).isNotNull();
+        assertThat(response.getBody().getMessage()).isEqualTo("Malformed request body");
+    }
+
+    /**
+     * :purpose: Build an unreadable-body exception whose cause is a per-property type mismatch on
+     *   the named property, as the JSON converter raises for a wrong-typed value.
+     * :param property: the property that failed conversion.
+     * :returns: the exception the advice receives.
+     */
+    private static HttpMessageNotReadableException mismatchOn(String property) {
+        MismatchedInputException cause =
+                MismatchedInputException.from((tools.jackson.core.JsonParser) null,
+                        java.math.BigDecimal.class, "not a number");
+        cause.prependPath(new JacksonException.Reference(Object.class, property));
+        return unreadable("wrong type", cause);
+    }
+
+    /**
+     * :purpose: Build an unreadable-body exception with the supplied cause, supplying the input
+     *  message the constructor requires.
+     * :param message: the converter's own message, which the advice must never echo.
+     * :param cause: the underlying conversion failure.
+     * :returns: the exception the advice receives.
+     */
+    private static HttpMessageNotReadableException unreadable(String message, Throwable cause) {
+        return new HttpMessageNotReadableException(message, cause,
+                new org.springframework.http.server.ServletServerHttpRequest(
+                        new MockHttpServletRequest("PUT", "/accounts/90000000001")));
+    }
+
+    /**
+     * :purpose: Provide a web request for the advice to derive the path from.
+     * :returns: a servlet web request for an account update.
+     */
+    private static ServletWebRequest webRequest() {
+        return new ServletWebRequest(
+                new MockHttpServletRequest("PUT", "/accounts/90000000001"));
     }
 }

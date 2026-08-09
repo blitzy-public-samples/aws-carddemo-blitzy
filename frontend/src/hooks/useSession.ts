@@ -29,6 +29,8 @@ import type {
   SignonResponseDto,
 } from '../types';
 import { CDEMO_USRTYP_ADMIN, CDEMO_USRTYP_USER } from '../types';
+import type { SessionRejectionReason } from '../api';
+import { SESSION_ENDED_MESSAGE } from '../api/messages';
 import {
   getSessionIdentity,
   logout,
@@ -51,12 +53,16 @@ const PGM_CONTEXT_ENTER = 0;
  *     when signed out.
  * :field session: full externalized session context when available; ``null``
  *     when signed out.
+ * :field resolved: whether the server has answered the identity question at all.
+ * :field notice: text the sign-on screen must show because the session ended
+ *     without the operator asking; ``null`` whenever there is nothing to report.
  */
 interface SessionState {
   user: string | null;
   role: Role | null;
   session: SessionContext | null;
   resolved: boolean;
+  notice: string | null;
 }
 
 /**
@@ -70,6 +76,7 @@ const EMPTY_STATE: SessionState = {
   role: null,
   session: null,
   resolved: false,
+  notice: null,
 };
 
 /**
@@ -83,7 +90,17 @@ const SIGNED_OUT_STATE: SessionState = {
   role: null,
   session: null,
   resolved: true,
+  notice: null,
 };
+
+/*
+ * The text the sign-on screen reports when the server-held session ended without the
+ * operator ending it, so an expiry is never silent. Re-exported rather than declared:
+ * the literal, and the note on why it has no legacy analogue, live with the other
+ * client-side line-23 texts in `api/messages.ts`, so the guards, the response
+ * interceptor and this store all report the condition in one wording.
+ */
+export { SESSION_ENDED_MESSAGE };
 
 /**
  * :purpose: Narrow an unknown value to a valid :ts:type:`Role`.
@@ -107,7 +124,8 @@ function stateFor(user: string, role: Role): SessionState {
     userType: role,
     programContext: PGM_CONTEXT_ENTER,
   };
-  return { user, role, session, resolved: true };
+  // A published identity leaves nothing to report: the operator is signed on.
+  return { user, role, session, resolved: true, notice: null };
 }
 
 /**
@@ -164,6 +182,22 @@ function setState(next: SessionState): void {
 }
 
 /**
+ * :purpose: Build the SERVER-CONFIRMED signed-out state, carrying forward the notice
+ *     already published unless the caller supplies one. The notice has to survive this
+ *     transition: the identity probe that follows an expiry answers "no session" and
+ *     would otherwise erase the very message the expiry raised.
+ * :param notice: text to publish, or ``null`` to keep whatever is already published.
+ * :returns: the signed-out :ts:type:`SessionState`; the shared
+ *     :data:`SIGNED_OUT_STATE` reference itself when there is nothing to report.
+ */
+function signedOutState(notice: string | null = null): SessionState {
+  const carried = notice ?? currentState.notice;
+  return carried === null
+    ? SIGNED_OUT_STATE
+    : { ...SIGNED_OUT_STATE, notice: carried };
+}
+
+/**
  * :purpose: Authenticate a user against ``POST /auth/signon`` (legacy
  *     ``COSGN00C`` / transaction ``CC00``) and establish the session on success.
  * :param userId: the user id, sent verbatim — never upper-cased, transformed,
@@ -207,18 +241,37 @@ async function signIn(
 async function signOut(): Promise<void> {
   await logout();
   identityProbe = null;
+  // An operator-ended session is not an expiry, so nothing is reported on the way out.
   setState(SIGNED_OUT_STATE);
 }
 
 /**
  * :purpose: Drop the local authority without a server round trip, for the case
  *     where the server has already told us the session is gone (a ``401`` or
- *     ``403`` on any request).
+ *     ``403`` on any request). Dropping it is also what moves the operator: the route
+ *     guard sees a resolved, signed-out session and navigates to the sign-on screen
+ *     client-side, so the application is never re-downloaded to report an expiry.
+ * :param reason: ``'expired'`` publishes :data:`SESSION_ENDED_MESSAGE` so the sign-on
+ *     screen tells the operator why they are back there; ``'refused'`` publishes
+ *     nothing, because a refusal is answered by the program that refused it — the
+ *     legacy literal ``No access - Admin Only option... `` is `MenuController`'s to
+ *     send, not the client's to invent.
  */
-function abandonSession(): void {
+function abandonSession(reason: SessionRejectionReason): void {
   identityProbe = null;
-  if (currentState !== SIGNED_OUT_STATE) {
-    setState(SIGNED_OUT_STATE);
+  const next = signedOutState(reason === 'expired' ? SESSION_ENDED_MESSAGE : null);
+  if (currentState !== next) {
+    setState(next);
+  }
+}
+
+/**
+ * :purpose: Withdraw the published notice once it has been read, so it is reported for
+ *     the expiry that raised it and not for the next screen the operator reaches.
+ */
+function clearSessionNotice(): void {
+  if (currentState.notice !== null) {
+    setState({ ...currentState, notice: null });
   }
 }
 
@@ -232,20 +285,44 @@ registerSessionExpiryHandler(abandonSession);
  *     from the authority that owns them.
  * :returns: a promise resolving to ``true`` when the server published an identity
  *     and ``false`` when it reported no usable session.
+ * :note: A probe that finds no session CONFIRMS the signed-out state without erasing a
+ *     notice already published — the probe an expiry triggers must not silence the
+ *     expiry it is reporting. A published identity clears the notice, because the
+ *     operator is signed on again and there is nothing left to report.
  */
 async function refresh(): Promise<boolean> {
   try {
     const identity = await getSessionIdentity();
     if (typeof identity.userId !== 'string' || !isValidRole(identity.userType)) {
-      setState(SIGNED_OUT_STATE);
+      setState(signedOutState());
       return false;
     }
     setState(stateFor(identity.userId, identity.userType));
     return true;
   } catch {
-    setState(SIGNED_OUT_STATE);
+    setState(signedOutState());
     return false;
   }
+}
+
+/**
+ * :purpose: Discard the conclusion of the last identity probe and ask the server
+ *     again, for a document that was RESTORED rather than loaded: a back-forward-cache
+ *     restore reinstates the rendered screen and issues no request of its own, so the
+ *     identity it was drawn under has to be re-established.
+ * :returns: a promise resolving to ``true`` when the server still publishes an
+ *     identity and ``false`` when it reports no usable session.
+ * :note: The store is returned to :data:`EMPTY_STATE` FIRST. That is the not-yet-asked
+ *     state, so every route guard renders its waiting announcement and the restored
+ *     protected screen is unmounted for the whole round trip rather than staying on
+ *     display until the answer arrives.
+ */
+async function revalidate(): Promise<boolean> {
+  identityProbe = null;
+  if (currentState !== EMPTY_STATE) {
+    setState(EMPTY_STATE);
+  }
+  return refresh();
 }
 
 /**
@@ -276,9 +353,17 @@ function probeIdentityOnce(): Promise<void> {
  *     window before that answer, during which a route guard must wait rather than
  *     treat the caller as signed out.
  * :field isAdmin: ``true`` only for the administrator role (``'A'``).
+ * :field sessionNotice: text the sign-on screen must report because the session ended
+ *     without the operator ending it (an expired cookie session), or ``null`` when
+ *     there is nothing to report. It survives the identity probe that follows the
+ *     expiry and is withdrawn by :func:`clearSessionNotice`.
+ * :field clearSessionNotice: withdraw the published notice once it has been reported.
  * :field signIn: authenticate and establish the session.
  * :field signOut: revoke the server session, then clear the local session.
  * :field refresh: re-resolve the identity from the server-held session.
+ * :field revalidate: discard the last conclusion and re-ask the server, clearing the
+ *     published identity for the duration so a restored screen is not left on display
+ *     under an identity that may already be gone.
  */
 export interface UseSessionResult {
   user: string | null;
@@ -287,12 +372,15 @@ export interface UseSessionResult {
   isAuthenticated: boolean;
   isSessionResolved: boolean;
   isAdmin: boolean;
+  sessionNotice: string | null;
+  clearSessionNotice: () => void;
   signIn: (
     userId: string,
     password: string,
   ) => Promise<SessionContext | SignonResponseDto>;
   signOut: () => Promise<void>;
   refresh: () => Promise<boolean>;
+  revalidate: () => Promise<boolean>;
 }
 
 /**
@@ -317,8 +405,11 @@ export function useSession(): UseSessionResult {
     isAuthenticated,
     isSessionResolved: state.resolved,
     isAdmin,
+    sessionNotice: state.notice,
+    clearSessionNotice,
     signIn,
     signOut,
     refresh,
+    revalidate,
   };
 }

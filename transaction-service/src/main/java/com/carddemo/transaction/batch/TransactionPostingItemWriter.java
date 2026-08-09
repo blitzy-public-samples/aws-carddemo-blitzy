@@ -182,7 +182,18 @@ public class TransactionPostingItemWriter implements ItemWriter<PostingItem> {
         tran.setTranCardNum(dt.getDalytranCardNum());
         tran.setTranOrigTs(dt.getDalytranOrigTs());
         tran.setTranProcTs(currentDb2Timestamp());
-        transactionRepository.save(tran);
+        // Flushed inside write(), not left to commit time. An id already on the transaction
+        // master is an abend in CBTRN02C (a WRITE with file status 22 falls into
+        // 9999-ABEND-PROGRAM), and that abend equivalence is preserved -- but WHERE the
+        // violation surfaces decides whether an operator can re-drive the cycle. Deferred to
+        // the chunk commit, the constraint failure arrives after the transaction is already
+        // committing, so Spring Batch cannot roll the chunk back and records the execution as
+        // UNKNOWN; every later launch for that posting date is then refused with "Cannot
+        // restart job from UNKNOWN status ... Manual intervention is probably necessary" and
+        // the cycle is permanently blocked. Flushing here raises it INSIDE the chunk, the
+        // chunk rolls back normally, and the step ends FAILED -- restartable, so the operator
+        // re-drives the same date and the run resumes past the records already posted.
+        transactionRepository.saveAndFlush(tran);
     }
 
     /**

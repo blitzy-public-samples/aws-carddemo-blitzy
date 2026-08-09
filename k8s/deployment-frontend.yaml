@@ -80,18 +80,19 @@ spec:
           ports:
             - name: http
               containerPort: 80
-          # Same-origin API base: the bundle issues requests to "/api",
-          # which nginx reverse-proxies to the api-gateway on the private
-          # network. VITE_* is baked at BUILD time (frontend/Dockerfile arg);
-          # this runtime value documents the contract. Provided WITHOUT
-          # `envFrom` so the frontend never receives DB/Redis secrets.
-          env:
-            - name: VITE_API_BASE_URL
-              value: "/api"
-            # Sign-on header AppID: field (legacy EXEC CICS ASSIGN APPLID); also baked
-            # at BUILD time by frontend/Dockerfile.
-            - name: VITE_APP_ID
-              value: "CARDDEMO"
+          # NO `env:` and NO `envFrom:` here, deliberately.
+          #
+          # The bundle's API base ("/api", reverse-proxied to the api-gateway by
+          # this pod's own nginx) and the sign-on header AppID ("CARDDEMO", the
+          # legacy EXEC CICS ASSIGN APPLID field) are consumed by `vite build` and
+          # are therefore BAKED INTO the static assets at BUILD time from
+          # frontend/Dockerfile's VITE_API_BASE_URL / VITE_APP_ID / VITE_SYS_ID
+          # build args. Nothing in the nginx runtime reads a VITE_* variable, so
+          # declaring one here would offer an operator a knob that silently does
+          # nothing: changing it produces neither an effect nor an error. To change
+          # either value, rebuild the image with the build arg and roll out the new
+          # tag. Omitting `envFrom` additionally keeps every DB/Redis secret out of
+          # the browser tier.
           # Writable scratch required by nginx under the read-only root fs.
           volumeMounts:
             - name: nginx-cache

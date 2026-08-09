@@ -46,16 +46,16 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  *     Flyway enabled, so the assertions exercise the seed migration itself.
  */
 @TestPropertySource(properties = "spring.jpa.hibernate.ddl-auto=none")
-class DocumentedCredentialsSmokeTest extends AbstractIntegrationTest {
+class DocumentedCredentialsSmokeIT extends AbstractIntegrationTest {
 
     /** :purpose: Password published for every seeded user in README-target.md. */
     private static final String DOCUMENTED_PASSWORD = "PASSWORD";
 
-    /** :purpose: Administrator ids seeded by ``V2__seed_security_users.sql``. */
+    /** :purpose: Administrator ids seeded by ``V3__seed_test_data.sql``. */
     private static final List<String> ADMIN_IDS =
             List.of("ADMIN001", "ADMIN002", "ADMIN003", "ADMIN004", "ADMIN005");
 
-    /** :purpose: Regular-user ids seeded by ``V2__seed_security_users.sql``. */
+    /** :purpose: Regular-user ids seeded by ``V3__seed_test_data.sql``. */
     private static final List<String> USER_IDS =
             List.of("USER0001", "USER0002", "USER0003", "USER0004", "USER0005");
 

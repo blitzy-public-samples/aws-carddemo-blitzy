@@ -16,6 +16,7 @@
 
 package com.carddemo.batch.batch;
 
+import com.carddemo.batch.config.JobSchedulingConfig;
 import com.carddemo.batch.repository.TransactionRepository;
 import com.carddemo.common.batch.BatchOutputPathResolver;
 import com.carddemo.common.config.CorrelationIdContext;
@@ -23,6 +24,7 @@ import com.carddemo.common.domain.Transaction;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.batch.core.scope.context.ChunkContext;
 import org.springframework.batch.core.step.StepContribution;
 import org.springframework.batch.core.step.tasklet.Tasklet;
@@ -87,6 +89,13 @@ public class CombineTransactionsTasklet implements Tasklet {
     private final BatchOutputPathResolver pathResolver;
 
     /**
+     * Combined-print file name used when the run supplies no ``outputFile`` job
+     * parameter, so every launch path resolves a destination - not only the HTTP
+     * launcher in {@link JobSchedulingConfig}.
+     */
+    private final String defaultOutputFile;
+
+    /**
      * :purpose: Construct the tasklet with the repository used for the ordered
      *  combine scan and the resolver that confines the combined output path.
      * :param transactionRepository: Spring Data JPA repository exposing the
@@ -94,11 +103,18 @@ public class CombineTransactionsTasklet implements Tasklet {
      *  unified ``transactions`` table.
      * :param pathResolver: resolver that normalizes the requested ``outputFile``
      *  and confines it to the configured batch output root.
+     * :param defaultOutputFile: configured combined-print name applied when the run
+     *  carries no ``outputFile`` job parameter, which is the case for the
+     *  ``--spring.batch.job.name`` command-line launch path.
      */
     public CombineTransactionsTasklet(TransactionRepository transactionRepository,
-                                      BatchOutputPathResolver pathResolver) {
+                                      BatchOutputPathResolver pathResolver,
+                                      @Value("${carddemo.batch.combined-transaction-file:"
+                                              + JobSchedulingConfig.DEFAULT_COMBINED_TRANSACTION_FILE + "}")
+                                      String defaultOutputFile) {
         this.transactionRepository = transactionRepository;
         this.pathResolver = pathResolver;
+        this.defaultOutputFile = defaultOutputFile;
     }
 
     /**
@@ -123,7 +139,8 @@ public class CombineTransactionsTasklet implements Tasklet {
         CorrelationIdContext.getOrCreateCorrelationId();
 
         Object outputFileParam = chunkContext.getStepContext().getJobParameters().get("outputFile");
-        String outputFile = (outputFileParam == null) ? null : outputFileParam.toString();
+        String requested = (outputFileParam == null) ? null : outputFileParam.toString();
+        String outputFile = (requested == null || requested.isBlank()) ? defaultOutputFile : requested;
         Path resolved = pathResolver.resolveOutput(outputFile);
 
         long combinedCount = 0;

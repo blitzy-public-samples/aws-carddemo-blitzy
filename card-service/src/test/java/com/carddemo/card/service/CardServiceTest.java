@@ -26,6 +26,7 @@ import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -50,6 +51,9 @@ import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
@@ -68,7 +72,10 @@ import org.springframework.orm.ObjectOptimisticLockingFailureException;
  *     context, no test container and no database, and drives all three
  *     collaborators ({@link CardRepository}, {@link CardXrefRepository} and
  *     {@link CardMapper}) as mocks. It locks the account/card-number filter
- *     edits, admin-versus-user account scoping, the seven-rows-per-page browse
+ *     edits, the ROLE-INDEPENDENT browse scope (``COCRDLIC 9500-FILTER-RECORDS``
+ *     carries no user-type branch, so the operator-supplied ``ACCTSID`` /
+ *     ``CARDSID`` filters are the only scope -- decision log §19.1), the
+ *     seven-rows-per-page browse
  *     cap, the fail-fast update validation edits with their byte-exact messages,
  *     the no-change short-circuit and the ordered re-read-then-rewrite update
  *     sequence. Typed domain exceptions are asserted by message; DTO fixtures are
@@ -110,6 +117,14 @@ class CardServiceTest {
     /** :purpose: ``COCRDSLC`` L154 / ``COCRDUPC`` L204 card-read-miss message (no trailing period). */
     private static final String MSG_DETAIL_NOT_FOUND =
             "Did not find cards for this search condition";
+
+    /** :purpose: ``COCRDUPC`` L188 ``NO-CHANGES-DETECTED`` outcome message. */
+    private static final String MSG_NO_CHANGES =
+            "No change detected with respect to values fetched.";
+
+    /** :purpose: Message for an expiry date naming a day that does not exist in its month. */
+    private static final String MSG_EXPIRY_DATE_INVALID =
+            "Card expiry date is not a valid calendar date";
 
     /**
      * :purpose: ``COCRDUPC`` L184 embossed-name edit message -- the
@@ -393,40 +408,58 @@ class CardServiceTest {
     }
 
     /**
-     * :purpose: A non-admin user with no account pinned in its session and no filter must not
-     *     receive the entire card base; the browse yields no rows instead of every PAN.
+     * :purpose: The unfiltered browse resolves the SAME window for a ``CDEMO-USRTYP-USER``
+     *     session as for a ``CDEMO-USRTYP-ADMIN`` session, and both receive the mapped rows:
+     *     ``COCRDLIC 9500-FILTER-RECORDS`` (L1382-1390) carries no user-type branch, so the
+     *     browse is role independent and no per-principal restriction narrows or empties it
+     *     (decision log §19.1, AAP §0.7.1 / §0.7.6).
      */
     @Test
-    void listCards_nonAdminUnpinnedNoFilter_doesNotWidenToFindAll() {
-        SessionContext user = mock(SessionContext.class);
+    void listCards_unfilteredBrowseIsIdenticalForAnOrdinaryUserAndAnAdministrator() {
+        SessionContext ordinaryUser = new SessionContext();
+        ordinaryUser.setUserType(SessionContext.UserType.CDEMO_USRTYP_USER);
+        SessionContext administrator = new SessionContext();
+        administrator.setUserType(SessionContext.UserType.CDEMO_USRTYP_ADMIN);
         CardListResponseDto expected = mock(CardListResponseDto.class);
+        stubWindow(CardService.MAX_SCREEN_LINES, true);
         when(cardMapper.toListResponse(any())).thenReturn(expected);
 
-        CardListResponseDto result = cardService.listCards(null, null, 1, user);
+        CardListResponseDto asUser = cardService.listCards(null, null, 1, ordinaryUser);
+        CardListResponseDto asAdmin = cardService.listCards(null, null, 1, administrator);
 
-        assertThat(result).isSameAs(expected);
+        assertThat(asUser).isSameAs(expected);
+        assertThat(asAdmin).isSameAs(expected);
+        verify(cardRepository, times(2)).findAllByOrderByCardNumAsc(any(Pageable.class));
+        verify(cardRepository, never()).findByCardAcctIdOrderByCardNumAsc(any(), any(Pageable.class));
         verify(cardRepository, never()).findAll();
+        // Both roles are handed the SAME seven mapped rows -- the ordinary user's page is
+        // neither narrowed nor emptied.
         @SuppressWarnings("unchecked")
         ArgumentCaptor<List<Card>> rowsCaptor = ArgumentCaptor.forClass(List.class);
-        verify(cardMapper).toListResponse(rowsCaptor.capture());
-        assertThat(rowsCaptor.getValue()).isEmpty();
+        verify(cardMapper, times(2)).toListResponse(rowsCaptor.capture());
+        assertThat(rowsCaptor.getAllValues()).hasSize(2);
+        assertThat(rowsCaptor.getAllValues().get(0)).hasSize(CardService.MAX_SCREEN_LINES);
+        assertThat(rowsCaptor.getAllValues().get(1))
+                .isEqualTo(rowsCaptor.getAllValues().get(0));
     }
 
     /**
-     * :purpose: A non-admin user supplying its OWN account id as the filter reads exactly that
-     *     account (the filter is honoured, not discarded).
+     * :purpose: The browse consults NOTHING on the caller session: the typed ``ACCTSID`` is
+     *     the whole scope, so no session field is read to narrow, widen or reject it. The
+     *     moment a per-principal entitlement filter is reintroduced this assertion fails.
      */
     @Test
-    void listCards_nonAdminOwnAcctFilter_isHonoured() {
-        SessionContext user = mock(SessionContext.class);
+    void listCards_acctFilter_readsNoSessionFieldToScopeTheBrowse() {
+        SessionContext session = mock(SessionContext.class);
         CardListResponseDto expected = mock(CardListResponseDto.class);
         stubAccountWindow(ACCT_ID, 2, false);
         when(cardMapper.toListResponse(any())).thenReturn(expected);
 
-        cardService.listCards(ACCT_ID, null, 1, user);
+        cardService.listCards(ACCT_ID, null, 1, session);
 
         verify(cardRepository).findByCardAcctIdOrderByCardNumAsc(eq(ACCT_ID), any(Pageable.class));
         verify(cardRepository, never()).findAll();
+        verifyNoInteractions(session);
     }
 
     /**
@@ -606,9 +639,10 @@ class CardServiceTest {
     }
 
     /**
-     * :purpose: A non-admin user requesting a card outside its account is rejected with the
-     *     same not-found message: the ``ACCTSID``/``CARDSID`` pair is the selection, so a card
-     *     outside the named account is not part of it.
+     * :purpose: A caller naming an ``ACCTSID`` that does not own the requested ``CARDSID`` is
+     *     rejected with the same not-found message, whatever its role: the
+     *     ``ACCTSID``/``CARDSID`` pair IS the selection, so a card outside the named account is
+     *     not part of it.
      */
     @Test
     void getCardDetail_accountFilterMismatch_reportsCombinationNotFound() {
@@ -629,7 +663,7 @@ class CardServiceTest {
     void getCardDetail_invalidAccountFilter_throwsAccountEditMessage() {
         assertThatExceptionOfType(CardDemoException.class)
                 .isThrownBy(() -> cardService.getCardDetail(CARD_NUM, 0L))
-                .withMessage("Account number must be a non zero 11 digit number");
+                .withMessage("ACCOUNT FILTER,IF SUPPLIED MUST BE A 11 DIGIT NUMBER");
         verifyNoInteractions(cardRepository, cardXrefRepository, cardMapper);
     }
 
@@ -852,17 +886,18 @@ class CardServiceTest {
     void updateCard_noChangesDetected_skipsSave() {
         Card card = card(CARD_NUM, ACCT_ID, VALID_NAME, "Y", VALID_EXPIRY, null);
         CardUpdateRequestDto request = mockRequest(VALID_NAME, "Y", VALID_EXPIRY);
-        CardUpdateResponseDto expected = mock(CardUpdateResponseDto.class);
         when(cardRepository.findForUpdateByCardNum(CARD_NUM)).thenReturn(Optional.of(card));
         when(cardXrefRepository.findById(CARD_NUM)).thenReturn(Optional.empty());
-        when(cardMapper.toUpdateResponse(card, null)).thenReturn(expected);
 
-        CardUpdateResponseDto result = cardService.updateCard(CARD_NUM, null, request, null);
+        // The program SAYS so [app/cbl/COCRDUPC.cbl:L188]; returning the record with no message
+        // left the caller unable to tell a no-op from an applied update, and disagreed with the
+        // account service about the identical shared literal.
+        assertThatExceptionOfType(CardDemoException.class)
+                .isThrownBy(() -> cardService.updateCard(CARD_NUM, null, request, null))
+                .withMessage(MSG_NO_CHANGES);
 
-        assertThat(result).isSameAs(expected);
         verify(cardRepository, never()).saveAndFlush(any());
         verify(cardMapper, never()).applyUpdate(any(), any());
-        verify(cardMapper).toUpdateResponse(card, null);
     }
 
     /**
@@ -873,14 +908,15 @@ class CardServiceTest {
     void updateCard_nameChangeCaseOnly_treatedAsNoChange() {
         Card card = card(CARD_NUM, ACCT_ID, VALID_NAME, "Y", VALID_EXPIRY, null);
         CardUpdateRequestDto request = mockRequest("JOHN SMITH", "Y", VALID_EXPIRY);
-        CardUpdateResponseDto expected = mock(CardUpdateResponseDto.class);
         when(cardRepository.findForUpdateByCardNum(CARD_NUM)).thenReturn(Optional.of(card));
         when(cardXrefRepository.findById(CARD_NUM)).thenReturn(Optional.empty());
-        when(cardMapper.toUpdateResponse(card, null)).thenReturn(expected);
 
-        CardUpdateResponseDto result = cardService.updateCard(CARD_NUM, null, request, null);
+        // Case-only difference is still NO change (the compare is case-insensitive, per the
+        // FUNCTION UPPER-CASE compare at COCRDUPC L680), so it reports the no-change outcome.
+        assertThatExceptionOfType(CardDemoException.class)
+                .isThrownBy(() -> cardService.updateCard(CARD_NUM, null, request, null))
+                .withMessage(MSG_NO_CHANGES);
 
-        assertThat(result).isSameAs(expected);
         verify(cardRepository, never()).saveAndFlush(any());
         verify(cardMapper, never()).applyUpdate(any(), any());
     }
@@ -1086,12 +1122,15 @@ class CardServiceTest {
         Card card = card(CARD_NUM, ACCT_ID, VALID_NAME, "Y", VALID_EXPIRY, "123");
         CardUpdateRequestDto request = mockRequest(VALID_NAME, "Y", VALID_EXPIRY);
         lenient().when(request.getCardCvvCd()).thenReturn(null);
-        CardUpdateResponseDto expected = mock(CardUpdateResponseDto.class);
         when(cardRepository.findForUpdateByCardNum(CARD_NUM)).thenReturn(Optional.of(card));
         when(cardXrefRepository.findById(CARD_NUM)).thenReturn(Optional.empty());
-        when(cardMapper.toUpdateResponse(card, null)).thenReturn(expected);
 
-        assertThat(cardService.updateCard(CARD_NUM, null, request, null)).isSameAs(expected);
+        // An omitted CVV is not a change, so an otherwise identical submission is still a no-op
+        // and reports the no-change outcome rather than silently re-writing the record.
+        assertThatExceptionOfType(CardDemoException.class)
+                .isThrownBy(() -> cardService.updateCard(CARD_NUM, null, request, null))
+                .withMessage(MSG_NO_CHANGES);
+
         verify(cardRepository, never()).saveAndFlush(any());
         verify(cardMapper, never()).applyUpdate(any(), any());
     }
@@ -1150,6 +1189,52 @@ class CardServiceTest {
         assertThat(result.getCards()).isEmpty();
         assertThat(result.getMessage()).isEqualTo("NO MORE RECORDS TO SHOW");
         assertThat(result.getPageNumber()).isEqualTo(3);
+    }
+
+    /**
+     * :purpose: A screen number whose first row lies beyond ``Integer.MAX_VALUE`` takes the
+     *  ordinary end-of-browse path instead of reaching the store, whose first-result offset
+     *  is an ``int``: ``Integer.MAX_VALUE`` as the page number produced an offset of
+     *  15,032,385,522 and a 500 from the data-access layer.
+     */
+    @Test
+    @DisplayName("a screen beyond the addressable row space is empty, not a data-access failure")
+    void listCards_pageBeyondAddressableRows_carriesNoMoreRecordsWithoutQuerying() {
+        stubRealListResponse(0);
+
+        CardListResponseDto result =
+                cardService.listCards(null, null, Integer.MAX_VALUE, null, null, null, null);
+
+        assertThat(result.getCards()).isEmpty();
+        assertThat(result.getMessage()).isEqualTo("NO MORE RECORDS TO SHOW");
+        assertThat(result.getPageNumber()).isEqualTo(Integer.MAX_VALUE);
+        assertThat(result.isNextPage()).isFalse();
+        verify(cardRepository, never()).findAllByOrderByCardNumAsc(any(Pageable.class));
+    }
+
+    /**
+     * :purpose: The bound applies only past the addressable range: the last screen whose
+     *  window still fits within ``Integer.MAX_VALUE`` is browsed normally, so the guard
+     *  cannot silently swallow a reachable page.
+     */
+    @Test
+    @DisplayName("the last addressable screen is still browsed")
+    void listCards_lastAddressableScreen_stillQueriesTheStore() {
+        stubWindow(0, false);
+        stubRealListResponse(0);
+        // Highest one-based screen whose offset plus the eight-row window stays within the
+        // int first-result domain: (page - 1) * 7 + 8 <= Integer.MAX_VALUE.
+        int lastAddressablePage = (Integer.MAX_VALUE - (CardService.MAX_SCREEN_LINES + 1))
+                / CardService.MAX_SCREEN_LINES + 1;
+
+        cardService.listCards(null, null, lastAddressablePage, null, null, null, null);
+
+        ArgumentCaptor<Pageable> windowCaptor = ArgumentCaptor.forClass(Pageable.class);
+        verify(cardRepository).findAllByOrderByCardNumAsc(windowCaptor.capture());
+        assertThat(windowCaptor.getValue().getOffset())
+                .isEqualTo((long) (lastAddressablePage - 1) * CardService.MAX_SCREEN_LINES);
+        assertThat(windowCaptor.getValue().getOffset() + windowCaptor.getValue().getPageSize())
+                .isLessThanOrEqualTo(Integer.MAX_VALUE);
     }
 
     /**
@@ -1237,5 +1322,114 @@ class CardServiceTest {
         assertThat(result.getInfoMessage()).isEqualTo("TYPE S FOR DETAIL, U TO UPDATE ANY RECORD");
         // A page with a further forward page available reports no boundary banner.
         assertThat(result.getMessage()).isNull();
+    }
+    /**
+     * :purpose: ``COCRDUPC`` edited the expiry month and year independently and never checked the
+     *   day against the month, so an impossible date such as ``2026-02-30`` was accepted and came
+     *   to rest in the record while the account service rejected the very same value. The calendar
+     *   edit must reject it, and must run LAST so the month and year edits keep reporting their own
+     *   frozen literals first.
+     * :param expiry: an expiry date whose day does not exist in its month.
+     */
+    @ParameterizedTest(name = "[{index}] expiry {0} rejected as not a calendar date")
+    @ValueSource(strings = {"2026-02-30", "2026-02-31", "2026-04-31", "2027-06-31"})
+    void updateCard_impossibleCalendarExpiry_isRejected(String expiry) {
+        CardUpdateRequestDto request = mockRequest(VALID_NAME, "Y", expiry);
+
+        assertThatExceptionOfType(CardDemoException.class)
+                .isThrownBy(() -> cardService.updateCard(CARD_NUM, null, request, null))
+                .withMessage(MSG_EXPIRY_DATE_INVALID);
+
+        // Rejected before the record is even read, so nothing is locked or written.
+        verify(cardRepository, never()).findForUpdateByCardNum(any());
+        verify(cardRepository, never()).saveAndFlush(any());
+    }
+
+    /**
+     * :purpose: A leap-day expiry is a REAL date in a leap year and must still be accepted, so the
+     *   new calendar edit does not reject a legitimate value.
+     */
+    @Test
+    void updateCard_leapDayExpiryInLeapYear_passesTheCalendarEdit() {
+        Card card = card(CARD_NUM, ACCT_ID, VALID_NAME, "Y", VALID_EXPIRY, null);
+        CardUpdateRequestDto request = mockRequest(VALID_NAME, "Y", "2028-02-29");
+        CardUpdateResponseDto expected = mock(CardUpdateResponseDto.class);
+        when(cardRepository.findForUpdateByCardNum(CARD_NUM)).thenReturn(Optional.of(card));
+        when(cardXrefRepository.findById(CARD_NUM)).thenReturn(Optional.empty());
+        when(cardRepository.saveAndFlush(card)).thenReturn(card);
+        when(cardMapper.toUpdateResponse(card, null)).thenReturn(expected);
+
+        assertThat(cardService.updateCard(CARD_NUM, null, request, null)).isSameAs(expected);
+        verify(cardRepository).saveAndFlush(card);
+    }
+
+    /**
+     * :purpose: The month and year edits must keep precedence over the new calendar edit, so a
+     *   value that fails BOTH still reports the frozen legacy literal the legacy program reported.
+     */
+    @Test
+    void updateCard_badMonthAndBadDay_reportsTheLegacyMonthMessageFirst() {
+        CardUpdateRequestDto request = mockRequest(VALID_NAME, "Y", "2026-13-32");
+
+        assertThatExceptionOfType(CardDemoException.class)
+                .isThrownBy(() -> cardService.updateCard(CARD_NUM, null, request, null))
+                .withMessage(MSG_EXPIRY_MONTH);
+    }
+    /**
+     * :purpose: Screens advance by ``WS-MAX-SCREEN-LINES`` (7), NOT by the window size. The window
+     *   reads 8 rows so the 8th can serve as the "is there a next screen" lookahead, but the NEXT
+     *   screen must resume AT that 8th row. Sizing a ``PageRequest`` at 8 stepped eight rows per
+     *   screen, so one card at every page boundary was silently invisible to every client of the
+     *   list API while remaining readable by direct id. The offset is therefore asserted directly.
+     * :param page: the requested one-based screen number.
+     * :param expectedOffset: the row offset that screen must begin at.
+     */
+    @ParameterizedTest(name = "[{index}] page {0} begins at offset {1}")
+    @CsvSource({"1,0", "2,7", "3,14", "4,21", "10,63"})
+    void listCards_screenAdvancesBySevenRowsNotByWindowSize(int page, long expectedOffset) {
+        stubRealListResponse(0);
+        when(cardRepository.findAllByOrderByCardNumAsc(any())).thenReturn(List.of());
+
+        cardService.listCards(null, null, page, null);
+
+        ArgumentCaptor<Pageable> captor = ArgumentCaptor.forClass(Pageable.class);
+        verify(cardRepository).findAllByOrderByCardNumAsc(captor.capture());
+        Pageable window = captor.getValue();
+        assertThat(window.getOffset())
+                .as("page %s must resume at the row the previous screen's lookahead peeked at", page)
+                .isEqualTo(expectedOffset);
+        assertThat(window.getPageSize())
+                .as("the window reads one extra row purely as the next-screen lookahead")
+                .isEqualTo(CardService.MAX_SCREEN_LINES + 1);
+    }
+
+    /**
+     * :purpose: Consecutive screens must not skip a row and must not repeat one: screen N's offset
+     *   plus the seven rows it DISPLAYS has to equal screen N+1's offset. This is the invariant the
+     *   defect violated, expressed independently of any single offset value.
+     */
+    @Test
+    void listCards_consecutiveScreensAreContiguous() {
+        for (int page = 1; page <= 5; page++) {
+            reset(cardRepository, cardMapper);
+            stubRealListResponse(0);
+            when(cardRepository.findAllByOrderByCardNumAsc(any())).thenReturn(List.of());
+            cardService.listCards(null, null, page, null);
+            ArgumentCaptor<Pageable> first = ArgumentCaptor.forClass(Pageable.class);
+            verify(cardRepository).findAllByOrderByCardNumAsc(first.capture());
+            long offsetOfThisScreen = first.getValue().getOffset();
+
+            reset(cardRepository, cardMapper);
+            stubRealListResponse(0);
+            when(cardRepository.findAllByOrderByCardNumAsc(any())).thenReturn(List.of());
+            cardService.listCards(null, null, page + 1, null);
+            ArgumentCaptor<Pageable> next = ArgumentCaptor.forClass(Pageable.class);
+            verify(cardRepository).findAllByOrderByCardNumAsc(next.capture());
+            long offsetOfNextScreen = next.getValue().getOffset();
+
+            assertThat(offsetOfNextScreen - offsetOfThisScreen)
+                    .as("screens must be contiguous across the page %s/%s boundary", page, page + 1)
+                    .isEqualTo(CardService.MAX_SCREEN_LINES);
+        }
     }
 }

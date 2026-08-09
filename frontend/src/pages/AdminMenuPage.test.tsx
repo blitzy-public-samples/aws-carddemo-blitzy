@@ -52,8 +52,12 @@ const SIGNON_ROUTE = '/signon';
 /** Row-4 screen heading (BMS ``INITIAL='Admin Menu'``). */
 const SCREEN_HEADING = 'Admin Menu';
 
-/** Level the row-4 screen heading renders at; the header title02 also reads ``Admin Menu``. */
-const SCREEN_HEADING_LEVEL = 2;
+/**
+ * Level the row-4 screen heading renders at. The shared header owns ``h1`` (title01) and
+ * ``h2`` (title02), so every screen body heading is an ``h3`` beneath them; the header
+ * title02 also reads ``Admin Menu``.
+ */
+const SCREEN_HEADING_LEVEL = 3;
 
 /** Row-20 prompt that names the ``OPTION`` entry field (BMS ``COLOR=TURQUOISE``). */
 const OPTION_FIELD_LABEL = 'Please select an option :';
@@ -89,25 +93,21 @@ const ADMIN_MENU_RESPONSE: MenuResponseDto = {
       optionNumber: 1,
       optionName: 'User List (Security)               ',
       programName: 'COUSR00C',
-      targetRoute: '/users',
     },
     {
       optionNumber: 2,
       optionName: 'User Add (Security)                ',
       programName: 'COUSR01C',
-      targetRoute: '/users',
     },
     {
       optionNumber: 3,
       optionName: 'User Update (Security)             ',
       programName: 'COUSR02C',
-      targetRoute: '/users',
     },
     {
       optionNumber: 4,
       optionName: 'User Delete (Security)             ',
       programName: 'COUSR03C',
-      targetRoute: '/users',
     },
   ],
   message: null,
@@ -150,7 +150,7 @@ const selectAdminMenuOptionMock =
  * :returns: the ``MenuSelectionResponseDto`` for that transfer.
  */
 function dispatched(programName: string): MenuSelectionResponseDto {
-  return { dispatched: true, programName, targetRoute: null, message: null };
+  return { dispatched: true, programName, message: null };
 }
 
 /**
@@ -159,13 +159,17 @@ function dispatched(programName: string): MenuSelectionResponseDto {
  * :returns: the refusing ``MenuSelectionResponseDto``.
  */
 function refused(message: string): MenuSelectionResponseDto {
-  return { dispatched: false, programName: null, targetRoute: null, message };
+  return { dispatched: false, programName: null, message };
 }
 
 // The mocked barrel exposes the real ``ApiError`` class ``useApi`` narrows
 // against, the fixture-backed ``getAdminMenu``, and the ``signon`` binding
 // ``useSession`` imports.
 jest.unstable_mockModule('../api', () => ({
+  // The request-cancellation contract ``useApi`` binds to: the real scope hands the
+  // caller's AbortSignal to axios, and the double simply invokes the call.
+  runWithRequestSignal: (_signal: AbortSignal, call: () => unknown): unknown => call(),
+  isCancelledRequest: (): boolean => false,
   // The session store and the REST hook this screen's module graph loads bind to
   // these barrel exports as well. ``getSessionIdentity`` is the production
   // ``GET /session`` probe the session harness drives; unanswered by this suite it
@@ -193,11 +197,13 @@ let seedSignedOutSession: SessionHarness['seedSignedOutSession'];
  * :purpose: Build the option row text the page renders for one served option
  *     (``CDEMO-ADMIN-OPT-NUM`` + ``'. '`` + ``CDEMO-ADMIN-OPT-NAME``), with the
  *     legacy padding collapsed the way the DOM text comparison normalizes it.
+ *     ``COADM02Y`` declares the number ``PIC 9(02)`` and ``COADM01C`` L233-L236 strings
+ *     it ``DELIMITED BY SIZE``, so the row carries two digits.
  * :param option: the served menu option.
  * :returns: the expected row text.
  */
 function optionLabel(option: MenuOption): string {
-  return `${String(option.optionNumber)}. ${option.optionName.trim()}`;
+  return `${String(option.optionNumber).padStart(2, '0')}. ${option.optionName.trim()}`;
 }
 
 /**
@@ -330,11 +336,43 @@ describe('AdminMenuPage', () => {
     typeOption('12');
     expect(field).toHaveValue('12');
 
-    // ``ATTRB=NUM`` accepts digits only, and ``OPTIONI`` holds two of them.
+    // ``OPTIONI`` is ``PIC X(2)``: it holds two positions of whatever was keyed, and
+    // ``PROCESS-ENTER-KEY`` is what judges the content. Discarding the characters the
+    // program's own class test refuses would rewrite the entry into a different, valid
+    // option and dispatch that one.
     typeOption('1x34');
-    expect(field).toHaveValue('13');
+    expect(field).toHaveValue('1x');
     typeOption('AB');
-    expect(field).toHaveValue('');
+    expect(field).toHaveValue('AB');
+  });
+
+  it('refuses a non-digit entry in place rather than dispatching a digit inside it', async () => {
+    await renderAdminMenu();
+
+    typeOption('-1');
+    pressEnterKey();
+
+    const banner = await screen.findByRole('alert');
+    expect(banner.textContent).toBe(INVALID_OPTION_MESSAGE);
+    // ``PROCESS-ENTER-KEY`` reaches its ``XCTL`` only past the edit, so nothing is sent
+    // and no other program is entered.
+    expect(selectAdminMenuOptionMock).not.toHaveBeenCalled();
+    expect(currentPath()).toBe(ADMIN_MENU_ROUTE);
+    expect(optionField()).toHaveValue('-1');
+    // Every re-send of the map re-applies the mapset's ``IC`` attribute.
+    expect(optionField()).toHaveFocus();
+  });
+
+  it('refuses an option past the four the admin table declares', async () => {
+    await renderAdminMenu();
+
+    typeOption('5');
+    pressEnterKey();
+
+    const banner = await screen.findByRole('alert');
+    expect(banner.textContent).toBe(INVALID_OPTION_MESSAGE);
+    expect(selectAdminMenuOptionMock).not.toHaveBeenCalled();
+    expect(currentPath()).toBe(ADMIN_MENU_ROUTE);
   });
 
   it.each(ADMIN_OPTION_ROUTES)(
@@ -368,6 +406,27 @@ describe('AdminMenuPage', () => {
     });
   });
 
+  it('leaves ENTER to the shell, so a repeat inside one task sends once', async () => {
+    // COADM01 declares the same single ENTER affordance every other mapset does, and a
+    // 3270 keyboard is locked from the moment an AID is sent until the program replies --
+    // so a second ENTER struck in the meantime is DISCARDED. The shell owns that rule for
+    // all 17 screens through its per-AID latch, which only applies to a key the shell
+    // actually sees. A page-local handler that swallowed ENTER bypassed the latch (and the
+    // per-send announcement and cursor rules with it), so this screen sent twice where
+    // every other screen sent once.
+    selectAdminMenuOptionMock.mockResolvedValue(dispatched('COUSR00C'));
+    await renderAdminMenu();
+
+    typeOption('1');
+    fireEvent.keyDown(optionField(), { key: 'Enter' });
+    fireEvent.keyDown(optionField(), { key: 'Enter' });
+
+    await waitFor(() => {
+      expect(currentPath()).toBe('/users');
+    });
+    expect(selectAdminMenuOptionMock).toHaveBeenCalledTimes(1);
+  });
+
   it.each(REJECTED_OPTIONS)(
     'rejects %s with the verbatim COADM01C message',
     async (_description, option) => {
@@ -386,7 +445,7 @@ describe('AdminMenuPage', () => {
   it('renders the line-24 ENTER=Continue and F3=Exit legend', async () => {
     await renderAdminMenu();
 
-    expect(screen.getByRole('toolbar', { name: 'Function keys' })).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: 'Function keys' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: ENTER_KEY_LABEL })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: EXIT_KEY_LABEL })).toBeInTheDocument();
     expect(screen.getAllByRole('button')).toHaveLength(2);

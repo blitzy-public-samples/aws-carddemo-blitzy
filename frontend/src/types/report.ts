@@ -100,11 +100,10 @@ export interface ReportRequestDto {
  * :note: Mirrors ``com.carddemo.common.dto.ReportResponseDto`` field-for-field
  *   (source ``app/cpy-bms/CORPT00.CPY``). Because report generation is launched
  *   as an asynchronous batch job, the submission acknowledgement is conveyed on
- *   the ``errorMessage`` status line (as the legacy ``CORPT00C`` screen
- *   re-displays after submit) rather than through a distinct job-id / status
- *   envelope; the backend contract exposes no such fields, so none are modelled
- *   here. All members are optional because the service populates only the
- *   relevant subset per request.
+ *   the row-23 status line (as the legacy ``CORPT00C`` screen re-displays after
+ *   submit) rather than through a distinct job-id / status envelope; the backend
+ *   contract exposes no such fields, so none are modelled here. All members are
+ *   optional because the service populates only the relevant subset per request.
  * :field monthly: echoed MONTHLY selector flag (``MONTHLYO`` ``PIC X(01)``).
  * :field yearly: echoed YEARLY selector flag (``YEARLYO`` ``PIC X(01)``).
  * :field custom: echoed CUSTOM selector flag (``CUSTOMO`` ``PIC X(01)``).
@@ -115,8 +114,14 @@ export interface ReportRequestDto {
  * :field endDateDay: echoed custom end-date day (``EDTDDO`` ``PIC X(02)``).
  * :field endDateYear: echoed custom end-date year (``EDTYYYYO`` ``PIC X(04)``).
  * :field confirm: confirmation flag set by the service (``CONFIRMO`` ``PIC X(01)``).
- * :field errorMessage: error / status line (``ERRMSGO`` ``PIC X(78)``); reuses
- *   the shared :ts:type:`ErrMsg` alias from ``./common``.
+ * :field errorMessage: row-23 line for an outcome the screen reports as an ERROR
+ *   (``ERRMSGO`` ``PIC X(78)`` sent in its declared ``COLOR=RED``); reuses the
+ *   shared :ts:type:`ErrMsg` alias from ``./common``.
+ * :field message: row-23 line for the one outcome the screen reports as a SUCCESS —
+ *   the ``<Name> report submitted for printing ...`` acknowledgement, which
+ *   ``CORPT00C`` precedes with ``MOVE DFHGREEN TO ERRMSGC`` and no other branch
+ *   does. The colour is therefore carried by the CHOICE of member rather than
+ *   inferred from the text; at most one of the two is ever populated.
  * :field title01: screen title line 1 (``TITLE01O`` ``PIC X(40)``).
  * :field title02: screen title line 2 (``TITLE02O`` ``PIC X(40)``).
  * :field trnName: header transaction name (``TRNNAMEO`` ``PIC X(04)``).
@@ -136,10 +141,12 @@ export interface ReportResponseDto {
   endDateYear?: string;
   confirm?: string;
   errorMessage?: ErrMsg;
+  message?: ErrMsg;
   title01?: string;
   title02?: string;
   trnName?: string;
   pgmName?: string;
   currentDate?: string;
   currentTime?: string;
+  jobExecutionId?: string | null;
 }

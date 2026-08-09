@@ -50,13 +50,15 @@ import org.springframework.test.web.servlet.MockMvc;
  *     false``): this test exists precisely to exercise it. A request authenticates the
  *     way production does, by presenting the shared session context published at
  *     sign-on.
+ * :note: The schema comes from the committed Flyway migrations the ``test`` profile
+ *     applies to its Testcontainers database, validated by that profile's
+ *     ``ddl-auto: validate``; the ``BATCH_*`` metadata tables come from
+ *     ``V5__batch_metadata.sql`` and, on an empty database, from
+ *     :java:class:`com.carddemo.common.batch.JdbcBatchConfiguration`. Neither a
+ *     ``ddl-auto`` override nor ``spring.batch.jdbc.initialize-schema`` (inert under
+ *     Spring Boot 4.1) is declared here (docs/decision-log.md, section 53.3).
  */
-@SpringBootTest(properties = {
-        // Create the scanned entity tables not owned by transaction-service migrations.
-        "spring.jpa.hibernate.ddl-auto=update",
-        // Provision the Spring Batch metadata tables required by the posting job wiring.
-        "spring.batch.jdbc.initialize-schema=always"
-})
+@SpringBootTest
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
 class SecurityContractIT {

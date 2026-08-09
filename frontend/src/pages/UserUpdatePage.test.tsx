@@ -86,6 +86,10 @@ const signonMock =
   jest.fn<(request: SignonRequestDto) => Promise<SignonResponseDto>>();
 
 jest.unstable_mockModule('../api', () => ({
+  // The request-cancellation contract ``useApi`` binds to: the real scope hands the
+  // caller's AbortSignal to axios, and the double simply invokes the call.
+  runWithRequestSignal: (_signal: AbortSignal, call: () => unknown): unknown => call(),
+  isCancelledRequest: (): boolean => false,
   // The session store and the REST hook this screen's module graph loads bind to
   // these barrel exports as well. ``getSessionIdentity`` is the production
   // ``GET /session`` probe the session harness drives; unanswered by this suite it
@@ -154,6 +158,8 @@ const HINT_USER_TYPE = '(A=Admin, U=User)';
 const MSG_USER_ID_EMPTY = 'User ID can NOT be empty...';
 const MSG_FIRST_NAME_EMPTY = 'First Name can NOT be empty...';
 const MSG_LAST_NAME_EMPTY = 'Last Name can NOT be empty...';
+/** The refusal ``COUSR02C`` L198-L202 raises for a blank ``PASSWD``; the optional-password
+ *  contract must never produce it. */
 const MSG_PASSWORD_EMPTY = 'Password can NOT be empty...';
 const MSG_USER_TYPE_EMPTY = 'User Type can NOT be empty...';
 const MSG_USER_ID_NOT_FOUND = 'User ID NOT found...';
@@ -390,16 +396,91 @@ describe('UserUpdatePage — user id not found', () => {
 });
 
 describe('UserUpdatePage — required field validation', () => {
-  it('reports "Password can NOT be empty..." when the password is not re-entered', async () => {
+  /*
+   * COUSR02C re-displayed SEC-USR-PWD in PASSWDO on the ENTER turn, so by the time PF5 ran
+   * the field was always populated and its 'Password can NOT be empty...' edit guarded a
+   * field the program itself had filled; the field-by-field compare at L227 then found it
+   * equal. The credential is a one-way hash here and is deliberately never sent to the
+   * client, so the field arrives empty on exactly the turns where the legacy field arrived
+   * unchanged. Reproducing the edit literally made a name-only or role-only edit
+   * impossible -- and it also put the 'Please modify to update ...' no-change guard out of
+   * reach. An empty field is therefore OMITTED from the body rather than sent as "", which
+   * the service would read as a request to set a blank credential, and the stored
+   * credential is left alone. The literal stays reachable on the ADD screen.
+   */
+  it('updates the name alone, sending no password, when the field is left empty', async () => {
     const user = userEvent.setup();
     await renderFetchedScreen();
 
+    await user.clear(field(LABEL_FIRST_NAME));
+    await user.type(field(LABEL_FIRST_NAME), EDITED_FIRST_NAME);
     await user.click(pfKey(PF5_LABEL));
 
     await waitFor(() => {
-      expect(screen.getByRole('alert')).toHaveTextContent(MSG_PASSWORD_EMPTY);
+      expect(infoBanner()).toHaveTextContent(MSG_USER_UPDATED);
     });
-    expect(updateUserMock).not.toHaveBeenCalled();
+    expect(updateUserMock).toHaveBeenCalledTimes(1);
+    // COUSR02C L169 pre-fills PASSWD from the record and L227-228 rewrites the
+    // credential only when the returned value differs, so an update that leaves the
+    // password alone must not carry one. A hashed credential cannot be pre-filled, so
+    // the property is absent rather than echoed back.
+    expect(updateUserMock).toHaveBeenCalledWith(TARGET_USER_ID, {
+      firstName: EDITED_FIRST_NAME,
+      lastName: STORED_USER.lastName,
+      userType: STORED_USER.userType,
+    });
+    const [, body] = updateUserMock.mock.calls[0];
+    expect(body).not.toHaveProperty('password');
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByText(MSG_PASSWORD_EMPTY)).toBeNull();
+  });
+
+  it('sends the password when one IS typed, so a credential change still works', async () => {
+    const user = userEvent.setup();
+    await renderFetchedScreen();
+
+    await user.type(field(LABEL_PASSWORD), ENTERED_PASSWORD);
+    await user.click(pfKey(PF5_LABEL));
+
+    await waitFor(() => {
+      expect(updateUserMock).toHaveBeenCalledTimes(1);
+    });
+    const [, body] = updateUserMock.mock.calls[0];
+    expect(body).toHaveProperty('password', ENTERED_PASSWORD);
+    expect(updateUserMock.mock.calls[0]?.[1]).toEqual({
+      firstName: STORED_USER.firstName,
+      lastName: STORED_USER.lastName,
+      userType: STORED_USER.userType,
+      password: ENTERED_PASSWORD,
+    });
+  });
+
+  it('marks the password field as not required, unlike every other entry field', () => {
+    // The four fields COUSR02C's EVALUATE actually tests for presence are required; the
+    // password is not, because an empty value is a valid statement of "leave it alone".
+    void renderScreen();
+
+    expect(field(LABEL_FIRST_NAME)).toHaveAttribute('aria-required', 'true');
+    expect(field(LABEL_LAST_NAME)).toHaveAttribute('aria-required', 'true');
+    expect(field(LABEL_USER_TYPE)).toHaveAttribute('aria-required', 'true');
+    expect(field(LABEL_PASSWORD)).not.toHaveAttribute('aria-required');
+  });
+
+  it('treats an all-blank password box as no password rather than as a value', async () => {
+    const user = userEvent.setup();
+    await renderFetchedScreen();
+
+    await user.clear(field(LABEL_FIRST_NAME));
+    await user.type(field(LABEL_FIRST_NAME), EDITED_FIRST_NAME);
+    await user.type(field(LABEL_PASSWORD), '   ');
+    await user.click(pfKey(PF5_LABEL));
+
+    await waitFor(() => {
+      expect(updateUserMock).toHaveBeenCalledTimes(1);
+    });
+    // The service reads a blank value as "not supplied", so sending it would invite a
+    // silent no-op; the client applies the same rule and omits the property.
+    expect(updateUserMock.mock.calls[0]?.[1]).not.toHaveProperty('password');
   });
 
   it('reports "First Name can NOT be empty..." when FNAME is cleared', async () => {
@@ -575,7 +656,7 @@ describe('UserUpdatePage — line-24 function keys', () => {
   it('legends ENTER, F3, F4, F5 and F12 exactly as the mapset does', async () => {
     await renderFetchedScreen();
 
-    const toolbar = screen.getByRole('toolbar', { name: 'Function keys' });
+    const toolbar = screen.getByRole('group', { name: 'Function keys' });
     // COUSR02.bms FKEYSC reads
     // 'ENTER=Fetch  F3=Save&Exit  F4=Clear  F5=Save  F12=Cancel'.
     expect(within(toolbar).getAllByRole('button')).toHaveLength(5);

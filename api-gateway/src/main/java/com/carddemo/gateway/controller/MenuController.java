@@ -14,7 +14,6 @@ import org.springframework.web.bind.annotation.RestController;
 import jakarta.servlet.http.HttpServletRequest;
 
 import java.util.List;
-import java.util.Map;
 
 /**
  * REST menu-navigation controller re-platforming the CardDemo CICS menu programs
@@ -44,9 +43,6 @@ public class MenuController {
 
     /** :purpose: Admin-menu legacy program name (COBOL ``COADM01C`` ``WS-PGMNAME``). */
     private static final String ADMIN_PROGRAM = "COADM01C";
-
-    /** :purpose: Downstream route for the PF3 back target (legacy sign-on ``COSGN00C``). */
-    private static final String SIGNON_ROUTE = "/auth";
 
     /** :purpose: Legacy sign-on program name set as the PF3 back target (``CDEMO-TO-PROGRAM``). */
     private static final String SIGNON_PROGRAM = "COSGN00C";
@@ -90,28 +86,6 @@ public class MenuController {
     private static final String COMING_SOON_SUFFIX = "is coming soon ...";
 
     /**
-     * :purpose: Resolve a legacy target program name to its modern downstream service
-     *  route on the gateway.
-     * :output: Immutable map from each of the fourteen selectable legacy program names
-     *  to the account, card, transaction, report, bill-pay, or user service route.
-     */
-    private static final Map<String, String> PROGRAM_ROUTES = Map.ofEntries(
-            Map.entry("COACTVWC", "/accounts"),
-            Map.entry("COACTUPC", "/accounts"),
-            Map.entry("COCRDLIC", "/cards"),
-            Map.entry("COCRDSLC", "/cards"),
-            Map.entry("COCRDUPC", "/cards"),
-            Map.entry("COTRN00C", "/transactions"),
-            Map.entry("COTRN01C", "/transactions"),
-            Map.entry("COTRN02C", "/transactions"),
-            Map.entry("CORPT00C", "/reports"),
-            Map.entry("COBIL00C", "/billpay"),
-            Map.entry("COUSR00C", "/users"),
-            Map.entry("COUSR01C", "/users"),
-            Map.entry("COUSR02C", "/users"),
-            Map.entry("COUSR03C", "/users"));
-
-    /**
      * Return the role-filtered main menu (legacy ``COMEN01C``, transaction ``CM00``).
      *
      * :param httpRequest: the current servlet request; its already-established session,
@@ -133,8 +107,7 @@ public class MenuController {
                 .map(option -> new MenuOptionView(
                         option.optionNumber(),
                         option.optionName(),
-                        option.programName(),
-                        resolveRoute(option.programName())))
+                        option.programName()))
                 .toList();
         return new MenuResponse(MAIN_TRANID, MAIN_PROGRAM, options, null);
     }
@@ -159,8 +132,7 @@ public class MenuController {
                 .map(option -> new MenuOptionView(
                         option.optionNumber(),
                         option.optionName(),
-                        option.programName(),
-                        resolveRoute(option.programName())))
+                        option.programName()))
                 .toList();
         return new MenuResponse(ADMIN_TRANID, ADMIN_PROGRAM, options, null);
     }
@@ -253,7 +225,10 @@ public class MenuController {
             ctx.setToProgram(SIGNON_PROGRAM);
             ctx.setToTranid(SIGNON_TRANID);
             storeSessionContext(httpRequest, ctx);
-            return new MenuSelectionResponse(true, null, SIGNON_ROUTE, null);
+            // PF3 names its target the same way an option dispatch does: COMEN01C L96-98
+            // moves 'COSGN00C' to CDEMO-TO-PROGRAM before RETURN-TO-SIGNON-SCREEN, and that
+            // program name -- already stored on the context just above -- IS the dispatch.
+            return new MenuSelectionResponse(true, SIGNON_PROGRAM, null);
         }
         if (!AID_ENTER.equals(aid)) {
             storeSessionContext(httpRequest, ctx);
@@ -270,17 +245,13 @@ public class MenuController {
         }
 
         if (!selected.programName().trim().startsWith(DUMMY_PREFIX)) {
-            return new MenuSelectionResponse(
-                    true,
-                    selected.programName(),
-                    resolveRoute(selected.programName()),
-                    null);
+            return new MenuSelectionResponse(true, selected.programName(), null);
         }
 
         String message = includeNameInComingSoon
                 ? COMING_SOON_PREFIX + firstToken(selected.optionName()) + COMING_SOON_SUFFIX
                 : COMING_SOON_PREFIX + COMING_SOON_SUFFIX;
-        return new MenuSelectionResponse(false, selected.programName(), null, message);
+        return new MenuSelectionResponse(false, selected.programName(), message);
     }
 
     /**
@@ -386,20 +357,6 @@ public class MenuController {
     }
 
     /**
-     * Resolve a legacy program name to its downstream gateway route.
-     *
-     * :param programName: the legacy program name (may carry surrounding padding).
-     * :returns: the mapped route, or ``null`` when the trimmed name is unmapped or the
-     *  input is ``null``.
-     */
-    private String resolveRoute(String programName) {
-        if (programName == null) {
-            return null;
-        }
-        return PROGRAM_ROUTES.get(programName.trim());
-    }
-
-    /**
      * Inbound option-selection body, modeling the COBOL ``OPTIONI`` field and ``EIBAID``.
      *
      * :param option: the entered option text; preserved verbatim (including non-numeric or
@@ -415,10 +372,15 @@ public class MenuController {
      *
      * :param optionNumber: the one-based option number.
      * :param optionName: the display label (35-character space-padded legacy name).
-     * :param programName: the legacy target program name.
-     * :param targetRoute: the resolved downstream gateway route, or ``null`` when unmapped.
+     * :param programName: the legacy target program name (``CDEMO-MENU-OPT-PGMNAME``),
+     *  which is what identifies the screen to open. The client owns the mapping from a
+     *  program name to its own route, so no route is published here: the only routes this
+     *  gateway could name are its own downstream service prefixes, and those are not the
+     *  screens the program names stand for -- ``COCRDSLC`` is the card DETAIL screen and
+     *  the four ``COUSR*`` programs are four different screens, all of which would
+     *  collapse onto one prefix and contradict where the client actually navigates.
      */
-    public record MenuOptionView(int optionNumber, String optionName, String programName, String targetRoute) {
+    public record MenuOptionView(int optionNumber, String optionName, String programName) {
     }
 
     /**
@@ -435,13 +397,14 @@ public class MenuController {
     /**
      * Response body for the two ``/select`` endpoints.
      *
-     * :param dispatched: ``true`` when the client should navigate to ``targetRoute`` (an
-     *  option dispatch or a PF3 back); ``false`` for an informational coming-soon result.
-     * :param programName: the resolved legacy target program name, or ``null`` for a PF3 back.
-     * :param targetRoute: the downstream route to navigate to, or ``null`` for a coming-soon
+     * :param dispatched: ``true`` when the selection resolved to a program the client should
+     *  open (an option dispatch or a PF3 back); ``false`` for an informational coming-soon
      *  result.
+     * :param programName: the resolved legacy target program name, or ``null`` for a PF3 back.
+     *  This is the ``XCTL PROGRAM`` target, and it is the whole dispatch instruction: the
+     *  client resolves it to the screen it owns.
      * :param message: the coming-soon message, or ``null`` when a dispatch occurred.
      */
-    public record MenuSelectionResponse(boolean dispatched, String programName, String targetRoute, String message) {
+    public record MenuSelectionResponse(boolean dispatched, String programName, String message) {
     }
 }

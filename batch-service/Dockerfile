@@ -56,10 +56,18 @@ USER 1000:1000
 # Prometheus scrapes (/actuator/health, /actuator/prometheus).
 EXPOSE 8080
 
-# Exec form: the JVM runs as PID 1 and receives SIGTERM directly, enabling
-# Spring Boot graceful shutdown within the batch window (AAP 0.7.6). Additional
-# JVM flags can be supplied at runtime through the standard JAVA_TOOL_OPTIONS
-# environment variable, which the JVM honors automatically (no shell wrapper,
-# so signal handling is preserved). Datasource/Redis settings are injected as
-# environment variables by docker-compose; no secrets are baked into the image.
-ENTRYPOINT ["java", "org.springframework.boot.loader.launch.JarLauncher"]
+# Container-aware memory and GC policy. The value is IDENTICAL in all nine
+# service images and resolves against the memory limit the runtime declares
+# (docker-compose `deploy.resources.limits.memory`, Kubernetes
+# `resources.limits.memory`), so one artifact has one footprint everywhere.
+# Overridable at run time for a differently sized deployment.
+# Measurements and rationale: docs/decision-log.md section 40.
+ENV JAVA_OPTS="-XX:+UseContainerSupport -XX:InitialRAMPercentage=25.0 -XX:MaxRAMPercentage=60.0 -XX:+UseG1GC -XX:MaxGCPauseMillis=100"
+
+# `sh -c "exec java ..."` expands JAVA_OPTS, and `exec` replaces the shell so the
+# JVM runs as PID 1 and receives SIGTERM directly, enabling Spring Boot graceful
+# shutdown within the batch window (AAP 0.7.6). The launcher class (not `-jar`)
+# is the entry point because the jar is extracted into layers above.
+# Datasource/Redis settings are injected as environment variables by
+# docker-compose; no secrets are baked into the image.
+ENTRYPOINT ["sh", "-c", "exec java $JAVA_OPTS org.springframework.boot.loader.launch.JarLauncher"]

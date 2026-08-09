@@ -75,6 +75,10 @@ class ApiError extends Error {
 }
 
 jest.unstable_mockModule('../api', () => ({
+  // The request-cancellation contract ``useApi`` binds to: the real scope hands the
+  // caller's AbortSignal to axios, and the double simply invokes the call.
+  runWithRequestSignal: (_signal: AbortSignal, call: () => unknown): unknown => call(),
+  isCancelledRequest: (): boolean => false,
   // The session store and the REST hook this screen's module graph loads bind to
   // these barrel exports as well. ``getSessionIdentity`` is the production
   // ``GET /session`` probe the session harness drives; unanswered by this suite it
@@ -93,9 +97,6 @@ const MSG_INVALID_SELECTION = 'Invalid selection. Valid value is S';
 
 /** Rejection message for a non-numeric browse filter (``COTRN00C``). */
 const MSG_TRAN_ID_NUMERIC = 'Tran ID must be Numeric ...';
-
-/** Empty-result text shown in place of the ten row lines. */
-const EMPTY_ROW_TEXT = 'No transactions to display';
 
 /** Top-of-browse informational message of ``COTRN00C``. */
 const MSG_TOP_OF_PAGE = 'You are at the top of the page...';
@@ -402,16 +403,6 @@ afterEach(async () => {
   sessionStorage.clear();
 });
 
-/**
- * :purpose: The line-23 informational message region. The shared shell also renders a
- *     visually hidden ``role="status"`` busy announcer, so the banner is matched on its
- *     own class rather than on the role alone.
- * :returns: the informational banner, or ``null`` when line 23 carries no
- *     informational message.
- */
-function infoBanner(): HTMLElement | null {
-  return document.querySelector<HTMLElement>('.errorBanner[role="status"]');
-}
 
 describe('TranListPage — screen frame (COTRN00 / CT00 / COTRN00C)', () => {
   it('publishes the transaction id, program name and titles into the shell', async () => {
@@ -610,6 +601,54 @@ describe('TranListPage — Search Tran ID filter (TRNIDIN)', () => {
     expect(listTransactionsMock).toHaveBeenCalledTimes(2);
     expect(listTransactionsMock).toHaveBeenLastCalledWith({});
   });
+
+  it('browses from the top when the field holds only spaces (EQUAL SPACES)', async () => {
+    await renderScreen();
+
+    typeFilter('    ');
+    await pressEnter();
+
+    expect(listTransactionsMock).toHaveBeenCalledTimes(2);
+    expect(listTransactionsMock).toHaveBeenLastCalledWith({});
+  });
+
+  it('refuses a tab instead of browsing the whole file and reporting success', async () => {
+    // A tab is neither SPACES nor LOW-VALUES, so L209 tests it for NUMERIC and it
+    // fails. Trimming it first turned a discarded filter into an unfiltered browse
+    // that reported success.
+    await renderScreen();
+
+    typeFilter('\t');
+    await pressEnter();
+
+    expect(screen.getByRole('alert')).toHaveTextContent(MSG_TRAN_ID_NUMERIC);
+    expect(listTransactionsMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses a padded value instead of silently browsing its trimmed self', async () => {
+    await renderScreen();
+
+    typeFilter(' 15 ');
+    await pressEnter();
+
+    expect(screen.getByRole('alert')).toHaveTextContent(MSG_TRAN_ID_NUMERIC);
+    expect(listTransactionsMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('cannot hold more characters than TRNIDIN declares, so none are dropped later', async () => {
+    // Nineteen digits reached the service and overflowed the key parse. The field is
+    // LENGTH=16, and what the field holds is what the browse receives.
+    await renderScreen();
+
+    typeFilter('1234567890123456789012345');
+    expect(screen.getByLabelText(FILTER_LABEL)).toHaveValue('1234567890123456');
+
+    await pressEnter();
+
+    expect(listTransactionsMock).toHaveBeenLastCalledWith({
+      tranIdFilter: '1234567890123456',
+    });
+  });
 });
 
 describe('TranListPage — row selection validation', () => {
@@ -644,6 +683,67 @@ describe('TranListPage — row selection validation', () => {
     expect(listTransactionsMock).toHaveBeenCalledTimes(1);
   });
 
+  it('holds the table to the summed width of its column rules so no column collapses', async () => {
+    // Under `table-layout: fixed` the columns carrying an explicit width are allocated
+    // FIRST and the width-less last column takes only the remainder, so in a container
+    // narrower than the fixed columns it is allocated ZERO -- its cells clip to nothing,
+    // and a zero-width column adds nothing to the scroll range, so scrolling never
+    // reveals it either. Measured at 375 and 320 CSS px: the Amount column had width 0
+    // and its values were unreachable at maximum container scroll.
+    await renderScreen();
+
+    const table = document.querySelector('table.dataTable');
+    // 3+2, 16+2, 8+2, 26+2, 12+2 -- the mapset's own row-9 runs plus one padding cell
+    // either side, which is the same arithmetic the <colgroup> uses.
+    expect(table).toHaveStyle({ minWidth: '75ch' });
+
+    const cols = Array.from(document.querySelectorAll('colgroup col'));
+    expect(cols).toHaveLength(5);
+    expect(cols.slice(0, 4).map((col) => col.getAttribute('style'))).toEqual([
+      'width: 5ch;',
+      'width: 18ch;',
+      'width: 10ch;',
+      'width: 28ch;',
+    ]);
+    // The last column stays width-less on purpose: a container wider than the floor
+    // hands it the slack, keeping the right-aligned amount against the frame's edge.
+    expect(cols[4].getAttribute('style')).toBeNull();
+  });
+
+  it('publishes the selection message on the PHYSICAL ENTER key, not only the legend button', async () => {
+    // The two activation paths reach the same handler by different routes: the legend
+    // button calls the prop it was handed on the current render, while the physical AID
+    // key is dispatched from the document listener through the published key array. A
+    // key array published from a PASSIVE effect lagged one commit behind the fields it
+    // acts on, so the keyboard turn read an empty selection map, fell through to the
+    // browse, and cleared the typed character with no message -- while the same turn
+    // taken with the button worked. Both paths are asserted for that reason.
+    await renderScreen();
+
+    selectRow(0, 'X');
+    await pressKey('Enter');
+
+    expect(screen.getByRole('alert')).toHaveTextContent(MSG_INVALID_SELECTION);
+    expect(currentPath()).toBe(LIST_ROUTE);
+    expect(listTransactionsMock).toHaveBeenCalledTimes(1);
+    // The character the operator typed is still in its box: COTRN00C moves nothing
+    // into the SEL fields, so the RECEIVE value is echoed straight back by the send.
+    expect(selectionFields()[0]).toHaveValue('X');
+  });
+
+  it('marks the rejected selection control invalid without reddening it', async () => {
+    // COTRN00C contains no `MOVE DFHRED` at all -- the whole program never recolours a
+    // field -- so a rejected selection is marked for assistive technology only. A red
+    // box here would be observable output the program does not produce.
+    await renderScreen();
+
+    selectRow(0, 'X');
+    await pressKey('Enter');
+
+    expect(selectionFields()[0]).toHaveAttribute('aria-invalid', 'true');
+    expect(selectionFields()[0].className).not.toContain('fieldError');
+  });
+
   it('acts on the first flagged row when several rows carry a flag', async () => {
     await renderScreen();
 
@@ -673,7 +773,7 @@ describe('TranListPage — line-24 function keys', () => {
   it('publishes exactly the ENTER / F3 / F7 / F8 legend of the mapset', async () => {
     await renderScreen();
 
-    const toolbar = screen.getByRole('toolbar', { name: 'Function keys' });
+    const toolbar = screen.getByRole('group', { name: 'Function keys' });
     // COTRN00.bms line 24 reads
     // 'ENTER=Continue  F3=Back  F7=Backward  F8=Forward'.
     expect(within(toolbar).getAllByRole('button')).toHaveLength(4);
@@ -714,7 +814,31 @@ describe('TranListPage — request outcomes', () => {
     await renderScreen();
 
     expect(screen.getByRole('alert')).toHaveTextContent(MSG_LOOKUP_FAILED);
-    expect(screen.getByTestId('tran-list-empty')).toHaveTextContent(EMPTY_ROW_TEXT);
+    // No row is painted and no placeholder invented: COTRN00C leaves the ten row fields
+    // at LOW-VALUES and publishes its message on line 23.
+    expect(selectionFields()).toHaveLength(0);
+    expect(screen.queryByTestId('tran-list-empty')).toBeNull();
+  });
+
+  it('keeps the displayed page on screen when a later browse fails', async () => {
+    await renderScreen();
+    const rowsBefore = rowTranIds();
+    expect(rowsBefore.length).toBeGreaterThan(0);
+    const pageBefore = screen.getByTestId('page-number').textContent;
+
+    // COTRN00C re-sends the map with ``SET SEND-ERASE-NO TO TRUE`` whenever it reports a
+    // browse it did not perform, so the rows already painted and the page number beside
+    // them stay put while line 23 carries the message. Discarding them would throw away
+    // the operator's browse position on a message that never claimed it had moved.
+    listTransactionsMock.mockRejectedValueOnce(new ApiError(500, MSG_LOOKUP_FAILED));
+    await act(async () => {
+      fireEvent.click(pfKey(PF8_LABEL));
+      await Promise.resolve();
+    });
+
+    expect(screen.getByRole('alert')).toHaveTextContent(MSG_LOOKUP_FAILED);
+    expect(rowTranIds()).toEqual(rowsBefore);
+    expect(screen.getByTestId('page-number').textContent).toBe(pageBefore);
   });
 
   it('surfaces a server message in the single line-23 message field', async () => {
@@ -724,9 +848,11 @@ describe('TranListPage — request outcomes', () => {
     await renderScreen();
 
     // COTRN00 declares one ERRMSG field, so every legacy message — boundary
-    // announcements included — is carried by that single region.
-    expect(screen.getByRole('alert')).toHaveTextContent(MSG_TOP_OF_PAGE);
-    expect(infoBanner()).toBeNull();
+    // announcements included — is carried by that single region, in the RED the mapset
+    // declares statically. A boundary announcement is not a failure, so it is announced
+    // politely (``role="status"``) rather than as an alert while keeping that colour.
+    expect(document.getElementById('screenMessageLine')).toHaveTextContent(MSG_TOP_OF_PAGE);
+    expect(screen.queryByRole('alert')).toBeNull();
   });
 
   it('reports an empty result and keeps both paging keys live', async () => {
@@ -735,12 +861,74 @@ describe('TranListPage — request outcomes', () => {
 
     await renderScreen();
 
-    expect(screen.getByTestId('tran-list-empty')).toHaveTextContent(EMPTY_ROW_TEXT);
+    // The body carries no invented "nothing found" literal; the empty result is
+    // reported by the service's own line-23 message alone.
+    expect(screen.queryByTestId('tran-list-empty')).toBeNull();
+    expect(screen.queryByText(/no transactions to display/i)).toBeNull();
     expect(selectionFields()).toHaveLength(0);
     // ``PROCESS-PF7-KEY`` / ``PROCESS-PF8-KEY`` are always reached; the service,
     // not the screen, decides that there is nothing further to read.
     expect(pfKey(PF7_LABEL)).toBeEnabled();
     expect(pfKey(PF8_LABEL)).toBeEnabled();
   });
+
+  it('states no result while the browse is still outstanding', async () => {
+    // The browse never settles inside this test, so the assertions describe the
+    // screen exactly as the operator sees it while the terminal is waiting.
+    listTransactionsMock.mockReset();
+    listTransactionsMock.mockImplementation(
+      () => new Promise<TranListResponseDto>(() => undefined),
+    );
+
+    render(
+      <MemoryRouter initialEntries={[LIST_ROUTE]}>
+        <Layout>
+          <TranListPage />
+        </Layout>
+      </MemoryRouter>,
+    );
+
+    // The row region claims nothing: the browse has not answered, so a "no transactions"
+    // literal would be a result the screen does not have -- and COTRN00C paints no such
+    // literal in the body in any state, so no placeholder row exists to carry one.
+    expect(screen.queryByTestId('tran-list-empty')).toBeNull();
+    expect(screen.queryByText(/no transactions to display/i)).toBeNull();
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.queryByText(/no transactions to display/i)).toBeNull();
+    expect(selectionFields()).toHaveLength(0);
+  });
 });
 
+describe('TranListPage — COTRN00 browse-table contract', () => {
+  it('paints the row-9 rule as the per-column hyphen runs the mapset declares', async () => {
+    await renderScreen();
+
+    // COTRN00 row 9: 3, 16, 8, 26 and 12 hyphens at columns 2, 8, 27, 38 and 67, with
+    // the gaps between them blank -- not one continuous border across the table.
+    const rule = document.querySelector('.dataTable__rule');
+    expect(rule).not.toBeNull();
+    expect(rule).toHaveAttribute('aria-hidden', 'true');
+    expect(
+      Array.from(rule?.querySelectorAll('td') ?? []).map((cell) => cell.textContent),
+    ).toEqual(['-'.repeat(3), '-'.repeat(16), '-'.repeat(8), '-'.repeat(26), '-'.repeat(12)]);
+  });
+
+  it('renders the screen name NEUTRAL, as COTRN00 row 4 declares', async () => {
+    await renderScreen();
+
+    expect(screen.getByRole('heading', { name: 'List Transactions' })).toHaveClass('neutral');
+  });
+
+  it('puts the browse table in a labelled region the keyboard can enter', async () => {
+    await renderScreen();
+
+    // On a narrow viewport the trailing BMS columns fall outside the frame and hold no
+    // focusable field of their own, so the scroll container carries the tab stop.
+    const region = screen.getByRole('group', { name: 'Transaction list columns' });
+    expect(region).toHaveClass('tableScroll');
+    expect(region).toHaveAttribute('tabindex', '0');
+    expect(region).toContainElement(screen.getByRole('table'));
+  });
+});

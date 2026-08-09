@@ -92,10 +92,16 @@ public class RequestLoggingFilter extends OncePerRequestFilter {
             // Logged here, not in the container, so the record still carries the MDC
             // correlation/trace context. The exception itself is propagated untouched so the
             // container's error dispatch and the configured error handling are unaffected.
+            // Exactly four arguments for the four placeholders, plus the throwable SLF4J
+            // consumes as the stack trace. The URI is rendered ONCE, through loggedUri, so
+            // the failure record is masked exactly like the success record. A fifth value
+            // here (the RAW request URI) shifted every argument by one: the unmasked
+            // 16-digit PAN was printed in the duration slot next to its own masked form
+            // (CWE-532), the duration landed in the exception slot, and the exception class
+            // name was dropped from the record altogether.
             log.error("{} {} failed after {}ms: {}",
                     request.getMethod(),
                     loggedUri(request),
-                    request.getRequestURI(),
                     elapsedMillis(startNanos),
                     ex.getClass().getName(),
                     ex);
@@ -112,17 +118,20 @@ public class RequestLoggingFilter extends OncePerRequestFilter {
     }
 
     /**
-     * :purpose: Render the request URI for the access log with every PAN-shaped digit run
+     * :purpose: Render the request URI for the access log with a card-number path segment
      *     reduced to its last four digits. The card screens address a card by its number
      *     (``/cards/{cardNum}``), so logging the URI verbatim wrote a full PAN into the access
      *     log of every card request -- and of the gateway in front of it (CWE-532) -- while the
-     *     domain-error path was already masking it. The account id (11 digits) and every other
-     *     identifier are shorter than the shortest PAN and stay intact for support.
+     *     domain-error path was already masking it.
      * :param request: the current request.
-     * :returns: the request URI with any PAN masked.
+     * :returns: the request URI with a card-number segment masked and every other segment
+     *     left intact.
+     * :note: Path-POSITIONAL masking, not a blanket digit-run match: the 16-character
+     *     transaction id of ``/transactions/{id}`` has the same shape as a PAN, so masking
+     *     the whole URI logged and reported a path the caller never requested.
      */
     private static String loggedUri(HttpServletRequest request) {
-        return SensitiveDataMasker.maskPan(request.getRequestURI());
+        return SensitiveDataMasker.maskPath(request.getRequestURI());
     }
 
     /**

@@ -573,14 +573,71 @@ class AccountServiceTest {
     void updateAccount_runsEditSequenceBeforeAnyFileRead() {
         AccountUpdateRequestDto request = new AccountUpdateRequestDto();
         request.setAcctActiveStatus("Z");
-        doThrow(new CardDemoException(AccountUpdateValidator.MSG_STATUS_YN))
+        // 1220-EDIT-YESNO composes its message from WS-EDIT-VARIABLE-NAME (COACTUPC
+        // L1472-1475 / L1856-1893); the 88-level carrying 'Account Active Status must be
+        // Y or N' is declared at L503-504 but never SET, so it cannot reach a terminal.
+        doThrow(new CardDemoException(AccountUpdateValidator.VAR_ACCOUNT_STATUS
+                + AccountUpdateValidator.SUFFIX_MUST_BE_YES_NO))
                 .when(accountUpdateValidator).validate(request);
 
         assertThatExceptionOfType(CardDemoException.class)
                 .isThrownBy(() -> accountService.updateAccount(ACCT_ID, request, null))
-                .withMessage("Account Active Status must be Y or N");
+                .withMessage("Account Status must be Y or N.");
 
         verifyNoInteractions(cardXrefRepository, accountRepository, customerRepository, accountMapper);
+    }
+
+    /**
+     * :purpose: Verify the ENTER edit pass (``1200-EDIT-MAP-INPUTS``) runs the same edits the
+     *  rewrite runs and writes NOTHING, so a screen can report ``Changes validated`` only
+     *  once the edits it names have actually passed (QA F19/F69).
+     */
+    @Test
+    void validateAccountUpdate_runsTheEditsAndWritesNothing() {
+        AccountUpdateRequestDto request = new AccountUpdateRequestDto();
+        request.setAcctActiveStatus("Y");
+
+        accountService.validateAccountUpdate(ACCT_ID, request);
+
+        verify(accountUpdateValidator).validate(request);
+        verifyNoInteractions(cardXrefRepository, accountRepository, customerRepository, accountMapper);
+    }
+
+    /**
+     * :purpose: Verify a refused edit propagates from the ENTER pass exactly as it does from
+     *  the rewrite, so both report the same literal for the same submission (QA F19).
+     */
+    @Test
+    void validateAccountUpdate_propagatesTheRefusedEdit() {
+        AccountUpdateRequestDto request = new AccountUpdateRequestDto();
+        request.setAcctActiveStatus("Z");
+        doThrow(new CardDemoException(AccountUpdateValidator.VAR_ACCOUNT_STATUS
+                + AccountUpdateValidator.SUFFIX_MUST_BE_YES_NO))
+                .when(accountUpdateValidator).validate(request);
+
+        assertThatExceptionOfType(CardDemoException.class)
+                .isThrownBy(() -> accountService.validateAccountUpdate(ACCT_ID, request))
+                .withMessage("Account Status must be Y or N.");
+
+        verifyNoInteractions(cardXrefRepository, accountRepository, customerRepository, accountMapper);
+    }
+
+    /**
+     * :purpose: Verify the ENTER pass does NOT report a concurrency conflict. The legacy
+     *  screen reaches ``9700-CHECK-CHANGE-IN-REC`` only on PF5, so announcing a conflict for
+     *  a record the operator has not asked to save would invent an outcome the legacy never
+     *  produces at that point.
+     */
+    @Test
+    void validateAccountUpdate_doesNotCompareAgainstTheStoredRecord() {
+        AccountUpdateRequestDto request = new AccountUpdateRequestDto();
+        request.setAcctActiveStatus("Y");
+        request.setVersion(1L);
+
+        accountService.validateAccountUpdate(ACCT_ID, request);
+
+        // No record is read at all, so there is nothing to compare and no lock to take.
+        verifyNoInteractions(cardXrefRepository, accountRepository, customerRepository);
     }
 
     /**

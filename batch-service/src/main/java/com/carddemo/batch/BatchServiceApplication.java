@@ -17,6 +17,8 @@ package com.carddemo.batch;
 
 import com.carddemo.common.config.RedisCommandMetricsConfig;
 import com.carddemo.common.config.SessionRedisConfig;
+import com.carddemo.common.config.CardDemoErrorController;
+import com.carddemo.common.config.ContainerErrorReportConfig;
 import com.carddemo.common.config.GlobalExceptionHandler;
 import com.carddemo.common.batch.BatchPathConfig;
 import com.carddemo.common.batch.JdbcBatchConfiguration;
@@ -56,6 +58,11 @@ import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
  *     every other CardDemo service (unknown job to HTTP 404, missing job
  *     parameter or rejected submission to HTTP 400) instead of a bare Boot
  *     ``/error`` body.
+ * :note: {@link CardDemoErrorController} and {@link ContainerErrorReportConfig} cover the
+ *     failures ``GlobalExceptionHandler`` cannot reach — a container-level error dispatch
+ *     such as a request that matched no handler, or a refusal decided before the dispatcher
+ *     servlet — so those answer in the same envelope here as in every other service instead
+ *     of Boot's abbreviated ``{timestamp,status,error,path}`` document.
  */
 // UserDetailsServiceAutoConfiguration is excluded: this service authenticates from the
 // shared CardDemo session, never from an in-memory user. Left enabled, Spring Boot
@@ -65,7 +72,8 @@ import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 @EntityScan("com.carddemo.common.domain")
 @EnableJpaRepositories("com.carddemo.batch.repository")
 @Import({ ObservabilityConfig.class, SchemaMigrationConfig.class, WebObservabilityConfig.class,
-        GlobalExceptionHandler.class, SessionRedisConfig.class, RedisCommandMetricsConfig.class,
+        GlobalExceptionHandler.class, CardDemoErrorController.class,
+        ContainerErrorReportConfig.class, SessionRedisConfig.class, RedisCommandMetricsConfig.class,
         BatchPathConfig.class, JdbcBatchConfiguration.class, WebHardeningConfig.class,
         PiiEncryptionConfig.class })
 public class BatchServiceApplication {

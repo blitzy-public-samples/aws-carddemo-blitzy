@@ -19,6 +19,7 @@ import com.carddemo.common.domain.SecurityUser;
 import com.carddemo.common.dto.AddUserRequestDto;
 import com.carddemo.common.dto.UpdateUserRequestDto;
 import com.carddemo.common.dto.UserResponseDto;
+import com.carddemo.common.security.UserIdNormalizer;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -52,7 +53,10 @@ public class UserMapper {
             return null;
         }
         SecurityUser user = new SecurityUser();
-        user.setSecUsrId(request.getUserId());
+        // Folded here as well as in the service, so the entity this mapper produces is in the
+        // canonical stored form for every caller. The primary key is what the sign-on path reads
+        // by, and an un-normalized key is not findable there.
+        user.setSecUsrId(UserIdNormalizer.normalize(request.getUserId()));
         user.setSecUsrFname(request.getFirstName());
         user.setSecUsrLname(request.getLastName());
         user.setSecUsrType(request.getUserType());

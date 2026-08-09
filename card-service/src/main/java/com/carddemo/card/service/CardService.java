@@ -29,6 +29,7 @@ import com.carddemo.common.dto.SessionContext;
 import com.carddemo.common.exception.CardDemoException;
 import com.carddemo.common.exception.OptimisticLockConflictException;
 import com.carddemo.common.exception.RecordNotFoundException;
+import com.carddemo.common.util.DateUtil;
 import jakarta.persistence.OptimisticLockException;
 import java.util.List;
 import java.util.Locale;
@@ -121,13 +122,23 @@ public class CardService {
     private static final String MSG_ACCT_NOT_IN_CARDS =
             "Did not find this account in cards database";
 
-    /** :purpose: ``COCRDSLC`` account-key edit message. */
-    private static final String MSG_ACCT_NON_ZERO_11 =
-            "Account number must be a non zero 11 digit number";
+    /**
+     * :purpose: ``COCRDSLC`` account-key edit message. ``2210-EDIT-ACCOUNT`` MOVEs this
+     *  literal directly for a rejected account filter; the mixed-case
+     *  ``SEARCHED-ACCT-ZEROES`` / ``SEARCHED-ACCT-NOT-NUMERIC`` 88-levels the program
+     *  declares are never SET, so this is the only text it can report.
+     */
+    private static final String MSG_ACCT_FILTER_NOT_NUMERIC = MSG_ACCT_FILTER_11;
 
-    /** :purpose: ``COCRDSLC`` card-key edit message. */
-    private static final String MSG_CARD_IF_SUPPLIED_16 =
-            "Card number if supplied must be a 16 digit number";
+    /**
+     * :purpose: ``COCRDSLC`` / ``COCRDUPC`` card-key edit message for a malformed key,
+     *  MOVEd directly for the same reason: ``SEARCHED-CARD-NOT-NUMERIC`` is an
+     *  unreachable 88-level.
+     */
+    private static final String MSG_CARD_FILTER_NOT_NUMERIC = MSG_CARD_FILTER_16;
+
+    /** :purpose: ``COCRDSLC`` / ``COCRDUPC`` ``WS-PROMPT-FOR-CARD`` absent-key message. */
+    private static final String MSG_CARD_NOT_PROVIDED = "Card number not provided";
 
     // -- Card update validation-edit messages (COCRDUPC.cbl), byte-for-byte. --------
 
@@ -147,6 +158,26 @@ public class CardService {
 
     /** :purpose: ``COCRDUPC`` ``CARD-EXPIRY-YEAR-NOT-VALID`` year edit message. */
     private static final String MSG_EXPIRY_YEAR = "Invalid card expiry year";
+
+    /**
+     * :purpose: ``COCRDUPC`` ``NO-CHANGES-DETECTED`` outcome message [app/cbl/COCRDUPC.cbl:L188].
+     *  Byte-identical to the literal ``COACTUPC`` declares for the same outcome
+     *  [app/cbl/COACTUPC.cbl:L492]; each program carries its own copy of the literal, so each
+     *  service declares its own here too.
+     */
+    private static final String MSG_NO_CHANGES =
+            "No change detected with respect to values fetched.";
+
+    /**
+     * :purpose: Reported when the submitted expiry date names a day that does not exist in the
+     *  submitted month, for example ``2026-02-30``. The legacy program edited only the month and
+     *  the year, so it had no literal for this case; the message is therefore new, and the
+     *  deviation is recorded in ``docs/decision-log.md``. Without the edit an impossible date was
+     *  accepted and came to rest in the card record, while the account service rejected the very
+     *  same value.
+     */
+    private static final String MSG_EXPIRY_DATE_INVALID =
+            "Card expiry date is not a valid calendar date";
 
     // -- Card update lock/rewrite outcome messages (COCRDUPC.cbl); retained for -----
     // -- traceability even though the pseudo-conversational lock mechanism collapses.
@@ -198,8 +229,9 @@ public class CardService {
      * :param cardNumFilter: optional exact card-number filter; when supplied it must
      *  be sixteen digits.
      * :param pageNumber: the one-based page number to return.
-     * :param sessionContext: the caller session, whose workflow fields the resolved
-     *  selection is propagated into. May be ``null``.
+     * :param sessionContext: the caller session. The browse reads NO field from it: the
+     *  filters above are the only scope, because ``9500-FILTER-RECORDS`` carries no
+     *  user-type branch (decision log §19.1). May be ``null``.
      * :returns: the card-list response holding at most ``MAX_SCREEN_LINES`` rows.
      * :raises CardDemoException: when a supplied account or card-number filter is invalid.
      */
@@ -224,8 +256,9 @@ public class CardService {
      *  ``null`` or blank means plain entry.
      * :param action: the row-selection flag, ``"S"`` for detail or ``"U"`` for update.
      * :param selectedCardNumber: the card number of the selected row.
-     * :param sessionContext: the caller session, whose workflow fields the resolved
-     *  selection is propagated into.
+     * :param sessionContext: the caller session. The browse reads NO field from it and
+     *  narrows nothing by role: the resolved selection travels back on the response and is
+     *  stored by the controller (decision log §19.1). May be ``null``.
      * :returns: the card-list response holding at most ``MAX_SCREEN_LINES`` rows, the paging
      *  state, the resolved selection and the two message lines.
      * :raises CardDemoException: when a supplied filter is invalid, or the row-selection flag
@@ -260,6 +293,12 @@ public class CardService {
                     && (acctIdFilter == null || acctIdFilter.equals(single.getCardAcctId()));
             // A keyed read yields at most one row, so only the first page can hold it.
             windowRows = inScope && page == 1 ? List.of(single) : List.of();
+        } else if (beyondAddressableRows(page)) {
+            // The requested screen begins past the last row any query can address, so it can
+            // hold no rows. Answering with an empty window puts the request on exactly the
+            // same beyond-the-end path as any other page past the last populated screen,
+            // rather than issuing a browse whose offset the store cannot express.
+            windowRows = List.of();
         } else {
             // Read exactly one page plus one lookahead row, ordered by card number to match the
             // VSAM primary-key browse order, so the store never materialises more than the
@@ -323,6 +362,23 @@ public class CardService {
      */
     private static Pageable screenWindow(int page) {
         return new ScreenWindow((long) (page - 1) * MAX_SCREEN_LINES, MAX_SCREEN_LINES + 1);
+    }
+
+    /**
+     * :purpose: Report whether a requested screen begins past the last row a browse can
+     *  address, so the browse is skipped rather than issued with an unrepresentable offset.
+     * :param page: the one-based screen number (``WS-CA-SCREEN-NUM``).
+     * :returns: ``true`` when the screen's first row, or its lookahead row, lies beyond
+     *  {@link Integer#MAX_VALUE}.
+     * :note: JPA expresses a query's first result as an ``int``, so Spring Data rejects any
+     *  offset above {@link Integer#MAX_VALUE} with an ``InvalidDataAccessApiUsageException``
+     *  -- a data-access failure, reported as HTTP 500, for what is only a page number past
+     *  the end of the file. No card base can reach two billion rows, so such a screen is
+     *  simply empty and takes the ordinary end-of-browse path (``NO MORE RECORDS TO SHOW``)
+     *  that every other page past the last populated screen already takes.
+     */
+    private static boolean beyondAddressableRows(int page) {
+        return (long) (page - 1) * MAX_SCREEN_LINES + MAX_SCREEN_LINES + 1 > Integer.MAX_VALUE;
     }
 
     /**
@@ -441,7 +497,7 @@ public class CardService {
         // COCRDSLC 2210-EDIT-ACCOUNT: an account number supplied on the screen must be a
         // non-zero eleven-digit value.
         if (acctIdFilter != null && (acctIdFilter <= 0L || acctIdFilter > ACCT_ID_MAX)) {
-            throw new CardDemoException(MSG_ACCT_NON_ZERO_11);
+            throw new CardDemoException(MSG_ACCT_FILTER_NOT_NUMERIC);
         }
 
         // Keyed read of the card master by card number (COBOL 9100 RIDFLD(card-number)).
@@ -497,7 +553,7 @@ public class CardService {
         // COCRDUPC 2210-EDIT-ACCOUNT: an account number supplied on the screen must be a
         // non-zero eleven-digit value.
         if (acctIdFilter != null && (acctIdFilter <= 0L || acctIdFilter > ACCT_ID_MAX)) {
-            throw new CardDemoException(MSG_ACCT_NON_ZERO_11);
+            throw new CardDemoException(MSG_ACCT_FILTER_NOT_NUMERIC);
         }
         if (request == null) {
             // No editable fields supplied: reproduce the first (name) edit failure, which for an
@@ -510,6 +566,7 @@ public class CardService {
         validateActiveStatus(request.getCardActiveStatus());
         validateExpiryMonth(request.getCardExpiraionDate());
         validateExpiryYear(request.getCardExpiraionDate());
+        validateExpiryCalendarDate(request.getCardExpiraionDate());
 
         // Step C -- re-read the current card inside this transaction under a row write lock
         // (COBOL 9200 READ ... UPDATE). The lock serialises simultaneous updaters, so each one
@@ -540,10 +597,14 @@ public class CardService {
             throw new OptimisticLockConflictException();
         }
 
-        // Step B -- NO-CHANGES-DETECTED short-circuit (COBOL 1200): nothing to rewrite.
+        // Step B -- NO-CHANGES-DETECTED short-circuit (COBOL 1200): nothing to rewrite, and the
+        // program says so [app/cbl/COCRDUPC.cbl:L188]. Reported the same way the account service
+        // reports the identical literal for the identical outcome: returning 200 with the record
+        // and no message at all left the caller unable to tell a no-op apart from an applied
+        // update, and made two services disagree about one shared legacy message.
         if (isUnchanged(request, card)) {
             log.debug("card update no-op for account {}", card.getCardAcctId());
-            return cardMapper.toUpdateResponse(card, xref);
+            throw new CardDemoException(MSG_NO_CHANGES);
         }
 
         // Step E -- apply the edits onto the managed entity (COBOL CARD-UPDATE-RECORD assembly).
@@ -620,6 +681,25 @@ public class CardService {
         Integer month = extractInt(expiraionDate, 5, 7);
         if (month == null || month < 1 || month > 12) {
             throw new CardDemoException(MSG_EXPIRY_MONTH);
+        }
+    }
+
+    /**
+     * :purpose: Confirm the submitted expiry date is a real calendar date, so a day that does not
+     *  exist in the submitted month cannot come to rest in the card record.
+     * :param expiraionDate: the submitted expiry date in ``YYYY-MM-DD`` form, legacy-spelled.
+     * :raises CardDemoException: when the value is not a valid date under a strict Gregorian
+     *  calendar.
+     * :note: This edit has NO legacy counterpart. ``COCRDUPC`` edited the month and the year
+     *  independently and never checked the day against the month, so ``2026-02-30`` passed and was
+     *  written. It is added here because the same value is rejected by the account service, which
+     *  applies the full ``EDIT-DATE-CCYYMMDD`` edit to its own expiry date, and two services
+     *  disagreeing about one value is not a difference any caller can reason about. Runs LAST, so
+     *  the month and year edits keep reporting their own frozen literals first.
+     */
+    private void validateExpiryCalendarDate(String expiraionDate) {
+        if (!DateUtil.isValid(expiraionDate, DateUtil.MASK_ISO)) {
+            throw new CardDemoException(MSG_EXPIRY_DATE_INVALID);
         }
     }
 

@@ -17,6 +17,7 @@
 package com.carddemo.reporting.config;
 
 import com.carddemo.common.config.CorrelationIdTaskDecorator;
+import com.carddemo.common.batch.BatchOutputPathResolver;
 import com.carddemo.common.exception.CardDemoException;
 
 import org.slf4j.Logger;
@@ -38,8 +39,11 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Configuration;
 
-import org.springframework.core.task.SimpleAsyncTaskExecutor;
+import org.springframework.core.task.TaskDecorator;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
+
 import java.util.UUID;
+import java.util.concurrent.Semaphore;
 
 /**
  * :purpose: Re-platforms the legacy CICS asynchronous batch-submission mechanism
@@ -85,8 +89,31 @@ public class JobSchedulingConfig {
 
 
 
-    /** :purpose: Upper bound on jobs running concurrently on the launch executor. */
-    private static final int MAX_CONCURRENT_JOBS = 4;
+    /**
+     * :purpose: Statement runs that may EXECUTE at once. One, deliberately: every run
+     *  writes the two output names of the legacy job stream (the ``STMTFILE`` and
+     *  ``HTMLFILE`` DD names), so two overlapping runs opened the same two files. That
+     *  produced ``ItemStreamException: Unable to create file`` for the loser, and the
+     *  failed run's output-cleanup listener then deleted a concurrently SUCCEEDING run's
+     *  statements after the API had already answered ``202``. Serializing the runs keeps
+     *  the frozen output names byte-faithful — the alternative, per-execution file names,
+     *  would break the ``CREASTMT`` DD-name contract [app/jcl/CREASTMT.JCL].
+     */
+    private static final int MAX_RUNNING_JOBS = 1;
+
+    /**
+     * :purpose: Submissions that may WAIT behind the running one. The legacy initiator
+     *  bounded concurrent job streams the same way; beyond this the submission is refused
+     *  with the frozen TDQ message rather than queued without limit.
+     */
+    private static final int MAX_QUEUED_JOBS = 4;
+
+    /**
+     * :purpose: Total submissions admitted at once: the running one plus the bounded
+     *  backlog. Sized to the executor's own capacity so the pool itself can never reject a
+     *  task the admission check already accepted.
+     */
+    private static final int MAX_ADMITTED_JOBS = MAX_RUNNING_JOBS + MAX_QUEUED_JOBS;
 
     /**
      * :purpose: Asynchronous operator used to submit the job. Submission is synchronous
@@ -105,12 +132,30 @@ public class JobSchedulingConfig {
     private final String statementHtmlFile;
 
     /**
+     * Resolver that confines an output name to the configured batch output root. Used to
+     * VALIDATE a caller-supplied file name synchronously, before a run is submitted.
+     */
+    private final BatchOutputPathResolver pathResolver;
+
+    /**
+     * :purpose: Admission permits for the launch executor: one per running job plus the
+     *  bounded backlog. A permit is taken before the job is submitted and released when the
+     *  run ends, so a submission that cannot be admitted is REFUSED immediately instead of
+     *  parking the request thread.
+     * :note: ``null`` when the scheduler was constructed over a caller-supplied operator,
+     *  whose admission policy belongs to that caller.
+     */
+    private final Semaphore admissions;
+
+    /**
      * :purpose: Construct the scheduler with a bounded asynchronous operator and the
      *  statement-generation job resolved by bean name.
      * :param jobRepository: batch job repository the operator records executions in.
      * :param statementGenerationJob: the ``statementGenerationJob`` batch job bean.
      * :param statementTextFile: configured default plain-text statement output name.
      * :param statementHtmlFile: configured default HTML statement output name.
+     * :param pathResolver: resolver used to validate a caller-supplied output name against
+     *  the configured batch output root before a run is submitted.
      */
     @Autowired
     public JobSchedulingConfig(JobRepository jobRepository,
@@ -118,9 +163,14 @@ public class JobSchedulingConfig {
                                @Value("${carddemo.batch.statement-text-file:statements.txt}")
                                String statementTextFile,
                                @Value("${carddemo.batch.statement-html-file:statements.html}")
-                               String statementHtmlFile) {
-        this(buildAsyncJobOperator(jobRepository), statementGenerationJob,
-                statementTextFile, statementHtmlFile);
+                               String statementHtmlFile,
+                               BatchOutputPathResolver pathResolver) {
+        this.admissions = new Semaphore(MAX_ADMITTED_JOBS);
+        this.jobOperator = buildAsyncJobOperator(jobRepository, this.admissions);
+        this.statementGenerationJob = statementGenerationJob;
+        this.statementTextFile = statementTextFile;
+        this.statementHtmlFile = statementHtmlFile;
+        this.pathResolver = pathResolver;
     }
 
     /**
@@ -130,35 +180,57 @@ public class JobSchedulingConfig {
      * :param statementGenerationJob: the ``statementGenerationJob`` batch job bean.
      * :param statementTextFile: configured default plain-text statement output name.
      * :param statementHtmlFile: configured default HTML statement output name.
+     * :param pathResolver: resolver used to validate a caller-supplied output name against
+     *  the configured batch output root before a run is submitted.
+     * :note: No admission bound is applied on this path: the supplied operator owns how
+     *  its runs are executed, so imposing a second bound here would silently refuse
+     *  submissions the caller's own executor was ready to accept.
      */
     public JobSchedulingConfig(JobOperator jobOperator,
                                Job statementGenerationJob,
                                String statementTextFile,
-                               String statementHtmlFile) {
+                               String statementHtmlFile,
+                               BatchOutputPathResolver pathResolver) {
         this.jobOperator = jobOperator;
         this.statementGenerationJob = statementGenerationJob;
         this.statementTextFile = statementTextFile;
         this.statementHtmlFile = statementHtmlFile;
+        this.pathResolver = pathResolver;
+        this.admissions = null;
     }
 
     /**
      * :purpose: Construct a {@link TaskExecutorJobOperator} bound to the batch job
-     *  repository and a bounded {@link SimpleAsyncTaskExecutor} whose threads are named
+     *  repository and a bounded {@link ThreadPoolTaskExecutor} whose threads are named
      *  ``statement-N``. The executor is decorated so the submitting request's correlation
-     *  id follows the job onto its worker thread.
+     *  id follows the job onto its worker thread and so the run's admission permit is
+     *  returned when it ends.
      * :param jobRepository: batch job repository the operator records executions in.
+     * :param admissions: permits governing how many submissions may be in flight.
      * :returns: a fully initialized asynchronous {@link JobOperator}.
      * :raises IllegalStateException: if the operator cannot be initialized, which would
      *  leave the statement job with no reachable submission surface.
+     * :note: A ``SimpleAsyncTaskExecutor`` with ``setConcurrencyLimit`` was used before.
+     *  Its limit is a THROTTLE, not a queue: ``execute`` BLOCKS the calling thread until a
+     *  slot frees, so a burst of submissions parked the HTTP request threads for tens of
+     *  seconds (measured p95 27.6 s, max 40.5 s) and neither returned promptly nor
+     *  refused. A pooled executor with a bounded queue never blocks the submitter, and the
+     *  admission permits turn an over-capacity submission into an immediate, frozen
+     *  refusal.
      */
-    private static JobOperator buildAsyncJobOperator(JobRepository jobRepository) {
+    private static JobOperator buildAsyncJobOperator(JobRepository jobRepository, Semaphore admissions) {
         TaskExecutorJobOperator operator = new TaskExecutorJobOperator();
         operator.setJobRepository(jobRepository);
-        SimpleAsyncTaskExecutor taskExecutor = new SimpleAsyncTaskExecutor("statement-");
-        taskExecutor.setTaskDecorator(new CorrelationIdTaskDecorator());
-        // SimpleAsyncTaskExecutor pools no threads, so without a limit each submission
-        // spawns a new thread and a burst of launches can exhaust memory.
-        taskExecutor.setConcurrencyLimit(MAX_CONCURRENT_JOBS);
+        ThreadPoolTaskExecutor taskExecutor = new ThreadPoolTaskExecutor();
+        taskExecutor.setThreadNamePrefix("statement-");
+        taskExecutor.setCorePoolSize(MAX_RUNNING_JOBS);
+        taskExecutor.setMaxPoolSize(MAX_RUNNING_JOBS);
+        taskExecutor.setQueueCapacity(MAX_QUEUED_JOBS);
+        // The queue is sized to the admission permits, so a task that passed admission can
+        // never be rejected by the pool; the default AbortPolicy therefore only ever fires
+        // if that invariant is broken, and is left in place as the fail-loud guard.
+        taskExecutor.setTaskDecorator(releasingDecorator(admissions));
+        taskExecutor.initialize();
         operator.setTaskExecutor(taskExecutor);
         // TaskExecutorJobOperator requires a non-null job locator to initialize, but this
         // operator is driven exclusively through start(Job, JobParameters), which resolves
@@ -173,6 +245,31 @@ public class JobSchedulingConfig {
             throw new IllegalStateException("Unable to initialize the statement job operator", ex);
         }
         return operator;
+    }
+
+    /**
+     * :purpose: Build the executor's task decorator: propagate the submitting request's
+     *  correlation id onto the worker thread, then return the run's admission permit once
+     *  the run has ended whatever its outcome.
+     * :param admissions: the permits to return.
+     * :returns: the composed {@link TaskDecorator}.
+     * :note: The release happens on the WORKER thread in a ``finally`` block, so a permit
+     *  is held for exactly as long as the run occupies the executor. Releasing at
+     *  submission time instead would make the bound meaningless, and releasing from the
+     *  request thread would release it before the run had even started.
+     */
+    private static TaskDecorator releasingDecorator(Semaphore admissions) {
+        TaskDecorator correlationIdDecorator = new CorrelationIdTaskDecorator();
+        return runnable -> {
+            Runnable correlated = correlationIdDecorator.decorate(runnable);
+            return () -> {
+                try {
+                    correlated.run();
+                } finally {
+                    admissions.release();
+                }
+            };
+        };
     }
 
     /**
@@ -217,8 +314,10 @@ public class JobSchedulingConfig {
      */
     public JobExecution launchStatementGeneration(String stmtFile, String htmlFile) {
         JobParameters jobParameters = new JobParametersBuilder()
-                .addString(PARAM_STMT_FILE, effectiveFile(stmtFile, statementTextFile))
-                .addString(PARAM_HTML_FILE, effectiveFile(htmlFile, statementHtmlFile))
+                .addString(PARAM_STMT_FILE,
+                        validatedFile(effectiveFile(stmtFile, statementTextFile), PARAM_STMT_FILE))
+                .addString(PARAM_HTML_FILE,
+                        validatedFile(effectiveFile(htmlFile, statementHtmlFile), PARAM_HTML_FILE))
                 // IDENTIFYING: statement generation only reads business data and rewrites
                 // its own two output files, so it is a repeatable print request. With a
                 // non-identifying id the report window became the instance key and a
@@ -230,12 +329,29 @@ public class JobSchedulingConfig {
         LOGGER.info("Submitting statementGenerationJob (stmtFile={}, htmlFile={})",
                 jobParameters.getString(PARAM_STMT_FILE), jobParameters.getString(PARAM_HTML_FILE));
 
+        // Admission control BEFORE the job instance is created, so an over-capacity
+        // submission leaves no execution record and is answered with the same frozen
+        // message the legacy screen showed when the TDQ write failed. The legacy
+        // initiator refused a submission it had no capacity for; it never held the
+        // terminal.
+        if (!admit()) {
+            LOGGER.warn("Refusing statementGenerationJob submission: {} submission(s) already in flight",
+                    MAX_ADMITTED_JOBS);
+            throw new CardDemoException(SUBMIT_FAILURE_MESSAGE);
+        }
+
         JobExecution jobExecution;
         try {
             jobExecution = jobOperator.start(statementGenerationJob, jobParameters);
         } catch (JobExecutionAlreadyRunningException | JobRestartException
                  | JobInstanceAlreadyCompleteException | InvalidJobParametersException e) {
+            // The run never reached the executor, so its permit must be returned here: the
+            // decorator that normally releases it only runs for a task that was submitted.
+            release();
             throw new CardDemoException(SUBMIT_FAILURE_MESSAGE, e);
+        } catch (RuntimeException e) {
+            release();
+            throw e;
         }
 
         // The operator returns normally even when the run itself failed, so the
@@ -255,6 +371,36 @@ public class JobSchedulingConfig {
     }
 
     /**
+     * :purpose: Refuse an output name that does not resolve inside the configured batch
+     *  output root, SYNCHRONOUSLY, before a job instance is created.
+     * :param fileName: the effective output name.
+     * :param parameterName: the job-parameter name, quoted in the refusal.
+     * :returns: the same name once it is proven resolvable.
+     * :raises CardDemoException: when the name escapes the root, names a directory, or
+     *  cannot be created — reported to the caller as a domain refusal.
+     * :note: The containment rule itself was already enforced, but only later, inside the
+     *  step-scoped writer factory. The caller therefore received ``202 ACCEPTED`` and the
+     *  run then failed with ``BeanCreationException: Error creating bean with name
+     *  'scopedTarget.statementCleanupListener' ...`` and a full stack trace persisted into
+     *  ``BATCH_JOB_EXECUTION.exit_message`` — internal Spring plumbing as the
+     *  operator-visible outcome of a bad parameter, and a spurious execution row for a run
+     *  that could never have produced a statement. Validating here refuses it the way every
+     *  other launch refusal is refused, and writes nothing to the batch metadata.
+     * :note: The resolver's own message is surfaced because it names the rejected VALUE and
+     *  nothing internal, so an operator can see which parameter was wrong.
+     */
+    private String validatedFile(String fileName, String parameterName) {
+        try {
+            pathResolver.resolveOutput(fileName);
+            return fileName;
+        } catch (IllegalArgumentException | java.io.UncheckedIOException e) {
+            LOGGER.error("Refusing statementGenerationJob submission: {} is not usable ({})",
+                    parameterName, e.getMessage());
+            throw new CardDemoException(e.getMessage(), e);
+        }
+    }
+
+    /**
      * :purpose: Choose the requested file name when supplied, else the configured default.
      * :param requested: the caller-supplied name, possibly null or blank.
      * :param configured: the configured default name.
@@ -262,6 +408,27 @@ public class JobSchedulingConfig {
      */
     private static String effectiveFile(String requested, String configured) {
         return (requested == null || requested.isBlank()) ? configured : requested.trim();
+    }
+
+    /**
+     * :purpose: Take one admission permit for a submission about to be made.
+     * :returns: ``true`` when the submission may proceed; ``false`` when the running job
+     *  plus the bounded backlog are already full.
+     * :note: Always ``true`` when the scheduler was constructed over a caller-supplied
+     *  operator, which owns its own admission policy.
+     */
+    private boolean admit() {
+        return admissions == null || admissions.tryAcquire();
+    }
+
+    /**
+     * :purpose: Return an admission permit taken for a submission that never reached the
+     *  executor.
+     */
+    private void release() {
+        if (admissions != null) {
+            admissions.release();
+        }
     }
 
 }

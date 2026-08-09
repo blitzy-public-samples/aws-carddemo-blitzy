@@ -59,11 +59,6 @@ USER spring
 # docker-compose routes to this port and health-checks /actuator/health here.
 EXPOSE 8080
 
-# Optional JVM tuning hook, empty by default: Java 21 is container-aware
-# (UseContainerSupport is on) and sizes the heap from the container memory limit
-# automatically. Override at runtime, e.g. -e JAVA_OPTS="-XX:MaxRAMPercentage=75.0".
-ENV JAVA_OPTS=""
-
 # Self-contained liveness probe for standalone `docker run` (docker-compose
 # defines and thus overrides its own). The probe uses bash's /dev/tcp
 # pseudo-device to issue a minimal HTTP request and assert the Actuator payload
@@ -74,9 +69,17 @@ ENV JAVA_OPTS=""
 HEALTHCHECK --interval=15s --timeout=5s --start-period=60s --retries=5 \
   CMD bash -c 'exec 3<>/dev/tcp/127.0.0.1/8080 && printf "GET /actuator/health HTTP/1.0\r\n\r\n" >&3 && cat <&3 | grep -q UP'
 
-# Exec-form entrypoint: `sh -c "exec java ..."` expands the optional JAVA_OPTS,
-# and `exec` replaces the shell so the JVM becomes PID 1 and receives SIGTERM
-# directly for graceful shutdown. Datasource, Redis, and the active profile are
-# supplied via environment variables (docker-compose.yml / Kubernetes) and read
-# by application.yml — nothing is hard-coded here.
+# Container-aware memory and GC policy. The value is IDENTICAL in all nine
+# service images and resolves against the memory limit the runtime declares
+# (docker-compose `deploy.resources.limits.memory`, Kubernetes
+# `resources.limits.memory`), so one artifact has one footprint everywhere.
+# Overridable at run time for a differently sized deployment.
+# Measurements and rationale: docs/decision-log.md section 40.
+ENV JAVA_OPTS="-XX:+UseContainerSupport -XX:InitialRAMPercentage=25.0 -XX:MaxRAMPercentage=60.0 -XX:+UseG1GC -XX:MaxGCPauseMillis=100"
+
+# Exec-form entrypoint: `sh -c "exec java ..."` expands JAVA_OPTS, and `exec`
+# replaces the shell so the JVM becomes PID 1 and receives SIGTERM directly for
+# graceful shutdown. Datasource, Redis, and the active profile are supplied via
+# environment variables (docker-compose.yml / Kubernetes) and read by
+# application.yml — nothing is hard-coded here.
 ENTRYPOINT ["sh", "-c", "exec java $JAVA_OPTS -jar /app/app.jar"]

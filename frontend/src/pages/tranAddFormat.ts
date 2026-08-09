@@ -8,11 +8,10 @@
  * :output: The named ``toAmountPicture`` and ``toMapDate`` helpers with their widths.
  */
 
+import { toSignedAmountPicture } from '../components/display';
+
 /** Integer digit count of the on-screen amount picture ``+99999999.99``. */
 export const AMOUNT_INTEGER_DIGITS = 8;
-
-/** Decimal digit count of the on-screen amount picture ``+99999999.99``. */
-export const AMOUNT_DECIMAL_DIGITS = 2;
 
 /** Width of the ``TORIGDTI`` / ``TPROCDTI`` map fields (``PIC X(10)``). */
 export const DATE_FIELD_WIDTH = 10;
@@ -26,18 +25,7 @@ export const DATE_FIELD_WIDTH = 10;
  * :returns: The twelve-character edited amount, for example ``+00000603.22``.
  */
 export function toAmountPicture(value: string): string {
-  const trimmed = value.trim();
-  const sign = trimmed.startsWith('-') ? '-' : '+';
-  const [whole = '', fraction = ''] = trimmed.replace(/^[-+]/, '').split('.');
-  const integerPart = whole
-    .replace(/\D/g, '')
-    .padStart(AMOUNT_INTEGER_DIGITS, '0')
-    .slice(-AMOUNT_INTEGER_DIGITS);
-  const fractionPart = fraction
-    .replace(/\D/g, '')
-    .padEnd(AMOUNT_DECIMAL_DIGITS, '0')
-    .slice(0, AMOUNT_DECIMAL_DIGITS);
-  return `${sign}${integerPart}.${fractionPart}`;
+  return toSignedAmountPicture(value, AMOUNT_INTEGER_DIGITS);
 }
 
 /**

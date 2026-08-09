@@ -94,6 +94,10 @@ jest.unstable_mockModule('./api/client', () => ({
   isApiError: (value: unknown): boolean => value instanceof MockApiError,
   generateCorrelationId: (): string => 'cid-app-routing-double',
   registerSessionExpiryHandler: (): (() => void) => (): void => undefined,
+  // The request-cancellation contract ``useApi`` binds to: the real scope hands the
+  // caller's AbortSignal to axios, and the double simply invokes the call.
+  runWithRequestSignal: (_signal: AbortSignal, call: () => unknown): unknown => call(),
+  isCancelledRequest: (): boolean => false,
 }));
 
 let App: () => ReactElement;
@@ -205,7 +209,7 @@ describe('App routing', () => {
     expect(screen.getByText(STANDARD_CAPTIONS.tran)).toBeInTheDocument();
     expect(screen.getByTestId('title01')).toBeInTheDocument();
     expect(
-      screen.getByRole('toolbar', { name: 'Function keys' }),
+      screen.getByRole('group', { name: 'Function keys' }),
     ).toBeInTheDocument();
   });
 
@@ -228,12 +232,16 @@ describe('App routing', () => {
       },
     );
 
-    it('carries no breadcrumb of the attempted screen on the sign-on redirect', async () => {
+    it('carries only the refusal reason, never a screen to resume from', async () => {
       renderAt('/cards');
       await expectScreen('COSGN00C');
-      // Entry begins at COSGN00 for every caller, so the redirect publishes no
-      // location state a later screen could resume from.
-      expect(screen.getByTestId('location-state')).toHaveTextContent('null');
+      // The redirect states WHY the sign-on screen is being presented, so it is not
+      // indistinguishable from an ordinary F3 sign-off. Entry still begins at COSGN00
+      // for every caller, so it publishes nothing a later screen could resume from.
+      const state = screen.getByTestId('location-state').textContent ?? '';
+      expect(JSON.parse(state)).toEqual({
+        screenMessage: 'Your session has ended. Please sign on again.',
+      });
     });
 
     it('resolves the entry route to the sign-on screen', async () => {

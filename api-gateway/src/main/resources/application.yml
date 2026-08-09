@@ -60,8 +60,12 @@ spring:
   # deprecated spring.cloud.gateway.mvc.routes).
   #
   # 8 downstream routes. Each downstream base URI is env-overridable so
-  # Compose/K8s can point at service DNS. Local defaults use the
-  # per-service host ports published by docker-compose.
+  # Compose/K8s can point at service DNS on the internal port 8080 (neither
+  # topology publishes a per-service host port). The defaults below are the
+  # WORKSTATION topology: with no profile active each service binds the matching
+  # port from its own application.yml (auth 8081 ... batch 8088), so a plain
+  # `mvn spring-boot:run` estate on one host is routable without any environment
+  # variable. The port map is documented in README-target.md.
   #
   # NOTE: /menu/** and /admin/** are deliberately ABSENT here - they are
   # served LOCALLY by MenuController (legacy CM00/CA00) and must NOT be
@@ -104,6 +108,39 @@ spring:
               uri: ${BATCH_SERVICE_URI:http://localhost:8088}
               predicates:
                 - Path=/batch/**
+
+  # ------------------------------------------------------------------
+  # Bounded upstream HTTP client (AVAILABILITY). Spring Cloud Gateway Server
+  # WebMVC owns no timeout property of its own: its proxy exchange is built
+  # from the Boot-managed RestClient.Builder, and its own
+  # GatewayHttpClientEnvironmentPostProcessor drives the SAME
+  # spring.http.clients.* namespace (it sets redirects and the imperative
+  # factory there). So these two keys are what bound a routed call.
+  #
+  # Without them the JDK HttpClient waits indefinitely. A downstream that is
+  # frozen rather than down - a container paused, a JVM in a stop-the-world
+  # pause, a host that black-holes packets - returned NOTHING: a client gave
+  # up after 90 seconds while a gateway thread stayed pinned to the dead
+  # upstream, and enough of those exhaust the thread pool and take the edge
+  # down with it. A refused connection was always answered promptly (503 via
+  # UpstreamFailureHandler) because the OS reports it immediately; only the
+  # frozen case hung.
+  #
+  # read-timeout is the ceiling for a whole routed response, so it must stay
+  # comfortably above the slowest legitimate call (the 200 ms p95 target of
+  # AAP 0.7.1, and the statement/report launches that answer synchronously)
+  # while still being a small multiple of it. On expiry the JDK client raises
+  # an IOException, Spring wraps it in ResourceAccessException, and
+  # UpstreamFailureHandler renders the same bounded 503 + Retry-After a
+  # refused connection produces.
+  #
+  # PROPERTY NAMES: spring.http.clients.* is the Boot 4.1 namespace;
+  # spring.http.client.* (singular) is deprecated since Boot 4.0 and binds
+  # without effect.
+  http:
+    clients:
+      connect-timeout: ${CARDDEMO_GATEWAY_CONNECT_TIMEOUT:2s}
+      read-timeout: ${CARDDEMO_GATEWAY_READ_TIMEOUT:10s}
 
 # --------------------------------------------------------------------
 # Session-cookie policy for the shared Spring Session cookie (CWE-614).

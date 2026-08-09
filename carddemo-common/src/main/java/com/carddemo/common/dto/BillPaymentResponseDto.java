@@ -26,7 +26,8 @@ import tools.jackson.databind.annotation.JsonSerialize;
  *  verbatim ``COBIL00C`` user-facing message, mirroring the ``COBIL00`` output map
  *  ``COBIL0AO`` and the program's confirm/preview/success paths.
  * :output: A mutable carrier with the account id, the balance to display, the
- *  generated transaction id (present only on a posted payment) and the message.
+ *  generated transaction id (present only on a posted payment) and the message, on
+ *  whichever of the two channels the outcome selects (see the member docstrings).
  */
 public class BillPaymentResponseDto {
 
@@ -40,8 +41,35 @@ public class BillPaymentResponseDto {
     /** :purpose: Generated 16-character zero-padded transaction id of a posted payment (``TRAN-ID`` PIC X(16)); null on preview/cancel. */
     private String transactionId;
 
-    /** :purpose: Verbatim user-facing message (COBIL00C confirm prompt, success banner, or blank on cancel). */
+    /**
+     * :purpose: Verbatim user-facing message of a turn that reached the account: the
+     *  confirm prompt ``Confirm to make a bill payment...`` (COBIL00C L237-239) or the
+     *  payment acknowledgement ``Payment successful.  Your Transaction ID is <id>.``
+     *  (L522-533). Blank on cancel.
+     * :note: The two are told apart by :attr:`transactionId`, which only the
+     *  acknowledgement carries -- never by reading the text. That also settles the
+     *  colour: L526 ``MOVE DFHGREEN TO ERRMSGC`` is the ONE site in the program that
+     *  overrides the declared ``ERRMSG COLOR=RED``, and it sits on that same
+     *  acknowledgement branch, so a populated ``message`` WITH a transaction id is the
+     *  GREEN send and WITHOUT one is a RED send.
+     */
     private String message;
+
+    /**
+     * :purpose: Verbatim user-facing message for an outcome the screen refuses while
+     *  still redisplaying its data and returning the cursor to ``ACTIDIN`` -- currently
+     *  only ``You have nothing to pay...`` (COBIL00C L200-203).
+     * :note: ``COBIL00`` declares ONE message field, ``ERRMSG POS=(23,1) COLOR=RED``,
+     *  and ``COBIL00C`` overrides its colour at exactly one site, ``MOVE DFHGREEN TO
+     *  ERRMSGC`` on the successful-payment branch (L526). The three in-band outcomes
+     *  therefore differ in colour AND in cursor target, and this member is what
+     *  separates the one that keeps the cursor on the account id from the two that
+     *  reached the account (see :attr:`message`): the refusal cursors ``ACTIDIN``
+     *  (L203) whereas the confirm prompt cursors ``CONFIRM`` (L239). Folding the prompt
+     *  in here would have forced the client to re-derive which outcome it was from the
+     *  balance. At most one of the two members is ever populated.
+     */
+    private String errorMessage;
 
     /**
      * :purpose: Create an empty response. Required for JSON (Jackson) serialization.
@@ -126,5 +154,21 @@ public class BillPaymentResponseDto {
      */
     public void setMessage(String message) {
         this.message = message;
+    }
+
+    /**
+     * :purpose: Return the verbatim message of an outcome reported as an error.
+     * :output: the ``errorMessage`` value.
+     */
+    public String getErrorMessage() {
+        return errorMessage;
+    }
+
+    /**
+     * :purpose: Set the verbatim message of an outcome reported as an error.
+     * :param errorMessage: the ``errorMessage`` value.
+     */
+    public void setErrorMessage(String errorMessage) {
+        this.errorMessage = errorMessage;
     }
 }

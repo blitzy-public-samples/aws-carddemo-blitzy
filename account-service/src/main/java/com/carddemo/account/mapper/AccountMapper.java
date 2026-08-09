@@ -124,7 +124,12 @@ public class AccountMapper {
             account.setAcctOpenDate(request.getAcctOpenDate());
             account.setAcctExpiraionDate(request.getAcctExpiraionDate());
             account.setAcctReissueDate(request.getAcctReissueDate());
-            account.setAcctGroupId(request.getAcctGroupId());
+            // ``ACCT-GROUP-ID PIC X(10)`` has no null: an unset group is SPACES, and the
+            // 3270 field returns spaces for an empty box. ``acct_group_id`` IS nullable,
+            // so writing the empty string a blank box submits would silently convert a
+            // stored NULL into '' on a save that changed nothing else. The absent value
+            // keeps its stored representation.
+            account.setAcctGroupId(blankToNull(request.getAcctGroupId()));
         }
         if (customer != null) {
             // Editable customer master fields (COACTUPC CUST-UPDATE-* preparation);
@@ -291,7 +296,12 @@ public class AccountMapper {
      * :returns: the value that must end up in the column.
      */
     private static String retainWhenMasked(String submitted, String stored) {
-        return PiiMasker.isMaskShaped(submitted) ? stored : submitted;
+        // Only the stored value's OWN mask is an echo. A mask character in any other value
+        // means the operator typed it: for the two numeric identifiers the update was
+        // already refused by AccountUpdateValidator.validateMaskedIdentifiers, and for the
+        // ``PIC X(20)`` government-issued id an asterisk is a legal character the legacy
+        // program would have stored, so the submitted value stands.
+        return PiiMasker.isMaskOf(submitted, stored) ? stored : submitted;
     }
 
     /**
@@ -305,5 +315,16 @@ public class AccountMapper {
      */
     private static BigDecimal scale2(BigDecimal value) {
         return value == null ? null : value.setScale(2, RoundingMode.DOWN);
+    }
+
+    /**
+     * :purpose: Reduce a value carrying nothing but whitespace to {@code null}, so a
+     *   nullable text column keeps its absent representation when the screen submits the
+     *   spaces a blank 3270 field returns.
+     * :param value: the submitted value; may be {@code null}.
+     * :returns: the value unchanged, or {@code null} when it is absent or all whitespace.
+     */
+    private static String blankToNull(String value) {
+        return value == null || value.trim().isEmpty() ? null : value;
     }
 }

@@ -46,21 +46,6 @@ public class PostingJobCompletionListener implements JobExecutionListener {
      */
     public static final String REJECT_COUNT_KEY = "posting.rejectCount";
 
-    /**
-     * :purpose: Exit code reported when the daily-transaction feed yielded no records.
-     *     ``CBTRN02C`` treats an unusable input as a hard failure (application result
-     *     code 12), never as a clean run. Set by the posting step, whose failure
-     *     Spring Batch propagates onto the job.
-     */
-    public static final String EMPTY_FEED_EXIT_CODE = "FAILED_EMPTY_FEED";
-
-    /**
-     * :purpose: Exit description carried with :data:`EMPTY_FEED_EXIT_CODE`, mapping
-     *     the legacy application result code 12.
-     */
-    public static final String EMPTY_FEED_EXIT_DESCRIPTION =
-            "Return code 12: the daily transaction feed contained no records";
-
     private static final Logger log = LoggerFactory.getLogger(PostingJobCompletionListener.class);
 
     /**

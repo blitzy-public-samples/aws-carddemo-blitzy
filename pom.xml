@@ -50,6 +50,13 @@
           declared below, so this property is inert in an ordinary build.
         -->
         <dependency-check-maven.version>13.0.0</dependency-check-maven.version>
+        <!--
+          JaCoCo code-coverage agent and reporter, pinned because it is NOT managed by
+          the Spring Boot BOM. Bound in every module (see <plugins> below) so
+          `mvn test` and `mvn verify` produce measurable coverage instead of leaving
+          untested branches invisible. Rationale: docs/decision-log.md, section 53.
+        -->
+        <jacoco-maven-plugin.version>0.8.15</jacoco-maven-plugin.version>
     </properties>
 
     <modules>
@@ -97,6 +104,17 @@
                   tests behave identically; a module that declares its own
                   systemPropertyVariables must repeat it. Plugin versions are inherited from the
                   Spring Boot parent BOM.
+
+                  CARDDEMO_PII_KEY is blanked in every test fork. PiiEncryptionKey resolves the
+                  environment variable BEFORE the system property and treats a blank value as
+                  absent, so an operator whose shell (or whose docker-compose/k8s-provisioned
+                  machine) exports the real key would otherwise silently outrank the fixture
+                  above - which is exactly how thirteen crypto and seeded-PII tests came to be
+                  skipped while the build still reported success. Blanking the variable makes the
+                  key deterministic for tests in every environment; no assumption can disable a
+                  security test. Nothing about production resolution changes: a deployed service
+                  reads the real variable and fails fast without it.
+                  Rationale: docs/decision-log.md, section 53.2.
                 -->
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
@@ -105,6 +123,9 @@
                         <systemPropertyVariables>
                             <carddemo.pii.key>Y2FyZGRlbW8tdGVzdC1waWkta2V5LTMyYnl0ZXMhISE=</carddemo.pii.key>
                         </systemPropertyVariables>
+                        <environmentVariables>
+                            <CARDDEMO_PII_KEY/>
+                        </environmentVariables>
                     </configuration>
                 </plugin>
                 <plugin>
@@ -114,7 +135,58 @@
                         <systemPropertyVariables>
                             <carddemo.pii.key>Y2FyZGRlbW8tdGVzdC1waWkta2V5LTMyYnl0ZXMhISE=</carddemo.pii.key>
                         </systemPropertyVariables>
+                        <environmentVariables>
+                            <CARDDEMO_PII_KEY/>
+                        </environmentVariables>
                     </configuration>
+                </plugin>
+
+                <!--
+                  Code-coverage instrumentation. The version is pinned by the
+                  ${jacoco-maven-plugin.version} property above because JaCoCo is not part
+                  of the Spring Boot BOM. The executions are declared here rather than in
+                  each module so every module measures coverage identically.
+
+                  prepare-agent writes -javaagent into the `argLine` property, which
+                  Surefire and Failsafe append to their forked JVM command line; no module
+                  sets argLine itself, so nothing is overwritten. The unit and integration
+                  tiers are measured into SEPARATE exec files and rendered as separate
+                  reports, so a branch covered only by a Testcontainers integration test is
+                  not mistaken for one covered by a unit test.
+                -->
+                <plugin>
+                    <groupId>org.jacoco</groupId>
+                    <artifactId>jacoco-maven-plugin</artifactId>
+                    <version>${jacoco-maven-plugin.version}</version>
+                    <executions>
+                        <!-- Unit tier: agent for Surefire, report after `test`. -->
+                        <execution>
+                            <id>jacoco-prepare-agent</id>
+                            <goals>
+                                <goal>prepare-agent</goal>
+                            </goals>
+                        </execution>
+                        <execution>
+                            <id>jacoco-report</id>
+                            <phase>test</phase>
+                            <goals>
+                                <goal>report</goal>
+                            </goals>
+                        </execution>
+                        <!-- Integration tier: agent for Failsafe, report after `verify`. -->
+                        <execution>
+                            <id>jacoco-prepare-agent-integration</id>
+                            <goals>
+                                <goal>prepare-agent-integration</goal>
+                            </goals>
+                        </execution>
+                        <execution>
+                            <id>jacoco-report-integration</id>
+                            <goals>
+                                <goal>report-integration</goal>
+                            </goals>
+                        </execution>
+                    </executions>
                 </plugin>
             </plugins>
         </pluginManagement>
@@ -131,6 +203,20 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-failsafe-plugin</artifactId>
+            </plugin>
+
+            <!--
+              Declared once here so coverage is measured build-wide. `mvn test` leaves
+              target/jacoco.exec and target/site/jacoco (HTML + XML + CSV) in every
+              module; `mvn verify` adds target/jacoco-it.exec and
+              target/site/jacoco-it for the Failsafe tier. The aggregator itself has no
+              sources, so its own report is empty by construction. Executions and
+              version are inherited from pluginManagement above. Rationale:
+              docs/decision-log.md, section 53.
+            -->
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
             </plugin>
         </plugins>
     </build>

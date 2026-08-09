@@ -195,7 +195,7 @@ public final class SecurityAuditLogger {
         if (request == null || request.getRequestURI() == null) {
             return UNKNOWN;
         }
-        return sanitize(SensitiveDataMasker.maskPan(request.getRequestURI()));
+        return sanitize(SensitiveDataMasker.maskPath(request.getRequestURI()));
     }
 
     /**

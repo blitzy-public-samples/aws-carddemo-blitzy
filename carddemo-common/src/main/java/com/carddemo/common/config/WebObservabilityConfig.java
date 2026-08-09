@@ -15,11 +15,16 @@
  */
 package com.carddemo.common.config;
 
+import jakarta.servlet.DispatcherType;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
+import tools.jackson.databind.ObjectMapper;
+import jakarta.servlet.DispatcherType;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.core.Ordered;
+import tools.jackson.databind.ObjectMapper;
 
 /**
  * :purpose: Web-only observability configuration that registers the shared
@@ -33,14 +38,12 @@ import org.springframework.core.Ordered;
  *        servlet filter. A service activates this configuration the same way it
  *        activates {@link ObservabilityConfig}: by ``@Import`` or by broadening
  *        component scanning to ``com.carddemo.common``.
- * :note: This library ships no ``META-INF`` auto-configuration import file, so the
- *        activation above is MANDATORY and is not applied automatically. A servlet
- *        module that neither imports this class nor declares its own
- *        {@link CorrelationIdFilter} ``@Component`` registers no correlation filter
- *        at all, and the ``correlationId`` MDC key rendered by its
- *        ``logback-spring.xml`` pattern stays permanently empty. Conversely, a module
- *        that already declares its own filter component must NOT import this class,
- *        or the filter would run twice per request.
+ * :note: The library's ``META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports``
+ *        lists this class, so a servlet module on the classpath activates it without doing
+ *        anything; the ``@Import`` or broadened component scan above is the alternative for a
+ *        module that disables auto-configuration. A module that already declares its own
+ *        {@link CorrelationIdFilter} ``@Component`` must NOT also import this class, or the
+ *        filter would run twice per request.
  */
 @AutoConfiguration
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
@@ -51,6 +54,17 @@ public class WebObservabilityConfig {
      *           filter (Spring Security included) so the ``correlationId`` MDC entry and the
      *           ``X-Correlation-Id`` response header are present for the whole request lifecycle.
      * :returns: the filter registration for {@link CorrelationIdFilter}.
+     * :note: Registered for the ``ERROR`` dispatch as well as ``REQUEST``. A registration bean
+     *        defaults to ``REQUEST`` alone, and with that default the container's ``ERROR``
+     *        dispatch -- which renders every ``sendError`` response, including the ones Spring
+     *        Security's request firewall and the servlet container raise before any handler is
+     *        selected -- would bypass this filter entirely, leaving
+     *        {@link CardDemoErrorController} with an empty correlation scope and emitting an error
+     *        envelope whose ``correlationId`` is null even though the caller already holds the id
+     *        from the ``X-Correlation-Id`` response header.
+     *        {@link CorrelationIdFilter#shouldNotFilterErrorDispatch()} returning ``false`` is a
+     *        necessary but NOT a sufficient condition: it only governs what the filter does once
+     *        invoked, never whether the container invokes it.
      */
     @Bean
     FilterRegistrationBean<CorrelationIdFilter> correlationIdFilterRegistration() {
@@ -59,6 +73,7 @@ public class WebObservabilityConfig {
         registration.addUrlPatterns("/*");
         registration.setName("correlationIdFilter");
         registration.setOrder(Ordered.HIGHEST_PRECEDENCE);
+        registration.setDispatcherTypes(DispatcherType.REQUEST, DispatcherType.ERROR);
         return registration;
     }
 
@@ -78,6 +93,42 @@ public class WebObservabilityConfig {
         registration.addUrlPatterns("/*");
         registration.setName("requestLoggingFilter");
         registration.setOrder(Ordered.HIGHEST_PRECEDENCE + 10);
+        return registration;
+    }
+
+    /**
+     * :purpose: Register the shared {@link DatastoreOutageErrorFilter} between the
+     *           correlation/access-log filters and Spring Session's
+     *           ``SessionRepositoryFilter``, so a session-store, datastore or transaction
+     *           outage is answered with the documented ``ErrorResponse`` envelope instead of
+     *           the servlet container's status page.
+     * :param objectMapperProvider: provider of the context's Jackson mapper, so the envelope
+     *           is serialized exactly as the exception-advice path serializes it; resolved
+     *           lazily so a context without Jackson still starts.
+     * :returns: the filter registration for {@link DatastoreOutageErrorFilter}.
+     * :note: The order is load-bearing. Spring Session registers its filter at
+     *        ``Integer.MIN_VALUE + 50`` for the ``REQUEST``, ``ERROR`` and ``ASYNC`` dispatcher
+     *        types, so a Redis failure repeats itself during the container's error dispatch and
+     *        the dispatch never reaches {@link CardDemoErrorController}. ``+ 20`` places this
+     *        filter outside the session filter (so it can answer the failure) and inside
+     *        {@link CorrelationIdFilter} at ``MIN_VALUE`` (so the envelope carries a correlation
+     *        id) and inside the access-log filter at ``+ 10`` (so one access record reports the
+     *        ``503`` this filter produced).
+     * :note: This is the ONE filter that answers an infrastructure outage at the filter layer.
+     *        It intercepts the whole ``DataAccessException`` family and
+     *        ``TransactionException``, unwrapping the cause chain a servlet filter may have
+     *        wrapped them in, writes ``503`` with ``Retry-After`` and the shared envelope, and
+     *        resets only the response BUFFER so the headers the outer filters already set
+     *        survive.
+     */
+    @Bean
+    FilterRegistrationBean<DatastoreOutageErrorFilter> datastoreOutageErrorFilterRegistration(
+            ObjectProvider<ObjectMapper> objectMapperProvider) {
+        FilterRegistrationBean<DatastoreOutageErrorFilter> registration =
+                new FilterRegistrationBean<>(new DatastoreOutageErrorFilter(objectMapperProvider));
+        registration.addUrlPatterns("/*");
+        registration.setName("datastoreOutageErrorFilter");
+        registration.setOrder(Ordered.HIGHEST_PRECEDENCE + 20);
         return registration;
     }
 }

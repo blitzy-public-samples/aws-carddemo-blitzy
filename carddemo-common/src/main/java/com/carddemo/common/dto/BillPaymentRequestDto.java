@@ -27,8 +27,21 @@ import jakarta.validation.constraints.Size;
  */
 public class BillPaymentRequestDto {
 
-    /** :purpose: Account id being paid (COBIL00 ``ACTIDIN`` / ``ACCT-ID`` PIC X(11)). */
-    @Size(max = 11, message = "Account number must be a non zero 11 digit number")
+    /**
+     * :purpose: Account id being paid (COBIL00 ``ACTIDIN``, ``LENGTH=11`` / ``ACCT-ID``
+     *  ``PIC 9(11)``, VSAM ``KEYLEN 11``). Deliberately carries NO bean-validation
+     *  width constraint: ``COBIL00C`` performs no numeric or width edit on this field
+     *  at all -- ``PROCESS-ENTER-KEY`` tests only for blank, then ``MOVE ACTIDINI TO
+     *  ACCT-ID`` and reads -- so every value the operator can enter that is not a
+     *  stored key produces exactly one outcome, ``Account ID NOT found...``. A width
+     *  constraint here answered a subset of those values with a second, different
+     *  message on a different status, and that message
+     *  (``'Account number must be a non zero 11 digit number'``) is an 88-level
+     *  ``COACTVWC``/``COACTUPC`` declare and neither program ever SETs, so it is not a
+     *  literal this screen -- or any screen -- can emit. ``BillPaymentService``
+     *  requires exactly eleven ASCII digits and raises the one reachable literal for
+     *  everything else.
+     */
     private String accountId;
 
     /**

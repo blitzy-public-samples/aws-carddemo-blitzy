@@ -24,10 +24,14 @@ import com.carddemo.auth.security.LoginAttemptService;
 import com.carddemo.common.domain.SecurityUser;
 import com.carddemo.common.dto.SessionAttributes;
 import com.carddemo.common.dto.SessionContext;
+import com.carddemo.common.exception.CardDemoException;
 import com.carddemo.common.security.SecurityAuditLogger;
 import com.carddemo.common.security.SessionPrincipalIndex;
+import com.carddemo.common.security.UserIdNormalizer;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpSession;
+import java.util.Collections;
+import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
 import org.springframework.dao.DataAccessException;
@@ -67,6 +71,15 @@ public class AuthenticationService {
      *  new user-facing string is introduced.
      */
     private static final String MSG_UNABLE_TO_VERIFY = "Unable to verify the User ...";
+
+    /**
+     * :purpose: Answer for a sign-on that arrives over a session already signed on as a
+     *  different user. The legacy screen could not be reached without ending the current
+     *  session first, so the sequence has no legacy literal; the request is refused and
+     *  the live session is left untouched rather than being destroyed.
+     */
+    private static final String MSG_ALREADY_SIGNED_ON =
+            "Already signed on. Sign off before signing on as another user.";
 
     /**
      * :purpose: Session attribute key under which the externalized
@@ -127,12 +140,32 @@ public class AuthenticationService {
      *  found, the password does not match, or the credential store cannot be read;
      *  ``429 TOO_MANY_REQUESTS`` while the user id is locked out after repeated
      *  failures.
+     * :raises CardDemoException: ``400 BAD_REQUEST`` when the request arrives over a
+     *  session already signed on as a DIFFERENT user; the live session is left intact.
+     * :note: The legacy sign-on screen was only ever reached by ending the current
+     *  session (``COSGN00C`` ``RETURN-TO-SIGNON-SCREEN``), so a sign-on never arrived
+     *  over a live one. A request that does is answered without touching the session:
+     *  the same principal signing on again is idempotent and gets the session it
+     *  already holds, and a different principal is refused. Rotating or invalidating
+     *  the session here cannot work — the api-gateway is a second Spring Session
+     *  participant holding the same record, so deleting its key mid-request makes the
+     *  gateway's own write-back fail and turns a verified sign-on into a 500 while
+     *  destroying a session that was valid.
      */
     @Transactional(readOnly = true)
     public SignonResponseDto signon(SignonRequestDto request, HttpServletRequest httpRequest) {
         String enteredUserId = request.getUserId();
-        String userId = enteredUserId == null ? "" : enteredUserId.trim().toUpperCase(Locale.ROOT);
+        String userId = UserIdNormalizer.normalizeToKey(enteredUserId);
         String rawPassword = request.getPassword();
+
+        SessionContext live = liveSessionContext(httpRequest);
+        if (live != null) {
+            if (!userId.equals(live.getUserId())) {
+                throw new CardDemoException(MSG_ALREADY_SIGNED_ON);
+            }
+            SecurityAuditLogger.authenticationSuccess(userId, httpRequest);
+            return signonMapper.toSignonResponse(live);
+        }
 
         if (loginAttemptService.isLocked(userId)) {
             SecurityAuditLogger.authenticationLocked(userId, httpRequest);
@@ -177,6 +210,21 @@ public class AuthenticationService {
     }
 
     /**
+     * :purpose: Read the sign-on context of a session that is already authenticated.
+     * :param httpRequest: the current HTTP request.
+     * :returns: the live {@link SessionContext}, or ``null`` when the request carries
+     *  no session or one that has not been signed on.
+     */
+    private SessionContext liveSessionContext(HttpServletRequest httpRequest) {
+        HttpSession existing = httpRequest.getSession(false);
+        if (existing == null) {
+            return null;
+        }
+        Object attribute = existing.getAttribute(SESSION_CONTEXT_ATTRIBUTE);
+        return attribute instanceof SessionContext context ? context : null;
+    }
+
+    /**
      * :purpose: Issue a fresh session id for the authenticated caller before any
      *  authenticated state is written to it, so a session id obtained before sign-on
      *  can never become an authenticated one.
@@ -186,19 +234,35 @@ public class AuthenticationService {
     private HttpSession rotateSession(HttpServletRequest httpRequest) {
         HttpSession existing = httpRequest.getSession(false);
         if (existing != null) {
-            String previousId = existing.getId();
-            httpRequest.changeSessionId();
-            HttpSession rotated = httpRequest.getSession(false);
-            if (rotated != null && !previousId.equals(rotated.getId())) {
-                return rotated;
-            }
-            if (rotated != null) {
-                // The container did not rotate the id (for example a wrapper without
-                // rotation support): invalidate and create a new session instead, so a
-                // pre-authentication id is never reused.
-                rotated.invalidate();
-            }
+            // Neither rotate nor invalidate a session record that reached this service on
+            // the shared session cookie. Every hop of the request holds its own live handle
+            // on that record -- the gateway that proxied this call as well as this service
+            // -- and each one saves its handle after the response is produced. Rotation
+            // DELETES the old entry, so the gateway's save then failed with
+            // "Session was invalidated" outside any exception handler: the caller was
+            // answered 500, and because the replacement id was never persisted every retry
+            // was answered 200 and then refused 401 forever. Reuse the record instead, and
+            // strip every attribute so that nothing written before sign-on survives into
+            // the authenticated session.
+            clearAttributes(existing);
+            return existing;
         }
+        // No session was presented, so sign-on mints a brand-new one with a fresh id: an
+        // id that existed before this sign-on can never become the authenticated one.
         return httpRequest.getSession(true);
+    }
+
+    /**
+     * :purpose: Remove every attribute from a session that is about to carry a new sign-on,
+     *  so no state written before the caller was authenticated survives into the
+     *  authenticated session.
+     * :param session: the session being reused.
+     * :returns: nothing; the session is emptied in place.
+     */
+    private void clearAttributes(HttpSession session) {
+        List<String> names = Collections.list(session.getAttributeNames());
+        for (String name : names) {
+            session.removeAttribute(name);
+        }
     }
 }

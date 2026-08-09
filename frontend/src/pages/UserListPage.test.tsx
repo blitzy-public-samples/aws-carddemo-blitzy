@@ -80,6 +80,10 @@ const signonMock =
 const navigationSpy = jest.fn<(pathname: string, state: unknown) => void>();
 
 jest.unstable_mockModule('../api', () => ({
+  // The request-cancellation contract ``useApi`` binds to: the real scope hands the
+  // caller's AbortSignal to axios, and the double simply invokes the call.
+  runWithRequestSignal: (_signal: AbortSignal, call: () => unknown): unknown => call(),
+  isCancelledRequest: (): boolean => false,
   // The session store and the REST hook this screen's module graph loads bind to
   // these barrel exports as well. ``getSessionIdentity`` is the production
   // ``GET /session`` probe the session harness drives; unanswered by this suite it
@@ -237,6 +241,14 @@ function errorText(): string {
 }
 
 /**
+ * :purpose: Read the line-23 region for a NON-failure outcome. A browse boundary or an empty result keeps the RED its mapset declares statically but is announced politely, so it is published with ``role="status"`` and carries the line-23 id.
+ * :returns: the notice text, or the empty string when none is published.
+ */
+function noticeText(): string {
+  return document.getElementById('screenMessageLine')?.textContent ?? '';
+}
+
+/**
  * :purpose: Read the line-23 informational region the shared shell renders. The shell
  *     also renders a visually hidden ``role="status"`` busy announcer, so the banner
  *     is matched on its own class rather than on the role alone.
@@ -253,7 +265,7 @@ function infoText(): string {
  * :returns: one legend caption per rendered function key.
  */
 function legendLabels(): (string | null)[] {
-  const toolbar = screen.getByRole('toolbar', { name: 'Function keys' });
+  const toolbar = screen.getByRole('group', { name: 'Function keys' });
   return within(toolbar)
     .getAllByRole('button')
     .map((key) => key.textContent);
@@ -377,7 +389,7 @@ describe('UserListPage — COUSR00 screen contract', () => {
     await renderScreen();
 
     expect(
-      screen.getByRole('heading', { level: 2, name: 'List Users' }),
+      screen.getByRole('heading', { level: 3, name: 'List Users' }),
     ).toBeInTheDocument();
 
     const searchField = screen.getByLabelText('Search User ID:');
@@ -410,7 +422,7 @@ describe('UserListPage — COUSR00 screen contract', () => {
     expect(screen.getByTestId('title01')).toHaveTextContent(CCDA_TITLE01);
     expect(screen.getByTestId('title02')).toHaveTextContent(CCDA_TITLE02);
     // The screen name lives in the body heading (BMS row 4), not in title02.
-    expect(screen.getByRole('heading', { level: 2, name: 'List Users' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 3, name: 'List Users' })).toBeInTheDocument();
     expect(errorText()).toBe('');
     expect(infoText()).toBe('');
   });
@@ -496,7 +508,7 @@ describe('UserListPage — ten rows per page (USER-REC OCCURS 10 TIMES)', () => 
     expect(pfKeyButton(PF8_LABEL)).toBeEnabled();
 
     await activatePfKey(PF7_LABEL);
-    expect(errorText()).toBe(ALREADY_TOP_MESSAGE);
+    expect(noticeText()).toBe(ALREADY_TOP_MESSAGE);
     expect(listUsersMock).toHaveBeenCalledTimes(1);
   });
 });
@@ -539,7 +551,7 @@ describe('UserListPage — PF7 / PF8 paging', () => {
 
     await activatePfKey(PF7_LABEL);
 
-    expect(errorText()).toBe(ALREADY_TOP_MESSAGE);
+    expect(noticeText()).toBe(ALREADY_TOP_MESSAGE);
     expect(listUsersMock).toHaveBeenCalledTimes(1);
     expect(displayedUserIds()[0]).toBe('USER0001');
 
@@ -560,7 +572,7 @@ describe('UserListPage — PF7 / PF8 paging', () => {
 
     await activatePfKey(PF8_LABEL);
 
-    expect(errorText()).toBe(ALREADY_BOTTOM_MESSAGE);
+    expect(noticeText()).toBe(ALREADY_BOTTOM_MESSAGE);
     expect(displayedUserIds()).toEqual(['USER0021', 'USER0022', 'USER0023']);
     expect(listUsersMock).toHaveBeenCalledTimes(3);
   });
@@ -764,6 +776,108 @@ describe('UserListPage — failed browse', () => {
     await renderScreen();
 
     expect(errorText()).toBe('Network Error');
+  });
+
+  /*
+   * Both of COUSR00C's paging-boundary branches publish their message with
+   * ``SET SEND-ERASE-NO TO TRUE`` and re-send the map (L252-L253, L275-L276), so the rows
+   * already painted stay on screen. `useApi` clears its data on a failure, which had left
+   * the operator with a header, a stale ``Page:`` counter and no rows -- and PF7 afterwards
+   * could not recover them because it is answered locally on page 1.
+   */
+  it('keeps the rows on screen when a browse fails after one succeeded', async () => {
+    await renderScreen();
+    const before = displayedUserIds();
+    expect(before).toHaveLength(EXPECTED_ROWS_PER_PAGE);
+
+    const body: ApiErrorResponse = {
+      timestamp: '2026-08-05T00:00:00Z',
+      status: 400,
+      error: 'Bad Request',
+      message: 'You are already at the bottom of the page...',
+      path: '/users',
+    };
+    listUsersMock.mockRejectedValueOnce(
+      new ApiError(400, 'Request failed with status code 400', body),
+    );
+    await activatePfKey('F8=Forward');
+
+    // A browse boundary is a notice, not a failure: it keeps the RED the mapset declares
+    // statically and is announced politely on the same line-23 region.
+    expect(noticeText()).toBe('You are already at the bottom of the page...');
+    expect(errorText()).toBe('');
+    expect(displayedUserIds()).toEqual(before);
+  });
+
+  /*
+   * The server decides whether a forward page exists by reading one row beyond the screen,
+   * as PROCESS-PAGE-FORWARD does (L307-L316). When it reports none, F8 is answered from
+   * the screen itself and no request is issued at all -- the boundary literal never comes
+   * back as a failure, so there is nothing for a failure handler to mishandle.
+   */
+  it('answers F8 locally, with no request, when the server reports no further page', async () => {
+    listUsersMock.mockReset();
+    listUsersMock.mockResolvedValue(pagedResponse(buildUsers(4), false, false, 1));
+    await renderScreen();
+    const before = displayedUserIds();
+    listUsersMock.mockClear();
+
+    await activatePfKey('F8=Forward');
+
+    expect(listUsersMock).not.toHaveBeenCalled();
+    expect(noticeText()).toBe('You are already at the bottom of the page...');
+    expect(errorText()).toBe('');
+    expect(displayedUserIds()).toEqual(before);
+  });
+});
+
+describe('UserListPage — the BMS row-9 runs are the column widths', () => {
+  it('declares the five column widths and holds the table to their total', async () => {
+    await renderScreen();
+
+    const table = screen.getByTestId('user-list-table');
+    expect(table.className).toContain('dataTable--fixed');
+    // 3 + 8 + 20 + 20 + 4 characters, one separator column each.
+    expect(table).toHaveStyle({ minWidth: '65ch' });
+
+    const cols = table.querySelectorAll('colgroup col');
+    expect(cols).toHaveLength(5);
+    expect(cols[0]).toHaveStyle({ width: '5ch' });
+    expect(cols[1]).toHaveStyle({ width: '10ch' });
+    expect(cols[2]).toHaveStyle({ width: '22ch' });
+    expect(cols[3]).toHaveStyle({ width: '22ch' });
+    // The last column carries no width so a wider frame hands it the slack.
+    expect(cols[4].getAttribute('style')).toBeNull();
+  });
+});
+
+describe('UserListPage — the rejected selection is the one row the program evaluated', () => {
+  /*
+   * COUSR00C's ``EVALUATE TRUE`` over SEL0001..SEL0010 is first-match-wins, so a second
+   * entry further down the page is never inspected. Marking every bad entry would assert a
+   * rejection the program never made. The marking is `aria-invalid` plus the accessible
+   * description of the line-23 message that produced it -- and nothing visible, because
+   * COUSR00C contains no ``MOVE DFHRED`` and no ``MOVE '*'`` at all.
+   */
+  it('marks only the first selected row, by flag and description, never by colour', async () => {
+    await renderScreen();
+    const ids = displayedUserIds();
+
+    fireEvent.change(screen.getByLabelText(`Select user ${ids[1]}`), {
+      target: { value: 'X' },
+    });
+    fireEvent.change(screen.getByLabelText(`Select user ${ids[3]}`), {
+      target: { value: 'Z' },
+    });
+    await pressEnter();
+
+    expect(errorText()).toBe('Invalid selection. Valid values are U and D');
+    const first = screen.getByLabelText(`Select user ${ids[1]}`);
+    const later = screen.getByLabelText(`Select user ${ids[3]}`);
+    expect(first).toHaveAttribute('aria-invalid', 'true');
+    expect(first.getAttribute('aria-describedby')).toContain('screenMessageLine');
+    expect(later).not.toHaveAttribute('aria-invalid');
+    expect(document.querySelectorAll('.fieldError')).toHaveLength(0);
   });
 });
 

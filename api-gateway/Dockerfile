@@ -46,7 +46,13 @@ EXPOSE 8080
 # JAVA_OPTS is an empty hook so heap/GC/flags can be tuned at deploy time
 # without rebuilding. SERVER_PORT keeps the Spring Boot port aligned with EXPOSE
 # and the compose mapping.
-ENV JAVA_OPTS=""
+# Container-aware memory and GC policy. The value is IDENTICAL in all nine
+# service images and resolves against the memory limit the runtime declares
+# (docker-compose `deploy.resources.limits.memory`, Kubernetes
+# `resources.limits.memory`), so one artifact has one footprint everywhere.
+# Overridable at run time for a differently sized deployment.
+# Measurements and rationale: docs/decision-log.md section 40.
+ENV JAVA_OPTS="-XX:+UseContainerSupport -XX:InitialRAMPercentage=25.0 -XX:MaxRAMPercentage=60.0 -XX:+UseG1GC -XX:MaxGCPauseMillis=100"
 ENV SERVER_PORT=8080
 
 # Shell form expands $JAVA_OPTS; `exec` makes java PID 1 so it receives SIGTERM

@@ -196,8 +196,14 @@ class ObservabilityEndpointsIT extends AbstractIntegrationTest {
         for (String closed : new String[]{"/actuator/env", "/actuator/beans", "/actuator/metrics"}) {
             assertThat(get(closed).statusCode()).as("anonymous %s", closed).isEqualTo(401);
         }
+        // The refusal carries the shared ErrorResponse envelope — one fixed operator sentence
+        // and a machine-readable code — and discloses nothing about the endpoint it protected.
         for (String closed : new String[]{"/actuator/env", "/actuator/beans"}) {
-            assertThat(get(closed).body()).as("body of %s", closed).isEmpty();
+            assertThat(get(closed).body()).as("body of %s", closed)
+                    .contains("\"status\":401")
+                    .contains("\"errorCode\":\"AUTHENTICATION_REQUIRED\"")
+                    .doesNotContain("Exception", "org.springframework", "spring.datasource",
+                            "CARDDEMO_PII_KEY", "requirepass", "dataSource");
         }
     }
 

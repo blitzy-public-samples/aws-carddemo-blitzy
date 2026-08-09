@@ -49,6 +49,7 @@ import com.carddemo.common.exception.OptimisticLockConflictException;
 import com.carddemo.common.exception.RecordNotFoundException;
 import com.carddemo.user.mapper.UserMapper;
 import com.carddemo.user.repository.UserRepository;
+import com.carddemo.common.security.UserIdNormalizer;
 
 import jakarta.persistence.OptimisticLockException;
 
@@ -85,6 +86,17 @@ public class UserService {
     /** :purpose: Fixed user-list page size, matching the legacy ``OCCURS 10 TIMES`` screen array. */
     private static final int PAGE_SIZE = 10;
 
+    /**
+     * :purpose: Rows fetched per browse: one screen plus the single look-ahead record
+     *     ``COUSR00C`` reads to decide ``CDEMO-CU00-NEXT-PAGE-FLG``.
+     * :note: ``PROCESS-PAGE-FORWARD`` fills ten rows and then performs one further
+     *     ``READNEXT``, setting ``NEXT-PAGE-YES`` only when that eleventh record exists
+     *     (L307-L316). Inferring the flag from the page being full instead reported a
+     *     forward page after a browse that ended exactly on a page boundary, and the
+     *     screen then asked for a page that was not there.
+     */
+    private static final int LOOK_AHEAD_SIZE = PAGE_SIZE + 1;
+
     private static final String MSG_INVALID_SELECTION = "Invalid selection. Valid values are U and D";
     private static final String MSG_ALREADY_TOP = "You are already at the top of the page...";
     private static final String MSG_ALREADY_BOTTOM = "You are already at the bottom of the page...";
@@ -93,26 +105,30 @@ public class UserService {
     private static final String MSG_REACHED_TOP = "You have reached the top of the page...";
     private static final String MSG_UNABLE_LOOKUP = "Unable to lookup User...";
 
+    /**
+     * :purpose: Request-payload property names published in ``ErrorResponse.fieldErrors``
+     *  so the screen marks and cursors to the control its edit refused, which is the
+     *  transport form of the legacy ``MOVE -1 TO <field>L``.
+     */
+    private static final String FIELD_FIRSTNAME = "firstName";
+
+    /** :purpose: ``fieldErrors`` key of the last-name property. */
+    private static final String FIELD_LASTNAME = "lastName";
+
+    /** :purpose: ``fieldErrors`` key of the user-id property. */
+    private static final String FIELD_USERID = "userId";
+
+    /** :purpose: ``fieldErrors`` key of the password property. */
+    private static final String FIELD_PASSWORD = "password";
+
+    /** :purpose: ``fieldErrors`` key of the user-type property. */
+    private static final String FIELD_USERTYPE = "userType";
+
     private static final String MSG_FIRST_NAME_EMPTY = "First Name can NOT be empty...";
     private static final String MSG_LAST_NAME_EMPTY = "Last Name can NOT be empty...";
     private static final String MSG_USER_ID_EMPTY = "User ID can NOT be empty...";
     private static final String MSG_PASSWORD_EMPTY = "Password can NOT be empty...";
     private static final String MSG_USER_TYPE_EMPTY = "User Type can NOT be empty...";
-
-    /**
-     * :purpose: Reported when the entered user type is neither of the two codes the legacy
-     *     role model defines (``CDEMO-USRTYP-ADMIN`` ``'A'`` / ``CDEMO-USRTYP-USER`` ``'U'``).
-     *     The 3270 map restricted the field to a single character and the value set was
-     *     enforced downstream, so this validation outcome has no legacy literal; the wording
-     *     follows the convention already used for the other value-set edits.
-     */
-    private static final String MSG_USER_TYPE_INVALID = "User Type must be A or U";
-
-    /** :purpose: ``SEC-USR-TYPE`` administrator code (``CDEMO-USRTYP-ADMIN``). */
-    private static final String USER_TYPE_ADMIN = "A";
-
-    /** :purpose: ``SEC-USR-TYPE`` regular-user code (``CDEMO-USRTYP-USER``). */
-    private static final String USER_TYPE_USER = "U";
 
     /** :purpose: SQL state PostgreSQL raises for a unique or primary-key violation. */
     private static final String SQL_STATE_UNIQUE_VIOLATION = "23505";
@@ -193,7 +209,8 @@ public class UserService {
      * :purpose: Perform the keyed read of a single security user, translating a data
      *     access failure to the browse/lookup failure outcome and an absent record to
      *     the not-found outcome.
-     * :param userId: the user id to look up; trimmed before the keyed read.
+     * :param userId: the user id to look up; folded to its canonical stored form before the
+     *     keyed read, so a caller may address a user under any casing.
      * :returns: the managed {@link SecurityUser} for ``userId``.
      * :raises RecordNotFoundException: when no user exists for ``userId``.
      * :raises CardDemoException: when the keyed read fails unexpectedly.
@@ -201,7 +218,7 @@ public class UserService {
     private SecurityUser readUser(String userId) {
         Optional<SecurityUser> found;
         try {
-            found = userRepository.findBySecUsrId(userId == null ? null : userId.trim());
+            found = userRepository.findBySecUsrId(UserIdNormalizer.normalize(userId));
         } catch (DataAccessException ex) {
             throw new CardDemoException(MSG_UNABLE_LOOKUP, ex);
         }
@@ -274,15 +291,17 @@ public class UserService {
         if (startUserId == null || startUserId.isBlank()) {
             return listUsers(0);
         }
-        List<SecurityUser> rows;
+        List<SecurityUser> found;
         try {
-            rows = userRepository.findBySecUsrIdGreaterThanEqualOrderBySecUsrIdAsc(
-                    startUserId.trim(), Pageable.ofSize(PAGE_SIZE));
+            found = userRepository.findBySecUsrIdGreaterThanEqualOrderBySecUsrIdAsc(
+                    UserIdNormalizer.normalize(startUserId), Pageable.ofSize(LOOK_AHEAD_SIZE));
         } catch (DataAccessException ex) {
             throw new CardDemoException(MSG_UNABLE_LOOKUP, ex);
         }
+        boolean hasFollowingRow = found.size() > PAGE_SIZE;
+        List<SecurityUser> rows = hasFollowingRow ? found.subList(0, PAGE_SIZE) : found;
         UserListResponseDto response = toListResponse(rows, 0);
-        response.setNextPage(rows.size() == PAGE_SIZE);
+        response.setNextPage(hasFollowingRow);
         if (rows.isEmpty()) {
             response.setMessage(MSG_REACHED_BOTTOM);
         }
@@ -299,18 +318,20 @@ public class UserService {
      */
     @Transactional(readOnly = true)
     public UserListResponseDto pageForward(String lastUserId) {
-        List<SecurityUser> next;
+        List<SecurityUser> found;
         try {
-            next = userRepository.findBySecUsrIdGreaterThanOrderBySecUsrIdAsc(lastUserId, Pageable.ofSize(PAGE_SIZE));
+            found = userRepository.findBySecUsrIdGreaterThanOrderBySecUsrIdAsc(
+                    UserIdNormalizer.normalize(lastUserId), Pageable.ofSize(LOOK_AHEAD_SIZE));
         } catch (DataAccessException ex) {
             throw new CardDemoException(MSG_UNABLE_LOOKUP, ex);
         }
-        if (next.isEmpty()) {
+        if (found.isEmpty()) {
             throw new CardDemoException(MSG_ALREADY_BOTTOM);
         }
+        boolean hasFollowingRow = found.size() > PAGE_SIZE;
+        List<SecurityUser> next = hasFollowingRow ? found.subList(0, PAGE_SIZE) : found;
         UserListResponseDto response = toListResponse(next, 0);
-        // A short page means the browse hit end-of-file, so PF8 can advance no further.
-        response.setNextPage(next.size() == PAGE_SIZE);
+        response.setNextPage(hasFollowingRow);
         if (next.size() < PAGE_SIZE) {
             response.setMessage(MSG_REACHED_BOTTOM);
         }
@@ -329,7 +350,8 @@ public class UserService {
     public UserListResponseDto pageBackward(String firstUserId) {
         List<SecurityUser> previous;
         try {
-            previous = userRepository.findBySecUsrIdLessThanOrderBySecUsrIdDesc(firstUserId, Pageable.ofSize(PAGE_SIZE));
+            previous = userRepository.findBySecUsrIdLessThanOrderBySecUsrIdDesc(
+                    UserIdNormalizer.normalize(firstUserId), Pageable.ofSize(PAGE_SIZE));
         } catch (DataAccessException ex) {
             throw new CardDemoException(MSG_UNABLE_LOOKUP, ex);
         }
@@ -387,26 +409,31 @@ public class UserService {
     @Transactional
     public UserWriteResponseDto addUser(AddUserRequestDto request) {
         if (request == null || isBlank(request.getFirstName())) {
-            throw new CardDemoException(MSG_FIRST_NAME_EMPTY);
+            throw new CardDemoException(MSG_FIRST_NAME_EMPTY).onField(FIELD_FIRSTNAME);
         }
         if (isBlank(request.getLastName())) {
-            throw new CardDemoException(MSG_LAST_NAME_EMPTY);
+            throw new CardDemoException(MSG_LAST_NAME_EMPTY).onField(FIELD_LASTNAME);
         }
         if (isBlank(request.getUserId())) {
-            throw new CardDemoException(MSG_USER_ID_EMPTY);
+            throw new CardDemoException(MSG_USER_ID_EMPTY).onField(FIELD_USERID);
         }
         String rawPassword = request.getPassword();
         if (isBlank(rawPassword)) {
-            throw new CardDemoException(MSG_PASSWORD_EMPTY);
+            throw new CardDemoException(MSG_PASSWORD_EMPTY).onField(FIELD_PASSWORD);
         }
         if (isBlank(request.getUserType())) {
-            throw new CardDemoException(MSG_USER_TYPE_EMPTY);
+            throw new CardDemoException(MSG_USER_TYPE_EMPTY).onField(FIELD_USERTYPE);
         }
-        requireKnownUserType(request.getUserType());
 
-        String userId = request.getUserId().trim();
+        // Folded to the canonical stored form BEFORE the duplicate check and before the insert.
+        // The legacy terminal's UCTRAN attribute made a lower-case id unrepresentable, and
+        // COSGN00C upper-cases the entered id at sign-on [app/cbl/COSGN00C.cbl:L132]; storing an
+        // id verbatim would let an administrator create a user that no sign-on could ever match,
+        // and would also let 'qat001' and 'QAT001' coexist as two rows the auth path cannot tell
+        // apart.
+        String userId = UserIdNormalizer.normalize(request.getUserId());
         if (userRepository.existsBySecUsrId(userId)) {
-            throw new CardDemoException(MSG_USER_ALREADY_EXISTS);
+            throw new CardDemoException(MSG_USER_ALREADY_EXISTS).onField(FIELD_USERID);
         }
 
         SecurityUser user = userMapper.toEntity(request);
@@ -431,22 +458,6 @@ public class UserService {
         String message = MSG_USER_PREFIX + userId + MSG_ADDED_SUFFIX;
         LOG.info(message);
         return toWriteResponse(saved, message);
-    }
-
-    /**
-     * :purpose: Confirm the entered user type is one of the two codes the role model
-     *     recognises, so a client-supplied value can never reach the ``chk_sec_usr_type``
-     *     database constraint and surface as a server error. Runs only after the legacy
-     *     presence edit, so an absent value still reports
-     *     ``'User Type can NOT be empty...'``.
-     * :param userType: the entered user type code.
-     * :raises CardDemoException: when the code is neither ``'A'`` nor ``'U'``.
-     */
-    private void requireKnownUserType(String userType) {
-        String candidate = userType == null ? null : userType.trim();
-        if (!USER_TYPE_ADMIN.equals(candidate) && !USER_TYPE_USER.equals(candidate)) {
-            throw new CardDemoException(MSG_USER_TYPE_INVALID);
-        }
     }
 
     /**
@@ -533,39 +544,59 @@ public class UserService {
      * :purpose: Update an existing security user (``COUSR02C`` / ``CU02``): validate the
      *     entered fields, read the current record, apply only the changed fields, re-encode
      *     the credential when it changes, and persist as one unit of work.
-     * :param userId: the user id to update (the lookup key, supplied in the path).
-     * :param request: the entered first name, last name, user type, and the raw password,
-     *     which is compared against the stored hash and re-encoded only when it changes;
-     *     never stored or logged in clear text.
+     * :param userId: the user id to update (the lookup key, supplied in the path); folded to its
+     *     canonical stored form, so the user may be addressed under any casing.
+     * :param request: the entered first name, last name, user type, and OPTIONALLY the raw
+     *     password. A supplied password is compared against the stored hash and re-encoded only
+     *     when it differs; an absent or blank one leaves the stored credential untouched, so a
+     *     name or role change is not also a forced credential reset. The raw value is never
+     *     stored or logged in clear text.
      * :returns: the updated user projection plus the verbatim ``COUSR02C`` outcome
      *     message ``'User <id> has been updated ...'``.
+     * :note: The password is optional on this call: an absent or blank value leaves the
+     *     stored credential untouched, so a name-only or role-only edit is possible even
+     *     though the hash is never sent to the client. A supplied value replaces the
+     *     credential only when it does not already match it.
      * :raises RecordNotFoundException: when no user exists for ``userId``.
-     * :raises CardDemoException: when a required field is empty, the user type is not a
-     *     recognised code, no field changed, or the update fails unexpectedly.
+     * :raises CardDemoException: when a required field is empty, no field changed, or the
+     *     update fails unexpectedly. A user type outside the two codes the role model
+     *     recognises is refused by the ``chk_sec_usr_type`` database constraint and
+     *     reported with the legacy write-failure literal.
      * :raises OptimisticLockConflictException: when another writer changed the same record
      *     between this read and the flush, so the two edits cannot both be applied.
      */
     @Transactional
     public UserWriteResponseDto updateUser(String userId, UpdateUserRequestDto request) {
         if (isBlank(userId)) {
-            throw new CardDemoException(MSG_USER_ID_EMPTY);
+            throw new CardDemoException(MSG_USER_ID_EMPTY).onField(FIELD_USERID);
         }
+        // Every later use of the id -- the keyed read, the session revocation key, and the outcome
+        // message -- must use the one canonical form, or a caller addressing the user in lower case
+        // would revoke sessions under a key no session was indexed by.
+        String normalizedUserId = UserIdNormalizer.normalize(userId);
         if (request == null || isBlank(request.getFirstName())) {
-            throw new CardDemoException(MSG_FIRST_NAME_EMPTY);
+            throw new CardDemoException(MSG_FIRST_NAME_EMPTY).onField(FIELD_FIRSTNAME);
         }
         if (isBlank(request.getLastName())) {
-            throw new CardDemoException(MSG_LAST_NAME_EMPTY);
+            throw new CardDemoException(MSG_LAST_NAME_EMPTY).onField(FIELD_LASTNAME);
         }
+        // COUSR02C L169 pre-fills PASSWD from SEC-USR-PWD under the mapset's DRK
+        // attribute, so the operator sees an empty box that already holds the current
+        // password; L227-228 then rewrites the credential only IF PASSWDI NOT =
+        // SEC-USR-PWD. Storing the password as a one-way hash (AAP 0.6.7) makes that
+        // pre-fill impossible: there is no plaintext to send, and shipping the hash to
+        // the browser would put credential material on the wire. An omitted password
+        // therefore carries the meaning the pre-fill gave it -- leave the credential
+        // alone -- which reproduces the legacy outcome that an update touching no
+        // password preserves it. The emptiness edit stays reachable on the add path,
+        // where COUSR01C L138 genuinely requires a password.
         String rawPassword = request.getPassword();
-        if (isBlank(rawPassword)) {
-            throw new CardDemoException(MSG_PASSWORD_EMPTY);
-        }
+        boolean passwordSupplied = !isBlank(rawPassword);
         if (isBlank(request.getUserType())) {
-            throw new CardDemoException(MSG_USER_TYPE_EMPTY);
+            throw new CardDemoException(MSG_USER_TYPE_EMPTY).onField(FIELD_USERTYPE);
         }
-        requireKnownUserType(request.getUserType());
 
-        SecurityUser user = readUser(userId);
+        SecurityUser user = readUser(normalizedUserId);
 
         boolean modified = false;
         if (!Objects.equals(request.getFirstName(), user.getSecUsrFname())) {
@@ -574,7 +605,13 @@ public class UserService {
         if (!Objects.equals(request.getLastName(), user.getSecUsrLname())) {
             modified = true;
         }
-        boolean passwordChanged = !passwordEncoder.matches(rawPassword, user.getSecUsrPwd());
+        // An absent password is not a change, and must not be mistaken for one: comparing a blank
+        // value against the stored hash would report "changed" and re-encode the blank as the new
+        // credential, locking the user out.
+        // The comparison runs only against a supplied value, so an omitted password can
+        // never be read as "differs from the stored hash" and can never trigger a write.
+        boolean passwordChanged =
+                passwordSupplied && !passwordEncoder.matches(rawPassword, user.getSecUsrPwd());
         if (passwordChanged) {
             modified = true;
         }
@@ -599,7 +636,7 @@ public class UserService {
             // outcome instead of silently overwriting the other writer's credential.
             saved = userRepository.saveAndFlush(user);
         } catch (ObjectOptimisticLockingFailureException | OptimisticLockException ex) {
-            LOG.warn("Optimistic lock conflict updating user {}", userId.trim());
+            LOG.warn("Optimistic lock conflict updating user {}", normalizedUserId);
             throw new OptimisticLockConflictException(ex);
         } catch (DataAccessException ex) {
             throw new CardDemoException(MSG_UNABLE_UPDATE, ex);
@@ -611,12 +648,12 @@ public class UserService {
         // role change is reported in preference to the credential change because it is
         // the authorization-relevant one.
         if (roleChanged) {
-            revokeSessions(userId, REASON_ROLE_CHANGED);
+            revokeSessions(normalizedUserId, REASON_ROLE_CHANGED);
         } else if (passwordChanged) {
-            revokeSessions(userId, REASON_CREDENTIAL_CHANGED);
+            revokeSessions(normalizedUserId, REASON_CREDENTIAL_CHANGED);
         }
 
-        String message = MSG_USER_PREFIX + userId.trim() + MSG_UPDATED_SUFFIX;
+        String message = MSG_USER_PREFIX + normalizedUserId + MSG_UPDATED_SUFFIX;
         LOG.info(message);
         return toWriteResponse(saved, message);
     }
@@ -633,10 +670,13 @@ public class UserService {
     @Transactional
     public void deleteUser(String userId) {
         if (isBlank(userId)) {
-            throw new CardDemoException(MSG_USER_ID_EMPTY);
+            throw new CardDemoException(MSG_USER_ID_EMPTY).onField(FIELD_USERID);
         }
+        // As on the update path: the revocation key and the log record must both use the canonical
+        // form the sessions were indexed under.
+        String normalizedUserId = UserIdNormalizer.normalize(userId);
 
-        SecurityUser user = readUser(userId);
+        SecurityUser user = readUser(normalizedUserId);
 
         try {
             userRepository.delete(user);
@@ -644,8 +684,8 @@ public class UserService {
             throw new CardDemoException(MSG_UNABLE_UPDATE, ex);
         }
 
-        revokeSessions(userId, REASON_USER_DELETED);
+        revokeSessions(normalizedUserId, REASON_USER_DELETED);
 
-        LOG.info(MSG_USER_PREFIX + userId.trim() + MSG_DELETED_SUFFIX);
+        LOG.info(MSG_USER_PREFIX + normalizedUserId + MSG_DELETED_SUFFIX);
     }
 }

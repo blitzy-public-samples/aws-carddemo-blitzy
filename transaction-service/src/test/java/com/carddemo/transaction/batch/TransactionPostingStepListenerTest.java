@@ -68,45 +68,47 @@ class TransactionPostingStepListenerTest {
     }
 
     /**
-     * :purpose: A run over a feed that holds no record fails the step with the legacy
-     *     return-code-12 exit status, so an empty feed can never be reported as a clean
-     *     posting cycle.
+     * :purpose: A run over a feed that holds no record COMPLETES with return code 0 and a
+     *     zero reject tally, exactly as ``CBTRN02C`` does: its read loop ends on the first
+     *     read, both DISPLAY lines report zero, and ``RETURN-CODE`` is raised to 4 only when
+     *     records were rejected — return code 12 belongs to the OPEN/READ failure paths that
+     *     ABEND the program [app/cbl/CBTRN02C.cbl L202-L234]. Failing the step instead paged
+     *     an operator for a no-transaction business day.
      */
     @Test
-    @DisplayName("an empty feed fails the step with return code 12")
-    void emptyFeedFailsTheStep() {
+    @DisplayName("an empty feed completes with return code 0 and a zero reject tally")
+    void emptyFeedCompletesWithReturnCodeZero() {
         TransactionPostingJob.RejectCountingStepListener listener =
                 new TransactionPostingJob.RejectCountingStepListener(() -> 0L);
         StepExecution stepExecution = stepExecution(BatchStatus.COMPLETED, 0L);
-        listener.beforeStep(stepExecution);
-
-        ExitStatus exitStatus = listener.afterStep(stepExecution);
-
-        assertThat(stepExecution.getStatus()).isEqualTo(BatchStatus.FAILED);
-        assertThat(exitStatus.getExitCode())
-                .isEqualTo(PostingJobCompletionListener.EMPTY_FEED_EXIT_CODE);
-        assertThat(exitStatus.getExitDescription())
-                .isEqualTo(PostingJobCompletionListener.EMPTY_FEED_EXIT_DESCRIPTION);
-    }
-
-    /**
-     * :purpose: A restart that resumes past the last consumed record reads nothing yet is
-     *     a correct, complete run: the feed still holds its records, so the empty-feed
-     *     verdict must not fire.
-     */
-    @Test
-    @DisplayName("a fully consumed restart is not reported as an empty feed")
-    void fullyConsumedRestartIsNotAnEmptyFeed() {
-        TransactionPostingJob.RejectCountingStepListener listener =
-                new TransactionPostingJob.RejectCountingStepListener(() -> 2L);
-        StepExecution stepExecution = stepExecution(BatchStatus.COMPLETED, 0L);
+        stepExecution.setExitStatus(ExitStatus.COMPLETED);
         listener.beforeStep(stepExecution);
 
         ExitStatus exitStatus = listener.afterStep(stepExecution);
 
         assertThat(stepExecution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
-        assertThat(exitStatus.getExitCode()).isNotEqualTo(
-                PostingJobCompletionListener.EMPTY_FEED_EXIT_CODE);
+        assertThat(exitStatus.getExitCode()).isEqualTo(ExitStatus.COMPLETED.getExitCode());
+        assertThat(stepExecution.getExecutionContext()
+                .getLong(PostingJobCompletionListener.REJECT_COUNT_KEY, -1L)).isZero();
+    }
+
+    /**
+     * :purpose: A restart that resumes past the last consumed record reads nothing yet is
+     *     a correct, complete run, and is reported exactly like any other clean run.
+     */
+    @Test
+    @DisplayName("a fully consumed restart completes cleanly")
+    void fullyConsumedRestartCompletesCleanly() {
+        TransactionPostingJob.RejectCountingStepListener listener =
+                new TransactionPostingJob.RejectCountingStepListener(() -> 2L);
+        StepExecution stepExecution = stepExecution(BatchStatus.COMPLETED, 0L);
+        stepExecution.setExitStatus(ExitStatus.COMPLETED);
+        listener.beforeStep(stepExecution);
+
+        ExitStatus exitStatus = listener.afterStep(stepExecution);
+
+        assertThat(stepExecution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
+        assertThat(exitStatus.getExitCode()).isEqualTo(ExitStatus.COMPLETED.getExitCode());
     }
 
     /**

@@ -15,9 +15,10 @@
  *     line-23 message region, and the line-24 function-key legend are published as
  *     chrome and rendered by the shared ``Layout``, not by this page.
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useLayoutEffect, useRef, useState } from 'react';
 import type { ReactElement } from 'react';
-import { useNavigate } from 'react-router';
+import { useLocation, useNavigate } from 'react-router';
+import { guardScreenMessage } from '../components/display';
 import { useScreenChrome } from '../components/Layout';
 import { invalidFieldProps } from '../components/ErrorBanner';
 import type { PFKeyDef } from '../components/PFKeyBar';
@@ -29,7 +30,7 @@ import {
   CCDA_MSG_THANK_YOU,
 } from '../types';
 import type { Role } from '../types';
-import { useFocusOnChange, useInitialFocus, useSession } from '../hooks';
+import { useFocusOnChange, useInitialFocus, useScreenAction, useSession } from '../hooks';
 import { ApiError, getAppId, getSysId } from '../api';
 
 /** CICS transaction id of the sign-on screen (``WS-TRANID``). */
@@ -115,6 +116,28 @@ const FAULTED_FIELD_BY_MESSAGE: Readonly<Record<string, 'userId' | 'password'>> 
   [MSG_WRONG_PASSWORD]: 'password',
 };
 
+/**
+ * :purpose: The field each ``COSGN00C`` message puts the cursor on, one entry per
+ *     ``MOVE -1 TO <field>L`` the program performs before it re-sends the map:
+ *     ``USERIDL`` for the blank user id (L121), the unknown user (L250) and the failed
+ *     verification (L255); ``PASSWDL`` for the blank password (L126) and the wrong
+ *     password (L244).
+ *
+ *     This is deliberately a second table rather than a reuse of
+ *     ``FAULTED_FIELD_BY_MESSAGE``: the two encode different decisions. ``MOVE -1`` is
+ *     where the operator resumes typing, whereas ``aria-invalid`` asserts that the value
+ *     in a control was rejected. ``MSG_UNABLE_TO_VERIFY`` separates them -- the read of
+ *     the security file failed, so no entered value is known to be wrong, yet the program
+ *     still returns the cursor to the user id.
+ */
+const CURSOR_FIELD_BY_MESSAGE: Readonly<Record<string, 'userId' | 'password'>> = {
+  [MSG_ENTER_USER_ID]: 'userId',
+  [MSG_USER_NOT_FOUND]: 'userId',
+  [MSG_UNABLE_TO_VERIFY]: 'userId',
+  [MSG_ENTER_PASSWORD]: 'password',
+  [MSG_WRONG_PASSWORD]: 'password',
+};
+
 /** HTTP status the api layer raises for a rejected credential. */
 const HTTP_UNAUTHORIZED = 401;
 
@@ -145,9 +168,16 @@ function resolveSignonError(error: unknown): string {
  * :output: The rendered sign-on form.
  */
 export default function SignonPage(): ReactElement {
+  const location = useLocation();
   const [userId, setUserId] = useState('');
   const [password, setPassword] = useState('');
-  const [errorMessage, setErrorMessage] = useState('');
+  // A guard that returned the caller here carries its reason in the navigation state,
+  // so the screen opens with that reason on line 23 instead of appearing for no
+  // stated cause. Read once, as the initial value: the operator's own next outcome
+  // replaces it, exactly as any other line-23 message is replaced.
+  const [errorMessage, setErrorMessage] = useState(() =>
+    guardScreenMessage(location.state),
+  );
 
   // The control the current line-23 message faults, mirroring ``MOVE -1 TO <field>L``.
   const faultedField = FAULTED_FIELD_BY_MESSAGE[errorMessage] ?? null;
@@ -155,8 +185,15 @@ export default function SignonPage(): ReactElement {
   const [plainText, setPlainText] = useState<string | undefined>(undefined);
 
   const navigate = useNavigate();
-  const { isAuthenticated, role, signIn, signOut } = useSession();
+  const { isAuthenticated, role, sessionNotice, clearSessionNotice, signIn, signOut } =
+    useSession();
   const { setChrome } = useScreenChrome();
+
+  // The row-23 region carries this screen's own edits first; when it has none, it
+  // reports why the operator is back here — a session that ended on its own is the one
+  // outcome no screen edit can produce, and the operator is told rather than silently
+  // returned to sign-on.
+  const screenMessage = errorMessage !== '' ? errorMessage : (sessionNotice ?? '');
 
   /**
    * Guard held in a ref rather than in state, so a second key press in the same
@@ -165,15 +202,34 @@ export default function SignonPage(): ReactElement {
    */
   const submitLatch = useRef(false);
 
-  // BMS ``IC`` on the USERID field, and the cursor the program returns there with
-  // its message (``MOVE -1 TO USERIDL``).
+  // The field this outcome returns the cursor to, resolved before the focus rules below.
+  const cursorField = CURSOR_FIELD_BY_MESSAGE[errorMessage] ?? null;
+
+  // BMS ``IC`` on the USERID field places the cursor on the first send.
   const userIdRef = useInitialFocus<HTMLInputElement>();
-  useFocusOnChange(errorMessage === '' ? null : errorMessage, userIdRef);
+  const passwordRef = useRef<HTMLInputElement>(null);
+
+  /*
+   * One rule per field, each armed only for the messages that name it, so the cursor
+   * lands where the program's own ``MOVE -1`` puts it instead of always returning to the
+   * user id. Entering a user id and pressing ENTER with the password still blank is the
+   * case the operator meets first: `COSGN00C` answers `Please enter Password ...` with
+   * the cursor on PASSWD, which is what advances the operator through the two fields.
+   * A message this screen did not raise names no field of its own -- the session-ended
+   * notice is the one such case -- and `COSGN00C` opens with the cursor on USERID, so it
+   * returns there.
+   */
+  useFocusOnChange(cursorField === 'userId' ? errorMessage : null, userIdRef);
+  useFocusOnChange(cursorField === 'password' ? errorMessage : null, passwordRef);
+  useFocusOnChange(errorMessage === '' && sessionNotice !== null ? sessionNotice : null, userIdRef);
 
   const handleSubmit = useCallback(async (): Promise<void> => {
     if (submitLatch.current) {
       return;
     }
+    // The operator has read why they are here and is acting on it, so the notice is
+    // withdrawn and this turn's own outcome owns the message region from here on.
+    clearSessionNotice();
     // Edit order and single-message behavior of COSGN00C PROCESS-ENTER-KEY.
     if (userId.trim() === '') {
       setErrorMessage(MSG_ENTER_USER_ID);
@@ -207,7 +263,7 @@ export default function SignonPage(): ReactElement {
       submitLatch.current = false;
       setSubmitting(false);
     }
-  }, [userId, password, role, signIn, navigate]);
+  }, [userId, password, role, signIn, navigate, clearSessionNotice]);
 
   /**
    * :purpose: Handle PF3 — end the session. ``COSGN00C`` moves
@@ -233,7 +289,22 @@ export default function SignonPage(): ReactElement {
     setPlainText(CCDA_MSG_THANK_YOU);
   }, [isAuthenticated, signOut]);
 
-  useEffect(() => {
+  // The activators published to the shared frame are identity-stable and always
+  // dispatch to the newest render's handler, so the line-24 legend is not rebuilt on
+  // every keystroke and an AID can never act on a value the screen has replaced.
+  const activateSubmit = useScreenAction((): void => {
+    void handleSubmit();
+  });
+  const activateExit = useScreenAction((): void => {
+    void handleExit();
+  });
+
+  // The frame's header, line-23 message region and line-24 key legend belong to the
+  // SAME map as this body, so they are published in a LAYOUT effect: a CICS program
+  // moved every field into the symbolic map before its one SEND, and nothing
+  // half-built ever reached the terminal. A passive effect would paint the frame
+  // once without them and then move it.
+  useLayoutEffect(() => {
     // The transaction has ended: the erased screen carries only the plain text, so
     // no header, no message region and no key legend are published with it.
     if (plainText !== undefined) {
@@ -244,17 +315,13 @@ export default function SignonPage(): ReactElement {
       {
         action: PfKeyAction.Enter,
         label: PF_ENTER_LABEL,
-        onActivate: () => {
-          void handleSubmit();
-        },
+        onActivate: activateSubmit,
         enabled: !submitting,
       },
       {
         action: PfKeyAction.PF3,
         label: PF_EXIT_LABEL,
-        onActivate: () => {
-          void handleExit();
-        },
+        onActivate: activateExit,
         enabled: !submitting,
       },
     ];
@@ -268,12 +335,19 @@ export default function SignonPage(): ReactElement {
       captionStyle: 'signon',
       appId: getAppId(),
       sysId: getSysId(),
-      errorMessage,
+      errorMessage: screenMessage,
       infoMessage: '',
       pfKeys,
       busy: submitting,
     });
-  }, [errorMessage, handleSubmit, handleExit, plainText, submitting, setChrome]);
+  }, [
+    activateExit,
+    activateSubmit,
+    screenMessage,
+    plainText,
+    setChrome,
+    submitting,
+  ]);
 
   // The screen is gone once the transaction has ended; the shell renders the plain
   // text in the erased frame.
@@ -327,6 +401,7 @@ export default function SignonPage(): ReactElement {
           {PASSWORD_CAPTION}
         </label>{' '}
         <input
+          ref={passwordRef}
           {...invalidFieldProps(faultedField === 'password')}
           id="password"
           name="password"
@@ -341,12 +416,16 @@ export default function SignonPage(): ReactElement {
         />{' '}
         <span className="label">{FIELD_WIDTH_HINT}</span>
       </div>
-
-      <div>
-        <button type="submit" disabled={submitting}>
-          Sign-on
-        </button>
-      </div>
+      {/*
+        No VISIBLE submit control is rendered in the screen body. `COSGN00.bms` declares two
+        entry fields and one row-24 legend field, `'ENTER=Sign-on  F3=Exit'`, so a button
+        beside the fields would be observable output the mapset does not declare and would
+        duplicate the key the shell already renders on line 24. The shell binds the physical
+        Enter key to that same key, which is what submits this form; the control below is
+        hidden from sight, from assistive technology and from keyboard navigation, and exists
+        only so the form still carries its own implicit submission.
+      */}
+      <button type="submit" hidden aria-hidden="true" tabIndex={-1} />
     </form>
   );
 }

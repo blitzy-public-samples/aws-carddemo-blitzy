@@ -24,11 +24,12 @@ import type {
   SignonRequestDto,
   SignonResponseDto,
   UserAddRequestDto,
-  UserDto,
+  UserAddResponseDto,
 } from '../types';
 
 /** Stable mock of the ``../api`` ``addUser`` export (``POST /users``). */
-const addUserMock = jest.fn<(request: UserAddRequestDto) => Promise<UserDto>>();
+const addUserMock =
+  jest.fn<(request: UserAddRequestDto) => Promise<UserAddResponseDto>>();
 
 /**
  * Stable mock of the ``../api`` ``signon`` export: the ``../hooks`` barrel pulls
@@ -67,6 +68,10 @@ class ApiError extends Error {
 }
 
 jest.unstable_mockModule('../api', () => ({
+  // The request-cancellation contract ``useApi`` binds to: the real scope hands the
+  // caller's AbortSignal to axios, and the double simply invokes the call.
+  runWithRequestSignal: (_signal: AbortSignal, call: () => unknown): unknown => call(),
+  isCancelledRequest: (): boolean => false,
   // The session store and the REST hook this screen's module graph loads bind to
   // these barrel exports as well. ``getSessionIdentity`` is the production
   // ``GET /session`` probe the session harness drives; unanswered by this suite it
@@ -162,11 +167,14 @@ const NEW_USER: UserAddRequestDto = {
 };
 
 /** Password-free user returned by a successful ``POST /users``. */
-const CREATED_USER: UserDto = {
+const CREATED_USER: UserAddResponseDto = {
   userId: NEW_USER.userId,
   firstName: NEW_USER.firstName,
   lastName: NEW_USER.lastName,
   userType: NEW_USER.userType,
+  // The real route returns the legacy banner here; null exercises the client-side
+  // fallback that composes it from the SERVER-normalized userId.
+  message: null,
 };
 
 /** Confirmation message built from the entered id (``'User ' + id + ...``). */
@@ -447,13 +455,48 @@ describe('UserAddPage — successful add (POST /users)', () => {
     expect(addUserMock).toHaveBeenCalledWith(NEW_USER);
     expect(messageText('status')).toBe(MSG_USER_ADDED);
   });
+
+  it('names the id the SERVICE stored, not the lower-case text that was typed', async () => {
+    // The service upper-cases SEC-USR-ID (COSGN00C L132 / the 3270 UCTRAN attribute),
+    // so a lower-case entry is stored upper-cased. Building the banner from the entered
+    // text would name an id that is NOT the one stored and make a correct normalization
+    // look broken to the operator.
+    const typedLowerCase = 'newuser1';
+    addUserMock.mockResolvedValue({ ...CREATED_USER, userId: 'NEWUSER1' });
+    renderAddUserScreen();
+
+    typeField(LABEL_FIRST_NAME, NEW_USER.firstName);
+    typeField(LABEL_LAST_NAME, NEW_USER.lastName);
+    typeField(LABEL_USER_ID, typedLowerCase);
+    typeField(LABEL_PASSWORD, NEW_USER.password);
+    typeField(LABEL_USER_TYPE, NEW_USER.userType);
+    await clickPfKey(PF_ENTER_LABEL);
+
+    expect(messageText('status')).toBe('User NEWUSER1 has been added ...');
+    expect(messageText('status')).not.toContain(typedLowerCase);
+  });
+
+  it('renders the verbatim banner the service returned when it supplies one', async () => {
+    // UserWriteResponseDto carries the legacy confirmation text; when present it is
+    // rendered as-is rather than recomposed on the client.
+    addUserMock.mockResolvedValue({
+      ...CREATED_USER,
+      message: 'User NEWUSER1 has been added ...',
+    });
+    renderAddUserScreen();
+
+    fillEveryField();
+    await clickPfKey(PF_ENTER_LABEL);
+
+    expect(messageText('status')).toBe('User NEWUSER1 has been added ...');
+  });
 });
 
 describe('UserAddPage — in-flight duplicate-add guard', () => {
   it('closes every entry field while the add is in flight and posts once for repeated ENTER', async () => {
-    let acknowledge!: (value: UserDto) => void;
+    let acknowledge!: (value: UserAddResponseDto) => void;
     addUserMock.mockReturnValueOnce(
-      new Promise<UserDto>((resolve) => {
+      new Promise<UserAddResponseDto>((resolve) => {
         acknowledge = resolve;
       }),
     );
@@ -483,6 +526,25 @@ describe('UserAddPage — in-flight duplicate-add guard', () => {
     expect(addUserMock).toHaveBeenCalledTimes(1);
     expect(screen.getByLabelText(LABEL_USER_ID)).toBeEnabled();
   });
+
+  it('posts once for three activations dispatched in the same task', async () => {
+    addUserMock.mockResolvedValue(CREATED_USER);
+    renderAddUserScreen();
+    fillEveryField();
+
+    // Nothing is awaited between the three activations, so React state has not
+    // advanced for any of them: only a synchronous latch can hold the keyboard.
+    const enterKey = screen.getByRole('button', { name: PF_ENTER_LABEL });
+    await act(async () => {
+      fireEvent.click(enterKey);
+      fireEvent.click(enterKey);
+      fireEvent.click(enterKey);
+      await Promise.resolve();
+    });
+
+    expect(addUserMock).toHaveBeenCalledTimes(1);
+    expect(addUserMock).toHaveBeenCalledWith(NEW_USER);
+  });
 });
 
 describe('UserAddPage — duplicate user id', () => {
@@ -510,7 +572,7 @@ describe('UserAddPage — line-24 function keys', () => {
     renderAddUserScreen();
 
     expect(
-      screen.getByRole('toolbar', { name: 'Function keys' }),
+      screen.getByRole('group', { name: 'Function keys' }),
     ).toBeInTheDocument();
     expect(
       screen.getByRole('button', { name: PF_ENTER_LABEL }),

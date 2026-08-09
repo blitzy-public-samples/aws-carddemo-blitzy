@@ -39,23 +39,28 @@ spring:
       # a second replica of anything.
       #
       # Sizing follows HikariCP's own guidance (a small pool served by a single
-      # PostgreSQL node sustains more throughput than a large one) and is sized for
-      # the 150-concurrent-user / p95 < 200 ms target of AAP 0.7.1: user requests are
-      # spread across seven online services and each connection is held only for the
-      # query itself, so eight connections per service is several times the
-      # per-service share of that load, and connection-timeout above bounds any queue
-      # wait to 3s rather than letting it hang. minimum-idle keeps the steady-state
-      # footprint at two connections per service (15 in total with the batch service)
-      # while the pool still grows to its ceiling under load.
+      # PostgreSQL node sustains more throughput than a large one) while carrying
+      # enough headroom for the 150-concurrent-user target of AAP 0.7.1. Eight was
+      # measured to be too small: a 150-user run recorded pool-acquisition TIMEOUTS
+      # (hikaricp_connections_timeout_total) on the read-heavy services, and a burst
+      # of twenty concurrent reads against a contended table exhausted the pool
+      # outright. Sixteen doubles the burst a single service can absorb before it
+      # queues, and connection-timeout above still bounds any queue wait to 3s rather
+      # than letting it hang. A request that STILL cannot acquire a connection is now
+      # reported as 503 with Retry-After rather than 500 (carddemo-common
+      # GlobalExceptionHandler), so saturation degrades gracefully instead of looking
+      # like a service fault. minimum-idle keeps the steady-state footprint at two
+      # connections per service (15 in total with the batch service) while the pool
+      # grows to its ceiling only under load.
       #
-      # Whole-deployment budget: ceiling 7 x 8 + 12 (batch) = 68, steady state 15,
+      # Whole-deployment budget: ceiling 7 x 16 + 12 (batch) = 124, steady state 15,
       # against the 200 max_connections configured for the PostgreSQL container
-      # (docker-compose.yml / k8s/deployment-postgres.yaml) - enough for two replicas
-      # of every service plus operator and monitoring sessions. Both values are
-      # environment-overridable so a larger replica count can be re-budgeted without
-      # rebuilding the image.
+      # (docker-compose.yml / k8s/deployment-postgres.yaml) - the steady state stays
+      # under 10% of the limit and the ceiling leaves 76 slots for operator and
+      # monitoring sessions. Both values are environment-overridable so a larger
+      # replica count can be re-budgeted without rebuilding the image.
       # ------------------------------------------------------------------
-      maximum-pool-size: ${SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE:8}
+      maximum-pool-size: ${SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE:16}
       minimum-idle: ${SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE:2}
       # Return connections acquired for a burst to the server within five minutes
       # instead of holding them for HikariCP's ten-minute default.
@@ -67,13 +72,23 @@ spring:
       # Flyway owns the schema; Hibernate only validates entity mapping.
       ddl-auto: validate
 
-  # Flyway applies the SHARED CardDemo migration set that ships in carddemo-common
-  # (classpath:db/migration) against the ONE shared flyway_schema_history table, so
-  # whichever service starts first provisions the business schema, the reference data
-  # and the Spring Batch metadata, and the rest find the migrations already applied.
-  # Rationale: docs/decision-log.md.
+  # Flyway is DISABLED here in every deployed environment. batch-service is the SINGLE
+  # migration owner; it applies the SHARED CardDemo migration set that ships in
+  # carddemo-common (classpath:db/migration) against the ONE shared history table
+  # (flyway_schema_history), and every service resolves that identical script set, so
+  # nothing is lost by not migrating here. Letting each service migrate meant the schema
+  # was provisioned by whichever container happened to win the race, and concurrent
+  # migrators contend on the shared history table and on cross-table foreign keys; the
+  # deployment topology already assumes a single owner (docker-compose.yml gates every
+  # other backend on batch-service reporting healthy, and Kubernetes uses the
+  # await-schema init container), so the configuration now matches it. This service only
+  # validates its entity mapping against the existing schema (hibernate.ddl-auto=validate).
+  # The default stays TRUE so a standalone `mvn verify`, whose Testcontainers PostgreSQL is
+  # private to this module, still provisions its own schema. baseline-on-migrate stays FALSE
+  # because the database is greenfield: V1 must run on an empty schema rather than being
+  # skipped past a synthetic baseline. Rationale: docs/decision-log.md.
   flyway:
-    enabled: true
+    enabled: ${SPRING_FLYWAY_ENABLED:true}
     locations: classpath:db/migration
     baseline-on-migrate: false
 
@@ -126,7 +141,16 @@ server:
         http-only: true
         same-site: strict
         secure: ${CARDDEMO_COOKIE_SECURE:true}
-  port: 8080
+  # Workstation (default-profile) HTTP port. Every DEPLOYED topology overrides it
+  # with SERVER_PORT=8080 - docker-compose.yml sets it in its shared backend
+  # environment and k8s/configmap.yaml supplies it to every pod - because the
+  # containers reach each other by DNS name on ONE internal port and publish none.
+  # The value here is therefore only for a `mvn spring-boot:run` estate on a
+  # developer workstation, where all eight services share one host and so cannot
+  # share one port: it is the port the api-gateway's OWN default route table
+  # already addresses (ACCOUNT_SERVICE_URI -> http://localhost:8083), and it is documented in
+  # README-target.md. Rationale: docs/decision-log.md.
+  port: ${SERVER_PORT:8083}
 
 # Observability (AAP 0.7.5): health/info/prometheus exposure plus
 # liveness/readiness probes for Kubernetes. The common 'application'

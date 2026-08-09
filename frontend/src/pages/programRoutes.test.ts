@@ -39,10 +39,14 @@ describe('resolveProgramRoute', () => {
     }
   });
 
-  it('covers exactly the fourteen menu programs and no others', () => {
+  it('covers every program either menu can dispatch, and no others', () => {
+    // The fourteen selectable options plus COSGN00C, which both menus move to
+    // CDEMO-TO-PROGRAM for PF3 (COMEN01C L96-98, COADM01C L96-98) and the selection
+    // endpoint now names as the dispatched program for that key.
     expect([...PROGRAM_SCREEN_ROUTES.keys()].sort()).toEqual(
-      [...MAIN_MENU_PROGRAMS, ...ADMIN_MENU_PROGRAMS].sort(),
+      [...MAIN_MENU_PROGRAMS, ...ADMIN_MENU_PROGRAMS, 'COSGN00C'].sort(),
     );
+    expect(resolveProgramRoute('COSGN00C')).toBe('/signon');
   });
 
   it('gives each card and user program its own screen, not a shared prefix', () => {

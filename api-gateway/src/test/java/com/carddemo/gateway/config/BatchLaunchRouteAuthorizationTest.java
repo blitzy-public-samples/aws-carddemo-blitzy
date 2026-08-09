@@ -147,4 +147,46 @@ class BatchLaunchRouteAuthorizationTest {
         mockMvc.perform(post("/batch/jobs/interestCalculationJob").with(csrf()))
                 .andExpect(status().isUnauthorized());
     }
+
+    /**
+     * :purpose: The POSTTRAN posting-job launch lives under the ``/transactions`` prefix the
+     *   online COTRN screens share, and it MOVES MONEY - it rewrites account balances and
+     *   inserts transaction rows. A signed-on ROLE_USER previously received ``202`` for it and
+     *   a real execution mutated balances, because the ``/transactions/**`` rule claimed the
+     *   path. The specific rule must precede it.
+     */
+    @Test
+    @DisplayName("a signed-on USER is refused the POSTTRAN posting-job launch surface")
+    void userIsRefusedThePostingJobLaunchSurface() throws Exception {
+        MockHttpSession session =
+                signedOnSession("USER0001", SessionContext.UserType.CDEMO_USRTYP_USER);
+
+        mockMvc.perform(post("/transactions/batch/jobs/transactionPostingJob")
+                        .param("postingDate", "2026-09-02").session(session).with(csrf()))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(get("/transactions/batch/jobs").session(session))
+                .andExpect(status().isForbidden());
+    }
+
+    /**
+     * :purpose: An administrator reaches the same surface (it routes downstream, so the slice
+     *   reports 404 rather than 403), and the ONLINE transaction surface stays open to a
+     *   signed-on user so the COTRN00C/COTRN01C/COTRN02C screens keep working.
+     */
+    @Test
+    @DisplayName("ADMIN reaches the posting-job surface and USER keeps the online transaction screens")
+    void adminReachesPostingSurfaceAndUserKeepsOnlineScreens() throws Exception {
+        MockHttpSession admin =
+                signedOnSession("ADMIN001", SessionContext.UserType.CDEMO_USRTYP_ADMIN);
+        mockMvc.perform(post("/transactions/batch/jobs/transactionPostingJob")
+                        .param("postingDate", "2026-09-02").session(admin).with(csrf()))
+                .andExpect(status().isNotFound());
+
+        MockHttpSession user =
+                signedOnSession("USER0001", SessionContext.UserType.CDEMO_USRTYP_USER);
+        mockMvc.perform(get("/transactions").session(user)).andExpect(status().isNotFound());
+        mockMvc.perform(get("/transactions/last").session(user)).andExpect(status().isNotFound());
+        mockMvc.perform(get("/transactions/0000000000683580").session(user))
+                .andExpect(status().isNotFound());
+    }
 }

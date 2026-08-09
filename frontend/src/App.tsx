@@ -21,9 +21,11 @@
  *     screen, re-expressing the ``COSGN00C`` sign-on transfer and the 3270's absence of
  *     a not-found state. Both hops use ``replace``, so neither leaves a history entry.
  */
+import { useEffect } from 'react';
 import type { ReactElement } from 'react';
 import { Navigate, Outlet, Route, Routes } from 'react-router';
 import Layout from './components/Layout';
+import { SESSION_ENDED_MESSAGE } from './api/messages';
 import { useSession } from './hooks';
 import type { Role } from './types';
 import { CDEMO_USRTYP_ADMIN, CDEMO_USRTYP_USER } from './types';
@@ -56,6 +58,22 @@ const ADMIN_MENU_ROUTE = '/admin';
 
 /** Entry route of the application, resolved by role rather than by a fixed screen. */
 const ENTRY_ROUTE = '/';
+
+/*
+ * The line-23 text a guard carries to the sign-on screen when it returns a caller whose
+ * session the server no longer honours — it expired, it was revoked when the caller's own
+ * privileges changed, or the caller deleted their own record. Without it the operator is
+ * put back on the sign-on screen with nothing said, which is indistinguishable from
+ * having pressed F3. The literal itself is shared with every other producer of this
+ * condition (``api/messages.ts``), so all of them report it in one wording.
+ */
+
+/**
+ * :purpose: Line-23 text carried to the main menu when a standard user reaches an
+ *     administrator-only screen. Verbatim ``COMEN01C`` L140, the literal that program
+ *     publishes for exactly this refusal, including its trailing spaces.
+ */
+const NO_ACCESS_MESSAGE = 'No access - Admin Only option... ';
 
 /**
  * :purpose: Text announced while the server identity probe is still outstanding, so a
@@ -131,7 +149,18 @@ function RequireAuth(): ReactElement {
   if (!isSessionResolved) {
     return <ResolvingSession />;
   }
-  return isAuthenticated ? <Outlet /> : <Navigate to={SIGNON_ROUTE} replace />;
+  if (isAuthenticated) {
+    return <Outlet />;
+  }
+  // The refusal carries its reason, so the sign-on screen can say why it is being
+  // presented rather than appearing for no stated cause.
+  return (
+    <Navigate
+      to={SIGNON_ROUTE}
+      replace
+      state={{ screenMessage: SESSION_ENDED_MESSAGE }}
+    />
+  );
 }
 
 /**
@@ -148,9 +177,61 @@ function RequireAdmin(): ReactElement {
     return <ResolvingSession />;
   }
   if (!isAuthenticated) {
-    return <Navigate to={SIGNON_ROUTE} replace />;
+    return (
+      <Navigate
+        to={SIGNON_ROUTE}
+        replace
+        state={{ screenMessage: SESSION_ENDED_MESSAGE }}
+      />
+    );
   }
-  return isAdmin ? <Outlet /> : <Navigate to={MAIN_MENU_ROUTE} replace />;
+  if (isAdmin) {
+    return <Outlet />;
+  }
+  // ``COMEN01C`` L137-142 answers an administrator-only option chosen by a standard
+  // user by re-sending the menu with its own refusal literal on line 23; the same
+  // literal travels with the guard's bounce so the refusal is never silent.
+  return (
+    <Navigate
+      to={MAIN_MENU_ROUTE}
+      replace
+      state={{ screenMessage: NO_ACCESS_MESSAGE }}
+    />
+  );
+}
+
+/**
+ * :purpose: Re-ask the server who the caller is whenever the document is restored
+ *     rather than loaded — a back-forward-cache restore, or a tab becoming visible
+ *     again. A restored document is reinstated with its rendered output intact and
+ *     issues no network request of its own, so a screen drawn before a sign-off would
+ *     otherwise keep showing account numbers, card numbers and customer details after
+ *     the session that authorized them had been revoked.
+ * :note: ``revalidate`` returns the session store to its pre-probe state before it
+ *     asks, so the guards render the waiting announcement and the protected screen is
+ *     unmounted for the whole round trip instead of staying on display until the
+ *     answer arrives.
+ */
+function useRestoreRevalidation(): void {
+  const { revalidate } = useSession();
+  useEffect(() => {
+    function onPageShow(event: PageTransitionEvent): void {
+      if (event.persisted) {
+        void revalidate();
+      }
+    }
+    function onVisibilityChange(): void {
+      if (document.visibilityState === 'visible') {
+        void revalidate();
+      }
+    }
+    window.addEventListener('pageshow', onPageShow);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      window.removeEventListener('pageshow', onPageShow);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, [revalidate]);
 }
 
 /**
@@ -158,6 +239,7 @@ function RequireAdmin(): ReactElement {
  * :returns: The rendered route tree.
  */
 export default function App(): ReactElement {
+  useRestoreRevalidation();
   return (
     <Routes>
       <Route element={<AppFrame />}>

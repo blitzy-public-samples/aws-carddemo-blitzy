@@ -25,11 +25,13 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import com.carddemo.common.constant.Messages;
 import com.carddemo.common.domain.CardXref;
 import com.carddemo.common.domain.Transaction;
 import com.carddemo.common.dto.SessionContext;
 import com.carddemo.common.dto.TransactionAddRequestDto;
 import com.carddemo.common.dto.TransactionAddResponseDto;
+import com.carddemo.common.dto.TransactionKeyDto;
 import com.carddemo.common.dto.TransactionListRequestDto;
 import com.carddemo.common.dto.TransactionListResponseDto;
 import com.carddemo.common.dto.TransactionViewResponseDto;
@@ -607,15 +609,21 @@ class TransactionServiceTest {
     class ViewTransaction {
 
         @Test
-        @DisplayName("a short numeric id is normalized to the 16-character zero-padded key")
-        void idIsNormalizedToTheStoredKey() {
+        @DisplayName("an unpadded id is read as typed and misses, never widened to a stored key")
+        void anUnpaddedIdIsNotWidenedToAStoredKey() {
+            // COTRN01C applies no edit to `TRNIDIN`: it performs `MOVE TRNIDINI TO TRAN-ID`
+            // (both PIC X(16)) and reads. `42` therefore reaches the read as `42`, blank-padded
+            // by BMS, and cannot equal `0000000000000042`. Zero-padding it here resolved a
+            // record the operator never named -- two different keys answering as one.
             when(transactionRepository.findById("0000000000000042"))
                     .thenReturn(Optional.of(transaction("0000000000000042")));
+            when(transactionRepository.findById("42")).thenReturn(Optional.empty());
 
-            TransactionViewResponseDto response = service.viewTransaction("42", null);
-
-            assertThat(response.getTranId()).isEqualTo("0000000000000042");
-            verify(transactionRepository).findById("0000000000000042");
+            assertThatThrownBy(() -> service.viewTransaction("42", null))
+                    .isInstanceOf(RecordNotFoundException.class)
+                    .hasMessage("Transaction ID NOT found...");
+            verify(transactionRepository).findById("42");
+            verify(transactionRepository, never()).findById("0000000000000042");
         }
 
         @Test
@@ -658,12 +666,38 @@ class TransactionServiceTest {
                     .hasMessage("Tran ID can NOT be empty...");
         }
 
+        @ParameterizedTest
+        @DisplayName("a digit run wider than the 16-character key misses the read instead of raising")
+        @ValueSource(strings = {"9999999999999999999", "12345678901234567", "99999999999999999999999999"})
+        void anOverWideDigitRunIsNotFound(String tranId) {
+            // TRAN-ID is PIC X(16) and TRNIDIN is sixteen characters wide, so a longer run is
+            // unenterable on the 3270 but still arrives over the wire. Normalizing the key as a
+            // numeric conversion overflowed `long` and surfaced as an unhandled HTTP 500 with a
+            // generic body -- the screen showed nothing at all. A run this wide cannot equal any
+            // sixteen-character key, so the correct outcome is the ordinary not-found path.
+            when(transactionRepository.findById(anyString())).thenReturn(Optional.empty());
+
+            assertThatThrownBy(() -> service.viewTransaction(tranId, null))
+                    .isInstanceOf(RecordNotFoundException.class)
+                    .hasMessage("Transaction ID NOT found...");
+        }
+
         @Test
         @DisplayName("an unknown id raises 'Transaction ID NOT found...' (404)")
         void unknownIdIsNotFound() {
             when(transactionRepository.findById(anyString())).thenReturn(Optional.empty());
 
             assertThatThrownBy(() -> service.viewTransaction("999", null))
+                    .isInstanceOf(RecordNotFoundException.class)
+                    .hasMessage("Transaction ID NOT found...");
+        }
+
+        @Test
+        @DisplayName("an id wider than the key is not found, not a parse failure")
+        void overlongNumericIdIsNotFound() {
+            when(transactionRepository.findById(anyString())).thenReturn(Optional.empty());
+
+            assertThatThrownBy(() -> service.viewTransaction("999999999999999999999", null))
                     .isInstanceOf(RecordNotFoundException.class)
                     .hasMessage("Transaction ID NOT found...");
         }
@@ -750,10 +784,10 @@ class TransactionServiceTest {
         @ParameterizedTest
         @DisplayName("a filter id starts the browse inclusively (STARTBR GTEQ semantics)")
         @CsvSource({
-                "5,    0000000000000004",
-                "1,    0000000000000000",
-                "0,    0000000000000000",
-                "1000, 0000000000000999"
+                "0000000000000005, 0000000000000004",
+                "0000000000000001, 0000000000000000",
+                "0000000000000000, 0000000000000000",
+                "0000000000001000, 0000000000000999"
         })
         void filterStartsTheBrowseInclusively(String filter, String expectedCursor) {
             TransactionListRequestDto request = new TransactionListRequestDto();
@@ -766,6 +800,43 @@ class TransactionServiceTest {
             assertThat(capturedForwardCursor()).isEqualTo(expectedCursor);
         }
 
+        @ParameterizedTest
+        @DisplayName("a filter that is not exactly sixteen digits raises 'Tran ID must be Numeric ...'")
+        @ValueSource(strings = {"99999999999999999999", "1111111111111111111",
+                "12345678901234567", "1000683580", "5", "\t", " 15 ", "15 ", " 15", "1 5", "\n"})
+        void aFilterOfTheWrongWidthIsRejected(String filter) {
+            // COTRN00C L206-L219 decides with `IF TRNIDINI IS NUMERIC` on a sixteen-column
+            // field, so only a full-width digit run passes: BMS blank-pads what the operator
+            // did not type, and a class test on an alphanumeric item is false as soon as one
+            // character is not a digit -- and it does not trim, so a value carrying a space or
+            // a tab fails it too. Trimming first made a tab indistinguishable from an
+            // unsupplied filter, so a discarded filter answered with the whole first page and
+            // reported success. Zero-padding a short run instead positioned the browse at the
+            // record its padded form names, and a run wider than the key is refused here rather
+            // than parsed, so no integral type is ever asked to hold a caller-supplied value.
+            TransactionListRequestDto request = new TransactionListRequestDto();
+            request.setTranIdFilter(filter);
+
+            assertThatThrownBy(() -> service.listTransactions(request, null))
+                    .isInstanceOf(CardDemoException.class)
+                    .hasMessage("Tran ID must be Numeric ...");
+            verifyNoInteractions(transactionRepository);
+        }
+
+        @ParameterizedTest
+        @DisplayName("a filter of SPACES or LOW-VALUES browses from the top")
+        @ValueSource(strings = {"", " ", "                "})
+        void anUnsuppliedFilterBrowsesFromTheTop(String filter) {
+            TransactionListRequestDto request = new TransactionListRequestDto();
+            request.setTranIdFilter(filter);
+            when(transactionRepository.findByTranIdGreaterThanOrderByTranIdAsc(anyString(),
+                    any(Pageable.class))).thenReturn(List.of());
+
+            service.listTransactions(request, null);
+
+            assertThat(capturedForwardCursor()).isEqualTo(LOW_SENTINEL);
+        }
+
         @Test
         @DisplayName("a non-numeric filter raises 'Tran ID must be Numeric ...'")
         void nonNumericFilterIsRejected() {
@@ -776,6 +847,36 @@ class TransactionServiceTest {
                     .isInstanceOf(CardDemoException.class)
                     .hasMessage("Tran ID must be Numeric ...");
             verifyNoInteractions(transactionRepository);
+        }
+
+        @ParameterizedTest
+        @ValueSource(strings = {
+                "99999999999999999",        // seventeen digits: one wider than the key
+                "999999999999999999999",    // twenty-one digits
+                "9999999999999999999999999999999999999999"
+        })
+        @DisplayName("a digit run wider than the sixteen-character key is rejected, not parsed")
+        void overlongNumericFilterIsRejected(String filter) {
+            TransactionListRequestDto request = new TransactionListRequestDto();
+            request.setTranIdFilter(filter);
+
+            assertThatThrownBy(() -> service.listTransactions(request, null))
+                    .isInstanceOf(CardDemoException.class)
+                    .hasMessage("Tran ID must be Numeric ...");
+            verifyNoInteractions(transactionRepository);
+        }
+
+        @Test
+        @DisplayName("a filter of exactly sixteen digits is accepted and starts the browse")
+        void sixteenDigitFilterIsAccepted() {
+            TransactionListRequestDto request = new TransactionListRequestDto();
+            request.setTranIdFilter("0000001001774260");
+            when(transactionRepository.findByTranIdGreaterThanOrderByTranIdAsc(anyString(),
+                    any(Pageable.class))).thenReturn(List.of());
+
+            service.listTransactions(request, null);
+
+            assertThat(capturedForwardCursor()).isEqualTo("0000001001774259");
         }
 
         @Test
@@ -802,6 +903,86 @@ class TransactionServiceTest {
             assertThat(response.getTransactions().get(0).getTranId()).isEqualTo("0000000000000001");
             assertThat(response.getTransactions().get(0).getTranAmt())
                     .isEqualTo(new BigDecimal("250.75"));
+        }
+
+        /**
+         * :purpose: ``COTRN00C`` evaluates ``EIBAID`` against exactly ENTER, PF3, PF7 and PF8 and
+         *   its ``WHEN OTHER`` branch reports ``CCDA-MSG-INVALID-KEY``
+         *   [app/cbl/COTRN00C.cbl:L129-L132]. An unrecognized action was previously treated as
+         *   ENTER, so a caller that mistyped a key was told nothing and was served the first page
+         *   it never asked for -- while the user list rejected the same mistake outright.
+         * :param action: an action the screen does not recognize.
+         */
+        @ParameterizedTest(name = "[{index}] action {0} reports the invalid-key banner")
+        @ValueSource(strings = {"BOGUS", "PF9", "PF12", "pf99", "ENTER2", "X"})
+        void unrecognizedActionReportsTheInvalidKeyBanner(String action) {
+            TransactionListRequestDto request = new TransactionListRequestDto();
+            request.setAction(action);
+
+            assertThatThrownBy(() -> service.listTransactions(request, null))
+                    .isInstanceOf(CardDemoException.class)
+                    .hasMessage(Messages.CCDA_MSG_INVALID_KEY);
+
+            // Rejected before any browse runs, so an unrecognized key costs no read.
+            verifyNoInteractions(transactionRepository);
+        }
+
+        /**
+         * :purpose: An ABSENT action is the screen's default, not an unrecognized key, and an
+         *   explicitly named ENTER means the same thing. Both must still list the first page.
+         * :param action: ``null`` (absent), empty, blank, or the explicit key name.
+         */
+        @ParameterizedTest(name = "[{index}] action {0} still lists the first page")
+        @ValueSource(strings = {"", "   ", "ENTER", "enter"})
+        void absentOrEnterActionStillListsTheFirstPage(String action) {
+            TransactionListRequestDto request = new TransactionListRequestDto();
+            request.setAction(action);
+            when(transactionRepository.findByTranIdGreaterThanOrderByTranIdAsc(anyString(),
+                    any(Pageable.class))).thenReturn(List.of(transaction("0000000000000001")));
+
+            TransactionListResponseDto response = service.listTransactions(request, null);
+
+            assertThat(response.getTransactions()).hasSize(1);
+        }
+
+        /**
+         * :purpose: A ``null`` action is the ordinary first-page request and must behave exactly
+         *   like an omitted one.
+         */
+        @Test
+        @DisplayName("a null action still lists the first page")
+        void nullActionStillListsTheFirstPage() {
+            TransactionListRequestDto request = new TransactionListRequestDto();
+            request.setAction(null);
+            when(transactionRepository.findByTranIdGreaterThanOrderByTranIdAsc(anyString(),
+                    any(Pageable.class))).thenReturn(List.of(transaction("0000000000000001")));
+
+            assertThat(service.listTransactions(request, null).getTransactions()).hasSize(1);
+        }
+
+        /**
+         * :purpose: Selecting a row must KEEP the page it was selected from on display.
+         *   ``COTRN00C``'s selection path re-sends the map without erasing it, so the operator
+         *   still sees those rows. Echoing an empty row list told the caller the page had gone
+         *   empty at the very moment they picked a row out of it.
+         */
+        @Test
+        @DisplayName("a row selection keeps the current page contents")
+        void rowSelectionKeepsTheCurrentPageContents() {
+            TransactionListRequestDto request = new TransactionListRequestDto();
+            request.setSelectionFlag("S");
+            request.setSelectedTranId("0000000000000002");
+            request.setTranIdFirst("0000000000000001");
+            when(transactionRepository.findByTranIdGreaterThanOrderByTranIdAsc(anyString(),
+                    any(Pageable.class))).thenReturn(List.of(
+                            transaction("0000000000000001"), transaction("0000000000000002")));
+
+            TransactionListResponseDto response = service.listTransactions(request, null);
+
+            assertThat(response.getSelectedTranId()).isEqualTo("0000000000000002");
+            assertThat(response.getTransactions())
+                    .as("the rows the caller selected from must still be on display")
+                    .hasSize(2);
         }
 
         @Test
@@ -1021,6 +1202,114 @@ class TransactionServiceTest {
             // COTRN00 renders the origination date as MM/DD/YY from the first ten
             // characters of the 26-character timestamp.
             assertThat(response.getTransactions().get(0).getTranDate()).isEqualTo("06/15/24");
+        }
+    }
+
+    @Nested
+    @DisplayName("resolveAddKey (COTRN02C VALIDATE-INPUT-KEY-FIELDS as its own step)")
+    class ResolveAddKey {
+
+        @Test
+        @DisplayName("a supplied account id resolves the card number from the cross-reference")
+        void accountIdResolvesTheCardNumber() {
+            stubAccountCrossReference();
+            TransactionKeyDto request = new TransactionKeyDto();
+            request.setAcctId("12345678901");
+
+            TransactionKeyDto resolved = service.resolveAddKey(request);
+
+            assertThat(resolved.getAcctId()).isEqualTo("12345678901");
+            assertThat(resolved.getTranCardNum()).isEqualTo(CARD_NUM);
+        }
+
+        @Test
+        @DisplayName("a supplied card number resolves the account id, zero-padded to its 11 digits")
+        void cardNumberResolvesThePaddedAccountId() {
+            when(cardXrefRepository.findByXrefCardNum(CARD_NUM))
+                    .thenReturn(Optional.of(new CardXref(CARD_NUM, 90L, 50L)));
+            TransactionKeyDto request = new TransactionKeyDto();
+            request.setTranCardNum(CARD_NUM);
+
+            TransactionKeyDto resolved = service.resolveAddKey(request);
+
+            // XREF-ACCT-ID is PIC 9(11) and ACTIDINI is eleven characters wide, so the
+            // resolved value is moved back into the map at its declared width.
+            assertThat(resolved.getAcctId()).isEqualTo("00000000050");
+            assertThat(resolved.getTranCardNum()).isEqualTo(CARD_NUM);
+        }
+
+        @Test
+        @DisplayName("the account id takes priority when both keys are supplied")
+        void accountIdTakesPriorityOverTheCardNumber() {
+            stubAccountCrossReference();
+            TransactionKeyDto request = new TransactionKeyDto();
+            request.setAcctId("12345678901");
+            request.setTranCardNum("9999999999999999");
+
+            assertThat(service.resolveAddKey(request).getTranCardNum()).isEqualTo(CARD_NUM);
+            verify(cardXrefRepository, never()).findByXrefCardNum(anyString());
+        }
+
+        @Test
+        @DisplayName("an unresolvable account id raises 'Account ID NOT found...' (404)")
+        void unresolvableAccountIdIsNotFound() {
+            when(cardXrefRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc(any()))
+                    .thenReturn(Optional.empty());
+            TransactionKeyDto request = new TransactionKeyDto();
+            request.setAcctId("99999999999");
+
+            // This is the literal the SPA could never reach while its own blank guards ran
+            // first: the legacy program performs this read BEFORE the eleven data-field
+            // guards, so an empty data field does not suppress it.
+            assertThatThrownBy(() -> service.resolveAddKey(request))
+                    .isInstanceOf(RecordNotFoundException.class)
+                    .hasMessage("Account ID NOT found...");
+        }
+
+        @Test
+        @DisplayName("an unresolvable card number raises 'Card Number NOT found...' (404)")
+        void unresolvableCardNumberIsNotFound() {
+            when(cardXrefRepository.findByXrefCardNum(anyString())).thenReturn(Optional.empty());
+            TransactionKeyDto request = new TransactionKeyDto();
+            request.setTranCardNum("9999999999999999");
+
+            assertThatThrownBy(() -> service.resolveAddKey(request))
+                    .isInstanceOf(RecordNotFoundException.class)
+                    .hasMessage("Card Number NOT found...");
+        }
+
+        @ParameterizedTest
+        @DisplayName("an account id wider than PIC 9(11) is refused by the numeric edit, not parsed")
+        @ValueSource(strings = {"999999999999", "99999999999999999999", "123456789012345678901"})
+        void anOverWideAccountIdIsRefused(String acctId) {
+            // Parsing the entry as a `long` overflowed past Long.MAX_VALUE and surfaced as an
+            // unhandled HTTP 500. XREF-ACCT-ID is PIC 9(11) and ACTIDIN is eleven characters
+            // wide, so a longer run is unenterable on the 3270 and cannot match a key; the
+            // numeric edit refuses it with its own verbatim message.
+            TransactionKeyDto request = new TransactionKeyDto();
+            request.setAcctId(acctId);
+
+            assertThatThrownBy(() -> service.resolveAddKey(request))
+                    .isInstanceOf(CardDemoException.class)
+                    .hasMessage("Account ID must be Numeric...");
+            verifyNoInteractions(cardXrefRepository);
+        }
+
+        @Test
+        @DisplayName("neither key supplied raises 'Account or Card Number must be entered...'")
+        void neitherKeyIsRejected() {
+            assertThatThrownBy(() -> service.resolveAddKey(new TransactionKeyDto()))
+                    .isInstanceOf(CardDemoException.class)
+                    .hasMessage("Account or Card Number must be entered...");
+            verifyNoInteractions(cardXrefRepository);
+        }
+
+        @Test
+        @DisplayName("a null request is rejected before any lookup")
+        void nullRequestIsRejected() {
+            assertThatThrownBy(() -> service.resolveAddKey(null))
+                    .isInstanceOf(CardDemoException.class);
+            verifyNoInteractions(cardXrefRepository);
         }
     }
 }

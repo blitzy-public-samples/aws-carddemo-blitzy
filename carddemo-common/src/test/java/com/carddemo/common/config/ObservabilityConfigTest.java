@@ -26,8 +26,10 @@ import io.micrometer.core.instrument.distribution.DistributionStatisticConfig;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationFilter;
+import io.micrometer.observation.ObservationHandler;
 import io.micrometer.observation.ObservationRegistry;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import org.junit.jupiter.api.DisplayName;
@@ -158,6 +160,110 @@ class ObservabilityConfigTest {
             assertThat(filtered.getLowCardinalityKeyValues()).contains(
                     KeyValue.of("outcome", "SUCCESS"),
                     KeyValue.of("application", "transaction-service"));
+        }
+    }
+
+    /**
+     * :purpose: Scenarios for the filter that keeps a card number out of the trace
+     *   pipeline, the one observability channel that stores a request URI verbatim.
+     */
+    @Nested
+    @DisplayName("sensitiveTraceAttributeMask")
+    class SensitiveTraceAttributeMask {
+
+        /**
+         * :purpose: ``http.url`` — the servlet convention's only high-cardinality key —
+         *   reaches the exporter with the PAN redacted to its last four digits.
+         */
+        @Test
+        @DisplayName("masks the card number in the http.url span attribute")
+        void masksCardNumberInHttpUrl() {
+            ObservationFilter filter = config.sensitiveTraceAttributeMask();
+            Observation.Context context = new Observation.Context();
+            context.addHighCardinalityKeyValue(KeyValue.of("http.url", "/cards/9000000000101107"));
+
+            Observation.Context filtered = filter.map(context);
+
+            assertThat(filtered.getHighCardinalityKeyValue("http.url").getValue())
+                    .isEqualTo("/cards/************1107");
+            assertThat(filtered.getHighCardinalityKeyValues())
+                    .doesNotContain(KeyValue.of("http.url", "/cards/9000000000101107"));
+        }
+
+        /**
+         * :purpose: Every high-cardinality key is redacted, not just ``http.url``, so a
+         *   client span or a future convention key is covered by the same rule.
+         */
+        @Test
+        @DisplayName("masks every high-cardinality value that carries a PAN-shaped digit run")
+        void masksEveryHighCardinalityValue() {
+            ObservationFilter filter = config.sensitiveTraceAttributeMask();
+            Observation.Context context = new Observation.Context();
+            context.addHighCardinalityKeyValue(KeyValue.of("http.url", "/cards/4111111111111111"));
+            context.addHighCardinalityKeyValue(KeyValue.of("url.full",
+                    "http://card-service:8080/cards/4111111111111111"));
+
+            Observation.Context filtered = filter.map(context);
+
+            assertThat(filtered.getHighCardinalityKeyValues()).containsExactlyInAnyOrder(
+                    KeyValue.of("http.url", "/cards/************1111"),
+                    KeyValue.of("url.full", "http://card-service:8080/cards/************1111"));
+        }
+
+        /**
+         * :purpose: Values with no PAN-shaped run are returned byte-for-byte, and the
+         *   LOW-cardinality key-values that form the metric label set are never touched,
+         *   so the templated ``uri`` tag and its cardinality contract are unchanged.
+         */
+        @Test
+        @DisplayName("leaves other values and all low-cardinality tags untouched")
+        void leavesUnaffectedValuesAlone() {
+            ObservationFilter filter = config.sensitiveTraceAttributeMask();
+            Observation.Context context = new Observation.Context();
+            context.addHighCardinalityKeyValue(KeyValue.of("http.url", "/accounts/00000000001"));
+            context.addLowCardinalityKeyValue(KeyValue.of("uri", "/cards/{cardNumber}"));
+            context.addLowCardinalityKeyValue(KeyValue.of("outcome", "SUCCESS"));
+
+            Observation.Context filtered = filter.map(context);
+
+            assertThat(filtered.getHighCardinalityKeyValues())
+                    .containsExactly(KeyValue.of("http.url", "/accounts/00000000001"));
+            assertThat(filtered.getLowCardinalityKeyValues()).containsExactlyInAnyOrder(
+                    KeyValue.of("uri", "/cards/{cardNumber}"),
+                    KeyValue.of("outcome", "SUCCESS"));
+        }
+
+        /**
+         * :purpose: The filter is exercised through a real registry so the ordering that
+         *   makes it work — convention key-values first, filters next, handlers last — is
+         *   asserted rather than assumed.
+         */
+        @Test
+        @DisplayName("redaction is applied before any handler observes the context")
+        void redactsBeforeHandlersRun() {
+            ObservationRegistry registry = ObservationRegistry.create();
+            List<String> observedByHandler = new ArrayList<>();
+            registry.observationConfig()
+                    .observationHandler(new ObservationHandler<Observation.Context>() {
+                        @Override
+                        public boolean supportsContext(Observation.Context context) {
+                            return true;
+                        }
+
+                        @Override
+                        public void onStop(Observation.Context context) {
+                            KeyValue url = context.getHighCardinalityKeyValue("http.url");
+                            observedByHandler.add(url == null ? null : url.getValue());
+                        }
+                    })
+                    .observationFilter(config.sensitiveTraceAttributeMask());
+
+            Observation.Context context = new Observation.Context();
+            Observation.createNotStarted("http.server.requests", () -> context, registry)
+                    .highCardinalityKeyValue("http.url", "/cards/9000000000101107")
+                    .observe(() -> { });
+
+            assertThat(observedByHandler).containsExactly("/cards/************1107");
         }
     }
 

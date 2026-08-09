@@ -211,19 +211,31 @@ public class AtomicRollbackIT {
 
         // A database-level rejection of one specific, in-width group id. The induced failure
         // must occur on the ACCOUNT write inside the service transaction, which is precisely
-        // what these cases assert rolls the customer write back with it; the constraint is
-        // dropped again in tearDown so it never leaks into another class.
+        // what these cases assert rolls the customer write back with it. The constraint is
+        // dropped again in tearDown so it never leaks into another class, and dropped here
+        // first as well so an interrupted run cannot make the next ADD fail on a name that
+        // is already taken (PostgreSQL has no ADD CONSTRAINT IF NOT EXISTS).
+        jdbcTemplate.execute("ALTER TABLE accounts DROP CONSTRAINT IF EXISTS "
+                + ROLLBACK_PROBE_CONSTRAINT);
         jdbcTemplate.execute("ALTER TABLE accounts ADD CONSTRAINT " + ROLLBACK_PROBE_CONSTRAINT
                 + " CHECK (acct_group_id IS NULL OR acct_group_id <> '" + REJECTED_GROUP_ID + "')");
-        cardXrefRepository.deleteAll();
-        cardXrefRepository.save(new CardXref(TEST_CARD_NUM, CUST_ID, ACCT_ID));
+
+        // Only the ONE cross-reference row this class needs is written, and only if the seed
+        // does not already carry it. The seeded rows are left in place: they are the linkage
+        // every sibling class in the fork reads, and deleting them made results depend on
+        // class order (docs/decision-log.md, section 53.6).
+        if (cardXrefRepository.findById(TEST_CARD_NUM).isEmpty()) {
+            cardXrefRepository.save(new CardXref(TEST_CARD_NUM, CUST_ID, ACCT_ID));
+        }
         assertThat(cardXrefRepository.findFirstByXrefAcctIdOrderByXrefCardNumAsc(ACCT_ID)).isPresent();
     }
 
     /**
-     * :purpose: Restore the seeded account and customer to their captured
-     *     original values and remove the seeded cross-reference, so the tests
-     *     remain isolated and pass repeatedly and in any order.
+     * :purpose: Leave the shared database exactly as this class found it: drop the probe
+     *     constraint, restore the seeded account and customer to their captured original
+     *     values, and remove the ONE cross-reference row this class wrote.
+     * :output: A fork state indistinguishable from the migrated seed, so the cases pass
+     *     repeatedly and in any class order.
      */
     @AfterEach
     void tearDown() {
@@ -235,6 +247,7 @@ public class AtomicRollbackIT {
                         + "cust_govt_issued_id = ?, cust_eft_account_id = ? WHERE cust_id = ?",
                 originalCustLastName, originalCustSsn, originalCustGovtIssuedId,
                 originalCustEftAccountId, CUST_ID);
+        jdbcTemplate.update("DELETE FROM card_xref WHERE xref_card_num = ?", TEST_CARD_NUM);
     }
 
     /**

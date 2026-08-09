@@ -18,6 +18,7 @@ package com.carddemo.card.controller;
 
 import com.carddemo.card.service.CardService;
 import com.carddemo.common.dto.CardDetailResponseDto;
+import com.carddemo.common.dto.CardKeyRequestDto;
 import com.carddemo.common.dto.CardListResponseDto;
 import com.carddemo.common.dto.CardUpdateRequestDto;
 import com.carddemo.common.dto.CardUpdateResponseDto;
@@ -29,7 +30,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 
 import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -56,6 +57,27 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/cards")
 public class CardController {
 
+    /**
+     * :purpose: ``WS-PROMPT-FOR-CARD`` — the literal ``1220-EDIT-CARD`` /
+     *  ``2220-EDIT-CARD`` report when no card key was supplied at all.
+     */
+    private static final String MSG_CARD_NOT_PROVIDED = "Card number not provided";
+
+    /**
+     * :purpose: The literal the card edits MOVE directly for a key that is present but not
+     *  sixteen digits. The mixed-case ``SEARCHED-CARD-NOT-NUMERIC`` 88-level both card
+     *  programs declare is never SET, so it is not text this service can report.
+     */
+    private static final String MSG_CARD_FILTER_NOT_NUMERIC =
+            "CARD ID FILTER,IF SUPPLIED MUST BE A 16 DIGIT NUMBER";
+
+    /**
+     * :purpose: The literal ``1210-EDIT-ACCOUNT`` / ``2210-EDIT-ACCOUNT`` MOVE directly for
+     *  a rejected account filter, for the same reason.
+     */
+    private static final String MSG_ACCT_FILTER_NOT_NUMERIC =
+            "ACCOUNT FILTER,IF SUPPLIED MUST BE A 11 DIGIT NUMBER";
+
     /** :purpose: Card feature business-logic service to which every request delegates. */
     private final CardService cardService;
 
@@ -70,9 +92,11 @@ public class CardController {
 
     /**
      * :purpose: List cards for the card-list screen (legacy ``COCRDLIC``, CICS ``CCLI``),
-     *  returning at most seven rows per page. Optional account and card-number filters
-     *  and admin-versus-user account scoping are applied by the service; forward and
-     *  backward paging (legacy PF8 / PF7) map to the one-based ``page`` parameter.
+     *  returning at most seven rows per page. The optional account and card-number filters
+     *  the operator typed are the only browse scope the service applies -- ``COCRDLIC``
+     *  ``9500-FILTER-RECORDS`` carries no user-type branch, so the browse is role independent
+     *  (decision log §19.1); forward and backward paging (legacy PF8 / PF7) map to the
+     *  one-based ``page`` parameter.
      * :param accountId: optional owning-account filter; when blank no account filter is
      *  applied.
      * :param cardNumber: optional exact card-number filter passed through to the service.
@@ -107,23 +131,30 @@ public class CardController {
     /**
      * :purpose: Read a single card for the card-detail screen (legacy ``COCRDSLC``,
      *  CICS ``CCDL``) by its sixteen-digit card number.
-     * :param cardNumber: the sixteen-digit card number path variable.
-     * :param accountId: the ``ACCTSID`` the screen collects alongside ``CARDSID``,
-     *  completing the composite selection; optional, and when supplied it must be a
-     *  non-zero eleven-digit number.
+     *
+     *  The key is submitted in the request BODY, which is why this read is a POST. A
+     *  card number is a Primary Account Number, and a URL -- path segment or query
+     *  string alike -- is written verbatim into every access log, proxy log and
+     *  distributed trace along the request path, so carrying it there would persist the
+     *  PAN in plaintext across the whole infrastructure. The request body is not
+     *  recorded by any of them. The read itself is unchanged and remains side-effect
+     *  free apart from the session-context update the pseudo-conversational flow
+     *  requires.
+     * :param key: the composite card key -- the sixteen-digit card number and the
+     *  optional ``ACCTSID`` that completes the selection; a supplied account id must be
+     *  a non-zero eleven-digit number.
      * :param httpRequest: the current servlet request; its already-established session,
      *  when present, carries the pseudo-conversational :java:type:`SessionContext`.
      * :returns: the card-detail response for the resolved card.
      * :raises CardDemoException: when the card number is not sixteen digits or the account
      *  number is not a non-zero eleven-digit value (translated to HTTP 400).
      */
-    @GetMapping("/{cardNumber}")
+    @PostMapping("/detail")
     public CardDetailResponseDto getCardDetail(
-            @PathVariable String cardNumber,
-            @RequestParam(name = "accountId", required = false) String accountId,
+            @RequestBody CardKeyRequestDto key,
             HttpServletRequest httpRequest) {
-        String validated = parseCardNumber(cardNumber);
-        Long acctIdFilter = parseAccountFilter(accountId);
+        String validated = parseCardNumber(key == null ? null : key.getCardNumber());
+        Long acctIdFilter = parseAccountFilter(key == null ? null : key.getAccountId());
         SessionContext ctx = resolveSessionContext(httpRequest);
         CardDetailResponseDto response = cardService.getCardDetail(validated, acctIdFilter);
         ctx.setCardNum(validated);
@@ -136,12 +167,12 @@ public class CardController {
      * :purpose: Update a card for the card-update screen (legacy ``COCRDUPC``, CICS
      *  ``CCUP``). The editable card fields are validated by the service and the update
      *  is applied as a single atomic transaction.
-     * :param cardNumber: the sixteen-digit card number path variable.
-     * :param accountId: the ``ACCTSID`` the screen collects alongside ``CARDSID``,
-     *  completing the composite selection; optional, and when supplied it must be a
-     *  non-zero eleven-digit number.
+     *  The addressed card number travels in the request body for the same reason the
+     *  detail read submits it there: a PAN must not be written into a URL, because every
+     *  access log, proxy and trace along the path records one.
      * :param request: the editable card fields (embossed name, active status, expiry
-     *  date, and CVV).
+     *  date, and CVV) together with the card number and optional account id that
+     *  address the record; a supplied account id must be a non-zero eleven-digit number.
      * :param httpRequest: the current servlet request; its already-established session,
      *  when present, carries the pseudo-conversational :java:type:`SessionContext`.
      * :returns: the card-update response reflecting the persisted card.
@@ -149,14 +180,12 @@ public class CardController {
      *  number is not a non-zero eleven-digit value, or a card field fails a validation
      *  edit (translated to HTTP 400).
      */
-    @PutMapping("/{cardNumber}")
+    @PutMapping
     public CardUpdateResponseDto updateCard(
-            @PathVariable String cardNumber,
-            @RequestParam(name = "accountId", required = false) String accountId,
             @Valid @RequestBody CardUpdateRequestDto request,
             HttpServletRequest httpRequest) {
-        String validated = parseCardNumber(cardNumber);
-        Long acctIdFilter = parseAccountFilter(accountId);
+        String validated = parseCardNumber(request == null ? null : request.getCardNumber());
+        Long acctIdFilter = parseAccountFilter(request == null ? null : request.getAccountId());
         SessionContext ctx = resolveSessionContext(httpRequest);
         CardUpdateResponseDto response =
                 cardService.updateCard(validated, acctIdFilter, request, ctx);
@@ -173,29 +202,44 @@ public class CardController {
      * :raises CardDemoException: when the card number is null or not sixteen digits.
      */
     private String parseCardNumber(String cardNumber) {
-        if (cardNumber == null || !cardNumber.trim().matches("\\d{16}")) {
-            throw new CardDemoException("Card number if supplied must be a 16 digit number");
+        String trimmed = cardNumber == null ? "" : cardNumber.trim();
+        // 1220-EDIT-CARD / 2220-EDIT-CARD split the rejection in two, and each branch has
+        // its own literal. An absent or all-zero key takes the blank branch
+        // (WS-PROMPT-FOR-CARD); anything else that is not sixteen digits takes the
+        // IS NOT NUMERIC branch, whose text the program MOVEs directly. The mixed-case
+        // SEARCHED-CARD-NOT-NUMERIC 88-level both programs declare is never SET, so it is
+        // not a message this service can legitimately report.
+        if (trimmed.isEmpty() || trimmed.matches("0+")) {
+            throw new CardDemoException(MSG_CARD_NOT_PROVIDED);
         }
-        return cardNumber.trim();
+        if (!trimmed.matches("\\d{16}")) {
+            throw new CardDemoException(MSG_CARD_FILTER_NOT_NUMERIC);
+        }
+        return trimmed;
     }
 
     /**
      * :purpose: Convert the optional account-filter query parameter to the numeric type
-     *  the service expects, applying the legacy one-to-eleven digit edit at the type
-     *  boundary. A null or blank value yields no filter; the value is neither reformatted
-     *  nor zero-padded.
+     *  the service expects, applying the legacy account-filter edit at the type
+     *  boundary — the one place the raw digit run is still visible. A null or blank
+     *  value yields no filter; the value is neither reformatted nor zero-padded.
      * :param accountId: the raw account-filter query parameter, or ``null``.
      * :returns: the parsed account-id filter, or ``null`` when no filter was supplied.
-     * :raises CardDemoException: when a supplied value is not a one-to-eleven digit
-     *  number.
+     * :raises CardDemoException: when a supplied value is not exactly eleven ASCII digits.
+     * :note: The width is EXACT. ``COCRDLIC``/``COCRDSLC``/``COCRDUPC`` all receive the
+     *  filter in a ``PIC X(11)`` map field and test ``IF CC-ACCT-ID IS NOT NUMERIC``
+     *  (``COCRDSLC`` L665), which is true unless every one of the eleven characters is a
+     *  digit; BMS blank-pads the untyped positions, so a shorter run is refused. The
+     *  service takes a ``Long``, which cannot tell ``1`` from ``00000000001``, so this
+     *  boundary is the only place the rule can be enforced.
      */
     private Long parseAccountFilter(String accountId) {
         if (accountId == null || accountId.trim().isEmpty()) {
             return null;
         }
         String trimmed = accountId.trim();
-        if (!trimmed.matches("\\d{1,11}")) {
-            throw new CardDemoException("ACCOUNT FILTER,IF SUPPLIED MUST BE A 11 DIGIT NUMBER");
+        if (!trimmed.matches("\\d{11}")) {
+            throw new CardDemoException(MSG_ACCT_FILTER_NOT_NUMERIC);
         }
         return Long.valueOf(trimmed);
     }

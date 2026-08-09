@@ -50,7 +50,9 @@ import org.springframework.web.filter.OncePerRequestFilter;
  * :note: The filter NEVER creates an HTTP session (it uses
  *     ``request.getSession(false)``), so an anonymous request cannot cause a
  *     persisted Redis session to be minted. It also never mutates the session, so it
- *     is safe on read-only and stateless chains.
+ *     is safe on read-only and stateless chains. It does not run at all for the anonymous
+ *     ``/auth/**`` sign-on routes -- see {@link #shouldNotFilter(HttpServletRequest)} -- so no
+ *     hop holds a handle to, or reads, the session that a sign-on rotates.
  * :note: The authentication is intentionally not persisted between requests: the
  *     session context itself is the durable state, and rebuilding the authentication
  *     from it on every request means a revoked or expired session immediately stops
@@ -76,6 +78,13 @@ public class SessionContextAuthenticationFilter extends OncePerRequestFilter {
      *     principal.
      */
     public static final String ROLE_USER = ROLE_PREFIX + "USER";
+
+    /**
+     * :purpose: Path of the sign-on endpoint (``COSGN00C`` / CICS ``CC00``), the one
+     *     request that REPLACES the caller's session identity and therefore must not be
+     *     served while holding a handle to the session it replaces.
+     */
+    public static final String SIGNON_PATH = "/auth/signon";
 
     /**
      * :purpose: Repository the restored context is published to, so the rest of the
@@ -105,6 +114,39 @@ public class SessionContextAuthenticationFilter extends OncePerRequestFilter {
      */
     public SessionContextAuthenticationFilter() {
         this(new RequestAttributeSecurityContextRepository());
+    }
+
+    /**
+     * :purpose: Skip the sign-on endpoint, the ONE request whose session identity is
+     *     replaced while it is being served. Sign-on is unauthenticated, so no principal
+     *     has to be restored for it; and because this filter is the only thing that
+     *     touches the session on that path, skipping it means the process serving the
+     *     request holds no session handle at all. That matters at the api-gateway: it
+     *     used to load the session to rebuild the principal, ``auth-service`` then
+     *     rotated the id (which deletes the previous Redis key), and Spring Session's
+     *     write-back of the now-deleted session failed the response the gateway had
+     *     already produced -- a successful sign-on reported to the caller as ``500``.
+     *     Not touching the session removes the cause rather than the symptom, and drops a
+     *     Redis round trip from the anonymous path.
+     * :param request: the current HTTP request.
+     * :returns: ``true`` for the sign-on endpoint, ``false`` for every other path.
+     * :note: The path is compared with the context path removed, so a service deployed
+     *     under one (``/api/auth/signon``) skips the same route. Only the rotation route
+     *     is skipped: the rest of ``/auth/**`` -- and every other anonymous route -- still
+     *     restores a principal when the caller already has a session, because nothing on
+     *     those paths replaces it.
+     */
+    @Override
+    protected boolean shouldNotFilter(HttpServletRequest request) {
+        String uri = request.getRequestURI();
+        if (uri == null) {
+            return false;
+        }
+        String contextPath = request.getContextPath();
+        String path = (contextPath != null && !contextPath.isEmpty() && uri.startsWith(contextPath))
+                ? uri.substring(contextPath.length())
+                : uri;
+        return SIGNON_PATH.equals(path) || (SIGNON_PATH + "/").equals(path);
     }
 
     /**

@@ -19,6 +19,7 @@ package com.carddemo.card.integration;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.hasSize;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -27,12 +28,17 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.carddemo.card.repository.CardRepository;
 import com.carddemo.card.repository.CardXrefRepository;
 import com.carddemo.common.domain.Card;
+import com.carddemo.common.dto.CardKeyRequestDto;
+import com.carddemo.common.dto.CardListItemDto;
+import com.carddemo.common.dto.CardListResponseDto;
 import com.carddemo.common.dto.CardUpdateRequestDto;
 import com.carddemo.common.dto.SessionContext;
 import com.carddemo.common.testsupport.MigratedSchemaContainer;
 
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.EntityManagerFactory;
+import java.util.ArrayList;
+import java.util.List;
 
 
 
@@ -41,6 +47,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
@@ -77,6 +85,20 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 @ActiveProfiles("test")
 class CardViewUpdateIT {
 
+    /**
+     * :purpose: Build the JSON body of a card-detail read. The composite key travels in the
+     *  BODY rather than in the URL: a card number is a Primary Account Number, and a path
+     *  segment or query string is written verbatim into every access log, proxy log and
+     *  distributed trace on the request path.
+     * :param cardNumber: the card number to address.
+     * :returns: the serialized request body.
+     */
+    private String cardKeyJson(String cardNumber) throws Exception {
+        CardKeyRequestDto key = new CardKeyRequestDto();
+        key.setCardNumber(cardNumber);
+        return objectMapper.writeValueAsString(key);
+    }
+
     /** :purpose: HttpSession attribute key carrying the externalized COMMAREA session context. */
     private static final String SESSION_ATTR = "carddemoSessionContext";
 
@@ -107,8 +129,9 @@ class CardViewUpdateIT {
      *  Testcontainers JDBC driver configured by the ``test`` profile is replaced with the
      *  plain PostgreSQL driver so exactly one container backs the whole test class.
      * :note: The context's Flyway auto-configuration applies the shared carddemo-common
-     *  migration set (``V1`` schema, ``V2`` reference data, ``V3`` test data, ``V4`` batch
-     *  metadata) to the empty container before Hibernate runs, so every entity-scanned
+     *  migration set (``V1`` schema, ``V2`` reference data, ``V3`` test data, ``V4`` seeded-PII
+     *  encryption, ``V5`` batch metadata, ``V6``–``V8`` optimistic-lock and card foreign-key
+     *  additions) to the empty container before Hibernate runs, so every entity-scanned
      *  table — including the 50 seeded cards and cross-references this class asserts on —
      *  exists and Hibernate ``ddl-auto: validate`` confirms the mapping.
      * :param registry: the dynamic property registry supplied by the Spring Test context.
@@ -198,13 +221,16 @@ class CardViewUpdateIT {
      * :output: HTTP 200 for a seeded card whose CVV column is untouched, with the CVV
      *  absent from the response body.
      */
+
     @Test
     void getCard_withUnmodifiedSeededCvv_returns200AndNeverEchoesTheCvv() throws Exception {
         Integer untouchedCvvs = jdbcTemplate.queryForObject(
                 "SELECT count(*) FROM cards WHERE card_cvv_cd IS NOT NULL", Integer.class);
         assertThat(untouchedCvvs).isPositive();
 
-        String body = mockMvc.perform(get("/cards/{cardNum}", CARD_ACCT1)
+        String body = mockMvc.perform(post("/cards/detail")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(cardKeyJson(CARD_ACCT1))
                         .sessionAttr(SESSION_ATTR, adminSession()))
                 .andExpect(status().isOk())
                 .andReturn()
@@ -254,13 +280,52 @@ class CardViewUpdateIT {
     }
 
     /**
+     * :purpose: Page forward through the WHOLE browse and prove the pages tile the card
+     *  master exactly: every seeded card is reachable, no card is skipped at a page
+     *  boundary, no card appears on two pages, and the concatenated pages reproduce the
+     *  ``card_num`` ascending order of the VSAM primary-key browse. Screens advance by
+     *  ``WS-MAX-SCREEN-LINES`` (7) even though the window reads one lookahead record, so a
+     *  page size of eight would step eight rows and silently drop one card per boundary.
+     * :note: The expected order is READ FROM the database at runtime; no primary account
+     *  number is written into this source.
+     */
+    @Test
+    void adminPagesTileTheCardMasterWithoutGapOrOverlap() throws Exception {
+        List<String> expectedOrder = jdbcTemplate.queryForList(
+                "SELECT card_num FROM cards ORDER BY card_num ASC", String.class);
+        assertThat(expectedOrder).hasSize(50);
+
+        List<String> pagedOrder = new ArrayList<>();
+        int pageCount = (expectedOrder.size() + 6) / 7;
+        assertThat(pageCount).isEqualTo(8);
+        for (int page = 1; page <= pageCount; page++) {
+            String body = mockMvc.perform(get("/cards")
+                            .param("page", String.valueOf(page))
+                            .sessionAttr(SESSION_ATTR, adminSession()))
+                    .andExpect(status().isOk())
+                    .andReturn()
+                    .getResponse()
+                    .getContentAsString();
+            CardListResponseDto response = objectMapper.readValue(body, CardListResponseDto.class);
+            assertThat(response.getPageNumber()).isEqualTo(page);
+            assertThat(response.getCards()).isNotEmpty().hasSizeLessThanOrEqualTo(7);
+            assertThat(response.isNextPage()).isEqualTo(page < pageCount);
+            response.getCards().stream().map(CardListItemDto::getCardNum).forEach(pagedOrder::add);
+        }
+
+        assertThat(pagedOrder).containsExactlyElementsOf(expectedOrder).doesNotHaveDuplicates();
+    }
+
+    /**
      * :purpose: The browse scope is the ACCTSID the operator supplies, NOT the caller's role
      *  or the account its session happens to carry: ``COCRDLIC 9500-FILTER-RECORDS``
      *  (L1382-1396) filters only on the supplied account and card filters and has no
      *  user-type branch. A non-admin with no filter therefore sees the same unfiltered first
      *  page an administrator sees, and supplying the filter is what narrows the browse to one
      *  account. The full PAN is never asserted (PII); scope is proven via the owning
-     *  account id.
+     *  account id. The filter is written at its full eleven-digit width because
+     *  ``IF CC-ACCT-ID IS NOT NUMERIC`` is a class test on a ``PIC X(11)`` item, so a shorter
+     *  run is refused rather than widened; see decision log section 44.7.
      */
     @Test
     void listScopeFollowsTheSuppliedFilterNotTheCallerRole() throws Exception {
@@ -275,7 +340,7 @@ class CardViewUpdateIT {
         // as it does to an administrator: account 1 owns exactly one seeded card.
         mockMvc.perform(get("/cards")
                         .param("page", "1")
-                        .param("accountId", "1")
+                        .param("accountId", "00000000001")
                         .sessionAttr(SESSION_ATTR, userSession(1L)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.cards", hasSize(1)))
@@ -283,7 +348,7 @@ class CardViewUpdateIT {
 
         mockMvc.perform(get("/cards")
                         .param("page", "1")
-                        .param("accountId", "1")
+                        .param("accountId", "00000000001")
                         .sessionAttr(SESSION_ATTR, adminSession()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.cards", hasSize(1)))
@@ -291,13 +356,16 @@ class CardViewUpdateIT {
     }
 
     /**
-     * :purpose: A supplied account filter that is not a one-to-eleven digit number is
-     *  rejected with HTTP 400 and the byte-exact legacy edit message.
+     * :purpose: A supplied account filter that is not EXACTLY eleven digits is rejected with
+     *  HTTP 400 and the byte-exact legacy edit message -- over-wide, short and non-numeric
+     *  alike, because ``COCRDSLC``'s edit is a class test on a ``PIC X(11)`` item.
+     * :param filter: an account filter violating the exactly-eleven-digits rule.
      */
-    @Test
-    void listInvalidAccountFilterReturns400() throws Exception {
+    @ParameterizedTest
+    @ValueSource(strings = {"123456789012", "1", "0000000000a"})
+    void listInvalidAccountFilterReturns400(String filter) throws Exception {
         mockMvc.perform(get("/cards")
-                        .param("accountId", "123456789012")
+                        .param("accountId", filter)
                         .sessionAttr(SESSION_ATTR, adminSession()))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.status").value(400))
@@ -330,7 +398,9 @@ class CardViewUpdateIT {
      */
     @Test
     void getCardDetailHappyPath() throws Exception {
-        mockMvc.perform(get("/cards/{cardNumber}", CARD_ACCT1)
+        mockMvc.perform(post("/cards/detail")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(cardKeyJson(CARD_ACCT1))
                         .sessionAttr(SESSION_ATTR, adminSession()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.cardAcctId").value(1))
@@ -352,7 +422,9 @@ class CardViewUpdateIT {
      */
     @Test
     void getCardDetailNotFoundReturns404() throws Exception {
-        mockMvc.perform(get("/cards/{cardNumber}", UNSEEDED_CARD)
+        mockMvc.perform(post("/cards/detail")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(cardKeyJson(UNSEEDED_CARD))
                         .sessionAttr(SESSION_ATTR, adminSession()))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.status").value(404))
@@ -360,16 +432,20 @@ class CardViewUpdateIT {
     }
 
     /**
-     * :purpose: A malformed (non-sixteen-digit) card-number path variable yields HTTP 400
-     *  with the byte-exact controller edit message.
+     * :purpose: A malformed (non-sixteen-digit) card key yields HTTP 400 with the byte-exact
+     *  literal ``2220-EDIT-CARD`` MOVEs for its ``IS NOT NUMERIC`` branch. The mixed-case
+     *  ``SEARCHED-CARD-NOT-NUMERIC`` 88-level the program declares is never SET.
      */
     @Test
     void getCardDetailMalformedNumberReturns400() throws Exception {
-        mockMvc.perform(get("/cards/{cardNumber}", "123")
+        mockMvc.perform(post("/cards/detail")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(cardKeyJson("123"))
                         .sessionAttr(SESSION_ATTR, adminSession()))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.status").value(400))
-                .andExpect(jsonPath("$.message").value("Card number if supplied must be a 16 digit number"));
+                .andExpect(jsonPath("$.message")
+                        .value("CARD ID FILTER,IF SUPPLIED MUST BE A 16 DIGIT NUMBER"));
     }
 
     // ------------------------------------------------------------------------
@@ -385,12 +461,14 @@ class CardViewUpdateIT {
     void updateCardHappyPathPersists() throws Exception {
         String newStatus = "Y".equals(origActiveStatus) ? "N" : "Y";
         CardUpdateRequestDto request = new CardUpdateRequestDto();
+        // The addressed card number rides in the BODY, never in the URL.
+        request.setCardNumber(CARD_ACCT50);
         request.setCardEmbossedName(origEmbossedName);
         request.setCardActiveStatus(newStatus);
         request.setCardExpiraionDate(origExpiraionDate);
         request.setCardCvvCd(null);
 
-        mockMvc.perform(put("/cards/{cardNumber}", CARD_ACCT50)
+        mockMvc.perform(put("/cards")
                         .sessionAttr(SESSION_ATTR, adminSession())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
@@ -506,6 +584,8 @@ class CardViewUpdateIT {
      */
     private CardUpdateRequestDto validBaseUpdate() {
         CardUpdateRequestDto request = new CardUpdateRequestDto();
+        // The addressed card number rides in the BODY, never in the URL.
+        request.setCardNumber(CARD_ACCT50);
         request.setCardEmbossedName("Valid Name");
         request.setCardActiveStatus("Y");
         request.setCardExpiraionDate("2025-05-20");
@@ -521,7 +601,7 @@ class CardViewUpdateIT {
      */
     private void performUpdateExpectingBadRequest(CardUpdateRequestDto request, String expectedMessage)
             throws Exception {
-        mockMvc.perform(put("/cards/{cardNumber}", CARD_ACCT50)
+        mockMvc.perform(put("/cards")
                         .sessionAttr(SESSION_ATTR, adminSession())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
@@ -567,7 +647,9 @@ class CardViewUpdateIT {
             String listBody = mockMvc.perform(get("/cards").param("page", "1"))
                     .andExpect(status().isUnauthorized())
                     .andReturn().getResponse().getContentAsString();
-            String detailBody = mockMvc.perform(get("/cards/{cardNumber}", CARD_ACCT1))
+            String detailBody = mockMvc.perform(post("/cards/detail")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(cardKeyJson(CARD_ACCT1)))
                     .andExpect(status().isUnauthorized())
                     .andReturn().getResponse().getContentAsString();
 
@@ -580,7 +662,7 @@ class CardViewUpdateIT {
         void anonymousUpdateIsRejected() throws Exception {
             Card before = reloadCardBypassingCache(CARD_ACCT50);
 
-            mockMvc.perform(put("/cards/{cardNumber}", CARD_ACCT50)
+            mockMvc.perform(put("/cards")
                             .contentType(MediaType.APPLICATION_JSON)
                             .content("{}"))
                     .andExpect(status().isUnauthorized());
@@ -604,7 +686,7 @@ class CardViewUpdateIT {
                     .DEFAULT_MAX_BODY_BYTES + 1024)];
             java.util.Arrays.fill(oversized, (byte) 'A');
 
-            mockMvc.perform(put("/cards/{cardNumber}", CARD_ACCT50)
+            mockMvc.perform(put("/cards")
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(oversized))
                     .andExpect(status().isContentTooLarge());

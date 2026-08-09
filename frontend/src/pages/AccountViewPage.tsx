@@ -12,7 +12,7 @@
  *     line-24 function-key bar are published to the shared ``Layout`` chrome
  *     rather than rendered here.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useState } from 'react';
 import type { ReactElement } from 'react';
 import { useNavigate, useParams } from 'react-router';
 import { useScreenChrome } from '../components/Layout';
@@ -21,16 +21,21 @@ import type { PFKeyDef } from '../components/PFKeyBar';
 import { PfKeyAction, CCDA_TITLE01, CCDA_TITLE02 } from '../types';
 import type { AccountViewResponseDto } from '../types';
 import { getAccount } from '../api';
-import { useApi, useFocusOnChange, useInitialFocus } from '../hooks';
-import { displayText, SSN_MASK_PREFIX } from '../components/display';
+import { useApi, useFocusOnChange, useInitialFocus, useFocusOnSettled } from '../hooks';
+import { displayField, displayText, SSN_MASK_PREFIX } from '../components/display';
 import OutputField from '../components/OutputField';
 
 /**
- * :purpose: Line-23 message rejecting an account number that is not an 11-digit
- *     non-zero value (``COACTVWC`` ``SEARCHED-ACCT-ZEROES`` /
- *     ``SEARCHED-ACCT-NOT-NUMERIC``).
+ * :purpose: Line-23 message rejecting an account number that is not an eleven-digit
+ *     non-zero value — ``COACTVWC`` ``2210-EDIT-ACCOUNT`` L672, verbatim. The double
+ *     space after ``must`` and the hyphen in ``non-zero`` are the source literal's own.
+ * :note: NOT the 88-level ``SEARCHED-ACCT-ZEROES`` / ``SEARCHED-ACCT-NOT-NUMERIC``
+ *     (L125/L127), whose text reads ``'Account number must be a non zero 11 digit
+ *     number'``: those condition names appear only on their own declaration lines and
+ *     the program never ``SET``s either, so that text is unreachable. The update screen
+ *     publishes different text again for the same edit.
  */
-const ACCOUNT_NUMBER_ERROR = 'Account number must be a non zero 11 digit number';
+const ACCOUNT_NUMBER_ERROR = 'Account Filter must  be a non-zero 11 digit number';
 
 /** :purpose: An account number is exactly eleven numeric characters. */
 const ACCOUNT_ID_PATTERN = /^\d{11}$/u;
@@ -63,11 +68,35 @@ function maskSsn(value: string | null | undefined): string {
  * :purpose: The account view screen (CICS ``CAVW``, program ``COACTVWC``).
  * :returns: The rendered screen body.
  */
+/**
+ * Width of the ``ACSZIPC`` field, ``LENGTH=5`` at ``POS=(17,73)``. ``CUST-ADDR-ZIP`` is
+ * ``PIC X(10)``, so the ``MOVE`` into the symbolic-map field truncates and the screen shows
+ * the first five characters; rendering all ten overflowed the declared field.
+ */
+const ZIP_FIELD_WIDTH = 5;
+
+/** Width of the ``ACCTSID`` entry field, ``LENGTH=11`` at ``POS=(5,38)``. */
+const ACCOUNT_ID_LENGTH = 11;
+
+/**
+ * Class list of the ``ACCTSID`` entry field. ``charField`` sizes the box in character cells
+ * so the field occupies exactly the eleven columns ``LENGTH=11`` declares, identically on
+ * every screen that carries it.
+ */
+const ACCOUNT_ID_FIELD_CLASS = 'field charField charField--acctId';
+
+/**
+ * ``CSSETATY`` re-entry highlight. ``1300-SETUP-SCREEN-ATTRS`` (``COACTVWC.cbl`` L556-558)
+ * moves ``DFHRED`` into ``ACCTSIDC`` whenever ``FLG-ACCTFILTER-NOT-OK`` is set, so a
+ * rejected search paints the field itself red as well as the message line.
+ */
+const FAULTED_FIELD_CLASS = 'fieldError';
+
 export default function AccountViewPage(): ReactElement {
   const navigate = useNavigate();
   const { accountId } = useParams();
   const { setChrome } = useScreenChrome();
-  const { data, error, loading, run } = useApi(getAccount);
+  const { data, error, loading, run, reset } = useApi(getAccount);
   const [acctInput, setAcctInput] = useState<string>(accountId ?? '');
   const [validationMessage, setValidationMessage] = useState<string>('');
 
@@ -77,17 +106,24 @@ export default function AccountViewPage(): ReactElement {
    * :purpose: Validate an account number and, when it passes, fetch the joined
    *     account + customer record.
    * :param value: the account number exactly as entered or routed.
+   * :note: A rejected value clears the displayed record as well as reporting the
+   *     error. ``COACTVWC`` reaches its send through ``1000-SEND-MAP``, whose first
+   *     step ``1100-SCREEN-INIT`` does ``MOVE LOW-VALUES TO CACTVWAO`` before
+   *     repainting, so the failed-edit path leaves the account and customer fields
+   *     BLANK rather than showing the previous account's balances beside the newly
+   *     typed number.
    */
   const fetchAccount = useCallback(
     (value: string): void => {
       if (!isValidAccountId(value)) {
+        reset();
         setValidationMessage(ACCOUNT_NUMBER_ERROR);
         return;
       }
       setValidationMessage('');
       void run(value);
     },
-    [run],
+    [reset, run],
   );
 
   useEffect(() => {
@@ -104,13 +140,25 @@ export default function AccountViewPage(): ReactElement {
   // COACTVW marks ACCTSID ``ATTRB=(FSET,IC,NORM,UNPROT)``, so the cursor rests there
   // when the map is sent and returns there whenever the search is rejected.
   const acctInputRef = useInitialFocus<HTMLInputElement>();
-  // ``COACTVWC`` faults ACCTSID only for its own 11-digit edit; a failed read
-  // reports an absent record rather than a rejected value.
-  const faultedAcctId = validationMessage !== '';
+  // ``1300-SETUP-SCREEN-ATTRS`` paints ACCTSID ``DFHRED`` whenever
+  // ``FLG-ACCTFILTER-NOT-OK`` is set, and ``9200-GETCARDXREF-BYACCT`` /
+  // ``9300-GETACCTDATA-BYACCT`` set that flag on a NOTFND read exactly as
+  // ``2210-EDIT-ACCOUNT`` sets it on a rejected value. The blank-filter path
+  // paints the field red too. Every rejected search therefore faults the field.
+  const faultedAcctId = errorMessage !== '';
 
   useFocusOnChange(errorMessage === '' ? null : errorMessage, acctInputRef);
+  // The account key is disabled while the read is in flight, which blurs it to the
+  // document body; `COACTVW.bms` gives ACCTSID the IC attribute on every send, so the
+  // cursor is placed again as soon as the read settles.
+  useFocusOnSettled(loading, acctInputRef);
 
-  useEffect(() => {
+  // The frame's header, line-23 message region and line-24 key legend belong to the
+  // SAME map as this body, so they are published in a LAYOUT effect: a CICS program
+  // moved every field into the symbolic map before its one SEND, and nothing
+  // half-built ever reached the terminal. A passive effect would paint the frame
+  // once without them and then move it.
+  useLayoutEffect(() => {
     const pfKeys: PFKeyDef[] = [
       {
         action: PfKeyAction.PF3,
@@ -126,15 +174,18 @@ export default function AccountViewPage(): ReactElement {
       title01: CCDA_TITLE01,
       title02: CCDA_TITLE02,
       errorMessage,
-      infoMessage: '',
+      infoFieldMessage: '',
       pfKeys,
+      // COACTVW declares its line-24 legend field COLOR=TURQUOISE, not the YELLOW
+      // fifteen of the seventeen mapsets declare.
+      pfKeyTone: 'turquoise',
       busy: loading,
     });
   }, [errorMessage, loading, navigate, setChrome]);
 
   return (
     <div className="accountView">
-      <h2 className="neutral">View Account</h2>
+      <h3 className="neutral">View Account</h3>
 
       <form
         className="accountView__search"
@@ -151,11 +202,20 @@ export default function AccountViewPage(): ReactElement {
           id="acctsid"
           name="acctsid"
           ref={acctInputRef}
-          className="field"
+          className={
+            faultedAcctId
+              ? `${ACCOUNT_ID_FIELD_CLASS} ${FAULTED_FIELD_CLASS}`
+              : ACCOUNT_ID_FIELD_CLASS
+          }
+          // A 3270 locked the keyboard while the host was thinking, so the entry field is
+          // closed for exactly the interval the read is in flight. It is also what makes
+          // that interval visible: a disabled control is painted dim with no entry box.
+          disabled={loading}
           type="text"
           inputMode="numeric"
           autoComplete="off"
-          maxLength={11}
+          maxLength={ACCOUNT_ID_LENGTH}
+          size={ACCOUNT_ID_LENGTH}
           value={acctInput}
           data-testid="acctsid"
           onChange={(event) => setAcctInput(event.target.value)}
@@ -175,6 +235,11 @@ export default function AccountViewPage(): ReactElement {
           label="Active Y/N:"
           value={displayText(account?.acctActiveStatus)}
           testId="acct-active-status"
+          row={1}
+          labelCol={57}
+          labelWidth={12}
+          valueCol={70}
+          width={1}
         />
         <OutputField
           className="accountView__field"
@@ -182,6 +247,11 @@ export default function AccountViewPage(): ReactElement {
           label="Opened:"
           value={displayText(account?.acctOpenDate)}
           testId="acct-open-date"
+          row={2}
+          labelCol={8}
+          labelWidth={7}
+          valueCol={17}
+          width={10}
         />
         <OutputField
           className="accountView__field"
@@ -189,6 +259,12 @@ export default function AccountViewPage(): ReactElement {
           label="Credit Limit        :"
           value={displayText(account?.acctCreditLimit)}
           testId="acct-credit-limit"
+          justifyRight
+          row={2}
+          labelCol={39}
+          labelWidth={21}
+          valueCol={61}
+          width={15}
         />
         <OutputField
           className="accountView__field"
@@ -196,6 +272,11 @@ export default function AccountViewPage(): ReactElement {
           label="Expiry:"
           value={displayText(account?.acctExpiraionDate)}
           testId="acct-expiraion-date"
+          row={3}
+          labelCol={8}
+          labelWidth={7}
+          valueCol={17}
+          width={10}
         />
         <OutputField
           className="accountView__field"
@@ -203,6 +284,12 @@ export default function AccountViewPage(): ReactElement {
           label="Cash credit Limit   :"
           value={displayText(account?.acctCashCreditLimit)}
           testId="acct-cash-credit-limit"
+          justifyRight
+          row={3}
+          labelCol={39}
+          labelWidth={21}
+          valueCol={61}
+          width={15}
         />
         <OutputField
           className="accountView__field"
@@ -210,6 +297,11 @@ export default function AccountViewPage(): ReactElement {
           label="Reissue:"
           value={displayText(account?.acctReissueDate)}
           testId="acct-reissue-date"
+          row={4}
+          labelCol={8}
+          labelWidth={8}
+          valueCol={17}
+          width={10}
         />
         <OutputField
           className="accountView__field"
@@ -217,6 +309,12 @@ export default function AccountViewPage(): ReactElement {
           label="Current Balance     :"
           value={displayText(account?.acctCurrBal)}
           testId="acct-curr-bal"
+          justifyRight
+          row={4}
+          labelCol={39}
+          labelWidth={21}
+          valueCol={61}
+          width={15}
         />
         <OutputField
           className="accountView__field"
@@ -224,6 +322,12 @@ export default function AccountViewPage(): ReactElement {
           label="Current Cycle Credit:"
           value={displayText(account?.acctCurrCycCredit)}
           testId="acct-curr-cyc-credit"
+          justifyRight
+          row={5}
+          labelCol={39}
+          labelWidth={21}
+          valueCol={61}
+          width={15}
         />
         <OutputField
           className="accountView__field"
@@ -231,6 +335,11 @@ export default function AccountViewPage(): ReactElement {
           label="Account Group:"
           value={displayText(account?.acctGroupId)}
           testId="acct-group-id"
+          row={6}
+          labelCol={8}
+          labelWidth={14}
+          valueCol={23}
+          width={10}
         />
         <OutputField
           className="accountView__field"
@@ -238,10 +347,16 @@ export default function AccountViewPage(): ReactElement {
           label="Current Cycle Debit :"
           value={displayText(account?.acctCurrCycDebit)}
           testId="acct-curr-cyc-debit"
+          justifyRight
+          row={6}
+          labelCol={39}
+          labelWidth={21}
+          valueCol={61}
+          width={15}
         />
       </dl>
 
-      <h3 className="neutral">Customer Details</h3>
+      <h4 className="neutral">Customer Details</h4>
 
       <dl className="accountView__details">
         <OutputField
@@ -250,6 +365,11 @@ export default function AccountViewPage(): ReactElement {
           label="Customer id  :"
           value={displayText(account?.custId)}
           testId="cust-id"
+          row={1}
+          labelCol={8}
+          labelWidth={14}
+          valueCol={23}
+          width={9}
         />
         <OutputField
           className="accountView__field"
@@ -257,6 +377,11 @@ export default function AccountViewPage(): ReactElement {
           label="SSN:"
           value={maskSsn(account?.custSsn)}
           testId="cust-ssn"
+          row={1}
+          labelCol={49}
+          labelWidth={4}
+          valueCol={54}
+          width={12}
         />
         <OutputField
           className="accountView__field"
@@ -264,6 +389,11 @@ export default function AccountViewPage(): ReactElement {
           label="Date of birth:"
           value={displayText(account?.custDobYyyyMmDd)}
           testId="cust-dob-yyyy-mm-dd"
+          row={2}
+          labelCol={8}
+          labelWidth={14}
+          valueCol={23}
+          width={10}
         />
         <OutputField
           className="accountView__field"
@@ -271,6 +401,11 @@ export default function AccountViewPage(): ReactElement {
           label="FICO Score:"
           value={displayText(account?.custFicoCreditScore)}
           testId="cust-fico-credit-score"
+          row={2}
+          labelCol={49}
+          labelWidth={11}
+          valueCol={61}
+          width={3}
         />
         <OutputField
           className="accountView__field"
@@ -278,6 +413,12 @@ export default function AccountViewPage(): ReactElement {
           label="First Name"
           value={displayText(account?.custFirstName)}
           testId="cust-first-name"
+          row={3}
+          labelCol={1}
+          labelWidth={10}
+          valueCol={1}
+          width={25}
+          valueRow={4}
         />
         <OutputField
           className="accountView__field"
@@ -285,6 +426,12 @@ export default function AccountViewPage(): ReactElement {
           label="Middle Name:"
           value={displayText(account?.custMiddleName)}
           testId="cust-middle-name"
+          row={3}
+          labelCol={28}
+          labelWidth={13}
+          valueCol={28}
+          width={25}
+          valueRow={4}
         />
         <OutputField
           className="accountView__field"
@@ -292,6 +439,12 @@ export default function AccountViewPage(): ReactElement {
           label="Last Name :"
           value={displayText(account?.custLastName)}
           testId="cust-last-name"
+          row={3}
+          labelCol={55}
+          labelWidth={12}
+          valueCol={55}
+          width={25}
+          valueRow={4}
         />
         <OutputField
           className="accountView__field"
@@ -299,6 +452,11 @@ export default function AccountViewPage(): ReactElement {
           label="Address:"
           value={displayText(account?.custAddrLine1)}
           testId="cust-addr-line-1"
+          row={5}
+          labelCol={1}
+          labelWidth={8}
+          valueCol={10}
+          width={50}
         />
         <OutputField
           className="accountView__field"
@@ -306,6 +464,11 @@ export default function AccountViewPage(): ReactElement {
           label="State"
           value={displayText(account?.custAddrStateCd)}
           testId="cust-addr-state-cd"
+          row={5}
+          labelCol={63}
+          labelWidth={6}
+          valueCol={73}
+          width={2}
         />
         <OutputField
           className="accountView__field"
@@ -313,14 +476,32 @@ export default function AccountViewPage(): ReactElement {
           label=""
           value={displayText(account?.custAddrLine2)}
           testId="cust-addr-line-2"
-          labelledBy="cust-addr-line-1-label"
+          row={6}
+          labelCol={1}
+          labelWidth={1}
+          valueCol={10}
+          width={50}
+          /*
+           * COACTVW paints `Address:` at row 16 column 1 for the first address line only
+           * and leaves row 17 unlabelled, so no caption is rendered here and the screen
+           * matches the mapset. Naming the value after the FIRST line's caption instead
+           * left the two lines announcing the same name, which is why the name is given
+           * here rather than borrowed. Nothing is painted by it.
+           */
+          ariaLabel="Address line 2"
         />
         <OutputField
           className="accountView__field"
           valueClassName="field"
           label="Zip"
-          value={displayText(account?.custAddrZip)}
+          value={displayField(account?.custAddrZip, ZIP_FIELD_WIDTH)}
           testId="cust-addr-zip"
+          justifyRight
+          row={6}
+          labelCol={63}
+          labelWidth={3}
+          valueCol={73}
+          width={5}
         />
         <OutputField
           className="accountView__field"
@@ -328,6 +509,11 @@ export default function AccountViewPage(): ReactElement {
           label="City"
           value={displayText(account?.custAddrLine3)}
           testId="cust-addr-line-3"
+          row={7}
+          labelCol={1}
+          labelWidth={5}
+          valueCol={10}
+          width={50}
         />
         <OutputField
           className="accountView__field"
@@ -335,6 +521,11 @@ export default function AccountViewPage(): ReactElement {
           label="Country"
           value={displayText(account?.custAddrCountryCd)}
           testId="cust-addr-country-cd"
+          row={7}
+          labelCol={63}
+          labelWidth={7}
+          valueCol={73}
+          width={3}
         />
         <OutputField
           className="accountView__field"
@@ -342,6 +533,11 @@ export default function AccountViewPage(): ReactElement {
           label="Phone 1:"
           value={displayText(account?.custPhoneNum1)}
           testId="cust-phone-num-1"
+          row={8}
+          labelCol={1}
+          labelWidth={8}
+          valueCol={10}
+          width={13}
         />
         <OutputField
           className="accountView__field"
@@ -349,6 +545,11 @@ export default function AccountViewPage(): ReactElement {
           label="Government Issued Id Ref    :"
           value={displayText(account?.custGovtIssuedId)}
           testId="cust-govt-issued-id"
+          row={8}
+          labelCol={24}
+          labelWidth={30}
+          valueCol={58}
+          width={20}
         />
         <OutputField
           className="accountView__field"
@@ -356,6 +557,11 @@ export default function AccountViewPage(): ReactElement {
           label="Phone 2:"
           value={displayText(account?.custPhoneNum2)}
           testId="cust-phone-num-2"
+          row={9}
+          labelCol={1}
+          labelWidth={8}
+          valueCol={10}
+          width={13}
         />
         <OutputField
           className="accountView__field"
@@ -363,6 +569,11 @@ export default function AccountViewPage(): ReactElement {
           label="EFT Account Id:"
           value={displayText(account?.custEftAccountId)}
           testId="cust-eft-account-id"
+          row={9}
+          labelCol={24}
+          labelWidth={16}
+          valueCol={41}
+          width={10}
         />
         <OutputField
           className="accountView__field"
@@ -370,6 +581,11 @@ export default function AccountViewPage(): ReactElement {
           label="Primary Card Holder Y/N:"
           value={displayText(account?.custPriCardHolderInd)}
           testId="cust-pri-card-holder-ind"
+          row={9}
+          labelCol={53}
+          labelWidth={24}
+          valueCol={78}
+          width={1}
         />
       </dl>
     </div>

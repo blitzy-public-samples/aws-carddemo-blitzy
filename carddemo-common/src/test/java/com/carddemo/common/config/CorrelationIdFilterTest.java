@@ -21,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 
+import jakarta.servlet.DispatcherType;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.ServletRequest;
@@ -333,6 +334,40 @@ class CorrelationIdFilterTest {
         assertNotNull(echoed);
         assertEquals(seenInChain[0], echoed);
         assertEquals(echoed, CorrelationIdContext.sanitize(echoed));
+    }
+
+    /**
+     * :purpose: The container's ``ERROR`` dispatch of a request that already carries a
+     *     correlation id re-enters the filter and MUST re-install the SAME id, so the error
+     *     body rendered on that dispatch reports the id the caller was already given rather
+     *     than a fresh one or none at all.
+     * :raises ServletException: if the filter raises a servlet error.
+     * :raises IOException: if the filter raises an I/O error.
+     */
+    @Test
+    @DisplayName("the ERROR dispatch re-installs the id the original dispatch resolved")
+    void errorDispatchReusesTheEstablishedId() throws ServletException, IOException {
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        request.addHeader(CorrelationIdFilter.CORRELATION_ID_HEADER, "dispatch-correlation-1");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.doFilter(request, response, new MockFilterChain());
+        assertEquals("dispatch-correlation-1",
+                request.getAttribute(CorrelationIdFilter.CORRELATION_ID_ATTRIBUTE),
+                "the resolved id must be published as a request attribute");
+        assertNull(CorrelationIdContext.getCorrelationId(),
+                "the scope must be cleared when the original dispatch completes");
+
+        // Second pass models the container's ERROR dispatch of the same request.
+        request.setDispatcherType(DispatcherType.ERROR);
+        request.setAttribute("jakarta.servlet.error.status_code", 500);
+        String[] seenOnErrorDispatch = new String[1];
+
+        filter.doFilter(request, response, (req, res) ->
+                seenOnErrorDispatch[0] = CorrelationIdContext.getCorrelationId());
+
+        assertEquals("dispatch-correlation-1", seenOnErrorDispatch[0],
+                "the ERROR dispatch must run inside the SAME correlation scope");
     }
 
 }

@@ -75,6 +75,9 @@ public class BillPaymentService {
     /** ``COBIL00C`` zero-or-negative balance message. */
     private static final String MSG_NOTHING_TO_PAY = "You have nothing to pay...";
 
+    /** :purpose: Width of the account key (``ACCT-ID`` PIC 9(11), map field ``ACTIDIN``). */
+    private static final int ACCT_ID_WIDTH = 11;
+
     /** ``COBIL00C`` confirm-payment prompt message. */
     private static final String MSG_CONFIRM_PAYMENT = "Confirm to make a bill payment...";
 
@@ -123,11 +126,13 @@ public class BillPaymentService {
      * :param sessionContext: the externalized pseudo-conversational session context; may
      *  be null (for example in unit tests), in which case no session state is propagated.
      * :returns: the bill-payment response — the confirm prompt with the current balance
-     *  (blank confirm), a cleared response (confirm ``N``), or the payment-success message
-     *  with the generated transaction id and the post-payment balance (confirm ``Y``).
+     *  (blank confirm), the nothing-to-pay message with that balance (balance at or below
+     *  zero), a cleared response (confirm ``N``), or the payment-success message with the
+     *  generated transaction id and the post-payment balance (confirm ``Y``).
      * :raises CardDemoException: (HTTP 400) when the account id is empty, the confirm flag
-     *  is invalid, the account has nothing to pay, or the generated transaction id already
-     *  exists.
+     *  is invalid, or the generated transaction id already exists. A zero-or-negative
+     *  balance is NOT an exception: the legacy screen displays the balance beside that
+     *  message, so it is returned on the response's error channel instead.
      * :raises RecordNotFoundException: (HTTP 404) when the account or its card
      *  cross-reference does not exist.
      * :raises OptimisticLockConflictException: (HTTP 409) when the account was modified
@@ -167,9 +172,16 @@ public class BillPaymentService {
                 .orElseThrow(() -> new RecordNotFoundException(MSG_ACCOUNT_NOT_FOUND));
         BigDecimal currentBalance = account.getAcctCurrBal();
 
-        // Step 4 - nothing-to-pay guard (COBOL L198-204).
+        // Step 4 - nothing-to-pay guard (COBOL L193-204). The balance reaches the screen
+        // FIRST: `MOVE ACCT-CURR-BAL TO WS-CURR-BAL` / `MOVE WS-CURR-BAL TO CURBALI` sits at
+        // L193-194, BEFORE the `IF ACCT-CURR-BAL <= ZEROS` test at L198, so the map send that
+        // carries this message carries the balance beside it. Refusing with an error status
+        // instead withheld the balance entirely and left the screen showing the PREVIOUS
+        // account's money next to this account's id -- and once an account had been paid down
+        // to zero, its balance could never be shown on this screen again.
         if (currentBalance.compareTo(BigDecimal.ZERO) <= 0) {
-            throw new CardDemoException(MSG_NOTHING_TO_PAY);
+            log.debug("Nothing to pay for account {}; balance redisplayed with the message", acctId);
+            return nothingToPayResponse(accountId, currentBalance);
         }
 
         // Step 5 (blank confirm) - preview prompt without writing (COBOL L235-238).
@@ -280,6 +292,27 @@ public class BillPaymentService {
     }
 
     /**
+     * :purpose: Build the response for the nothing-to-pay branch, carrying the balance the
+     *  legacy screen displays beside the message (COBOL L193-204).
+     * :param accountId: the entered account id echoed back to the screen.
+     * :param currentBalance: the zero-or-negative balance to display.
+     * :returns: a response carrying the account id and the balance, with the message on the
+     *  ERROR channel and no transaction id.
+     * :note: ``COBIL00C`` L197-204 raises ``WS-ERR-FLG`` and re-sends the map for this branch
+     *  and never performs ``MOVE DFHGREEN TO ERRMSGC`` -- the one green override in the
+     *  program is the acknowledgement at L526 -- so the refusal travels on the RED channel
+     *  the mapset declares, beside the balance L193-194 has already placed on the screen.
+     */
+    private BillPaymentResponseDto nothingToPayResponse(String accountId,
+                                                        BigDecimal currentBalance) {
+        BillPaymentResponseDto response = new BillPaymentResponseDto();
+        response.setAccountId(accountId);
+        response.setCurrentBalance(currentBalance);
+        response.setErrorMessage(MSG_NOTHING_TO_PAY);
+        return response;
+    }
+
+    /**
      * :purpose: Build the success response for a completed payment (COBOL L522-533).
      * :param accountId: the paid account id echoed back to the screen.
      * :param newBalance: the post-payment balance (``0.00`` for pay-in-full).
@@ -299,20 +332,48 @@ public class BillPaymentService {
     }
 
     /**
-     * :purpose: Parse the trimmed account id to the numeric key used for the repository
-     *  lookup. A non-numeric value cannot match any stored account, so it is treated as a
-     *  not-found outcome — matching the legacy VSAM read that fails with ``NOTFND`` — rather
-     *  than surfacing a parse error or inventing a numeric-format validation message.
+     * :purpose: Parse the entered account id to the numeric key used for the repository
+     *  lookup, accepting ONLY the exact stored key shape: eleven ASCII digits.
      * :param accountId: the trimmed, non-empty account id.
      * :returns: the account id as a ``Long``.
-     * :raises RecordNotFoundException: when the account id is not a valid number.
+     * :raises RecordNotFoundException: when the value is not exactly eleven ASCII digits.
+     * :note: ``COBIL00C`` carries no numeric edit at all — its only entry guard is the
+     *  blank test — so a malformed entry reaches the read and fails it. ``ACTIDIN`` is an
+     *  eleven-column map field and ``ACCT-ID`` is ``PIC 9(11)``, so a shorter entry keeps
+     *  its trailing spaces through the ``MOVE`` and cannot equal a zero-padded key: the
+     *  legacy read MISSES, which is why the not-found literal is the faithful outcome and
+     *  no numeric-format message is invented here.
+     * :note: The width and character-set test is what makes that outcome correct rather
+     *  than incidental. ``Long.parseLong`` alone accepted three classes of value the
+     *  legacy key could never hold: an unpadded id (``1`` and ``01`` both resolved to
+     *  account ``00000000001`` and disclosed its balance), any Unicode decimal digit
+     *  (``Character.digit`` accepts the full-width forms, so a run of them resolved to the
+     *  same account), and a run wide enough to overflow ``long``.
      */
     private Long parseAccountId(String accountId) {
-        try {
-            return Long.parseLong(accountId);
-        } catch (NumberFormatException e) {
+        if (accountId.length() != ACCT_ID_WIDTH || !isAsciiDigits(accountId)) {
             throw new RecordNotFoundException(MSG_ACCOUNT_NOT_FOUND);
         }
+        return Long.valueOf(accountId);
+    }
+
+    /**
+     * :purpose: Report whether every character is an ASCII digit ``0``..``9``, the COBOL
+     *  ``IS NUMERIC`` class test on a ``PIC 9`` field.
+     * :param value: the string to test; must not be null.
+     * :returns: ``true`` when the value is non-empty and holds ASCII digits only.
+     */
+    private static boolean isAsciiDigits(String value) {
+        if (value.isEmpty()) {
+            return false;
+        }
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if (c < '0' || c > '9') {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**

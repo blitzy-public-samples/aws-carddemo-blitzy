@@ -24,7 +24,12 @@ import { jest } from '@jest/globals';
 import { MemoryRouter, Route, Routes } from 'react-router';
 // The header title lines every screen publishes (``COTTL01Y``).
 import { CCDA_TITLE01, CCDA_TITLE02 } from '../types';
-import type { TranAddRequestDto, TranAddResponseDto } from '../types';
+import type {
+  TranAddRequestDto,
+  TranAddResponseDto,
+  TranKeyResponseDto,
+  TranViewResponseDto,
+} from '../types';
 
 /** The ``ApiErrorResponse`` member the page reads (``error.body?.message``). */
 interface ApiErrorBody {
@@ -65,6 +70,23 @@ const addTransactionMock =
   jest.fn<(request: TranAddRequestDto) => Promise<TranAddResponseDto>>();
 
 /**
+ * Stable mock for the ``../api`` ``resolveTransactionKeys`` named export — the
+ * ``VALIDATE-INPUT-KEY-FIELDS`` cross-reference read, which the source performs before
+ * any data field is examined and which writes the counterpart key back onto the map.
+ */
+const resolveTransactionKeysMock =
+  jest.fn<(acctId: string, tranCardNum: string) => Promise<TranKeyResponseDto>>();
+
+/** Stable mock for the ``../api`` ``getLastTransaction`` named export (F5=Copy). */
+const getLastTransactionMock = jest.fn<() => Promise<TranViewResponseDto>>();
+
+/** The card the cross-reference holds for :data:`RESOLVED_ACCT_ID`. */
+const RESOLVED_CARD_NUM = '4111111111111111';
+
+/** The account the cross-reference holds for :data:`RESOLVED_CARD_NUM`. */
+const RESOLVED_ACCT_ID = '00000000011';
+
+/**
  * Stable mock for the ``../api`` ``signon`` named export. ``useSession`` — reached
  * through both the hooks barrel and the screen shell — imports it statically, and
  * a native-ESM namespace must expose every imported name.
@@ -72,6 +94,10 @@ const addTransactionMock =
 const signonMock = jest.fn();
 
 jest.unstable_mockModule('../api', () => ({
+  // The request-cancellation contract ``useApi`` binds to: the real scope hands the
+  // caller's AbortSignal to axios, and the double simply invokes the call.
+  runWithRequestSignal: (_signal: AbortSignal, call: () => unknown): unknown => call(),
+  isCancelledRequest: (): boolean => false,
   // The session store and the REST hook this screen's module graph loads bind to
   // these barrel exports as well. ``getSessionIdentity`` is the production
   // ``GET /session`` probe the session harness drives; unanswered by this suite it
@@ -79,9 +105,10 @@ jest.unstable_mockModule('../api', () => ({
   getSessionIdentity: jest.fn(() => Promise.reject(new Error('No session'))),
   logout: jest.fn(() => Promise.resolve(undefined)),
   registerSessionExpiryHandler: jest.fn(() => () => undefined),
-  getLastTransaction: jest.fn(),
+  getLastTransaction: getLastTransactionMock,
   __esModule: true,
   addTransaction: addTransactionMock,
+  resolveTransactionKeys: resolveTransactionKeysMock,
   signon: signonMock,
   ApiError,
 }));
@@ -142,9 +169,13 @@ const LABELS = {
 /** Verbatim ``COTRN02C`` line-23 literals asserted by this suite. */
 const MESSAGES = {
   acctOrCardRequired: 'Account or Card Number must be entered...',
+  acctIdNumeric: 'Account ID must be Numeric...',
+  acctIdNotFound: 'Account ID NOT found...',
+  cardNumberNotFound: 'Card Number NOT found...',
   categoryCdEmpty: 'Category CD can NOT be empty...',
   descriptionEmpty: 'Description can NOT be empty...',
   amountEmpty: 'Amount can NOT be empty...',
+  amountFormat: 'Amount should be in format -99999999.99',
   merchantCityEmpty: 'Merchant City can NOT be empty...',
   confirmRequired: 'Confirm to add this transaction...',
   invalidYesNo: 'Invalid value. Valid values are (Y/N)...',
@@ -175,12 +206,31 @@ const VALID_ENTRY: ReadonlyArray<readonly [string, string]> = [
   [LABELS.merchantZip, '98101'],
 ];
 
+/** The record ``F5=Copy Last Tran.`` reads, in the shape the view endpoint returns. */
+const LAST_TRANSACTION: TranViewResponseDto = {
+  tranId: '0000000000000042',
+  tranTypeCd: '02',
+  tranCatCd: '5002',
+  tranSource: 'POS TERM',
+  tranDesc: 'COPIED LAST TRANSACTION',
+  tranAmt: '-100.00',
+  tranOrigTs: '2026-07-20-11.22.33.000000',
+  tranProcTs: '2026-07-21-11.22.33.000000',
+  tranMerchantId: '000999888',
+  tranMerchantName: 'COPY MERCHANT',
+  tranMerchantCity: 'PORTLAND',
+  tranMerchantZip: '97201',
+  tranCardNum: RESOLVED_CARD_NUM,
+};
+
 /**
- * The request the page posts for :data:`VALID_ENTRY` confirmed with ``Y``. It
- * carries no ``tranId`` and no ``tranCardNum`` (the account key was supplied).
+ * The request the page posts for :data:`VALID_ENTRY` confirmed with ``Y``. It carries no
+ * ``tranId``, and it carries the card number the cross-reference read wrote back onto the
+ * map (``MOVE XREF-CARD-NUM TO CARDNINI``) even though the operator supplied the account.
  */
 const EXPECTED_REQUEST: TranAddRequestDto = {
   acctId: '00000000011',
+  tranCardNum: RESOLVED_CARD_NUM,
   tranTypeCd: '01',
   tranCatCd: '5001',
   tranSource: 'POS',
@@ -268,8 +318,13 @@ async function pressEnterAndSettle(): Promise<void> {
   await act(async () => {
     pressEnter();
     // Awaited so this is an asynchronous act scope: the effects and the promise
-    // callbacks the interaction queues are flushed before it returns.
-    await Promise.resolve();
+    // callbacks the interaction queues are flushed before it returns. ENTER now opens
+    // with the VALIDATE-INPUT-KEY-FIELDS cross-reference read, so the pass resolves over
+    // several microtask hops — the lookup, its state commit, then the data-field pass —
+    // and one hop is no longer enough to reach the line-23 outcome.
+    for (let hop = 0; hop < 8; hop += 1) {
+      await Promise.resolve();
+    }
   });
 }
 
@@ -292,6 +347,15 @@ function expectInfoLine(message: string): void {
 beforeEach(async () => {
   addTransactionMock.mockReset();
   addTransactionMock.mockResolvedValue(ADD_RESPONSE);
+  getLastTransactionMock.mockReset();
+  getLastTransactionMock.mockResolvedValue(LAST_TRANSACTION);
+  resolveTransactionKeysMock.mockReset();
+  resolveTransactionKeysMock.mockImplementation((acctId, tranCardNum) =>
+    Promise.resolve({
+      acctId: acctId === '' ? RESOLVED_ACCT_ID : acctId,
+      tranCardNum: tranCardNum === '' ? RESOLVED_CARD_NUM : tranCardNum,
+    }),
+  );
   signonMock.mockReset();
   await seedSignedOnSession(SIGNED_ON_USER, 'U');
 });
@@ -377,21 +441,21 @@ const REQUIRED_FIELD_CASES: ReadonlyArray<readonly [number, string]> = [
 
 describe('TranAddPage — required-field edits (COTRN02C)', () => {
   for (const [filledFields, message] of REQUIRED_FIELD_CASES) {
-    it(`stops the pass with "${message}"`, () => {
+    it(`stops the pass with "${message}"`, async () => {
       renderScreen();
       fillEntry(filledFields);
 
-      pressEnter();
+      await pressEnterAndSettle();
 
       expectErrorLine(message);
       expect(addTransactionMock).not.toHaveBeenCalled();
     });
   }
 
-  it('repositions the cursor onto the first field that failed its edit', () => {
+  it('repositions the cursor onto the first field that failed its edit', async () => {
     renderScreen();
 
-    pressEnter();
+    await pressEnterAndSettle();
 
     expectErrorLine(MESSAGES.acctOrCardRequired);
     expect(screen.getByLabelText(LABELS.acctId)).toHaveFocus();
@@ -399,27 +463,49 @@ describe('TranAddPage — required-field edits (COTRN02C)', () => {
 });
 
 describe('TranAddPage — (Y/N) confirmation gate', () => {
-  it('validates on the first ENTER, asks to confirm, and posts nothing yet', () => {
+  it('validates on the first ENTER, asks to confirm, and posts nothing yet', async () => {
     renderScreen();
     fillEntry();
 
-    pressEnter();
+    await pressEnterAndSettle();
 
     expectErrorLine(MESSAGES.confirmRequired);
     expect(addTransactionMock).not.toHaveBeenCalled();
     expect(screen.getByLabelText(LABELS.confirm)).toHaveFocus();
   });
 
-  it('rejects a confirmation value that is neither Y nor N', () => {
+  it('rejects a confirmation value that is neither Y nor N', async () => {
     renderScreen();
     fillEntry();
     enterField(LABELS.confirm, 'X');
 
-    pressEnter();
+    await pressEnterAndSettle();
 
     expectErrorLine(MESSAGES.invalidYesNo);
     expect(addTransactionMock).not.toHaveBeenCalled();
     expect(screen.getByLabelText(LABELS.confirm)).toHaveValue('X');
+  });
+
+  it('marks the control the rejection sends the cursor to', async () => {
+    // `COTRN02C` ends a failed edit with `MOVE -1 TO <field>L`, so the cursor names the
+    // field the row-23 message is about rather than leaving the operator to guess that
+    // something failed. It contains no `MOVE DFHRED`, so the field is not recoloured.
+    // The turn is awaited because the key-field edit that precedes the confirm edit is a
+    // lookup, so the rejection is published once that round trip has settled -- exactly
+    // as the sibling case above awaits it.
+    renderScreen();
+    fillEntry();
+    enterField(LABELS.confirm, 'X');
+
+    await pressEnterAndSettle();
+
+    expectErrorLine(MESSAGES.invalidYesNo);
+    const confirm = screen.getByLabelText(LABELS.confirm);
+    expect(confirm).toBeInvalid();
+    expect(confirm).toHaveClass('field');
+    expect(confirm).not.toHaveClass('fieldError');
+    expect(screen.getByLabelText(LABELS.acctId)).not.toBeInvalid();
+    expect(document.querySelectorAll('.fieldError')).toHaveLength(0);
   });
 
   it('accepts the lower-case y confirmation and forwards it verbatim', async () => {
@@ -468,6 +554,40 @@ describe('TranAddPage — server-generated transaction id', () => {
     expect(responseDeclaresTranId).toBe(true);
   });
 
+  it('replaces a standing rejection on the next turn and unmarks the field it faulted', async () => {
+    // Line 23 holds one message and one only, belonging to the CURRENT turn: a 3270
+    // repaints it on every SEND MAP. A rejection left standing beside a screen the
+    // operator has since corrected would attribute the fault to values that no longer
+    // carry it, and would leave the corrected control still announced as invalid.
+    renderScreen();
+    fillEntry();
+    enterField(LABELS.amount, 'not-a-number');
+
+    await pressEnterAndSettle();
+    expectErrorLine(MESSAGES.amountFormat);
+    expect(screen.getByLabelText(LABELS.amount)).toHaveAttribute('aria-invalid', 'true');
+
+    enterField(LABELS.amount, '-00000100.00');
+    await pressEnterAndSettle();
+
+    // The corrected value now clears every data edit, so the turn reaches the CONFIRMI
+    // evaluation and publishes its own prompt in place of the stale rejection.
+    expectErrorLine(MESSAGES.confirmRequired);
+    expect(screen.getByLabelText(LABELS.amount)).not.toHaveAttribute('aria-invalid');
+    expect(screen.getByLabelText(LABELS.confirm)).toHaveAttribute('aria-invalid', 'true');
+  });
+
+  it('marks a rejected entry field invalid without reddening it', () => {
+    // COTRN02C contains no `MOVE DFHRED` anywhere: the add screen never recolours a
+    // field, so a rejected entry is marked for assistive technology alone. Painting a
+    // red box would be observable output the program does not produce (AAP 0.7.2 Rule 5).
+    renderScreen();
+
+    expect(
+      Array.from(document.querySelectorAll('.fieldError')),
+    ).toHaveLength(0);
+  });
+
   it('surfaces the server-assigned tranId and clears the screen', async () => {
     renderScreen();
     fillEntry();
@@ -509,8 +629,12 @@ describe('TranAddPage — server-generated transaction id', () => {
     await pressEnterAndSettle();
 
     const request = addTransactionMock.mock.calls[0][0];
-    expect(request).not.toHaveProperty('acctId');
     expect(request.tranCardNum).toBe('4111111111111111');
+    // ``MOVE XREF-ACCT-ID TO ACTIDINI``: reading by card writes the account back onto
+    // the map, so the key the operator did not supply is on the screen and travels
+    // with the request.
+    expect(request.acctId).toBe(RESOLVED_ACCT_ID);
+    expect(resolveTransactionKeysMock).toHaveBeenCalledWith('', '4111111111111111');
     expect(request).not.toHaveProperty('tranId');
   });
 
@@ -533,35 +657,35 @@ describe('TranAddPage — server-generated transaction id', () => {
 });
 
 describe('TranAddPage — cancelling the add', () => {
-  it('posts nothing when the confirmation is N', () => {
+  it('posts nothing when the confirmation is N', async () => {
     renderScreen();
     fillEntry();
     enterField(LABELS.confirm, 'N');
 
-    pressEnter();
+    await pressEnterAndSettle();
 
     expect(addTransactionMock).not.toHaveBeenCalled();
     expectErrorLine(MESSAGES.confirmRequired);
     expect(screen.getByLabelText(LABELS.confirm)).toHaveValue('');
   });
 
-  it('posts nothing when the confirmation is lower-case n', () => {
+  it('posts nothing when the confirmation is lower-case n', async () => {
     renderScreen();
     fillEntry();
     enterField(LABELS.confirm, 'n');
 
-    pressEnter();
+    await pressEnterAndSettle();
 
     expect(addTransactionMock).not.toHaveBeenCalled();
     expectErrorLine(MESSAGES.confirmRequired);
   });
 
-  it('keeps the entered fields on screen after a cancelled add', () => {
+  it('keeps the entered fields on screen after a cancelled add', async () => {
     renderScreen();
     fillEntry();
     enterField(LABELS.confirm, 'N');
 
-    pressEnter();
+    await pressEnterAndSettle();
 
     expect(screen.getByLabelText(LABELS.amount)).toHaveValue('-00000100.00');
     expect(screen.getByLabelText(LABELS.description)).toHaveValue(
@@ -602,11 +726,11 @@ describe('TranAddPage — line-24 function keys', () => {
     expect(screen.getByTestId('tranListRoute')).toBeInTheDocument();
   });
 
-  it('F4=Clear empties every field and the line-23 region', () => {
+  it('F4=Clear empties every field and the line-23 region', async () => {
     renderScreen();
     fillEntry();
     enterField(LABELS.confirm, 'N');
-    pressEnter();
+    await pressEnterAndSettle();
     expectErrorLine(MESSAGES.confirmRequired);
 
     fireEvent.click(screen.getByRole('button', { name: 'F4=Clear' }));
@@ -648,8 +772,13 @@ describe('TranAddPage — in-flight duplicate-add guard', () => {
     fillEntry();
     enterField(LABELS.confirm, 'Y');
 
-    act(() => {
+    // ENTER opens with the VALIDATE-INPUT-KEY-FIELDS cross-reference read, so the POST
+    // is only reached once that has settled.
+    await act(async () => {
       pressEnter();
+      for (let hop = 0; hop < 8; hop += 1) {
+        await Promise.resolve();
+      }
     });
 
     // ``ATTRB=ASKIP`` for the whole in-flight interval: the operator cannot retype a
@@ -658,11 +787,24 @@ describe('TranAddPage — in-flight duplicate-add guard', () => {
       expect(screen.getByLabelText(label)).toBeDisabled();
     }
     expect(screen.getByLabelText(LABELS.confirm)).toBeDisabled();
+    // The keyboard is locked for the same interval, so the row-24 legend renders
+    // inactive too rather than inviting an AID the screen would discard.
+    for (const label of [
+      'ENTER=Continue',
+      'F3=Back',
+      'F4=Clear',
+      'F5=Copy Last Tran.',
+    ]) {
+      expect(screen.getByRole('button', { name: label })).toBeDisabled();
+    }
 
     // A second ENTER, from the legend and from the physical key, must not post again.
-    act(() => {
+    await act(async () => {
       pressEnter();
       fireEvent.keyDown(document, { key: 'Enter' });
+      for (let hop = 0; hop < 8; hop += 1) {
+        await Promise.resolve();
+      }
     });
     expect(addTransactionMock).toHaveBeenCalledTimes(1);
 
@@ -678,3 +820,98 @@ describe('TranAddPage — in-flight duplicate-add guard', () => {
   });
 });
 
+
+/* ------------------------------------------------------------------ */
+/* VALIDATE-INPUT-KEY-FIELDS runs before VALIDATE-INPUT-DATA-FIELDS   */
+/* ------------------------------------------------------------------ */
+
+describe('TranAddPage — key-field edit order (PROCESS-ENTER-KEY)', () => {
+  it('reports a key that is not on file before any empty data field', async () => {
+    // PROCESS-ENTER-KEY performs VALIDATE-INPUT-KEY-FIELDS and only then
+    // VALIDATE-INPUT-DATA-FIELDS, and the cross-reference reads live inside the first
+    // paragraph. An account that does not exist is therefore reported even though every
+    // data field is still empty.
+    resolveTransactionKeysMock.mockRejectedValueOnce(
+      new ApiError(404, MESSAGES.acctIdNotFound),
+    );
+    renderScreen();
+    enterField(LABELS.acctId, '00000000099');
+
+    await pressEnterAndSettle();
+
+    expectErrorLine(MESSAGES.acctIdNotFound);
+    expect(addTransactionMock).not.toHaveBeenCalled();
+    expect(screen.getByLabelText(LABELS.acctId)).toHaveFocus();
+  });
+
+  it('places the cursor on the card field when the card is not on file', async () => {
+    // READ-CCXREF-FILE ends its NOTFND branch with ``MOVE -1 TO CARDNINL``.
+    resolveTransactionKeysMock.mockRejectedValueOnce(
+      new ApiError(404, MESSAGES.cardNumberNotFound),
+    );
+    renderScreen();
+    enterField(LABELS.cardNum, '9999999999999999');
+
+    await pressEnterAndSettle();
+
+    expectErrorLine(MESSAGES.cardNumberNotFound);
+    expect(screen.getByLabelText(LABELS.cardNum)).toHaveFocus();
+  });
+
+  it('does not read the cross-reference for a key that fails its shape edit', async () => {
+    renderScreen();
+    enterField(LABELS.acctId, 'ABCDEFGHIJK');
+
+    await pressEnterAndSettle();
+
+    expectErrorLine(MESSAGES.acctIdNumeric);
+    expect(resolveTransactionKeysMock).not.toHaveBeenCalled();
+  });
+
+  it('writes the counterpart key back onto the map', async () => {
+    renderScreen();
+    enterField(LABELS.acctId, '00000000011');
+
+    await pressEnterAndSettle();
+
+    expect(screen.getByLabelText(LABELS.cardNum)).toHaveValue(RESOLVED_CARD_NUM);
+  });
+});
+
+describe('TranAddPage — F5=Copy Last Tran. (COPY-LAST-TRAN-DATA)', () => {
+  /** :purpose: Activate the ``F5=Copy Last Tran.`` key and flush its round trips. */
+  async function pressCopyLastAndSettle(): Promise<void> {
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'F5=Copy Last Tran.' }));
+      for (let hop = 0; hop < 12; hop += 1) {
+        await Promise.resolve();
+      }
+    });
+  }
+
+  it('refuses a copy with no key, before reading anything', async () => {
+    // The paragraph opens with PERFORM VALIDATE-INPUT-KEY-FIELDS.
+    renderScreen();
+
+    await pressCopyLastAndSettle();
+
+    expectErrorLine(MESSAGES.acctOrCardRequired);
+    expect(getLastTransactionMock).not.toHaveBeenCalled();
+    expect(screen.getByLabelText(LABELS.acctId)).toHaveFocus();
+  });
+
+  it('copies the last transaction and then asks for the confirmation', async () => {
+    // The paragraph closes with PERFORM PROCESS-ENTER-KEY, so the copied screen comes
+    // to rest on the confirmation gate rather than looking already submitted.
+    renderScreen();
+    enterField(LABELS.acctId, '00000000011');
+
+    await pressCopyLastAndSettle();
+
+    expect(getLastTransactionMock).toHaveBeenCalledTimes(1);
+    expect(screen.getByLabelText(LABELS.description)).toHaveValue(LAST_TRANSACTION.tranDesc);
+    expectErrorLine(MESSAGES.confirmRequired);
+    expect(addTransactionMock).not.toHaveBeenCalled();
+    expect(screen.getByLabelText(LABELS.confirm)).toHaveFocus();
+  });
+});

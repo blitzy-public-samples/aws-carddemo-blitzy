@@ -91,6 +91,52 @@ public class BatchOutputPathResolver {
     }
 
     /**
+     * :purpose: Resolve a requested file name to a PER-RUN generation of it, reproducing the
+     *  generation-data-group allocation the legacy job streams used for their deliverables.
+     * :param requested: the configured base file name (for example ``dalyrejs.txt``).
+     * :param generation: the run's generation number; the job execution id is used, so the
+     *  name is unique for all time, ordered by run, and directly resolvable in
+     *  ``BATCH_JOB_EXECUTION``.
+     * :returns: the canonical {@link Path} of that generation, confined to the output root.
+     * :throws IllegalArgumentException: when the request is blank, escapes the root, or
+     *  resolves through a symlink that leaves the root.
+     * :note: The generation is inserted BEFORE the extension - ``dalyrejs.txt`` with
+     *  generation 33 becomes ``dalyrejs.G0033V00.txt`` - so the name carries the legacy
+     *  ``Gnnnnvnn`` generation shape (``AWS.M2.CARDDEMO.DALYREJS.G0001V00``) while keeping
+     *  the extension the repository's ``.gitignore`` matches. A run's own generation is
+     *  still removed when its step fails, exactly as ``DISP=(NEW,CATLG,DELETE)`` deletes the
+     *  generation it created on an abend; what can no longer happen is one run destroying
+     *  ANOTHER run's generation [app/jcl/POSTTRAN.jcl].
+     * :note: A negative or zero generation is not special-cased: Spring Batch execution ids
+     *  start at 1, and formatting is width-4 minimum without truncation, so a five-digit id
+     *  widens the field rather than wrapping onto an earlier generation.
+     */
+    public Path resolveOutputGeneration(String requested, long generation) {
+        if (requested == null || requested.isBlank()) {
+            throw new IllegalArgumentException("Batch file path must not be blank");
+        }
+        return resolve(outputRoot, generationName(requested, generation), true);
+    }
+
+    /**
+     * :purpose: Insert a ``Gnnnnv00`` generation qualifier before the extension of a file
+     *  name, leaving any directory prefix untouched.
+     * :param requested: the base file name, possibly carrying a relative directory prefix.
+     * :param generation: the generation number.
+     * :returns: the generation-qualified name.
+     */
+    private static String generationName(String requested, long generation) {
+        String qualifier = String.format(".G%04dV00", generation);
+        int lastSeparator = Math.max(requested.lastIndexOf('/'), requested.lastIndexOf('\\'));
+        int dot = requested.lastIndexOf('.');
+        if (dot <= lastSeparator + 1) {
+            // No extension on the file-name component (a leading dot is part of the name).
+            return requested + qualifier;
+        }
+        return requested.substring(0, dot) + qualifier + requested.substring(dot);
+    }
+
+    /**
      * :purpose: Resolve a requested file name to a path confined to the input
      *  root for reading the daily-transaction feed.
      * :param requested: the ``inputFile`` job-parameter value; a relative name is

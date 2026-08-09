@@ -412,7 +412,7 @@
     {
       "id": 8,
       "type": "timeseries",
-      "title": "Latency Quantiles \u2014 Global (p50/p95/p99)",
+      "title": "Latency Quantiles — Global (p50/p95/p99)",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -1222,7 +1222,7 @@
     {
       "id": 18,
       "type": "row",
-      "title": "PostgreSQL \u2014 HikariCP (pool / latency / errors)",
+      "title": "PostgreSQL — HikariCP (pool / latency / errors)",
       "collapsed": false,
       "gridPos": {
         "h": 1,
@@ -1235,7 +1235,7 @@
     {
       "id": 19,
       "type": "timeseries",
-      "title": "DB Pool \u2014 Connections Active",
+      "title": "DB Pool — Connections Active",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -1328,7 +1328,7 @@
     {
       "id": 20,
       "type": "timeseries",
-      "title": "DB Pool \u2014 Pending (threads waiting)",
+      "title": "DB Pool — Pending (threads waiting)",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -1607,7 +1607,7 @@
     {
       "id": 23,
       "type": "row",
-      "title": "Redis \u2014 Lettuce (rate / latency)",
+      "title": "Redis — Lettuce (rate / latency)",
       "collapsed": false,
       "gridPos": {
         "h": 1,
@@ -1795,7 +1795,6 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (job) (rate(lettuce_command_completion_seconds_sum{job=~\"$job\"}[$__rate_interval])) / sum by (job) (rate(lettuce_command_completion_seconds_count{job=~\"$job\"}[$__rate_interval]))",
           "expr": "sum by (job) (rate(lettuce_seconds_sum{job=~\"$job\"}[$__rate_interval])) / clamp_min(sum by (job) (rate(lettuce_seconds_count{job=~\"$job\"}[$__rate_interval])), 1)",
           "legendFormat": "{{job}}",
           "range": true,
@@ -1996,7 +1995,7 @@
           },
           "editorMode": "code",
           "expr": "sum by (spring_batch_job_name, spring_batch_job_status) (spring_batch_job_seconds_count{job=~\"$job\"})",
-          "legendFormat": "{{spring_batch_job_name}} \u2014 {{spring_batch_job_status}}",
+          "legendFormat": "{{spring_batch_job_name}} — {{spring_batch_job_status}}",
           "range": true,
           "instant": false,
           "refId": "A"
@@ -2209,7 +2208,7 @@
     {
       "id": 32,
       "type": "timeseries",
-      "title": "Batch Item Read / Process Rate",
+      "title": "Batch Items Read / Processed",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -2228,7 +2227,7 @@
           "custom": {
             "axisCenteredZero": false,
             "axisColorMode": "text",
-            "axisLabel": "",
+            "axisLabel": "items",
             "axisPlacement": "auto",
             "barAlignment": 0,
             "drawStyle": "line",
@@ -2265,7 +2264,7 @@
               }
             ]
           },
-          "unit": "ops"
+          "unit": "short"
         },
         "overrides": []
       },
@@ -2291,8 +2290,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(spring_batch_item_read_seconds_count{job=~\"$job\"}[$__rate_interval]))",
-          "legendFormat": "items read/s",
+          "expr": "sum(spring_batch_item_read_seconds_count{job=~\"$job\"})",
+          "legendFormat": "items read",
           "range": true,
           "instant": false,
           "refId": "A"
@@ -2303,8 +2302,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(spring_batch_item_process_seconds_count{job=~\"$job\"}[$__rate_interval]))",
-          "legendFormat": "items processed/s",
+          "expr": "sum(spring_batch_item_process_seconds_count{job=~\"$job\"})",
+          "legendFormat": "items processed",
           "range": true,
           "instant": false,
           "refId": "B"
@@ -2333,7 +2332,7 @@
           "custom": {
             "axisCenteredZero": false,
             "axisColorMode": "text",
-            "axisLabel": "",
+            "axisLabel": "chunk writes",
             "axisPlacement": "auto",
             "barAlignment": 0,
             "drawStyle": "line",
@@ -2370,7 +2369,7 @@
               }
             ]
           },
-          "unit": "ops"
+          "unit": "short"
         },
         "overrides": []
       },
@@ -2396,7 +2395,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum by (spring_batch_chunk_write_step_name) (rate(spring_batch_chunk_write_seconds_count{job=~\"$job\"}[$__rate_interval]))",
+          "expr": "sum by (spring_batch_chunk_write_step_name) (spring_batch_chunk_write_seconds_count{job=~\"$job\"})",
           "legendFormat": "{{spring_batch_chunk_write_step_name}}",
           "range": true,
           "instant": false,
@@ -2556,7 +2555,7 @@
   },
   "timepicker": {},
   "timezone": "",
-  "title": "CardDemo \u2014 Services Observability",
+  "title": "CardDemo — Services Observability",
   "uid": "carddemo-observability",
   "version": 1,
   "weekStart": ""

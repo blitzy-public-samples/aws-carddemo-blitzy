@@ -43,6 +43,15 @@ global:
     application: carddemo
     environment: local
 
+# Alerting rules — the paging counterpart to the Grafana dashboard. The file is
+# mounted read-only next to this one by docker-compose.yml, and every threshold in
+# it is a number the project already commits to (the 200 ms p95 target and the
+# 4-hour batch window of AAP 0.7.1). Prometheus evaluates them at the global
+# evaluation_interval and exposes them through /api/v1/rules and /api/v1/alerts; no
+# Alertmanager is configured in the local stack, so nothing is dispatched.
+rule_files:
+  - /etc/prometheus/alert-rules.yml
+
 scrape_configs:
   # --- Prometheus self-monitoring -------------------------------------------
   - job_name: prometheus

@@ -61,17 +61,19 @@ import static org.mockito.Mockito.when;
  *  and verifies the behaviours a Mockito unit test cannot: full-context wiring, real
  *  atomic persistence of the payment ``Transaction`` alongside the zeroed account
  *  balance, and the database-sequence-driven 16-digit zero-padded transaction id.
- * :note: ``billpay-service`` is online-only — no batch, no security module and no
- *  Redis at test time (the ``test`` profile excludes the Redis and Spring Session
- *  auto-configuration). The service owns no tables and ships no migrations, so this
- *  test self-provisions the schema through Hibernate ``create-drop`` over the shared
- *  ``carddemo-common`` entities and explicitly creates the ``transaction_id_seq``
- *  sequence that ``TransactionRepository.getNextTransactionId()`` draws from.
+ * :note: ``billpay-service`` is online-only — no batch and no Redis at test time (the
+ *  ``test`` profile excludes the Redis and Spring Session auto-configuration). The
+ *  service owns no tables and ships no migrations, so the schema under test comes from
+ *  the shared, already-migrated container
+ *  (:java:class:`com.carddemo.common.testsupport.MigratedSchemaContainer`) and Hibernate
+ *  runs at ``ddl-auto: validate``, which turns the shared ``carddemo-common`` entity
+ *  mappings into an assertion against the committed migrations rather than letting
+ *  Hibernate manufacture the schema.
  */
 @SpringBootTest
 @ActiveProfiles("test")
 @Testcontainers
-public class BillPaymentIntegrationTest {
+public class BillPaymentIntegrationIT {
 
     /*
      * The PII encryption key CryptoConverter fails fast without is supplied by this
@@ -86,8 +88,8 @@ public class BillPaymentIntegrationTest {
     /**
      * :purpose: Idempotent guard for ``transaction_id_seq``, the sequence backing
      *  ``TransactionRepository.getNextTransactionId()``. The sequence is created by the
-     *  transaction-service migration ``V4__create_transaction_id_sequence.sql``; the
-     *  ``IF NOT EXISTS`` form keeps the fixture reset self-contained without redefining it.
+     *  shared migration ``V1__create_schema.sql``; the ``IF NOT EXISTS`` form keeps the
+     *  fixture reset self-contained without redefining it.
      */
     private static final String TRANSACTION_ID_SEQ =
             "CREATE SEQUENCE IF NOT EXISTS transaction_id_seq AS BIGINT START WITH 1 INCREMENT BY 1";
@@ -297,10 +299,14 @@ public class BillPaymentIntegrationTest {
     /**
      * :purpose: Build a confirmed (``Y``) bill-payment request for the supplied account.
      * :param acctId: the account identifier to pay.
-     * :returns: a request DTO whose account id is the zero-safe string form of ``acctId``.
+     * :returns: a request DTO whose account id is rendered at the declared key width.
+     * :note: Zero-padded to eleven digits because that is what the screen field holds:
+     *  ``ACTIDIN`` is ``LENGTH=11``, ``ACCT-ID`` is ``PIC 9(11)`` and the VSAM catalogue
+     *  records ``KEYLEN 11``. The service accepts only that exact width, so a narrower
+     *  literal would take the not-found path rather than the case under test.
      */
     static BillPaymentRequestDto confirmedRequest(long acctId) {
-        return new BillPaymentRequestDto(Long.toString(acctId), "Y");
+        return new BillPaymentRequestDto(String.format("%011d", acctId), "Y");
     }
 
     /**
@@ -418,19 +424,24 @@ public class BillPaymentIntegrationTest {
 
     /**
      * :purpose: An account whose balance is not positive must surface the verbatim
-     *  ``COBIL00C`` "nothing to pay" outcome as a {@link CardDemoException} (HTTP 400) and
-     *  must not record any transaction.
+     *  ``COBIL00C`` "nothing to pay" outcome WITH the balance beside it, and must not
+     *  record any transaction.
+     * :note: The outcome is a response rather than an exception because ``COBIL00C`` moves
+     *  ``ACCT-CURR-BAL`` into ``CURBALI`` at L193-194, before the ``IF ACCT-CURR-BAL <=
+     *  ZEROS`` test at L198: the map send that carries this message carries the balance.
      */
     @Test
-    @DisplayName("non-positive balance throws CardDemoException and records nothing")
+    @DisplayName("non-positive balance returns the balance with the message and records nothing")
     void nothingToPayWhenBalanceNotPositive() {
         seedAccount(jdbcTemplate, ACCT_ID_1, ZERO_BALANCE);
 
-        assertThatThrownBy(() ->
-                billPaymentService.processBillPayment(confirmedRequest(ACCT_ID_1), session()))
-                .isInstanceOf(CardDemoException.class)
-                .hasMessage(MSG_NOTHING_TO_PAY);
+        BillPaymentResponseDto response =
+                billPaymentService.processBillPayment(confirmedRequest(ACCT_ID_1), session());
 
+        assertThat(response.getErrorMessage()).isEqualTo(MSG_NOTHING_TO_PAY);
+        assertThat(response.getMessage()).isNull();
+        assertThat(response.getCurrentBalance()).isEqualByComparingTo(ZERO_BALANCE);
+        assertThat(response.getTransactionId()).isNull();
         assertThat(transactionRepository.count()).isZero();
     }
 

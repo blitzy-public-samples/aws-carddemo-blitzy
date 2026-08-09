@@ -18,11 +18,15 @@ package com.carddemo.common.config;
 
 import com.carddemo.common.dto.BillPaymentRequestDto;
 import com.carddemo.common.exception.CardDemoException;
+import com.carddemo.common.exception.FieldValidationException;
 import com.carddemo.common.exception.RecordNotFoundException;
+import com.carddemo.common.exception.UpstreamUnavailableException;
 import jakarta.validation.Valid;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.dao.QueryTimeoutException;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
@@ -33,10 +37,13 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.List;
+
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -88,7 +95,21 @@ class ErrorEnvelopeTest {
          */
         @GetMapping("/business")
         String business() {
-            throw new CardDemoException("Account number must be a non zero 11 digit number");
+            // A literal a program actually MOVEs: COACTVWC:L672. The 88-level
+            // 'Account number must be a non zero 11 digit number' is declared by
+            // COACTVWC/COACTUPC and SET by neither, so it is not used as a probe.
+            throw new CardDemoException("Account Filter must  be a non-zero 11 digit number");
+        }
+
+        /**
+         * :purpose: Endpoint that raises a named-field input edit failure covering two
+         *  members, as a legacy cross-field edit does.
+         * :returns: never returns normally.
+         */
+        @GetMapping("/fieldedit")
+        String fieldEdit() {
+            throw new FieldValidationException(null,
+                    List.of("custAddrStateCd", "custAddrZip"), "Invalid zip code for state");
         }
 
         /**
@@ -100,6 +121,48 @@ class ErrorEnvelopeTest {
         @GetMapping("/typed")
         String typed(@RequestParam int page) {
             return String.valueOf(page);
+        }
+
+        /**
+         * :purpose: Endpoint that raises an unreachable-collaborator failure carrying a
+         *  frozen legacy literal.
+         * :returns: never returns normally.
+         */
+        @GetMapping("/unreachable")
+        String unreachable() {
+            throw new UpstreamUnavailableException("Unable to Write TDQ (JOBS)...");
+        }
+
+        /**
+         * :purpose: Endpoint whose datastore cannot be REACHED, as when Redis or
+         *  PostgreSQL is down, so the advice's outage mapping is exercised.
+         * :returns: never returns.
+         */
+        @GetMapping("/datastore-unreachable")
+        String datastoreUnreachable() {
+            throw new org.springframework.dao.DataAccessResourceFailureException(
+                    "Unable to connect to Redis at redis:6379");
+        }
+
+        /**
+         * :purpose: Endpoint whose datastore REJECTED the statement, which must stay a
+         *  500 rather than being downgraded to an outage.
+         * :returns: never returns.
+         */
+        @GetMapping("/rejected")
+        String rejected() {
+            throw new org.springframework.dao.DataIntegrityViolationException(
+                    "could not execute statement");
+        }
+
+        /**
+         * :purpose: Endpoint that raises the failure a session-store or datastore command
+         *  timeout is translated into.
+         * :returns: never returns normally.
+         */
+        @GetMapping("/timeout")
+        String timeout() {
+            throw new QueryTimeoutException("Redis command timed out");
         }
     }
 
@@ -179,6 +242,23 @@ class ErrorEnvelopeTest {
      * :raises Exception: propagated from MockMvc.
      */
     @Test
+    @DisplayName("a field edit failure names every faulted member in the envelope")
+    void fieldEditFailureNamesItsMembers() throws Exception {
+        mockMvc.perform(get("/probe/fieldedit"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.status").value(400))
+                .andExpect(jsonPath("$.message").value("Invalid zip code for state"))
+                .andExpect(jsonPath("$.fieldErrors.custAddrStateCd")
+                        .value("Invalid zip code for state"))
+                .andExpect(jsonPath("$.fieldErrors.custAddrZip")
+                        .value("Invalid zip code for state"));
+    }
+
+    /**
+     * :purpose: A parameter type mismatch answers 400 inside the documented envelope.
+     * :raises Exception: propagated from MockMvc.
+     */
+    @Test
     @DisplayName("a parameter type mismatch carries the documented envelope")
     void typeMismatchCarriesEnvelope() throws Exception {
         mockMvc.perform(get("/probe/typed").param("page", "abc"))
@@ -203,27 +283,34 @@ class ErrorEnvelopeTest {
         mockMvc.perform(get("/probe/business"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.message")
-                        .value("Account number must be a non zero 11 digit number"));
+                        .value("Account Filter must  be a non-zero 11 digit number"));
     }
 
     /**
      * :purpose: A bean-validation failure reports exactly ONE message - the legacy
-     *  literal of the first field in screen order - and never the framework's
-     *  generic size text nor an invented summary.
+     *  literal of the violated field - and never the framework's generic size text
+     *  nor an invented summary. The account id carries NO width constraint, so an
+     *  over-width value is not a bean-validation failure at all: COBIL00C performs no
+     *  numeric or width edit and answers every unreadable key with the single literal
+     *  'Account ID NOT found...', which BillPaymentService raises.
      * :raises Exception: propagated from MockMvc.
      */
     @Test
-    @DisplayName("validation reports exactly one COBOL literal, in screen order")
+    @DisplayName("validation reports exactly one COBOL literal, and only for constrained fields")
     void validationReportsSingleLiteralInScreenOrder() throws Exception {
         mockMvc.perform(put("/probe/validated").contentType(MediaType.APPLICATION_JSON)
                         .content("{\"accountId\":\"123456789012\",\"confirm\":\"YESPLEASE\"}"))
                 .andExpect(status().isBadRequest())
-                // accountId is declared first, exactly as the COBIL00C screen edits it.
                 .andExpect(jsonPath("$.message")
-                        .value("Account number must be a non zero 11 digit number"))
-                .andExpect(jsonPath("$.fieldErrors.accountId")
-                        .value("Account number must be a non zero 11 digit number"))
-                .andExpect(jsonPath("$.fieldErrors.confirm").doesNotExist());
+                        .value("Invalid value. Valid values are (Y/N)..."))
+                .andExpect(jsonPath("$.fieldErrors.confirm")
+                        .value("Invalid value. Valid values are (Y/N)..."))
+                .andExpect(jsonPath("$.fieldErrors.accountId").doesNotExist());
+
+        // The same over-width account id, alone, is accepted by the request contract.
+        mockMvc.perform(put("/probe/validated").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"accountId\":\"123456789012\",\"confirm\":\"\"}"))
+                .andExpect(status().isOk());
     }
 
     /**
@@ -240,5 +327,78 @@ class ErrorEnvelopeTest {
                 .andExpect(jsonPath("$.message").value("Invalid value. Valid values are (Y/N)..."))
                 .andExpect(jsonPath("$.fieldErrors.confirm")
                         .value("Invalid value. Valid values are (Y/N)..."));
+    }
+
+    /**
+     * :purpose: A collaborator that could not be reached reports ``503`` with a
+     *  ``Retry-After`` hint and keeps its frozen legacy message byte-for-byte, so a caller
+     *  can tell an outage apart from a rejected request without the observable text
+     *  changing.
+     * :raises Exception: propagated from MockMvc.
+     */
+    @Test
+    @DisplayName("an unreachable collaborator reports 503 and keeps its frozen message")
+    void unreachableCollaboratorReports503() throws Exception {
+        mockMvc.perform(get("/probe/unreachable"))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(header().string(HttpHeaders.RETRY_AFTER, "10"))
+                .andExpect(jsonPath("$.status").value(503))
+                .andExpect(jsonPath("$.error").value("Service Unavailable"))
+                .andExpect(jsonPath("$.message").value("Unable to Write TDQ (JOBS)..."))
+                .andExpect(jsonPath("$.path").value("/probe/unreachable"));
+    }
+
+    /**
+     * :purpose: An UNREACHABLE datastore answers 503 with the documented envelope and the
+     *  shared outage message -- the same detail the pre-dispatcher filter writes, so the
+     *  contract does not depend on where the outage was detected -- and the datastore's
+     *  address never reaches the body.
+     * :raises Exception: propagated from MockMvc.
+     */
+    @Test
+    @DisplayName("an unreachable datastore answers 503 with the outage envelope")
+    void unreachableDatastoreAnswers503() throws Exception {
+        mockMvc.perform(get("/probe/datastore-unreachable"))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(header().string(HttpHeaders.RETRY_AFTER, "10"))
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("$.status").value(503))
+                .andExpect(jsonPath("$.error").value("Service Unavailable"))
+                .andExpect(jsonPath("$.message").value(DatastoreOutageErrorFilter.MESSAGE))
+                .andExpect(jsonPath("$.path").value("/probe/datastore-unreachable"))
+                .andExpect(content().string(org.hamcrest.Matchers.not(
+                        org.hamcrest.Matchers.containsString("redis:6379"))));
+    }
+
+    /**
+     * :purpose: A session-store or datastore command timeout is the same outage: ``503``
+     *  with a ``Retry-After`` hint rather than the ``500`` the generic data-access mapping
+     *  would report, and no driver detail is disclosed.
+     * :raises Exception: propagated from MockMvc.
+     */
+    @Test
+    @DisplayName("a store timeout reports 503 rather than 500 and discloses no driver detail")
+    void storeTimeoutReports503() throws Exception {
+        mockMvc.perform(get("/probe/timeout"))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(header().string(HttpHeaders.RETRY_AFTER, "10"))
+                .andExpect(jsonPath("$.status").value(503))
+                .andExpect(jsonPath("$.message").value(DatastoreOutageErrorFilter.MESSAGE))
+                .andExpect(content().string(org.hamcrest.Matchers.not(
+                        org.hamcrest.Matchers.containsString("Redis command timed out"))));
+    }
+
+    /**
+     * :purpose: A statement the datastore itself REJECTED stays a 500: only an
+     *  unreachable datastore is an outage, so the narrower 503 mapping must not swallow
+     *  the general data-access failure.
+     * :raises Exception: propagated from MockMvc.
+     */
+    @Test
+    @DisplayName("a rejected statement still answers 500")
+    void rejectedStatementStillAnswers500() throws Exception {
+        mockMvc.perform(get("/probe/rejected"))
+                .andExpect(status().isInternalServerError())
+                .andExpect(jsonPath("$.status").value(500));
     }
 }

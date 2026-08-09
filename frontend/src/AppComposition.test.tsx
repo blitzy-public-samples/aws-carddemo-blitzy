@@ -18,10 +18,11 @@
  * :note: The adapter models the server, not just the wire: a successful
  *     ``POST /logout`` clears the identity, so the next ``GET /session`` answers
  *     ``401`` exactly as a revoked Spring Session would.
- * :note: jsdom implements no navigation, so the browser path is parked on
- *     ``/signon`` — the one path for which the client's expiry handling skips
- *     ``location.assign``. The SPA's own route is driven independently by
- *     ``MemoryRouter``, which is where the redirect is asserted.
+ * :note: The client performs NO browser navigation on an expiry — dropping the local
+ *     authority is what moves the operator, and the route guard makes the hop
+ *     client-side. The SPA's route is driven by ``MemoryRouter``, which is where that
+ *     hop is asserted; the jsdom browser path is asserted to be untouched, which is
+ *     what proves the application was not re-downloaded to report the expiry.
  */
 
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -30,12 +31,20 @@ import type { ReactElement } from 'react';
 import type { AxiosAdapter, InternalAxiosRequestConfig } from 'axios';
 import apiClient from './api/client';
 import App from './App';
-import { resolveSessionFromServer } from './testing/sessionHarness';
+import { resolveSessionFromServer, withdrawSessionNotice } from './testing/sessionHarness';
+import { SESSION_ENDED_MESSAGE } from './hooks/useSession';
 import type { MenuResponseDto, Role, SessionIdentityDto } from './types';
 import { CDEMO_USRTYP_ADMIN, CDEMO_USRTYP_USER } from './types';
 
 /** Client route of the sign-on screen (``COSGN00`` / ``CC00``). */
 const SIGNON_ROUTE = '/signon';
+
+/**
+ * Browser path each test parks jsdom on. It deliberately is NOT a client route: an
+ * expiry that left it unchanged proves the operator reached the sign-on screen through
+ * the router rather than through a document navigation.
+ */
+const BROWSER_PARK_PATH = '/parked-browser-path';
 
 /** Client route of the main menu (``COMEN01`` / ``CM00``). */
 const MAIN_MENU_ROUTE = '/menu';
@@ -61,7 +70,6 @@ const MENU_RESPONSE: MenuResponseDto = {
       optionNumber: 1,
       optionName: 'Account View',
       programName: 'COACTVWC',
-      targetRoute: '/accounts',
     },
   ],
   message: null,
@@ -230,6 +238,12 @@ async function expectScreen(programName: string): Promise<void> {
   await waitFor(() => {
     expect(screen.getByTestId('pgm-name')).toHaveTextContent(programName);
   });
+  // A screen is only ready for an attention identifier once its own read has
+  // completed: the shell holds the keyboard locked, and shows `X SYSTEM`, for as long
+  // as the transaction is outstanding, exactly as the terminal does.
+  await waitFor(() => {
+    expect(screen.getByTestId('screen-busy')).toBeEmptyDOMElement();
+  });
 }
 
 beforeEach(() => {
@@ -237,9 +251,9 @@ beforeEach(() => {
   serverIdentity = null;
   accountReadStatus = 200;
   sessionProbeGate = null;
-  // The browser path the client's expiry handling treats as "already there", so the
-  // unimplemented jsdom navigation is never attempted.
-  window.history.pushState({}, '', SIGNON_ROUTE);
+  // A known browser path to compare against: an expiry must leave it exactly here,
+  // because the hop to the sign-on screen is the router's to make, not the browser's.
+  window.history.pushState({}, '', BROWSER_PARK_PATH);
   apiClient.defaults.adapter = serve as unknown as AxiosAdapter;
 });
 
@@ -251,6 +265,9 @@ afterEach(async () => {
   cleanup();
   serverIdentity = null;
   await resolveSessionFromServer();
+  // A session-ended notice outlives the test that raised it, so it is withdrawn before
+  // the next test looks at a message region.
+  withdrawSessionNotice();
 });
 
 describe('App composition — session bootstrap over GET /session', () => {
@@ -306,11 +323,21 @@ describe('App composition — a 401 revokes the session in flight', () => {
     accountReadStatus = 401;
     serverIdentity = null;
 
+    const browserPathBefore = window.location.href;
+
     renderAt(`/accounts/${ACCOUNT_ID}`);
 
     await expectScreen('COSGN00C');
     expect(screen.getByTestId('location')).toHaveTextContent(SIGNON_ROUTE);
     expect(authenticatedFlag()).toBe('false');
+    // The sign-on screen the operator lands on says why they are there, rather than
+    // presenting a blank screen that looks like they were never signed on.
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toHaveTextContent(SESSION_ENDED_MESSAGE);
+    });
+    // And the document itself never navigated: the SPA was not re-downloaded, so
+    // anything the operator had typed on the way out was not destroyed by a reload.
+    expect(window.location.href).toBe(browserPathBefore);
   });
 
   it('leaves the session in place when a business read fails for a reason other than authorization', async () => {

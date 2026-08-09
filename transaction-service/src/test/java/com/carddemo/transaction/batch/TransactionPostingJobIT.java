@@ -121,8 +121,17 @@ class TransactionPostingJobIT {
      */
     private static final Path REJECT_DIR = createRejectDirectory();
 
-    /** :purpose: The reject file the writer produces for this run. */
+    /**
+     * :purpose: The CONFIGURED ``DALYREJS`` name. It is the base of the deliverable, not the
+     *     file the run writes: ``POSTTRAN.jcl`` allocated ``DALYREJS`` as
+     *     ``DSN=AWS.M2.CARDDEMO.DALYREJS(+1)``, a NEW generation per run, so the writer
+     *     qualifies this name with the execution's generation and this exact path must stay
+     *     untouched [app/jcl/POSTTRAN.jcl].
+     */
     private static final Path REJECT_FILE = REJECT_DIR.resolve("dalyrejs.txt");
+
+    /** :purpose: Glob matching the generation-qualified reject files of the base name. */
+    private static final String REJECT_GENERATION_GLOB = "dalyrejs.G*.txt";
 
     @Autowired
     private JobOperatorTestUtils jobOperatorTestUtils;
@@ -290,7 +299,7 @@ class TransactionPostingJobIT {
         assertThat(execution.getStepExecutions().iterator().next().getReadCount()).isEqualTo(4L);
 
         // ---- 2500-WRITE-REJECT-REC: three 430-byte reject records ----
-        List<String> rejectLines = Files.readAllLines(REJECT_FILE, StandardCharsets.UTF_8);
+        List<String> rejectLines = Files.readAllLines(rejectGeneration(), StandardCharsets.UTF_8);
         assertThat(rejectLines).hasSize(3);
         assertThat(rejectLines).allSatisfy(line -> assertThat(line).hasSize(430));
 
@@ -366,6 +375,29 @@ class TransactionPostingJobIT {
                 .get()
                 .extracting(DailyTransaction::getDalytranAmt)
                 .isEqualTo(postingCreditLimit.add(new BigDecimal("1000.00")));
+    }
+
+    /**
+     * :purpose: Locate the single generation-qualified ``DALYREJS`` file this run produced.
+     * :returns: the path of the run's reject generation.
+     * :raises IOException: when the reject directory cannot be listed.
+     * :note: The run writes a NEW generation rather than a fixed name, so the assertions
+     *     read the generation and additionally prove the configured base name was never
+     *     written — a fixed name would have destroyed the previous run's deliverable
+     *     [app/jcl/POSTTRAN.jcl].
+     */
+    private static Path rejectGeneration() throws IOException {
+        List<Path> generations = new ArrayList<>();
+        try (var stream = Files.newDirectoryStream(REJECT_DIR, REJECT_GENERATION_GLOB)) {
+            stream.forEach(generations::add);
+        }
+        assertThat(generations)
+                .as("generation-qualified DALYREJS files in %s", REJECT_DIR)
+                .hasSize(1);
+        assertThat(REJECT_FILE)
+                .as("the configured base name must never be written over")
+                .doesNotExist();
+        return generations.get(0);
     }
 
     /**

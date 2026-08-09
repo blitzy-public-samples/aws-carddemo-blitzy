@@ -143,25 +143,116 @@ public class DataManagementJobConfig {
     // -----------------------------------------------------------------------
 
     /**
-     * :purpose: Remove the artifact a step was writing when that step does not complete
-     *  successfully, for every job whose destination is the ``outputFile`` job parameter
-     *  (the ``READACCT``/``READCARD``/``READXREF``/``READCUST`` dumps, the ``PRTCATBL``
-     *  report and the ``COMBTRAN`` combined print). Without it a failed run left a file
-     *  carrying only the legacy start and end banners - the exact shape of a successful
-     *  run over an empty input - which no downstream reader could tell apart.
-     * :param outputFile: the requested output file, bound late from the ``outputFile`` job
-     *  parameter.
+     * :purpose: Remove the artifact ``accountReadStep`` was writing when it does not
+     *  complete successfully. Without it a failed run left a file carrying only the
+     *  legacy start and end banners - the exact shape of a successful run over an empty
+     *  input - which no downstream reader could tell apart.
+     * :param outputFile: the requested dump file, bound late from the ``outputFile`` job
+     *  parameter and defaulted to the same configured name the writer resolves.
      * :param pathResolver: resolver confining the name to the batch output root, so the
      *  listener addresses exactly the file the writer opened.
-     * :returns: the cleanup listener for one step execution.
+     * :returns: the cleanup listener for one ``accountReadStep`` execution.
      * :note: ``@StepScope`` is required because the destination is a job parameter: a
      *  singleton listener would be bound to whichever execution created it and could
      *  delete another run's file.
+     * :note: One listener PER destination rather than one shared listener for all six
+     *  file-writing steps. The default belongs to the destination, and a shared bean can
+     *  carry only one: with no default at all every launch path that does not pass
+     *  ``outputFile`` - the ``--spring.batch.job.name`` command-line runner the
+     *  Kubernetes CronJob uses - failed the step with ``Batch file path must not be
+     *  blank`` before the writer ever opened. The default now sits on the binding, so it
+     *  holds for EVERY launch path instead of only for {@code JobSchedulingConfig}.
      */
     @Bean
     @StepScope
-    public FailedOutputCleanupListener outputFileCleanupListener(
-            @Value("#{jobParameters['outputFile']}") String outputFile,
+    public FailedOutputCleanupListener accountDumpCleanupListener(
+            @Value("#{jobParameters['outputFile'] ?: '${carddemo.batch.account-report-file:"
+                    + JobSchedulingConfig.DEFAULT_ACCOUNT_REPORT_FILE + "}'}") String outputFile,
+            BatchOutputPathResolver pathResolver) {
+        return new FailedOutputCleanupListener(pathResolver.resolveOutput(outputFile));
+    }
+
+    /**
+     * :purpose: Remove the artifact ``cardReadStep`` was writing when it does not complete
+     *  successfully.
+     * :param outputFile: the requested dump file, bound late from the ``outputFile`` job
+     *  parameter and defaulted to the same configured name the writer resolves.
+     * :param pathResolver: resolver confining the name to the batch output root.
+     * :returns: the cleanup listener for one ``cardReadStep`` execution.
+     */
+    @Bean
+    @StepScope
+    public FailedOutputCleanupListener cardDumpCleanupListener(
+            @Value("#{jobParameters['outputFile'] ?: '${carddemo.batch.card-report-file:"
+                    + JobSchedulingConfig.DEFAULT_CARD_REPORT_FILE + "}'}") String outputFile,
+            BatchOutputPathResolver pathResolver) {
+        return new FailedOutputCleanupListener(pathResolver.resolveOutput(outputFile));
+    }
+
+    /**
+     * :purpose: Remove the artifact ``cardXrefReadStep`` was writing when it does not
+     *  complete successfully.
+     * :param outputFile: the requested dump file, bound late from the ``outputFile`` job
+     *  parameter and defaulted to the same configured name the writer resolves.
+     * :param pathResolver: resolver confining the name to the batch output root.
+     * :returns: the cleanup listener for one ``cardXrefReadStep`` execution.
+     */
+    @Bean
+    @StepScope
+    public FailedOutputCleanupListener cardXrefDumpCleanupListener(
+            @Value("#{jobParameters['outputFile'] ?: '${carddemo.batch.card-xref-report-file:"
+                    + JobSchedulingConfig.DEFAULT_CARD_XREF_REPORT_FILE + "}'}") String outputFile,
+            BatchOutputPathResolver pathResolver) {
+        return new FailedOutputCleanupListener(pathResolver.resolveOutput(outputFile));
+    }
+
+    /**
+     * :purpose: Remove the artifact ``customerReadStep`` was writing when it does not
+     *  complete successfully.
+     * :param outputFile: the requested dump file, bound late from the ``outputFile`` job
+     *  parameter and defaulted to the same configured name the writer resolves.
+     * :param pathResolver: resolver confining the name to the batch output root.
+     * :returns: the cleanup listener for one ``customerReadStep`` execution.
+     */
+    @Bean
+    @StepScope
+    public FailedOutputCleanupListener customerDumpCleanupListener(
+            @Value("#{jobParameters['outputFile'] ?: '${carddemo.batch.customer-report-file:"
+                    + JobSchedulingConfig.DEFAULT_CUSTOMER_REPORT_FILE + "}'}") String outputFile,
+            BatchOutputPathResolver pathResolver) {
+        return new FailedOutputCleanupListener(pathResolver.resolveOutput(outputFile));
+    }
+
+    /**
+     * :purpose: Remove the ``PRTCATBL`` report when ``categoryBalanceReportStep`` does not
+     *  complete successfully.
+     * :param outputFile: the requested report file, bound late from the ``outputFile`` job
+     *  parameter and defaulted to the same configured name the writer resolves.
+     * :param pathResolver: resolver confining the name to the batch output root.
+     * :returns: the cleanup listener for one ``categoryBalanceReportStep`` execution.
+     */
+    @Bean
+    @StepScope
+    public FailedOutputCleanupListener categoryBalanceReportCleanupListener(
+            @Value("#{jobParameters['outputFile'] ?: '${carddemo.batch.category-balance-report-file:"
+                    + JobSchedulingConfig.DEFAULT_CATEGORY_BALANCE_REPORT_FILE + "}'}") String outputFile,
+            BatchOutputPathResolver pathResolver) {
+        return new FailedOutputCleanupListener(pathResolver.resolveOutput(outputFile));
+    }
+
+    /**
+     * :purpose: Remove the ``COMBTRAN`` combined print when ``combineTransactionsStep``
+     *  does not complete successfully.
+     * :param outputFile: the requested combined file, bound late from the ``outputFile``
+     *  job parameter and defaulted to the same configured name the tasklet resolves.
+     * :param pathResolver: resolver confining the name to the batch output root.
+     * :returns: the cleanup listener for one ``combineTransactionsStep`` execution.
+     */
+    @Bean
+    @StepScope
+    public FailedOutputCleanupListener combinedTransactionCleanupListener(
+            @Value("#{jobParameters['outputFile'] ?: '${carddemo.batch.combined-transaction-file:"
+                    + JobSchedulingConfig.DEFAULT_COMBINED_TRANSACTION_FILE + "}'}") String outputFile,
             BatchOutputPathResolver pathResolver) {
         return new FailedOutputCleanupListener(pathResolver.resolveOutput(outputFile));
     }
@@ -171,14 +262,15 @@ public class DataManagementJobConfig {
      *  does not complete successfully. Its destination is the ``reportFile`` job
      *  parameter rather than ``outputFile``, so it needs its own binding.
      * :param reportFile: the requested report file, bound late from the ``reportFile``
-     *  job parameter.
+     *  job parameter and defaulted to the same configured name the writer resolves.
      * :param pathResolver: resolver confining the name to the batch output root.
      * :returns: the cleanup listener for one report step execution.
      */
     @Bean
     @StepScope
     public FailedOutputCleanupListener reportFileCleanupListener(
-            @Value("#{jobParameters['reportFile']}") String reportFile,
+            @Value("#{jobParameters['reportFile'] ?: '${carddemo.batch.transaction-detail-report-file:"
+                    + JobSchedulingConfig.DEFAULT_TRANSACTION_DETAIL_REPORT_FILE + "}'}") String reportFile,
             BatchOutputPathResolver pathResolver) {
         return new FailedOutputCleanupListener(pathResolver.resolveOutput(reportFile));
     }
@@ -223,7 +315,8 @@ public class DataManagementJobConfig {
     @Bean
     @StepScope
     public RecordDumpItemWriter<Account> accountDumpWriter(
-            @Value("#{jobParameters['outputFile']}") String outputFile,
+            @Value("#{jobParameters['outputFile'] ?: '${carddemo.batch.account-report-file:"
+                    + JobSchedulingConfig.DEFAULT_ACCOUNT_REPORT_FILE + "}'}") String outputFile,
             BatchOutputPathResolver pathResolver) {
         Path resolved = pathResolver.resolveOutput(outputFile);
         return new RecordDumpItemWriter<>("accountDumpWriter", resolved,
@@ -240,7 +333,7 @@ public class DataManagementJobConfig {
      * :param transactionManager: batch transaction manager (Boot auto-configured).
      * :param accountReader: reader streaming accounts in ``acctId`` order.
      * :param accountDumpWriter: writer printing each account to the dump file.
-     * :param outputFileCleanupListener: step-scoped listener removing the dump file
+     * :param cleanupListener: step-scoped listener removing the dump file
      *  when the step does not complete successfully.
      * :returns: the ``accountReadStep`` ``Step``.
      */
@@ -249,14 +342,14 @@ public class DataManagementJobConfig {
                                 PlatformTransactionManager transactionManager,
                                 RepositoryItemReader<Account> accountReader,
                                 RecordDumpItemWriter<Account> accountDumpWriter,
-                                FailedOutputCleanupListener outputFileCleanupListener) {
+                                FailedOutputCleanupListener accountDumpCleanupListener) {
         return new StepBuilder("accountReadStep", jobRepository)
                 .<Account, Account>chunk(PAGE_SIZE).transactionManager(transactionManager)
                 .reader(accountReader)
                 .writer(accountDumpWriter)
-                .listener((StepExecutionListener) outputFileCleanupListener)
+                .listener((StepExecutionListener) accountDumpCleanupListener)
                 
-                .listener(outputFileCleanupListener)
+                .listener(accountDumpCleanupListener)
                 .build();
     }
 
@@ -320,7 +413,8 @@ public class DataManagementJobConfig {
     @Bean
     @StepScope
     public RecordDumpItemWriter<Card> cardDumpWriter(
-            @Value("#{jobParameters['outputFile']}") String outputFile,
+            @Value("#{jobParameters['outputFile'] ?: '${carddemo.batch.card-report-file:"
+                    + JobSchedulingConfig.DEFAULT_CARD_REPORT_FILE + "}'}") String outputFile,
             BatchOutputPathResolver pathResolver) {
         Path resolved = pathResolver.resolveOutput(outputFile);
         return new RecordDumpItemWriter<>("cardDumpWriter", resolved,
@@ -337,7 +431,7 @@ public class DataManagementJobConfig {
      * :param transactionManager: batch transaction manager (Boot auto-configured).
      * :param cardReader: reader streaming cards in ``cardNum`` order.
      * :param cardDumpWriter: writer printing each card to the dump file.
-     * :param outputFileCleanupListener: step-scoped listener removing the dump file
+     * :param cleanupListener: step-scoped listener removing the dump file
      *  when the step does not complete successfully.
      * :returns: the ``cardReadStep`` ``Step``.
      */
@@ -346,14 +440,14 @@ public class DataManagementJobConfig {
                              PlatformTransactionManager transactionManager,
                              RepositoryItemReader<Card> cardReader,
                              RecordDumpItemWriter<Card> cardDumpWriter,
-                             FailedOutputCleanupListener outputFileCleanupListener) {
+                             FailedOutputCleanupListener cardDumpCleanupListener) {
         return new StepBuilder("cardReadStep", jobRepository)
                 .<Card, Card>chunk(PAGE_SIZE).transactionManager(transactionManager)
                 .reader(cardReader)
                 .writer(cardDumpWriter)
-                .listener((StepExecutionListener) outputFileCleanupListener)
+                .listener((StepExecutionListener) cardDumpCleanupListener)
                 
-                .listener(outputFileCleanupListener)
+                .listener(cardDumpCleanupListener)
                 .build();
     }
 
@@ -417,7 +511,8 @@ public class DataManagementJobConfig {
     @Bean
     @StepScope
     public RecordDumpItemWriter<CardXref> cardXrefDumpWriter(
-            @Value("#{jobParameters['outputFile']}") String outputFile,
+            @Value("#{jobParameters['outputFile'] ?: '${carddemo.batch.card-xref-report-file:"
+                    + JobSchedulingConfig.DEFAULT_CARD_XREF_REPORT_FILE + "}'}") String outputFile,
             BatchOutputPathResolver pathResolver) {
         Path resolved = pathResolver.resolveOutput(outputFile);
         return new RecordDumpItemWriter<>("cardXrefDumpWriter", resolved,
@@ -436,7 +531,7 @@ public class DataManagementJobConfig {
      *  ``xrefCardNum`` order.
      * :param cardXrefDumpWriter: writer printing each cross-reference record to
      *  the dump file.
-     * :param outputFileCleanupListener: step-scoped listener removing the dump file
+     * :param cleanupListener: step-scoped listener removing the dump file
      *  when the step does not complete successfully.
      * :returns: the ``cardXrefReadStep`` ``Step``.
      */
@@ -445,14 +540,14 @@ public class DataManagementJobConfig {
                                  PlatformTransactionManager transactionManager,
                                  RepositoryItemReader<CardXref> cardXrefReader,
                                  RecordDumpItemWriter<CardXref> cardXrefDumpWriter,
-                                 FailedOutputCleanupListener outputFileCleanupListener) {
+                                 FailedOutputCleanupListener cardXrefDumpCleanupListener) {
         return new StepBuilder("cardXrefReadStep", jobRepository)
                 .<CardXref, CardXref>chunk(PAGE_SIZE).transactionManager(transactionManager)
                 .reader(cardXrefReader)
                 .writer(cardXrefDumpWriter)
-                .listener((StepExecutionListener) outputFileCleanupListener)
+                .listener((StepExecutionListener) cardXrefDumpCleanupListener)
                 
-                .listener(outputFileCleanupListener)
+                .listener(cardXrefDumpCleanupListener)
                 .build();
     }
 
@@ -517,7 +612,8 @@ public class DataManagementJobConfig {
     @Bean
     @StepScope
     public RecordDumpItemWriter<Customer> customerDumpWriter(
-            @Value("#{jobParameters['outputFile']}") String outputFile,
+            @Value("#{jobParameters['outputFile'] ?: '${carddemo.batch.customer-report-file:"
+                    + JobSchedulingConfig.DEFAULT_CUSTOMER_REPORT_FILE + "}'}") String outputFile,
             BatchOutputPathResolver pathResolver) {
         Path resolved = pathResolver.resolveOutput(outputFile);
         return new RecordDumpItemWriter<>("customerDumpWriter", resolved,
@@ -534,7 +630,7 @@ public class DataManagementJobConfig {
      * :param transactionManager: batch transaction manager (Boot auto-configured).
      * :param customerReader: reader streaming customers in ``custId`` order.
      * :param customerDumpWriter: writer printing each customer to the dump file.
-     * :param outputFileCleanupListener: step-scoped listener removing the dump file
+     * :param cleanupListener: step-scoped listener removing the dump file
      *  when the step does not complete successfully.
      * :returns: the ``customerReadStep`` ``Step``.
      */
@@ -543,14 +639,14 @@ public class DataManagementJobConfig {
                                  PlatformTransactionManager transactionManager,
                                  RepositoryItemReader<Customer> customerReader,
                                  RecordDumpItemWriter<Customer> customerDumpWriter,
-                                 FailedOutputCleanupListener outputFileCleanupListener) {
+                                 FailedOutputCleanupListener customerDumpCleanupListener) {
         return new StepBuilder("customerReadStep", jobRepository)
                 .<Customer, Customer>chunk(PAGE_SIZE).transactionManager(transactionManager)
                 .reader(customerReader)
                 .writer(customerDumpWriter)
-                .listener((StepExecutionListener) outputFileCleanupListener)
+                .listener((StepExecutionListener) customerDumpCleanupListener)
                 
-                .listener(outputFileCleanupListener)
+                .listener(customerDumpCleanupListener)
                 .build();
     }
 
@@ -599,7 +695,9 @@ public class DataManagementJobConfig {
     @Bean
     @StepScope
     public FlatFileItemReader<DailyTransaction> dailyTransactionValidationReader(
-            @Value("#{jobParameters['inputFile']}") String inputFile,
+            @Value("#{jobParameters['inputFile'] ?: '${carddemo.batch.daily-transaction-file:"
+
+                    + JobSchedulingConfig.DEFAULT_DAILY_TRANSACTION_FEED_FILE + "}'}") String inputFile,
             BatchOutputPathResolver pathResolver) {
         Path resolved = pathResolver.resolveInput(inputFile);
         return new FlatFileItemReaderBuilder<DailyTransaction>()
@@ -731,7 +829,7 @@ public class DataManagementJobConfig {
      * :param categoryBalanceReportWriter: step-scoped stream writer that renders
      *  the report to the ``outputFile`` job parameter; supplied directly as the
      *  step writer so the chunk step auto-registers it as an ``ItemStream``.
-     * :param outputFileCleanupListener: step-scoped listener removing the report file
+     * :param cleanupListener: step-scoped listener removing the report file
      *  when the step does not complete successfully.
      * :returns: the ``categoryBalanceReportStep`` ``Step``.
      */
@@ -740,14 +838,14 @@ public class DataManagementJobConfig {
                                           PlatformTransactionManager transactionManager,
                                           RepositoryItemReader<TranCatBal> categoryBalanceReader,
                                           CategoryBalanceReportWriter categoryBalanceReportWriter,
-                                          FailedOutputCleanupListener outputFileCleanupListener) {
+                                          FailedOutputCleanupListener categoryBalanceReportCleanupListener) {
         return new StepBuilder("categoryBalanceReportStep", jobRepository)
                 .<TranCatBal, TranCatBal>chunk(PAGE_SIZE).transactionManager(transactionManager)
                 .reader(categoryBalanceReader)
                 .writer(categoryBalanceReportWriter)
-                .listener((StepExecutionListener) outputFileCleanupListener)
+                .listener((StepExecutionListener) categoryBalanceReportCleanupListener)
                 
-                .listener(outputFileCleanupListener)
+                .listener(categoryBalanceReportCleanupListener)
                 .build();
     }
 
@@ -783,7 +881,7 @@ public class DataManagementJobConfig {
      * :param transactionManager: batch transaction manager (Boot auto-configured).
      * :param combineTransactionsTasklet: tasklet performing the merge, ordering,
      *  and load.
-     * :param outputFileCleanupListener: step-scoped listener removing the combined print
+     * :param cleanupListener: step-scoped listener removing the combined print
      *  when the step does not complete successfully.
      * :returns: the ``combineTransactionsStep`` ``Step``.
      */
@@ -791,10 +889,10 @@ public class DataManagementJobConfig {
     public Step combineTransactionsStep(JobRepository jobRepository,
                                         PlatformTransactionManager transactionManager,
                                         CombineTransactionsTasklet combineTransactionsTasklet,
-                                        FailedOutputCleanupListener outputFileCleanupListener) {
+                                        FailedOutputCleanupListener combinedTransactionCleanupListener) {
         return new StepBuilder("combineTransactionsStep", jobRepository)
                 .tasklet(combineTransactionsTasklet, transactionManager)
-                .listener((StepExecutionListener) outputFileCleanupListener)
+                .listener((StepExecutionListener) combinedTransactionCleanupListener)
                 .build();
     }
 
@@ -904,8 +1002,6 @@ public class DataManagementJobConfig {
                 .processor(transactionReportItemProcessor)
                 .writer(transactionDetailReportWriter)
                 .listener((StepExecutionListener) reportFileCleanupListener)
-                
-                .listener(reportFileCleanupListener)
                 .build();
     }
 

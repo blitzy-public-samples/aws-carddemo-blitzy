@@ -17,10 +17,11 @@ package com.carddemo.common.dto;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.validation.constraints.Pattern;
+import jakarta.validation.constraints.Size;
 
 /**
- * :purpose: Inbound DTO for the card update screen (COCRDUPC, CICS CCUP). Carries the editable card fields (the new values), plus the optional display-time snapshot of those fields (the legacy ``CCUP-OLD-*`` values) used to detect a concurrent modification. The card number primary key and owning account id are identifiers and are never carried here.
- * :output: A mutable carrier of the editable embossed name, active status, expiry date, and CVV, together with the optional display-time snapshot (old embossed name, active status, expiry date, and CVV) of the same fields.
+ * :purpose: Inbound DTO for the card update screen (COCRDUPC, CICS CCUP). Carries the editable card fields (the new values), plus the optional display-time snapshot of those fields (the legacy ``CCUP-OLD-*`` values) used to detect a concurrent modification. The card number and owning account id are carried as identifiers only -- in the body rather than the URL, so a Primary Account Number is not written verbatim into access, proxy and trace logs -- and are never rewritten.
+ * :output: A mutable carrier of the addressed card number and optional account id, the editable embossed name, active status, expiry date, and CVV, together with the optional display-time snapshot (old embossed name, active status, expiry date, and CVV) of the same fields.
  */
 public class CardUpdateRequestDto {
 
@@ -30,13 +31,59 @@ public class CardUpdateRequestDto {
     /** :purpose: Message reported when a supplied CVV does not fit ``PIC 9(03)``. */
     private static final String MSG_CVV_THREE_DIGITS = "Card CVV must be exactly 3 digits";
 
-    /** :purpose: the embossed name (``CARD-EMBOSSED-NAME``). */
+    /** :purpose: Declared width of ``CARD-EMBOSSED-NAME PIC X(50)`` / ``VARCHAR(50)``. */
+    private static final int EMBOSSED_NAME_WIDTH = 50;
+
+    /** :purpose: Declared width of ``CARD-EXPIRAION-DATE PIC X(10)`` / ``VARCHAR(10)``. */
+    private static final int EXPIRY_DATE_WIDTH = 10;
+
+    /** :purpose: Declared width of ``CARD-ACTIVE-STATUS PIC X(01)`` / ``VARCHAR(1)``. */
+    private static final int ACTIVE_STATUS_WIDTH = 1;
+
+    /** :purpose: Message reported when the embossed name exceeds its declared width. */
+    private static final String MSG_NAME_WIDTH =
+            "Card Embossed Name must be at most 50 characters";
+
+    /** :purpose: Message reported when the expiration date exceeds its declared width. */
+    private static final String MSG_EXPIRY_WIDTH =
+            "Card Expiry Date must be at most 10 characters";
+
+    /** :purpose: Message reported when the active status exceeds its declared width. */
+    private static final String MSG_STATUS_WIDTH =
+            "Card Active Status must be at most 1 character";
+
+    /**
+     * :purpose: the sixteen-digit card number addressed by this update (``CARD-NUM``
+     *  ``PIC X(16)``). It is carried in the body rather than in the URL because a card
+     *  number is a Primary Account Number and every access log, proxy log and
+     *  distributed trace records a URL verbatim, which would persist the PAN in
+     *  plaintext right across the infrastructure. It is an identifier, not an editable
+     *  field: the service uses it to read the record and never writes it.
+     */
+    private String cardNumber;
+
+    /**
+     * :purpose: the optional ``ACCTSID`` completing the composite selection the legacy
+     *  screen collected; when supplied it must be a non-zero eleven-digit value.
+     */
+    private String accountId;
+
+    /**
+     * :purpose: the embossed name (``CARD-EMBOSSED-NAME`` ``PIC X(50)``).
+     * :note: Bounded at its declared width so an over-length value is reported as a field error.
+     *  Unbounded, the value reached the ``VARCHAR(50)`` column, and the constraint violation the
+     *  database raised surfaced to the caller as a ``500`` data-access error -- a client mistake
+     *  reported as a server fault, on an unguarded write path.
+     */
+    @Size(max = EMBOSSED_NAME_WIDTH, message = MSG_NAME_WIDTH)
     private String cardEmbossedName;
 
-    /** :purpose: the card active status (``CARD-ACTIVE-STATUS``). */
+    /** :purpose: the card active status (``CARD-ACTIVE-STATUS`` ``PIC X(01)``). */
+    @Size(max = ACTIVE_STATUS_WIDTH, message = MSG_STATUS_WIDTH)
     private String cardActiveStatus;
 
     /** :purpose: the card expiration date (legacy-spelled ``CARD-EXPIRAION-DATE``, YYYY-MM-DD). */
+    @Size(max = EXPIRY_DATE_WIDTH, message = MSG_EXPIRY_WIDTH)
     private String cardExpiraionDate;
 
     /**
@@ -64,12 +111,14 @@ public class CardUpdateRequestDto {
      *  concurrency check (``COCRDUPC 9300-CHECK-CHANGE-IN-REC``). Optional; ``null`` when the
      *  caller supplies no snapshot.
      */
+    @Size(max = EMBOSSED_NAME_WIDTH, message = MSG_NAME_WIDTH)
     private String oldCardEmbossedName;
 
     /**
      * :purpose: the display-time snapshot of the active status (``CCUP-OLD-CRDSTCD``). Optional;
      *  ``null`` when the caller supplies no snapshot.
      */
+    @Size(max = ACTIVE_STATUS_WIDTH, message = MSG_STATUS_WIDTH)
     private String oldCardActiveStatus;
 
     /**
@@ -77,6 +126,7 @@ public class CardUpdateRequestDto {
      *  ``CCUP-OLD-EXPIRAION-DATE``, YYYY-MM-DD; year/month/day compared per ``9300``). Optional;
      *  ``null`` when the caller supplies no snapshot.
      */
+    @Size(max = EXPIRY_DATE_WIDTH, message = MSG_EXPIRY_WIDTH)
     private String oldCardExpiraionDate;
 
     /**
@@ -93,6 +143,39 @@ public class CardUpdateRequestDto {
      */
     public CardUpdateRequestDto() {
     }
+
+    /**
+     * :purpose: Return the sixteen-digit card number addressed by this update.
+     * :output: the ``cardNumber`` value.
+     */
+    public String getCardNumber() {
+        return cardNumber;
+    }
+
+    /**
+     * :purpose: Set the sixteen-digit card number addressed by this update.
+     * :param cardNumber: the card number as submitted.
+     */
+    public void setCardNumber(String cardNumber) {
+        this.cardNumber = cardNumber;
+    }
+
+    /**
+     * :purpose: Return the optional account filter completing the composite selection.
+     * :output: the ``accountId`` value.
+     */
+    public String getAccountId() {
+        return accountId;
+    }
+
+    /**
+     * :purpose: Set the optional account filter completing the composite selection.
+     * :param accountId: the account id as submitted.
+     */
+    public void setAccountId(String accountId) {
+        this.accountId = accountId;
+    }
+
 
     /**
      * :purpose: Return the embossed name (``CARD-EMBOSSED-NAME``).

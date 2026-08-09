@@ -28,7 +28,6 @@ import com.carddemo.account.service.AccountService;
 import java.util.Arrays;
 import java.util.Base64;
 
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -50,8 +49,14 @@ import org.springframework.test.web.servlet.MockMvc;
  *     false``): this test exists precisely to exercise it. A request authenticates the
  *     way production does, by presenting the shared session context published at
  *     sign-on.
+ * :note: No schema is created or altered here, and no ``ddl-auto`` override is declared.
+ *     The whole schema - ``card_xref`` and its two foreign keys included - comes from the
+ *     shared migration set the ``test`` profile applies, validated by that profile's
+ *     ``ddl-auto: validate``. An earlier revision created a constraint-free ``card_xref``
+ *     from this class, which is the pattern that let a foreign-key assertion in a sibling
+ *     class silently stop asserting anything (docs/decision-log.md, section 53.6).
  */
-@SpringBootTest(properties = {"spring.jpa.hibernate.ddl-auto=none"})
+@SpringBootTest
 @AutoConfigureMockMvc
 @ActiveProfiles("test")
 class SecurityContractIT {
@@ -70,22 +75,6 @@ class SecurityContractIT {
 
     @Autowired
     private MockMvc mockMvc;
-
-    @Autowired
-    private org.springframework.jdbc.core.JdbcTemplate jdbcTemplate;
-
-    /**
-     * :purpose: Create the card cross-reference table the account view joins. The
-     *     account-service owns no migration for it (the card-service does), so the test
-     *     schema provides it exactly as this module's other integration tests do.
-     */
-    @BeforeEach
-    void ensureLinkageTable() {
-        jdbcTemplate.execute("CREATE TABLE IF NOT EXISTS card_xref ("
-                + "xref_card_num VARCHAR(16) PRIMARY KEY, "
-                + "xref_cust_id BIGINT NOT NULL, "
-                + "xref_acct_id BIGINT NOT NULL)");
-    }
 
     /** :purpose: Spied so the test can prove the request never reached business logic. */
     @MockitoSpyBean

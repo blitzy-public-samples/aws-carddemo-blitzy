@@ -52,8 +52,16 @@ public class TransactionAddRequestDto {
     /** :purpose: Monetary amount (COTRN02 ``TRNAMTI`` / ``TRAN-AMT`` PIC S9(09)V99 -> NUMERIC(11,2)). */
     private BigDecimal tranAmt;
 
-    /** :purpose: Card number (COTRN02 ``CARDNINI`` / ``TRAN-CARD-NUM`` PIC X(16)). */
-    @Size(max = 16, message = "Card number if supplied must be a 16 digit number")
+    /**
+     * :purpose: Card number (COTRN02 ``CARDNINI`` / ``TRAN-CARD-NUM`` PIC X(16)).
+     * :note: Carries NO bean-validation constraint, for the reason given on ``acctId``.
+     *  The constraint that stood here answered an over-width value with ``'Card number if
+     *  supplied must be a 16 digit number'`` — the 88-level ``SEARCHED-CARD-NOT-NUMERIC``,
+     *  which ``COCRDSLC`` L149 and ``COCRDUPC`` L194 declare and which appears nowhere
+     *  else in either program, so neither ever ``SET``s it. ``COTRN02C``'s reachable card
+     *  edit publishes ``'Card Number must be Numeric...'``, and the service applies it to
+     *  every value of the wrong width.
+     */
     private String tranCardNum;
 
     /** :purpose: Merchant id (COTRN02 ``MIDI`` / ``TRAN-MERCHANT-ID`` PIC 9(09)). */
@@ -83,8 +91,15 @@ public class TransactionAddRequestDto {
      * :purpose: Account id key input (COTRN02 ``ACTIDINI``). When supplied it takes
      *  priority over ``tranCardNum`` and drives the account-to-card cross-reference
      *  lookup that resolves the card number; it is validated but not persisted.
+     * :note: Carries NO bean-validation constraint on purpose. The width rule belongs to
+     *  ``COTRN02C`` L197-L201, which tests ``IF ACTIDINI IS NOT NUMERIC`` on an
+     *  eleven-column field and publishes ``'Account ID must be Numeric...'`` — one
+     *  line-23 message with the cursor on the field. A ``@Size`` here answered instead
+     *  with a ``fieldErrors`` entry carrying ``'Account number must be a non zero 11
+     *  digit number'``, an 88-level that ``COACTVWC`` and ``COACTUPC`` declare and
+     *  neither ever ``SET``s, so no legacy screen can emit it. The service applies the
+     *  reachable edit for every caller, including one that supplies an over-width value.
      */
-    @Size(max = 11, message = "Account number must be a non zero 11 digit number")
     private String acctId;
 
     /**

@@ -97,6 +97,10 @@ const getMainMenuMock = jest.fn<() => Promise<MenuResponseDto>>();
 const signonMock = jest.fn();
 
 jest.unstable_mockModule('../api', () => ({
+  // The request-cancellation contract ``useApi`` binds to: the real scope hands the
+  // caller's AbortSignal to axios, and the double simply invokes the call.
+  runWithRequestSignal: (_signal: AbortSignal, call: () => unknown): unknown => call(),
+  isCancelledRequest: (): boolean => false,
   // The session store and the REST hook this screen's module graph loads bind to
   // these barrel exports as well. ``getSessionIdentity`` is the production
   // ``GET /session`` probe the session harness drives; unanswered by this suite it
@@ -117,20 +121,17 @@ jest.unstable_mockModule('../api', () => ({
  * :param optionNumber: one-based option number the operator types.
  * :param optionName: label as declared in ``COMEN02Y``.
  * :param programName: legacy target program.
- * :param targetRoute: route the gateway resolves for that program.
  * :returns: the option exactly as ``GET /menu`` returns it.
  */
 function menuOption(
   optionNumber: number,
   optionName: string,
   programName: string,
-  targetRoute: string | null,
 ): MenuOption {
   return {
     optionNumber,
     optionName: optionName.padEnd(OPTION_NAME_WIDTH, ' '),
     programName,
-    targetRoute,
   };
 }
 
@@ -150,7 +151,7 @@ const selectMenuOptionMock =
  * :returns: the ``MenuSelectionResponseDto`` for that transfer.
  */
 function dispatched(programName: string): MenuSelectionResponseDto {
-  return { dispatched: true, programName, targetRoute: null, message: null };
+  return { dispatched: true, programName, message: null };
 }
 
 /**
@@ -159,34 +160,34 @@ function dispatched(programName: string): MenuSelectionResponseDto {
  * :returns: the refusing ``MenuSelectionResponseDto``.
  */
 function refused(message: string): MenuSelectionResponseDto {
-  return { dispatched: false, programName: null, targetRoute: null, message };
+  return { dispatched: false, programName: null, message };
 }
 
 /** The ten ``CDEMO-MENU-OPTIONS`` rows the gateway returns for a standard user. */
 const MAIN_MENU_OPTIONS: MenuOption[] = [
-  menuOption(1, 'Account View', 'COACTVWC', '/accounts'),
-  menuOption(2, 'Account Update', 'COACTUPC', '/accounts'),
-  menuOption(3, 'Credit Card List', 'COCRDLIC', '/cards'),
-  menuOption(4, 'Credit Card View', 'COCRDSLC', '/cards'),
-  menuOption(5, 'Credit Card Update', 'COCRDUPC', '/cards'),
-  menuOption(6, 'Transaction List', 'COTRN00C', '/transactions'),
-  menuOption(7, 'Transaction View', 'COTRN01C', '/transactions'),
-  menuOption(8, 'Transaction Add', 'COTRN02C', '/transactions'),
-  menuOption(9, 'Transaction Reports', 'CORPT00C', '/reports'),
-  menuOption(10, 'Bill Payment', 'COBIL00C', '/billpay'),
+  menuOption(1, 'Account View', 'COACTVWC'),
+  menuOption(2, 'Account Update', 'COACTUPC'),
+  menuOption(3, 'Credit Card List', 'COCRDLIC'),
+  menuOption(4, 'Credit Card View', 'COCRDSLC'),
+  menuOption(5, 'Credit Card Update', 'COCRDUPC'),
+  menuOption(6, 'Transaction List', 'COTRN00C'),
+  menuOption(7, 'Transaction View', 'COTRN01C'),
+  menuOption(8, 'Transaction Add', 'COTRN02C'),
+  menuOption(9, 'Transaction Reports', 'CORPT00C'),
+  menuOption(10, 'Bill Payment', 'COBIL00C'),
 ];
 
 /** The option lines rendered for :data:`MAIN_MENU_OPTIONS`, in server order. */
 const MAIN_MENU_LINES = [
-  '1. Account View',
-  '2. Account Update',
-  '3. Credit Card List',
-  '4. Credit Card View',
-  '5. Credit Card Update',
-  '6. Transaction List',
-  '7. Transaction View',
-  '8. Transaction Add',
-  '9. Transaction Reports',
+  '01. Account View',
+  '02. Account Update',
+  '03. Credit Card List',
+  '04. Credit Card View',
+  '05. Credit Card Update',
+  '06. Transaction List',
+  '07. Transaction View',
+  '08. Transaction Add',
+  '09. Transaction Reports',
   '10. Bill Payment',
 ];
 
@@ -327,23 +328,23 @@ describe('MainMenuPage — menu load (COMEN01 / CM00)', () => {
   it('renders whichever role-filtered option set the gateway returns', async () => {
     getMainMenuMock.mockResolvedValue(
       menuResponse([
-        menuOption(6, 'Transaction List', 'COTRN00C', '/transactions'),
-        menuOption(9, 'Transaction Reports', 'CORPT00C', '/reports'),
+        menuOption(6, 'Transaction List', 'COTRN00C'),
+        menuOption(9, 'Transaction Reports', 'CORPT00C'),
       ]),
     );
 
     await renderLoadedMainMenu(2);
 
-    expect(screenBody().getByText('6. Transaction List')).toBeInTheDocument();
-    expect(screenBody().getByText('9. Transaction Reports')).toBeInTheDocument();
-    expect(screenBody().queryByText('1. Account View')).not.toBeInTheDocument();
+    expect(screenBody().getByText('06. Transaction List')).toBeInTheDocument();
+    expect(screenBody().getByText('09. Transaction Reports')).toBeInTheDocument();
+    expect(screenBody().queryByText('01. Account View')).not.toBeInTheDocument();
   });
 
   it('renders at most the twelve option slots the mapset provides', async () => {
     getMainMenuMock.mockResolvedValue(
       menuResponse(
         Array.from({ length: MENU_OPTION_SLOTS + 2 }, (_, index) =>
-          menuOption(index + 1, `Option ${String(index + 1)}`, 'COACTVWC', '/accounts'),
+          menuOption(index + 1, `Option ${String(index + 1)}`, 'COACTVWC'),
         ),
       ),
     );
@@ -374,15 +375,57 @@ describe('MainMenuPage — OPTION entry field', () => {
     expect(field).toHaveValue('');
   });
 
-  it('keeps only digits and stops at two characters', async () => {
+  it('keeps the entry as it was made and stops at two characters', async () => {
+    await renderLoadedMainMenu();
+
+    // ``OPTIONI`` is ``PIC X(2)``: it holds two positions of whatever was keyed, and
+    // ``PROCESS-ENTER-KEY`` is what judges the content. Discarding the characters the
+    // program's own class test refuses would rewrite the entry into a different, valid
+    // option — which is how ``-1`` came to open Account View.
+    const field = optionField();
+    await userEvent.type(field, 'a1b2');
+    expect(field).toHaveValue('a1');
+
+    await userEvent.type(field, '3');
+    expect(field).toHaveValue('a1');
+  });
+
+  it('refuses a signed entry in place rather than dispatching the digit inside it', async () => {
+    await renderLoadedMainMenu();
+
+    await userEvent.type(optionField(), '-1');
+    expect(optionField()).toHaveValue('-1');
+    await pressEnterKey();
+
+    await waitFor(() => {
+      expect(messageText()).toBe(MSG_INVALID_OPTION);
+    });
+    // ``PROCESS-ENTER-KEY`` reaches its ``XCTL`` only past the edit, so nothing is sent
+    // and no other program is entered.
+    expect(selectMenuOptionMock).not.toHaveBeenCalled();
+    expect(currentPath()).toBe(MENU_ROUTE);
+    expect(optionField()).toHaveValue('-1');
+  });
+
+  it('returns the cursor to the OPTION field on every refusing pass', async () => {
     await renderLoadedMainMenu();
 
     const field = optionField();
-    await userEvent.type(field, 'a1b2');
-    expect(field).toHaveValue('12');
+    await userEvent.type(field, 'x');
+    await userEvent.click(screen.getByRole('button', { name: 'ENTER=Continue' }));
 
-    await userEvent.type(field, '3');
-    expect(field).toHaveValue('12');
+    await waitFor(() => {
+      expect(messageText()).toBe(MSG_INVALID_OPTION);
+    });
+    // Every re-send of the map re-applies the mapset's ``IC`` attribute, so a second
+    // identical refusal places the cursor a second time even though line 23 is unchanged.
+    expect(field).toHaveFocus();
+
+    await userEvent.click(screen.getByRole('button', { name: 'ENTER=Continue' }));
+
+    expect(messageText()).toBe(MSG_INVALID_OPTION);
+    expect(field).toHaveFocus();
+    expect(selectMenuOptionMock).not.toHaveBeenCalled();
   });
 });
 
@@ -415,42 +458,55 @@ describe('MainMenuPage — option selection', () => {
     },
   );
 
-  it('refuses a blank option with the verbatim invalid-option message', async () => {
+  /*
+   * COMEN01C runs its option edit before it dispatches anything, so each of the three
+   * refusals below is answered without a request. The server is left mocked to refuse as
+   * well, so the assertion that nothing was sent is the whole point: were the edit missing,
+   * the mock would supply the same message and hide it.
+   */
+  it.each([
+    { name: 'a blank option', entry: '' },
+    { name: 'option zero, as the legacy zero check does', entry: '0' },
+    { name: 'an option number beyond the declared option count', entry: '99' },
+    { name: 'a signed entry, which is NOT NUMERIC in a PIC 9(02) field', entry: '-1' },
+    { name: 'a fractional entry, which is NOT NUMERIC too', entry: '1.' },
+  ])('refuses $name with the verbatim invalid-option message', async ({ entry }) => {
     selectMenuOptionMock.mockResolvedValue(refused(MSG_INVALID_OPTION));
     await renderLoadedMainMenu();
 
+    if (entry !== '') {
+      await userEvent.type(optionField(), entry);
+    }
     await pressEnterKey();
 
     await waitFor(() => {
       expect(messageText()).toBe(MSG_INVALID_OPTION);
     });
+    expect(selectMenuOptionMock).not.toHaveBeenCalled();
     expect(currentPath()).toBe(MENU_ROUTE);
   });
 
-  it('refuses option zero, as the legacy zero check does', async () => {
-    selectMenuOptionMock.mockResolvedValue(refused(MSG_INVALID_OPTION));
+  it('marks the refused OPTION field invalid and leaves the cursor on it', async () => {
     await renderLoadedMainMenu();
 
-    await userEvent.type(optionField(), '0');
+    await userEvent.type(optionField(), '-1');
     await pressEnterKey();
 
     await waitFor(() => {
       expect(messageText()).toBe(MSG_INVALID_OPTION);
     });
-    expect(currentPath()).toBe(MENU_ROUTE);
+    expect(optionField()).toHaveAttribute('aria-invalid', 'true');
+    expect(optionField()).toHaveFocus();
   });
 
-  it('refuses an option number beyond the declared option count', async () => {
-    selectMenuOptionMock.mockResolvedValue(refused(MSG_INVALID_OPTION));
+  it('keeps a signed entry in the field so the edit can judge it', async () => {
     await renderLoadedMainMenu();
 
-    await userEvent.type(optionField(), '99');
-    await pressEnterKey();
+    // A 3270 numeric field admits the minus sign, which is why COMEN01C tests
+    // IS NOT NUMERIC. Dropping it here would silently turn -1 into option 1.
+    await userEvent.type(optionField(), '-1');
 
-    await waitFor(() => {
-      expect(messageText()).toBe(MSG_INVALID_OPTION);
-    });
-    expect(currentPath()).toBe(MENU_ROUTE);
+    expect(optionField()).toHaveValue('-1');
   });
 });
 
@@ -469,7 +525,7 @@ describe('MainMenuPage — administrator-only gating', () => {
 
   it('refuses an option the gateway withheld from a standard user', async () => {
     getMainMenuMock.mockResolvedValue(
-      menuResponse([menuOption(1, 'Account View', 'COACTVWC', '/accounts')]),
+      menuResponse([menuOption(1, 'Account View', 'COACTVWC')]),
     );
 
     selectMenuOptionMock.mockResolvedValue(refused(MSG_INVALID_OPTION));
@@ -502,7 +558,7 @@ describe('MainMenuPage — PF keys', () => {
   it('publishes exactly the two legend keys the mapset declares', async () => {
     await renderLoadedMainMenu();
 
-    const legend = within(screen.getByRole('toolbar', { name: 'Function keys' }));
+    const legend = within(screen.getByRole('group', { name: 'Function keys' }));
     expect(legend.getByRole('button', { name: 'ENTER=Continue' })).toBeInTheDocument();
     expect(legend.getByRole('button', { name: 'F3=Exit' })).toBeInTheDocument();
     expect(legend.getAllByRole('button')).toHaveLength(2);
@@ -538,7 +594,11 @@ describe('MainMenuPage — PF keys', () => {
 
     await userEvent.click(screen.getByRole('button', { name: 'F3=Exit' }));
 
-    expect(currentPath()).toBe(SIGNON_ROUTE);
+    // The exit revokes the SERVER session before it navigates, so the transfer completes
+    // on a later tick than the click; the sibling physical-key test waits the same way.
+    await waitFor(() => {
+      expect(currentPath()).toBe(SIGNON_ROUTE);
+    });
     expect(container.querySelector('.screen')).toHaveAttribute('data-authenticated', 'false');
   });
 

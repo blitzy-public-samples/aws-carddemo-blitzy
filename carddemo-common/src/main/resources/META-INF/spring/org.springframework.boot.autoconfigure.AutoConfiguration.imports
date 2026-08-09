@@ -2,3 +2,5 @@ com.carddemo.common.config.WebObservabilityConfig
 com.carddemo.common.config.DeployedConfigurationAutoConfiguration
 com.carddemo.common.crypto.PiiEncryptionAutoConfiguration
 com.carddemo.common.config.LettuceMetricsAutoConfiguration
+com.carddemo.common.json.LegacyTextAutoConfiguration
+com.carddemo.common.security.RequestFirewallAutoConfiguration

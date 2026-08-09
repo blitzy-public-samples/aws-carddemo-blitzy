@@ -13,8 +13,8 @@
  */
 
 import { jest } from '@jest/globals';
-import { act, render, screen, waitFor } from '@testing-library/react';
-import { useEffect } from 'react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { useEffect, useLayoutEffect, useState } from 'react';
 import type { ReactElement } from 'react';
 import { Link, MemoryRouter, Route, Routes } from 'react-router';
 import type {
@@ -35,6 +35,10 @@ const getSessionIdentityMock = jest.fn<() => Promise<SessionIdentityDto>>();
 let expireSession: (() => void) | undefined;
 
 jest.unstable_mockModule('../api', () => ({
+  // The request-cancellation contract ``useApi`` binds to: the real scope hands the
+  // caller's AbortSignal to axios, and the double simply invokes the call.
+  runWithRequestSignal: (_signal: AbortSignal, call: () => unknown): unknown => call(),
+  isCancelledRequest: (): boolean => false,
   __esModule: true,
   signon: jest.fn<(request: SignonRequestDto) => Promise<SignonResponseDto>>(),
   getSessionIdentity: getSessionIdentityMock,
@@ -78,6 +82,7 @@ function ChromePublisher(): ReactElement {
       transactionId: 'CAUP',
       programName: 'COACTUPC',
       title01: 'Account Update',
+      title02: 'Update Account',
       errorMessage: 'Record changed by some one else. Please review',
       pfKeys: [{ action: PfKeyAction.PF3, label: 'F3=Exit', onActivate: jest.fn() }],
     });
@@ -111,6 +116,46 @@ function BusyPublisher(): ReactElement {
     setChrome({ transactionId: 'CAVW', busy: true });
   }, [setChrome]);
   return <div data-testid="page-body">loading screen</div>;
+}
+
+/**
+ * :purpose: A page shaped exactly like the seventeen real screens: it holds the value
+ *     of its one entry field in state, publishes an ENTER handler that reads that
+ *     state, and publishes from a LAYOUT effect. It is the harness for the one property
+ *     that matters most about the shell — that a key struck immediately behind a
+ *     keystroke acts on the value the operator can see.
+ * :returns: the rendered entry field.
+ */
+function EntryFieldPublisher({
+  onSubmit,
+}: {
+  onSubmit: (submitted: string) => void;
+}): ReactElement {
+  const { setChrome } = useScreenChrome();
+  const [value, setValue] = useState('');
+  useLayoutEffect(() => {
+    setChrome({
+      transactionId: 'CT01',
+      pfKeys: [
+        {
+          action: PfKeyAction.Enter,
+          label: 'ENTER=Fetch',
+          onActivate: () => {
+            onSubmit(value);
+          },
+        },
+      ],
+    });
+  }, [setChrome, onSubmit, value]);
+  return (
+    <input
+      data-testid="entry"
+      value={value}
+      onChange={(event) => {
+        setValue(event.target.value);
+      }}
+    />
+  );
 }
 
 /**
@@ -154,7 +199,7 @@ describe('Layout', () => {
     );
     expect(screen.getByTestId('tran-id')).toBeInTheDocument();
     expect(screen.getByTestId('page-body')).toHaveTextContent('hello');
-    expect(screen.getByRole('toolbar', { name: 'Function keys' })).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: 'Function keys' })).toBeInTheDocument();
   });
 
   it('lets a page publish chrome (title, tran/prog, message, keys) via useScreenChrome', () => {
@@ -266,7 +311,7 @@ describe('Layout', () => {
     expect(screen.queryByTestId('tran-id')).not.toBeInTheDocument();
   });
 
-  it('marks the body region busy and announces the wait', () => {
+  it('marks the body region busy and shows the input-inhibited indicator', () => {
     const { container } = render(
       <MemoryRouter>
         <Layout>
@@ -275,7 +320,13 @@ describe('Layout', () => {
       </MemoryRouter>,
     );
     expect(container.querySelector('main')).toHaveAttribute('aria-busy', 'true');
-    expect(screen.getByTestId('screen-busy')).toHaveTextContent('Working');
+    // The Operator Information Area is the terminal's own status line below the 24
+    // application rows, and `X SYSTEM` is its input-inhibited indicator: the screen
+    // shows it, and announces it politely, for exactly as long as the keyboard is
+    // locked. It replaces no BMS field and consumes none of the 24 rows.
+    const oia = screen.getByTestId('screen-busy');
+    expect(oia).toHaveTextContent('X SYSTEM');
+    expect(oia).toHaveAttribute('aria-live', 'polite');
   });
 
   it('erases the frame to one plain-text line when a transaction ends', () => {
@@ -295,7 +346,7 @@ describe('Layout', () => {
     expect(screen.queryByTestId('page-body')).not.toBeInTheDocument();
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     expect(
-      screen.queryByRole('toolbar', { name: 'Function keys' }),
+      screen.queryByRole('group', { name: 'Function keys' }),
     ).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'F3=Exit' })).not.toBeInTheDocument();
   });
@@ -318,4 +369,181 @@ describe('Layout', () => {
     );
   });
 
+});
+
+describe('Layout — a key acts on the state the operator can see', () => {
+  it('submits the value the field holds when ENTER arrives in the same task as the keystroke', () => {
+    const submitted: string[] = [];
+    render(
+      <MemoryRouter>
+        <Layout>
+          <EntryFieldPublisher
+            onSubmit={(value) => {
+              submitted.push(value);
+            }}
+          />
+        </Layout>
+      </MemoryRouter>,
+    );
+
+    const entry = screen.getByTestId('entry');
+    // One task: the last keystroke and the ENTER that follows it, with nothing in
+    // between. This is the window in which the shell used to submit the value the
+    // field held BEFORE the keystroke.
+    act(() => {
+      fireEvent.change(entry, { target: { value: '000000100068358' } });
+      fireEvent.change(entry, { target: { value: '0000001000683580' } });
+      fireEvent.keyDown(document, { key: 'Enter' });
+    });
+
+    expect(submitted).toEqual(['0000001000683580']);
+  });
+
+  it('submits the value the field holds when ENTER is struck through the legend button', () => {
+    const submitted: string[] = [];
+    render(
+      <MemoryRouter>
+        <Layout>
+          <EntryFieldPublisher
+            onSubmit={(value) => {
+              submitted.push(value);
+            }}
+          />
+        </Layout>
+      </MemoryRouter>,
+    );
+
+    act(() => {
+      fireEvent.change(screen.getByTestId('entry'), { target: { value: 'USER0005' } });
+      fireEvent.click(screen.getByRole('button', { name: 'ENTER=Fetch' }));
+    });
+
+    expect(submitted).toEqual(['USER0005']);
+  });
+});
+
+describe('Layout — the keyboard is locked for the whole transaction', () => {
+  it('accepts no attention identifier and offers no enabled key while the screen is busy', () => {
+    const activate = jest.fn();
+    /**
+     * :purpose: A screen whose read is outstanding and which still declares a key.
+     * :returns: the rendered page body.
+     */
+    function BusyWithKeys(): ReactElement {
+      const { setChrome } = useScreenChrome();
+      useLayoutEffect(() => {
+        setChrome({
+          transactionId: 'CT00',
+          busy: true,
+          pfKeys: [
+            { action: PfKeyAction.PF8, label: 'F8=Forward', onActivate: activate },
+          ],
+        });
+      }, [setChrome]);
+      return <div data-testid="page-body">browsing</div>;
+    }
+
+    render(
+      <MemoryRouter>
+        <Layout>
+          <BusyWithKeys />
+        </Layout>
+      </MemoryRouter>,
+    );
+
+    // Five presses of a paging key while the reply is outstanding: a 3270 discards
+    // every one of them rather than queueing five requests that all carry the cursor
+    // of the page still on screen.
+    act(() => {
+      for (let press = 0; press < 5; press += 1) {
+        fireEvent.keyDown(document, { key: 'F8' });
+      }
+    });
+
+    expect(activate).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'F8=Forward' })).toBeDisabled();
+  });
+
+  it('sends one attention identifier per send even when five keys arrive in one task', () => {
+    const activate = jest.fn();
+    /**
+     * :purpose: An idle screen declaring a paging key, which becomes busy only once its
+     *     handler has run — the shape every list screen has.
+     * :returns: the rendered page body.
+     */
+    function IdleWithPagingKey(): ReactElement {
+      const { setChrome } = useScreenChrome();
+      const [busy, setBusy] = useState(false);
+      useLayoutEffect(() => {
+        setChrome({
+          transactionId: 'CT00',
+          busy,
+          pfKeys: [
+            {
+              action: PfKeyAction.PF8,
+              label: 'F8=Forward',
+              onActivate: () => {
+                activate();
+                setBusy(true);
+              },
+            },
+          ],
+        });
+      }, [setChrome, busy]);
+      return <div data-testid="page-body">browsing</div>;
+    }
+
+    render(
+      <MemoryRouter>
+        <Layout>
+          <IdleWithPagingKey />
+        </Layout>
+      </MemoryRouter>,
+    );
+
+    // One task, no macrotask boundary: the rendered lock cannot have been committed
+    // between the presses, so only the synchronous latch can refuse them.
+    act(() => {
+      const bar = document.querySelector('.pfKeyBar');
+      for (let press = 0; press < 5; press += 1) {
+        bar?.ownerDocument.dispatchEvent(
+          new KeyboardEvent('keydown', { key: 'F8', bubbles: true }),
+        );
+      }
+    });
+
+    expect(activate).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('Layout — the frame is navigable and identifiable', () => {
+  it('holds rows 23 and 24 in a contentinfo landmark a skip link reaches', () => {
+    const { container } = render(
+      <MemoryRouter>
+        <Layout>
+          <ChromePublisher />
+        </Layout>
+      </MemoryRouter>,
+    );
+
+    const status = screen.getByRole('contentinfo');
+    expect(status).toContainElement(screen.getByRole('alert'));
+    expect(status).toContainElement(screen.getByRole('group', { name: 'Function keys' }));
+    const skip = container.querySelector('.screen__skipLink');
+    expect(skip).toHaveAttribute('href', `#${status.id}`);
+  });
+
+  it('titles the document with the screen the frame is showing', async () => {
+    render(
+      <MemoryRouter>
+        <Layout>
+          <ChromePublisher />
+        </Layout>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(document.title).toBe('CAUP COACTUPC - CardDemo');
+    });
+  });
 });

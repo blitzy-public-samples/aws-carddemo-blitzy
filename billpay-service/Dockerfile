@@ -39,9 +39,13 @@ USER carddemo
 # :8080/actuator/health.
 EXPOSE 8080
 
-# Container-aware JVM defaults; JAVA_OPTS remains overridable at run time
-# (e.g. via docker-compose environment or `docker run -e JAVA_OPTS=...`).
-ENV JAVA_OPTS="-XX:MaxRAMPercentage=75.0 -XX:+UseContainerSupport"
+# Container-aware memory and GC policy. The value is IDENTICAL in all nine
+# service images and resolves against the memory limit the runtime declares
+# (docker-compose `deploy.resources.limits.memory`, Kubernetes
+# `resources.limits.memory`), so one artifact has one footprint everywhere.
+# Overridable at run time for a differently sized deployment.
+# Measurements and rationale: docs/decision-log.md section 40.
+ENV JAVA_OPTS="-XX:+UseContainerSupport -XX:InitialRAMPercentage=25.0 -XX:MaxRAMPercentage=60.0 -XX:+UseG1GC -XX:MaxGCPauseMillis=100"
 
 # `exec` replaces the shell so the JVM becomes PID 1 and receives SIGTERM for
 # graceful shutdown; the surrounding shell expands $JAVA_OPTS at start-up.

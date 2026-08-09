@@ -23,6 +23,7 @@ import { jest } from '@jest/globals';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router';
 // The header title lines every screen publishes (``COTTL01Y``).
+import { GENERIC_ERROR_MESSAGE } from '../api/messages';
 import { CCDA_TITLE02 } from '../types';
 import type { ApiErrorResponse, CardDetailResponseDto } from '../types';
 
@@ -56,11 +57,40 @@ const PF_ENTER_LABEL = 'ENTER=Search Cards';
 /** PF3 entry of the BMS ``FKEYS`` legend (line 24). */
 const PF_EXIT_LABEL = 'F3=Exit';
 
-/** ``SEARCHED-ACCT-ZEROES`` / ``SEARCHED-ACCT-NOT-NUMERIC``. */
-const MSG_ACCOUNT_NON_ZERO_11 = 'Account number must be a non zero 11 digit number';
+/**
+ * ``2210-EDIT-ACCOUNT`` non-numeric literal, MOVEd directly. ``COCRDSLC`` declares
+ * ``SEARCHED-ACCT-ZEROES`` / ``SEARCHED-ACCT-NOT-NUMERIC`` ('Account number must be a
+ * non zero 11 digit number') but never SETs either, so this upper-case form is the only
+ * account-filter text the program can put on line 23.
+ */
+const MSG_ACCOUNT_FILTER_11 = 'ACCOUNT FILTER,IF SUPPLIED MUST BE A 11 DIGIT NUMBER';
 
-/** ``SEARCHED-CARD-NOT-NUMERIC``. */
-const MSG_CARD_16_DIGITS = 'Card number if supplied must be a 16 digit number';
+/**
+ * ``2220-EDIT-CARD`` non-numeric literal, MOVEd directly for the same reason:
+ * ``SEARCHED-CARD-NOT-NUMERIC`` is an unreachable 88-level.
+ */
+const MSG_CARD_FILTER_16 = 'CARD ID FILTER,IF SUPPLIED MUST BE A 16 DIGIT NUMBER';
+
+/** ``WS-PROMPT-FOR-CARD`` — the read key was not supplied. */
+const MSG_CARD_NOT_PROVIDED = 'Card number not provided';
+
+/**
+ * ``WS-PROMPT-FOR-ACCT`` — ``2210-EDIT-ACCOUNT`` found no account key. Reached by a
+ * blank ACCTSID *and* by an all-zeros one, because the paragraph's "not supplied" test
+ * is ``CC-ACCT-ID EQUAL LOW-VALUES OR SPACES OR CC-ACCT-ID-N EQUAL ZEROS``.
+ */
+const MSG_ACCOUNT_NOT_PROVIDED = 'Account number not provided';
+
+/** ``NO-SEARCH-CRITERIA-RECEIVED`` — the unguarded both-blank cross-field test. */
+const MSG_NO_SEARCH_CRITERIA = 'No input received';
+
+/** A valid 11-digit ``ACCTSID`` entry, used where the account edit must pass. */
+const VALID_ACCOUNT_FILTER = '00000000050';
+
+/** Aliases used by the later cases for the same three literals. */
+const MSG_ACCOUNT_FILTER_11_DIGITS = MSG_ACCOUNT_FILTER_11;
+const MSG_CARD_FILTER_16_DIGITS = MSG_CARD_FILTER_16;
+const MSG_NO_INPUT_RECEIVED = MSG_NO_SEARCH_CRITERIA;
 
 /** ``DID-NOT-FIND-ACCTCARD-COMBO``; the card-service message on a failed read. */
 const MSG_NO_CARDS_FOUND = 'Did not find cards for this search condition';
@@ -79,6 +109,12 @@ const SCREEN_TITLE = 'View Credit Card Detail';
 
 /** Route of the card list screen (``COCRDLI`` / ``CCLI``), the PF3 target. */
 const CARD_LIST_ROUTE = '/cards';
+
+/** ``LIT-MENUPGM`` — the PF3 fallback when no caller is recorded. */
+const MAIN_MENU_ROUTE = '/menu';
+
+/** ``FOUND-CARDS-FOR-ACCOUNT`` (COCRDSLC L129-130), three leading spaces preserved. */
+const FOUND_CARDS_FOR_ACCOUNT = '   Displaying requested details';
 
 /** Seeded user id (``CDEMO-USER-ID``); no credential is involved. */
 const SESSION_USER = 'USER0001';
@@ -120,6 +156,13 @@ const overlongCardDetail: CardDetailResponseDto = {
 
 /** The 16-digit route parameter under test, carried as a ``string``. */
 const ROUTE_CARD_NUMBER: string = cardDetail.cardNum;
+
+/**
+ * The account handed over alongside the card. ``COCRDLIC`` always transfers the browse
+ * row's account id with its card number, and ``2210-EDIT-ACCOUNT`` refuses a search that
+ * arrives without one, so the hand-over fixture carries both halves of the composite key.
+ */
+const ROUTE_ACCOUNT_ID: string = cardDetail.cardAcctId;
 
 /** Entry location of the screen. */
 const CARD_DETAIL_ROUTE = '/cards/view';
@@ -163,6 +206,10 @@ const getCardMock =
 // ``getCard`` (this page), ``ApiError`` (``useApi``), ``signon`` (``useSession``,
 // reached through the hook barrel and the shell).
 jest.unstable_mockModule('../api', () => ({
+  // The request-cancellation contract ``useApi`` binds to: the real scope hands the
+  // caller's AbortSignal to axios, and the double simply invokes the call.
+  runWithRequestSignal: (_signal: AbortSignal, call: () => unknown): unknown => call(),
+  isCancelledRequest: (): boolean => false,
   // The session store and the REST hook this screen's module graph loads bind to
   // these barrel exports as well. ``getSessionIdentity`` is the production
   // ``GET /session`` probe the session harness drives; unanswered by this suite it
@@ -224,12 +271,13 @@ function verbatim(text: string): string {
  */
 function renderCardDetail(
   cardNumber: string = ROUTE_CARD_NUMBER,
-  accountId = '',
+  accountId: string = ROUTE_ACCOUNT_ID,
+  from: string = CARD_LIST_ROUTE,
 ): void {
   render(
     <MemoryRouter
       initialEntries={[
-        { pathname: CARD_DETAIL_ROUTE, state: { cardNumber, accountId } },
+        { pathname: CARD_DETAIL_ROUTE, state: { cardNumber, accountId, from } },
       ]}
     >
       <Routes>
@@ -242,6 +290,7 @@ function renderCardDetail(
           }
         />
         <Route path={CARD_LIST_ROUTE} element={<div data-testid="card-list-route" />} />
+        <Route path={MAIN_MENU_ROUTE} element={<div data-testid="main-menu-route" />} />
       </Routes>
     </MemoryRouter>,
   );
@@ -254,7 +303,7 @@ describe('CardDetailPage — load by route parameter', () => {
     await waitFor(() => {
       expect(getCardMock).toHaveBeenCalledTimes(1);
     });
-    expect(getCardMock).toHaveBeenCalledWith(ROUTE_CARD_NUMBER, undefined);
+    expect(getCardMock).toHaveBeenCalledWith(ROUTE_CARD_NUMBER, ROUTE_ACCOUNT_ID);
 
     // The 16-digit PAN travels as a string, never a number.
     const [passedCardNumber] = getCardMock.mock.calls[0];
@@ -281,7 +330,7 @@ describe('CardDetailPage — load by route parameter', () => {
     expect(screen.getByTestId('title02')).toHaveTextContent(CCDA_TITLE02);
     // The screen name lives in the body heading (BMS row 4), not in title02.
     expect(
-      screen.getByRole('heading', { level: 2, name: SCREEN_TITLE }),
+      screen.getByRole('heading', { level: 3, name: SCREEN_TITLE }),
     ).toBeInTheDocument();
     expect(screen.getByRole('region', { name: SCREEN_TITLE })).toBeInTheDocument();
   });
@@ -393,7 +442,7 @@ describe('CardDetailPage — preserved cardExpiraionDate spelling', () => {
 });
 
 describe('CardDetailPage — filter edits', () => {
-  it('rejects a zero account filter with the verbatim non zero 11 digit message', async () => {
+  it('treats an all-zeros account filter as not supplied, per the blank branch', async () => {
     renderCardDetail();
 
     await waitFor(() => {
@@ -405,9 +454,36 @@ describe('CardDetailPage — filter edits', () => {
     });
     fireEvent.click(screen.getByRole('button', { name: PF_ENTER_LABEL }));
 
-    expect(await screen.findByRole('alert')).toHaveTextContent(MSG_ACCOUNT_NON_ZERO_11);
+    // 2210-EDIT-ACCOUNT's "not supplied" test includes CC-ACCT-ID-N EQUAL ZEROS, so a
+    // zero-filled field takes the prompt branch, NOT the non-numeric branch.
+    const banner = await screen.findByRole('alert');
+    expect(banner).toHaveTextContent(MSG_ACCOUNT_NOT_PROVIDED);
+    expect(banner).not.toHaveTextContent(MSG_ACCOUNT_FILTER_11);
     // The edit fails before the read, so no further request is issued.
     expect(getCardMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('requires the account key, reporting WS-PROMPT-FOR-ACCT when only a card is typed', async () => {
+    renderCardDetail('', '');
+    expect(getCardMock).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByTestId('cardsid'), { target: { value: ROUTE_CARD_NUMBER } });
+    fireEvent.click(screen.getByRole('button', { name: PF_ENTER_LABEL }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(MSG_ACCOUNT_NOT_PROVIDED);
+    expect(screen.getByTestId('acctsid')).toHaveAttribute('aria-invalid', 'true');
+    expect(getCardMock).not.toHaveBeenCalled();
+  });
+
+  it('requires the card key, reporting WS-PROMPT-FOR-CARD when only an account is typed', async () => {
+    renderCardDetail('');
+
+    fireEvent.change(screen.getByTestId('acctsid'), { target: { value: VALID_ACCOUNT_FILTER } });
+    fireEvent.click(screen.getByRole('button', { name: PF_ENTER_LABEL }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(MSG_CARD_NOT_PROVIDED);
+    expect(screen.getByTestId('cardsid')).toHaveAttribute('aria-invalid', 'true');
+    expect(getCardMock).not.toHaveBeenCalled();
   });
 
   it('rejects an account filter that is not 11 digits before reading', async () => {
@@ -420,14 +496,36 @@ describe('CardDetailPage — filter edits', () => {
     fireEvent.change(screen.getByTestId('acctsid'), { target: { value: '12345' } });
     fireEvent.click(screen.getByRole('button', { name: PF_ENTER_LABEL }));
 
-    expect(await screen.findByRole('alert')).toHaveTextContent(MSG_ACCOUNT_NON_ZERO_11);
+    expect(await screen.findByRole('alert')).toHaveTextContent(MSG_ACCOUNT_FILTER_11);
     expect(getCardMock).toHaveBeenCalledTimes(1);
   });
 
-  it('rejects a card filter that is not 16 digits with the verbatim message', async () => {
-    renderCardDetail('123');
+  it('reports the both-blank cross-field literal when ENTER finds neither key', async () => {
+    // No selection is handed over, so the screen presents its own entry fields and runs
+    // no edit until an AID arrives -- the fresh-entry branch of the source.
+    renderCardDetail('', '');
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(getCardMock).not.toHaveBeenCalled();
 
-    expect(await screen.findByRole('alert')).toHaveTextContent(MSG_CARD_16_DIGITS);
+    fireEvent.click(screen.getByRole('button', { name: PF_ENTER_LABEL }));
+
+    const banner = await screen.findByRole('alert');
+    // The cross-field test is unguarded, so it replaces both field prompts.
+    expect(banner).toHaveTextContent(MSG_NO_SEARCH_CRITERIA);
+    expect(banner).not.toHaveTextContent(MSG_CARD_NOT_PROVIDED);
+    // The mixed-case 88-level COCRDSLC declares but never SETs must not be emitted.
+    expect(banner).not.toHaveTextContent('Card number if supplied must be a 16 digit');
+    expect(getCardMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a card filter that is not 16 digits with the verbatim message', async () => {
+    renderCardDetail('');
+
+    fireEvent.change(screen.getByTestId('acctsid'), { target: { value: VALID_ACCOUNT_FILTER } });
+    fireEvent.change(screen.getByTestId('cardsid'), { target: { value: '123' } });
+    fireEvent.click(screen.getByRole('button', { name: PF_ENTER_LABEL }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(MSG_CARD_FILTER_16);
     expect(getCardMock).not.toHaveBeenCalled();
     expect(screen.getByTestId('cardsid')).toHaveValue('123');
   });
@@ -439,18 +537,127 @@ describe('CardDetailPage — filter edits', () => {
       expect(getCardMock).toHaveBeenCalledTimes(1);
     });
 
-    fireEvent.change(screen.getByTestId('acctsid'), {
-      target: { value: '0'.repeat(ACCOUNT_FILTER_LENGTH) },
-    });
+    fireEvent.change(screen.getByTestId('acctsid'), { target: { value: '12345' } });
     fireEvent.change(screen.getByTestId('cardsid'), { target: { value: '123' } });
     fireEvent.click(screen.getByRole('button', { name: PF_ENTER_LABEL }));
 
     const banner = await screen.findByRole('alert');
-    expect(banner).toHaveTextContent(MSG_ACCOUNT_NON_ZERO_11);
-    expect(banner).not.toHaveTextContent(MSG_CARD_16_DIGITS);
+    expect(banner).toHaveTextContent(MSG_ACCOUNT_FILTER_11);
+    expect(banner).not.toHaveTextContent(MSG_CARD_FILTER_16);
     expect(getCardMock).toHaveBeenCalledTimes(1);
   });
+
+  it('reddens BOTH key controls when neither was supplied', async () => {
+    renderCardDetail('', '');
+
+    fireEvent.click(screen.getByRole('button', { name: PF_ENTER_LABEL }));
+    await screen.findByRole('alert');
+
+    // 1300-SETUP-SCREEN-ATTRS reddens the two fields through four independent IFs, so
+    // FLG-ACCTFILTER-BLANK and FLG-CARDFILTER-BLANK both fire on a both-blank send.
+    expect(screen.getByTestId('acctsid')).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.getByTestId('cardsid')).toHaveAttribute('aria-invalid', 'true');
+    // The fault must be VISIBLE, not only announced: the colour half of the paragraph
+    // is the `fieldError` class, which turns the field's frame red.
+    expect(screen.getByTestId('acctsid')).toHaveClass('fieldError');
+    expect(screen.getByTestId('cardsid')).toHaveClass('fieldError');
+  });
+
+  it("marks a BLANK key with the paragraph's '*' and a rejected one with colour alone", async () => {
+    renderCardDetail('');
+
+    // Blank card, valid account: FLG-CARDFILTER-BLANK -> MOVE '*' + DFHRED.
+    fireEvent.change(screen.getByTestId('acctsid'), { target: { value: VALID_ACCOUNT_FILTER } });
+    fireEvent.click(screen.getByRole('button', { name: PF_ENTER_LABEL }));
+    await screen.findByRole('alert');
+    expect(screen.getByTestId('cardsid')).toHaveClass('fieldError');
+    expect(screen.getByTestId('cardsid').previousElementSibling).toHaveTextContent('*');
+    // The account passed its edit, so it carries neither the colour nor the marker.
+    expect(screen.getByTestId('acctsid')).not.toHaveClass('fieldError');
+    expect(screen.getByTestId('acctsid').previousElementSibling).toBeEmptyDOMElement();
+  });
+
+  it('reddens a wrong-length key without marking it blank', async () => {
+    renderCardDetail('');
+
+    // FLG-ACCTFILTER-NOT-OK takes MOVE DFHRED only: the field holds what was typed, so
+    // the paragraph does not overwrite it with '*'.
+    fireEvent.change(screen.getByTestId('acctsid'), { target: { value: '12345' } });
+    fireEvent.change(screen.getByTestId('cardsid'), { target: { value: ROUTE_CARD_NUMBER } });
+    fireEvent.click(screen.getByRole('button', { name: PF_ENTER_LABEL }));
+    await screen.findByRole('alert');
+
+    expect(screen.getByTestId('acctsid')).toHaveClass('fieldError');
+    expect(screen.getByTestId('acctsid').previousElementSibling).toBeEmptyDOMElement();
+  });
+
+  it('clears every fault marking once the keys pass their edits', async () => {
+    renderCardDetail('', '');
+
+    fireEvent.click(screen.getByRole('button', { name: PF_ENTER_LABEL }));
+    await screen.findByRole('alert');
+    expect(screen.getByTestId('acctsid')).toHaveClass('fieldError');
+
+    fireEvent.change(screen.getByTestId('acctsid'), { target: { value: VALID_ACCOUNT_FILTER } });
+    fireEvent.change(screen.getByTestId('cardsid'), { target: { value: ROUTE_CARD_NUMBER } });
+    fireEvent.click(screen.getByRole('button', { name: PF_ENTER_LABEL }));
+
+    await waitFor(() => {
+      expect(getCardMock).toHaveBeenCalledTimes(1);
+    });
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getByTestId('acctsid')).not.toHaveClass('fieldError');
+    expect(screen.getByTestId('cardsid')).not.toHaveClass('fieldError');
+    expect(screen.getByTestId('acctsid')).not.toHaveAttribute('aria-invalid');
+    expect(screen.getByTestId('cardsid')).not.toHaveAttribute('aria-invalid');
+  });
+
+  it('puts the cursor on the control the edit rejected, not always on ACCTSID', async () => {
+    renderCardDetail('');
+
+    // Account valid, card absent: the cursor EVALUATE falls through the two account
+    // conditions to WHEN FLG-CARDFILTER-BLANK -> MOVE -1 TO CARDSIDL.
+    fireEvent.change(screen.getByTestId('acctsid'), { target: { value: VALID_ACCOUNT_FILTER } });
+    fireEvent.click(screen.getByRole('button', { name: PF_ENTER_LABEL }));
+    await screen.findByRole('alert');
+
+    expect(document.activeElement).toBe(screen.getByTestId('cardsid'));
+  });
+
+  it('homes the cursor on ACCTSID when the account condition matches first', async () => {
+    renderCardDetail('', '');
+
+    // Neither key: the EVALUATE tests FLG-ACCTFILTER-BLANK before the card conditions.
+    fireEvent.click(screen.getByRole('button', { name: PF_ENTER_LABEL }));
+    await screen.findByRole('alert');
+
+    expect(document.activeElement).toBe(screen.getByTestId('acctsid'));
+  });
+
+  it('runs no edit on the hand-over read, whose criteria the list already validated', async () => {
+    // COCRDSLC's "COMING FROM CREDIT CARD LIST SCREEN / SELECTION CRITERIA ALREADY
+    // VALIDATED" branch sets INPUT-OK and reads without reaching 2200-EDIT-MAP-INPUTS,
+    // so a selection carried in without an account filter still displays its card.
+    renderCardDetail(ROUTE_CARD_NUMBER, '');
+
+    await waitFor(() => {
+      expect(getCardMock).toHaveBeenCalledTimes(1);
+    });
+    expect(getCardMock).toHaveBeenCalledWith(ROUTE_CARD_NUMBER, undefined);
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
 });
+
+/**
+ * :purpose: Wait until the screen's transaction has completed and the shell has
+ *     released the keyboard, mirroring the fact that a 3270 accepts no attention
+ *     identifier while `X SYSTEM` is showing.
+ */
+async function waitForKeyboardRelease(): Promise<void> {
+  await waitFor(() => {
+    expect(screen.getByTestId('screen-busy')).toBeEmptyDOMElement();
+  });
+}
 
 describe('CardDetailPage — line-24 function keys', () => {
   it('publishes exactly the two BMS legend entries', async () => {
@@ -460,14 +667,16 @@ describe('CardDetailPage — line-24 function keys', () => {
       expect(getCardMock).toHaveBeenCalledTimes(1);
     });
 
-    const legend = screen.getByRole('toolbar', { name: 'Function keys' });
+    const legend = screen.getByRole('group', { name: 'Function keys' });
     expect(screen.getByRole('button', { name: PF_ENTER_LABEL })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: PF_EXIT_LABEL })).toBeInTheDocument();
     expect(legend.querySelectorAll('button')).toHaveLength(2);
   });
 
   it('ENTER=Search Cards reads the card number currently entered', async () => {
-    renderCardDetail();
+    // Both keys are seeded from the hand-over, as the card list supplies them, so the
+    // 2210/2220 edits pass and the re-read exercises only the typed card change.
+    renderCardDetail(ROUTE_CARD_NUMBER, VALID_ACCOUNT_FILTER);
 
     await waitFor(() => {
       expect(getCardMock).toHaveBeenCalledTimes(1);
@@ -482,7 +691,10 @@ describe('CardDetailPage — line-24 function keys', () => {
     await waitFor(() => {
       expect(getCardMock).toHaveBeenCalledTimes(2);
     });
-    expect(getCardMock).toHaveBeenLastCalledWith(otherCardDetail.cardNum, undefined);
+    expect(getCardMock).toHaveBeenLastCalledWith(
+      otherCardDetail.cardNum,
+      VALID_ACCOUNT_FILTER,
+    );
     expect(await screen.findByTestId('crdname')).toHaveTextContent(
       otherCardDetail.cardEmbossedName,
     );
@@ -490,18 +702,19 @@ describe('CardDetailPage — line-24 function keys', () => {
   });
 
   it('binds the physical ENTER key to the same search handler', async () => {
-    renderCardDetail();
+    renderCardDetail(ROUTE_CARD_NUMBER, VALID_ACCOUNT_FILTER);
 
     await waitFor(() => {
       expect(getCardMock).toHaveBeenCalledTimes(1);
     });
 
+    await waitForKeyboardRelease();
     fireEvent.keyDown(document.body, { key: 'Enter' });
 
     await waitFor(() => {
       expect(getCardMock).toHaveBeenCalledTimes(2);
     });
-    expect(getCardMock).toHaveBeenLastCalledWith(ROUTE_CARD_NUMBER, undefined);
+    expect(getCardMock).toHaveBeenLastCalledWith(ROUTE_CARD_NUMBER, VALID_ACCOUNT_FILTER);
   });
 
   it('F3=Exit leaves the screen for the card list', async () => {
@@ -511,6 +724,7 @@ describe('CardDetailPage — line-24 function keys', () => {
       expect(getCardMock).toHaveBeenCalledTimes(1);
     });
 
+    await waitForKeyboardRelease();
     fireEvent.click(screen.getByRole('button', { name: PF_EXIT_LABEL }));
 
     expect(await screen.findByTestId('card-list-route')).toBeInTheDocument();
@@ -523,6 +737,7 @@ describe('CardDetailPage — line-24 function keys', () => {
       expect(getCardMock).toHaveBeenCalledTimes(1);
     });
 
+    await waitForKeyboardRelease();
     fireEvent.keyDown(document.body, { key: 'F3' });
 
     expect(await screen.findByTestId('card-list-route')).toBeInTheDocument();
@@ -548,8 +763,170 @@ describe('CardDetailPage — failed read', () => {
     getCardMock.mockRejectedValueOnce(new Error(MSG_XREF_READ_ERROR));
     renderCardDetail();
 
-    expect(await screen.findByRole('alert')).toHaveTextContent(MSG_XREF_READ_ERROR);
+    // A plain Error never passed through the client interceptor, so it carries a
+    // library or programming diagnostic rather than a screen literal; line 23 shows
+    // the application's own generic instead of rendering it.
+    expect(await screen.findByRole('alert')).toHaveTextContent(GENERIC_ERROR_MESSAGE);
     expect(getCardMock).toHaveBeenCalledTimes(1);
   });
 });
 
+describe('CardDetailPage — mandatory composite key (2200-EDIT-MAP-INPUTS)', () => {
+  it('arrives clean with no hand-over, and reads nothing until asked', () => {
+    renderCardDetail('', '', '');
+
+    // A transaction started without a COMMAREA has received no input to complain about:
+    // the screen waits with both filters enterable and the message line free.
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(getCardMock).not.toHaveBeenCalled();
+    expect(screen.getByTestId('acctsid')).toHaveValue('');
+    expect(screen.getByTestId('cardsid')).toHaveValue('');
+  });
+
+  it('reports no input received when ENTER arrives with neither filter supplied', async () => {
+    renderCardDetail('', '', '');
+
+    fireEvent.click(screen.getByRole('button', { name: PF_ENTER_LABEL }));
+
+    // The CROSS FIELD EDIT sets NO-SEARCH-CRITERIA-RECEIVED unconditionally when both
+    // FLG-ACCTFILTER-BLANK and FLG-CARDFILTER-BLANK hold, replacing the account prompt
+    // 2210-EDIT-ACCOUNT had already published.
+    expect(await screen.findByRole('alert')).toHaveTextContent(MSG_NO_INPUT_RECEIVED);
+    expect(getCardMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses a card-only search rather than widening it, per 2210 INPUT-ERROR', async () => {
+    // The edits belong to the CDEMO-PGM-REENTER path (L357-L371 performs
+    // 2000-PROCESS-INPUTS, which reaches 2200-EDIT-MAP-INPUTS at L585); the hand-over
+    // branch at L339-L348 SETs INPUT-OK and reads without editing, so a mandatory-key
+    // rule is proven on the path the operator drives.
+    renderCardDetail('', '');
+
+    fireEvent.change(screen.getByTestId('cardsid'), {
+      target: { value: ROUTE_CARD_NUMBER },
+    });
+    fireEvent.click(screen.getByRole('button', { name: PF_ENTER_LABEL }));
+
+    // 2210-EDIT-ACCOUNT's 'Not supplied' branch SETs INPUT-ERROR, so the read never runs
+    // and the card is not disclosed on the strength of its number alone.
+    expect(await screen.findByRole('alert')).toHaveTextContent(MSG_ACCOUNT_NOT_PROVIDED);
+    expect(getCardMock).not.toHaveBeenCalled();
+  });
+
+  it('reports a missing card number when only the account is supplied', async () => {
+    renderCardDetail();
+
+    await waitFor(() => {
+      expect(getCardMock).toHaveBeenCalledTimes(1);
+    });
+
+    fireEvent.change(screen.getByTestId('cardsid'), { target: { value: '' } });
+    fireEvent.click(screen.getByRole('button', { name: PF_ENTER_LABEL }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(MSG_CARD_NOT_PROVIDED);
+    expect(getCardMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('treats the * wildcard as not supplied on both filters', async () => {
+    renderCardDetail('', '');
+
+    fireEvent.change(screen.getByTestId('acctsid'), { target: { value: '*' } });
+    fireEvent.change(screen.getByTestId('cardsid'), { target: { value: '*' } });
+    fireEvent.click(screen.getByRole('button', { name: PF_ENTER_LABEL }));
+
+    // 2200-EDIT-MAP-INPUTS moves LOW-VALUES for a '*' entry before the field edits run.
+    expect(await screen.findByRole('alert')).toHaveTextContent(MSG_NO_INPUT_RECEIVED);
+    expect(getCardMock).not.toHaveBeenCalled();
+  });
+
+  it('withdraws the details-shown notice while an edit is being reported', async () => {
+    renderCardDetail();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('crdname')).toHaveTextContent(
+        cardDetail.cardEmbossedName ?? '',
+      );
+    });
+
+    fireEvent.change(screen.getByTestId('acctsid'), { target: { value: '12345' } });
+    fireEvent.click(screen.getByRole('button', { name: PF_ENTER_LABEL }));
+
+    // The screen cannot report a rejected key and simultaneously claim the details it
+    // was asked for are on display; COCRDSLC reaches 'SETUP MESSAGE' only after a read.
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      MSG_ACCOUNT_FILTER_11_DIGITS,
+    );
+    expect(screen.queryByText(FOUND_CARDS_FOR_ACCOUNT)).toBeNull();
+  });
+});
+
+describe('CardDetailPage — PF3 returns to the caller (CDEMO-FROM-PROGRAM)', () => {
+  it('returns to the card list when the list handed the selection over', async () => {
+    renderCardDetail(ROUTE_CARD_NUMBER, ROUTE_ACCOUNT_ID, CARD_LIST_ROUTE);
+
+    // The read has to have SETTLED, not merely started: the keyboard is locked between
+    // the AID and its reply, so an F3 transmitted while the read is outstanding is
+    // discarded exactly as the terminal discards it.
+    await waitFor(() => {
+      expect(screen.getByTestId('crdname')).toHaveTextContent(
+        cardDetail.cardEmbossedName,
+      );
+    });
+    expect(getCardMock).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole('button', { name: PF_EXIT_LABEL }));
+
+    expect(await screen.findByTestId('card-list-route')).toBeInTheDocument();
+  });
+
+  it('returns to the main menu when no caller was recorded', async () => {
+    // `CDEMO-FROM-PROGRAM EQUAL SPACES` substitutes LIT-MENUPGM, so a screen entered from
+    // the menu or by deep link goes back to the menu rather than to a list never visited.
+    renderCardDetail(ROUTE_CARD_NUMBER, ROUTE_ACCOUNT_ID, '');
+
+    await waitFor(() => {
+      expect(screen.getByTestId('crdname')).toHaveTextContent(
+        cardDetail.cardEmbossedName,
+      );
+    });
+    expect(getCardMock).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole('button', { name: PF_EXIT_LABEL }));
+
+    expect(await screen.findByTestId('main-menu-route')).toBeInTheDocument();
+    expect(screen.queryByTestId('card-list-route')).toBeNull();
+  });
+});
+
+describe('CardDetailPage — cursor placement (MOVE -1 TO <field>L)', () => {
+  it('leaves the cursor on the card filter when the card edit refused it', async () => {
+    renderCardDetail();
+
+    await waitFor(() => {
+      expect(getCardMock).toHaveBeenCalledTimes(1);
+    });
+
+    fireEvent.change(screen.getByTestId('cardsid'), { target: { value: '4444' } });
+    fireEvent.click(screen.getByRole('button', { name: PF_ENTER_LABEL }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(MSG_CARD_FILTER_16_DIGITS);
+    // The field marked invalid and the field holding the cursor must be the same one.
+    expect(screen.getByTestId('cardsid')).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.getByTestId('cardsid')).toHaveFocus();
+  });
+
+  it('leaves the cursor on the account filter when the account edit refused it', async () => {
+    renderCardDetail();
+
+    await waitFor(() => {
+      expect(getCardMock).toHaveBeenCalledTimes(1);
+    });
+
+    fireEvent.change(screen.getByTestId('acctsid'), { target: { value: '12345' } });
+    fireEvent.click(screen.getByRole('button', { name: PF_ENTER_LABEL }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      MSG_ACCOUNT_FILTER_11_DIGITS,
+    );
+    expect(screen.getByTestId('acctsid')).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.getByTestId('acctsid')).toHaveFocus();
+  });
+});

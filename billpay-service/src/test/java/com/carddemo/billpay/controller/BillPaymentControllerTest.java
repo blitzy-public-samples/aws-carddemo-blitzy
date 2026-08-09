@@ -253,14 +253,15 @@ class BillPaymentControllerTest {
     /**
      * :purpose: A request body that violates the {@code @Valid} bean-validation constraints on
      *  {@link BillPaymentRequestDto} is rejected with HTTP 400 and per-field messages before the
-     *  service is reached; the over-length account id breaches the ``@Size(max = 11)`` bound.
-     * :returns: passes when the response is 400, ``$.status`` is 400 and ``$.fieldErrors`` is a
-     *  non-empty map carrying the ``accountId`` violation, with the service never invoked.
+     *  service is reached. The confirmation flag is the one constrained member: ``CONFIRM`` is
+     *  ``LENGTH=1``, so anything longer cannot have come from the map.
+     * :returns: passes when the response is 400, ``$.status`` is 400 and ``$.fieldErrors`` carries
+     *  the ``confirm`` violation with the COBIL00C literal, and the service was never invoked.
      */
     @Test
     @DisplayName("POST /billpay invalid request body returns 400 with field errors")
     void validationFailureReturns400WithFieldErrors() throws Exception {
-        String invalidBody = "{\"accountId\":\"123456789012\",\"confirm\":\"Y\"}";
+        String invalidBody = "{\"accountId\":\"00000000001\",\"confirm\":\"YESPLEASE\"}";
 
         mockMvc.perform(post("/billpay").session(signedOnSession())
                         .contentType(MediaType.APPLICATION_JSON)
@@ -268,9 +269,37 @@ class BillPaymentControllerTest {
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.status").value(400))
                 .andExpect(jsonPath("$.fieldErrors").isNotEmpty())
-                .andExpect(jsonPath("$.fieldErrors.accountId").exists());
+                .andExpect(jsonPath("$.fieldErrors.confirm")
+                        .value("Invalid value. Valid values are (Y/N)..."));
 
         verifyNoInteractions(billPaymentService);
+    }
+
+    /**
+     * :purpose: The account id carries no bean-validation width constraint, so a value that is
+     *  not the eleven-digit key width is NOT stopped at the request contract: it reaches the
+     *  service, which owns the single decision COBIL00C makes for every unreadable key. The
+     *  program performs no numeric or width edit on ``ACTIDIN`` at all, so answering a subset of
+     *  malformed values with a second, differently-worded 400 would have been a message the
+     *  screen cannot send.
+     * :returns: passes when the over-width id reaches the service and its ``Account ID NOT
+     *  found...`` outcome is what the caller sees.
+     */
+    @Test
+    @DisplayName("POST /billpay an over-width account id reaches the service, not a 400")
+    void overWidthAccountIdReachesTheService() throws Exception {
+        when(billPaymentService.processBillPayment(any(BillPaymentRequestDto.class), any(SessionContext.class)))
+                .thenThrow(new RecordNotFoundException(MSG_ACCOUNT_NOT_FOUND));
+
+        mockMvc.perform(post("/billpay").session(signedOnSession())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"accountId\":\"123456789012\",\"confirm\":\"\"}"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.message").value(MSG_ACCOUNT_NOT_FOUND))
+                .andExpect(jsonPath("$.fieldErrors").doesNotExist());
+
+        verify(billPaymentService).processBillPayment(any(BillPaymentRequestDto.class),
+                any(SessionContext.class));
     }
 
     /**

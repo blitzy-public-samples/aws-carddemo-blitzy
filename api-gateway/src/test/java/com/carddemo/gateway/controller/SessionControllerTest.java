@@ -30,10 +30,9 @@ import org.springframework.mock.web.MockHttpSession;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.context.WebApplicationContext;
-import org.springframework.web.server.ResponseStatusException;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
+import static org.hamcrest.Matchers.nullValue;
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -104,27 +103,33 @@ class SessionControllerTest {
     }
 
     @Test
-    @DisplayName("answers 401 when no session has been established")
-    void answersUnauthorizedWithoutASession() throws Exception {
-        mockMvc.perform(get("/session")).andExpect(status().isUnauthorized());
+    @DisplayName("reports an empty identity when no session has been established")
+    void reportsAnEmptyIdentityWithoutASession() throws Exception {
+        mockMvc.perform(get("/session"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.userId").value(nullValue()))
+                .andExpect(jsonPath("$.userType").value(nullValue()));
     }
 
     @Test
-    @DisplayName("answers 401 when the session carries no sign-on context")
-    void answersUnauthorizedForASessionWithoutContext() throws Exception {
+    @DisplayName("reports an empty identity when the session carries no sign-on context")
+    void reportsAnEmptyIdentityForASessionWithoutContext() throws Exception {
         mockMvc.perform(get("/session").session(new MockHttpSession()))
-                .andExpect(status().isUnauthorized());
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.userId").value(nullValue()))
+                .andExpect(jsonPath("$.userType").value(nullValue()));
     }
 
     @Test
-    @DisplayName("refuses without creating a session, so the probe cannot mint one")
-    void refusesWithoutCreatingASession() {
+    @DisplayName("answers anonymously without creating a session, so the probe cannot mint one")
+    void answersWithoutCreatingASession() {
         MockHttpServletRequest request = new MockHttpServletRequest("GET", "/session");
         SessionController controller = new SessionController();
 
-        assertThatExceptionOfType(ResponseStatusException.class)
-                .isThrownBy(() -> controller.currentSession(request));
+        SessionController.SessionIdentity identity = controller.currentSession(request);
 
+        assertThat(identity.userId()).isNull();
+        assertThat(identity.userType()).isNull();
         assertThat(request.getSession(false)).isNull();
     }
 }

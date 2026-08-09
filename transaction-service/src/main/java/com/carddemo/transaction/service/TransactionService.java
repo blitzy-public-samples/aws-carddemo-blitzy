@@ -16,14 +16,17 @@
  */
 package com.carddemo.transaction.service;
 
+import com.carddemo.common.constant.Messages;
 import com.carddemo.common.domain.CardXref;
 import com.carddemo.common.domain.Transaction;
 import com.carddemo.common.dto.SessionContext;
 import com.carddemo.common.dto.TransactionAddRequestDto;
 import com.carddemo.common.dto.TransactionAddResponseDto;
+import com.carddemo.common.dto.TransactionKeyResponseDto;
 import com.carddemo.common.dto.TransactionListItemDto;
 import com.carddemo.common.dto.TransactionListRequestDto;
 import com.carddemo.common.dto.TransactionListResponseDto;
+import com.carddemo.common.dto.TransactionKeyDto;
 import com.carddemo.common.dto.TransactionViewResponseDto;
 import com.carddemo.common.exception.CardDemoException;
 import com.carddemo.common.exception.RecordNotFoundException;
@@ -147,9 +150,25 @@ public class TransactionService {
     private static final int CSUTLDTC_OK_MSG_NO = 2513;
     /** :purpose: Width of the zero-padded transaction-id and account/card key form. */
     private static final int TRAN_ID_WIDTH = 16;
+
+    /** Declared width of ``XREF-ACCT-ID`` / ``ACTIDIN`` (``PIC 9(11)``). */
+    private static final int ACCT_ID_WIDTH = 11;
+
+    /**
+     * :purpose: Declared width of the card-number key (``CARD-NUM PIC X(16)``, ``COTRN02``
+     *  ``CARDNIN LENGTH=16``). The width is exact for the same reason the account width is.
+     */
+    private static final int CARD_NUM_WIDTH = 16;
     /** :purpose: Low sentinel key opening the forward browse from the first record (COBOL ``LOW-VALUES``). */
     private static final String LOW_SENTINEL = "0000000000000000";
     /** :purpose: Navigation action requesting the previous page (COBOL ``DFHPF7``). */
+    /**
+     * :purpose: The list screen's default action, matching ``WHEN DFHENTER``
+     *     [app/cbl/COTRN00C.cbl:L120]. Accepted explicitly as well as by omission, so a caller may
+     *     name the key it pressed rather than having to send nothing.
+     */
+    private static final String ACTION_ENTER = "ENTER";
+
     private static final String ACTION_PF7 = "PF7";
     /** :purpose: Navigation action requesting the next page (COBOL ``DFHPF8``). */
     private static final String ACTION_PF8 = "PF8";
@@ -215,6 +234,16 @@ public class TransactionService {
         if (ACTION_PF8.equalsIgnoreCase(action)) {
             return pageForward(req);
         }
+        // COTRN00C evaluates EIBAID against exactly ENTER, PF3, PF7 and PF8, and its WHEN OTHER
+        // branch reports CCDA-MSG-INVALID-KEY [app/cbl/COTRN00C.cbl:L129-L132]. Treating an
+        // unrecognized action as ENTER instead silently served the first page: a caller that
+        // mistyped a key, or that this service simply does not support, was told nothing and was
+        // given a page it never asked for. An ABSENT action is still ENTER -- that is the screen's
+        // default, not an unrecognized key.
+        if (!action.isEmpty() && !ACTION_ENTER.equalsIgnoreCase(action)) {
+            log.debug("listTransactions rejected unrecognized action");
+            throw new CardDemoException(Messages.CCDA_MSG_INVALID_KEY);
+        }
         return enterList(req);
     }
 
@@ -231,7 +260,11 @@ public class TransactionService {
         String selId = trimToNull(req.getSelectedTranId());
         if (selFlag != null && selId != null) {
             if ("S".equalsIgnoreCase(selFlag)) {
-                TransactionListResponseDto selResp = echoState(req);
+                // The rows STAY on display. COTRN00C's selection path reaches SEND-TRNLST-SCREEN
+                // without erasing the map, so the operator still sees the page they selected from.
+                // Echoing an empty row list instead told the caller the page had become empty at
+                // the very moment they picked a row out of it.
+                TransactionListResponseDto selResp = redisplayCurrentPage(req);
                 selResp.setSelectedTranId(selId);
                 log.debug("listTransactions selection accepted for view navigation");
                 return selResp;
@@ -239,15 +272,30 @@ public class TransactionService {
             throw new CardDemoException(MSG_INVALID_SELECTION);
         }
 
-        String filter = trimToNull(req.getTranIdFilter());
+        // L206-217 edits the field as received: EQUAL SPACES OR LOW-VALUES browses from
+        // LOW-VALUES, and anything else must be NUMERIC. Trimming first made a tab
+        // indistinguishable from an unsupplied filter, so a discarded filter answered with
+        // the whole first page and no message at all.
+        String filter = req.getTranIdFilter();
         String cursor;
-        if (filter == null) {
+        if (isNotSupplied(filter)) {
             cursor = LOW_SENTINEL;
         } else {
-            if (!isNumeric(filter)) {
+            // COTRN00C L206-L219: blank browses from the top, otherwise
+            // `IF TRNIDINI OF COTRN0AI IS NUMERIC` decides. `TRNIDIN` is a sixteen-column
+            // field and a class test on an alphanumeric item is true only when EVERY
+            // character is a digit, so a shorter entry — which BMS returns blank-padded —
+            // fails it and publishes this literal. Zero-padding the entry instead let an
+            // unpadded filter position the browse at the record its padded form names. The
+            // class test does not trim either, so a value carrying a space fails it here
+            // exactly as it does in the source. The width is part of the same edit rather
+            // than a second message -- a value wider than the key cannot be keyed on the
+            // 3270 at all -- and it is enforced BEFORE the value reaches the key
+            // arithmetic, which is what kept an over-wide digit run out of a 500.
+            if (!isAllDigits(filter) || filter.length() != TRAN_ID_WIDTH) {
                 throw new CardDemoException(MSG_TRAN_ID_NUMERIC);
             }
-            cursor = inclusiveLowerCursor(pad16(filter));
+            cursor = inclusiveLowerCursor(filter);
         }
         return forwardPage(cursor, 0);
     }
@@ -266,7 +314,7 @@ public class TransactionService {
             resp.setMessage(MSG_ALREADY_BOTTOM);
             return resp;
         }
-        String cursor = pad16(defaultIfBlank(req.getTranIdLast(), LOW_SENTINEL));
+        String cursor = defaultIfBlank(req.getTranIdLast(), LOW_SENTINEL);
         return forwardPage(cursor, req.getPageNumber());
     }
 
@@ -284,7 +332,7 @@ public class TransactionService {
             resp.setMessage(MSG_ALREADY_TOP);
             return resp;
         }
-        String cursor = pad16(defaultIfBlank(req.getTranIdFirst(), LOW_SENTINEL));
+        String cursor = defaultIfBlank(req.getTranIdFirst(), LOW_SENTINEL);
         List<Transaction> rows = new ArrayList<>(
                 transactionRepository.findByTranIdLessThanOrderByTranIdDesc(
                         cursor, PageRequest.of(0, PAGE_SIZE)));
@@ -371,7 +419,7 @@ public class TransactionService {
             return echoState(req);
         }
         List<Transaction> rows = transactionRepository.findByTranIdGreaterThanOrderByTranIdAsc(
-                inclusiveLowerCursor(pad16(first)), PageRequest.of(0, PAGE_SIZE));
+                inclusiveLowerCursor(first), PageRequest.of(0, PAGE_SIZE));
         if (rows.isEmpty()) {
             return echoState(req);
         }
@@ -396,7 +444,12 @@ public class TransactionService {
         if (tranId == null || tranId.trim().isEmpty()) {
             throw new CardDemoException(MSG_TRAN_ID_EMPTY);
         }
-        String key = pad16(tranId.trim());
+        // COTRN01C applies NO numeric or width edit to `TRNIDIN` — PROCESS-ENTER-KEY tests
+        // only for an empty field and then performs `MOVE TRNIDINI TO TRAN-ID` (both
+        // `PIC X(16)`) and reads. The key is therefore whatever the operator typed,
+        // blank-padded by BMS, and a short run simply misses the read. Zero-padding it
+        // here resolved a record the operator never named.
+        String key = tranId.trim();
         log.debug("viewTransaction lookup for tranId key");
         Transaction entity = transactionRepository.findById(key)
                 .orElseThrow(() -> new RecordNotFoundException(MSG_TRAN_ID_NOT_FOUND));
@@ -417,6 +470,28 @@ public class TransactionService {
         Transaction entity = transactionRepository.findFirstByOrderByTranIdDesc()
                 .orElseThrow(() -> new RecordNotFoundException(MSG_TRAN_ID_NOT_FOUND));
         return transactionMapper.toViewResponse(entity);
+    }
+
+    /**
+     * :purpose: Run ``VALIDATE-INPUT-KEY-FIELDS`` on its own and report the pair it
+     *  resolves. ``PROCESS-ENTER-KEY`` performs that paragraph before
+     *  ``VALIDATE-INPUT-DATA-FIELDS``, so the existence of the account or card is
+     *  established before any data field is examined; running the edit here lets the
+     *  screen keep that order instead of reporting an empty data field for a key that is
+     *  not on file. The paragraph also writes the counterpart key back onto the map, so
+     *  the resolved pair is returned rather than just an acknowledgement.
+     * :param acctId: the ``ACTIDIN`` entry value; may be ``null`` or blank.
+     * :param tranCardNum: the ``CARDNIN`` entry value; may be ``null`` or blank.
+     * :returns: the resolved account id and card number.
+     * :raises CardDemoException: when a key is non-numeric or neither key is present.
+     * :raises RecordNotFoundException: when the account or card cross-reference is
+     *  not found.
+     */
+    @Transactional(readOnly = true)
+    public TransactionKeyResponseDto resolveKeys(String acctId, String tranCardNum) {
+        CardXref xref = resolveCrossReference(acctId, tranCardNum);
+        return new TransactionKeyResponseDto(
+                String.format("%011d", xref.getXrefAcctId()), xref.getXrefCardNum());
     }
 
     /**
@@ -604,10 +679,33 @@ public class TransactionService {
      *  not found.
      */
     private CardXref resolveCrossReference(TransactionAddRequestDto request) {
-        String acctIdIn = trimToNull(request.getAcctId());
-        String cardIn = trimToNull(request.getTranCardNum());
+        return resolveCrossReference(request.getAcctId(), request.getTranCardNum());
+    }
+
+    /**
+     * :purpose: Run ``COTRN02C VALIDATE-INPUT-KEY-FIELDS`` against the two raw key
+     *  entries. The paragraph is an ``EVALUATE`` whose first branch wins, so a supplied
+     *  account id takes priority over a supplied card number, and the branch that runs
+     *  performs the cross-reference read that yields the counterpart key. That read being
+     *  INSIDE this paragraph -- which runs before ``VALIDATE-INPUT-DATA-FIELDS`` -- is what
+     *  makes a key that is not on file the first thing the screen reports.
+     * :param acctIdRaw: the ``ACTIDIN`` entry, or ``null``.
+     * :param cardNumRaw: the ``CARDNIN`` entry, or ``null``.
+     * :returns: the resolved {@link CardXref} linking card, customer, and account.
+     * :raises CardDemoException: when a key is non-numeric or neither key is present.
+     * :raises RecordNotFoundException: when the account or card cross-reference is
+     *  not found.
+     */
+    private CardXref resolveCrossReference(String acctIdRaw, String cardNumRaw) {
+        String acctIdIn = trimToNull(acctIdRaw);
+        String cardIn = trimToNull(cardNumRaw);
         if (acctIdIn != null) {
-            if (!isNumeric(acctIdIn)) {
+            // COTRN02C L197-L201: `IF ACTIDINI OF COTRN2AI IS NOT NUMERIC` on an eleven-column
+            // field, so the run must be exactly eleven ASCII digits — a class test on an
+            // alphanumeric item is true only when every character is a digit, and BMS
+            // blank-pads what the operator did not type. The exact width is also what keeps
+            // `Long.valueOf` in range: a longer run overflowed and surfaced as a 500.
+            if (!isNumeric(acctIdIn) || acctIdIn.length() != ACCT_ID_WIDTH) {
                 throw new CardDemoException(MSG_ACCT_NUMERIC);
             }
             Long acctId = Long.valueOf(acctIdIn);
@@ -615,13 +713,40 @@ public class TransactionService {
                     .orElseThrow(() -> new RecordNotFoundException(MSG_ACCT_NOT_FOUND));
         }
         if (cardIn != null) {
-            if (!isNumeric(cardIn)) {
+            // COTRN02C's card edit is the same class test on the sixteen-column `CARDNIN`.
+            if (!isNumeric(cardIn) || cardIn.length() != CARD_NUM_WIDTH) {
                 throw new CardDemoException(MSG_CARD_NUMERIC);
             }
             return cardXrefRepository.findByXrefCardNum(cardIn)
                     .orElseThrow(() -> new RecordNotFoundException(MSG_CARD_NOT_FOUND));
         }
         throw new CardDemoException(MSG_ACCT_OR_CARD);
+    }
+
+    /**
+     * :purpose: Resolve the add screen's two key fields from either one, re-expressing
+     *  the ``COTRN02C VALIDATE-INPUT-KEY-FIELDS`` paragraph on its own. The legacy
+     *  program runs that paragraph BEFORE the eleven data-field blank guards, and its
+     *  cross-reference read is what publishes ``Account ID NOT found...`` /
+     *  ``Card Number NOT found...``; running it as its own step is what keeps those two
+     *  literals reachable when a data field is still empty, and it is also the first
+     *  thing ``COPY-LAST-TRAN-DATA`` performs.
+     * :param request: the key entry, carrying an account id, a card number, or neither.
+     * :returns: both keys, each in its declared width — the account id zero-padded to
+     *  eleven digits and the card number at its stored sixteen.
+     * :raises CardDemoException: when a key is non-numeric or neither key is present.
+     * :raises RecordNotFoundException: when the cross-reference holds no such key.
+     */
+    public TransactionKeyDto resolveAddKey(TransactionKeyDto request) {
+        String acctIdRaw = request == null ? null : request.getAcctId();
+        String cardNumRaw = request == null ? null : request.getTranCardNum();
+        CardXref xref = resolveCrossReference(acctIdRaw, cardNumRaw);
+
+        TransactionKeyDto resolved = new TransactionKeyDto();
+        resolved.setAcctId(String.format("%0" + ACCT_ID_WIDTH + "d", xref.getXrefAcctId()));
+        resolved.setTranCardNum(xref.getXrefCardNum());
+        log.debug("resolveAddKey matched a cross-reference entry");
+        return resolved;
     }
 
     /**
@@ -772,12 +897,25 @@ public class TransactionService {
      * :returns: the sixteen-character zero-padded key, or the trimmed value when it
      *  is not numeric.
      */
-    private static String pad16(String value) {
-        String trimmed = value == null ? "" : value.trim();
-        if (isNumeric(trimmed)) {
-            return String.format("%0" + TRAN_ID_WIDTH + "d", Long.valueOf(trimmed));
+    /**
+     * :purpose: Left-pad a digit string to the stored key width without parsing it. The
+     *  key is a fixed-width digit string, so padding is a string operation; parsing it
+     *  into an integral type would impose that type's range on a field the caller
+     *  controls, which is how a long enough digit string became a 500 instead of a
+     *  browse that simply finds nothing.
+     * :param digits: a string of ASCII digits.
+     * :returns: the value left-padded with zeros to the key width, unchanged when it is
+     *  already at least that wide.
+     */
+    private static String leftPadZeros(String digits) {
+        if (digits.length() >= TRAN_ID_WIDTH) {
+            return digits;
         }
-        return trimmed;
+        StringBuilder padded = new StringBuilder(TRAN_ID_WIDTH);
+        for (int i = digits.length(); i < TRAN_ID_WIDTH; i++) {
+            padded.append('0');
+        }
+        return padded.append(digits).toString();
     }
 
     /**
@@ -790,13 +928,38 @@ public class TransactionService {
      */
     private static String inclusiveLowerCursor(String paddedId) {
         if (isNumeric(paddedId)) {
-            long value = Long.parseLong(paddedId);
-            if (value <= 0L) {
+            String previous = decrementDigits(paddedId);
+            if (previous == null) {
                 return LOW_SENTINEL;
             }
-            return String.format("%0" + TRAN_ID_WIDTH + "d", value - 1L);
+            return previous;
         }
         return LOW_SENTINEL;
+    }
+
+    /**
+     * :purpose: Subtract one from a fixed-width digit string, in the string domain. Keys
+     *  are zero-padded to a constant width, so their lexicographic order is their
+     *  numeric order and the predecessor of a key is obtained by borrowing from the
+     *  right. Working on the digits keeps a key wider than any integral type from
+     *  overflowing: such a value is greater than every stored key, and its predecessor
+     *  is still greater than every stored key, so the browse correctly finds nothing.
+     * :param digits: a string of ASCII digits.
+     * :returns: the digit string one less than the input at the same width, or ``null``
+     *  when the input is zero and has no predecessor.
+     */
+    private static String decrementDigits(String digits) {
+        char[] borrowed = digits.toCharArray();
+        int position = borrowed.length - 1;
+        while (position >= 0 && borrowed[position] == '0') {
+            borrowed[position] = '9';
+            position--;
+        }
+        if (position < 0) {
+            return null;
+        }
+        borrowed[position] = (char) (borrowed[position] - 1);
+        return new String(borrowed);
     }
 
     /**
@@ -826,6 +989,46 @@ public class TransactionService {
      * :param value: the candidate string; may be ``null``.
      * :returns: the trimmed value, or ``null`` when blank.
      */
+    /**
+     * :purpose: ``IF <field> EQUAL LOW-VALUES OR EQUAL SPACES`` — the "not supplied" test
+     *  a filter edit opens with. An untouched map field arrives as LOW-VALUES, whose wire
+     *  analogue is an absent or empty parameter, and a blanked one arrives as SPACES.
+     *  Nothing else is "not supplied": a tab is neither, so it falls through to the
+     *  numeric edit exactly as it does in the source.
+     * :param value: the raw filter value; may be ``null``.
+     * :returns: ``true`` when the filter was not supplied.
+     */
+    private static boolean isNotSupplied(String value) {
+        if (value == null || value.isEmpty()) {
+            return true;
+        }
+        for (int i = 0; i < value.length(); i++) {
+            if (value.charAt(i) != ' ') {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * :purpose: COBOL ``IS NUMERIC`` against a ``PIC X(n)`` field: every position must
+     *  hold one of ``0``..``9``. Unlike {@link #isNumeric(String)} this does not trim, so
+     *  a surrounding space fails the class test as it does in the source.
+     * :param value: the raw filter value; may be ``null``.
+     * :returns: ``true`` when every character is an ASCII digit and there is at least one.
+     */
+    private static boolean isAllDigits(String value) {
+        if (value == null || value.isEmpty()) {
+            return false;
+        }
+        for (int i = 0; i < value.length(); i++) {
+            if (!isAsciiDigit(value, i)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     private static String trimToNull(String value) {
         if (value == null) {
             return null;

@@ -74,6 +74,31 @@ spec:
             seccompProfile:
               type: RuntimeDefault
           automountServiceAccountToken: false
+          # Wait for the schema owner, exactly as the online deployments do. This pod
+          # carries SPRING_FLYWAY_ENABLED=false from carddemo-config and so does not
+          # create the schema itself; with hibernate.ddl-auto=validate it cannot start
+          # before batch-service has applied the migration set. A schedule that fired
+          # while the owner was unavailable would otherwise fail the whole run rather
+          # than wait for it.
+          initContainers:
+            - name: await-schema
+              image: eclipse-temurin:21-jre
+              imagePullPolicy: IfNotPresent
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop:
+                    - ALL
+              command:
+                - bash
+                - -c
+                - >-
+                  until exec 3<>/dev/tcp/batch-service/8080 2>/dev/null && printf 'GET
+                  /actuator/health/readiness HTTP/1.1\r\nHost: batch-service\r\nConnection:
+                  close\r\n\r\n' >&3 && grep -q '"status":"UP"' <&3; do echo 'waiting for the
+                  schema owner (batch-service) to become ready'; sleep 5; done; echo 'schema
+                  owner ready'
           containers:
             - name: transaction-posting
               # Same artifact as the online pod: see transaction-service/Dockerfile.
@@ -126,12 +151,17 @@ spec:
                     name: carddemo-pii-key
                 - secretRef:
                     name: carddemo-monitoring-secret
+              # `limits.memory` is what the image's JAVA_OPTS percentages resolve
+              # against, so this figure - not a JVM flag - is what bounds the heap.
+              # The command above expands the SAME JAVA_OPTS the image declares, so
+              # the scheduled posting run carries the identical policy.
+              # Measurements and rationale: docs/decision-log.md section 50.
               resources:
                 requests:
-                  cpu: 250m
+                  cpu: 500m
                   memory: 512Mi
                 limits:
-                  cpu: "1"
+                  cpu: "2"
                   memory: 1Gi
           volumes:
             - name: tmp

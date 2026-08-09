@@ -153,11 +153,8 @@ public class TransactionPostingJob {
      * :returns: the ``transactionPostingStep`` {@link Step}.
      * :note: The cleanup listener is registered FIRST and the reject-counting listener
      *     second because Spring Batch runs ``afterStep`` in REVERSE registration order
-     *     (``CompositeStepExecutionListener`` iterates its composite in reverse). The
-     *     cleanup must therefore be registered first so it runs LAST and observes the
-     *     final status — including the ``FAILED``/``FAILED_EMPTY_FEED`` verdict the
-     *     reject-counting listener sets for a genuinely empty feed, whose zero-byte
-     *     reject file must not survive.
+     *     (``CompositeStepExecutionListener`` iterates its composite in reverse), so the
+     *     cleanup runs LAST and observes the final status the other listeners left.
      */
     @Bean
     public Step transactionPostingStep(JobRepository jobRepository,
@@ -184,23 +181,34 @@ public class TransactionPostingJob {
     }
 
     /**
-     * :purpose: Remove the ``DALYREJS`` reject generation when the posting step does not
-     *     complete successfully, so a failed run leaves no reject file that a downstream
+     * :purpose: Remove THIS RUN's ``DALYREJS`` reject generation when the posting step does
+     *     not complete successfully, so a failed run leaves no reject file that a downstream
      *     reader could mistake for a completed one — the legacy job stream allocated a new
-     *     GDG generation per run and an abending step left none [app/jcl/POSTTRAN.jcl].
-     * :param rejectFileName: the configured reject file name, the same property the
-     *     {@link RejectFileItemWriter} opens.
+     *     GDG generation per run with ``DISP=(NEW,CATLG,DELETE)``, so an abending step left
+     *     its own generation deleted and every earlier generation untouched
+     *     [app/jcl/POSTTRAN.jcl].
+     * :param rejectFileName: the configured reject BASE file name, the same property the
+     *     {@link RejectFileItemWriter} reads.
+     * :param jobExecutionId: id of the job execution, the generation number of the file this
+     *     run writes.
      * :param pathResolver: resolver confining the name to the batch output root, so the
      *     listener addresses exactly the file the writer opened.
      * :returns: the cleanup listener for ``transactionPostingStep``.
+     * :note: ``@StepScope`` and the SAME generation qualifier as the writer. Bound to one
+     *     fixed name instead, this listener deleted whatever run had written that name last —
+     *     so a failing run erased the reject records a PREVIOUS run had delivered, and the
+     *     restart of the failing instance could then never open the file it needed.
      * :note: A run that rejected records completes ``COMPLETED_WITH_REJECTS``, a qualified
      *     SUCCESS code, so its reject generation is retained.
      */
     @Bean
+    @StepScope
     public FailedOutputCleanupListener rejectFileCleanupListener(
             @Value("${carddemo.batch.reject-file:dalyrejs.txt}") String rejectFileName,
+            @Value("#{stepExecution.jobExecutionId}") Long jobExecutionId,
             BatchOutputPathResolver pathResolver) {
-        return new FailedOutputCleanupListener(pathResolver.resolveOutput(rejectFileName));
+        return new FailedOutputCleanupListener(
+                pathResolver.resolveOutputGeneration(rejectFileName, jobExecutionId));
     }
 
     /**
@@ -230,21 +238,18 @@ public class TransactionPostingJob {
      *     completion listener to read back, and render the end-of-step verdict on
      *     an empty ``DALYTRAN`` feed.
      * :output: The running reject count is reset at step start, incremented per
-     *     write, and stored on the step execution context at step end; the step
-     *     exit status is returned unchanged unless the feed was empty, in which
-     *     case the step is failed with
-     *     {@link PostingJobCompletionListener#EMPTY_FEED_EXIT_CODE} (return code
-     *     12) and Spring Batch carries that status and exit code onto the job.
-     * :note: The verdict lives here, not on the job listener, so the job and step
-     *     rows an operator queries always agree: failing the job while
-     *     its only step stayed ``COMPLETED`` left ``BATCH_JOB_EXECUTION`` and
-     *     ``BATCH_STEP_EXECUTION`` contradicting each other.
-     * :note: Reading nothing is not by itself an empty feed. A
-     *     restarted execution that resumes past the last consumed record legitimately
-     *     reads zero rows, and reporting that as a missing feed dispatched an
-     *     operator after a non-existent incident. The staged record count is
-     *     therefore consulted as well, so the verdict is reached only when the feed
-     *     itself holds no record.
+     *     write, and stored on the step execution context at step end; the step exit
+     *     status is always returned unchanged.
+     * :note: An empty feed COMPLETES with return code 0 and the legacy zero tallies,
+     *     matching ``CBTRN02C``: its read loop simply ends, both DISPLAY lines report
+     *     zero, and ``RETURN-CODE`` is only raised to 4 when records were rejected —
+     *     return code 12 belongs to the OPEN/READ failure paths that ABEND the program
+     *     [app/cbl/CBTRN02C.cbl L202-L234]. The condition is logged at WARN so an absent
+     *     feed stays visible to an operator without being reported as an incident.
+     * :note: Reading nothing is not by itself an empty feed. A restarted execution that
+     *     resumes past the last consumed record legitimately reads zero rows, so the
+     *     staged record count is consulted as well and the WARN is emitted only when the
+     *     feed itself holds no record.
      */
     static final class RejectCountingStepListener
             implements StepExecutionListener, ItemWriteListener<PostingItem> {
@@ -290,30 +295,30 @@ public class TransactionPostingJob {
 
         /**
          * :purpose: Publish the final reject count onto the step execution context
-         *     under {@link PostingJobCompletionListener#REJECT_COUNT_KEY} and, when
-         *     the ``DALYTRAN`` feed held no record at all, fail the step with the
-         *     legacy return-code-12 exit status.
+         *     under {@link PostingJobCompletionListener#REJECT_COUNT_KEY} and, when the
+         *     ``DALYTRAN`` feed held no record at all, report that at WARN.
          * :param stepExecution: the completing step execution.
-         * :returns: the return-code-12 exit status when the feed was empty,
-         *     otherwise the step's existing exit status, left unchanged.
+         * :returns: the step's existing exit status, always left unchanged — an empty feed
+         *     completes with return code 0, as ``CBTRN02C`` does.
          */
         @Override
         public ExitStatus afterStep(StepExecution stepExecution) {
             stepExecution.getExecutionContext()
                     .putLong(PostingJobCompletionListener.REJECT_COUNT_KEY, this.rejectCount);
 
-            // An empty feed is an operational failure, not a clean run: the legacy job
-            // step was scheduled because a DALYTRAN feed had been delivered, so a feed
-            // holding no record means the input never arrived. Reporting COMPLETED in
-            // that case is a silent false success - the operator believes the day's
-            // transactions were posted when nothing was.
+            // An empty feed COMPLETES with return code 0, exactly as CBTRN02C does: its
+            // `PERFORM UNTIL END-OF-FILE` simply ends on the first read, both tallies are
+            // DISPLAYed as zero, and RETURN-CODE is raised to 4 only when
+            // WS-REJECT-COUNT > 0 -- return code 12 is reserved for the OPEN/READ failure
+            // paths that ABEND the program [app/cbl/CBTRN02C.cbl L202-L234]. Failing the
+            // step instead paged an operator for a no-transaction business day, a
+            // functional-equivalence break; the condition is still reported, at WARN, so an
+            // absent feed remains visible without being an incident.
             if (stepExecution.getStatus() == BatchStatus.COMPLETED
                     && stepExecution.getReadCount() == 0
                     && feedRecordCount.getAsLong() == 0L) {
-                LOG.error("Daily transaction feed was empty: no records were read from DALYTRAN");
-                stepExecution.setStatus(BatchStatus.FAILED);
-                return new ExitStatus(PostingJobCompletionListener.EMPTY_FEED_EXIT_CODE,
-                        PostingJobCompletionListener.EMPTY_FEED_EXIT_DESCRIPTION);
+                LOG.warn("Daily transaction feed was empty: no records were read from DALYTRAN;"
+                        + " completing with return code 0 (CBTRN02C behaviour)");
             }
             return stepExecution.getExitStatus();
         }

@@ -11,18 +11,24 @@
  *     request carries no ``tranId``; the assigned id arrives on
  *     ``TranAddResponseDto.tranId`` and is surfaced on the line-23 confirmation.
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { ReactElement } from 'react';
 import { useNavigate } from 'react-router';
 import { useScreenChrome } from '../components/Layout';
 import type { PFKeyDef } from '../components/PFKeyBar';
 import { PfKeyAction, CCDA_TITLE01, CCDA_TITLE02 } from '../types';
-import type { TranAddRequestDto, TranAddResponseDto, TranViewResponseDto } from '../types';
-import { addTransaction, getLastTransaction } from '../api';
-import { useApi, useFocusOnSettled } from '../hooks';
+import type {
+  TranAddRequestDto,
+  TranAddResponseDto,
+  TranKeyResponseDto,
+  TranViewResponseDto,
+} from '../types';
+import { addTransaction, getLastTransaction, resolveTransactionKeys } from '../api';
+import { placeCursor, useApi, useScreenAction } from '../hooks';
 import { invalidFieldProps } from '../components/ErrorBanner';
 import { resolveApiErrorMessage } from '../components/display';
 import { toAmountPicture, toMapDate } from './tranAddFormat';
+import { isFilterAllDigits, isFilterNotSupplied } from './screenFilters';
 
 /** The line-23 message literals of ``COTRN02C``, reproduced verbatim. */
 const MESSAGES = {
@@ -206,27 +212,40 @@ function isCalendarDate(value: string): boolean {
 }
 
 /**
- * :purpose: Validate the entered screen in the exact ``COTRN02C`` order — key fields,
- *     blank guards, numeric edits, amount and date shapes, calendar validity, merchant
- *     id — stopping at the first failure as the legacy program does.
+ * :purpose: The shape half of ``VALIDATE-INPUT-KEY-FIELDS``: the ``EVALUATE TRUE`` that
+ *     gives ``ACTIDIN`` priority over ``CARDNIN``, each field's ``IS NOT NUMERIC`` edit,
+ *     and the ``WHEN OTHER`` that demands one of them. The paragraph's other half is the
+ *     cross-reference read, which is a lookup and therefore runs in the service — and
+ *     because that read lives inside this paragraph, it precedes every data-field check.
  * :param form: Current screen state.
- * :returns: The first failure, or ``null`` when every edit passes.
+ * :returns: The first key-field failure, or ``null`` when the supplied key is well formed.
  */
-function validateForm(form: TranAddFormState): ValidationFailure | null {
-  const acctId = form.acctId.trim();
-  const cardNum = form.tranCardNum.trim();
-  if (acctId !== '') {
-    if (!isNumericField(acctId)) {
+function validateKeyFields(form: TranAddFormState): ValidationFailure | null {
+  // The EVALUATE tests each field as received — ``NOT = SPACES AND LOW-VALUES`` — so a
+  // field holding a tab is supplied and must pass ``IS NUMERIC``. Trimming first would
+  // make it indistinguishable from an untouched field and answer with the wrong literal.
+  if (!isFilterNotSupplied(form.acctId)) {
+    if (!isFilterAllDigits(form.acctId)) {
       return { field: 'acctId', message: MESSAGES.acctIdNumeric };
     }
-  } else if (cardNum !== '') {
-    if (!isNumericField(cardNum)) {
+    return null;
+  }
+  if (!isFilterNotSupplied(form.tranCardNum)) {
+    if (!isFilterAllDigits(form.tranCardNum)) {
       return { field: 'tranCardNum', message: MESSAGES.cardNumberNumeric };
     }
-  } else {
-    return { field: 'acctId', message: MESSAGES.acctOrCardRequired };
+    return null;
   }
+  return { field: 'acctId', message: MESSAGES.acctOrCardRequired };
+}
 
+/**
+ * :purpose: ``VALIDATE-INPUT-DATA-FIELDS`` — the eleven empty guards followed by the
+ *     class and shape edits, in the paragraph's own order.
+ * :param form: the entry state.
+ * :returns: the first failure, or ``null`` when every data field passes.
+ */
+function validateDataFields(form: TranAddFormState): ValidationFailure | null {
   for (const [field, message] of BLANK_GUARDS) {
     if (form[field].trim() === '') {
       return { field, message };
@@ -268,7 +287,7 @@ function validateForm(form: TranAddFormState): ValidationFailure | null {
 function focusField(field: TranAddField): void {
   const element = document.getElementById(field);
   if (element !== null) {
-    element.focus();
+    placeCursor(element);
   }
 }
 
@@ -322,6 +341,11 @@ export default function TranAddPage(): ReactElement {
   } = useApi<TranAddResponseDto, [TranAddRequestDto]>(addTransaction);
   const { run: runCopyLast, error: copyLastError } =
     useApi<TranViewResponseDto, []>(getLastTransaction);
+  const {
+    run: runResolveKeys,
+    error: resolveKeysError,
+    loading: resolvingKeys,
+  } = useApi<TranKeyResponseDto, [string, string]>(resolveTransactionKeys);
 
   // A ref, not the render-derived ``adding`` flag, is what makes a second ENTER
   // arriving in the same tick a no-op: state updates are asynchronous, so two
@@ -334,9 +358,15 @@ export default function TranAddPage(): ReactElement {
       return;
     }
     const message = resolveApiErrorMessage(addError);
+    const faulted = CURSOR_BY_SERVER_MESSAGE[message] ?? 'acctId';
     setInfoMessage('');
     setErrorMessage(message);
-    setFaultedField(CURSOR_BY_SERVER_MESSAGE[message] ?? 'acctId');
+    setFaultedField(faulted);
+    // Every refusal in the source ends ``MOVE -1 TO <field>L`` before SEND-TRNADD-SCREEN,
+    // so the cursor lands on the field that was faulted. Placing it here rather than
+    // leaving it to the settle rule is what stops a card that is not on file from
+    // marking CARDNIN while the cursor returns to ACTIDIN.
+    focusField(faulted);
   }, [addError]);
 
   useEffect(() => {
@@ -344,10 +374,24 @@ export default function TranAddPage(): ReactElement {
       return;
     }
     const message = resolveApiErrorMessage(copyLastError);
+    const faulted = CURSOR_BY_SERVER_MESSAGE[message] ?? 'acctId';
     setInfoMessage('');
     setErrorMessage(message);
-    setFaultedField(CURSOR_BY_SERVER_MESSAGE[message] ?? 'acctId');
+    setFaultedField(faulted);
+    focusField(faulted);
   }, [copyLastError]);
+
+  useEffect(() => {
+    if (resolveKeysError === null) {
+      return;
+    }
+    const message = resolveApiErrorMessage(resolveKeysError);
+    const faulted = CURSOR_BY_SERVER_MESSAGE[message] ?? 'acctId';
+    setInfoMessage('');
+    setErrorMessage(message);
+    setFaultedField(faulted);
+    focusField(faulted);
+  }, [resolveKeysError]);
 
   // COTRN02 marks ACTIDIN ``ATTRB=(FSET,IC,NORM,UNPROT)``, so the cursor starts on the
   // account key field when the screen is first shown.
@@ -355,12 +399,19 @@ export default function TranAddPage(): ReactElement {
     focusField('acctId');
   }, []);
 
-  // Both completed-add outcomes place the cursor back on the account field:
-  // ``INITIALIZE-ALL-FIELDS`` does so after a successful write and the duplicate-key
-  // branch does so explicitly. The entry fields are disabled for the whole in-flight
-  // interval and focusing a disabled field is a no-op, so the placement has to happen on
-  // the settle rather than in the request's own continuation.
-  const acctIdRef = useFocusOnSettled<HTMLInputElement>(adding);
+  // ``INITIALIZE-ALL-FIELDS`` places the cursor back on the account field after a
+  // completed write. The entry fields are disabled for the whole in-flight interval and
+  // focusing a disabled field is a no-op, so the placement has to happen on the settle
+  // rather than in the request's own continuation — but ONLY for the outcome that
+  // initialises the screen. A refused write is placed by the effect above, on the field
+  // the refusal names, and this rule would otherwise pull the cursor off it.
+  const wasAdding = useRef<boolean>(false);
+  useEffect(() => {
+    if (wasAdding.current && !adding && addError === null) {
+      focusField('acctId');
+    }
+    wasAdding.current = adding;
+  }, [adding, addError]);
 
   const updateField = useCallback((field: TranAddField, value: string): void => {
     setForm((previous) => ({ ...previous, [field]: value }));
@@ -407,23 +458,54 @@ export default function TranAddPage(): ReactElement {
     [runAdd],
   );
 
-  const handleEnter = useCallback((): void => {
-    if (submitLatch.current || adding) {
-      return;
-    }
-    const failure = validateForm(form);
-    if (failure !== null) {
-      setInfoMessage('');
-      setErrorMessage(failure.message);
-      setFaultedField(failure.field);
-      focusField(failure.field);
-      return;
-    }
+  const publishFailure = useCallback((failure: ValidationFailure): void => {
+    setInfoMessage('');
+    setErrorMessage(failure.message);
+    setFaultedField(failure.field);
+    focusField(failure.field);
+  }, []);
 
-    const flag = form.confirm.trim().toUpperCase();
+  /**
+   * :purpose: ``VALIDATE-INPUT-KEY-FIELDS`` in full — the shape edits, then the
+   *     cross-reference read, then the counterpart key written back onto the map
+   *     (``MOVE XREF-CARD-NUM TO CARDNINI`` / ``MOVE XREF-ACCT-ID TO ACTIDINI``).
+   * :param current: the entry state the ENTER was pressed against.
+   * :returns: the resolved key pair, or ``null`` when the paragraph reported a failure.
+   */
+  const runKeyFieldEdit = useCallback(
+    async (current: TranAddFormState): Promise<TranKeyResponseDto | null> => {
+      const shape = validateKeyFields(current);
+      if (shape !== null) {
+        publishFailure(shape);
+        return null;
+      }
+      const resolved = await runResolveKeys(
+        current.acctId.trim(),
+        current.tranCardNum.trim(),
+      );
+      if (resolved === undefined) {
+        return null;
+      }
+      setForm((previous) => ({
+        ...previous,
+        acctId: resolved.acctId,
+        tranCardNum: resolved.tranCardNum,
+      }));
+      return resolved;
+    },
+    [publishFailure, runResolveKeys],
+  );
+
+  /**
+   * :purpose: The ``EVALUATE CONFIRMI`` that closes ``PROCESS-ENTER-KEY``: ``Y`` writes,
+   *     ``N``/blank asks for the confirmation, anything else reports the valid values.
+   * :param current: the edited entry state.
+   */
+  const confirmOrAdd = useCallback((current: TranAddFormState): void => {
+    const flag = current.confirm.trim().toUpperCase();
     if (flag === 'Y') {
       submitLatch.current = true;
-      void submitAdd(form);
+      void submitAdd(current);
       return;
     }
     setInfoMessage('');
@@ -435,7 +517,36 @@ export default function TranAddPage(): ReactElement {
     }
     setFaultedField('confirm');
     focusField('confirm');
-  }, [adding, form, submitAdd]);
+  }, [submitAdd]);
+
+  const handleEnter = useCallback((): void => {
+    if (submitLatch.current || adding || resolvingKeys) {
+      return;
+    }
+    void (async (): Promise<void> => {
+      // PROCESS-ENTER-KEY performs VALIDATE-INPUT-KEY-FIELDS and only then
+      // VALIDATE-INPUT-DATA-FIELDS, and the cross-reference reads are inside the first
+      // paragraph. So an account or card that is not on file is reported before any
+      // empty data field — reversing the two is what answered a key that does not exist
+      // with "Type CD can NOT be empty...".
+      const resolved = await runKeyFieldEdit(form);
+      if (resolved === null) {
+        return;
+      }
+      const current: TranAddFormState = {
+        ...form,
+        acctId: resolved.acctId,
+        tranCardNum: resolved.tranCardNum,
+      };
+      const failure = validateDataFields(current);
+      if (failure !== null) {
+        publishFailure(failure);
+        return;
+      }
+      confirmOrAdd(current);
+    })();
+  }, [adding, confirmOrAdd, form, publishFailure, resolvingKeys, runKeyFieldEdit]);
+
 
   const handleExit = useCallback((): void => {
     void navigate('/transactions');
@@ -450,21 +561,32 @@ export default function TranAddPage(): ReactElement {
   }, []);
 
   /**
-   * :purpose: PF5 — ``COPY-LAST-TRAN-DATA``: read the last transaction on file and copy
-   *     its editable fields onto the screen. The account and card key fields are
-   *     deliberately left untouched, exactly as the legacy paragraph copies only
-   *     ``TTYPCD`` through ``MZIP``.
+   * :purpose: PF5 — ``COPY-LAST-TRAN-DATA``: run the key-field edit, read the last
+   *     transaction on file, copy its editable fields onto the screen, and then perform
+   *     ``PROCESS-ENTER-KEY``. The paragraph opens with ``PERFORM
+   *     VALIDATE-INPUT-KEY-FIELDS`` and closes with ``PERFORM PROCESS-ENTER-KEY``, so a
+   *     copy made with no account or card is refused before anything is read, and a copy
+   *     that succeeds leaves the screen asking for the confirmation rather than silently
+   *     filled in. It copies only ``TTYPCD`` through ``MZIP`` — the key fields carry
+   *     whatever the edit resolved.
    */
   const handleCopyLast = useCallback((): void => {
+    if (submitLatch.current || adding || resolvingKeys) {
+      return;
+    }
     void (async (): Promise<void> => {
+      const resolved = await runKeyFieldEdit(form);
+      if (resolved === null) {
+        return;
+      }
       const last = await runCopyLast();
       if (last === undefined) {
         return;
       }
-      setErrorMessage('');
-      setInfoMessage('');
-      setForm((previous) => ({
-        ...previous,
+      const copied: TranAddFormState = {
+        ...form,
+        acctId: resolved.acctId,
+        tranCardNum: resolved.tranCardNum,
         tranTypeCd: last.tranTypeCd,
         tranCatCd: last.tranCatCd,
         tranSource: last.tranSource,
@@ -479,17 +601,64 @@ export default function TranAddPage(): ReactElement {
         tranMerchantName: last.tranMerchantName,
         tranMerchantCity: last.tranMerchantCity,
         tranMerchantZip: last.tranMerchantZip,
-      }));
-      focusField('acctId');
+      };
+      setForm(copied);
+      setErrorMessage('');
+      setInfoMessage('');
+      // ``PERFORM PROCESS-ENTER-KEY`` closes the paragraph, and its key edit has already
+      // run, so what remains is the data-field pass and the confirmation gate: a copied
+      // screen therefore comes to rest asking to confirm rather than looking finished.
+      const failure = validateDataFields(copied);
+      if (failure !== null) {
+        publishFailure(failure);
+        return;
+      }
+      confirmOrAdd(copied);
     })();
-  }, [runCopyLast]);
+  }, [adding, confirmOrAdd, form, publishFailure, resolvingKeys, runCopyLast, runKeyFieldEdit]);
 
-  useEffect(() => {
+  // The activators published to the shared frame are identity-stable and always
+  // dispatch to the newest render's handler, so the line-24 legend is not rebuilt on
+  // every keystroke and an AID can never act on a value the screen has replaced.
+  const activateEnter = useScreenAction(handleEnter);
+  const activateExit = useScreenAction(handleExit);
+  const activateClear = useScreenAction(handleClear);
+  const activateCopyLast = useScreenAction(handleCopyLast);
+
+  // The frame's header, line-23 message region and line-24 key legend belong to the
+  // SAME map as this body, so they are published in a LAYOUT effect: a CICS program
+  // moved every field into the symbolic map before its one SEND, and nothing
+  // half-built ever reached the terminal. A passive effect would paint the frame
+  // once without them and then move it.
+  useLayoutEffect(() => {
+    // The 3270 keyboard is LOCKED from the moment an AID is transmitted until the next
+    // map arrives, so while the add is outstanding the legend renders inactive and no
+    // key is accepted -- the same treatment the sign-on and report screens carry.
     const pfKeys: PFKeyDef[] = [
-      { action: PfKeyAction.Enter, label: ENTER_LABEL, onActivate: handleEnter },
-      { action: PfKeyAction.PF3, label: BACK_LABEL, onActivate: handleExit },
-      { action: PfKeyAction.PF4, label: CLEAR_LABEL, onActivate: handleClear },
-      { action: PfKeyAction.PF5, label: COPY_LAST_LABEL, onActivate: handleCopyLast },
+      {
+        action: PfKeyAction.Enter,
+        label: ENTER_LABEL,
+        onActivate: activateEnter,
+        enabled: !adding,
+      },
+      {
+        action: PfKeyAction.PF3,
+        label: BACK_LABEL,
+        onActivate: activateExit,
+        enabled: !adding,
+      },
+      {
+        action: PfKeyAction.PF4,
+        label: CLEAR_LABEL,
+        onActivate: activateClear,
+        enabled: !adding,
+      },
+      {
+        action: PfKeyAction.PF5,
+        label: COPY_LAST_LABEL,
+        onActivate: activateCopyLast,
+        enabled: !adding,
+      },
     ];
     setChrome({
       transactionId: 'CT02',
@@ -499,17 +668,23 @@ export default function TranAddPage(): ReactElement {
       errorMessage,
       infoMessage,
       pfKeys,
-      busy: adding,
+      // The key-field edit is a lookup, so its round trip is part of the same
+      // keyboard-locked interval the write occupies.
+      busy: adding || resolvingKeys,
+      // Only the write locks the function keys: it is the action whose completion the
+      // operator must see, because it posts a transaction.
+      locked: adding,
     });
   }, [
+    activateClear,
+    activateCopyLast,
+    activateEnter,
+    activateExit,
     adding,
-    setChrome,
     errorMessage,
     infoMessage,
-    handleCopyLast,
-    handleEnter,
-    handleExit,
-    handleClear,
+    resolvingKeys,
+    setChrome,
   ]);
 
   return (
@@ -522,16 +697,15 @@ export default function TranAddPage(): ReactElement {
         handleEnter();
       }}
     >
-      <h2 className="neutral" id="tranAddHeading">
+      <h3 className="neutral" id="tranAddHeading">
         Add Transaction
-      </h2>
+      </h3>
 
       <div className="tranAdd__row">
         <label className="prompt" htmlFor="acctId">
           Enter Acct #:
         </label>{NBSP}
         <input
-          ref={acctIdRef}
           className="field"
           disabled={adding}
           id="acctId"

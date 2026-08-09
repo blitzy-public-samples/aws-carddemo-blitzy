@@ -32,7 +32,9 @@ import com.carddemo.common.testsupport.MigratedSchemaContainer;
 import com.carddemo.common.crypto.PiiMasker;
 import com.carddemo.common.dto.SessionContext;
 
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -57,6 +59,7 @@ import org.springframework.web.context.WebApplicationContext;
 import tools.jackson.databind.ObjectMapper;
 
 import java.math.BigDecimal;
+import java.util.List;
 import java.util.Map;
 import java.util.function.Consumer;
 import java.util.stream.Stream;
@@ -135,8 +138,32 @@ class AccountViewUpdateIT {
      */
     private static final String MSG_ACCT_NOT_IN_XREF = "Did not find this account in account card xref file";
 
-    /** :purpose: Verbatim COACTVWC/COACTUPC account-id edit message (``2210-EDIT-ACCOUNT``). */
-    private static final String MSG_INVALID_ACCT_ID = "Account number must be a non zero 11 digit number";
+    /**
+     * :purpose: Verbatim account-key edit message of the VIEW screen (``COACTVWC``
+     *  ``2210-EDIT-ACCOUNT``, L672). The two screens publish different text for the same
+     *  edit, so the read and write paths assert different literals.
+     */
+    private static final String MSG_ACCT_FILTER_INVALID = "Account Filter must  be a non-zero 11 digit number";
+
+    /**
+     * :purpose: Verbatim account-key edit message of the UPDATE screen (``COACTUPC``
+     *  ``1210-EDIT-ACCOUNT``, L1806-L1809, assembled by ``STRING``).
+     */
+    private static final String MSG_ACCT_NUMBER_INVALID =
+            "Account Number if supplied must be a 11 digit Non-Zero Number";
+
+    /**
+     * :purpose: Format an account id as the eleven-digit key every account endpoint requires.
+     *  ``CC-ACCT-ID`` is ``PIC X(11)`` and its edit is ``IF CC-ACCT-ID IS NOT NUMERIC`` -- a
+     *  class test on an alphanumeric item, true unless ALL eleven characters are digits -- so a
+     *  shorter run arrives blank-padded from BMS and is refused. Tests therefore address a
+     *  record by its full key rather than by its bare number.
+     * :param acctId: the numeric account id.
+     * :returns: the zero-padded eleven-digit key.
+     */
+    private static String acctKey(long acctId) {
+        return String.format("%011d", acctId);
+    }
 
     /** :purpose: A social security number that satisfies ``1265-EDIT-US-SSN``. */
     private static final String VALID_SSN = "020973888";
@@ -181,6 +208,39 @@ class AccountViewUpdateIT {
     @DynamicPropertySource
     static void datasourceProperties(DynamicPropertyRegistry registry) {
         MigratedSchemaContainer.registerDataSource(registry);
+    }
+
+    /**
+     * :purpose: The seeded cross-references this class removes so that
+     *     {@link #ACCT_WITHOUT_XREF} is unlinked, captured so they can be put back.
+     */
+    private static List<Map<String, Object>> removedSeedXrefs = List.of();
+
+    /**
+     * :purpose: Remember the seeded cross-reference rows for the account this class needs
+     *     unlinked, before any case removes them.
+     * :output: {@link #removedSeedXrefs} holds those rows.
+     */
+    @BeforeAll
+    static void captureSeededXrefsForUnlinkedAccount(@Autowired JdbcTemplate bootstrapJdbc) {
+        removedSeedXrefs = List.copyOf(bootstrapJdbc.queryForList(
+                "SELECT xref_card_num, xref_cust_id, xref_acct_id FROM card_xref "
+                        + "WHERE xref_acct_id = ?", ACCT_WITHOUT_XREF));
+    }
+
+    /**
+     * :purpose: Put the seeded cross-references back, so the shared container is left in the
+     *     state the committed migrations produced and no later class in the fork inherits this
+     *     class's fixture.
+     * :output: The seed rows removed for {@link #ACCT_WITHOUT_XREF} exist again.
+     */
+    @AfterAll
+    static void restoreSeededXrefsForUnlinkedAccount(@Autowired JdbcTemplate bootstrapJdbc) {
+        for (Map<String, Object> row : removedSeedXrefs) {
+            bootstrapJdbc.update("INSERT INTO card_xref (xref_card_num, xref_cust_id, xref_acct_id) "
+                            + "VALUES (?, ?, ?) ON CONFLICT (xref_card_num) DO NOTHING",
+                    row.get("xref_card_num"), row.get("xref_cust_id"), row.get("xref_acct_id"));
+        }
     }
 
     /**
@@ -247,16 +307,20 @@ class AccountViewUpdateIT {
      */
     @BeforeEach
     void setUp() {
-        // Only the ROWS are cleared. The migrated table itself — and with it
-        // fk_card_xref_cust / fk_card_xref_acct — is left exactly as the shared V1 schema
-        // declares it, because those constraints ARE the database-level referential
-        // integrity AAP 0.6.4 requires and two cases in this class
-        // (cardXref_withUnknownAccount_isRejectedByForeignKey and its customer twin)
-        // assert the database rejects an orphan. Dropping and re-creating the table
-        // without them also leaked a constraint-free card_xref into the JVM-wide shared
-        // MigratedSchemaContainer, which then failed the equivalent assertions in
-        // CardXrefRepositoryIT whenever the two classes ran in one reactor build.
-        jdbcTemplate.execute("TRUNCATE TABLE card_xref");
+        // The migrated table itself — and with it fk_card_xref_cust / fk_card_xref_acct — is
+        // left exactly as the shared V1 schema declares it, because those constraints ARE the
+        // database-level referential integrity AAP 0.6.4 requires and two cases in this class
+        // (cardXref_withUnknownAccount_isRejectedByForeignKey and its customer twin) assert the
+        // database rejects an orphan. Dropping and re-creating the table without them leaked a
+        // constraint-free card_xref into the JVM-wide shared MigratedSchemaContainer, which then
+        // failed the equivalent assertions in CardXrefRepositoryIT whenever the two classes ran
+        // in one reactor build.
+        //
+        // Nor is the table emptied: only the rows for the ONE account this class needs to be
+        // unlinked are removed, and they are restored in @AfterAll. Truncating destroyed all 50
+        // seeded cross-references for every later class in the fork, which is the shared-state
+        // coupling MigratedSchemaContainer's contract forbids (docs/decision-log.md, 40.6).
+        jdbcTemplate.update("DELETE FROM card_xref WHERE xref_acct_id = ?", ACCT_WITHOUT_XREF);
 
         // Re-stage the two baseline linkages the view and update paths need. COACTVWC reads
         // the cross-reference FIRST and derives the customer id from it, so an account with no
@@ -405,7 +469,7 @@ class AccountViewUpdateIT {
                 "SELECT count(*) FROM customers WHERE cust_ssn <> ''", Integer.class);
         assertThat(untouchedCustomers).isPositive();
 
-        MvcResult result = mockMvc.perform(get("/accounts/{id}", SEEDED_ACCT_WITH_PII).session(signedOnSession()))
+        MvcResult result = mockMvc.perform(get("/accounts/{id}", acctKey(SEEDED_ACCT_WITH_PII)).session(signedOnSession()))
                 .andExpect(status().isOk())
                 .andReturn();
 
@@ -428,18 +492,25 @@ class AccountViewUpdateIT {
         Customer stored = customerRepository.findById(SEEDED_ACCT_WITH_PII).orElseThrow();
         String storedSsn = stored.getCustSsn();
         String storedGovtId = stored.getCustGovtIssuedId();
+        String storedEftId = stored.getCustEftAccountId();
         assertThat(storedSsn).isNotBlank();
         assertThat(storedGovtId).isNotBlank();
+        assertThat(storedEftId).isNotBlank();
 
-        MvcResult result = mockMvc.perform(get("/accounts/{id}", SEEDED_ACCT_WITH_PII).session(signedOnSession()))
+        MvcResult result = mockMvc.perform(get("/accounts/{id}", acctKey(SEEDED_ACCT_WITH_PII)).session(signedOnSession()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.custSsn").value(PiiMasker.maskSsn(storedSsn)))
                 .andExpect(jsonPath("$.custGovtIssuedId").value(PiiMasker.maskIdentifier(storedGovtId)))
+                // The EFT account id is the third regulated identifier the mapper masks
+                // (AccountMapper L216/L277); asserted here so all three are covered on the
+                // read path, not only the two the review named.
+                .andExpect(jsonPath("$.custEftAccountId").value(PiiMasker.maskIdentifier(storedEftId)))
                 .andReturn();
 
         String body = result.getResponse().getContentAsString();
         assertThat(body).doesNotContain(storedSsn);
         assertThat(body).doesNotContain(storedGovtId);
+        assertThat(body).doesNotContain(storedEftId);
         AccountViewResponseDto view = parse(result, AccountViewResponseDto.class);
         // The 3270 mask keeps the group separators (``***-**-nnnn``), so it is deliberately
         // wider than the nine stored digits; what must hold is that only the last four
@@ -447,6 +518,14 @@ class AccountViewUpdateIT {
         assertThat(view.getCustSsn()).endsWith(storedSsn.substring(storedSsn.length() - 4));
         assertThat(view.getCustSsn()).startsWith("*");
         assertThat(view.getCustSsn()).isEqualTo(PiiMasker.maskSsn(storedSsn));
+        // The fixed-width identifiers keep their stored length, with only the trailing four
+        // characters visible.
+        assertThat(view.getCustGovtIssuedId()).hasSameSizeAs(storedGovtId);
+        assertThat(view.getCustGovtIssuedId())
+                .endsWith(storedGovtId.substring(storedGovtId.length() - 4));
+        assertThat(view.getCustEftAccountId()).hasSameSizeAs(storedEftId);
+        assertThat(view.getCustEftAccountId())
+                .endsWith(storedEftId.substring(storedEftId.length() - 4));
     }
 
     /**
@@ -465,7 +544,7 @@ class AccountViewUpdateIT {
         assertThat(govtIdBefore).isNotBlank();
 
         AccountViewResponseDto current = parse(
-                mockMvc.perform(get("/accounts/{id}", HAPPY_ACCT_ID).session(signedOnSession()))
+                mockMvc.perform(get("/accounts/{id}", acctKey(HAPPY_ACCT_ID)).session(signedOnSession()))
                         .andExpect(status().isOk())
                         .andReturn(),
                 AccountViewResponseDto.class);
@@ -477,7 +556,7 @@ class AccountViewUpdateIT {
         AccountUpdateRequestDto request = toUpdateRequest(current);
         request.setCustLastName("Kesslerechoed");
 
-        mockMvc.perform(put("/accounts/{id}", HAPPY_ACCT_ID).session(signedOnSession())
+        mockMvc.perform(put("/accounts/{id}", acctKey(HAPPY_ACCT_ID)).session(signedOnSession())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isOk());
@@ -510,7 +589,7 @@ class AccountViewUpdateIT {
     void getAccount_returns200WithAccountAndCustomerFields() throws Exception {
         cardXrefRepository.save(new CardXref(CARD_HAPPY, HAPPY_CUST_ID, HAPPY_ACCT_ID));
 
-        MvcResult result = mockMvc.perform(get("/accounts/{id}", HAPPY_ACCT_ID).session(signedOnSession()))
+        MvcResult result = mockMvc.perform(get("/accounts/{id}", acctKey(HAPPY_ACCT_ID)).session(signedOnSession()))
                 .andExpect(status().isOk())
                 .andReturn();
 
@@ -556,7 +635,7 @@ class AccountViewUpdateIT {
     @Test
     void putAccount_updatesAndPersistsWithScale2Precision() throws Exception {
         AccountViewResponseDto current = parse(
-                mockMvc.perform(get("/accounts/{id}", HAPPY_ACCT_ID).session(signedOnSession()))
+                mockMvc.perform(get("/accounts/{id}", acctKey(HAPPY_ACCT_ID)).session(signedOnSession()))
                         .andExpect(status().isOk())
                         .andReturn(),
                 AccountViewResponseDto.class);
@@ -565,7 +644,7 @@ class AccountViewUpdateIT {
         request.setAcctCurrBal(new BigDecimal("250.00"));
         request.setCustLastName("Kesslerupd");
 
-        MvcResult result = mockMvc.perform(put("/accounts/{id}", HAPPY_ACCT_ID).session(signedOnSession())
+        MvcResult result = mockMvc.perform(put("/accounts/{id}", acctKey(HAPPY_ACCT_ID)).session(signedOnSession())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isOk())
@@ -591,7 +670,7 @@ class AccountViewUpdateIT {
      */
     @Test
     void getAccount_whenCardXrefMissing_returns404() throws Exception {
-        MvcResult result = mockMvc.perform(get("/accounts/{id}", ACCT_WITHOUT_XREF).session(signedOnSession()))
+        MvcResult result = mockMvc.perform(get("/accounts/{id}", acctKey(ACCT_WITHOUT_XREF)).session(signedOnSession()))
                 .andExpect(status().isNotFound())
                 .andReturn();
 
@@ -646,7 +725,7 @@ class AccountViewUpdateIT {
      * :output: HTTP 400 whose message is the verbatim account-id edit text.
      */
     @ParameterizedTest
-    @ValueSource(strings = {"00000000000", "abc", "123456789012"})
+    @ValueSource(strings = {"00000000000", "abc", "123456789012", "1"})
     void getAccount_whenAccountIdInvalid_returns400(String invalidId) throws Exception {
         MvcResult result = mockMvc.perform(get("/accounts/{id}", invalidId).session(signedOnSession()))
                 .andExpect(status().isBadRequest())
@@ -654,17 +733,21 @@ class AccountViewUpdateIT {
 
         ErrorResponse error = parse(result, ErrorResponse.class);
         assertThat(error.getStatus()).isEqualTo(400);
-        assertThat(error.getMessage()).isEqualTo(MSG_INVALID_ACCT_ID);
+        assertThat(error.getMessage()).isEqualTo(MSG_ACCT_FILTER_INVALID);
     }
 
     /**
-     * :purpose: Account-id edit on the update path (``2210-EDIT-ACCOUNT``): an all-zeros id is
-     *  rejected even when the request body is otherwise well-formed.
-     * :output: HTTP 400 whose message is the verbatim account-id edit text.
+     * :purpose: Account-key edit on the update path (``COACTUPC`` ``1210-EDIT-ACCOUNT``): an
+     *  all-zeros id, and any run that is not exactly eleven digits, is rejected even when the
+     *  request body is otherwise well-formed. The message is the UPDATE screen's own text, not
+     *  the view screen's.
+     * :param invalidId: an account id violating the exactly-eleven-non-zero-digits rule.
+     * :output: HTTP 400 whose message is the verbatim ``COACTUPC`` account-key edit text.
      */
-    @Test
-    void putAccount_whenAccountIdInvalid_returns400() throws Exception {
-        MvcResult result = mockMvc.perform(put("/accounts/{id}", "00000000000").session(signedOnSession())
+    @ParameterizedTest
+    @ValueSource(strings = {"00000000000", "abc", "123456789012", "1"})
+    void putAccount_whenAccountIdInvalid_returns400(String invalidId) throws Exception {
+        MvcResult result = mockMvc.perform(put("/accounts/{id}", invalidId).session(signedOnSession())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{}"))
                 .andExpect(status().isBadRequest())
@@ -672,7 +755,7 @@ class AccountViewUpdateIT {
 
         ErrorResponse error = parse(result, ErrorResponse.class);
         assertThat(error.getStatus()).isEqualTo(400);
-        assertThat(error.getMessage()).isEqualTo(MSG_INVALID_ACCT_ID);
+        assertThat(error.getMessage()).isEqualTo(MSG_ACCT_NUMBER_INVALID);
     }
 
     /**
@@ -685,7 +768,7 @@ class AccountViewUpdateIT {
     void putAccount_withEmptyBody_returns400NoInputReceived() throws Exception {
         cardXrefRepository.save(new CardXref(CARD_HAPPY, HAPPY_CUST_ID, HAPPY_ACCT_ID));
 
-        MvcResult result = mockMvc.perform(put("/accounts/{id}", HAPPY_ACCT_ID).session(signedOnSession())
+        MvcResult result = mockMvc.perform(put("/accounts/{id}", acctKey(HAPPY_ACCT_ID)).session(signedOnSession())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{}"))
                 .andExpect(status().isBadRequest())
@@ -715,14 +798,14 @@ class AccountViewUpdateIT {
         cardXrefRepository.save(new CardXref(CARD_HAPPY, HAPPY_CUST_ID, HAPPY_ACCT_ID));
 
         AccountViewResponseDto current = parse(
-                mockMvc.perform(get("/accounts/{id}", HAPPY_ACCT_ID).session(signedOnSession())).andExpect(status().isOk()).andReturn(),
+                mockMvc.perform(get("/accounts/{id}", acctKey(HAPPY_ACCT_ID)).session(signedOnSession())).andExpect(status().isOk()).andReturn(),
                 AccountViewResponseDto.class);
 
         AccountUpdateRequestDto request = toUpdateRequest(current);
         request.setCustLastName("Changed");
         mutation.accept(request);
 
-        MvcResult result = mockMvc.perform(put("/accounts/{id}", HAPPY_ACCT_ID).session(signedOnSession())
+        MvcResult result = mockMvc.perform(put("/accounts/{id}", acctKey(HAPPY_ACCT_ID)).session(signedOnSession())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isBadRequest())
@@ -743,8 +826,12 @@ class AccountViewUpdateIT {
      */
     private static Stream<Arguments> invalidUpdateSubmissions() {
         return Stream.of(
+                // 1220-EDIT-YESNO COMPOSES this sentence by STRINGing the trimmed variable name
+                // with ' must be Y or N.'; the 88 level ACCT-STATUS-MUST-BE-YES-NO at
+                // [app/cbl/COACTUPC.cbl:L503-504], whose wording reads 'Account Active Status
+                // must be Y or N', is declared and never SET anywhere in the program.
                 Arguments.of((Consumer<AccountUpdateRequestDto>) r -> r.setAcctActiveStatus("Z"),
-                        "Account Active Status must be Y or N"),
+                        "Account Status must be Y or N."),
                 Arguments.of((Consumer<AccountUpdateRequestDto>) r -> r.setAcctCreditLimit(null),
                         "Credit Limit must be supplied"),
                 Arguments.of((Consumer<AccountUpdateRequestDto>) r ->
@@ -799,7 +886,7 @@ class AccountViewUpdateIT {
         request.setAcctActiveStatus("Y");
         request.setOldAcctActiveStatus("Y");
 
-        MvcResult result = mockMvc.perform(put("/accounts/{id}", HAPPY_ACCT_ID).session(signedOnSession())
+        MvcResult result = mockMvc.perform(put("/accounts/{id}", acctKey(HAPPY_ACCT_ID)).session(signedOnSession())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isBadRequest())
@@ -821,7 +908,7 @@ class AccountViewUpdateIT {
 
         // User A displays the record.
         AccountViewResponseDto displayed = parse(
-                mockMvc.perform(get("/accounts/{id}", HAPPY_ACCT_ID).session(signedOnSession())).andExpect(status().isOk()).andReturn(),
+                mockMvc.perform(get("/accounts/{id}", acctKey(HAPPY_ACCT_ID)).session(signedOnSession())).andExpect(status().isOk()).andReturn(),
                 AccountViewResponseDto.class);
         assertMoney(displayed.getAcctCurrBal(), "194.00");
 
@@ -834,7 +921,7 @@ class AccountViewUpdateIT {
         stale.setOldAcctCurrBal(displayed.getAcctCurrBal());
         stale.setAcctCurrBal(new BigDecimal("111.00"));
 
-        MvcResult result = mockMvc.perform(put("/accounts/{id}", HAPPY_ACCT_ID).session(signedOnSession())
+        MvcResult result = mockMvc.perform(put("/accounts/{id}", acctKey(HAPPY_ACCT_ID)).session(signedOnSession())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(stale)))
                 .andExpect(status().isConflict())
@@ -856,7 +943,7 @@ class AccountViewUpdateIT {
     void accountResponses_maskSensitiveCustomerIdentifiers() throws Exception {
         cardXrefRepository.save(new CardXref(CARD_HAPPY, HAPPY_CUST_ID, HAPPY_ACCT_ID));
 
-        MvcResult viewResult = mockMvc.perform(get("/accounts/{id}", HAPPY_ACCT_ID).session(signedOnSession()))
+        MvcResult viewResult = mockMvc.perform(get("/accounts/{id}", acctKey(HAPPY_ACCT_ID)).session(signedOnSession()))
                 .andExpect(status().isOk())
                 .andReturn();
         String viewBody = viewResult.getResponse().getContentAsString();
@@ -873,7 +960,7 @@ class AccountViewUpdateIT {
         AccountUpdateRequestDto request = toUpdateRequest(view);
         request.setCustLastName("Masktest");
 
-        MvcResult updateResult = mockMvc.perform(put("/accounts/{id}", HAPPY_ACCT_ID).session(signedOnSession())
+        MvcResult updateResult = mockMvc.perform(put("/accounts/{id}", acctKey(HAPPY_ACCT_ID)).session(signedOnSession())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isOk())
@@ -897,13 +984,13 @@ class AccountViewUpdateIT {
     void observability_correlationIdHeader_generatedWhenAbsentAndEchoedWhenPresent() throws Exception {
         cardXrefRepository.save(new CardXref(CARD_HAPPY, HAPPY_CUST_ID, HAPPY_ACCT_ID));
 
-        MvcResult generated = mockMvc.perform(get("/accounts/{id}", HAPPY_ACCT_ID).session(signedOnSession()))
+        MvcResult generated = mockMvc.perform(get("/accounts/{id}", acctKey(HAPPY_ACCT_ID)).session(signedOnSession()))
                 .andExpect(status().isOk())
                 .andReturn();
         assertThat(generated.getResponse().getHeader(CorrelationIdFilter.CORRELATION_ID_HEADER))
                 .isNotBlank();
 
-        MvcResult echoed = mockMvc.perform(get("/accounts/{id}", HAPPY_ACCT_ID).session(signedOnSession())
+        MvcResult echoed = mockMvc.perform(get("/accounts/{id}", acctKey(HAPPY_ACCT_ID)).session(signedOnSession())
                         .header(CorrelationIdFilter.CORRELATION_ID_HEADER, "test-123"))
                 .andExpect(status().isOk())
                 .andReturn();

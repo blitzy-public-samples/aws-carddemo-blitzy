@@ -60,6 +60,15 @@ class RejectFileItemWriterTest {
     /** :purpose: Width of the reconstructed ``DALYTRAN-RECORD`` image. */
     private static final int IMAGE_LENGTH = 350;
 
+    /**
+     * Job-execution id of the run under test, used as the DALYREJS generation number the
+     * writer qualifies its file name with.
+     */
+    private static final long EXECUTION_ID = 33L;
+
+    /** The generation the writer produces for {@link #EXECUTION_ID}. */
+    private static final String GENERATION_FILE = "dalyrejs.G0033V00.txt";
+
     @TempDir
     private Path tempDir;
 
@@ -97,10 +106,14 @@ class RejectFileItemWriterTest {
         // The writer resolves its destination through the shared output-path resolver, which
         // confines every generated artifact to a configured, writable root; the temp dir
         // stands in for the writable mount the container provides.
+        // The writer generation-qualifies its destination per RUN, exactly as the legacy
+        // job stream allocated a new DALYREJS GDG generation per run, so the expected file
+        // name carries the execution id of the run under test.
         RejectFileItemWriter writer = new RejectFileItemWriter(
                 "dalyrejs.txt",
+                EXECUTION_ID,
                 new BatchOutputPathResolver(tempDir.toString(), tempDir.toString()));
-        Path rejectFile = tempDir.resolve("dalyrejs.txt");
+        Path rejectFile = tempDir.resolve(GENERATION_FILE);
         writer.open(new ExecutionContext());
         try {
             Chunk<PostingItem> chunk = new Chunk<>();
@@ -112,7 +125,7 @@ class RejectFileItemWriterTest {
         } finally {
             writer.close();
         }
-        return readLines(tempDir.resolve("dalyrejs.txt"));
+        return readLines(tempDir.resolve(GENERATION_FILE));
     }
 
     /**
@@ -162,6 +175,7 @@ class RejectFileItemWriterTest {
     private byte[] writeAndReadRawBytes(PostingItem... items) throws Exception {
         RejectFileItemWriter writer = new RejectFileItemWriter(
                 "dalyrejs.txt",
+                EXECUTION_ID,
                 new BatchOutputPathResolver(tempDir.toString(), tempDir.toString()));
         writer.open(new ExecutionContext());
         try {
@@ -174,7 +188,90 @@ class RejectFileItemWriterTest {
         } finally {
             writer.close();
         }
-        return Files.readAllBytes(tempDir.resolve("dalyrejs.txt"));
+        return Files.readAllBytes(tempDir.resolve(GENERATION_FILE));
+    }
+
+    @Nested
+    @DisplayName("Restart tolerance (a re-driven posting cycle must be able to open the file)")
+    class RestartTolerance {
+
+        /**
+         * :purpose: A re-driven cycle must open cleanly even though the failed attempt's
+         *     reject generation was deleted by the cleanup listener. The writer previously
+         *     saved its byte offset, so the restart required that file to still exist and
+         *     died in ``open`` before reading a record — which is what made a failed posting
+         *     date permanently un-redrivable.
+         */
+        @Test
+        @DisplayName("opens cleanly on a restart whose previous reject file was removed")
+        void opensOnRestartAfterTheFileWasRemoved() throws Exception {
+            // The writer generation-qualifies its destination per RUN, so the file a
+            // re-driven attempt opens is the generation of the execution under test.
+            RejectFileItemWriter writer = new RejectFileItemWriter(
+                    "dalyrejs.txt",
+                    EXECUTION_ID,
+                    new BatchOutputPathResolver(tempDir.toString(), tempDir.toString()));
+            Path rejectFile = tempDir.resolve(GENERATION_FILE);
+
+            // First attempt writes one record, then its output is deleted exactly as
+            // rejectFileCleanupListener does for an unsuccessful step.
+            ExecutionContext firstAttempt = new ExecutionContext();
+            writer.open(firstAttempt);
+            Chunk<PostingItem> chunk = new Chunk<>();
+            chunk.add(PostingItem.rejected(dailyTransaction("100.00"),
+                    TransactionRejectException.INVALID_CARD_NUMBER,
+                    TransactionRejectException.MSG_INVALID_CARD_NUMBER, null, null));
+            writer.write(chunk);
+            writer.update(firstAttempt);
+            writer.close();
+            Files.deleteIfExists(rejectFile);
+
+            // The restart is handed the SAME execution context the first attempt updated.
+            writer.open(firstAttempt);
+            try {
+                writer.write(chunk);
+                writer.update(firstAttempt);
+            } finally {
+                writer.close();
+            }
+
+            assertThat(readLines(rejectFile))
+                    .as("the re-driven attempt writes its own complete reject generation")
+                    .hasSize(1);
+            assertThat(readLines(rejectFile).get(0)).hasSize(RECORD_LENGTH);
+        }
+
+        /**
+         * :purpose: A fresh attempt must not append to a reject generation left behind by an
+         *     earlier one: the legacy job stream allocated a new ``DALYREJS`` generation per
+         *     run, so each attempt's file holds only its own rejects.
+         */
+        @Test
+        @DisplayName("a later attempt truncates a reject file left behind rather than appending")
+        void truncatesAnExistingRejectFile() throws Exception {
+            // The writer generation-qualifies its destination per RUN, so the file a
+            // re-driven attempt opens is the generation of the execution under test.
+            RejectFileItemWriter writer = new RejectFileItemWriter(
+                    "dalyrejs.txt",
+                    EXECUTION_ID,
+                    new BatchOutputPathResolver(tempDir.toString(), tempDir.toString()));
+            Path rejectFile = tempDir.resolve(GENERATION_FILE);
+            Chunk<PostingItem> chunk = new Chunk<>();
+            chunk.add(PostingItem.rejected(dailyTransaction("100.00"),
+                    TransactionRejectException.INVALID_CARD_NUMBER,
+                    TransactionRejectException.MSG_INVALID_CARD_NUMBER, null, null));
+
+            for (int attempt = 0; attempt < 3; attempt++) {
+                ExecutionContext context = new ExecutionContext();
+                writer.open(context);
+                writer.write(chunk);
+                writer.update(context);
+                writer.close();
+                assertThat(readLines(rejectFile))
+                        .as("attempt %d must leave exactly its own record", attempt)
+                        .hasSize(1);
+            }
+        }
     }
 
     @Nested

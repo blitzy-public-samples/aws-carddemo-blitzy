@@ -22,7 +22,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import com.carddemo.batch.config.JobSchedulingConfig;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.UUID;
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.batch.core.BatchStatus;
@@ -55,14 +57,24 @@ import org.testcontainers.utility.DockerImageName;
  *     execution is recorded in the durable repository, that job identity derives from
  *     the business parameters, and that a completed instance is refused on
  *     re-submission.
- * :note: Runs the real jobs against a throwaway ``postgres:18`` container. The shared
- *     business tables have no batch-service migration, so Hibernate materializes them
- *     from the shared entities via ``ddl-auto=create``; the ``BATCH_*`` schema is
- *     provisioned exactly as in production.
+ * :note: Runs the real jobs against a throwaway ``postgres:18`` container the context's
+ *     own Flyway migrates from the committed set (V1-V8, including the Java migration
+ *     ``SchemaMigrationConfig`` registers), so both the business tables and the
+ *     ``BATCH_*`` metadata schema are provisioned exactly as in production and the jobs
+ *     read the same seeded rows a deployment starts from. The container is private to
+ *     this class because it launches state-changing jobs whose metadata must not decide
+ *     a sibling class's duplicate-instance assertions.
  */
 @SpringBootTest(classes = BatchServiceApplication.class)
 @DisplayName("Batch launch parameters, durable metadata and job identity")
 class JobLaunchParameterIT {
+
+    /**
+     * :purpose: Budget for an asynchronously launched run to reach a terminal status. Long
+     *     enough that a loaded host does not fail the class, short enough that a genuinely
+     *     stuck run is reported rather than waited on for the whole build.
+     */
+    private static final long JOB_TIMEOUT_SECONDS = 300L;
 
     /**
      * Shared PostgreSQL container for the whole test JVM, started from a static
@@ -77,9 +89,15 @@ class JobLaunchParameterIT {
     }
 
     /**
-     * :purpose: Point the datasource at the container and let Hibernate create the
-     *     shared business tables this module has no migration for.
+     * :purpose: Point the datasource at the container, whose schema this context's OWN
+     *     Flyway provisions from the committed migration set exactly as a deployed
+     *     service does.
      * :param registry: the dynamic property registry supplied by the test context.
+     * :note: ``ddl-auto`` is ``validate``, never ``create``: Hibernate must verify the
+     *     scanned entities against the migrated schema rather than manufacture whatever
+     *     the entities imply, which is what turns this class into a check of the
+     *     entity-to-migration contract as well as of the launch surface
+     *     (docs/decision-log.md, section 53.3).
      */
     @DynamicPropertySource
     static void datasourceProperties(DynamicPropertyRegistry registry) {
@@ -87,7 +105,7 @@ class JobLaunchParameterIT {
         registry.add("spring.datasource.username", POSTGRES::getUsername);
         registry.add("spring.datasource.password", POSTGRES::getPassword);
         registry.add("spring.datasource.driver-class-name", () -> "org.postgresql.Driver");
-        registry.add("spring.jpa.hibernate.ddl-auto", () -> "create");
+        registry.add("spring.jpa.hibernate.ddl-auto", () -> "validate");
     }
 
     /** :purpose: The launch surface under test. */
@@ -115,14 +133,18 @@ class JobLaunchParameterIT {
      * :purpose: Block until an asynchronously launched execution reaches a terminal
      *     status, so the assertions observe the job's real outcome rather than the
      *     ``STARTING`` status the launcher returns immediately.
-     * :param execution: the execution returned by a ``launch*`` method.
+     * :param execution: the execution returned by a ``launch*`` method, which the
+     *     production ``asyncJobOperator`` runs on its own task executor.
      * :returns: the same execution once it is no longer running.
-     * :raises InterruptedException: if the wait is interrupted.
+     * :raises org.awaitility.core.ConditionTimeoutException: if the run is still going
+     *     when the timeout expires, reporting the status it was left in.
      */
-    private JobExecution awaitCompletion(JobExecution execution) throws InterruptedException {
-        for (int attempt = 0; attempt < 300 && execution.isRunning(); attempt++) {
-            Thread.sleep(100);
-        }
+    private JobExecution awaitCompletion(JobExecution execution) {
+        Awaitility.await("job execution " + execution.getId() + " reaches a terminal status")
+                .atMost(Duration.ofSeconds(JOB_TIMEOUT_SECONDS))
+                .pollInterval(Duration.ofMillis(50))
+                .pollDelay(Duration.ZERO)
+                .until(() -> !execution.isRunning());
         return execution;
     }
 
@@ -303,6 +325,38 @@ class JobLaunchParameterIT {
                         SimpleAsyncTaskExecutor.UNBOUNDED_CONCURRENCY)
                 .isPositive()
                 .isNotEqualTo(SimpleAsyncTaskExecutor.UNBOUNDED_CONCURRENCY);
+    }
+
+    /**
+     * :purpose: A launch made through this class runs on the PRODUCTION asynchronous
+     *     operator and is awaited to a terminal status there, rather than on a launcher
+     *     the test assembled over a synchronous executor. Without this the whole class
+     *     could pass while the code path a deployment uses stayed unexercised.
+     * :output: Assertions that the operator the launch surface delegates to IS the
+     *     ``asyncJobOperator`` bean, that its executor really is asynchronous, and that a
+     *     run submitted through it reaches ``COMPLETED`` and is recorded as such in the
+     *     durable metadata rather than merely in the returned object.
+     * :raises Exception: if the launch fails to be accepted.
+     */
+    @Test
+    @DisplayName("a launch runs on the production async operator and completes there")
+    void launchIsRunByTheProductionAsyncOperator() throws Exception {
+        assertThat(ReflectionTestUtils.getField(jobScheduling, "asyncJobOperator"))
+                .as("the launch surface must delegate to the asyncJobOperator bean")
+                .isSameAs(asyncJobOperator);
+        assertThat(ReflectionTestUtils.getField(asyncJobOperator, "taskExecutor"))
+                .as("a synchronous executor would run the job on the caller thread")
+                .isInstanceOf(SimpleAsyncTaskExecutor.class);
+
+        JobExecution execution =
+                awaitCompletion(jobScheduling.launchAccountRead("async-operator-" + UUID.randomUUID() + ".txt"));
+
+        assertThat(execution.getStatus()).isEqualTo(BatchStatus.COMPLETED);
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT status FROM batch_job_execution WHERE job_execution_id = ?",
+                String.class, execution.getId()))
+                .as("the terminal status must be durable, not just in-memory")
+                .isEqualTo(BatchStatus.COMPLETED.name());
     }
 
     /**

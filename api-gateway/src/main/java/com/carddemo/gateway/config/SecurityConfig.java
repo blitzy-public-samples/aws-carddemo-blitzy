@@ -94,8 +94,10 @@ public class SecurityConfig {
      *     route prefixes require ``ROLE_USER`` or ``ROLE_ADMIN``; every other request
      *     must be authenticated.
      * :param http: the Spring Security ``HttpSecurity`` builder.
-     * :param requestsPerMinute: per-source-address request budget for the public edge.
+     * :param requestsPerMinute: per-signed-on-caller request budget for the public edge.
      * :param signonRequestsPerMinute: per-source-address budget for ``/auth/**``.
+     * :param anonymousRequestsPerMinute: per-source-address budget for requests that carry
+     *     no established session.
      * :param cookieSecure: whether cookies are marked ``Secure``; bound to the same
      *     ``server.servlet.session.cookie.secure`` switch as the session cookie so the
      *     CSRF cookie can never be laxer than the credential it protects.
@@ -108,7 +110,8 @@ public class SecurityConfig {
     SecurityFilterChain securityFilterChain(
             HttpSecurity http,
             @Value("${carddemo.rate-limit.gateway-requests-per-minute:600}") int requestsPerMinute,
-            @Value("${carddemo.rate-limit.signon-requests-per-minute:60}") int signonRequestsPerMinute,
+            @Value("${carddemo.rate-limit.signon-requests-per-minute:300}") int signonRequestsPerMinute,
+            @Value("${carddemo.rate-limit.anonymous-requests-per-minute:1200}") int anonymousRequestsPerMinute,
             @Value("${server.servlet.session.cookie.secure:true}") boolean cookieSecure,
             SessionPrincipalIndex sessionPrincipalIndex)
             throws Exception {
@@ -132,6 +135,15 @@ public class SecurityConfig {
                 // answered with an EMPTY 403 - the real status and the error body were lost.
                 .dispatcherTypeMatchers(DispatcherType.ERROR, DispatcherType.ASYNC).permitAll()
                 .requestMatchers("/auth/**", "/csrf").permitAll()
+                // GET /session reports whether the caller is signed on; it is a question
+                // about the caller's own session, not access to a protected resource, and
+                // "nobody is signed on" is a truthful answer to it rather than a refusal.
+                // Gating it made the sign-on screen's own boot probe answer 401, which the
+                // browser records as a page error on every cold load and which any console
+                // collector then reports as a fault. Anonymously it discloses nothing: the
+                // handler reads only the session the caller already carries and returns an
+                // empty identity when there is none.
+                .requestMatchers(HttpMethod.GET, "/session").permitAll()
                 .requestMatchers("/error").permitAll()
                 .requestMatchers("/actuator/health/**", "/actuator/health", "/actuator/info").permitAll()
                 .requestMatchers("/admin/**", "/users/**").hasRole("ADMIN")
@@ -149,6 +161,17 @@ public class SecurityConfig {
                 .requestMatchers(HttpMethod.POST, "/batch/jobs/transactionDetailReportJob")
                         .hasAnyRole("USER", "ADMIN")
                 .requestMatchers(HttpMethod.POST, "/batch/jobs/*").hasRole("ADMIN")
+                // POSTTRAN is the same kind of function: a JES/JCL operator submission with
+                // no CICS transaction of its own, launched here by
+                // k8s/cronjob-transaction-posting.yaml. It POSTS financial movements - it
+                // rewrites account balances and inserts transactions - so it carries the
+                // administrator authority even though it lives under the /transactions
+                // prefix that the online COTRN00C/COTRN01C/COTRN02C screens share. Declared
+                // BEFORE the /transactions/** rule, which would otherwise claim it and let
+                // any signed-on ROLE_USER post the day's transactions
+                // [app/jcl/POSTTRAN.jcl]. transaction-service applies the same rule on its
+                // own chain, so the gate holds for a caller that reaches it directly.
+                .requestMatchers("/transactions/batch/**").hasRole("ADMIN")
                 .requestMatchers("/menu/**", "/accounts/**", "/cards/**", "/transactions/**",
                         "/billpay/**", "/reports/**", "/batch/**").hasAnyRole("USER", "ADMIN")
                 .anyRequest().authenticated())
@@ -158,12 +181,35 @@ public class SecurityConfig {
                 .ignoringRequestMatchers(
                         PathPatternRequestMatcher.withDefaults().matcher("/auth/**")))
             .addFilterAfter(new CsrfCookieMaterializingFilter(), org.springframework.security.web.csrf.CsrfFilter.class)
-            // Two source-address budgets are applied at the network edge, the only
-            // place the client address is authentic: a global budget that bounds a
-            // 401/403 storm, and a much tighter sign-on budget that bounds credential
-            // stuffing. The account-level lockout in auth-service remains the
-            // topology-independent brute-force control.
-            .addFilterBefore(new RateLimitFilter(requestsPerMinute, "/"),
+            // Three budgets are applied at the network edge. Their SIZING is derived from
+            // the AAP 0.7.1 target of 150 concurrent users, because a budget below that
+            // target does not protect the system - it defines its capacity:
+            //
+            //   per signed-on caller, any path (600/min): a screen-driven session issues
+            //     one request per operator action, so ten per second is already an order of
+            //     magnitude above human pace and still bounds a runaway or scripted client.
+            //     Counted PER CALLER, not per address: keyed on the address it was a shared
+            //     budget, so 150 users behind one NAT address received four requests per
+            //     minute each and the 150-user target was unreachable by construction.
+            //
+            //   per source address, anonymous traffic only (1200/min): once authenticated
+            //     traffic is counted per caller, this counter sees only pre-sign-on and
+            //     unauthenticated requests. 150 users fetching a CSRF token and signing on
+            //     need a few hundred; 1200 admits that while still bounding a 401/403 storm
+            //     from one address to twenty per second.
+            //
+            //   per source address, /auth/** (300/min): deliberately still SHARED, because
+            //     no caller is authenticated yet and the source address is the only honest
+            //     identity - a per-session sign-on budget would be no budget at all. 150
+            //     users must be able to sign on inside one window (60/min made 150 sign-ons
+            //     arithmetically impossible), and 300 leaves each one a retry. The
+            //     account-level lockout in auth-service remains the topology-independent
+            //     brute-force control.
+            .addFilterBefore(new RateLimitFilter(requestsPerMinute, "/",
+                            RateLimitFilter.CountedIdentity.SIGNED_ON_CALLER),
+                    WebAsyncManagerIntegrationFilter.class)
+            .addFilterBefore(new RateLimitFilter(anonymousRequestsPerMinute, "/",
+                            RateLimitFilter.CountedIdentity.ANONYMOUS_SOURCE_ADDRESS),
                     WebAsyncManagerIntegrationFilter.class)
             .addFilterBefore(new RateLimitFilter(signonRequestsPerMinute, "/auth/"),
                     WebAsyncManagerIntegrationFilter.class)

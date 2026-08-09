@@ -36,6 +36,7 @@ import com.carddemo.common.dto.TransactionAddRequestDto;
 import com.carddemo.common.dto.TransactionAddResponseDto;
 import com.carddemo.common.dto.TransactionListItemDto;
 import com.carddemo.common.dto.TransactionListRequestDto;
+import com.carddemo.common.dto.TransactionKeyDto;
 import com.carddemo.common.dto.TransactionListResponseDto;
 import com.carddemo.common.dto.TransactionViewResponseDto;
 import com.carddemo.common.exception.CardDemoException;
@@ -65,6 +66,7 @@ import org.springframework.http.MediaType;
 import org.springframework.mock.web.MockHttpSession;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
 
 import tools.jackson.databind.ObjectMapper;
 
@@ -74,7 +76,7 @@ import tools.jackson.databind.ObjectMapper;
  * :purpose: Verify the three REST endpoints that replace the CICS transactions
  *     ``CT00`` / ``CT01`` / ``CT02`` (``COTRN00C`` / ``COTRN01C`` / ``COTRN02C``):
  *     ``GET /transactions`` (query-parameter binding of the list request),
- *     ``GET /transactions/{id}`` and ``POST /transactions`` (HTTP 201 on a
+ *     ``GET /transactions/detail``, ``POST /transactions/key`` and ``POST /transactions`` (HTTP 201 on a
  *     successful add). Also verifies that the controller holds no business logic —
  *     it passes the raw inputs through, bridges the externalized
  *     :class:`SessionContext` to and from the servlet session, and lets the shared
@@ -295,12 +297,12 @@ class TransactionControllerTest {
     }
 
     @Test
-    @DisplayName("GET /transactions/{id} returns 200 with every mapped field")
+    @DisplayName("GET /transactions/detail returns 200 with every mapped field")
     void viewReturns200WithEveryField() throws Exception {
         when(transactionService.viewTransaction(eq(TRAN_ID), any(SessionContext.class)))
                 .thenReturn(viewResponse());
 
-        mockMvc.perform(get("/transactions/{id}", TRAN_ID).session(signedOnSession()))
+        mockMvc.perform(get("/transactions/detail").param("tranId", TRAN_ID).session(signedOnSession()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.tranId").value(TRAN_ID))
                 .andExpect(jsonPath("$.tranCardNum").value("4111111111111111"))
@@ -312,12 +314,12 @@ class TransactionControllerTest {
     }
 
     @Test
-    @DisplayName("GET /transactions/{id} passes the raw path variable through without local validation")
+    @DisplayName("GET /transactions/detail passes the raw parameter through without local validation")
     void viewPassesTheRawIdThrough() throws Exception {
         when(transactionService.viewTransaction(eq("42"), any(SessionContext.class)))
                 .thenReturn(viewResponse());
 
-        mockMvc.perform(get("/transactions/{id}", "42").session(signedOnSession()))
+        mockMvc.perform(get("/transactions/detail").param("tranId", "42").session(signedOnSession()))
                 .andExpect(status().isOk());
 
         // The zero-padding and the blank-id guard are service-owned business logic.
@@ -325,25 +327,113 @@ class TransactionControllerTest {
     }
 
     @Test
-    @DisplayName("GET /transactions/{id} maps RecordNotFoundException to 404 with the verbatim message")
+    @DisplayName("GET /transactions/detail maps RecordNotFoundException to 404 with the verbatim message")
     void viewMapsNotFoundTo404() throws Exception {
         when(transactionService.viewTransaction(any(), any(SessionContext.class)))
                 .thenThrow(new RecordNotFoundException("Transaction ID NOT found..."));
 
-        mockMvc.perform(get("/transactions/{id}", "999").session(signedOnSession()))
+        mockMvc.perform(get("/transactions/detail").param("tranId", "999").session(signedOnSession()))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.message").value("Transaction ID NOT found..."));
     }
 
     @Test
-    @DisplayName("GET /transactions/{id} maps CardDemoException to 400 with the verbatim message")
+    @DisplayName("GET /transactions/detail maps CardDemoException to 400 with the verbatim message")
     void viewMapsValidationFailureTo400() throws Exception {
         when(transactionService.viewTransaction(any(), any(SessionContext.class)))
                 .thenThrow(new CardDemoException("Tran ID can NOT be empty..."));
 
-        mockMvc.perform(get("/transactions/{id}", " ").session(signedOnSession()))
+        mockMvc.perform(get("/transactions/detail").param("tranId", " ").session(signedOnSession()))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.message").value("Tran ID can NOT be empty..."));
+    }
+
+    @Test
+    @DisplayName("no transaction endpoint reads an id out of the URL PATH")
+    void noEndpointTakesTheIdAsAPathSegment() throws Exception {
+        // The id is a request PARAMETER, never a path segment. A path segment does not
+        // survive a value holding a separator: an intermediary decodes "%2F" and collapses
+        // the resulting ".." before it routes, which lifted the request clean out of the
+        // API prefix and had the SPA document answered with HTTP 200 -- a screen that sat
+        // silently dead. Pinning the absence of the old shape is what stops it returning.
+        mockMvc.perform(get("/transactions/{id}", TRAN_ID).session(signedOnSession()))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    @DisplayName("POST /transactions/key resolves both keys from either one")
+    void keyEndpointResolvesBothKeys() throws Exception {
+        TransactionKeyDto resolved = new TransactionKeyDto();
+        resolved.setAcctId("00000000050");
+        resolved.setTranCardNum("4111111111111111");
+        when(transactionService.resolveAddKey(any(TransactionKeyDto.class))).thenReturn(resolved);
+
+        mockMvc.perform(post("/transactions/key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"acctId\":\"00000000050\"}")
+                        .session(signedOnSession()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.acctId").value("00000000050"))
+                .andExpect(jsonPath("$.tranCardNum").value("4111111111111111"));
+    }
+
+    @Test
+    @DisplayName("POST /transactions/key maps a missing cross-reference to 404 with the verbatim message")
+    void keyEndpointMapsNotFoundTo404() throws Exception {
+        when(transactionService.resolveAddKey(any(TransactionKeyDto.class)))
+                .thenThrow(new RecordNotFoundException("Account ID NOT found..."));
+
+        mockMvc.perform(post("/transactions/key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"acctId\":\"99999999999\"}")
+                        .session(signedOnSession()))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.message").value("Account ID NOT found..."));
+    }
+
+    @Test
+    @DisplayName("POST /transactions/key: an over-width key reaches the service, not a width constraint")
+    void keyEndpointAppliesNoWidthConstraintOfItsOwn() throws Exception {
+        // The key widths are COTRN02C's edits and the service applies them to EVERY value.
+        // A `@Size` on the DTO fired only for an over-width value and answered with a
+        // `fieldErrors` entry, while every other wrong width answered with a bare message --
+        // the same refusal in two shapes depending on which side of the width it fell. The
+        // service must therefore see the value, so removing the constraint is observable
+        // here as the service being consulted at all.
+        when(transactionService.resolveAddKey(any(TransactionKeyDto.class)))
+                .thenThrow(new CardDemoException("Account ID must be Numeric..."));
+
+        mockMvc.perform(post("/transactions/key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"acctId\":\"123456789012\"}")
+                        .session(signedOnSession()))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("Account ID must be Numeric..."))
+                .andExpect(jsonPath("$.fieldErrors").doesNotExist());
+
+        verify(transactionService).resolveAddKey(any(TransactionKeyDto.class));
+    }
+
+    @Test
+    @DisplayName("POST /transactions/key carries the card number in the BODY, never the URL")
+    void keyEndpointKeepsThePanOutOfTheUrl() throws Exception {
+        TransactionKeyDto resolved = new TransactionKeyDto();
+        resolved.setAcctId("00000000050");
+        resolved.setTranCardNum("4111111111111111");
+        when(transactionService.resolveAddKey(any(TransactionKeyDto.class))).thenReturn(resolved);
+
+        MvcResult result = mockMvc.perform(post("/transactions/key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"tranCardNum\":\"4111111111111111\"}")
+                        .session(signedOnSession()))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        String requestLine = result.getRequest().getRequestURI()
+                + (result.getRequest().getQueryString() == null
+                        ? ""
+                        : "?" + result.getRequest().getQueryString());
+        assertThat(requestLine).doesNotMatch(".*\\d{16}.*");
     }
 
     @Test
@@ -439,7 +529,7 @@ class TransactionControllerTest {
         when(transactionService.viewTransaction(eq(TRAN_ID), any(SessionContext.class)))
                 .thenReturn(viewResponse());
 
-        mockMvc.perform(get("/transactions/{id}", TRAN_ID).session(session))
+        mockMvc.perform(get("/transactions/detail").param("tranId", TRAN_ID).session(session))
                 .andExpect(status().isOk());
 
         ArgumentCaptor<SessionContext> captor = ArgumentCaptor.forClass(SessionContext.class);
@@ -465,7 +555,7 @@ class TransactionControllerTest {
         // This slice imports the shared GlobalExceptionHandler, so the invariant violation
         // is reported as the generic error envelope rather than propagating; either way the
         // request is refused and the transaction is never read.
-        mockMvc.perform(get("/transactions/{id}", TRAN_ID).session(session))
+        mockMvc.perform(get("/transactions/detail").param("tranId", TRAN_ID).session(session))
                 .andExpect(status().isInternalServerError())
                 .andExpect(jsonPath("$.message").value("An unexpected error occurred"));
 

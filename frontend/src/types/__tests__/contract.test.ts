@@ -85,19 +85,17 @@ import {
 
 describe('menu contract (api-gateway MenuController records)', () => {
   it('binds MenuResponse / MenuOptionView', () => {
-    // MenuController.MenuOptionView(int, String, String, String)
+    // MenuController.MenuOptionView(int, String, String)
     const option: MenuOption = {
       optionNumber: 1,
       optionName: 'Account View',
       programName: 'COACTVWC',
-      targetRoute: '/accounts',
     };
-    // A coming-soon option has no resolved route.
+    // Every option names its program; the client owns the program-to-screen mapping.
     const unmapped: MenuOption = {
       optionNumber: 9,
       optionName: 'Reports',
       programName: 'CORPT00C',
-      targetRoute: null,
     };
     // MenuController.MenuResponse(String, String, List<MenuOptionView>, String)
     const menu: MenuResponseDto = {
@@ -110,7 +108,7 @@ describe('menu contract (api-gateway MenuController records)', () => {
     const admin: AdminMenuResponseDto = { ...menu, tranId: 'CA00', programName: 'COADM01C' };
 
     expect(option.optionNumber).toBe(1);
-    expect(unmapped.targetRoute).toBeNull();
+    expect(unmapped.programName).toBe('CORPT00C');
     expect(menu.options).toHaveLength(2);
     expect(main.tranId).toBe('CM00');
     expect(admin.tranId).toBe('CA00');
@@ -120,17 +118,15 @@ describe('menu contract (api-gateway MenuController records)', () => {
     // MenuController.MenuSelectionRequest(String option, String aid)
     const req: MenuSelectionRequestDto = { option: '1', aid: 'ENTER' };
     const reqNoAid: MenuSelectionRequestDto = { option: '2' };
-    // MenuController.MenuSelectionResponse(boolean, String, String, String)
+    // MenuController.MenuSelectionResponse(boolean, String, String)
     const dispatched: MenuSelectionResponseDto = {
       dispatched: true,
       programName: 'COACTVWC',
-      targetRoute: '/accounts',
       message: null,
     };
     const comingSoon: MenuSelectionResponseDto = {
       dispatched: false,
       programName: null,
-      targetRoute: null,
       message: 'This option is coming soon.',
     };
 

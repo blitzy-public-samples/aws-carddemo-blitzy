@@ -768,36 +768,46 @@ class UserControllerTest {
 
     /**
      * :purpose: An unauthenticated caller is rejected on the list endpoint with the single
-     *     authoritative status the chain produces — 403. The chain declares no
-     *     {@code AuthenticationEntryPoint} (HTTP Basic and form login are both disabled), so
-     *     Spring Security's {@code Http403ForbiddenEntryPoint} applies and 401 is never
-     *     produced; asserting one status rather than a 401/403 pair is what lets the test
-     *     detect a regression that flips the rejection semantics. The response body stays
-     *     empty so nothing about the application is disclosed, and the service is never reached.
+     *     authoritative status the chain produces — 401, from the shared
+     *     {@code AuditingAuthenticationEntryPoint}. Asserting one status rather than a 401/403
+     *     pair is what lets the test detect a regression that flips the rejection semantics:
+     *     the SPA returns to sign-on on 401 alone and keeps the screen on 403. The refusal
+     *     arrives in the shared {@code ErrorResponse} envelope — one fixed operator sentence
+     *     and a machine-readable code, and nothing about the application — and the service is
+     *     never reached.
      */
     @Test
-    @DisplayName("GET /users unauthenticated -> 403 with an empty body and no service call")
+    @DisplayName("GET /users unauthenticated -> 401 in the shared envelope and no service call")
     void listUsersUnauthenticatedIsRejected() throws Exception {
         mockMvc.perform(get("/users"))
                 .andExpect(status().isUnauthorized())
-                .andExpect(result -> assertThat(result.getResponse().getContentAsString()).isEmpty());
+                .andExpect(jsonPath("$.status").value(401))
+                .andExpect(jsonPath("$.errorCode").value("AUTHENTICATION_REQUIRED"))
+                .andExpect(jsonPath("$.message").value("Your session has ended. Please sign on again."))
+                .andExpect(result -> assertThat(result.getResponse().getContentAsString())
+                        .doesNotContain("Exception", "org.springframework"));
 
         verifyNoInteractions(userService);
     }
 
     /**
      * :purpose: An unauthenticated caller is rejected on a mutation with the same single
-     *     authoritative 403 (CSRF satisfied, so the denial is by authentication rather than by
-     *     token) and an empty body, and the service is never reached.
+     *     authoritative 401 (CSRF satisfied, so the denial is by authentication rather than by
+     *     token), in the same envelope, and the service is never reached. The submitted user id
+     *     must not be echoed back, so a caller cannot use the refusal to confirm a payload was
+     *     parsed.
      */
     @Test
-    @DisplayName("POST /users unauthenticated -> 403 with an empty body and no service call")
+    @DisplayName("POST /users unauthenticated -> 401 in the shared envelope and no service call")
     void addUserUnauthenticatedIsRejected() throws Exception {
         mockMvc.perform(post("/users").with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(addUserJson("USER0010", "Karl", "King", "U")))
                 .andExpect(status().isUnauthorized())
-                .andExpect(result -> assertThat(result.getResponse().getContentAsString()).isEmpty());
+                .andExpect(jsonPath("$.status").value(401))
+                .andExpect(jsonPath("$.errorCode").value("AUTHENTICATION_REQUIRED"))
+                .andExpect(result -> assertThat(result.getResponse().getContentAsString())
+                        .doesNotContain("USER0010", "Karl", "Exception"));
 
         verifyNoInteractions(userService);
     }

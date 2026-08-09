@@ -8,7 +8,9 @@
  *   individual modules.
  * :output: The camelCase REST functions of every domain module, plus ``apiClient``
  *   (the shared ``AxiosInstance``), ``ApiError`` and ``isApiError`` (the normalized
- *   error type and its type-guard), ``registerSessionExpiryHandler`` (the centralized
+ *   error type and its type-guard), ``isCancelledRequest`` and
+ *   ``runWithRequestSignal`` (the request-cancellation contract),
+ *   ``registerSessionExpiryHandler`` (the centralized
  *   session-expiry hook), ``generateCorrelationId`` (the shared correlation-id source),
  *   and ``getApiBaseUrl`` (the api-gateway base-URL resolver).
  * :note: Pure ES-module re-export surface: it declares no runtime logic, no own
@@ -31,7 +33,11 @@ export {
   default as apiClient,
   ApiError,
   isApiError,
+  isCancelledRequest,
+  runWithRequestSignal,
   generateCorrelationId,
   registerSessionExpiryHandler,
 } from './client';
+export type { SessionRejectionReason } from './client';
+export { GENERIC_ERROR_MESSAGE, SESSION_ENDED_MESSAGE } from './messages';
 export { getApiBaseUrl, getAppId, getSysId } from './config';

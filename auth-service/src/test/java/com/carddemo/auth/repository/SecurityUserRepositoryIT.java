@@ -37,8 +37,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  *     PostgreSQL ``security_users`` migration. Extends
  *     {@link AbstractIntegrationTest} to boot the full auth-service context
  *     against shared ``postgres:18`` + ``redis:8`` containers under the
- *     ``test`` profile; Flyway applies ``V1__create_security_users_table.sql``
- *     then ``V2__seed_security_users.sql`` against the container database, and
+ *     ``test`` profile; Flyway applies the shared committed migration set - the
+ *     ``security_users`` table comes from ``V1__create_schema.sql``, its ten seeded rows from
+ *     ``V3__seed_test_data.sql``, and the optimistic-lock
+ *     column from ``V6__security_users_optimistic_lock.sql`` - against the container database, and
  *     the {@link SecurityUser} mapping is exercised through the repository under the
  *     ``test`` profile's ``ddl-auto: validate`` - the mapping of every entity-scanned
  *     table is therefore asserted against the migrated schema, never neutralised. The
@@ -49,7 +51,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *     ``PasswordEncoderFactory.BCRYPT_STRENGTH``, and the documented
  *     case-sensitivity behavior.
  */
-class SecurityUserRepositoryTest extends AbstractIntegrationTest {
+class SecurityUserRepositoryIT extends AbstractIntegrationTest {
 
     /**
      * :purpose: Algorithm-identifier prefix that ``DelegatingPasswordEncoder``

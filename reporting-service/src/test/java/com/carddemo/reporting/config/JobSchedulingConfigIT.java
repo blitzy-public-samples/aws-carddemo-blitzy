@@ -27,6 +27,7 @@ import com.carddemo.reporting.repository.CardXrefRepository;
 import com.carddemo.reporting.repository.CustomerRepository;
 import com.carddemo.reporting.repository.TransactionRepository;
 
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
@@ -43,7 +44,8 @@ import org.springframework.batch.core.step.StepExecution;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.core.task.SimpleAsyncTaskExecutor;
+import org.springframework.core.task.AsyncTaskExecutor;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
@@ -55,12 +57,13 @@ import java.math.BigDecimal;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.time.Duration;
 import java.util.Comparator;
 import java.util.List;
-import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.mockito.ArgumentMatchers.any;
@@ -130,6 +133,13 @@ class JobSchedulingConfigIT {
     /** :purpose: Raw JDBC access used only to clear the seeded cards before their parents. */
     @Autowired
     private JdbcTemplate jdbcTemplate;
+
+    /**
+     * :purpose: The context's batch output-path resolver, handed to the hand-built component
+     *   below so it validates output names exactly as the injected one does.
+     */
+    @Autowired
+    private com.carddemo.common.batch.BatchOutputPathResolver batchOutputPathResolver;
 
     /**
      * :purpose: Bind the datasource to the shared, already-migrated ``postgres:18``
@@ -291,17 +301,15 @@ class JobSchedulingConfigIT {
      *     recorded a terminal status.
      * :param execution: the execution the launcher accepted.
      * :returns: the same execution once it is no longer running.
-     * :raises InterruptedException: if the wait is interrupted.
-     * :raises AssertionError: if the run is still going when the timeout expires.
+     * :raises org.awaitility.core.ConditionTimeoutException: if the run is still going when
+     *     the timeout expires, reporting the status it was left in.
      */
-    private JobExecution awaitCompletion(JobExecution execution) throws InterruptedException {
-        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(JOB_TIMEOUT_SECONDS);
-        while (execution.isRunning() && System.nanoTime() < deadline) {
-            Thread.sleep(50L);
-        }
-        assertThat(execution.isRunning())
-                .as("the launched run must reach a terminal status within %d s", JOB_TIMEOUT_SECONDS)
-                .isFalse();
+    private JobExecution awaitCompletion(JobExecution execution) {
+        Awaitility.await("job execution " + execution.getId() + " reaches a terminal status")
+                .atMost(Duration.ofSeconds(JOB_TIMEOUT_SECONDS))
+                .pollInterval(Duration.ofMillis(50))
+                .pollDelay(Duration.ZERO)
+                .until(() -> !execution.isRunning());
         return execution;
     }
 
@@ -370,9 +378,16 @@ class JobSchedulingConfigIT {
      * :purpose: Prove the submission runs the job OFF the caller thread in the running
      *   context, so an online report request never blocks for the whole statement run. The
      *   component owns a {@link TaskExecutorJobOperator} driven by an asynchronous, bounded
-     *   task executor; a synchronous operator would run the job on the request thread.
+     *   POOL; a synchronous operator would run the job on the request thread.
      *   ``@Async`` on a ``@Configuration`` class was the superseded way of achieving this,
      *   so the advice itself is no longer the contract - the operator's executor is.
+     * :note: The executor is a {@link ThreadPoolTaskExecutor}, not a
+     *   ``SimpleAsyncTaskExecutor``: the latter's ``concurrencyLimit`` is a THROTTLE that
+     *   blocks the calling thread inside ``execute()`` rather than a queue, which held an
+     *   online submission for tens of seconds once the limit was reached - the very thing
+     *   this scenario exists to prevent. Backpressure is now a bounded queue plus an
+     *   admission check that refuses over-budget submissions immediately. Rationale:
+     *   docs/decision-log.md section 50.6.
      */
     @Test
     void submissionRunsTheJobOffTheCallerThreadSoTheOnlineCallerNeverBlocks() {
@@ -382,28 +397,43 @@ class JobSchedulingConfigIT {
         Object taskExecutor = ReflectionTestUtils.getField(operator, "taskExecutor");
         assertThat(taskExecutor)
                 .as("a synchronous executor would block the online caller")
-                .isInstanceOf(SimpleAsyncTaskExecutor.class);
+                .isInstanceOf(AsyncTaskExecutor.class);
+        assertThat(taskExecutor)
+                .as("a throttling executor blocks the caller once its limit is reached")
+                .isInstanceOf(ThreadPoolTaskExecutor.class);
 
-        SimpleAsyncTaskExecutor asyncExecutor = (SimpleAsyncTaskExecutor) taskExecutor;
-        assertThat(asyncExecutor.getThreadNamePrefix()).isEqualTo("statement-");
-        // SimpleAsyncTaskExecutor pools nothing, so an unbounded one spawns a thread per
-        // submission; the bound is what keeps a burst of report requests survivable.
-        assertThat(asyncExecutor.getConcurrencyLimit()).isPositive();
+        ThreadPoolTaskExecutor pool = (ThreadPoolTaskExecutor) taskExecutor;
+        assertThat(pool.getThreadNamePrefix()).isEqualTo("statement-");
+        // The pool is bounded on BOTH axes: workers, so concurrent runs cannot collide on
+        // the frozen output file names, and queue depth, so a burst of report requests is
+        // refused rather than accumulated without limit.
+        assertThat(pool.getCorePoolSize()).isPositive();
+        assertThat(pool.getMaxPoolSize()).isEqualTo(pool.getCorePoolSize());
+        assertThat(pool.getQueueCapacity()).isPositive();
+        assertThat(pool.getQueueCapacity()).isNotEqualTo(Integer.MAX_VALUE);
     }
 
     /**
      * :purpose: A job that fails once running must surface through the future as a
      *   ``FAILED`` {@link JobExecution} carrying its failure exception, not as a
-     *   silently swallowed error. The failure is injected by making the writers'
-     *   default output destination unusable (a regular file where the directory
-     *   belongs), which is exactly how an unwritable statement destination fails in
-     *   production.
+     *   silently swallowed error. The failure is injected by obstructing the writers'
+     *   own destination FILE — a directory standing where the statement file belongs —
+     *   which the launcher's synchronous name check cannot pre-empt, because that check
+     *   proves the name resolves inside the output root and says nothing about what
+     *   already occupies it. The run therefore starts and then fails while writing,
+     *   which is the surface under test.
      * :raises Exception: propagated from the awaited future or the output setup.
      */
     @Test
     void jobFailureIsDeliveredThroughTheAwaitedFuture() throws Exception {
         removeDefaultOutput();
-        Files.createFile(DEFAULT_OUTPUT_DIR);
+        Files.createDirectories(DEFAULT_OUTPUT_DIR);
+        Path obstruction = DEFAULT_OUTPUT_DIR.resolve("unwritable.txt");
+        Files.createDirectories(obstruction);
+        // The obstruction must be a NON-EMPTY directory: the writers replace an existing
+        // destination, and an empty directory would simply be deleted, letting the run
+        // succeed and defeating the injection.
+        Files.createFile(obstruction.resolve("occupied"));
 
         // Distinct output names are used so this case observes a failure of its OWN
         // destination rather than re-running the success case's files, which the
@@ -417,9 +447,41 @@ class JobSchedulingConfigIT {
         assertThat(execution.getAllFailureExceptions())
                 .anySatisfy(failure -> assertThat(failure).hasMessageContaining("unwritable.txt"));
         // The injected obstruction is still in place and no statement artifact was produced.
-        // (Files.notExists cannot confirm absence below a non-directory, so exists() is used.)
-        assertThat(Files.isRegularFile(DEFAULT_OUTPUT_DIR)).isTrue();
+        assertThat(Files.isDirectory(obstruction)).isTrue();
         assertThat(Files.exists(DEFAULT_TEXT_FILE)).isFalse();
+    }
+
+    /**
+     * :purpose: An output destination that cannot be used AT ALL — the configured output
+     *   root obstructed by a regular file, so no statement file can be created under it —
+     *   must be refused SYNCHRONOUSLY at the call site, before a job instance exists.
+     * :raises Exception: propagated from the output setup.
+     * :note: This is the surface the QA run exercised with
+     *   ``stmtFile=../../../../etc/passwd``: the containment rule was enforced, but only
+     *   later, inside the step-scoped writer factory. The caller was told ``202 ACCEPTED``,
+     *   a ``BATCH_JOB_EXECUTION`` row was created for a run that could never produce a
+     *   statement, and the run then failed with a ``BeanCreationException`` whose stack
+     *   trace was persisted into ``exit_message`` as the operator-visible outcome.
+     */
+    @Test
+    void anUnusableOutputDestinationIsRefusedAtTheCallSite() throws Exception {
+        removeDefaultOutput();
+        Files.createFile(DEFAULT_OUTPUT_DIR);
+        try {
+            assertThatThrownBy(() ->
+                    jobSchedulingConfig.launchStatementGeneration("refused.txt", "refused.html"))
+                    .isInstanceOf(CardDemoException.class)
+                    .hasMessageContaining("refused.txt")
+                    .hasMessageNotContaining("BeanCreationException")
+                    .hasMessageNotContaining("scopedTarget");
+
+            // The obstruction is untouched and nothing was written anywhere.
+            assertThat(Files.isRegularFile(DEFAULT_OUTPUT_DIR)).isTrue();
+        } finally {
+            // Restore a usable root so the shared context's remaining cases are unaffected.
+            removeDefaultOutput();
+            Files.createDirectories(DEFAULT_OUTPUT_DIR);
+        }
     }
 
     /**
@@ -455,7 +517,7 @@ class JobSchedulingConfigIT {
             // constructor is the seam it exposes for exactly this substitution.
             JobSchedulingConfig refusingComponent = new JobSchedulingConfig(
                     refusingOperator, realStatementGenerationJob,
-                    "statements.txt", "statements.html");
+                    "statements.txt", "statements.html", batchOutputPathResolver);
 
             // The operator refuses the submission, so the caller learns about it
             // immediately instead of receiving a success message over a job that never ran.

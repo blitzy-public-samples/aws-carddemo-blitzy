@@ -1,0 +1,171 @@
+---
+# =============================================================================
+# k8s/cronjob-postgres-backup.yaml
+# -----------------------------------------------------------------------------
+# Scheduled logical backup of the CardDemo PostgreSQL database, plus the claim it
+# writes to.
+#
+# :purpose: Gives the continuity obligation the legacy GDG backup stream carried
+#           (app/jcl/DEFGDGB.jcl defined the generation-data group,
+#           app/jcl/TRANBKP.jcl wrote the daily generation) a home in the target
+#           platform. AAP 0.4.6 maps those jobs to "database backup/PITR" and
+#           places them OUTSIDE application-code scope, so this is deployment
+#           infrastructure: no service code participates, and the procedure an
+#           operator runs by hand is documented in README-target.md under
+#           "Backup and Recovery".
+# :output:  A daily `pg_dump -Fc` of the whole database written to
+#           /backup/carddemo-<UTC timestamp>.dump on the carddemo-backup claim,
+#           after which dumps older than BACKUP_RETENTION_DAYS are deleted. The
+#           Job's exit status is the backup's outcome: pg_dump writes to a
+#           temporary name and is renamed into place only on success, so a
+#           truncated dump is never left behind looking like a good one.
+# :notes:   Runs the SAME pinned postgres:18 image as k8s/deployment-postgres.yaml,
+#           so the dump is produced by the exact server version that will restore
+#           it, and authenticates with the existing
+#           carddemo-postgres-bootstrap Secret rather than introducing a new
+#           credential. Point-in-time recovery is NOT provided: the server runs
+#           with archive_mode=off, so the recovery point is the last dump. See
+#           README-target.md for the restore commands and for what enabling PITR
+#           would require.
+# =============================================================================
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: carddemo-backup
+  labels:
+    app: postgres-backup
+    app.kubernetes.io/name: carddemo-backup
+    app.kubernetes.io/part-of: carddemo
+    app.kubernetes.io/component: backup
+spec:
+  # No storageClassName: bind to the cluster default so the claim is portable
+  # across minikube, kind and managed cloud clusters, exactly like postgres-pvc.
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      # Holds BACKUP_RETENTION_DAYS compressed dumps of the seeded database, which
+      # is under 100 KiB each; sized for growth, not for the reference data.
+      storage: 5Gi
+
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: carddemo-postgres-backup
+  labels:
+    app: postgres-backup
+    app.kubernetes.io/name: carddemo-postgres-backup
+    app.kubernetes.io/part-of: carddemo
+    app.kubernetes.io/component: backup
+spec:
+  # 01:00 UTC daily: after the online day closes and BEFORE the 02:00 posting
+  # cycle (k8s/cronjob-transaction-posting.yaml), so the dump is a clean
+  # pre-posting image the cycle can be replayed against.
+  schedule: "0 1 * * *"
+  timeZone: Etc/UTC
+  # Two dumps at once would contend on the same claim and produce no additional
+  # protection.
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 7
+  failedJobsHistoryLimit: 7
+  jobTemplate:
+    spec:
+      # One retry: a transient connection failure is worth repeating, an
+      # authentication or disk-space failure is not worth repeating indefinitely.
+      backoffLimit: 1
+      template:
+        metadata:
+          labels:
+            app: postgres-backup
+            app.kubernetes.io/name: carddemo-postgres-backup
+            app.kubernetes.io/part-of: carddemo
+            app.kubernetes.io/component: backup
+        spec:
+          restartPolicy: Never
+          # Pod-level hardening, identical in shape to every other CardDemo pod.
+          # uid/gid 999 is the `postgres` account inside the official image, and
+          # fsGroup makes the claim writable by it.
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 999
+            runAsGroup: 999
+            fsGroup: 999
+            seccompProfile:
+              type: RuntimeDefault
+          automountServiceAccountToken: false
+          containers:
+            - name: pg-dump
+              # Same pinned server version as the database itself.
+              image: postgres:18
+              imagePullPolicy: IfNotPresent
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop:
+                    - ALL
+              command:
+                - /bin/sh
+                - -c
+              args:
+                # Custom format (-Fc) so a selective restore is possible, written
+                # to a .part name and renamed only after pg_dump exits 0, then the
+                # retention window is pruned. `set -e` makes any failure the Job's
+                # failure rather than a silently empty backup.
+                - >-
+                  set -e;
+                  stamp="$(date -u +%Y%m%dT%H%M%SZ)";
+                  target="/backup/carddemo-${stamp}.dump";
+                  echo "backing up ${POSTGRES_DB} from ${PGHOST} to ${target}";
+                  pg_dump -h "$PGHOST" -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc -f "${target}.part";
+                  mv "${target}.part" "${target}";
+                  echo "backup complete: $(ls -l "${target}")";
+                  find /backup -maxdepth 1 -name 'carddemo-*.dump' -type f
+                  -mtime "+${BACKUP_RETENTION_DAYS}" -print -delete;
+                  echo "retention pruned to ${BACKUP_RETENTION_DAYS} days"
+              env:
+                # Service DNS name of the database (k8s/service-postgres.yaml).
+                - name: PGHOST
+                  value: postgres
+                # pg_dump reads the password from this variable; the value comes
+                # from the SAME Secret the server is bootstrapped with, so no new
+                # credential is introduced.
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: carddemo-postgres-bootstrap
+                      key: POSTGRES_PASSWORD
+                # How many days of dumps are kept on the claim. Retention is an
+                # operator policy, so it is a plain value to change here.
+                - name: BACKUP_RETENTION_DAYS
+                  value: "7"
+              envFrom:
+                # POSTGRES_DB comes from the shared ConfigMap; POSTGRES_USER from
+                # the bootstrap Secret.
+                - configMapRef:
+                    name: carddemo-config
+                - secretRef:
+                    name: carddemo-postgres-bootstrap
+              volumeMounts:
+                - name: backup
+                  mountPath: /backup
+                # pg_dump needs a writable temporary directory under the read-only
+                # root filesystem.
+                - name: tmp
+                  mountPath: /tmp
+              # A logical dump of this database is short and I/O bound.
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 128Mi
+                limits:
+                  cpu: 500m
+                  memory: 512Mi
+          volumes:
+            - name: backup
+              persistentVolumeClaim:
+                claimName: carddemo-backup
+            - name: tmp
+              emptyDir: {}

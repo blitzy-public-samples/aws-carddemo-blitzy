@@ -291,6 +291,54 @@ class AccountMapperTest {
     }
 
     /**
+     * :purpose: Only the stored value's OWN mask is an echo. ``CUST-GOVT-ISSUED-ID`` is
+     *   ``PIC X(20)``, so an asterisk is a legal character the legacy program would have
+     *   stored, and a mask-bearing value that is not the stored mask must be applied
+     *   rather than silently discarded in favour of the stored identifier.
+     */
+    @Test
+    @DisplayName("applyUpdate applies a mask-bearing value that is not the stored value's own mask")
+    void applyUpdateAppliesMaskShapedValueThatIsNotTheStoredMask() {
+        Customer customer = newFullyValuedCustomer();
+        String storedGovtId = customer.getCustGovtIssuedId();
+
+        AccountUpdateRequestDto edited = newFullyValuedUpdateRequest();
+        edited.setCustGovtIssuedId("****IDENTIFIER**0001");
+        mapper.applyUpdate(edited, newFullyValuedAccount(), customer);
+
+        assertThat(storedGovtId).isNotEqualTo("****IDENTIFIER**0001");
+        assertThat(customer.getCustGovtIssuedId()).isEqualTo("****IDENTIFIER**0001");
+    }
+
+    /**
+     * :purpose: ``ACCT-GROUP-ID PIC X(10)`` has no null and a blank 3270 field returns
+     *   spaces, while ``acct_group_id`` is nullable. A save that changed nothing else must
+     *   not convert a stored NULL into the empty string, so a blank submission is applied
+     *   as {@code null} and the read/save round trip is idempotent.
+     */
+    @Test
+    @DisplayName("applyUpdate writes a blank account group id as null, never as the empty string")
+    void applyUpdateNormalizesBlankAccountGroupIdToNull() {
+        Account account = newFullyValuedAccount();
+        account.setAcctGroupId(null);
+
+        AccountUpdateRequestDto blank = newFullyValuedUpdateRequest();
+        blank.setAcctGroupId("");
+        mapper.applyUpdate(blank, account, newFullyValuedCustomer());
+        assertThat(account.getAcctGroupId()).isNull();
+
+        AccountUpdateRequestDto spaces = newFullyValuedUpdateRequest();
+        spaces.setAcctGroupId("   ");
+        mapper.applyUpdate(spaces, account, newFullyValuedCustomer());
+        assertThat(account.getAcctGroupId()).isNull();
+
+        AccountUpdateRequestDto supplied = newFullyValuedUpdateRequest();
+        supplied.setAcctGroupId("PREMIUM");
+        mapper.applyUpdate(supplied, account, newFullyValuedCustomer());
+        assertThat(account.getAcctGroupId()).isEqualTo("PREMIUM");
+    }
+
+    /**
      * :purpose: Verify {@code toViewResponse} tolerates a {@code null} cardXref
      *   (the read-only account view surfaces no card-number field) and still
      *   populates the account- and customer-derived fields.

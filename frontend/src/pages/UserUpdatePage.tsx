@@ -14,17 +14,22 @@
  *     the line-24 function-key bar are published to the shared shell through
  *     :func:`useScreenChrome` and are not rendered here.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useState, useRef } from 'react';
 import type { FormEvent, ReactElement } from 'react';
 import { useLocation, useNavigate } from 'react-router';
 import { useScreenChrome } from '../components/Layout';
 import { invalidFieldProps } from '../components/ErrorBanner';
 import type { PFKeyDef } from '../components/PFKeyBar';
 import { PfKeyAction, CCDA_TITLE01, CCDA_TITLE02 } from '../types';
-import type { Role, UserDto, UserUpdateRequestDto } from '../types';
+import type {
+  Role,
+  UserDto,
+  UserUpdateRequestDto,
+  UserUpdateResponseDto,
+} from '../types';
 import { ApiError, getUser, updateUser } from '../api';
-import { useApi } from '../hooks';
-import { resolveApiErrorMessage } from '../components/display';
+import { placeCursor, useApi, useScreenAction, useSelfRevocationExit } from '../hooks';
+import { resolveApiErrorMessage, resolveFaultedField } from '../components/display';
 
 /** :purpose: CICS transaction id of this screen (``WS-TRANID``). */
 const TRANSACTION_ID = 'CU02';
@@ -71,8 +76,21 @@ const MSG_FIRST_NAME_EMPTY = 'First Name can NOT be empty...';
 /** :purpose: ``LNAME`` empty (``UPDATE-USER-INFO``). */
 const MSG_LAST_NAME_EMPTY = 'Last Name can NOT be empty...';
 
-/** :purpose: ``PASSWD`` empty (``UPDATE-USER-INFO``). */
+/**
+ * :purpose: ``PASSWD`` empty (``UPDATE-USER-INFO`` L200). Declared by the program and
+ *     kept in the cursor and fault tables so the control is still addressed should the
+ *     service report it, but unreachable from this screen: ``COUSR02C`` can only see an
+ *     empty ``PASSWD`` because L169 pre-filled it, and a hashed credential cannot be
+ *     pre-filled. The add screen reaches the same literal from ``COUSR01C`` L138.
+ */
 const MSG_PASSWORD_EMPTY = 'Password can NOT be empty...';
+
+/**
+ * :purpose: Native-tooltip text for ``PASSWD``, explaining that leaving the box empty
+ *     keeps the stored credential. Not part of the mapset, so it is carried by the
+ *     ``title`` attribute rather than as screen text.
+ */
+const PASSWORD_UNCHANGED_HINT = 'Leave blank to keep the current password';
 
 /** :purpose: ``USRTYPE`` empty (``UPDATE-USER-INFO``). */
 const MSG_USER_TYPE_EMPTY = 'User Type can NOT be empty...';
@@ -116,6 +134,20 @@ const PF12_LABEL = 'F12=Cancel';
  *     two not-found outcomes name their own field, while the remaining paths return
  *     the cursor to ``USRIDIN`` (the mapset's ``IC`` field) or to ``FNAME``.
  */
+/**
+ * :purpose: Map a request-payload property named in ``ErrorResponse.fieldErrors`` to the
+ *     DOM id of the control that carries it, so the marker and the cursor land on the
+ *     field the service refused. ``COUSR02.bms`` names its fields ``USRIDIN``, ``FNAME``,
+ *     ``LNAME``, ``PASSWD`` and ``USRTYPE``; the payload uses the DTO property names.
+ */
+const ELEMENT_BY_PAYLOAD_PROPERTY: Readonly<Partial<Record<string, string>>> = {
+  userId: 'usridin',
+  firstName: 'fname',
+  lastName: 'lname',
+  password: 'passwd',
+  userType: 'usrtype',
+};
+
 const CURSOR_BY_MESSAGE: Readonly<Record<string, string>> = {
   [MSG_USER_ID_EMPTY]: 'usridin',
   [MSG_FIRST_NAME_EMPTY]: 'fname',
@@ -221,6 +253,7 @@ export default function UserUpdatePage(): ReactElement {
     error: updateError,
     loading: updateLoading,
   } = useApi(updateUser);
+  const exitOnSelfRevocation = useSelfRevocationExit();
 
   // Only one of the two calls carries an error at a time: each flow resets the
   // other before it starts, so the single line-23 region shows one message.
@@ -237,21 +270,38 @@ export default function UserUpdatePage(): ReactElement {
   // The keyboard-locked interval covers both the fetch and the update.
   const busy = fetchLoading || updateLoading;
 
+  /**
+   * :purpose: Keyboard-lock latch: ``true`` from the instant a fetch or an update is
+   *     dispatched until its answer has been applied. A 3270 locked the keyboard for
+   *     exactly that interval, so one intent could never be sent twice. The latch is a
+   *     ref rather than ``busy`` because two activations in the same task both observe
+   *     the state as it was before either of them, and both would be admitted.
+   */
+  const requestLatch = useRef<boolean>(false);
+
   // ``MOVE -1 TO <field>L``: the cursor follows the current line-23 outcome. The
   // entry fields are disabled while a call is outstanding and focusing a disabled
   // control is a no-op, so placement waits for the call to settle.
+  // The service names the property its edit refused in the error envelope, which is
+  // preferred over matching the message text: the edit ran there, so it knows which
+  // field failed, and a message no map has seen still reaches the right control.
+  const serverField =
+    ELEMENT_BY_PAYLOAD_PROPERTY[resolveFaultedField(updateError ?? fetchError) ?? ''];
+
   useEffect(() => {
     if (busy) {
       return;
     }
-    const field = CURSOR_BY_MESSAGE[errorMessage] ?? DEFAULT_CURSOR_FIELD;
-    document.getElementById(field)?.focus();
-  }, [busy, errorMessage]);
+    const field = serverField ?? CURSOR_BY_MESSAGE[errorMessage] ?? DEFAULT_CURSOR_FIELD;
+    placeCursor(document.getElementById(field));
+  }, [busy, errorMessage, serverField]);
 
   // The cursor moves for every outcome, but only a rejected value is invalid.
-  const faultedField: string | null = FIELD_FAULT_MESSAGES.has(errorMessage)
-    ? (CURSOR_BY_MESSAGE[errorMessage] ?? null)
-    : null;
+  const faultedField: string | null =
+    serverField ??
+    (FIELD_FAULT_MESSAGES.has(errorMessage)
+      ? (CURSOR_BY_MESSAGE[errorMessage] ?? null)
+      : null);
 
   /**
    * :purpose: Read the record of a user id and seed the editable fields
@@ -260,7 +310,7 @@ export default function UserUpdatePage(): ReactElement {
    * :param id: the user id to look up.
    * :returns: A promise that settles once the outcome has been published.
    */
-  const fetchUser = useCallback(
+  const readUser = useCallback(
     async (id: string): Promise<void> => {
       const key = id.trim();
       resetUpdate();
@@ -293,11 +343,8 @@ export default function UserUpdatePage(): ReactElement {
    *     reported by the service and surfaced verbatim.
    * :returns: A promise that settles once the outcome has been published.
    */
-  const saveUser = useCallback(
+  const writeUser = useCallback(
     async (): Promise<void> => {
-      if (updateLoading) {
-        return;
-      }
       const key = userId.trim();
       const enteredFirstName = firstName.trim();
       const enteredLastName = lastName.trim();
@@ -321,11 +368,19 @@ export default function UserUpdatePage(): ReactElement {
         setValidationMessage(MSG_LAST_NAME_EMPTY);
         return;
       }
-      if (password.trim().length === 0) {
-        resetUpdate();
-        setValidationMessage(MSG_PASSWORD_EMPTY);
-        return;
-      }
+      /*
+       * No blank-password edit here, deliberately. COUSR02C reaches its
+       * 'Password can NOT be empty...' edit (L198-L202) with PASSWD already pre-filled
+       * from SEC-USR-PWD (L169, under the mapset's DRK attribute), so the field was always
+       * populated by the time PF5 ran and the field-by-field compare then found it equal;
+       * an empty box THERE meant the operator had deliberately erased the credential. A
+       * hashed credential cannot be pre-filled and is never sent to the client, so an empty
+       * box HERE means "leave it alone" instead. Reproducing the edit literally made a
+       * name-only or role-only update impossible -- something no legacy operator ever
+       * experienced -- and it also put the 'Please modify to update ...' no-change guard out
+       * of reach. The add screen keeps the literal, where COUSR01C L138 genuinely requires
+       * a password.
+       */
       if (enteredUserType.length === 0) {
         resetUpdate();
         setValidationMessage(MSG_USER_TYPE_EMPTY);
@@ -333,32 +388,85 @@ export default function UserUpdatePage(): ReactElement {
       }
       setValidationMessage('');
 
-      // Presence is the only edit COUSR02C applies to the type code; the
-      // service rejects a code other than 'A' or 'U'.
+      // Presence is the only edit COUSR02C applies to the type code (its EVALUATE tests
+      // SPACES/LOW-VALUES and nothing else), so no value-set check is made here either.
+      // The password is carried only when one was entered, so an update of the profile
+      // fields alone cannot reach -- and therefore cannot replace -- the credential.
+      // The raw value is sent unpadded and untrimmed: it is compared against the stored
+      // hash, so altering it here would change the credential the operator typed.
       const request: UserUpdateRequestDto = {
         firstName: enteredFirstName,
         lastName: enteredLastName,
         userType: enteredUserType as Role,
-        password,
+        ...(password.trim().length > 0 ? { password } : {}),
       };
-      const updated: UserDto | undefined = await runUpdate(key, request);
+      const updated: UserUpdateResponseDto | undefined = await runUpdate(key, request);
       if (updated === undefined) {
         return;
       }
-      setOutcomeMessage(`${MSG_USER_PREFIX}${key}${MSG_UPDATED_SUFFIX}`);
+      // The banner comes from the RESPONSE, never from what was typed: the service
+      // upper-cases the user id (COSGN00C L132 / 3270 UCTRAN), so echoing the entered
+      // text would report an id that is not the one stored.
+      const confirmation =
+        updated.message ?? `${MSG_USER_PREFIX}${updated.userId}${MSG_UPDATED_SUFFIX}`;
+      // Changing one's own role or credential revokes one's own session, so the
+      // consequence is reported by the action that caused it rather than surfacing as a
+      // blank refusal of whatever the operator does next.
+      if (await exitOnSelfRevocation(key, confirmation)) {
+        return;
+      }
+      setOutcomeMessage(confirmation);
     },
     [
+      exitOnSelfRevocation,
       firstName,
       lastName,
       password,
       resetFetch,
       resetUpdate,
       runUpdate,
-      updateLoading,
       userId,
       userType,
     ],
   );
+
+  /**
+   * :purpose: Look a user id up under the keyboard lock, so a repeated activation in
+   *     the same task issues exactly one read.
+   * :param id: the user id to look up.
+   * :returns: A promise that settles once the outcome has been published.
+   */
+  const fetchUser = useCallback(
+    async (id: string): Promise<void> => {
+      if (requestLatch.current) {
+        return;
+      }
+      requestLatch.current = true;
+      try {
+        await readUser(id);
+      } finally {
+        requestLatch.current = false;
+      }
+    },
+    [readUser],
+  );
+
+  /**
+   * :purpose: Rewrite the record under the keyboard lock, so a repeated activation in
+   *     the same task issues exactly one update.
+   * :returns: A promise that settles once the outcome has been published.
+   */
+  const saveUser = useCallback(async (): Promise<void> => {
+    if (requestLatch.current) {
+      return;
+    }
+    requestLatch.current = true;
+    try {
+      await writeUser();
+    } finally {
+      requestLatch.current = false;
+    }
+  }, [writeUser]);
 
   /**
    * :purpose: ENTER — look the entered user id up.
@@ -426,19 +534,33 @@ export default function UserUpdatePage(): ReactElement {
     }
   }, [fetchUser, incomingUserId]);
 
-  useEffect(() => {
+  // The activators published to the shared frame are identity-stable and always
+  // dispatch to the newest render's handler, so the line-24 legend is not rebuilt on
+  // every keystroke and an AID can never act on a value the screen has replaced.
+  const activateFetch = useScreenAction(handleFetch);
+  const activateClear = useScreenAction(handleClear);
+  const activateSave = useScreenAction(handleSave);
+  const activateCancel = useScreenAction(handleCancel);
+  const activateExit = useScreenAction((): void => {
+    void handleExit();
+  });
+
+  // The frame's header, line-23 message region and line-24 key legend belong to the
+  // SAME map as this body, so they are published in a LAYOUT effect: a CICS program
+  // moved every field into the symbolic map before its one SEND, and nothing
+  // half-built ever reached the terminal. A passive effect would paint the frame
+  // once without them and then move it.
+  useLayoutEffect(() => {
     const pfKeys: PFKeyDef[] = [
-      { action: PfKeyAction.Enter, label: PF_ENTER_LABEL, onActivate: handleFetch },
+      { action: PfKeyAction.Enter, label: PF_ENTER_LABEL, onActivate: activateFetch },
       {
         action: PfKeyAction.PF3,
         label: PF3_LABEL,
-        onActivate: () => {
-          void handleExit();
-        },
+        onActivate: activateExit,
       },
-      { action: PfKeyAction.PF4, label: PF4_LABEL, onActivate: handleClear },
-      { action: PfKeyAction.PF5, label: PF5_LABEL, onActivate: handleSave },
-      { action: PfKeyAction.PF12, label: PF12_LABEL, onActivate: handleCancel },
+      { action: PfKeyAction.PF4, label: PF4_LABEL, onActivate: activateClear },
+      { action: PfKeyAction.PF5, label: PF5_LABEL, onActivate: activateSave },
+      { action: PfKeyAction.PF12, label: PF12_LABEL, onActivate: activateCancel },
     ];
     setChrome({
       transactionId: TRANSACTION_ID,
@@ -451,13 +573,13 @@ export default function UserUpdatePage(): ReactElement {
       busy,
     });
   }, [
+    activateCancel,
+    activateClear,
+    activateExit,
+    activateFetch,
+    activateSave,
     busy,
     errorMessage,
-    handleCancel,
-    handleClear,
-    handleExit,
-    handleFetch,
-    handleSave,
     infoMessage,
     setChrome,
   ]);
@@ -470,13 +592,15 @@ export default function UserUpdatePage(): ReactElement {
 
       <form className="userUpdate__form" onSubmit={handleSubmit}>
         <div className="userUpdate__row">
-          <label className="label" htmlFor="usridin">
+          {/* COUSR02.bms:L80-L84 -- LENGTH=14 POS=(6,6) COLOR=GREEN. */}
+          <label className="green" htmlFor="usridin">
             Enter User ID:
           </label>{' '}
           <input
             className="field"
             disabled={busy}
             data-testid="usridin"
+            aria-required="true"
             id="usridin"
             name="usridin"
             {...invalidFieldProps(faultedField === 'usridin')}
@@ -489,7 +613,9 @@ export default function UserUpdatePage(): ReactElement {
           />
         </div>
 
-        <div className="userUpdate__separator" aria-hidden="true">
+        {/* COUSR02.bms:L93-L97 declares the 70-asterisk rule COLOR=YELLOW at POS=(8,6),
+            exactly as COUSR03 does; `title` is the shared YELLOW tone. */}
+        <div className="userUpdate__separator title" aria-hidden="true">
           {FIELD_SEPARATOR}
         </div>
 
@@ -501,6 +627,7 @@ export default function UserUpdatePage(): ReactElement {
             className="field"
             disabled={busy}
             data-testid="fname"
+            aria-required="true"
             id="fname"
             name="fname"
             {...invalidFieldProps(faultedField === 'fname')}
@@ -518,6 +645,7 @@ export default function UserUpdatePage(): ReactElement {
             className="field"
             disabled={busy}
             data-testid="lname"
+            aria-required="true"
             id="lname"
             name="lname"
             {...invalidFieldProps(faultedField === 'lname')}
@@ -546,6 +674,10 @@ export default function UserUpdatePage(): ReactElement {
             maxLength={PASSWORD_MAX_LENGTH}
             size={PASSWORD_MAX_LENGTH}
             value={password}
+            /* The mapset's own hint literal stays exactly ``(8 Char)``, so the
+               leave-blank semantic is carried by the native tooltip: it adds no
+               rendered text and no DOM node to the 24x80 screen contract. */
+            title={PASSWORD_UNCHANGED_HINT}
             onChange={(event) => setPassword(event.target.value)}
           />{' '}
           <span className="label" id="passwdHint">
@@ -561,6 +693,7 @@ export default function UserUpdatePage(): ReactElement {
             className="field"
             disabled={busy}
             data-testid="usrtype"
+            aria-required="true"
             id="usrtype"
             name="usrtype"
             type="text"
@@ -576,10 +709,6 @@ export default function UserUpdatePage(): ReactElement {
           </span>
         </div>
 
-        {/* ENTER submits the lookup. The mapset places no button in the screen
-            body, so this control is hidden from sight, from assistive technology
-            and from keyboard navigation. */}
-        <button type="submit" hidden aria-hidden="true" tabIndex={-1} />
       </form>
     </section>
   );

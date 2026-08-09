@@ -190,7 +190,7 @@
           @DataJpaTest / @AutoConfigureTestDatabase persistence-slice support. In Spring Boot 4.x
           these annotations live in the modular spring-boot-data-jpa-test / spring-boot-jdbc-test
           jars, which this starter pulls in transitively (spring-boot-data-jpa-test and
-          spring-boot-starter-jdbc-test). Backs CardRepositoryTest and CardXrefRepositoryTest.
+          spring-boot-starter-jdbc-test). Backs CardRepositoryIT and CardXrefRepositoryIT.
           Versions managed by the parent BOM.
         -->
         <dependency>

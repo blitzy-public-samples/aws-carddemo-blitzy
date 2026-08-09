@@ -21,16 +21,33 @@
  *     contexts. Pages consume only the action context, whose value never changes
  *     identity, so publishing chrome re-renders the frame regions and not the
  *     routed page.
+ * :note: A published function key is never handed to the key bar directly. The frame
+ *     records the newest legend synchronously as the page publishes it and hands the
+ *     key bar an identity-stable indirection per AID that resolves the handler at the
+ *     moment the key is struck. Together with the pages publishing from a LAYOUT
+ *     effect, that is what guarantees a key acts on the screen state the operator can
+ *     see: a passive publication is deferred past the commit, so a key struck straight
+ *     after a keystroke would otherwise run the handler closure of the render that
+ *     preceded it and send the value the field held before that keystroke.
  */
-import { createContext, useCallback, useContext, useMemo, useState } from 'react';
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import type { ReactElement, ReactNode } from 'react';
 import { useLocation } from 'react-router';
 import Header from './Header';
 import type { HeaderCaptionStyle } from './Header';
 import ErrorBanner from './ErrorBanner';
 import PFKeyBar from './PFKeyBar';
-import type { PFKeyDef } from './PFKeyBar';
+import type { PFKeyBarTone, PFKeyDef } from './PFKeyBar';
 import { useSession } from '../hooks/useSession';
+import { PfKeyAction } from '../types';
 
 /**
  * :purpose: The per-screen frame values a routed page publishes into the shell.
@@ -48,10 +65,21 @@ import { useSession } from '../hooks/useSession';
  * :param appId: Application id shown after ``AppID:`` on the sign-on frame.
  * :param sysId: System id shown after ``SysID:`` on the sign-on frame.
  * :param errorMessage: Line-23 error text, rendered RED with ``role="alert"``.
- * :param infoMessage: Line-23 informational fallback, rendered ``role="status"``.
+ * :param infoMessage: Informational text in the line-23 ``ERRMSG`` field itself, rendered
+ *     GREEN with ``role="status"`` for the programs that move ``DFHGREEN`` into it.
+ * :param infoFieldMessage: Text of the separate ``INFOMSG`` field the five detail mapsets
+ *     declare ABOVE their ``ERRMSG`` region, rendered NEUTRAL. Publishing the key at all
+ *     -- even as an empty string -- reserves the row that field occupies.
  * :param pfKeys: Line-24 function keys and handlers declared for the screen.
+ * :param pfKeyTone: Colour the screen's mapset declares on its line-24 legend field;
+ *     omitted renders the YELLOW that fifteen of the seventeen mapsets declare.
+ * :param noticeMessage: a non-failure condition -- the end of a browse, an empty page --
+ *     reported on line 23 in the RED the mapset declares, but announced politely.
  * :param busy: ``true`` while the screen waits for the server, which marks the body
  *     region ``aria-busy`` and announces the wait in a polite live region.
+ * :param locked: ``true`` while a write the screen issued is outstanding. Every declared
+ *     function key stays legended but stops acting, reproducing the 3270 keyboard lock, so
+ *     the screen cannot be left before the write it started reports back.
  * :param plainText: When set, the frame renders this single line of text and nothing
  *     else, reproducing ``EXEC CICS SEND TEXT ... ERASE``: the header, the body, the
  *     line-23 region and the line-24 legend are all cleared.
@@ -67,9 +95,14 @@ export interface ScreenChrome {
   appId?: string;
   sysId?: string;
   errorMessage?: string;
+  noticeMessage?: string;
   infoMessage?: string;
+  infoFieldMessage?: string;
+  messageReference?: string | null;
   pfKeys?: PFKeyDef[];
+  pfKeyTone?: PFKeyBarTone;
   busy?: boolean;
+  locked?: boolean;
   plainText?: string;
 }
 
@@ -99,11 +132,46 @@ const EMPTY_CHROME: ScreenChrome = {};
 const NO_PF_KEYS: PFKeyDef[] = [];
 
 /**
- * :purpose: Text announced in the body region's live area while a screen waits for
- *     the server. Announcement only: it replaces no BMS field and is never part of
- *     a screen's own message line.
+ * :purpose: The 3270 input-inhibited indicator, shown in the Operator Information
+ *     Area while a transaction is outstanding and the keyboard is locked. The OIA is
+ *     the terminal's own status line below the 24 application rows, so this replaces no
+ *     BMS field and is never part of a screen's own message line.
  */
-const BUSY_ANNOUNCEMENT = 'Working';
+const BUSY_ANNOUNCEMENT = 'X SYSTEM';
+
+/**
+ * :purpose: DOM id of the region holding rows 23 and 24, so the skip link can jump
+ *     to the message line and the function keys.
+ */
+const SCREEN_STATUS_REGION_ID = 'screenStatusRegion';
+
+/**
+ * :purpose: The application name the document title always ends with, so a screen is
+ *     identifiable in a tab, a history entry and a bookmark while the product remains
+ *     recognisable. ``CardDemo`` is the application's own name in
+ *     ``app/csd/CARDDEMO.CSD``.
+ */
+const APPLICATION_TITLE = 'CardDemo';
+
+/**
+ * :purpose: Build the document title for a screen from the pair its own header rows
+ *     identify it by — the CICS transaction id and the program name. The two BMS title
+ *     lines are deliberately not used: every mapset carries the same
+ *     ``AWS Mainframe Modernization`` / ``CardDemo`` pair, so they identify the
+ *     application rather than the screen.
+ * :param transactionId: The published 4-character transaction id, if any.
+ * :param programName: The published program name, if any.
+ * :returns: ``"<tran> <program> - CardDemo"``, degrading to the parts that are present
+ *     and to the application name alone before a screen has published anything.
+ */
+function buildDocumentTitle(transactionId?: string, programName?: string): string {
+  const parts = [transactionId, programName]
+    .map((part) => (part ?? '').trim())
+    .filter((part) => part !== '');
+  return parts.length === 0
+    ? APPLICATION_TITLE
+    : `${parts.join(' ')} - ${APPLICATION_TITLE}`;
+}
 
 /**
  * :purpose: Inert actions supplied to a page rendered outside a :func:`Layout`, so
@@ -130,6 +198,14 @@ const ScreenChromeActionsContext =
   createContext<ScreenChromeActions>(DETACHED_ACTIONS);
 
 /**
+ * :purpose: Carries the number of attention identifiers this screen has sent, so the
+ *     regions that a CICS ``SEND MAP`` rewrites unconditionally can do the same:
+ *     re-announce an unchanged message, re-capture the header clock, and re-place the
+ *     cursor. A page rendered outside a :func:`Layout` reads ``0``.
+ */
+const SendCountContext = createContext<number>(0);
+
+/**
  * :purpose: Access the screen-chrome publishing actions from a routed page, so it
  *     can publish its transaction id, program name, titles, message, busy state and
  *     PF keys into the shared frame, and clear them again in its cleanup.
@@ -150,6 +226,19 @@ export function usePublishedChrome(): ScreenChrome {
 }
 
 /**
+ * :purpose: Read how many attention identifiers the screen has sent. Every accepted
+ *     AID — a physical PF key or its legend button — advances the count by one, which
+ *     is the SPA's equivalent of a CICS ``SEND MAP``: the map is repainted, the header
+ *     date and time are re-captured (``POPULATE-HEADER-INFO``), the message region is
+ *     written again even when the text is unchanged, and the cursor is re-placed on the
+ *     screen's insert-cursor field.
+ * :returns: The send count of the enclosing frame; ``0`` outside a :func:`Layout`.
+ */
+export function useSendCount(): number {
+  return useContext(SendCountContext);
+}
+
+/**
  * :purpose: Props for :func:`Layout`.
  * :param children: The routed screen rendered in the body region (rows 4-22).
  */
@@ -167,20 +256,86 @@ export interface LayoutProps {
  */
 function ScreenFrame({ children }: LayoutProps): ReactElement {
   const [chrome, setChromeState] = useState<ScreenChrome>(EMPTY_CHROME);
+  // How many attention identifiers this screen has sent. A CICS program repaints the
+  // whole map on every send, so the count is what lets the regions that must be
+  // rewritten unconditionally tell one send from the next.
+  const [sendCount, setSendCount] = useState<number>(0);
   const { isAuthenticated } = useSession();
 
-  const setChrome = useCallback((next: ScreenChrome): void => {
-    setChromeState(next);
+  // The legend a page publishes, captured SYNCHRONOUSLY at publish time. A key is
+  // dispatched through a stable indirection that reads this, so the handler that runs
+  // is always the one from the newest publication even when the legend the key bar
+  // holds is a render behind.
+  const latestKeysRef = useRef<PFKeyDef[]>(NO_PF_KEYS);
+  const dispatchersRef = useRef<Map<PfKeyAction, () => void>>(new Map());
+
+  const stableDispatcher = useCallback((action: PfKeyAction): (() => void) => {
+    const existing = dispatchersRef.current.get(action);
+    if (existing !== undefined) {
+      return existing;
+    }
+    const dispatch = (): void => {
+      const declared = latestKeysRef.current.find((key) => key.action === action);
+      declared?.onActivate();
+    };
+    dispatchersRef.current.set(action, dispatch);
+    return dispatch;
   }, []);
+
+  const setChrome = useCallback(
+    (next: ScreenChrome): void => {
+      const incoming = next.pfKeys ?? NO_PF_KEYS;
+      latestKeysRef.current = incoming;
+      setChromeState({
+        ...next,
+        pfKeys: incoming.map((key) => ({
+          ...key,
+          onActivate: stableDispatcher(key.action),
+        })),
+      });
+    },
+    [stableDispatcher],
+  );
   const resetChrome = useCallback((): void => {
+    latestKeysRef.current = NO_PF_KEYS;
     setChromeState(EMPTY_CHROME);
   }, []);
   const actions = useMemo<ScreenChromeActions>(
     () => ({ setChrome, resetChrome }),
     [setChrome, resetChrome],
   );
+  const handleAidDispatched = useCallback((): void => {
+    setSendCount((previous) => previous + 1);
+  }, []);
 
   const busy = chrome.busy === true;
+
+  // A 3270 operator identifies a screen by the transaction id and title the map
+  // carries, so the document title carries the same pair. Without it every route,
+  // history entry and bookmark reads the bare application name.
+  const documentTitle = buildDocumentTitle(chrome.transactionId, chrome.programName);
+  useEffect(() => {
+    if (typeof document === 'undefined') {
+      return;
+    }
+    document.title = documentTitle;
+  }, [documentTitle]);
+
+  // A 3270 locked the keyboard from the instant an AID was transmitted until the reply
+  // arrived, so no second AID could be raised while that transaction was in flight. The
+  // legends stay on screen exactly as they were — the terminal did not blank line 24 —
+  // but none of them acts, which is what makes leaving a screen mid-transaction
+  // unreachable rather than merely unlikely: a screen abandoned while its write was
+  // outstanding committed that write with nothing left to report it.
+  //
+  // Only a screen that declares `locked` is held this way, and only its own writes
+  // declare it. A read in flight paints nothing and commits nothing, so locking the
+  // keyboard for a read would trap the operator behind a slow or hung GET for no gain.
+  const locked = chrome.locked === true;
+  const lockedKeys = useMemo<PFKeyDef[]>(
+    () => (chrome.pfKeys ?? NO_PF_KEYS).map((key) => ({ ...key, enabled: false })),
+    [chrome.pfKeys],
+  );
 
   // ``EXEC CICS SEND TEXT ... ERASE`` clears the whole 24x80 device and writes one
   // line of text, so a screen that ends that way renders neither the header, nor
@@ -188,50 +343,94 @@ function ScreenFrame({ children }: LayoutProps): ReactElement {
   if (chrome.plainText !== undefined) {
     return (
       <ScreenChromeActionsContext.Provider value={actions}>
-        <ScreenChromeContext.Provider value={chrome}>
-          <div className="screen" data-authenticated={String(isAuthenticated)}>
-            <p className="screen__plainText" data-testid="screen-plain-text">
-              {chrome.plainText}
-            </p>
-          </div>
-        </ScreenChromeContext.Provider>
+        <SendCountContext.Provider value={sendCount}>
+          <ScreenChromeContext.Provider value={chrome}>
+            <div className="screen" data-authenticated={String(isAuthenticated)}>
+              <p className="screen__plainText" data-testid="screen-plain-text">
+                {chrome.plainText}
+              </p>
+            </div>
+          </ScreenChromeContext.Provider>
+        </SendCountContext.Provider>
       </ScreenChromeActionsContext.Provider>
     );
   }
 
   return (
     <ScreenChromeActionsContext.Provider value={actions}>
-      <ScreenChromeContext.Provider value={chrome}>
-        <div className="screen" data-authenticated={String(isAuthenticated)}>
-          <Header
-            transactionId={chrome.transactionId}
-            programName={chrome.programName}
-            title01={chrome.title01}
-            title02={chrome.title02}
-            currentDate={chrome.currentDate}
-            currentTime={chrome.currentTime}
-            captionStyle={chrome.captionStyle}
-            appId={chrome.appId}
-            sysId={chrome.sysId}
-          />
-          <main className="screen__body" aria-busy={busy}>
-            {children}
-          </main>
-          {/*
-           * Announcement-only live region: it is outside the aria-busy body so the
-           * announcement is not suppressed, and it is visually hidden so the 24-row
-           * frame geometry and the screen's visible output are unchanged.
-           */}
-          <p className="screen__busy" role="status" data-testid="screen-busy">
-            {busy ? BUSY_ANNOUNCEMENT : ''}
-          </p>
-          <ErrorBanner
-            message={chrome.errorMessage}
-            infoMessage={chrome.infoMessage}
-          />
-          <PFKeyBar keys={chrome.pfKeys ?? NO_PF_KEYS} />
-        </div>
-      </ScreenChromeContext.Provider>
+      <SendCountContext.Provider value={sendCount}>
+        <ScreenChromeContext.Provider value={chrome}>
+          <div className="screen" data-authenticated={String(isAuthenticated)}>
+            <a className="screen__skipLink" href={`#${SCREEN_STATUS_REGION_ID}`}>
+              Skip to message line and function keys
+            </a>
+            <Header
+              transactionId={chrome.transactionId}
+              programName={chrome.programName}
+              title01={chrome.title01}
+              title02={chrome.title02}
+              currentDate={chrome.currentDate}
+              currentTime={chrome.currentTime}
+              captionStyle={chrome.captionStyle}
+              appId={chrome.appId}
+              sysId={chrome.sysId}
+              sendCount={sendCount}
+            />
+            <main className="screen__body" aria-busy={busy}>
+              {children}
+            </main>
+            {/*
+             * Rows 23 and 24 are the two lines a 3270 operator watches, so they are
+             * reachable as a landmark of their own instead of sitting outside every
+             * region, and the skip link above jumps straight to them.
+             */}
+            <footer
+              className="screen__status"
+              id={SCREEN_STATUS_REGION_ID}
+              role="contentinfo"
+              /*
+               * The skip link's target must be able to hold focus, or activating the link
+               * moves the browser's scroll position and its sequential starting point but
+               * leaves `document.activeElement` on the body -- so the next Tab is the only
+               * evidence the jump happened. A negative index is focusable
+               * programmatically without joining the tab sequence, which is what a skip
+               * target needs.
+               */
+              tabIndex={-1}
+            >
+              <ErrorBanner
+                message={chrome.errorMessage}
+                noticeMessage={chrome.noticeMessage}
+                infoMessage={chrome.infoMessage}
+                infoFieldMessage={chrome.infoFieldMessage}
+                messageReference={chrome.messageReference}
+                sendCount={sendCount}
+              />
+              <PFKeyBar
+                keys={locked ? lockedKeys : (chrome.pfKeys ?? NO_PF_KEYS)}
+                tone={chrome.pfKeyTone}
+                inputInhibited={busy}
+                onAidDispatched={handleAidDispatched}
+              />
+            </footer>
+            {/*
+             * The 3270 Operator Information Area: the status line a terminal paints
+             * BELOW the 24 application rows, never one of them. `X SYSTEM` is its
+             * input-inhibited indicator, shown for exactly as long as the keyboard is
+             * locked, and it is also the polite announcement of the wait. The row is
+             * always reserved so no screen's geometry changes when a request starts.
+             */}
+            <p
+              className="screen__oia"
+              role="status"
+              aria-live="polite"
+              data-testid="screen-busy"
+            >
+              {busy ? BUSY_ANNOUNCEMENT : ''}
+            </p>
+          </div>
+        </ScreenChromeContext.Provider>
+      </SendCountContext.Provider>
     </ScreenChromeActionsContext.Provider>
   );
 }

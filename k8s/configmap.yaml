@@ -11,12 +11,31 @@ metadata:
     app.kubernetes.io/component: config
 data:
   SPRING_PROFILES_ACTIVE: "k8s"
+  # The ONE internal HTTP port every pod listens on. Declared here explicitly, and
+  # not left to each application.yml, because it is a property of THIS topology:
+  # pods reach each other by Service DNS and publish no host port, so they all
+  # share 8080, and every containerPort, probe port, Service targetPort and
+  # Prometheus target in this repository is that number. Each service's
+  # application.yml defaults instead to its own workstation port (8081-8088, the
+  # ports the gateway's default route table addresses), which is only reachable
+  # when the eight services share one host; this value overrides that for the
+  # cluster exactly as docker-compose.yml's SERVER_PORT does for Compose.
+  SERVER_PORT: "8080"
   # Datasource URL only (no credentials); each service supplies its own
   # username/password from its per-service Secret (carddemo-<svc>-db).
   SPRING_DATASOURCE_URL: "jdbc:postgresql://postgres:5432/carddemo"
   SPRING_DATA_REDIS_HOST: "redis"
   SPRING_DATA_REDIS_PORT: "6379"
   POSTGRES_DB: "carddemo"
+  # Flyway is OFF for every service that consumes this ConfigMap. batch-service is the
+  # SINGLE migration owner and re-enables it with a Deployment-level `env` entry, which
+  # takes precedence over `envFrom`. Every other Deployment waits on the schema through its
+  # await-schema init container and then only validates its entity mapping
+  # (hibernate.ddl-auto=validate). Without this key each pod ran the shared migration set
+  # itself, so the schema was provisioned by whichever pod was scheduled first and
+  # concurrent migrators contended on the shared flyway_schema_history table and on
+  # cross-table foreign keys.
+  SPRING_FLYWAY_ENABLED: "false"
   # Kept identical to every service's application.yml so the Kubernetes deployment
   # exposes no management endpoint the local and Compose runs do not.
   MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: "health,info,prometheus"
@@ -24,6 +43,14 @@ data:
   # Health detail is rendered only to an authenticated principal;
   # anonymous callers still receive the overall UP/DOWN status for probes.
   MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: "when-authorized"
+  # CARDDEMO_COOKIE_SECURE is DELIBERATELY ABSENT. Every service defaults
+  # `server.servlet.session.cookie.secure` to true and the gateway gates its
+  # XSRF-TOKEN cookie on the same value, so omitting the key here keeps the secure
+  # default for a cluster deployment, which is expected to be TLS-terminated at the
+  # Ingress. Only docker-compose.yml sets it to false, because that local stack is
+  # served over plain HTTP. If you expose this cluster over plain HTTP — a
+  # LoadBalancer or NodePort without TLS — add CARDDEMO_COOKIE_SECURE: "false" here
+  # or sign-on will appear to succeed and every following request will be 401.
   # Conservative default trace sampling for the backend services. The
   # api-gateway raises this to 1.0 via a Deployment-level env override so every
   # request entering the stack starts a sampled trace.

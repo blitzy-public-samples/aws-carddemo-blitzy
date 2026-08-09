@@ -20,7 +20,9 @@ import com.carddemo.common.dto.SessionContext;
 import com.carddemo.common.dto.SessionContextSupport;
 import com.carddemo.common.dto.TransactionAddRequestDto;
 import com.carddemo.common.dto.TransactionAddResponseDto;
+import com.carddemo.common.dto.TransactionKeyResponseDto;
 import com.carddemo.common.dto.TransactionListRequestDto;
+import com.carddemo.common.dto.TransactionKeyDto;
 import com.carddemo.common.dto.TransactionListResponseDto;
 import com.carddemo.common.dto.TransactionViewResponseDto;
 import com.carddemo.transaction.service.TransactionService;
@@ -28,10 +30,10 @@ import com.carddemo.transaction.service.TransactionService;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.ModelAttribute;
-import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -99,11 +101,41 @@ public class TransactionController {
     }
 
     /**
+     * :purpose: Run the add screen's key-field edit on its own (``COTRN02C``
+     *  ``VALIDATE-INPUT-KEY-FIELDS``) and report the account/card pair it resolves.
+     *  ``PROCESS-ENTER-KEY`` performs that paragraph before the data-field checks, so the
+     *  screen needs the same lookup available before it examines its own fields; the
+     *  paragraph also writes the counterpart key back onto the map, which is why the
+     *  resolved pair is returned. Declared before the ``/{id}`` template so the literal
+     *  segment wins the mapping.
+     * :param acctId: the ``ACTIDIN`` entry value; optional.
+     * :param tranCardNum: the ``CARDNIN`` entry value; optional.
+     * :returns: the resolved account id and card number (HTTP 200).
+     * :raises CardDemoException: when a key is non-numeric or neither key is present
+     *  (mapped to HTTP 400 by the shared ``GlobalExceptionHandler``).
+     * :raises RecordNotFoundException: when the cross-reference holds no such account or
+     *  card (mapped to HTTP 404).
+     */
+    @GetMapping("/keys")
+    public TransactionKeyResponseDto resolveKeys(
+            @RequestParam(name = "acctId", required = false) String acctId,
+            @RequestParam(name = "tranCardNum", required = false) String tranCardNum) {
+        return transactionService.resolveKeys(acctId, tranCardNum);
+    }
+
+    /**
      * :purpose: View a single transaction by its 16-character zero-padded id (CICS
      *  ``CT01`` / ``COTRN01C``). The empty/blank-id guard and the not-found lookup are
-     *  business logic owned by the service; the raw path variable is passed straight
-     *  through without local validation.
-     * :param id: the 16-character zero-padded transaction id in its String wire form.
+     *  business logic owned by the service; the raw parameter is passed straight through
+     *  without local validation, so the service's own literals answer every value.
+     * :param tranId: the 16-character zero-padded transaction id in its String wire form,
+     *  carried as a REQUEST PARAMETER rather than a path segment. ``TRNIDIN`` is an
+     *  ``X(16)`` field an operator may fill with any characters, and a value holding a
+     *  path separator does not survive as a path segment: an intermediary normalizes the
+     *  encoded form back into ``/..`` before it routes, which lifted the request out of
+     *  the API prefix and answered it with the SPA document instead of this endpoint --
+     *  a silently dead screen. A query parameter is not path-normalized, so the value
+     *  arrives verbatim and misses the read, which is what the legacy READ does too.
      * :param httpRequest: the current servlet request; its already-established session,
      *  when present, backs the externalized session context.
      * :returns: the view response DTO serialized as JSON (HTTP 200).
@@ -112,11 +144,40 @@ public class TransactionController {
      * :raises RecordNotFoundException: when no transaction exists for the id (mapped to
      *  HTTP 404 by the shared ``GlobalExceptionHandler``).
      */
-    @GetMapping("/{id}")
-    public TransactionViewResponseDto viewTransaction(@PathVariable("id") String id,
-                                                      HttpServletRequest httpRequest) {
+    @GetMapping("/detail")
+    public TransactionViewResponseDto viewTransaction(
+            @RequestParam(name = "tranId", required = false) String tranId,
+            HttpServletRequest httpRequest) {
         SessionContext sessionContext = resolveSessionContext(httpRequest);
-        TransactionViewResponseDto response = transactionService.viewTransaction(id, sessionContext);
+        TransactionViewResponseDto response = transactionService.viewTransaction(tranId, sessionContext);
+        storeSessionContext(httpRequest, sessionContext);
+        return response;
+    }
+
+    /**
+     * :purpose: Resolve the add screen's two key fields from either one (``COTRN02C``
+     *  ``VALIDATE-INPUT-KEY-FIELDS``). The legacy program runs that paragraph BEFORE its
+     *  eleven data-field blank guards, and the cross-reference read inside it is what
+     *  publishes ``Account ID NOT found...`` and ``Card Number NOT found...``; exposing
+     *  it as its own step is what keeps those two literals reachable while a data field
+     *  is still empty. It is also the first thing ``COPY-LAST-TRAN-DATA`` performs, which
+     *  is why the copy-last action fills BOTH key fields.
+     * :param request: the key entry, carrying an account id, a card number, or neither.
+     *  It is a request BODY because one of the two members is a card number, and a URL
+     *  is recorded verbatim by every intermediary on the path.
+     * :param httpRequest: the current servlet request; its already-established session,
+     *  when present, backs the externalized session context.
+     * :returns: both keys at their declared widths (HTTP 200).
+     * :raises CardDemoException: when a key is non-numeric or neither key is present
+     *  (HTTP 400).
+     * :raises RecordNotFoundException: when the cross-reference holds no such key
+     *  (HTTP 404).
+     */
+    @PostMapping("/key")
+    public TransactionKeyDto resolveAddKey(@Valid @RequestBody TransactionKeyDto request,
+                                           HttpServletRequest httpRequest) {
+        SessionContext sessionContext = resolveSessionContext(httpRequest);
+        TransactionKeyDto response = transactionService.resolveAddKey(request);
         storeSessionContext(httpRequest, sessionContext);
         return response;
     }

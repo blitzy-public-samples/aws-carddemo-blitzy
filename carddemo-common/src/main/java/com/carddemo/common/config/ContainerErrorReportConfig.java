@@ -34,7 +34,6 @@ import org.springframework.http.MediaType;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.nio.charset.StandardCharsets;
-import java.time.Instant;
 
 /**
  * :purpose: Suppress the servlet container's own HTML error report. A request the
@@ -118,13 +117,11 @@ public class ContainerErrorReportConfig {
             }
             HttpStatus status = HttpStatus.resolve(statusCode);
             String reason = (status == null) ? "Error" : status.getReasonPhrase();
-            String path = request.getRequestURI();
-            String body = "{\"timestamp\":\"" + Instant.now()
-                    + "\",\"status\":" + statusCode
-                    + ",\"error\":\"" + escape(reason)
-                    + "\",\"errorCode\":null,\"message\":\"" + escape(reason)
-                    + "\",\"path\":" + (path == null ? "null" : "\"" + escape(path) + "\"")
-                    + ",\"traceId\":null,\"fieldErrors\":null}";
+            // The one authoritative envelope shape, shared with every other non-MVC
+            // failure path, so a container-level rejection is indistinguishable in shape
+            // from an application error. The path is PAN-masked by the writer.
+            String body = ErrorEnvelopeWriter.json(statusCode, reason, request.getRequestURI(),
+                    resolveCorrelationId(request), null);
             try {
                 response.setContentType(MediaType.APPLICATION_JSON_VALUE);
                 response.setCharacterEncoding(StandardCharsets.UTF_8);
@@ -140,30 +137,31 @@ public class ContainerErrorReportConfig {
         }
 
         /**
-         * :purpose: Escape the characters that would break the hand-written JSON body.
-         * :param value: the raw value.
-         * :returns: the escaped value.
+         * :purpose: Recover the correlation id for a failure the container itself answers, so the
+         *  envelope carries the SAME id the caller holds whenever such an id exists.
+         * :param request: the rejected request.
+         * :returns: the id {@link CorrelationIdFilter} published as a request attribute when that
+         *  filter ran; otherwise the sanitized inbound ``X-Correlation-Id`` supplied by the
+         *  caller; otherwise ``null``.
+         * :note: The ``null`` case is reachable and is not a defect. A URI the container refuses
+         *  while parsing the request line -- an encoded path separator, for instance -- is
+         *  rejected before a context is selected, so NO servlet filter runs and the server never
+         *  mints an id for it. Reading the inbound header here means a caller that supplies its
+         *  own id can still correlate even that class of rejection; a caller that supplies none
+         *  gets ``null``, matching the fact that no id was ever issued or logged. ``traceId``
+         *  stays ``null`` for the same reason: no observation scope was ever opened.
          */
-        private static String escape(String value) {
-            StringBuilder escaped = new StringBuilder(value.length() + 8);
-            for (int i = 0; i < value.length(); i++) {
-                char character = value.charAt(i);
-                switch (character) {
-                    case '"' -> escaped.append("\\\"");
-                    case '\\' -> escaped.append("\\\\");
-                    case '\n' -> escaped.append("\\n");
-                    case '\r' -> escaped.append("\\r");
-                    case '\t' -> escaped.append("\\t");
-                    default -> {
-                        if (character < 0x20) {
-                            escaped.append(String.format("\\u%04x", (int) character));
-                        } else {
-                            escaped.append(character);
-                        }
-                    }
+        private String resolveCorrelationId(Request request) {
+            Object established = request.getAttribute(CorrelationIdFilter.CORRELATION_ID_ATTRIBUTE);
+            if (established instanceof String existing) {
+                String sanitized = CorrelationIdContext.sanitize(existing);
+                if (sanitized != null) {
+                    return sanitized;
                 }
             }
-            return escaped.toString();
+            return CorrelationIdContext.sanitize(
+                    request.getHeader(CorrelationIdFilter.CORRELATION_ID_HEADER));
         }
+
     }
 }

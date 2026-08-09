@@ -14,7 +14,7 @@
  *     region and the line-24 function-key bar are rendered by the shared ``Layout``
  *     shell from the chrome this page publishes through ``useScreenChrome``.
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { ReactElement } from 'react';
 import { useNavigate, useParams } from 'react-router';
 import { useScreenChrome } from '../components/Layout';
@@ -33,9 +33,19 @@ import type {
   ActiveStatus,
   FieldErrorMap,
 } from '../types';
-import { getAccount, updateAccount, ApiError } from '../api';
-import { useApi, useFocusOnChange, useInitialFocus } from '../hooks';
-import { isBlank, SSN_MASK_PREFIX } from '../components/display';
+import {
+  getAccount,
+  updateAccount,
+  validateAccountUpdate as requestValidation,
+  ApiError,
+} from '../api';
+import { useApi, useFocusOnChange, useInitialFocus, useScreenAction } from '../hooks';
+import {
+  isBlank,
+  resolveApiErrorMessage,
+  resolveFaultedField,
+  SSN_MASK_PREFIX,
+} from '../components/display';
 
 /* ------------------------------------------------------------------ */
 /* Screen identity (BMS COACTUP / CICS CAUP / program COACTUPC)       */
@@ -84,8 +94,14 @@ const MSG_UPDATE_SUCCESS = 'Changes committed to database';
 /** ``INFORM-FAILURE``. */
 const MSG_FAILURE = 'Changes unsuccessful. Please try again';
 
-/** ``SEARCHED-ACCT-ZEROES`` / ``SEARCHED-ACCT-NOT-NUMERIC``. */
-const MSG_ACCOUNT_ID_INVALID = 'Account number must be a non zero 11 digit number';
+/**
+ * ``1210-EDIT-ACCOUNT`` L1806-L1809, assembled by ``STRING 'Account Number if supplied
+ * must be a 11 digit' ' Non-Zero Number' DELIMITED BY SIZE``. This screen's text differs
+ * from the view screen's for the same edit; the 88-levels ``SEARCHED-ACCT-ZEROES`` /
+ * ``SEARCHED-ACCT-NOT-NUMERIC`` (L493/L495) are declared and never ``SET``.
+ */
+const MSG_ACCOUNT_ID_INVALID =
+  'Account Number if supplied must be a 11 digit Non-Zero Number';
 
 /** ``WS-PROMPT-FOR-ACCT``. */
 const MSG_ACCOUNT_NOT_PROVIDED = 'Account number not provided';
@@ -117,6 +133,12 @@ const SUFFIX_AREA_CODE_3_DIGIT = ': Area code must be A 3 digit number.';
 
 /** ``EDIT-US-PHONE-LINENUM`` class-test result. */
 const SUFFIX_LINE_4_DIGIT = ': Line number code must be A 4 digit number.';
+
+/**
+ * ``1275-EDIT-FICO-SCORE`` suffix (``COACTUPC.cbl`` L2524). The range itself is the
+ * ``88 FICO-RANGE-IS-VALID VALUES 300 THRU 850`` condition at L848.
+ */
+const SUFFIX_FICO_RANGE = ': should be between 300 and 850';
 
 /* ------------------------------------------------------------------ */
 /* Field captions (COACTUPC WS-EDIT-VARIABLE-NAME values)             */
@@ -152,6 +174,13 @@ const VAR_PRIMARY_CARD_HOLDER = 'Primary Card Holder';
 /* ------------------------------------------------------------------ */
 
 const ACCOUNT_ID_LENGTH = 11;
+
+/**
+ * Class list of the ``ACCTSID`` entry field. ``charField`` sizes the box in character
+ * cells so the field is exactly the eleven columns ``LENGTH=11`` declares, identically on
+ * every screen that carries it.
+ */
+const ACCOUNT_ID_FIELD_CLASS = 'field charField charField--acctId';
 const STATUS_LENGTH = 1;
 const DATE_LENGTH = 10;
 
@@ -178,6 +207,20 @@ const PHONE_PREFIX_LENGTH = 3;
 
 /** ``ACSPH1C`` / ``ACSPH2C`` declared width. */
 const PHONE_LINE_LENGTH = 4;
+/**
+ * Declared width at and above which an entry field is allowed to render narrower than its
+ * BMS ``LENGTH`` and scroll its own value. The 80-column frame holds about 44 columns at the
+ * 375px breakpoint, so a field of 25 columns or more can exceed the room its row has once
+ * its caption is placed beside it: the names (25) and the three address lines (50).
+ */
+const SHRINKABLE_FIELD_WIDTH = 25;
+
+/** Lowest score ``88 FICO-RANGE-IS-VALID`` accepts (``COACTUPC.cbl`` L848). */
+const FICO_MIN = 300;
+
+/** Highest score ``88 FICO-RANGE-IS-VALID`` accepts (``COACTUPC.cbl`` L848). */
+const FICO_MAX = 850;
+
 const AMOUNT_LENGTH = 15;
 const ACCOUNT_GROUP_LENGTH = 10;
 const CUSTOMER_ID_LENGTH = 9;
@@ -263,6 +306,44 @@ interface AccountUpdateFormState {
   custEftAccountId: string;
   custPriCardHolderInd: string;
 }
+
+/**
+ * :purpose: The entry field each request-DTO property is edited from, so a server-named
+ *     fault lands on the control the operator can actually correct. The composite fields
+ *     map to their FIRST segment, which is where ``COACTUPC`` leaves the cursor
+ *     (``MOVE -1 TO <field>L`` targets the first sub-field of a group).
+ */
+const FIELD_BY_PAYLOAD_PROPERTY: Readonly<
+  Partial<Record<string, keyof AccountUpdateFormState>>
+> = {
+  acctActiveStatus: 'acctActiveStatus',
+  acctOpenDate: 'opnYear',
+  acctCreditLimit: 'acctCreditLimit',
+  acctExpiraionDate: 'expYear',
+  acctCashCreditLimit: 'acctCashCreditLimit',
+  acctReissueDate: 'risYear',
+  acctCurrBal: 'acctCurrBal',
+  acctCurrCycCredit: 'acctCurrCycCredit',
+  acctCurrCycDebit: 'acctCurrCycDebit',
+  acctGroupId: 'acctGroupId',
+  custSsn: 'actSsn1',
+  custDobYyyyMmDd: 'dobYear',
+  custFicoCreditScore: 'custFicoCreditScore',
+  custFirstName: 'custFirstName',
+  custMiddleName: 'custMiddleName',
+  custLastName: 'custLastName',
+  custAddrLine1: 'custAddrLine1',
+  custAddrLine2: 'custAddrLine2',
+  custAddrLine3: 'custAddrLine3',
+  custAddrStateCd: 'custAddrStateCd',
+  custAddrZip: 'custAddrZip',
+  custAddrCountryCd: 'custAddrCountryCd',
+  custPhoneNum1: 'acsPh1A',
+  custPhoneNum2: 'acsPh2A',
+  custGovtIssuedId: 'custGovtIssuedId',
+  custEftAccountId: 'custEftAccountId',
+  custPriCardHolderInd: 'custPriCardHolderInd',
+};
 
 /** Empty entry state used before the account is read and when the read fails. */
 const EMPTY_FORM: AccountUpdateFormState = {
@@ -431,6 +512,8 @@ type ScreenState =
 const CASE_INSENSITIVE_FIELDS: ReadonlySet<keyof AccountUpdateFormState> = new Set([
   'acctActiveStatus',
   'acctGroupId',
+  'custId',
+  'custAddrZip',
   'custFirstName',
   'custMiddleName',
   'custLastName',
@@ -442,6 +525,65 @@ const CASE_INSENSITIVE_FIELDS: ReadonlySet<keyof AccountUpdateFormState> = new S
   'custGovtIssuedId',
   'custPriCardHolderInd',
 ]);
+
+/**
+ * :purpose: Map an ``AccountUpdateRequestDto`` member the service rejected onto the
+ *     entry fields of this mapset, cursor field first. The service edits the request
+ *     body, whose dates, SSN and phone numbers are single members, while ``COACTUP``
+ *     splits each of them across two or three 3270 fields, so the screen owns the
+ *     mapping. Every member the service can fault is present, so a rejection always
+ *     highlights a field.
+ */
+const SERVER_FIELDS_BY_REQUEST_MEMBER: Readonly<Record<string, readonly string[]>> = {
+  acctActiveStatus: ['acctActiveStatus'],
+  acctOpenDate: ['opnYear', 'opnMon', 'opnDay'],
+  acctCreditLimit: ['acctCreditLimit'],
+  acctExpiraionDate: ['expYear', 'expMon', 'expDay'],
+  acctCashCreditLimit: ['acctCashCreditLimit'],
+  acctReissueDate: ['risYear', 'risMon', 'risDay'],
+  acctCurrBal: ['acctCurrBal'],
+  acctCurrCycCredit: ['acctCurrCycCredit'],
+  acctCurrCycDebit: ['acctCurrCycDebit'],
+  acctGroupId: ['acctGroupId'],
+  custSsn: ['actSsn1', 'actSsn2', 'actSsn3'],
+  custDobYyyyMmDd: ['dobYear', 'dobMon', 'dobDay'],
+  custFicoCreditScore: ['custFicoCreditScore'],
+  custFirstName: ['custFirstName'],
+  custMiddleName: ['custMiddleName'],
+  custLastName: ['custLastName'],
+  custAddrLine1: ['custAddrLine1'],
+  custAddrLine2: ['custAddrLine2'],
+  custAddrLine3: ['custAddrLine3'],
+  custAddrStateCd: ['custAddrStateCd'],
+  custAddrZip: ['custAddrZip'],
+  custAddrCountryCd: ['custAddrCountryCd'],
+  custPhoneNum1: ['acsPh1A', 'acsPh1B', 'acsPh1C'],
+  custPhoneNum2: ['acsPh2A', 'acsPh2B', 'acsPh2C'],
+  custEftAccountId: ['custEftAccountId'],
+  custGovtIssuedId: ['custGovtIssuedId'],
+  custPriCardHolderInd: ['custPriCardHolderInd'],
+};
+
+/**
+ * :purpose: Translate the ``fieldErrors`` member of a rejected update into the screen
+ *     highlight state, so a value the service refused is painted RED and the cursor is
+ *     placed on it exactly as ``3300-SETUP-SCREEN-ATTRS`` does for an edit that ran
+ *     inside the screen program.
+ * :param reported: the ``field name -> message`` map the service returned, if any.
+ * :returns: the highlight state; empty when the rejection named no known field.
+ */
+function toFieldErrors(reported: Record<string, string> | undefined): FieldErrorMap {
+  const fieldErrors: FieldErrorMap = {};
+  if (reported === undefined) {
+    return fieldErrors;
+  }
+  for (const member of Object.keys(reported)) {
+    for (const field of SERVER_FIELDS_BY_REQUEST_MEMBER[member] ?? []) {
+      fieldErrors[field] = { invalid: true, blank: false };
+    }
+  }
+  return fieldErrors;
+}
 
 /**
  * :purpose: ``1205-COMPARE-OLD-NEW`` — decide whether the entry state still matches
@@ -462,13 +604,6 @@ function hasChanges(
       ? left.toUpperCase() !== right.toUpperCase()
       : left !== right;
   });
-}
-
-interface ScreenHandlers {
-  handleProcess: () => void;
-  handleExit: () => void;
-  handleSave: () => Promise<void>;
-  handleCancel: () => void;
 }
 
 /* ------------------------------------------------------------------ */
@@ -521,6 +656,19 @@ function isMaskShaped(value: string): boolean {
  */
 function padToWidth(value: string, width: number): string {
   return value.length >= width ? value.slice(0, width) : value.padEnd(width, ' ');
+}
+
+/**
+ * :purpose: Reproduce a COBOL ``MOVE`` of a record field into a NARROWER symbolic-map
+ *     field: the value is truncated to the map field's width, exactly as the receiving
+ *     ``PIC X(n)`` truncates on the right. Unlike :func:`padToWidth` this does not pad,
+ *     because an entry field is seeded with the characters it can hold and no more.
+ * :param value: the stored record value.
+ * :param width: the declared width of the map field it is displayed in.
+ * :returns: the value truncated to at most ``width`` characters.
+ */
+function toDisplayWidth(value: string, width: number): string {
+  return value.length > width ? value.slice(0, width) : value;
 }
 
 /**
@@ -754,7 +902,13 @@ function toFormState(response: AccountViewResponseDto): AccountUpdateFormState {
     custAddrLine1: asText(response.custAddrLine1),
     custAddrStateCd: asText(response.custAddrStateCd),
     custAddrLine2: asText(response.custAddrLine2),
-    custAddrZip: asText(response.custAddrZip),
+    // ``ACSZIPCO`` is ``PIC X(5)`` (app/cpy-bms/COACTUP.CPY L572) and ``COACTUP.bms`` L382-385
+    // declares the field ``LENGTH=5``, while ``CUST-ADDR-ZIP`` is ``PIC X(10)``. COACTUPC
+    // L2843 does `MOVE ACUP-OLD-CUST-ADDR-ZIP TO ACSZIPCO`, which truncates to the left five
+    // characters, so a stored ZIP+4 reaches the screen as its five-digit prefix. Seeding the
+    // full ten into a five-wide box instead is what hid four characters where no scroll,
+    // caret or keystroke could reach them.
+    custAddrZip: toDisplayWidth(asText(response.custAddrZip), ZIP_LENGTH),
     custAddrLine3: asText(response.custAddrLine3),
     custAddrCountryCd: asText(response.custAddrCountryCd),
     acsPh1A: phone1.areaCode,
@@ -768,6 +922,24 @@ function toFormState(response: AccountViewResponseDto): AccountUpdateFormState {
     custPriCardHolderInd: asText(response.custPriCardHolderInd),
   };
 }
+
+/**
+ * :purpose: ``9500-STORE-FETCHED-DATA`` — the display-time snapshot ``ACUP-OLD-DETAILS``,
+ *     which is filled from the RECORD (L3875 ``MOVE CUST-ADDR-ZIP TO
+ *     ACUP-OLD-CUST-ADDR-ZIP``) and not from the map. It differs from the entry state in
+ *     exactly one field: the zip is held at its stored ``PIC X(10)`` width, because
+ *     ``1205-COMPARE-OLD-NEW`` L1744-1747 compares the five characters the map field can
+ *     carry against the ten the record holds. A stored ZIP+4 therefore registers as a
+ *     change, which is what makes the truncation the rewrite performs — L4025 MOVEs the
+ *     five-character map value into ``CUST-UPDATE-ADDR-ZIP`` — something the operator is
+ *     told about before pressing F5 rather than something that happens unannounced.
+ * :param response: the account read (or the record an update returns).
+ * :returns: the snapshot the no-change comparison is made against.
+ */
+function toRecordState(response: AccountViewResponseDto): AccountUpdateFormState {
+  return { ...toFormState(response), custAddrZip: asText(response.custAddrZip) };
+}
+
 
 /**
  * :purpose: Build the ``PUT /accounts/{id}`` body from the entry state and the
@@ -814,15 +986,22 @@ function toRequestDto(
 }
 
 /**
- * :purpose: Reproduce the ``COACTUPC`` ``1200-EDIT-MAP-INPUTS`` edit sequence over
- *     the fields the screen presents, in the legacy ``PERFORM`` order. Every edit
- *     runs so each failing field is highlighted, while only the first failure sets
- *     the message — the behaviour of the ``IF WS-RETURN-MSG-OFF`` guard.
+ * :purpose: Run the SHAPE half of ``COACTUPC`` ``1200-EDIT-MAP-INPUTS`` over the fields
+ *     the screen presents, in the legacy ``PERFORM`` order: presence, numeric and
+ *     alphabetic form, calendar validity, and the fixed segment widths. Every edit runs so
+ *     each failing field is highlighted, while only the first failure sets the message —
+ *     the behaviour of the ``IF WS-RETURN-MSG-OFF`` guard.
+ * :note: The SEMANTIC edits of the same paragraph — the FICO range, the US state-code and
+ *     phone area-code lookups, and the state/zip combination — are NOT reproduced here.
+ *     They are performed by the service, against the one copy of those lookup tables, and
+ *     the screen reaches them through :func:`validateAccountUpdate` before it publishes
+ *     PROMPT-FOR-CONFIRMATION. Keeping a second copy of the tables in the browser would
+ *     give a frozen contract two sources of truth that could silently drift apart.
  * :param accountNumber: the ``ACCTSID`` entry value.
  * :param form: the current entry state.
  * :returns: the first failing message and the highlight state of every failed field.
  */
-function validateAccountUpdate(
+function validateEntryShape(
   accountNumber: string,
   form: AccountUpdateFormState,
 ): ValidationResult {
@@ -905,6 +1084,26 @@ function validateAccountUpdate(
     }
   };
 
+  // ``1245-EDIT-NUM-REQD`` followed by ``1275-EDIT-FICO-SCORE``: the score must be
+  // supplied and all-numeric first, and only a value that passed those edits is range
+  // checked, exactly as the legacy GO TO exits arrange.
+  const editFicoScore = (caption: string): void => {
+    const value = form.custFicoCreditScore;
+    if (isBlank(value)) {
+      fail('custFicoCreditScore', true, caption + SUFFIX_MUST_BE_SUPPLIED);
+      return;
+    }
+    const digits = padToWidth(value.trim(), FICO_LENGTH);
+    if (!isAllDigits(digits)) {
+      fail('custFicoCreditScore', false, caption + SUFFIX_MUST_BE_ALL_NUMERIC);
+      return;
+    }
+    const score = Number(digits);
+    if (score < FICO_MIN || score > FICO_MAX) {
+      fail('custFicoCreditScore', false, caption + SUFFIX_FICO_RANGE);
+    }
+  };
+
   const editSsnParts = (caption: string): void => {
     const assembled = joinSsn(form.actSsn1, form.actSsn2, form.actSsn3);
     if (isMaskShaped(assembled)) {
@@ -958,7 +1157,7 @@ function validateAccountUpdate(
   editAmount('acctCurrCycDebit', VAR_CURR_CYC_DEBIT);
   editSsnParts(VAR_SSN);
   editDateParts('dobYear', 'dobMon', 'dobDay', VAR_DATE_OF_BIRTH);
-  editNumeric('custFicoCreditScore', VAR_FICO_SCORE, FICO_LENGTH);
+  editFicoScore(VAR_FICO_SCORE);
   editRequired('custFirstName', VAR_FIRST_NAME);
   editRequired('custLastName', VAR_LAST_NAME);
   editRequired('custAddrLine1', VAR_ADDRESS_LINE_1);
@@ -1009,6 +1208,9 @@ export default function AccountUpdatePage(): ReactElement {
   const [errorMessage, setErrorMessage] = useState<string>('');
   const [infoMessage, setInfoMessage] = useState<string>(MSG_PROMPT_FOR_SEARCH_KEYS);
   const [saving, setSaving] = useState<boolean>(false);
+  // The ENTER edit pass is a round trip, so the screen is busy for its duration exactly as
+  // it is for the rewrite: a 3270 locked the keyboard from the AID until the reply.
+  const [validating, setValidating] = useState<boolean>(false);
 
   const { run: runGetAccount, error: loadError, loading } = useApi(getAccount);
 
@@ -1027,15 +1229,48 @@ export default function AccountUpdatePage(): ReactElement {
       if (loaded === undefined) {
         return;
       }
-      const seeded = toFormState(loaded);
-      setForm(seeded);
-      setOriginalForm(seeded);
+      setForm(toFormState(loaded));
+      setOriginalForm(toRecordState(loaded));
       setVersion(loaded.version);
       setLoadedAccountId(identifier);
       setScreenState('SHOW_DETAILS');
       setFieldErrors({});
       setErrorMessage('');
       setInfoMessage(MSG_PROMPT_FOR_CHANGES);
+    },
+    [runGetAccount],
+  );
+
+  /**
+   * :purpose: Put the record on display for the review the concurrency message demands.
+   *     The rewrite's concurrency branch sets ``ACUP-SHOW-DETAILS`` rather than a failure
+   *     state (L2611-2612), and ``3200-SETUP-SCREEN-VARS`` paints that state through
+   *     ``3202-SHOW-ORIGINAL-VALUES`` (L2715-2717) — from ``ACUP-OLD-DETAILS``, the
+   *     snapshot, not from the edited ``ACUP-NEW-DETAILS``. So the map that follows a
+   *     conflict shows the record, and the operator's keystrokes are not carried over it.
+   *     Reading the record here is the same read ``PFK12`` performs (L2571-2580 into
+   *     ``9000-READ-ACCT``, which begins ``INITIALIZE ACUP-OLD-DETAILS``): it makes the
+   *     values on display, the no-change comparison and the version echoed by a retry one
+   *     consistent set. Reviewing the record as it now stands is the only way the operator
+   *     can see the change that beat them, and re-applying an edit on top of what they can
+   *     see is what keeps the winner's write from being silently undone.
+   * :param identifier: the account key the rewrite was aimed at.
+   * :returns: ``true`` when the record was put on display.
+   */
+  const reviewCurrentRecord = useCallback(
+    async (identifier: string): Promise<boolean> => {
+      const reread = await runGetAccount(identifier);
+      if (reread === undefined) {
+        return false;
+      }
+      // Both halves move together: 3202 paints the snapshot, so the snapshot IS the screen.
+      setForm(toFormState(reread));
+      setOriginalForm(toRecordState(reread));
+      setVersion(reread.version);
+      setLoadedAccountId(identifier);
+      setScreenState('SHOW_DETAILS');
+      setFieldErrors({});
+      return true;
     },
     [runGetAccount],
   );
@@ -1066,7 +1301,10 @@ export default function AccountUpdatePage(): ReactElement {
     void loadAccount(routeAccountId);
   }, [routeAccountId, loadAccount]);
 
-  // Surface a failed read on the message line.
+  // Surface a failed read on the message line. ``9300-GETACCTDATA-BYACCT`` sets
+  // FLG-ACCTFILTER-NOT-OK on a NOTFND read and 3300-SETUP-SCREEN-ATTRS (L3176) then
+  // paints ACCTSID red, so an absent record faults the search key the same way a
+  // rejected value does.
   useEffect(() => {
     if (loadError !== null) {
       setForm(EMPTY_FORM);
@@ -1074,22 +1312,34 @@ export default function AccountUpdatePage(): ReactElement {
       setVersion(null);
       setLoadedAccountId(null);
       setScreenState('DETAILS_NOT_FETCHED');
+      setFieldErrors({ acctsid: { invalid: true, blank: false } });
       setErrorMessage(loadError.body?.message ?? loadError.message);
       setInfoMessage('');
     }
   }, [loadError]);
 
-  // 3300-SETUP-SCREEN-ATTRS positions the cursor on the first field, in screen order,
-  // whose edit failed; with no failure it rests on the first editable field of a
-  // fetched account, or on ACCTSID while the keys are still being asked for.
+  // ``3300-SETUP-SCREEN-ATTRS`` (L3008-3167) positions the cursor on EVERY send of the
+  // map, and its EVALUATE resolves to three outcomes. ``NO-CHANGES-DETECTED`` — the only
+  // WS-RETURN-MSG value the EVALUATE tests, since ``3250-SETUP-INFOMSG`` has already
+  // replaced WS-INFO-MSG by the time 3300 runs — parks the cursor on ACSTTUS. Otherwise
+  // the first field in screen order whose FLG-*-NOT-OK / -BLANK flag is set takes it.
+  // With no flag set — a fresh read, a validated change awaiting F5, and a committed
+  // save all clear WS-NON-KEY-FLAGS to LOW-VALUES (L1466, L2789) — the final
+  // ``WHEN OTHER`` (L3165) parks it on ACCTSID.
   const firstErrorField = SCREEN_FIELD_ORDER.find((field) =>
     isFieldInError(fieldErrors[field]),
   );
   const focusField =
     firstErrorField ??
-    (screenState === 'DETAILS_NOT_FETCHED' ? 'acctsid' : 'acctActiveStatus');
+    (errorMessage === MSG_NO_CHANGES_DETECTED ? 'acctActiveStatus' : 'acctsid');
   const focusRef = useInitialFocus<HTMLInputElement>();
-  useFocusOnChange(`${focusField}:${errorMessage}`, focusRef);
+  // The entry fields are disabled for the duration of a save, which drops the cursor to
+  // the document body, so the ``saving`` edge is part of the token: the map is re-sent
+  // once the write completes and the cursor is placed again, as it is on every send.
+  useFocusOnChange(
+    `${focusField}:${errorMessage}:${screenState}:${saving ? 'saving' : 'ready'}`,
+    focusRef,
+  );
 
   /**
    * :purpose: Associate a field with the hint that describes it and, for the field the
@@ -1121,7 +1371,39 @@ export default function AccountUpdatePage(): ReactElement {
    * :purpose: ENTER — process the screen. A changed account key re-reads that
    *     account; otherwise the edit sequence runs and a clean pass invites the save.
    */
-  const handleProcess = useCallback((): void => {
+  /**
+   * :purpose: Publish a refused edit the way ``COACTUPC`` does: the failing edit's own
+   *     message on line 23, the field it faulted highlighted, and the cursor moved there.
+   *     Used by both the ENTER edit pass and the F5 rewrite, so the two report identically.
+   * :param caught: the rejection raised by the service call.
+   */
+  const publishEditFailure = useCallback((caught: unknown): void => {
+    const apiError = caught instanceof ApiError ? caught : null;
+    // Every request member the envelope faults is highlighted, and a composite member is
+    // expanded onto all of its 3270 segments, because ``COACTUP`` splits the dates, the
+    // SSN and the phone numbers across two or three fields apiece. The cursor still
+    // lands on the first segment in screen order, which is the field
+    // ``3300-SETUP-SCREEN-ATTRS`` selects, so the single named property is folded into
+    // the same map rather than replacing it.
+    const faulted = toFieldErrors(apiError?.body?.fieldErrors ?? undefined);
+    const property = resolveFaultedField(apiError);
+    const field = property === null ? undefined : FIELD_BY_PAYLOAD_PROPERTY[property];
+    if (field !== undefined) {
+      faulted[field] = { invalid: true, blank: false };
+    }
+    setFieldErrors(faulted);
+    setErrorMessage(
+      apiError === null
+        ? caught instanceof Error && caught.message !== ''
+          ? caught.message
+          : MSG_FAILURE
+        : resolveApiErrorMessage(apiError, MSG_FAILURE),
+    );
+    setInfoMessage(MSG_PROMPT_FOR_CHANGES);
+    setScreenState('CHANGES_NOT_OK');
+  }, []);
+
+  const handleProcess = useCallback(async (): Promise<void> => {
     const requested = accountNumber.trim();
     if (!isValidAccountNumber(requested)) {
       setFieldErrors({ acctsid: { invalid: !isBlank(requested), blank: isBlank(requested) } });
@@ -1143,18 +1425,43 @@ export default function AccountUpdatePage(): ReactElement {
       setScreenState('SHOW_DETAILS');
       return;
     }
-    const result = validateAccountUpdate(requested, form);
-    setFieldErrors(result.fieldErrors);
-    if (result.message !== '') {
-      setErrorMessage(result.message);
+    // The shape edits run first so a malformed entry is reported without a round trip,
+    // exactly as the legacy program edits before it does anything else.
+    const shape = validateEntryShape(requested, form);
+    if (shape.message !== '') {
+      setFieldErrors(shape.fieldErrors);
+      setErrorMessage(shape.message);
       setInfoMessage(MSG_PROMPT_FOR_CHANGES);
       setScreenState('CHANGES_NOT_OK');
       return;
     }
-    setErrorMessage('');
-    setInfoMessage(MSG_PROMPT_FOR_CONFIRMATION);
-    setScreenState('CHANGES_OK_NOT_CONFIRMED');
-  }, [accountNumber, form, loadAccount, loadedAccountId, originalForm, version]);
+    // ``1200-EDIT-MAP-INPUTS`` is the program's own edit pass, and the semantic edits it
+    // performs — the FICO range, the state-code and area-code lookups, the state/zip
+    // combination — live in the service. Running them here is what makes
+    // PROMPT-FOR-CONFIRMATION a true statement instead of a claim the rewrite then
+    // contradicts; it also means the operator is told WHICH field is wrong, and why,
+    // before being invited to press F5.
+    setValidating(true);
+    try {
+      await requestValidation(loadedAccountId, toRequestDto(form, version));
+      setFieldErrors({});
+      setErrorMessage('');
+      setInfoMessage(MSG_PROMPT_FOR_CONFIRMATION);
+      setScreenState('CHANGES_OK_NOT_CONFIRMED');
+    } catch (caught) {
+      publishEditFailure(caught);
+    } finally {
+      setValidating(false);
+    }
+  }, [
+    accountNumber,
+    form,
+    loadAccount,
+    loadedAccountId,
+    originalForm,
+    publishEditFailure,
+    version,
+  ]);
 
   /**
    * :purpose: F5 — commit the edited account and customer fields, carrying the
@@ -1171,17 +1478,21 @@ export default function AccountUpdatePage(): ReactElement {
       setInfoMessage(MSG_PROMPT_FOR_SEARCH_KEYS);
       return;
     }
-    // The source reads the record it is about to rewrite and aborts when it no longer
-    // matches the snapshot taken at display time. An ACCTSID edited away from the
-    // loaded key is exactly that mismatch, so it reports the same outcome and writes
-    // nothing until a fresh read re-anchors the snapshot.
-    if (accountNumber.trim() !== loadedAccountId) {
+    // ``9600-WRITE-PROCESSING`` reads the account file under CC-ACCT-ID — the ACCTSID as
+    // edited on the map — and 9700 then compares that record against the display-time
+    // snapshot. An ACCTSID edited away from the loaded key therefore fails the comparison
+    // and reports DATA-WAS-CHANGED-BEFORE-UPDATE, which is why the same literal is
+    // published here. The record under the key actually entered is then put on display, so
+    // the review the message invites is a review of something.
+    const keyed = accountNumber.trim();
+    if (keyed !== loadedAccountId) {
       setErrorMessage(MSG_OPTIMISTIC_LOCK_CONFLICT);
       setInfoMessage(MSG_PROMPT_FOR_CHANGES);
       setScreenState('SHOW_DETAILS');
+      await reviewCurrentRecord(keyed);
       return;
     }
-    const result = validateAccountUpdate(loadedAccountId, form);
+    const result = validateEntryShape(loadedAccountId, form);
     setFieldErrors(result.fieldErrors);
     if (result.message !== '') {
       setErrorMessage(result.message);
@@ -1197,33 +1508,48 @@ export default function AccountUpdatePage(): ReactElement {
         loadedAccountId,
         toRequestDto(form, version),
       );
-      const committed = toFormState(updated);
-      setForm(committed);
-      setOriginalForm(committed);
+      setForm(toFormState(updated));
+      setOriginalForm(toRecordState(updated));
       setVersion(updated.version);
       setFieldErrors({});
       setErrorMessage('');
       setInfoMessage(MSG_UPDATE_SUCCESS);
       setScreenState('CHANGES_OKAYED_AND_DONE');
     } catch (caught) {
-      setInfoMessage(MSG_FAILURE);
-      setScreenState('CHANGES_FAILED');
-      if (caught instanceof ApiError) {
-        setErrorMessage(
-          caught.isOptimisticLockConflict
-            ? MSG_OPTIMISTIC_LOCK_CONFLICT
-            : caught.body?.message ?? caught.message,
-        );
-      } else if (caught instanceof Error && caught.message !== '') {
-        setErrorMessage(caught.message);
+      if (caught instanceof ApiError && caught.isOptimisticLockConflict) {
+        // L2611-2612: the concurrency branch sets ACUP-SHOW-DETAILS, NOT a failure state —
+        // the record goes on display for review and the operator may edit and retry. 3202
+        // paints that state from the snapshot, so the record replaces the losing keystrokes
+        // and the retry is neither doomed by a stale version nor able to undo the winner
+        // unseen.
+        setErrorMessage(MSG_OPTIMISTIC_LOCK_CONFLICT);
+        setInfoMessage(MSG_PROMPT_FOR_CHANGES);
+        setScreenState('SHOW_DETAILS');
+        await reviewCurrentRecord(loadedAccountId);
+        return;
+      }
+      // A rejection that names a field is a refused EDIT — 1200-EDIT-MAP-INPUTS reporting
+      // late, because the rewrite re-runs the same pass — so it is published exactly as the
+      // ENTER pass publishes one, with the field marked and the cursor moved to it. Anything
+      // else is a write failure, the legacy's ACUP-CHANGES-OKAYED-BUT-FAILED.
+      if (caught instanceof ApiError && resolveFaultedField(caught) !== null) {
+        publishEditFailure(caught);
       } else {
-        setErrorMessage(MSG_FAILURE);
+        setInfoMessage(MSG_FAILURE);
+        setScreenState('CHANGES_FAILED');
+        if (caught instanceof ApiError) {
+          setErrorMessage(resolveApiErrorMessage(caught, MSG_FAILURE));
+        } else if (caught instanceof Error && caught.message !== '') {
+          setErrorMessage(caught.message);
+        } else {
+          setErrorMessage(MSG_FAILURE);
+        }
       }
     } finally {
       saveLatch.current = false;
       setSaving(false);
     }
-  }, [accountNumber, form, loadedAccountId, version]);
+  }, [accountNumber, form, loadedAccountId, publishEditFailure, reviewCurrentRecord, version]);
 
   /** :purpose: F3 — leave the screen for the calling menu. */
   const handleExit = useCallback((): void => {
@@ -1242,48 +1568,44 @@ export default function AccountUpdatePage(): ReactElement {
     void loadAccount(loadedAccountId);
   }, [loadAccount, loadedAccountId]);
 
-  // The published function keys dispatch through this ref, so a key activated at
-  // any time acts on the current entry state and version snapshot.
-  const handlersRef = useRef<ScreenHandlers>({
-    handleProcess,
-    handleExit,
-    handleSave,
-    handleCancel,
+  // The published function keys dispatch through :func:`useScreenAction`, so a key
+  // activated at any time acts on the current entry state and version snapshot: the
+  // handler is captured in a layout effect within the same commit that paints the
+  // entry, and the published activator's identity never changes.
+  const activateProcess = useScreenAction((): void => {
+    void handleProcess();
   });
-
-  useEffect(() => {
-    handlersRef.current = { handleProcess, handleExit, handleSave, handleCancel };
-  }, [handleProcess, handleExit, handleSave, handleCancel]);
-
-  const activateProcess = useCallback((): void => {
-    handlersRef.current.handleProcess();
-  }, []);
-
-  const activateExit = useCallback((): void => {
-    handlersRef.current.handleExit();
-  }, []);
+  const activateExit = useScreenAction(handleExit);
 
   // COACTUPC L905-916: only ENTER, PF3, PF5-while-awaiting-confirmation and
   // PF12-once-details-are-fetched are valid AIDs; every other combination is
   // rewritten to ENTER before the screen decides what to do.
-  const activateSave = useCallback((): void => {
+  const activateSave = useScreenAction((): void => {
     if (screenState !== 'CHANGES_OK_NOT_CONFIRMED') {
-      handlersRef.current.handleProcess();
+      void handleProcess();
       return;
     }
-    void handlersRef.current.handleSave();
-  }, [screenState]);
+    void handleSave();
+  });
 
-  const activateCancel = useCallback((): void => {
+  const activateCancel = useScreenAction((): void => {
     if (screenState === 'DETAILS_NOT_FETCHED') {
-      handlersRef.current.handleProcess();
+      void handleProcess();
       return;
     }
-    handlersRef.current.handleCancel();
-  }, [screenState]);
+    handleCancel();
+  });
 
   // Publish the screen chrome; Layout renders the header, message line and key bar.
-  useEffect(() => {
+  // The frame's header, line-23 message region and line-24 key legend belong to the
+  // SAME map as this body, so they are published in a LAYOUT effect and flushed
+  // SYNCHRONOUSLY at commit: a CICS program moved every field into the symbolic map
+  // before its one SEND, and nothing half-built ever reached the terminal. From a
+  // passive effect they are flushed on a scheduled task instead, so the frame paints
+  // once without them and then moves, and for that one frame the key bar can hold a
+  // generation-old `onActivate` closure or a stale `enabled`/`busy` flag -- an AID
+  // pressed in that frame would run against the previous screen state.
+  useLayoutEffect(() => {
     // COACTUPC 3390-SETUP-INFOMSG-ATTRS un-darkens FKEY05 only while the confirmation
     // is being prompted, and FKEY12 as soon as changes exist that are not yet saved.
     const awaitingConfirmation = screenState === 'CHANGES_OK_NOT_CONFIRMED';
@@ -1313,9 +1635,12 @@ export default function AccountUpdatePage(): ReactElement {
       title01: CCDA_TITLE01,
       title02: CCDA_TITLE02,
       errorMessage,
-      infoMessage,
+      infoFieldMessage: infoMessage,
       pfKeys,
-      busy: loading || saving,
+      busy: loading || saving || validating,
+      // Only the rewrite locks the keyboard: it is the one action whose completion the
+      // operator must see, because it changes the record.
+      locked: saving,
     });
   }, [
     setChrome,
@@ -1324,6 +1649,7 @@ export default function AccountUpdatePage(): ReactElement {
     screenState,
     loading,
     saving,
+    validating,
     activateProcess,
     activateExit,
     activateSave,
@@ -1348,13 +1674,24 @@ export default function AccountUpdatePage(): ReactElement {
     const errorClass = fieldErrorClass(state);
     const marker = fieldMarker(state);
     const hintId = hint === undefined ? undefined : `${field}Hint`;
+    // A field declaring more columns than a phone-width frame carries has to be able to
+    // give some of them up; a narrow one beside it must not.
+    const wrapperClass =
+      maxLength >= SHRINKABLE_FIELD_WIDTH
+        ? 'accountUpdate__field accountUpdate__field--wide'
+        : 'accountUpdate__field';
     return (
-      <span className="accountUpdate__field">
-        {marker !== '' && (
-          <span className="fieldError" aria-hidden="true">
-            {marker}
-          </span>
-        )}
+      <span className={wrapperClass}>
+        {/*
+          The marker column is RESERVED rather than inserted: it is always rendered, and
+          holds an empty string until the field is faulted, so a failed edit moves no
+          caption, no entry field and no neighbouring group. `CSSETATY` moves `*` INTO
+          the field's own value on re-entry, so on the terminal the marker never moved
+          anything either.
+        */}
+        <span className="accountUpdate__marker" aria-hidden="true">
+          {marker}
+        </span>
         {label !== undefined && (
           <label className="prompt" htmlFor={field}>
             {label}
@@ -1412,11 +1749,9 @@ export default function AccountUpdatePage(): ReactElement {
     const marker = groupState.map(fieldMarker).find((each) => each !== '') ?? '';
     return (
       <span className="accountUpdate__field">
-        {marker !== '' && (
-          <span className="fieldError" aria-hidden="true">
-            {marker}
-          </span>
-        )}
+        <span className="accountUpdate__marker" aria-hidden="true">
+          {marker}
+        </span>
         <label className="prompt" htmlFor={first.field}>
           {label}
         </label>{' '}
@@ -1459,17 +1794,15 @@ export default function AccountUpdatePage(): ReactElement {
 
   return (
     <section className="accountUpdate" aria-labelledby="accountUpdateHeading">
-      <h2 id="accountUpdateHeading" className="neutral">
+      <h3 id="accountUpdateHeading" className="neutral">
         {HEADING}
-      </h2>
+      </h3>
 
       <div className="accountUpdate__row">
         <span className="accountUpdate__field">
-          {accountNumberMarker !== '' && (
-            <span className="fieldError" aria-hidden="true">
-              {accountNumberMarker}
-            </span>
-          )}
+          <span className="accountUpdate__marker" aria-hidden="true">
+            {accountNumberMarker}
+          </span>
           <label className="prompt" htmlFor="acctsid">
             Account Number :
           </label>{' '}
@@ -1479,7 +1812,9 @@ export default function AccountUpdatePage(): ReactElement {
             ref={focusField === 'acctsid' ? focusRef : undefined}
             type="text"
             className={
-              accountNumberErrorClass === '' ? 'field' : `field ${accountNumberErrorClass}`
+              accountNumberErrorClass === ''
+                ? ACCOUNT_ID_FIELD_CLASS
+                : `${ACCOUNT_ID_FIELD_CLASS} ${accountNumberErrorClass}`
             }
             maxLength={ACCOUNT_ID_LENGTH}
             size={ACCOUNT_ID_LENGTH}
@@ -1579,7 +1914,7 @@ export default function AccountUpdatePage(): ReactElement {
         })}
       </div>
 
-      <h3 className="neutral">{CUSTOMER_SECTION_HEADING}</h3>
+      <h4 className="neutral">{CUSTOMER_SECTION_HEADING}</h4>
 
       <div className="accountUpdate__row">
         {entryField({

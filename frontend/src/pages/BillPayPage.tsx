@@ -18,7 +18,7 @@
  *     ``string`` — it is never parsed, rounded or reformatted here.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useLayoutEffect, useRef, useState } from 'react';
 import type { ReactElement } from 'react';
 import { useNavigate } from 'react-router';
 import { useScreenChrome } from '../components/Layout';
@@ -26,16 +26,29 @@ import type { PFKeyDef } from '../components/PFKeyBar';
 import { PfKeyAction, CCDA_TITLE01, CCDA_TITLE02 } from '../types';
 import type { BillPayRequestDto, BillPayResponseDto } from '../types';
 import { payBill } from '../api';
-import { useApi, useFocusOnChange } from '../hooks';
+import { useApi, useFocusOnChange, useScreenAction } from '../hooks';
 import OutputField from '../components/OutputField';
 import { invalidFieldProps } from '../components/ErrorBanner';
-import { displayText, resolveApiErrorMessage } from '../components/display';
+import {
+  displayText,
+  resolveApiErrorMessage,
+  toSignedAmountPicture,
+} from '../components/display';
 
 /** CICS transaction id of the bill-payment screen. */
 const TRANSACTION_ID = 'CB00';
 
 /** Legacy program name reproduced by this page. */
 const PROGRAM_NAME = 'COBIL00C';
+
+/**
+ * Integer digit count of the balance picture. ``COBIL00C`` L56 declares
+ * ``WS-CURR-BAL PIC +9999999999.99`` and L193-194 MOVEs ``ACCT-CURR-BAL`` through it into
+ * ``CURBALI``, whose map field ``COBIL00.bms`` L103-106 declares ``LENGTH=14``. So the
+ * balance reaches the screen edited — sign, ten zero-padded integer digits, point, two
+ * decimals — not as the bare wire value.
+ */
+const BALANCE_INTEGER_DIGITS = 10;
 
 /** ``COBIL00C`` empty account-id message. */
 const MSG_ACCT_ID_EMPTY = 'Acct ID can NOT be empty...';
@@ -46,6 +59,9 @@ const MSG_INVALID_CONFIRM = 'Invalid value. Valid values are (Y/N)...';
 /** ``COBIL00C`` confirm-payment prompt shown once the balance is displayed. */
 const MSG_CONFIRM_PAYMENT = 'Confirm to make a bill payment...';
 
+/** ``COBIL00C`` L200-201 refusal for an account with a non-positive balance. */
+const MSG_NOTHING_TO_PAY = 'You have nothing to pay...';
+
 /**
  * ``COBIL00C`` success-banner prefix, including its trailing space. The legacy
  * ``STRING`` concatenates this with ``' Your Transaction ID is '``, hence the
@@ -53,21 +69,18 @@ const MSG_CONFIRM_PAYMENT = 'Confirm to make a bill payment...';
  */
 const MSG_PAYMENT_SUCCESSFUL = 'Payment successful. ';
 
-/**
- * :purpose: The control each ``COBIL00C`` message faults for the value it rejected.
- *     The confirm prompt and the nothing-to-pay outcome report a screen state rather
- *     than a bad value, so neither appears here and neither marks a control invalid.
- */
-const FAULTED_FIELD_BY_MESSAGE: Readonly<Record<string, CursorField>> = {
-  [MSG_ACCT_ID_EMPTY]: 'acctId',
-  [MSG_INVALID_CONFIRM]: 'confirm',
-};
-
 /** ``ACTIDIN`` field width (``PIC X(11)``). */
 const ACCT_ID_WIDTH = 11;
 
 /** ``CURBAL`` field width (``PIC X(14)``). */
 const CURR_BAL_WIDTH = 14;
+
+/**
+ * :purpose: The ``COBIL00`` balance caption, verbatim at its declared ``LENGTH=25``
+ *     (``POS=(11,6) COLOR=TURQUOISE``): twenty-four visible characters plus the trailing
+ *     pad column that separates it from ``CURBAL`` at column 32.
+ */
+const BALANCE_CAPTION = 'Your current balance is: ';
 
 /** ``CONFIRM`` field width (``PIC X(1)``). */
 const CONFIRM_WIDTH = 1;
@@ -163,8 +176,12 @@ export default function BillPayPage(): ReactElement {
   useFocusOnChange(acctIdCursor, accountIdRef);
   useFocusOnChange(confirmCursor, confirmRef);
 
-  // The cursor moves for every outcome, but only a rejected value is invalid.
-  const faultedField: CursorField | null = FAULTED_FIELD_BY_MESSAGE[errorMessage] ?? null;
+  // The faulted control is the one the screen sends the cursor to. Every `COBIL00C`
+  // path that reports something ends with `MOVE -1 TO ACTIDINL` or `MOVE -1 TO
+  // CONFIRML`, so the cursor target IS the field the row-23 message is about --
+  // including the messages the SERVER produces, which no client-side table of message
+  // text can enumerate.
+  const faultedField: CursorField | null = errorMessage === '' ? null : cursor.field;
 
   /**
    * :purpose: ``INITIALIZE-ALL-FIELDS`` / ``CLEAR-CURRENT-SCREEN`` — blank the
@@ -243,6 +260,14 @@ export default function BillPayPage(): ReactElement {
       setSubmitting(false);
     }
     if (response === undefined) {
+      // The balance already on screen is deliberately LEFT there. `COBIL00` declares
+      // `CURBAL ATTRB=(ASKIP,FSET,NORM)`, and `COBIL0AO REDEFINES COBIL0AI` places
+      // `CURBALO` and `CURBALI` on the same fourteen bytes, so the FSET tag returns the
+      // displayed value on `RECEIVE MAP` and the send echoes it straight back. A read that
+      // fails sends the map from inside `READ-ACCTDAT-FILE`, BEFORE the L193 move that
+      // would replace it, so the legacy screen shows the previous balance beside the
+      // not-found message too. Only a turn that reaches the account repaints the field --
+      // which is the case the reported defect was actually about, and it is fixed above.
       placeCursor('acctId');
       return;
     }
@@ -257,25 +282,73 @@ export default function BillPayPage(): ReactElement {
       return;
     }
 
-    setCurrentBalance(displayText(response.currentBalance));
-    const previewMessage = displayText(response.message);
-    setScreenMessage(
-      previewMessage.length > 0 ? previewMessage : MSG_CONFIRM_PAYMENT,
+    // The balance is taken from the response on EVERY answered turn, which is what keeps
+    // it tied to the account id beside it: COBIL00C moves `ACCT-CURR-BAL` into `CURBALI`
+    // at L193-194 before it decides which message to send, so both outcomes below repaint
+    // the field from the account just read, in the picture the mapset declares.
+    const wireBalance = displayText(response.currentBalance);
+    setCurrentBalance(
+      wireBalance === ''
+        ? ''
+        : toSignedAmountPicture(wireBalance, BALANCE_INTEGER_DIGITS),
     );
-    placeCursor('confirm');
+
+    // `You have nothing to pay...` is sent on the RED channel with the balance beside it,
+    // and it cursors ACTIDIN rather than CONFIRM (COBIL00C L202).
+    const refusal = displayText(response.errorMessage);
+    if (refusal.length > 0) {
+      setInfoMessage('');
+      setScreenMessage(refusal);
+      placeCursor('acctId');
+      return;
+    }
+
+    const previewMessage = displayText(response.message);
+    const published =
+      previewMessage.length > 0 ? previewMessage : MSG_CONFIRM_PAYMENT;
+    setScreenMessage(published);
+    // The confirm prompt ends ``MOVE -1 TO CONFIRML``; the nothing-to-pay refusal ends
+    // ``MOVE -1 TO ACTIDINL``, because the account is what the operator must change.
+    placeCursor(published === MSG_NOTHING_TO_PAY ? 'acctId' : 'confirm');
   }, [handleClear, placeCursor, reset, run]);
 
-  useEffect(() => {
+  // The activators published to the shared frame are identity-stable and always
+  // dispatch to the newest render's handler, so the line-24 legend is not rebuilt on
+  // every keystroke and an AID can never act on a value the screen has replaced.
+  const activateExit = useScreenAction(handleExit);
+  const activateClear = useScreenAction(handleClear);
+  const activateEnter = useScreenAction((): void => {
+    void handleEnter();
+  });
+
+  // The frame's header, line-23 message region and line-24 key legend belong to the
+  // SAME map as this body, so they are published in a LAYOUT effect: a CICS program
+  // moved every field into the symbolic map before its one SEND, and nothing
+  // half-built ever reached the terminal. A passive effect would paint the frame
+  // once without them and then move it.
+  useLayoutEffect(() => {
+    // The 3270 keyboard is LOCKED from the moment an AID is transmitted until the next
+    // map arrives, so while the payment is outstanding the legend renders inactive and
+    // no key is accepted -- the same treatment the sign-on and report screens carry.
     const pfKeys: PFKeyDef[] = [
       {
         action: PfKeyAction.Enter,
         label: 'ENTER=Continue',
-        onActivate: () => {
-          void handleEnter();
-        },
+        onActivate: activateEnter,
+        enabled: !submitting,
       },
-      { action: PfKeyAction.PF3, label: 'F3=Back', onActivate: handleExit },
-      { action: PfKeyAction.PF4, label: 'F4=Clear', onActivate: handleClear },
+      {
+        action: PfKeyAction.PF3,
+        label: 'F3=Back',
+        onActivate: activateExit,
+        enabled: !submitting,
+      },
+      {
+        action: PfKeyAction.PF4,
+        label: 'F4=Clear',
+        onActivate: activateClear,
+        enabled: !submitting,
+      },
     ];
     setChrome({
       transactionId: TRANSACTION_ID,
@@ -288,13 +361,13 @@ export default function BillPayPage(): ReactElement {
       busy: submitting,
     });
   }, [
-    setChrome,
+    activateClear,
+    activateEnter,
+    activateExit,
     errorMessage,
     infoMessage,
+    setChrome,
     submitting,
-    handleEnter,
-    handleExit,
-    handleClear,
   ]);
 
   return (
@@ -304,7 +377,10 @@ export default function BillPayPage(): ReactElement {
       </h3>
 
       <div className="billPay__row">
-        <label className="prompt" htmlFor="billPayAcctId">
+        {/* COBIL00 paints this caption COLOR=GREEN (LENGTH=14, POS=(6,6)) -- the same
+            green as the entry field beside it, and the one entry caption in the app that
+            is not the TURQUOISE `.prompt` tone. */}
+        <label className="green" htmlFor="billPayAcctId">
           Enter Acct ID:
         </label>
         <input
@@ -330,8 +406,11 @@ export default function BillPayPage(): ReactElement {
       </div>
 
       <dl className="billPay__row">
+        {/* LENGTH=25 at POS=(11,6): twenty-four visible characters and a trailing pad
+            column, which separates the caption from CURBAL at column 32. The literal
+            carries that column, so it is rendered rather than trimmed. */}
         <OutputField
-          label="Your current balance is:"
+          label={BALANCE_CAPTION}
           value={currentBalance}
           testId="cur-bal"
           width={CURR_BAL_WIDTH}

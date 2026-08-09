@@ -23,11 +23,40 @@ export const ERROR_LINE_ID = 'screenMessageLine';
 /**
  * :purpose: Props for :func:`ErrorBanner`.
  * :param message: Error message, rendered RED with ``role="alert"``.
- * :param infoMessage: Fallback informational message, rendered ``role="status"``.
+ * :param noticeMessage: A non-failure condition the screen reports on the same line-23
+ *     region and in the same RED its mapset declares statically -- reaching the end of
+ *     a browse, or an empty page. It keeps the legacy colour but is announced with
+ *     ``role="status"``: the 3270 had no notion of an assertive announcement, and
+ *     interrupting a screen-reader user to tell them a list ended is not what the
+ *     colour was expressing.
+ * :param infoMessage: Informational text a program writes into that SAME ``ERRMSG``
+ *     field after moving ``DFHGREEN`` into its colour byte, so it occupies line 23 and
+ *     renders GREEN with ``role="status"``. Eight programs do this -- COADM01C, COMEN01C,
+ *     COBIL00C, CORPT00C, COTRN02C, COUSR01C, COUSR02C and COUSR03C -- and because it is
+ *     one field it holds either an error or this text, never both.
+ * :param infoFieldMessage: Text a program writes into the mapset's own, SEPARATE
+ *     ``INFOMSG`` field. Five mapsets declare one, and every one of them places it ABOVE
+ *     the ``ERRMSG`` region at ``POS=(23,1)`` and colours it ``NEUTRAL``: COACTUP and
+ *     COACTVW at ``POS=(22,23)``, COCRDLI at ``POS=(20,19)``, COCRDSL and COCRDUP at
+ *     ``POS=(20,25)``. Their programs confirm that colour at runtime -- COCRDLIC,
+ *     COACTVWC and COCRDSLC move ``DFHNEUTR`` into ``INFOMSGC`` when the line is shown
+ *     and ``DFHBMDAR`` when it is not, while COACTUPC and COCRDUPC leave the declared
+ *     colour in force and only darken the field -- and none of the five ever moves
+ *     ``DFHGREEN`` anywhere. Supplying the prop reserves the row the field occupies, so
+ *     the message region does not shift as the line comes and goes; an empty string
+ *     renders the darkened state.
+ * :param sendCount: How many attention identifiers the screen has sent. A CICS program
+ *     writes ``ERRMSG`` on every ``SEND MAP``, so a second identical rejection is
+ *     announced again; a live region only announces text that CHANGED, so the region is
+ *     remounted per send to reproduce that.
  */
 export interface ErrorBannerProps {
   message?: string;
+  noticeMessage?: string;
   infoMessage?: string;
+  infoFieldMessage?: string;
+  messageReference?: string | null;
+  sendCount?: number;
 }
 
 /**
@@ -48,6 +77,17 @@ export function isFieldInError(state: FieldErrorState | undefined): boolean {
 export function fieldErrorClass(state: FieldErrorState | undefined): string {
   return isFieldInError(state) ? 'fieldError' : '';
 }
+
+/*
+ * A boolean counterpart of `fieldErrorClass` for the screens that fault ONE control per
+ * message is deliberately NOT provided. The three screens whose programs move `DFHRED`
+ * over a field -- `COACTUPC` and `COCRDUPC` through `CSSETATY`, and the card-detail
+ * screen -- carry a per-field flag map and use `fieldErrorClass` above. `COSGN00C`,
+ * `COTRN02C`, `COBIL00C` and `CORPT00C` contain no `MOVE DFHRED` at all: they mark a
+ * rejected entry with `MOVE -1 TO <field>L` -- the cursor -- and the line-23 message, so
+ * those four screens pass `invalidFieldProps` alone, which carries the accessible flag
+ * and the message reference without painting a frame the mapset never declares.
+ */
 
 /**
  * :purpose: The leading marker for a field: ``*`` for a blank required field
@@ -124,25 +164,127 @@ export function hasFieldErrors(map: FieldErrorMap | undefined): boolean {
 }
 
 /**
- * :purpose: The shared line-23 message banner.
- * :param message: Error message (RED, ``role="alert"``).
- * :param infoMessage: Informational fallback (``role="status"``).
- * :returns: The rendered message region.
+ * :purpose: Render the line-23 ``ERRMSG`` region. The mapsets declare one field there,
+ *     so it carries one value: an error outranks a browse notice, which outranks the
+ *     green informational text a program moves into the same field, and with none of
+ *     them the region renders empty so the frame keeps the row.
+ * :param message: Error text (RED, ``role="alert"``).
+ * :param noticeMessage: Browse-boundary text (RED, ``role="status"``).
+ * :param infoMessage: Green informational text (``role="status"``).
+ * :param reference: Correlation carried as ``data-message-reference``.
+ * :param sendKey: Identity of the current send. A CICS program writes ``ERRMSG`` on every
+ *     ``SEND MAP``, so a second identical rejection is reported again; a live region only
+ *     announces text that CHANGED, so the region is remounted per send to reproduce that.
+ * :returns: The rendered line-23 region.
  */
-export default function ErrorBanner({ message, infoMessage }: ErrorBannerProps): ReactElement {
+function renderErrorLine(
+  message: string | undefined,
+  noticeMessage: string | undefined,
+  infoMessage: string | undefined,
+  reference: string | undefined,
+  sendKey: string,
+): ReactElement {
   if (message) {
     return (
-      <div className="errorBanner" role="alert" id={ERROR_LINE_ID}>
+      <div
+        className="errorBanner"
+        role="alert"
+        id={ERROR_LINE_ID}
+        data-message-reference={reference}
+        key={sendKey}
+      >
         {message}
       </div>
     );
   }
-  if (infoMessage) {
+  if (noticeMessage) {
     return (
-      <div className="errorBanner" role="status">
+      <div
+        className="errorBanner errorBanner--notice"
+        role="status"
+        id={ERROR_LINE_ID}
+        data-message-reference={reference}
+        key={sendKey}
+      >
+        {noticeMessage}
+      </div>
+    );
+  }
+  if (infoMessage) {
+    // The id stays on every variant that carries text so an `aria-describedby` a
+    // screen set on the control it faulted never dangles when the outcome turns
+    // informational.
+    return (
+      <div
+        className="errorBanner"
+        role="status"
+        id={ERROR_LINE_ID}
+        data-message-reference={reference}
+        key={sendKey}
+      >
         {infoMessage}
       </div>
     );
   }
+  // No text, so no live region: an empty one is a reader-only artefact of reserving the
+  // row, and the variants above are remounted per send, which is what makes a repeated
+  // message announce again.
   return <div className="errorBanner errorBanner--empty" data-testid="error-banner-empty" />;
+}
+
+/**
+ * :purpose: The shared message region: the mapset's ``INFOMSG`` field, when it declares
+ *     one, above the line-23 ``ERRMSG`` field.
+ * :param message: Error message (RED, ``role="alert"``).
+ * :param noticeMessage: Browse-boundary message (RED, ``role="status"``).
+ * :param infoMessage: Green informational text in the ``ERRMSG`` field.
+ * :param infoFieldMessage: Text of the separate ``INFOMSG`` field (NEUTRAL, above).
+ * :param sendCount: How many attention identifiers the screen has sent; the line-23 region
+ *     is remounted per send so a repeated identical message is announced again.
+ * :returns: The rendered message region.
+ */
+export default function ErrorBanner({
+  message,
+  noticeMessage,
+  infoMessage,
+  infoFieldMessage,
+  messageReference,
+  sendCount = 0,
+}: ErrorBannerProps): ReactElement {
+  // Remounting on each send is what makes an unchanged message announce again: a live
+  // region is silent when the text it already holds is written back to it.
+  const sendKey = `send-${String(sendCount)}`;
+  // The correlation the message belongs to, carried as an attribute rather than as screen
+  // text: the 3270 message field is a frozen 79-character contract and appending a
+  // reference to it would change literals the mapsets declare, while a request that
+  // cannot be traced back to its log line is not observable. The value is whatever the
+  // publishing screen holds — an error envelope's correlationId, or the execution id a
+  // launched job reported.
+  const reference = messageReference ?? undefined;
+  const errorLine = renderErrorLine(message, noticeMessage, infoMessage, reference, sendKey);
+  if (infoFieldMessage === undefined) {
+    // Twelve of the seventeen mapsets declare no INFOMSG field, so line 23 is the whole
+    // message region and no row is reserved above it.
+    return errorLine;
+  }
+  // The five mapsets that declare both fields populate them on the same send -- COACTUPC
+  // L2979-2981 moves WS-INFO-MSG to INFOMSGO and then WS-RETURN-MSG to ERRMSGO, COCRDLIC
+  // L924-930 moves WS-ERROR-MSG to ERRMSGO and then WS-INFO-MSG to INFOMSGO -- so both
+  // lines are rendered. The INFOMSG row comes first because every one of the five
+  // declares it at a LOWER row number than ERRMSG at POS=(23,1): the error states what
+  // was refused, the line above it states what to do next.
+  return (
+    <>
+      <div
+        className="errorBanner errorBanner--infoField"
+        // The darkened state carries no text, so it is not announced: an empty live
+        // region would be a reader-only artefact of reserving the row.
+        role={infoFieldMessage === '' ? undefined : 'status'}
+        data-testid="info-message-line"
+      >
+        {infoFieldMessage}
+      </div>
+      {errorLine}
+    </>
+  );
 }

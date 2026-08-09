@@ -16,6 +16,7 @@
 
 package com.carddemo.batch.batch;
 
+import com.carddemo.batch.config.JobSchedulingConfig;
 import com.carddemo.common.batch.BatchOutputPathResolver;
 import org.springframework.batch.core.configuration.annotation.StepScope;
 import org.springframework.batch.infrastructure.item.Chunk;
@@ -87,7 +88,8 @@ public class CategoryBalanceReportWriter implements ItemStreamWriter<TranCatBal>
      *  symlink-escape paths (CWE-22).
      */
     public CategoryBalanceReportWriter(
-            @Value("#{jobParameters['outputFile']}") String outputFile,
+            @Value("#{jobParameters['outputFile'] ?: '${carddemo.batch.category-balance-report-file:"
+                    + JobSchedulingConfig.DEFAULT_CATEGORY_BALANCE_REPORT_FILE + "}'}") String outputFile,
             BatchOutputPathResolver pathResolver) {
         Path resolved = pathResolver.resolveOutput(outputFile);
         this.delegate = new FlatFileItemWriterBuilder<TranCatBal>()

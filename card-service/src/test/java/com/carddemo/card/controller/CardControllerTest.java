@@ -26,6 +26,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -36,6 +37,7 @@ import com.carddemo.card.repository.CardXrefRepository;
 import com.carddemo.card.service.CardService;
 import com.carddemo.common.config.GlobalExceptionHandler;
 import com.carddemo.common.dto.CardDetailResponseDto;
+import com.carddemo.common.dto.CardKeyRequestDto;
 import com.carddemo.common.dto.CardListItemDto;
 import com.carddemo.common.dto.CardListResponseDto;
 import com.carddemo.common.dto.CardUpdateRequestDto;
@@ -145,6 +147,9 @@ class CardControllerTest {
      */
     private static CardUpdateRequestDto updateRequest(String activeStatus) {
         CardUpdateRequestDto dto = new CardUpdateRequestDto();
+        // The addressed card number travels in the BODY, not in the URL: a PAN in a path
+        // or query string is recorded verbatim by every access log on the request path.
+        dto.setCardNumber(VALID_CARD);
         dto.setCardEmbossedName("JOHN DOE");
         dto.setCardActiveStatus(activeStatus);
         dto.setCardExpiraionDate("2027-12-31");
@@ -200,6 +205,59 @@ class CardControllerTest {
     }
 
     /**
+     * :purpose: No card endpoint addresses a record through its URL. A card number is a
+     *  Primary Account Number, and a path segment or query string is written verbatim into
+     *  every access log, proxy log and distributed trace on the request path, so the old
+     *  ``/cards/{cardNumber}`` shapes must no longer resolve at all. The browse route keeps
+     *  its ``cardNumber`` search PARAMETER: that is a filter the operator typed, echoed by
+     *  the legacy map, and it addresses no record.
+     */
+    @Test
+    @DisplayName("no card endpoint takes the card number from the URL")
+    void noCardEndpointAcceptsThePanInItsUrl() throws Exception {
+        mockMvc.perform(get("/cards/" + VALID_CARD).session(signedOnSession()))
+                .andExpect(status().isNotFound());
+
+        mockMvc.perform(put("/cards/" + VALID_CARD).session(signedOnSession())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(updateRequest("Y"))))
+                .andExpect(status().isNotFound());
+
+        verifyNoInteractions(cardService);
+    }
+
+    /**
+     * :purpose: A card-detail read whose body carries no card number at all is refused by
+     *  the same edit as a malformed one, with the verbatim message and no service call.
+     */
+    @Test
+    void getCardDetail_withNoKeyInBody_returns400() throws Exception {
+        mockMvc.perform(post("/cards/detail").session(signedOnSession())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .andExpect(status().isBadRequest())
+                // An ABSENT key takes the blank branch, whose literal is WS-PROMPT-FOR-CARD.
+                .andExpect(jsonPath("$.message").value("Card number not provided"));
+
+        verifyNoInteractions(cardService);
+    }
+
+    /**
+     * :purpose: Build the JSON body of a card-detail read. The key travels in the BODY
+     *  rather than in the URL because a card number is a Primary Account Number and every
+     *  access log, proxy log and trace on the request path records a URL verbatim.
+     * :param cardNumber: the card number to address.
+     * :param accountId: the optional account filter, or ``null``.
+     * :returns: the serialized request body.
+     */
+    private String detailKeyJson(String cardNumber, String accountId) throws Exception {
+        CardKeyRequestDto key = new CardKeyRequestDto();
+        key.setCardNumber(cardNumber);
+        key.setAccountId(accountId);
+        return objectMapper.writeValueAsString(key);
+    }
+
+    /**
      * :purpose: A valid sixteen-digit card-detail request returns HTTP 200 with the non-PII
      *  detail fields.
      */
@@ -208,7 +266,9 @@ class CardControllerTest {
         when(cardService.getCardDetail(eq(VALID_CARD), isNull()))
                 .thenReturn(detailStub());
 
-        mockMvc.perform(get("/cards/{cardNumber}", VALID_CARD).session(signedOnSession()))
+        mockMvc.perform(post("/cards/detail").session(signedOnSession())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(detailKeyJson(VALID_CARD, null)))
                 .andExpect(status().isOk())
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$.cardAcctId").value(VALID_ACCT_ID))
@@ -227,10 +287,15 @@ class CardControllerTest {
     @ParameterizedTest
     @ValueSource(strings = {"abc", "123", "12345678901234567"})
     void getCardDetail_withInvalidNumber_returns400(String badCard) throws Exception {
-        mockMvc.perform(get("/cards/{cardNumber}", badCard).session(signedOnSession()))
+        mockMvc.perform(post("/cards/detail").session(signedOnSession())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(detailKeyJson(badCard, null)))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.status").value(400))
-                .andExpect(jsonPath("$.message").value("Card number if supplied must be a 16 digit number"));
+                // A key that is PRESENT but not sixteen digits takes the IS NOT NUMERIC
+                // branch, whose literal 2220-EDIT-CARD MOVEs directly.
+                .andExpect(jsonPath("$.message")
+                        .value("CARD ID FILTER,IF SUPPLIED MUST BE A 16 DIGIT NUMBER"));
 
         verifyNoInteractions(cardService);
     }
@@ -244,7 +309,9 @@ class CardControllerTest {
         when(cardService.getCardDetail(eq(VALID_CARD), isNull()))
                 .thenThrow(new RecordNotFoundException("Did not find cards for this search condition"));
 
-        mockMvc.perform(get("/cards/{cardNumber}", VALID_CARD).session(signedOnSession()))
+        mockMvc.perform(post("/cards/detail").session(signedOnSession())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(detailKeyJson(VALID_CARD, null)))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.status").value(404))
                 .andExpect(jsonPath("$.message").value("Did not find cards for this search condition"));
@@ -260,7 +327,7 @@ class CardControllerTest {
                 .thenReturn(updateResponseStub());
         String json = objectMapper.writeValueAsString(updateRequest("Y"));
 
-        mockMvc.perform(put("/cards/{cardNumber}", VALID_CARD).session(signedOnSession())
+        mockMvc.perform(put("/cards").session(signedOnSession())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(json))
                 .andExpect(status().isOk())
@@ -282,7 +349,7 @@ class CardControllerTest {
                 .thenThrow(new CardDemoException("Card Active Status must be Y or N"));
         String json = objectMapper.writeValueAsString(updateRequest("X"));
 
-        mockMvc.perform(put("/cards/{cardNumber}", VALID_CARD).session(signedOnSession())
+        mockMvc.perform(put("/cards").session(signedOnSession())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(json))
                 .andExpect(status().isBadRequest())
@@ -298,7 +365,7 @@ class CardControllerTest {
      */
     @Test
     void updateCard_withMalformedJson_returns400AndServiceNotInvoked() throws Exception {
-        mockMvc.perform(put("/cards/{cardNumber}", VALID_CARD).session(signedOnSession())
+        mockMvc.perform(put("/cards").session(signedOnSession())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{ \"cardActiveStatus\": "))
                 .andExpect(status().isBadRequest());
@@ -316,7 +383,7 @@ class CardControllerTest {
                 .thenThrow(new OptimisticLockConflictException());
         String json = objectMapper.writeValueAsString(updateRequest("Y"));
 
-        mockMvc.perform(put("/cards/{cardNumber}", VALID_CARD).session(signedOnSession())
+        mockMvc.perform(put("/cards").session(signedOnSession())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(json))
                 .andExpect(status().isConflict())
@@ -337,7 +404,9 @@ class CardControllerTest {
         // This slice imports the shared GlobalExceptionHandler, so the invariant violation is
         // reported as the generic error envelope rather than propagating; either way the
         // request is refused and no blank identity is fabricated.
-        mockMvc.perform(get("/cards/{cardNumber}", VALID_CARD).session(session))
+        mockMvc.perform(post("/cards/detail").session(session)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(detailKeyJson(VALID_CARD, null)))
                 .andExpect(status().isInternalServerError())
                 .andExpect(jsonPath("$.message").value("An unexpected error occurred"));
 
@@ -359,7 +428,9 @@ class CardControllerTest {
         MockHttpSession session = new MockHttpSession();
         session.setAttribute(SESSION_CONTEXT_ATTRIBUTE, existing);
 
-        mockMvc.perform(get("/cards/{cardNumber}", VALID_CARD).session(session))
+        mockMvc.perform(post("/cards/detail").session(session)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(detailKeyJson(VALID_CARD, null)))
                 .andExpect(status().isOk());
 
         verify(cardService).getCardDetail(eq(VALID_CARD), isNull());
@@ -377,9 +448,10 @@ class CardControllerTest {
         when(cardService.getCardDetail(eq(VALID_CARD), eq(VALID_ACCT_ID)))
                 .thenReturn(detailStub());
 
-        mockMvc.perform(get("/cards/{cardNumber}", VALID_CARD)
+        mockMvc.perform(post("/cards/detail")
                         .session(signedOnSession())
-                        .param("accountId", String.valueOf(VALID_ACCT_ID)))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(detailKeyJson(VALID_CARD, String.valueOf(VALID_ACCT_ID))))
                 .andExpect(status().isOk());
 
         verify(cardService).getCardDetail(VALID_CARD, VALID_ACCT_ID);
@@ -394,11 +466,12 @@ class CardControllerTest {
                 any(CardUpdateRequestDto.class), any(SessionContext.class)))
                 .thenReturn(updateResponseStub());
 
-        mockMvc.perform(put("/cards/{cardNumber}", VALID_CARD)
+        CardUpdateRequestDto keyed = updateRequest("Y");
+        keyed.setAccountId(String.valueOf(VALID_ACCT_ID));
+        mockMvc.perform(put("/cards")
                         .session(signedOnSession())
-                        .param("accountId", String.valueOf(VALID_ACCT_ID))
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(updateRequest("Y"))))
+                        .content(objectMapper.writeValueAsString(keyed)))
                 .andExpect(status().isOk());
 
         verify(cardService).updateCard(eq(VALID_CARD), eq(VALID_ACCT_ID),
@@ -471,12 +544,14 @@ class CardControllerTest {
                 .andReturn();
         assertThat(listResult.getRequest().getSession(false)).isNull();
 
-        MvcResult detailResult = mockMvc.perform(get("/cards/{cardNumber}", VALID_CARD))
+        MvcResult detailResult = mockMvc.perform(post("/cards/detail")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(detailKeyJson(VALID_CARD, null)))
                 .andExpect(status().isInternalServerError())
                 .andReturn();
         assertThat(detailResult.getRequest().getSession(false)).isNull();
 
-        MvcResult updateResult = mockMvc.perform(put("/cards/{cardNumber}", VALID_CARD)
+        MvcResult updateResult = mockMvc.perform(put("/cards")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(updateRequest("Y"))))
                 .andExpect(status().isInternalServerError())

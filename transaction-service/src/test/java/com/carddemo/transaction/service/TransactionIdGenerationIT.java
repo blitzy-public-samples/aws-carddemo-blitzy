@@ -48,8 +48,12 @@ import org.testcontainers.utility.DockerImageName;
  *     ``TRAN-ID PIC X(16)`` wire format, that an id already present in the transaction
  *     master is skipped rather than overwritten, and that an exhausted probe bound raises
  *     the frozen ``COTRN02C`` message while leaving every stored row untouched.
- * :note: Runs against a throwaway ``postgres:18`` container so the real sequence and the
- *     real primary-key constraint participate.
+ * :note: Runs against a throwaway ``postgres:18`` container whose schema and seed rows come
+ *     from the committed Flyway migrations, so the real ``transaction_id_seq`` (created by
+ *     ``V1__create_schema.sql``), the real ``transactions`` primary key and the real
+ *     ``fk_transactions_card`` foreign key added by ``V8__transactions_card_fk.sql`` all
+ *     participate, and Hibernate validates the scanned entities against that schema
+ *     (docs/decision-log.md, section 53.3).
  */
 @SpringBootTest(classes = TransactionServiceApplication.class)
 class TransactionIdGenerationIT {
@@ -57,11 +61,11 @@ class TransactionIdGenerationIT {
     /** Probe bound enforced by the service before it refuses to assign an id. */
     private static final int MAX_TRAN_ID_PROBES = 1000;
 
-    /** Card number seeded for the happy-path add. */
-    private static final String CARD_NUM = "4111111111111111";
+    /** Seeded card number used for the happy-path add (``V3__seed_test_data.sql``). */
+    private static final String CARD_NUM = "0923877193247330";
 
-    /** Account seeded as the parent of {@link #CARD_NUM}. */
-    private static final long ACCT_ID = 91L;
+    /** Seeded account that owns {@link #CARD_NUM} and is cross-referenced to it. */
+    private static final long ACCT_ID = 2L;
 
     private static final PostgreSQLContainer POSTGRES =
             new PostgreSQLContainer(DockerImageName.parse("postgres:18"));
@@ -71,17 +75,20 @@ class TransactionIdGenerationIT {
     }
 
     /**
-     * :purpose: Point the context at the throwaway container and materialize the shared
-     *     business tables from the entities.
+     * :purpose: Point the context at the throwaway container, whose schema and seed data this
+     *     context's OWN Flyway provisions from the committed migration set exactly as a
+     *     deployed service does.
      * :param registry: the dynamic property registry.
+     * :note: ``ddl-auto`` is ``validate``: the entities are checked against the migrated
+     *     schema instead of the schema being generated from the entities, which is what makes
+     *     the sequence, the primary key and the card foreign key under test the REAL ones.
      */
     @DynamicPropertySource
     static void datasourceProperties(DynamicPropertyRegistry registry) {
         registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
         registry.add("spring.datasource.username", POSTGRES::getUsername);
         registry.add("spring.datasource.password", POSTGRES::getPassword);
-        registry.add("spring.jpa.hibernate.ddl-auto", () -> "create");
-        registry.add("spring.flyway.enabled", () -> "false");
+        registry.add("spring.jpa.hibernate.ddl-auto", () -> "validate");
     }
 
     @Autowired
@@ -91,29 +98,37 @@ class TransactionIdGenerationIT {
     private JdbcTemplate jdbcTemplate;
 
     /**
-     * :purpose: Clear the transaction master and seed the customer, account and card
-     *     cross-reference the add request resolves against.
+     * :purpose: Empty the transaction master and rewind the id generator, so each case starts
+     *     from a known draw and the row counts below describe only the rows the case wrote.
+     * :output: ``transactions`` is empty, ``transaction_id_seq`` will next draw 1, and the
+     *     seeded customer, account, card and cross-reference the add request resolves against
+     *     are in place.
+     * :note: Only the transaction master is emptied. The customer, account and card rows come
+     *     from the migration seed and are LEFT INTACT: they are the parents the
+     *     ``fk_cards_account`` / ``fk_card_xref_*`` / ``fk_transactions_card`` constraints
+     *     require, and deleting them would fail against the real schema rather than prove
+     *     anything about id generation.
      */
     @BeforeEach
     void resetDatabase() {
-        // The generator sequence is owned by Flyway migration V4, which is disabled here;
-        // it is recreated with the same definition so the real nextval() draw participates.
-        jdbcTemplate.execute("CREATE SEQUENCE IF NOT EXISTS transaction_id_seq AS BIGINT "
-                + "START WITH 1 INCREMENT BY 1 MINVALUE 1 NO MAXVALUE CACHE 1");
-        jdbcTemplate.queryForObject("SELECT setval('transaction_id_seq', 1, false)", Long.class);
         jdbcTemplate.update("DELETE FROM transactions");
-        jdbcTemplate.update("DELETE FROM card_xref");
-        jdbcTemplate.update("DELETE FROM accounts");
-        jdbcTemplate.update("DELETE FROM customers");
-        jdbcTemplate.update("INSERT INTO customers (cust_id, cust_first_name, cust_last_name, "
-                + "cust_fico_credit_score, version) VALUES (?, 'Test', 'Customer', 700, 0)", ACCT_ID);
-        jdbcTemplate.update("INSERT INTO accounts (acct_id, acct_active_status, acct_curr_bal, "
-                + "acct_credit_limit, acct_cash_credit_limit, acct_open_date, acct_expiraion_date, "
-                + "acct_reissue_date, acct_curr_cyc_credit, acct_curr_cyc_debit, version) "
-                + "VALUES (?, 'Y', 0.00, 99999.00, 0.00, '2020-01-01', '2099-12-31', "
-                + "'2020-01-01', 0.00, 0.00, 0)", ACCT_ID);
-        jdbcTemplate.update("INSERT INTO card_xref (xref_card_num, xref_cust_id, xref_acct_id) "
-                + "VALUES (?, ?, ?)", CARD_NUM, ACCT_ID, ACCT_ID);
+        jdbcTemplate.queryForObject("SELECT setval('transaction_id_seq', 1, false)", Long.class);
+    }
+
+    /**
+     * :purpose: The fixture this class relies on is the migration seed, not test-authored
+     *     rows: the card must exist, belong to {@link #ACCT_ID} and be cross-referenced to it,
+     *     which is what the add request resolves and what ``fk_transactions_card`` enforces.
+     */
+    @Test
+    @DisplayName("the seeded card, account and cross-reference the add resolves against exist")
+    void seededFixtureIsPresent() {
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT card_acct_id FROM cards WHERE card_num = ?", Long.class, CARD_NUM))
+                .isEqualTo(ACCT_ID);
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT xref_acct_id FROM card_xref WHERE xref_card_num = ?", Long.class, CARD_NUM))
+                .isEqualTo(ACCT_ID);
     }
 
     /**

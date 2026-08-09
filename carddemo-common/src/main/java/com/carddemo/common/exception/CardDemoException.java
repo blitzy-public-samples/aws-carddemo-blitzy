@@ -62,4 +62,35 @@ public class CardDemoException extends RuntimeException {
     public String getErrorCode() {
         return errorCode;
     }
+
+    /**
+     * :purpose: Name the request field this failure is about, so the API answer says
+     *  WHICH field was refused and the screen can mark and cursor to that one control
+     *  instead of only restating the message. It is the transport form of the legacy
+     *  ``MOVE -1 TO <field>L`` the screen programs perform beside every edit failure.
+     * :returns: the request-payload property name, or ``null`` when the failure names
+     *  no single field (a whole-submission refusal, or a state conflict).
+     */
+    public String getField() {
+        return field;
+    }
+
+    /**
+     * :purpose: Return this failure named against a request field. The exception type,
+     *  message, code and cause are preserved exactly, so attaching a field can never
+     *  change the status or the line-23 text a screen already publishes.
+     * :param fieldName: the request-payload property name the failure is about.
+     * :returns: a copy of this exception carrying the field name.
+     */
+    public CardDemoException onField(String fieldName) {
+        CardDemoException named = new CardDemoException(errorCode, getMessage(), getCause());
+        named.field = fieldName;
+        named.setStackTrace(getStackTrace());
+        return named;
+    }
+
+    /**
+     * :purpose: Request field this failure is about; ``null`` when it names none.
+     */
+    private String field;
 }

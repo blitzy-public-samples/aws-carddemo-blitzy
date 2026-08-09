@@ -10,8 +10,10 @@
  *   routes on the api-gateway, using the shared axios instance so session,
  *   correlation-id, and error normalization are applied uniformly.
  * :output: The named async functions ``listCards`` (``GET /cards``, 7 rows per
- *   page), ``getCard`` (``GET /cards/{cardNumber}``), and ``updateCard``
- *   (``PUT /cards/{cardNumber}``).
+ *   page), ``getCard`` (``POST /cards/detail``), and ``updateCard``
+ *   (``PUT /cards``). Neither of the latter two puts the card number in the URL:
+ *   a PAN in a path or query string is written verbatim into every access log,
+ *   proxy log and trace along the request path, so the key travels in the body.
  * :note: The 16-digit card number (PAN) is always a ``string``: it exceeds
  *   ``Number.MAX_SAFE_INTEGER`` and preserves leading zeros, so it is never
  *   typed as ``number``. Request/response DTOs are passed through untouched to
@@ -70,36 +72,39 @@ export async function listCards(
 
 /**
  * :purpose: Fetch a single card's read-only detail for the ``CardDetailPage``
- *   screen (CICS ``CCDL`` / ``COCRDSLC``).
- * :param cardNumber: the 16-digit card number (PAN) as a ``string``; encoded as
- *   a path segment.
+ *   screen (CICS ``CCDL`` / ``COCRDSLC``). The read is a POST because its key is
+ *   a Primary Account Number and therefore travels in the request body, never in
+ *   the URL; the operation itself reads and does not modify the card.
+ * :param cardNumber: the 16-digit card number (PAN) as a ``string``; sent in the
+ *   request body.
  * :param accountId: the ``ACCTSID`` the screen collects alongside ``CARDSID``,
  *   completing the composite selection ``COCRDSLC`` requires (``2200-EDIT-MAP-
- *   INPUTS``). Omitted from the query string when ``undefined``.
+ *   INPUTS``). Omitted from the body when ``undefined``.
  * :returns: the card detail as a :ts:type:`CardDetailResponseDto`.
  */
 export async function getCard(
   cardNumber: string,
   accountId?: string,
 ): Promise<CardDetailResponseDto> {
-  const response = await apiClient.get<CardDetailResponseDto>(
-    `/cards/${encodeURIComponent(cardNumber)}`,
-    { params: { accountId } },
-  );
+  const response = await apiClient.post<CardDetailResponseDto>('/cards/detail', {
+    cardNumber,
+    accountId,
+  });
   return response.data;
 }
 
 /**
  * :purpose: Update a card's editable fields for the ``CardUpdatePage`` screen
- *   (CICS ``CCUP`` / ``COCRDUPC``). The target card number travels in the path;
- *   the request body carries only the mutable fields and is forwarded untouched
- *   so the ``cardExpiraionDate`` spelling and single-character status flag are
- *   preserved.
- * :param cardNumber: the 16-digit card number (PAN) as a ``string``; encoded as
- *   a path segment.
+ *   (CICS ``CCUP`` / ``COCRDUPC``). The target card number travels in the body
+ *   alongside the mutable fields -- never in the URL, because a PAN in a path or
+ *   query string is recorded by every log along the way. The mutable fields are
+ *   forwarded untouched so the ``cardExpiraionDate`` spelling and the
+ *   single-character status flag are preserved.
+ * :param cardNumber: the 16-digit card number (PAN) as a ``string``; sent in the
+ *   request body as the record's identifier, never written by the service.
  * :param request: the editable card fields to persist.
  * :param accountId: the ``ACCTSID`` completing the composite selection, as on
- *   :func:`getCard`. Omitted from the query string when ``undefined``.
+ *   :func:`getCard`. Omitted from the body when ``undefined``.
  * :returns: the refreshed card record as a :ts:type:`CardUpdateResponseDto`.
  */
 export async function updateCard(
@@ -107,10 +112,10 @@ export async function updateCard(
   request: CardUpdateRequestDto,
   accountId?: string,
 ): Promise<CardUpdateResponseDto> {
-  const response = await apiClient.put<CardUpdateResponseDto>(
-    `/cards/${encodeURIComponent(cardNumber)}`,
-    request,
-    { params: { accountId } },
-  );
+  const response = await apiClient.put<CardUpdateResponseDto>('/cards', {
+    ...request,
+    cardNumber,
+    accountId,
+  });
   return response.data;
 }

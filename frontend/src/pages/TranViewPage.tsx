@@ -15,7 +15,7 @@
  *     header, the line-23 message region and the line-24 function-key bar from
  *     the chrome this page publishes through ``useScreenChrome``.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useState } from 'react';
 import type { ChangeEvent, ReactElement } from 'react';
 import { useNavigate, useParams } from 'react-router';
 import { useScreenChrome } from '../components/Layout';
@@ -23,7 +23,13 @@ import type { PFKeyDef } from '../components/PFKeyBar';
 import { PfKeyAction, CCDA_TITLE01, CCDA_TITLE02 } from '../types';
 import type { TranViewResponseDto } from '../types';
 import { getTransaction, ApiError } from '../api';
-import { useApi, useFocusOnChange, useFocusOnSettled, useInitialFocus } from '../hooks';
+import {
+  useApi,
+  useFocusOnChange,
+  useFocusOnSettled,
+  useInitialFocus,
+  useScreenAction,
+} from '../hooks';
 import { displayField } from '../components/display';
 import OutputField from '../components/OutputField';
 import { invalidFieldProps } from '../components/ErrorBanner';
@@ -36,6 +42,15 @@ const TRANSACTION_NOT_FOUND_MESSAGE = 'Transaction ID NOT found...';
 
 /** HTTP status the backend returns for a missing transaction record. */
 const HTTP_NOT_FOUND = 404;
+
+/**
+ * :purpose: The decorative separator the mapset draws on line 8 — ``COTRN01.bms`` L94-99
+ *     declares it ``LENGTH=70`` ``COLOR=NEUTRAL`` with seventy dashes as its ``INITIAL``
+ *     value at column 6, so it is screen text of a fixed character width, not a rule whose
+ *     width the layout decides. Rendered as an element whose width the flex column sets, the UA's
+ *     ``hr { margin-inline: auto }`` won over the stretch and it collapsed to a dot.
+ */
+const SEPARATOR_RULE = '-'.repeat(70);
 
 /** Width of the ``TRNIDIN`` entry field and the ``TRNID`` display field. */
 const TRAN_ID_WIDTH = 16;
@@ -130,11 +145,19 @@ export default function TranViewPage(): ReactElement {
     const enteredTranId = searchTranId.trim();
     if (enteredTranId === '') {
       setValidationMessage(EMPTY_TRAN_ID_MESSAGE);
+      // The thirteen display fields are blanked, because the legacy screen shows
+      // nothing here either. COTRN01 declares every one of them ``ATTRB=(ASKIP,NORM)``
+      // with NO FSET, so their modified-data tags are off and ``RECEIVE MAP`` returns
+      // them as LOW-VALUES; this turn moves no value into them (the clearing MOVE and
+      // the read are both guarded by ``IF NOT ERR-FLG-ON``), and ``SEND ... ERASE``
+      // then paints an empty field for each. Keeping the previous transaction's values
+      // on screen beside a fresh error would attribute them to an id nobody entered.
+      reset();
       return;
     }
     setValidationMessage('');
     void run(enteredTranId);
-  }, [searchTranId, run]);
+  }, [searchTranId, run, reset]);
 
   /**
    * :purpose: PF3 — leave for the caller screen. ``COTRN01C`` returns to
@@ -161,12 +184,25 @@ export default function TranViewPage(): ReactElement {
     void navigate(TRAN_LIST_ROUTE);
   }, [navigate]);
 
-  useEffect(() => {
+  // The activators published to the shared frame are identity-stable and always
+  // dispatch to the newest render's handler, so the line-24 legend is not rebuilt on
+  // every keystroke and an AID can never act on a value the screen has replaced.
+  const activateSearch = useScreenAction(handleSearch);
+  const activateExit = useScreenAction(handleExit);
+  const activateClear = useScreenAction(handleClear);
+  const activateBrowse = useScreenAction(handleBrowse);
+
+  // The frame's header, line-23 message region and line-24 key legend belong to the
+  // SAME map as this body, so they are published in a LAYOUT effect: a CICS program
+  // moved every field into the symbolic map before its one SEND, and nothing
+  // half-built ever reached the terminal. A passive effect would paint the frame
+  // once without them and then move it.
+  useLayoutEffect(() => {
     const pfKeys: PFKeyDef[] = [
-      { action: PfKeyAction.Enter, label: ENTER_LABEL, onActivate: handleSearch },
-      { action: PfKeyAction.PF3, label: BACK_LABEL, onActivate: handleExit },
-      { action: PfKeyAction.PF4, label: CLEAR_LABEL, onActivate: handleClear },
-      { action: PfKeyAction.PF5, label: BROWSE_LABEL, onActivate: handleBrowse },
+      { action: PfKeyAction.Enter, label: ENTER_LABEL, onActivate: activateSearch },
+      { action: PfKeyAction.PF3, label: BACK_LABEL, onActivate: activateExit },
+      { action: PfKeyAction.PF4, label: CLEAR_LABEL, onActivate: activateClear },
+      { action: PfKeyAction.PF5, label: BROWSE_LABEL, onActivate: activateBrowse },
     ];
     setChrome({
       transactionId: 'CT01',
@@ -179,18 +215,18 @@ export default function TranViewPage(): ReactElement {
       busy: loading,
     });
   }, [
-    setChrome,
+    activateBrowse,
+    activateClear,
+    activateExit,
+    activateSearch,
     errorMessage,
-    handleBrowse,
-    handleClear,
-    handleSearch,
-    handleExit,
     loading,
+    setChrome,
   ]);
 
   return (
     <div className="tranViewPage">
-      <h2 className="neutral">View Transaction</h2>
+      <h3 className="neutral">View Transaction</h3>
 
       <div className="screenLine">
         <label className="prompt" htmlFor={TRAN_ID_FIELD_NAME}>
@@ -212,7 +248,16 @@ export default function TranViewPage(): ReactElement {
         />
       </div>
 
-      <hr className="neutral" />
+      {/*
+        COTRN01 row 8 paints a 70-character run of hyphens at column 6, NEUTRAL. It is
+        rendered as that literal run rather than as an `hr`: a replaced element carries
+        the user agent's own auto inline margins, which inside this flex column collapse
+        it to a two-pixel dot. The four sibling rule-bearing screens render the same
+        construct through the same shared CSS rule, so no `hr` remains anywhere.
+      */}
+      <p className="neutral tranView__rule" data-testid="tranViewRule" aria-hidden="true">
+        {SEPARATOR_RULE}
+      </p>
 
       <dl className="screenLine">
         <OutputField

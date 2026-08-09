@@ -29,6 +29,7 @@ import org.springframework.batch.infrastructure.item.ItemStreamException;
 import org.springframework.batch.infrastructure.item.ItemStreamWriter;
 import org.springframework.batch.infrastructure.item.file.FlatFileItemWriter;
 import org.springframework.batch.infrastructure.item.file.builder.FlatFileItemWriterBuilder;
+import org.springframework.batch.core.configuration.annotation.StepScope;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.FileSystemResource;
 import org.springframework.stereotype.Component;
@@ -41,11 +42,28 @@ import org.springframework.stereotype.Component;
  *     80-byte validation trailer holding a 4-digit reason code and a 76-character
  *     reason description, exactly reproducing the legacy ``REJECT-RECORD`` layout.
  * :output: A Spring Batch :class:`ItemStreamWriter` that appends one 430-character
- *     line per rejected item to a configurable file resource. The 430-character
- *     payload is byte-exact with the mainframe reject record; the modern sink is
- *     newline-delimited between records.
+ *     line per rejected item to a PER-RUN generation of the configured file resource. The
+ *     430-character payload is byte-exact with the mainframe reject record; the modern sink
+ *     is newline-delimited between records.
+ * :note: ``@StepScope`` because the destination is derived from the job execution. The
+ *     legacy job stream allocated a NEW generation for every run
+ *     (``DSN=AWS.M2.CARDDEMO.DALYREJS(+1)``, ``DISP=(NEW,CATLG,DELETE)``), so a run could
+ *     only ever create or discard ITS OWN generation
+ *     [app/jcl/POSTTRAN.jcl]. Writing one fixed name instead meant a later run destroyed an
+ *     earlier run's deliverable: a failing run's cleanup deleted the previous run's reject
+ *     records outright, and a successful run truncated them - a zero-data-loss violation
+ *     against a downstream file interface, with ``BATCH_JOB_EXECUTION`` still reporting
+ *     COMPLETED for a file that no longer existed.
+ * :note: The delegate saves NO stream state and deletes an existing file of its own
+ *     generation name. Restart therefore works: a restarted execution is a new execution, so
+ *     it opens its own generation and writes the rejects of the records the restart still has
+ *     to process, while the failed execution's generation stays exactly as the legacy abend
+ *     would have left it. With saved state and a shared name, a restart demanded the byte
+ *     offset of a file the cleanup listener had already removed and failed instantly with
+ *     ``File is not writable``, which made restart-after-failure permanently impossible.
  */
 @Component
+@StepScope
 public class RejectFileItemWriter implements ItemStreamWriter<PostingItem> {
 
     /**
@@ -90,35 +108,68 @@ public class RejectFileItemWriter implements ItemStreamWriter<PostingItem> {
      */
     private final FlatFileItemWriter<PostingItem> delegate;
 
+    /** This run's generation of the reject file, resolved once at construction. */
+    private final java.nio.file.Path rejectFile;
+
     /**
      * :purpose: Construct the writer and its :class:`FlatFileItemWriter` delegate
      *     bound to the configured reject-file resource and the fixed-width line
      *     aggregator.
-     * :param rejectFileName: file name of the reject sink, read from the
+     * :param rejectFileName: BASE file name of the reject sink, read from the
      *     ``carddemo.batch.reject-file`` property and defaulting to the legacy
      *     ``DALYREJS`` data-set name ``dalyrejs.txt``; never an absolute path baked
      *     into the code.
+     * :param jobExecutionId: id of the job execution this step belongs to, used as the
+     *     generation number of the file this run writes.
      * :param pathResolver: shared resolver that confines the reject file to the
      *     configured ``carddemo.batch.output-dir`` root, creating the directory so
      *     the delegate can open the file, and rejecting absolute paths, ``..``
      *     traversal and symlink escapes (CWE-22).
      * :note: The name is resolved through the shared batch root rather than opened
-     *     directly; the delegate encodes in ``ISO-8859-1`` and pins the record
-     *     delimiter to a single ``LF``. ``DALYREJS`` is a ``RECFM=F LRECL=430`` data
-     *     set [app/jcl/POSTTRAN.jcl], so its length is a BYTE contract. Rationale for
-     *     all three choices is in docs/decision-log.md, sections 9.5 (shared batch
-     *     output root) and 10.1 (encoding and record delimiter).
+     *     directly, and it is generation-qualified per run
+     *     (``dalyrejs.txt`` -> ``dalyrejs.G0033V00.txt``); the delegate encodes in
+     *     ``ISO-8859-1`` and pins the record delimiter to a single ``LF``. ``DALYREJS`` is a
+     *     ``RECFM=F LRECL=430`` data set [app/jcl/POSTTRAN.jcl], so its length is a BYTE
+     *     contract. Rationale for all of these is in docs/decision-log.md, sections 9.5
+     *     (shared batch output root) and 10.1 (encoding and record delimiter).
      */
     public RejectFileItemWriter(
             @Value("${carddemo.batch.reject-file:dalyrejs.txt}") String rejectFileName,
+            @Value("#{stepExecution.jobExecutionId}") Long jobExecutionId,
             BatchOutputPathResolver pathResolver) {
+        this.rejectFile = pathResolver.resolveOutputGeneration(rejectFileName, jobExecutionId);
         this.delegate = new FlatFileItemWriterBuilder<PostingItem>()
                 .name("rejectFileItemWriter")
-                .resource(new FileSystemResource(pathResolver.resolveOutput(rejectFileName)))
+                .resource(new FileSystemResource(this.rejectFile))
+                // This generation belongs to THIS execution: it is created fresh, and no
+                // byte offset from a previous execution is resumed. Both are what make a
+                // restart of a failed instance succeed instead of demanding a deleted file.
+                .shouldDeleteIfExists(true)
+                .saveState(false)
                 .encoding(StandardCharsets.ISO_8859_1.name())
                 .lineSeparator(RECORD_SEPARATOR)
                 .lineAggregator(this::toFixedWidthLine)
+                // Restart tolerance. A FlatFileItemWriter that saves its state resumes at the
+                // byte offset the previous attempt reached, which requires that file to still
+                // exist at that length -- and the failed attempt's reject generation is
+                // deliberately DELETED by rejectFileCleanupListener, so the restart opened
+                // against a file that was gone and died in open() before reading a record.
+                // The legacy job stream allocated a NEW DALYREJS generation per run rather
+                // than appending to the previous one, so state-free is also the faithful
+                // behaviour: each attempt writes its own complete reject generation from the
+                // beginning, and shouldDeleteIfExists truncates any file left behind.
+                .saveState(false)
+                .shouldDeleteIfExists(true)
                 .build();
+    }
+
+    /**
+     * :purpose: Expose the generation this run writes, so a caller (and the step's cleanup
+     *     listener) can address exactly the file this execution opened.
+     * :returns: the resolved path of this run's reject generation.
+     */
+    public java.nio.file.Path getRejectFile() {
+        return rejectFile;
     }
 
     /**

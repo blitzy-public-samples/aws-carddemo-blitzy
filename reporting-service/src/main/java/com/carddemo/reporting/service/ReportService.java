@@ -319,7 +319,18 @@ public class ReportService {
             LOGGER.info("{} report submitted as {} execution {}", reportName,
                     submitted.jobName(), submitted.jobExecutionId());
             resetInputFields(response);
-            return withMessage(response, reportName + SUBMIT_SUCCESS_SUFFIX);
+            // The execution the submission reported travels back with the response, so a
+            // launched report can be followed from the screen that launched it into the
+            // job's own log and trace records. It is a reference, not screen text.
+            response.setJobExecutionId(
+                    submitted.jobExecutionId() == null
+                            ? null : String.valueOf(submitted.jobExecutionId()));
+            // The acknowledgement is the ONE message this screen sends in green:
+            // ``CORPT00C`` performs `MOVE DFHGREEN TO ERRMSGC` immediately before it,
+            // and on no other branch. It therefore travels on the success channel, so
+            // the client reads the colour from the contract instead of inferring it by
+            // comparing the text against its own copy of the expected wording.
+            return withSuccess(response, reportName + SUBMIT_SUCCESS_SUFFIX);
         }
         if (confirmValue.equals("N") || confirmValue.equals("n")) {
             resetInputFields(response);
@@ -383,13 +394,30 @@ public class ReportService {
     }
 
     /**
-     * :purpose: Set the outcome message on the response and return it.
+     * :purpose: Set the outcome message on the ERROR channel and return the response.
      * :param response: the response being assembled.
      * :param message: the outcome message text, or ``null`` to clear it.
      * :returns: the same response instance.
+     * :note: ``CORPT00`` declares one message field, ``ERRMSG POS=(23,1) COLOR=RED``, and
+     *  every branch except the submission acknowledgement sends it in that declared red.
      */
     private static ReportResponseDto withMessage(ReportResponseDto response, String message) {
         response.setErrorMessage(message);
+        response.setMessage(null);
+        return response;
+    }
+
+    /**
+     * :purpose: Set the outcome message on the SUCCESS channel and return the response,
+     *  reproducing the ``MOVE DFHGREEN TO ERRMSGC`` that precedes the submission
+     *  acknowledgement in ``CORPT00C``.
+     * :param response: the response being assembled.
+     * :param message: the acknowledgement text.
+     * :returns: the same response instance.
+     */
+    private static ReportResponseDto withSuccess(ReportResponseDto response, String message) {
+        response.setMessage(message);
+        response.setErrorMessage(null);
         return response;
     }
 

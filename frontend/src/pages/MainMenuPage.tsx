@@ -15,17 +15,35 @@
  *     line-23 message banner, and the line-24 PF-key bar from the chrome this
  *     page publishes through :func:`useScreenChrome`.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useState, useRef } from 'react';
 import type { ReactElement } from 'react';
-import { useNavigate } from 'react-router';
+import { useLocation, useNavigate } from 'react-router';
 import { useScreenChrome } from '../components/Layout';
 import { invalidFieldProps } from '../components/ErrorBanner';
 import type { PFKeyDef } from '../components/PFKeyBar';
 import { PfKeyAction, CCDA_TITLE01, CCDA_TITLE02, SCREEN_NAMES } from '../types';
 import type { MenuOption, MenuResponseDto } from '../types';
 import { getMainMenu, selectMenuOption } from '../api';
-import { useApi, useInitialFocus, useFocusOnChange, useSession } from '../hooks';
-import { resolveApiErrorMessage } from '../components/display';
+import {
+  placeCursor,
+  useApi,
+  useInitialFocus,
+  useFocusOnChange,
+  useScreenAction,
+  useSession,
+} from '../hooks';
+import {
+  displayZoned,
+  guardScreenMessage,
+  isRejectedValue,
+  resolveApiErrorMessage,
+} from '../components/display';
+import { limitToFieldWidth } from './screenFilters';
+import {
+  CDEMO_MENU_OPT_COUNT,
+  MSG_INVALID_OPTION,
+  isOptionRefused,
+} from './menuOptionEdit';
 import { resolveProgramRoute } from './programRoutes';
 
 /** CICS transaction id of this screen (``COMEN01C`` ``WS-TRANID``). */
@@ -52,8 +70,17 @@ const OPTION_PROMPT = 'Please select an option :';
 /** Width of the ``OPTION`` entry field (``OPTIONI PIC X(2)``). */
 const OPTION_MAX_LENGTH = 2;
 
+/**
+ * Digits of the option number as ``COMEN02Y`` declares it: ``CDEMO-MENU-OPT-NUM PIC
+ * 9(02)``. ``COMEN01C`` L243-L246 strings the field ``DELIMITED BY SIZE``, so all ten
+ * rows carry two digits and every option name begins in the same column.
+ */
+const MENU_OPT_NUM_DIGITS = 2;
+
 /** DOM id tying the row-20 prompt to the ``OPTION`` entry field. */
 const OPTION_FIELD_ID = 'option';
+
+
 
 /**
  * :purpose: The option lines the screen can display, capped at the number of BMS
@@ -69,15 +96,19 @@ function visibleMenuOptions(menu: MenuResponseDto | null): MenuOption[] {
 }
 
 /**
- * :purpose: Keep only the characters the ``OPTION`` field accepts and clamp the entry
- *     to its two positions. The mapset declares ``ATTRB=(FSET,IC,NORM,NUM,UNPROT)``
- *     with ``LENGTH=2``, and a 3270 ``NUM`` field admits digits only, so the same
- *     restriction is applied at the point of entry.
+ * :purpose: Clamp the entry to the two positions the ``OPTION`` field physically has
+ *     (``LENGTH=2``), and nothing more. Discarding the characters a 3270 ``NUM`` field
+ *     would have refused looks equivalent but is not: it rewrites what the operator
+ *     entered into a DIFFERENT, valid option and dispatches that. ``-1`` became ``1``
+ *     and opened Account View. ``COMEN01C`` keeps the value as received and tests it
+ *     with ``IF WS-OPTION IS NOT NUMERIC`` -- a test that would be dead code if the
+ *     field could only ever hold digits -- so the value is carried through unaltered
+ *     and the edit refuses it.
  * :param value: the raw value typed into the field.
- * :returns: the digits-only value, at most two characters long.
+ * :returns: the value, at most two characters long.
  */
 function sanitizeOption(value: string): string {
-  return value.replace(/\D/g, '').slice(0, OPTION_MAX_LENGTH);
+  return limitToFieldWidth(value, OPTION_MAX_LENGTH);
 }
 
 /**
@@ -100,8 +131,14 @@ export default function MainMenuPage(): ReactElement {
     error: selectError,
     run: runSelect,
   } = useApi(selectMenuOption);
+  const location = useLocation();
   const [option, setOption] = useState('');
-  const [validationMessage, setValidationMessage] = useState('');
+  // ``COMEN01C`` publishes its own refusal literal on line 23 when a standard user
+  // reaches an administrator-only option; the route guard hands the same literal over
+  // in the navigation state, so the menu opens with it rather than in silence.
+  const [validationMessage, setValidationMessage] = useState(() =>
+    guardScreenMessage(location.state),
+  );
 
   // BMS ``IC`` on the OPTION field: the cursor is placed there when the map is
   // sent, so the field takes focus on entry.
@@ -128,12 +165,26 @@ export default function MainMenuPage(): ReactElement {
     errorMessage = resolveApiErrorMessage(error);
   }
 
-  // A refused or rejected selection returns the cursor to the OPTION field, which
-  // is the ``MOVE -1 TO OPTIONL`` the legacy program performs with its message.
-  // ``COMEN01C`` rejects the entered option; a transport failure faults nothing.
-  const faultedOption = validationMessage !== '';
+  /*
+   * The option field is faulted whenever the option itself was refused: by this screen's
+   * own edit, or by the server rejecting the value it was sent (``400``). A transport or
+   * server failure faults no field, because nothing was found wrong with what was typed.
+   */
+  const faultedOption =
+    validationMessage !== '' || isRejectedValue(selectError);
 
-  useFocusOnChange(errorMessage === '' ? null : errorMessage, optionRef);
+  // The third argument is the keyboard-locked interval: an outcome published while the
+  // entry field is still disabled must place the cursor once the field is live again, and
+  // a second identical refusal must place it a second time, because every re-send of the
+  // map re-applies the ``IC`` attribute the mapset puts on this field.
+  useFocusOnChange(errorMessage === '' ? null : errorMessage, optionRef, !busy);
+
+  /**
+   * :purpose: Keyboard-lock latch: ``true`` from the instant a selection is dispatched
+   *     until its answer has been applied, so a repeated activation in the same task
+   *     cannot send the option twice.
+   */
+  const submitLatch = useRef<boolean>(false);
 
   /**
    * :purpose: Handle ENTER — submit the entered option to the gateway's selection
@@ -143,25 +194,42 @@ export default function MainMenuPage(): ReactElement {
    *     resolves the dispatched program to its own route.
    */
   const handleSubmit = useCallback(async (): Promise<void> => {
-    if (selecting) {
+    // A 3270 keyboard was locked from the instant an AID was sent until the program
+    // replied, so one selection could never be sent twice. The latch is a ref rather
+    // than the `selecting` state because two activations in one task both read the
+    // state as it was before either of them, and both would be admitted.
+    if (submitLatch.current) {
       return;
     }
+    submitLatch.current = true;
     setValidationMessage('');
-    const outcome = await runSelect({ option, aid: 'ENTER' });
-    if (outcome === undefined) {
-      return;
+    try {
+      // ``PROCESS-ENTER-KEY`` runs the option edits before it reaches its ``XCTL``, so a
+      // refused entry never leaves the screen: the map is re-sent with the refusal on
+      // line 23 and the cursor back on the option field, and no other program is entered.
+      if (isOptionRefused(option, CDEMO_MENU_OPT_COUNT)) {
+        setValidationMessage(MSG_INVALID_OPTION);
+        placeCursor(optionRef.current);
+        return;
+      }
+      const outcome = await runSelect({ option, aid: 'ENTER' });
+      if (outcome === undefined) {
+        return;
+      }
+      if (!outcome.dispatched) {
+        setValidationMessage(outcome.message ?? '');
+        return;
+      }
+      const route = resolveProgramRoute(outcome.programName);
+      if (route === null) {
+        setValidationMessage(outcome.message ?? '');
+        return;
+      }
+      void navigate(route);
+    } finally {
+      submitLatch.current = false;
     }
-    if (!outcome.dispatched) {
-      setValidationMessage(outcome.message ?? '');
-      return;
-    }
-    const route = resolveProgramRoute(outcome.programName);
-    if (route === null) {
-      setValidationMessage(outcome.message ?? '');
-      return;
-    }
-    void navigate(route);
-  }, [navigate, option, runSelect, selecting]);
+  }, [navigate, option, optionRef, runSelect]);
 
   /**
    * :purpose: Handle PF3 — revoke the server session, then return to the sign-on
@@ -181,23 +249,34 @@ export default function MainMenuPage(): ReactElement {
     void navigate(SIGNON_ROUTE);
   }, [navigate, signOut]);
 
+  // The published activators are identity-stable and always dispatch to the newest
+  // render's handler, so the legend is not rebuilt on every keystroke and an AID can
+  // never act on an option the screen has already replaced.
+  const activateSubmit = useScreenAction((): void => {
+    void handleSubmit();
+  });
+  const activateExit = useScreenAction((): void => {
+    void handleExit();
+  });
+
   // ``pfKeys`` is built inside the effect and must stay out of its dependency
-  // list; the effect re-runs only when a handler or the message changes.
-  useEffect(() => {
+  // list; the effect re-runs only when a handler, the message or the busy state changes.
+  // The frame's header, line-23 message region and line-24 key legend belong to the
+  // SAME map as this body, so they are published in a LAYOUT effect: a CICS program
+  // moved every field into the symbolic map before its one SEND, and nothing
+  // half-built ever reached the terminal. A passive effect would paint the frame
+  // once without them and then move it.
+  useLayoutEffect(() => {
     const pfKeys: PFKeyDef[] = [
       {
         action: PfKeyAction.Enter,
         label: 'ENTER=Continue',
-        onActivate: () => {
-          void handleSubmit();
-        },
+        onActivate: activateSubmit,
       },
       {
         action: PfKeyAction.PF3,
         label: 'F3=Exit',
-        onActivate: () => {
-          void handleExit();
-        },
+        onActivate: activateExit,
       },
     ];
     setChrome({
@@ -210,15 +289,16 @@ export default function MainMenuPage(): ReactElement {
       pfKeys,
       busy,
     });
-  }, [busy, errorMessage, handleExit, handleSubmit, setChrome]);
+  }, [activateExit, activateSubmit, busy, errorMessage, setChrome]);
 
   return (
     <>
-      <h2 className="neutral">{SCREEN_NAME}</h2>
+      <h3 className="neutral">{SCREEN_NAME}</h3>
       <div role="list">
         {options.map((menuOption) => (
           <div className="label" role="listitem" key={menuOption.optionNumber}>
-            {menuOption.optionNumber}. {menuOption.optionName}
+            {displayZoned(menuOption.optionNumber, MENU_OPT_NUM_DIGITS)}.{' '}
+            {menuOption.optionName}
           </div>
         ))}
       </div>

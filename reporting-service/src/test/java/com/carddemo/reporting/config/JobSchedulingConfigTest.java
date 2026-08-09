@@ -20,6 +20,8 @@ import com.carddemo.common.exception.CardDemoException;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -40,6 +42,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
@@ -64,14 +67,23 @@ class JobSchedulingConfigTest {
     @Mock
     private Job statementGenerationJob;
 
+    /** Writable batch output root the launcher validates output names against. */
+    @org.junit.jupiter.api.io.TempDir
+    private java.nio.file.Path tempDir;
+
     /**
      * :purpose: Construct the system under test over the mocked operator and job with
      *   the configured default ``STMTFILE``/``HTMLFILE`` output names.
      * :returns: the configured {@link JobSchedulingConfig}.
      */
     private JobSchedulingConfig newConfig() {
+        // A real resolver over a temp root: the launcher now VALIDATES both output names
+        // against the batch output root before submitting, so a stub would not exercise the
+        // path the production code takes.
         return new JobSchedulingConfig(jobOperator, statementGenerationJob,
-                "statements.txt", "statements.html");
+                "statements.txt", "statements.html",
+                new com.carddemo.common.batch.BatchOutputPathResolver(
+                        tempDir.toString(), tempDir.toString()));
     }
 
     /**
@@ -187,5 +199,84 @@ class JobSchedulingConfigTest {
         assertThat(submissions).hasSize(2);
         assertThat(submissions.get(0).getString("run.id"))
                 .isNotEqualTo(submissions.get(1).getString("run.id"));
+    }
+
+    /**
+     * :purpose: Verify an output file name that does not resolve inside the configured
+     *   batch output root is refused SYNCHRONOUSLY, as a domain refusal, and that the
+     *   operator is never reached — so no job instance and no ``BATCH_JOB_EXECUTION`` row
+     *   is created for a run that could never have produced a statement.
+     * :param hostileName: an output name that escapes the root or is otherwise unusable.
+     * :note: The containment rule was already enforced, but only later, inside the
+     *   step-scoped writer factory. The caller therefore received ``202 ACCEPTED`` and the
+     *   run then failed with a ``BeanCreationException`` whose stack trace was persisted
+     *   into ``BATCH_JOB_EXECUTION.exit_message``.
+     */
+    @ParameterizedTest
+    @ValueSource(strings = {
+        "../../../../etc/passwd",
+        "../outside.txt",
+        "/etc/passwd",
+        "sub/../../escape.txt"})
+    void launchStatementGenerationRefusesAnUnusableStatementFile(String hostileName) {
+        JobSchedulingConfig config = newConfig();
+
+        assertThatThrownBy(() -> config.launchStatementGeneration(hostileName, "statements.html"))
+                .isInstanceOf(CardDemoException.class);
+
+        verifyNoInteractions(jobOperator);
+    }
+
+    /**
+     * :purpose: Verify the HTML output name is gated by the same rule as the plain-text
+     *   name, so neither of the two ``CREASTMT`` DD names can escape the output root.
+     */
+    @Test
+    void launchStatementGenerationRefusesAnUnusableHtmlFile() {
+        JobSchedulingConfig config = newConfig();
+
+        assertThatThrownBy(() ->
+                config.launchStatementGeneration("statements.txt", "../../../../etc/passwd"))
+                .isInstanceOf(CardDemoException.class);
+
+        verifyNoInteractions(jobOperator);
+    }
+
+    /**
+     * :purpose: Verify the refusal reads as an operator-facing message naming the rejected
+     *   value, and carries none of the Spring plumbing that previously reached the caller
+     *   and the batch audit record.
+     */
+    @Test
+    void refusalCarriesNoFrameworkPlumbing() {
+        JobSchedulingConfig config = newConfig();
+
+        assertThatThrownBy(() ->
+                config.launchStatementGeneration("../../../../etc/passwd", "statements.html"))
+                .isInstanceOf(CardDemoException.class)
+                .hasMessageNotContaining("BeanCreationException")
+                .hasMessageNotContaining("scopedTarget")
+                .hasMessageNotContaining("org.springframework")
+                .hasMessageNotContaining(JobSchedulingConfig.SUBMIT_FAILURE_MESSAGE);
+    }
+
+    /**
+     * :purpose: Verify a plain name inside the output root is still accepted, so the new
+     *   synchronous gate refuses only what the writer factory would have refused later.
+     * :raises Exception: propagated from the mocked launcher signature.
+     */
+    @Test
+    void launchStatementGenerationAcceptsNamesInsideTheOutputRoot() throws Exception {
+        JobExecution execution = completedExecution();
+        when(jobOperator.start(eq(statementGenerationJob), any(JobParameters.class)))
+                .thenReturn(execution);
+        JobSchedulingConfig config = newConfig();
+
+        config.launchStatementGeneration("cycle-2026-09.txt", "cycle-2026-09.html");
+
+        ArgumentCaptor<JobParameters> captor = ArgumentCaptor.forClass(JobParameters.class);
+        verify(jobOperator).start(eq(statementGenerationJob), captor.capture());
+        assertThat(captor.getValue().getString("stmtFile")).isEqualTo("cycle-2026-09.txt");
+        assertThat(captor.getValue().getString("htmlFile")).isEqualTo("cycle-2026-09.html");
     }
 }

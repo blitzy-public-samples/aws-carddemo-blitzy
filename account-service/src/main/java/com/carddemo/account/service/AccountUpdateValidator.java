@@ -16,14 +16,18 @@
 package com.carddemo.account.service;
 
 import com.carddemo.common.constant.LookupCodes;
+import com.carddemo.common.domain.Customer;
 import com.carddemo.common.dto.AccountUpdateRequestDto;
 import com.carddemo.common.exception.CardDemoException;
+import com.carddemo.common.exception.FieldValidationException;
 import com.carddemo.common.util.DateUtil;
 import com.carddemo.common.crypto.PiiMasker;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
+import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 /**
  * :purpose: Reproduce the field-level input edits of the legacy account-update program
@@ -65,8 +69,6 @@ public class AccountUpdateValidator {
     public static final String MSG_NAME_ALPHA = "Name can only contain alphabets and spaces";
 
     /** ``ACCT-STATUS-MUST-BE-YES-NO`` (L504). */
-    public static final String MSG_STATUS_YN = "Account Active Status must be Y or N";
-
     /** ``CRED-LIMIT-IS-BLANK`` (L506). */
     public static final String MSG_CREDIT_LIMIT_BLANK = "Credit Limit must be supplied";
 
@@ -85,7 +87,7 @@ public class AccountUpdateValidator {
     private static final String SUFFIX_MUST_BE_SUPPLIED = " must be supplied.";
 
     /** ``1220-EDIT-YESNO`` suffix. */
-    private static final String SUFFIX_MUST_BE_YES_NO = " must be Y or N.";
+    public static final String SUFFIX_MUST_BE_YES_NO = " must be Y or N.";
 
     /** ``1225-EDIT-ALPHA-REQD`` / ``1235-EDIT-ALPHA-OPT`` suffix. */
     private static final String SUFFIX_ALPHABETS_ONLY = " can have alphabets only.";
@@ -160,6 +162,75 @@ public class AccountUpdateValidator {
     /** ``app/cpy/CSUTLDPY.cpy`` day edit suffix. */
     private static final String SUFFIX_DAY_RANGE = ":day must be a number between 1 and 31.";
 
+
+    /**
+     * :purpose: Complete the ``1265-EDIT-US-SSN`` and ``1245-EDIT-NUM-REQD`` numeric edits for
+     *     the two identifiers the view masks. {@link #validate} runs before the record is
+     *     read and so cannot tell an echoed mask ("nothing was typed here") from a value the
+     *     operator edited THROUGH the mask ("****-**-1234"), which is not numeric and which
+     *     the legacy program — displaying the identifiers in full — would have refused. This
+     *     edit closes that gap once the stored values are available: only the stored value's
+     *     own mask is accepted as an echo.
+     * :param request: the submitted request.
+     * :param customer: the stored customer master record whose identifiers were masked.
+     * :raises FieldValidationException: when a mask-bearing value is not the stored mask.
+     */
+    public void validateMaskedIdentifiers(AccountUpdateRequestDto request, Customer customer) {
+        if (request == null || customer == null) {
+            return;
+        }
+        String ssn = request.getCustSsn();
+        if (PiiMasker.isMaskShaped(ssn) && !PiiMasker.isMaskOf(ssn, customer.getCustSsn())) {
+            throw new FieldValidationException(FIELD_CUST_SSN, SSN_PART1_LABEL + SUFFIX_ALL_NUMERIC);
+        }
+        String eft = request.getCustEftAccountId();
+        if (PiiMasker.isMaskShaped(eft)
+                && !PiiMasker.isMaskOf(eft, customer.getCustEftAccountId())) {
+            throw new FieldValidationException(FIELD_CUST_EFT_ACCOUNT_ID,
+                    VAR_EFT_ACCOUNT_ID + SUFFIX_ALL_NUMERIC);
+        }
+    }
+
+    /**
+     * :purpose: Run one edit and, if it fails, name the request property it refused. The
+     *  legacy paragraphs each end their failure branch with ``MOVE -1 TO <field>L``, which is
+     *  how a 3270 both highlighted the offending field and put the cursor in it; naming the
+     *  property carries that same information to a screen that has no map to move a cursor
+     *  on. The message, the exception type and the status are untouched, so an edit reports
+     *  exactly what it reported before.
+     * :param property: the request-payload property the edit covers.
+     * :param edit: the edit to run.
+     * :raises CardDemoException: the failure the edit raised, named against ``property``.
+     */
+    private void edit(String property, Runnable edit) {
+        editFields(List.of(property), edit);
+    }
+
+    /**
+     * :purpose: Run a cross-field edit and, when it fails, re-report the failure against every
+     *     member the legacy program flags for it, cursor field first.
+     * :param fields: the request-body members the edit covers, cursor field first.
+     * :param edits: the edits to run.
+     * :raises FieldValidationException: carrying the failing message and ``fields``.
+     */
+    private void editFields(List<String> fields, Runnable edits) {
+        try {
+            edits.run();
+        } catch (FieldValidationException alreadyIdentified) {
+            throw alreadyIdentified;
+        } catch (CardDemoException failure) {
+            throw new FieldValidationException(failure.getErrorCode(), fields, failure.getMessage());
+        }
+    }
+
+    /**
+     * :purpose: ``EDIT-DATE-OF-BIRTH`` failure literal, composed by the legacy ``STRING`` statement
+     *     from the trimmed variable name and ``':cannot be in the future '``
+     *     (``app/cpy/CSUTLDPY.cpy``). The leading colon and the trailing space are part of the
+     *     literal and are preserved verbatim.
+     */
+    private static final String SUFFIX_CANNOT_BE_FUTURE = ":cannot be in the future ";
+
     /**
      * :purpose: Composed suffix reporting that a value is longer than the fixed-width field it
      *     is written into. The 3270 map bounded every field physically, so the legacy program
@@ -198,11 +269,46 @@ public class AccountUpdateValidator {
     private static final String VAR_PHONE_NUMBER_2 = "Phone Number 2";
     private static final String VAR_EFT_ACCOUNT_ID = "EFT Account Id";
     private static final String VAR_PRIMARY_CARD_HOLDER = "Primary Card Holder";
-    private static final String VAR_ACCOUNT_STATUS = "Account Status";
+    public static final String VAR_ACCOUNT_STATUS = "Account Status";
     private static final String VAR_ACCOUNT_GROUP = "Account Group";
     private static final String VAR_LAST_NAME = "Last Name";
     private static final String VAR_ADDRESS_LINE_2 = "Address Line 2";
     private static final String VAR_GOVT_ISSUED_ID = "Govt Issued Id";
+
+    // -- AccountUpdateRequestDto member names reported as the faulted field. --------
+    //
+    // A rejected edit names the REQUEST member it covers, not a 3270 field: the screen
+    // splits the dates, the SSN and the phone numbers across several entry fields and owns
+    // that mapping. Every value below matches the corresponding
+    // ``AccountUpdateRequestDto`` property exactly.
+
+    private static final String FIELD_ACCT_ACTIVE_STATUS = "acctActiveStatus";
+    private static final String FIELD_ACCT_OPEN_DATE = "acctOpenDate";
+    private static final String FIELD_ACCT_CREDIT_LIMIT = "acctCreditLimit";
+    private static final String FIELD_ACCT_EXPIRAION_DATE = "acctExpiraionDate";
+    private static final String FIELD_ACCT_CASH_CREDIT_LIMIT = "acctCashCreditLimit";
+    private static final String FIELD_ACCT_REISSUE_DATE = "acctReissueDate";
+    private static final String FIELD_ACCT_CURR_BAL = "acctCurrBal";
+    private static final String FIELD_ACCT_CURR_CYC_CREDIT = "acctCurrCycCredit";
+    private static final String FIELD_ACCT_CURR_CYC_DEBIT = "acctCurrCycDebit";
+    private static final String FIELD_ACCT_GROUP_ID = "acctGroupId";
+    private static final String FIELD_CUST_SSN = "custSsn";
+    private static final String FIELD_CUST_DOB = "custDobYyyyMmDd";
+    private static final String FIELD_CUST_FICO_SCORE = "custFicoCreditScore";
+    private static final String FIELD_CUST_FIRST_NAME = "custFirstName";
+    private static final String FIELD_CUST_MIDDLE_NAME = "custMiddleName";
+    private static final String FIELD_CUST_LAST_NAME = "custLastName";
+    private static final String FIELD_CUST_ADDR_LINE_1 = "custAddrLine1";
+    private static final String FIELD_CUST_ADDR_LINE_2 = "custAddrLine2";
+    private static final String FIELD_CUST_ADDR_LINE_3 = "custAddrLine3";
+    private static final String FIELD_CUST_ADDR_STATE_CD = "custAddrStateCd";
+    private static final String FIELD_CUST_ADDR_ZIP = "custAddrZip";
+    private static final String FIELD_CUST_ADDR_COUNTRY_CD = "custAddrCountryCd";
+    private static final String FIELD_CUST_PHONE_NUM_1 = "custPhoneNum1";
+    private static final String FIELD_CUST_PHONE_NUM_2 = "custPhoneNum2";
+    private static final String FIELD_CUST_EFT_ACCOUNT_ID = "custEftAccountId";
+    private static final String FIELD_CUST_GOVT_ISSUED_ID = "custGovtIssuedId";
+    private static final String FIELD_CUST_PRI_CARD_HOLDER = "custPriCardHolderInd";
 
     /** :purpose: Lowest FICO score the legacy range check accepts. */
     private static final int FICO_MIN = 300;
@@ -230,6 +336,13 @@ public class AccountUpdateValidator {
 
     /** :purpose: Monetary scale of every ``S9(09)V99`` COMP-3 amount. */
     private static final int MONEY_SCALE = 2;
+
+    /**
+     * :purpose: Integer-digit capacity of every account amount, from ``PIC S9(10)V99``
+     *     [app/cpy/CVACT01Y.cpy:L7-L14] and its ``NUMERIC(12,2)`` column: 12 total digits less the
+     *     2 fractional ones. The largest representable amount is ``9999999999.99``.
+     */
+    private static final int MONEY_INTEGER_DIGITS = 10;
 
     /** :purpose: Earliest card expiry year the legacy year edit accepts. */
     private static final int EXPIRY_YEAR_MIN = 1950;
@@ -270,107 +383,137 @@ public class AccountUpdateValidator {
         // Record-layout widths (app/cpy/CVACT01Y.cpy, app/cpy/CVCUS01Y.cpy). Each width edit
         // sits at its field's position in the PERFORM order, so the message a submission with
         // several faults reports is still the one the legacy screen would have shown.
-        requireMaxLength(request.getAcctActiveStatus(), VAR_ACCOUNT_STATUS, ACCT_STATUS_WIDTH);
+        edit(FIELD_ACCT_ACTIVE_STATUS, () ->
+                requireMaxLength(request.getAcctActiveStatus(), VAR_ACCOUNT_STATUS, ACCT_STATUS_WIDTH));
 
-        // 1220-EDIT-YESNO on 'Account Status'.
-        requireYesNo(request.getAcctActiveStatus(), MSG_STATUS_YN);
+        // 1220-EDIT-YESNO on 'Account Status'. The paragraph composes both of its messages
+        // from WS-EDIT-VARIABLE-NAME, which L1472-1475 sets to 'Account Status' before
+        // performing it for this field. The 88-level ACCT-STATUS-MUST-BE-YES-NO at L503-504
+        // carries the wording 'Account Active Status must be Y or N' but is never SET
+        // anywhere in the program, so it is unreachable and the composed form is what a
+        // terminal displays.
+        edit(FIELD_ACCT_ACTIVE_STATUS, () -> requireYesNo(request.getAcctActiveStatus(), VAR_ACCOUNT_STATUS));
 
         // EDIT-DATE-CCYYMMDD on 'Open Date'.
-        requireValidDate(request.getAcctOpenDate(), VAR_OPEN_DATE);
+        edit(FIELD_ACCT_OPEN_DATE, () -> requireValidDate(request.getAcctOpenDate(), VAR_OPEN_DATE));
 
         // 1250-EDIT-SIGNED-9V2 on 'Credit Limit' — the only amount with its own
         // dedicated 88-level messages.
-        requireAmount(request.getAcctCreditLimit(), MSG_CREDIT_LIMIT_BLANK, MSG_CREDIT_LIMIT_INVALID);
+        edit(FIELD_ACCT_CREDIT_LIMIT, () ->
+                requireAmount(request.getAcctCreditLimit(),
+                        MSG_CREDIT_LIMIT_BLANK, MSG_CREDIT_LIMIT_INVALID));
 
         // EDIT-DATE-CCYYMMDD on 'Expiry Date'; the month and year failures carry the
         // account program's own dedicated literals.
-        requireValidExpiryDate(request.getAcctExpiraionDate());
+        edit(FIELD_ACCT_EXPIRAION_DATE, () -> requireValidExpiryDate(request.getAcctExpiraionDate()));
 
         // 1250-EDIT-SIGNED-9V2 on the remaining amounts, in COBOL order.
-        requireAmount(request.getAcctCashCreditLimit(),
-                VAR_CASH_CREDIT_LIMIT + SUFFIX_MUST_BE_SUPPLIED, VAR_CASH_CREDIT_LIMIT + SUFFIX_NOT_VALID);
+        edit(FIELD_ACCT_CASH_CREDIT_LIMIT, () -> requireAmount(request.getAcctCashCreditLimit(),
+                VAR_CASH_CREDIT_LIMIT + SUFFIX_MUST_BE_SUPPLIED, VAR_CASH_CREDIT_LIMIT + SUFFIX_NOT_VALID));
 
         // EDIT-DATE-CCYYMMDD on 'Reissue Date'.
-        requireValidDate(request.getAcctReissueDate(), VAR_REISSUE_DATE);
+        edit(FIELD_ACCT_REISSUE_DATE, () -> requireValidDate(request.getAcctReissueDate(), VAR_REISSUE_DATE));
 
-        requireAmount(request.getAcctCurrBal(),
-                VAR_CURRENT_BALANCE + SUFFIX_MUST_BE_SUPPLIED, VAR_CURRENT_BALANCE + SUFFIX_NOT_VALID);
-        requireAmount(request.getAcctCurrCycCredit(),
-                VAR_CURR_CYC_CREDIT + SUFFIX_MUST_BE_SUPPLIED, VAR_CURR_CYC_CREDIT + SUFFIX_NOT_VALID);
-        requireAmount(request.getAcctCurrCycDebit(),
-                VAR_CURR_CYC_DEBIT + SUFFIX_MUST_BE_SUPPLIED, VAR_CURR_CYC_DEBIT + SUFFIX_NOT_VALID);
+        edit(FIELD_ACCT_CURR_BAL, () -> requireAmount(request.getAcctCurrBal(),
+                VAR_CURRENT_BALANCE + SUFFIX_MUST_BE_SUPPLIED, VAR_CURRENT_BALANCE + SUFFIX_NOT_VALID));
+        edit(FIELD_ACCT_CURR_CYC_CREDIT, () -> requireAmount(request.getAcctCurrCycCredit(),
+                VAR_CURR_CYC_CREDIT + SUFFIX_MUST_BE_SUPPLIED, VAR_CURR_CYC_CREDIT + SUFFIX_NOT_VALID));
+        edit(FIELD_ACCT_CURR_CYC_DEBIT, () -> requireAmount(request.getAcctCurrCycDebit(),
+                VAR_CURR_CYC_DEBIT + SUFFIX_MUST_BE_SUPPLIED, VAR_CURR_CYC_DEBIT + SUFFIX_NOT_VALID));
 
         // 'Account Group' has no legacy edit of its own -- COACTUPC displays it and rewrites it
         // unchecked -- so its declared X(10) width is the only constraint that applies.
-        requireMaxLength(request.getAcctGroupId(), VAR_ACCOUNT_GROUP, ACCT_GROUP_ID_WIDTH);
+        edit(FIELD_ACCT_GROUP_ID, () ->
+                requireMaxLength(request.getAcctGroupId(), VAR_ACCOUNT_GROUP, ACCT_GROUP_ID_WIDTH));
 
         // 1265-EDIT-US-SSN: the screen carries three separate SSN fields, each edited by
         // 1245-EDIT-NUM-REQD over its own fixed width, with the range check applied only to
         // part 1 and only when part 1 already passed.
-        requireSsn(request.getCustSsn());
+        edit(FIELD_CUST_SSN, () -> requireSsn(request.getCustSsn()));
 
-        // EDIT-DATE-CCYYMMDD plus EDIT-DATE-OF-BIRTH on 'Date of Birth'.
-        requireValidDate(request.getCustDobYyyyMmDd(), VAR_DATE_OF_BIRTH);
+        // EDIT-DATE-CCYYMMDD plus EDIT-DATE-OF-BIRTH on 'Date of Birth'. Both edits, in this
+        // order: COACTUPC runs the calendar edit first and performs the reasonableness edit only
+        // when the date already parsed [app/cbl/COACTUPC.cbl:L1533-L1541], so an unparseable value
+        // reports its own calendar message rather than the future-date one. Both are reported
+        // against the same screen field so the caller can position the cursor on it.
+        edit(FIELD_CUST_DOB, () -> requireValidDate(request.getCustDobYyyyMmDd(), VAR_DATE_OF_BIRTH));
+        edit(FIELD_CUST_DOB, () -> requireDateOfBirthNotInFuture(request.getCustDobYyyyMmDd()));
 
         // 1245-EDIT-NUM-REQD plus 1275-EDIT-FICO-SCORE on 'FICO Score'.
-        requireFicoScore(request.getCustFicoCreditScore());
+        edit(FIELD_CUST_FICO_SCORE, () -> requireFicoScore(request.getCustFicoCreditScore()));
 
         // 1225-EDIT-ALPHA-REQD / 1235-EDIT-ALPHA-OPT on the names. The dedicated
         // 88-level literals win over the generic composed forms here.
-        requireAlpha(request.getCustFirstName(), VAR_FIRST_NAME + SUFFIX_MUST_BE_SUPPLIED, MSG_NAME_ALPHA);
-        requireMaxLength(request.getCustFirstName(), VAR_FIRST_NAME, NAME_WIDTH);
-        requireOptionalAlpha(request.getCustMiddleName(), VAR_MIDDLE_NAME + SUFFIX_ALPHABETS_ONLY);
-        requireMaxLength(request.getCustMiddleName(), VAR_MIDDLE_NAME, NAME_WIDTH);
-        requireAlpha(request.getCustLastName(), MSG_LASTNAME_NOT_PROVIDED, MSG_NAME_ALPHA);
-        requireMaxLength(request.getCustLastName(), VAR_LAST_NAME, NAME_WIDTH);
+        edit(FIELD_CUST_FIRST_NAME, () ->
+                requireAlpha(request.getCustFirstName(),
+                        VAR_FIRST_NAME + SUFFIX_MUST_BE_SUPPLIED, MSG_NAME_ALPHA));
+        edit(FIELD_CUST_FIRST_NAME, () -> requireMaxLength(request.getCustFirstName(), VAR_FIRST_NAME, NAME_WIDTH));
+        edit(FIELD_CUST_MIDDLE_NAME, () ->
+                requireOptionalAlpha(request.getCustMiddleName(), VAR_MIDDLE_NAME + SUFFIX_ALPHABETS_ONLY));
+        edit(FIELD_CUST_MIDDLE_NAME, () ->
+                requireMaxLength(request.getCustMiddleName(), VAR_MIDDLE_NAME, NAME_WIDTH));
+        edit(FIELD_CUST_LAST_NAME, () ->
+                requireAlpha(request.getCustLastName(), MSG_LASTNAME_NOT_PROVIDED, MSG_NAME_ALPHA));
+        edit(FIELD_CUST_LAST_NAME, () -> requireMaxLength(request.getCustLastName(), VAR_LAST_NAME, NAME_WIDTH));
 
         // 1215-EDIT-MANDATORY on 'Address Line 1'.
-        requireSupplied(request.getCustAddrLine1(), VAR_ADDRESS_LINE_1 + SUFFIX_MUST_BE_SUPPLIED);
-        requireMaxLength(request.getCustAddrLine1(), VAR_ADDRESS_LINE_1, ADDRESS_WIDTH);
-        requireMaxLength(request.getCustAddrLine2(), VAR_ADDRESS_LINE_2, ADDRESS_WIDTH);
+        edit(FIELD_CUST_ADDR_LINE_1, () ->
+                requireSupplied(request.getCustAddrLine1(), VAR_ADDRESS_LINE_1 + SUFFIX_MUST_BE_SUPPLIED));
+        edit(FIELD_CUST_ADDR_LINE_1, () ->
+                requireMaxLength(request.getCustAddrLine1(), VAR_ADDRESS_LINE_1, ADDRESS_WIDTH));
+        edit(FIELD_CUST_ADDR_LINE_2, () ->
+                requireMaxLength(request.getCustAddrLine2(), VAR_ADDRESS_LINE_2, ADDRESS_WIDTH));
 
         // 1225-EDIT-ALPHA-REQD plus 1270-EDIT-US-STATE-CD on 'State'.
-        requireStateCode(request.getCustAddrStateCd());
+        edit(FIELD_CUST_ADDR_STATE_CD, () -> requireStateCode(request.getCustAddrStateCd()));
 
         // 1245-EDIT-NUM-REQD on 'Zip'. Only the FIRST FIVE characters are edited
         // (COACTUPC L1607 moves 5 into WS-EDIT-ALPHANUM-LENGTH), so a ZIP+4 value passes.
-        requireNumeric(request.getCustAddrZip(), VAR_ZIP, ZIP_EDIT_LENGTH, ZIP_WIDTH);
+        edit(FIELD_CUST_ADDR_ZIP, () ->
+                requireNumeric(request.getCustAddrZip(), VAR_ZIP, ZIP_EDIT_LENGTH, ZIP_WIDTH));
 
         // 1225-EDIT-ALPHA-REQD on 'City' and 'Country'. CVCUS01Y carries no separate
         // city column: COACTUPC edits 'City' against CUST-ADDR-LINE-3.
-        requireAlpha(request.getCustAddrLine3(), VAR_CITY + SUFFIX_MUST_BE_SUPPLIED,
-                VAR_CITY + SUFFIX_ALPHABETS_ONLY);
-        requireMaxLength(request.getCustAddrLine3(), VAR_CITY, ADDRESS_WIDTH);
-        requireAlpha(request.getCustAddrCountryCd(), VAR_COUNTRY + SUFFIX_MUST_BE_SUPPLIED,
-                VAR_COUNTRY + SUFFIX_ALPHABETS_ONLY);
-        requireMaxLength(request.getCustAddrCountryCd(), VAR_COUNTRY, COUNTRY_CODE_WIDTH);
+        edit(FIELD_CUST_ADDR_LINE_3, () ->
+                requireAlpha(request.getCustAddrLine3(), VAR_CITY + SUFFIX_MUST_BE_SUPPLIED,
+                        VAR_CITY + SUFFIX_ALPHABETS_ONLY));
+        edit(FIELD_CUST_ADDR_LINE_3, () -> requireMaxLength(request.getCustAddrLine3(), VAR_CITY, ADDRESS_WIDTH));
+        edit(FIELD_CUST_ADDR_COUNTRY_CD, () ->
+                requireAlpha(request.getCustAddrCountryCd(),
+                        VAR_COUNTRY + SUFFIX_MUST_BE_SUPPLIED, VAR_COUNTRY + SUFFIX_ALPHABETS_ONLY));
+        edit(FIELD_CUST_ADDR_COUNTRY_CD, () ->
+                requireMaxLength(request.getCustAddrCountryCd(), VAR_COUNTRY, COUNTRY_CODE_WIDTH));
 
         // 1260-EDIT-US-PHONE-NUM on both phone numbers.
-        requirePhone(request.getCustPhoneNum1(), VAR_PHONE_NUMBER_1);
-        requirePhone(request.getCustPhoneNum2(), VAR_PHONE_NUMBER_2);
+        edit(FIELD_CUST_PHONE_NUM_1, () -> requirePhone(request.getCustPhoneNum1(), VAR_PHONE_NUMBER_1));
+        edit(FIELD_CUST_PHONE_NUM_2, () -> requirePhone(request.getCustPhoneNum2(), VAR_PHONE_NUMBER_2));
 
         // 1245-EDIT-NUM-REQD on 'EFT Account Id' over its declared 10-character width. The
         // view masks this identifier too (AAP 0.6.7), so an echoed mask carries no new value
         // and there is nothing to edit, exactly as for the SSN above.
         if (!PiiMasker.isMaskShaped(request.getCustEftAccountId())) {
-            requireNumeric(request.getCustEftAccountId(), VAR_EFT_ACCOUNT_ID,
-                    EFT_EDIT_LENGTH, EFT_WIDTH);
-            requireMaxLength(request.getCustEftAccountId(), VAR_EFT_ACCOUNT_ID, EFT_WIDTH);
+            edit(FIELD_CUST_EFT_ACCOUNT_ID, () -> requireNumeric(request.getCustEftAccountId(), VAR_EFT_ACCOUNT_ID,
+                    EFT_EDIT_LENGTH, EFT_WIDTH));
+            edit(FIELD_CUST_EFT_ACCOUNT_ID, () ->
+                    requireMaxLength(request.getCustEftAccountId(), VAR_EFT_ACCOUNT_ID, EFT_WIDTH));
         }
 
         // 'Govt Issued Id' carries no legacy edit either, so only its X(20) width applies. A
         // masked echo of the stored identifier is not a new value and is left alone.
         if (!PiiMasker.isMaskShaped(request.getCustGovtIssuedId())) {
-            requireMaxLength(request.getCustGovtIssuedId(), VAR_GOVT_ISSUED_ID, GOVT_ID_WIDTH);
+            edit(FIELD_CUST_GOVT_ISSUED_ID, () ->
+                    requireMaxLength(request.getCustGovtIssuedId(), VAR_GOVT_ISSUED_ID, GOVT_ID_WIDTH));
         }
 
         // 1220-EDIT-YESNO on 'Primary Card Holder'.
-        requireYesNo(request.getCustPriCardHolderInd(),
-                VAR_PRIMARY_CARD_HOLDER + SUFFIX_MUST_BE_YES_NO);
+        edit(FIELD_CUST_PRI_CARD_HOLDER, () ->
+                requireYesNo(request.getCustPriCardHolderInd(), VAR_PRIMARY_CARD_HOLDER));
 
         // Cross-field edit (COACTUPC L1664-1669): performed only once the state code and the
-        // zip have each passed their own edit.
-        requireZipMatchesState(request.getCustAddrStateCd(), request.getCustAddrZip());
+        // zip have each passed their own edit. It sets FLG-STATE-NOT-OK *and*
+        // FLG-ZIPCODE-NOT-OK, so both members are reported as faulted.
+        editFields(List.of(FIELD_CUST_ADDR_STATE_CD, FIELD_CUST_ADDR_ZIP),
+                () -> requireZipMatchesState(request.getCustAddrStateCd(), request.getCustAddrZip()));
     }
 
     /**
@@ -415,9 +558,14 @@ public class AccountUpdateValidator {
      * :param message: the message reported when the value is absent or not Y/N.
      * :raises CardDemoException: when the edit fails.
      */
-    private void requireYesNo(String value, String message) {
+    private void requireYesNo(String value, String variableName) {
+        // 1220-EDIT-YESNO tests 'Not supplied' first (LOW-VALUES, SPACES or ZEROS) and
+        // reports it with its own composed message, then tests the value itself.
+        if (value == null || value.isBlank() || value.chars().allMatch(c -> c == '0')) {
+            throw new CardDemoException(variableName + SUFFIX_MUST_BE_SUPPLIED);
+        }
         if (!"Y".equals(value) && !"N".equals(value)) {
-            throw new CardDemoException(message);
+            throw new CardDemoException(variableName + SUFFIX_MUST_BE_YES_NO);
         }
     }
 
@@ -438,7 +586,12 @@ public class AccountUpdateValidator {
         if (value.stripTrailingZeros().scale() > MONEY_SCALE) {
             throw new CardDemoException(invalidMessage);
         }
-        if (value.precision() - value.scale() > 9) {
+        // Ten integer digits, not nine. Every account amount is declared PIC S9(10)V99
+        // [app/cpy/CVACT01Y.cpy:L7-L14] and stored in a NUMERIC(12,2) column, so 9999999999.99 is
+        // a legal value. Capping at nine made an account that legitimately holds a ten-digit
+        // amount impossible to update AT ALL -- every full-snapshot PUT was rejected on the
+        // unchanged field, whichever field the caller was actually editing.
+        if (value.precision() - value.scale() > MONEY_INTEGER_DIGITS) {
             throw new CardDemoException(invalidMessage);
         }
     }
@@ -465,6 +618,23 @@ public class AccountUpdateValidator {
         }
         if (!DateUtil.isValid(value, DateUtil.MASK_ISO)) {
             throw new CardDemoException(variableName + SUFFIX_DAY_RANGE);
+        }
+    }
+
+    /**
+     * :purpose: ``EDIT-DATE-OF-BIRTH`` (``app/cpy/CSUTLDPY.cpy``) — the reasonableness edit that
+     *     follows the calendar edit on 'Date of Birth'. The legacy paragraph passes only when
+     *     ``WS-CURRENT-DATE-BINARY > WS-EDIT-DATE-BINARY``, so a date of birth must fall STRICTLY
+     *     before today; today itself is rejected, and that boundary is reproduced exactly.
+     * :param value: the submitted date of birth, already known to be a real calendar date because
+     *     the calendar edit runs first and throws on failure.
+     * :raises CardDemoException: with ``'Date of Birth:cannot be in the future '`` when the date is
+     *     today or later. The literal, including its leading colon and trailing space, is the one
+     *     the legacy ``STRING`` statement composes from the trimmed variable name.
+     */
+    private void requireDateOfBirthNotInFuture(String value) {
+        if (!DateUtil.isValidDateOfBirth(value, DateUtil.MASK_ISO)) {
+            throw new CardDemoException(VAR_DATE_OF_BIRTH + SUFFIX_CANNOT_BE_FUTURE);
         }
     }
 
@@ -581,6 +751,30 @@ public class AccountUpdateValidator {
         if (value < FICO_MIN || value > FICO_MAX) {
             throw new CardDemoException(VAR_FICO_SCORE + SUFFIX_FICO_RANGE);
         }
+    }
+
+    /**
+     * :purpose: Map each numerically-typed request property to the message its screen edit reports
+     *     for an invalid value, so a value that fails to BIND reports the same thing as a value
+     *     that binds and then fails the edit.
+     * :returns: an immutable property-name-to-message map covering every numeric property of the
+     *     account update request.
+     * :note: Exposed from this class, and composed here from the same constants the edits use, so
+     *     each frozen literal exists exactly once. A copy kept beside the JSON layer would be free
+     *     to drift away from the edit that owns it.
+     * :note: A numeric property is converted by the JSON layer BEFORE any edit runs, so
+     *     ``"acctCreditLimit": "ABC"`` fails during deserialization and
+     *     {@link #requireAmount} never sees it. Without this map such a request reported only
+     *     ``'Malformed request body'``, naming no field and losing the frozen literal.
+     */
+    static Map<String, String> typeMismatchMessages() {
+        return Map.of(
+                "acctCurrBal", VAR_CURRENT_BALANCE + SUFFIX_NOT_VALID,
+                "acctCreditLimit", MSG_CREDIT_LIMIT_INVALID,
+                "acctCashCreditLimit", VAR_CASH_CREDIT_LIMIT + SUFFIX_NOT_VALID,
+                "acctCurrCycCredit", VAR_CURR_CYC_CREDIT + SUFFIX_NOT_VALID,
+                "acctCurrCycDebit", VAR_CURR_CYC_DEBIT + SUFFIX_NOT_VALID,
+                "custFicoCreditScore", VAR_FICO_SCORE + SUFFIX_FICO_RANGE);
     }
 
     /**

@@ -15,6 +15,7 @@
  */
 package com.carddemo.common.config;
 
+import com.carddemo.common.security.SensitiveDataMasker;
 import io.micrometer.common.KeyValue;
 import io.micrometer.context.ContextRegistry;
 import io.micrometer.core.instrument.Meter;
@@ -96,6 +97,37 @@ public class ObservabilityConfig {
     ObservationFilter commonObservationTags(
             @Value("${spring.application.name:carddemo}") String applicationName) {
         return context -> context.addLowCardinalityKeyValue(KeyValue.of("application", applicationName));
+    }
+
+    /**
+     * :purpose: Mask card numbers in every HIGH-cardinality observation value, so no span attribute
+     *           exported to the tracing backend carries a primary account number. The servlet
+     *           convention's only high-cardinality key is ``http.url``, whose value is the request
+     *           URI — for a card screen that URI contains the PAN. Applying
+     *           {@link SensitiveDataMasker} here masks it exactly as the log stream, the audit log
+     *           and the error envelope already mask it, so every channel redacts identically.
+     * :note: LOW-cardinality values are deliberately left untouched: they are the Micrometer meter
+     *        tags, and the request-timer's ``uri`` is already the templated route
+     *        (``/cards/{cardNumber}``), so the metric label set and its cardinality contract are
+     *        unchanged. The span name is the contextual name, also templated.
+     * :note: Filters run after the convention has contributed its key values and before any handler
+     *        records the span, so the replacement is what reaches the exporter.
+     *        ``addHighCardinalityKeyValue`` replaces a value stored under the same key, and
+     *        ``getHighCardinalityKeyValues`` returns a snapshot, so replacing while iterating is safe.
+     * :returns: a filter that redacts PAN-shaped digit runs from high-cardinality observation values.
+     */
+    @Bean
+    ObservationFilter sensitiveTraceAttributeMask() {
+        return context -> {
+            for (KeyValue keyValue : context.getHighCardinalityKeyValues()) {
+                String value = keyValue.getValue();
+                String masked = SensitiveDataMasker.maskPan(value);
+                if (!masked.equals(value)) {
+                    context.addHighCardinalityKeyValue(KeyValue.of(keyValue.getKey(), masked));
+                }
+            }
+            return context;
+        };
     }
 
     /**

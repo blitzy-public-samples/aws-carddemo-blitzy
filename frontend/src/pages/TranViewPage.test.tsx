@@ -74,6 +74,10 @@ const getTransaction =
 const signon = jest.fn();
 
 jest.unstable_mockModule('../api', () => ({
+  // The request-cancellation contract ``useApi`` binds to: the real scope hands the
+  // caller's AbortSignal to axios, and the double simply invokes the call.
+  runWithRequestSignal: (_signal: AbortSignal, call: () => unknown): unknown => call(),
+  isCancelledRequest: (): boolean => false,
   // The session store and the REST hook this screen's module graph loads bind to
   // these barrel exports as well. ``getSessionIdentity`` is the production
   // ``GET /session`` probe the session harness drives; unanswered by this suite it
@@ -212,6 +216,12 @@ async function renderLoadedScreen(): Promise<void> {
   await waitFor(() => {
     expect(getTransaction).toHaveBeenCalledTimes(1);
   });
+  // The screen is not ready for an attention identifier until the read has completed
+  // and the shell has released the keyboard: a 3270 discards every key struck while
+  // `X SYSTEM` is showing.
+  await waitFor(() => {
+    expect(screen.getByTestId('screen-busy')).toBeEmptyDOMElement();
+  });
 }
 
 /**
@@ -247,7 +257,7 @@ function typeSearchTranId(value: string): void {
  * :returns: one legend caption per rendered function key.
  */
 function legendLabels(): (string | null)[] {
-  const toolbar = screen.getByRole('toolbar', { name: 'Function keys' });
+  const toolbar = screen.getByRole('group', { name: 'Function keys' });
   return within(toolbar)
     .getAllByRole('button')
     .map((key) => key.textContent);
@@ -326,6 +336,19 @@ describe('TranViewPage — load by route parameter', () => {
     expect(screen.getByTestId('title01')).toHaveTextContent(CCDA_TITLE01);
     expect(screen.getByTestId('title02')).toHaveTextContent(CCDA_TITLE02);
     expect(errorText()).toBe('');
+  });
+
+  it('paints the row-8 rule as seventy hyphens and hides it from assistive technology', async () => {
+    // ``COTRN01.bms`` declares the run ``COLOR=NEUTRAL LENGTH=70 POS=(8,6)``, so the
+    // glyphs ARE the rule and are rendered verbatim. They carry no meaning to a screen
+    // reader, which would otherwise read seventy hyphens aloud, so the element is hidden
+    // from the accessibility tree exactly as the other four rule-bearing screens are.
+    await renderLoadedScreen();
+
+    const rule = screen.getByTestId('tranViewRule');
+    expect(rule.textContent).toHaveLength(70);
+    expect(new Set(rule.textContent ?? '')).toEqual(new Set(['-']));
+    expect(rule).toHaveAttribute('aria-hidden', 'true');
   });
 });
 

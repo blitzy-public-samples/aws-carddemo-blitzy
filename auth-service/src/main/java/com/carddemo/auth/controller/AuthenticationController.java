@@ -111,7 +111,7 @@ public class AuthenticationController {
         String uri = description != null && description.startsWith("uri=")
                 ? description.substring(4)
                 : description;
-        return SensitiveDataMasker.maskPan(uri);
+        return SensitiveDataMasker.maskPath(uri);
     }
 
     /**

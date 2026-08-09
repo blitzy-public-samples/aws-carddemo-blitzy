@@ -15,8 +15,11 @@
  */
 package com.carddemo.gateway;
 
+import com.carddemo.common.config.CardDemoErrorController;
+import com.carddemo.common.config.ContainerErrorReportConfig;
 import com.carddemo.common.config.GlobalExceptionHandler;
 import com.carddemo.common.config.ObservabilityConfig;
+import com.carddemo.common.config.SecurityExceptionHandler;
 import com.carddemo.common.config.SessionRedisConfig;
 import com.carddemo.common.config.WebHardeningConfig;
 import com.carddemo.common.config.WebObservabilityConfig;
@@ -32,10 +35,18 @@ import org.springframework.context.annotation.Import;
  *     Gateway Server WebMVC (servlet) edge router that also serves the
  *     menu-navigation endpoints re-platforming legacy CICS transactions
  *     CM00 (COMEN01C) and CA00 (COADM01C).
- * :note: Explicitly imports the shared carddemo-common ObservabilityConfig,
- *     WebObservabilityConfig (which registers the shared correlation-id filter) and
- *     GlobalExceptionHandler because that library ships no auto-configuration
- *     imports file.
+ * :note: Explicitly imports the shared carddemo-common configurations it needs rather
+ *     than broadening the component scan into that library, which ships no
+ *     auto-configuration imports file: ObservabilityConfig, WebObservabilityConfig (the
+ *     shared correlation-id filter and the datastore-outage filter), GlobalExceptionHandler,
+ *     and -- as every other service already does -- CardDemoErrorController with
+ *     ContainerErrorReportConfig. Those last two matter most here, because the gateway is
+ *     the only member of the estate a browser talks to: without them a container-level
+ *     error dispatch at the edge fell through to Boot's BasicErrorController and answered
+ *     an abbreviated {timestamp,status,error,path} document, so one request could be
+ *     refused in two different shapes depending on which component refused it.
+ * :note: SecurityExceptionHandler covers an authorization failure raised inside the
+ *     application rather than by the filter chain.
  */
 @SpringBootApplication
 @Import({
@@ -43,6 +54,9 @@ import org.springframework.context.annotation.Import;
         WebObservabilityConfig.class,
         WebHardeningConfig.class,
         GlobalExceptionHandler.class,
+        CardDemoErrorController.class,
+        ContainerErrorReportConfig.class,
+        SecurityExceptionHandler.class,
         SessionRedisConfig.class
 })
 public class GatewayApplication {

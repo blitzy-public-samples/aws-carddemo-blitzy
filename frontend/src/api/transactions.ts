@@ -8,8 +8,10 @@
  *   (transaction ``CT01``, view), and ``COTRN02C`` (transaction ``CT02``, add)
  *   as stateless REST calls issued through the shared axios instance.
  * :output: The named exports ``listTransactions`` (``GET /transactions``,
- *   ten rows per page), ``getTransaction`` (``GET /transactions/{id}``), and
- *   ``addTransaction`` (``POST /transactions``).
+ *   ten rows per page), ``getTransaction`` (``GET /transactions/detail?tranId=``),
+ *   ``getLastTransaction`` (``GET /transactions/last``), ``addTransaction``
+ *   (``POST /transactions``) and the key-resolution step ``resolveAddKey`` /
+ *   ``resolveTransactionKeys`` (``POST /transactions/key``).
  * :note: Wire formats are preserved untouched — the 16-digit transaction id, the
  *   ``NUMERIC(11,2)`` monetary amount, the four-digit category code, the nine-digit
  *   merchant id and the origination and processing timestamps all travel as
@@ -31,6 +33,8 @@ import type {
   TranViewResponseDto,
   TranAddRequestDto,
   TranAddResponseDto,
+  TranKeyDto,
+  TranKeyResponseDto,
 } from '../types';
 
 /**
@@ -59,16 +63,23 @@ export async function listTransactions(
  * :purpose: Fetch a single transaction's full detail for the ``TranViewPage``
  *   screen, re-expressing CICS transaction ``CT01`` (``COTRN01C``).
  * :param transactionId: the 16-digit transaction identifier, carried as a
- *   ``string`` to preserve its fixed width and leading zeros; it is percent-
- *   encoded before being placed in the request path.
+ *   ``string`` to preserve its fixed width and leading zeros. It travels as a
+ *   REQUEST PARAMETER, never as a path segment: ``TRNIDIN`` is an ``X(16)`` field
+ *   an operator may fill with any characters, and a value holding a path separator
+ *   does not survive a path segment -- an intermediary normalizes the encoded form
+ *   back into ``/..`` before routing, which lifted the request out of the ``/api``
+ *   prefix and answered it with the SPA document, leaving the screen silently dead.
+ *   A query string is not path-normalized, so the value reaches the service verbatim
+ *   and misses the read, which is what the legacy ``READ`` does for any key not on
+ *   file.
  * :returns: a promise resolving to the full transaction detail.
  */
 export async function getTransaction(
   transactionId: string,
 ): Promise<TranViewResponseDto> {
-  const response = await apiClient.get<TranViewResponseDto>(
-    `/transactions/${encodeURIComponent(transactionId)}`,
-  );
+  const response = await apiClient.get<TranViewResponseDto>('/transactions/detail', {
+    params: { tranId: transactionId },
+  });
   return response.data;
 }
 
@@ -82,6 +93,34 @@ export async function getTransaction(
 export async function getLastTransaction(): Promise<TranViewResponseDto> {
   const response = await apiClient.get<TranViewResponseDto>('/transactions/last');
   return response.data;
+}
+
+/**
+ * :purpose: Run the add screen's key-field edit (``COTRN02C``
+ *   ``VALIDATE-INPUT-KEY-FIELDS``) and return the account/card pair it resolves.
+ *   ``PROCESS-ENTER-KEY`` performs that paragraph — cross-reference reads included —
+ *   before ``VALIDATE-INPUT-DATA-FIELDS``, so a key that is not on file is reported
+ *   ahead of any empty data field; the paragraph also writes the counterpart key back
+ *   onto the map, which is why the resolved pair comes back.
+ * :param acctId: the ``ACTIDIN`` entry value; omitted when not supplied.
+ * :param tranCardNum: the ``CARDNIN`` entry value; omitted when not supplied.
+ * :returns: a promise resolving to the resolved account id and card number.
+ */
+export async function resolveTransactionKeys(
+  acctId: string,
+  tranCardNum: string,
+): Promise<TranKeyResponseDto> {
+  // Delegates to the body-carrying route rather than sending the keys as query
+  // parameters: one of them is a card number, and a URL -- path or query string -- is
+  // recorded verbatim by the browser tier, the gateway and every trace on the path.
+  const resolved = await resolveAddKey({
+    ...(acctId === '' ? {} : { acctId }),
+    ...(tranCardNum === '' ? {} : { tranCardNum }),
+  });
+  return {
+    acctId: resolved.acctId ?? acctId,
+    tranCardNum: resolved.tranCardNum ?? tranCardNum,
+  };
 }
 
 /**
@@ -100,5 +139,25 @@ export async function addTransaction(
     '/transactions',
     request,
   );
+  return response.data;
+}
+
+/**
+ * :purpose: Resolve the add screen's two key fields from whichever one the operator
+ *   supplied, re-expressing ``COTRN02C VALIDATE-INPUT-KEY-FIELDS``. That paragraph
+ *   runs BEFORE the eleven data-field blank guards, and the cross-reference read
+ *   inside it is what publishes ``Account ID NOT found...`` and
+ *   ``Card Number NOT found...``; calling it as its own step is what keeps those two
+ *   literals reachable while a data field is still empty. The paragraph also moves the
+ *   counterpart key back into its own map field, which is why both come back.
+ * :param request: the key entry, carrying an account id, a card number, or neither.
+ *   It is a POST body because one member is a card number and a URL is recorded
+ *   verbatim by every intermediary on the path.
+ * :returns: a promise resolving to both keys at their declared widths.
+ */
+export async function resolveAddKey(
+  request: TranKeyDto,
+): Promise<TranKeyDto> {
+  const response = await apiClient.post<TranKeyDto>('/transactions/key', request);
   return response.data;
 }

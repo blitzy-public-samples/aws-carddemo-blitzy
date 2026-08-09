@@ -89,7 +89,7 @@ class AccountControllerTest {
     private static final long VALID_ID_LONG = 12345678901L;
 
     /** :purpose: Verbatim account-id edit message surfaced as the HTTP 400 body message. */
-    private static final String MSG_INVALID_ACCT_ID = "Account number must be a non zero 11 digit number";
+    private static final String MSG_INVALID_ACCT_ID = "Account Filter must  be a non-zero 11 digit number";
 
     /** :purpose: Verbatim cross-reference-miss message (legacy COACTVWC L130) surfaced as the HTTP 404 body message. */
     private static final String MSG_ACCT_NOT_IN_XREF = "Did not find this account in account card xref file";

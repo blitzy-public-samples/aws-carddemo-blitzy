@@ -111,4 +111,46 @@ class CardDemoErrorControllerTest {
         assertThat(response.getBody().getMessage()).isEqualTo("Internal Server Error");
         assertThat(response.getBody().getMessage()).doesNotContain("secret");
     }
+    /**
+     * :purpose: A container-dispatched error must carry the correlation id that is in scope, so the
+     *   body a caller receives can be joined to the access-log record for the same request and to
+     *   the ``X-Correlation-Id`` response header it already holds. Setting only ``traceId`` here
+     *   left every ``sendError`` response -- the request-firewall rejections among them --
+     *   reporting ``"correlationId":null`` while the log line for the very same dispatch carried
+     *   the real id.
+     */
+    @Test
+    @DisplayName("a dispatched error carries the in-scope correlation id")
+    void dispatchedErrorCarriesTheInScopeCorrelationId() {
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", "/error");
+        request.setAttribute(RequestDispatcher.ERROR_STATUS_CODE, 400);
+        request.setAttribute(RequestDispatcher.ERROR_REQUEST_URI, "/accounts/1;drop");
+        CorrelationIdContext.setCorrelationId("dispatch-scope-id");
+        try {
+            ResponseEntity<ErrorResponse> response = newController().handleError(request);
+
+            ErrorResponse body = response.getBody();
+            assertThat(body).isNotNull();
+            assertThat(body.getCorrelationId()).isEqualTo("dispatch-scope-id");
+        } finally {
+            CorrelationIdContext.clear();
+        }
+    }
+
+    /**
+     * :purpose: With no correlation scope the field is simply absent rather than fabricated, so the
+     *   envelope never reports an id that was neither issued nor logged.
+     */
+    @Test
+    @DisplayName("no correlation scope yields a null correlation id rather than a fabricated one")
+    void noCorrelationScopeYieldsNull() {
+        CorrelationIdContext.clear();
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", "/error");
+        request.setAttribute(RequestDispatcher.ERROR_STATUS_CODE, 404);
+
+        ResponseEntity<ErrorResponse> response = newController().handleError(request);
+
+        assertThat(response.getBody()).isNotNull();
+        assertThat(response.getBody().getCorrelationId()).isNull();
+    }
 }

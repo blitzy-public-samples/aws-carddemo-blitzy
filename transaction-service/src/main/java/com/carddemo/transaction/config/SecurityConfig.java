@@ -76,6 +76,15 @@ public class SecurityConfig {
                     "/actuator/health",
                     "/actuator/health/**",
                     "/actuator/info").permitAll()
+                // The POSTTRAN posting-job launch surface is an OPERATIONS function, not a
+                // screen function: CBTRN02C had no CICS transaction and was submitted to JES
+                // by an operator, and it moves money - it rewrites account balances and
+                // inserts transaction rows [app/jcl/POSTTRAN.jcl, app/cbl/CBTRN02C.cbl]. It
+                // therefore requires the administrator authority that CDEMO-USRTYP-ADMIN
+                // ('A') maps to, while the online inquiry/add screens below stay open to a
+                // signed-on ROLE_USER. Enforced here as well as at the api-gateway so the
+                // gate does not depend on the edge alone.
+                .requestMatchers("/transactions/batch/**").hasRole("ADMIN")
                 .anyRequest().hasAnyRole("USER", "ADMIN"))
             .httpBasic(httpBasic -> httpBasic.disable())
             .formLogin(formLogin -> formLogin.disable());

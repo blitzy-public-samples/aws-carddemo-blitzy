@@ -111,6 +111,18 @@ public class OptimisticLockConflictIT {
     /** :purpose: Account identifier of the self-contained fixture row (non-colliding with the 1..50 seed). */
     private static final Long SEED_ACCT_ID = 90000003L;
 
+    /**
+     * :purpose: Format an account id as the eleven-digit key every account endpoint requires.
+     *  ``CC-ACCT-ID`` is ``PIC X(11)`` edited by ``IF CC-ACCT-ID IS NOT NUMERIC`` -- a class test
+     *  on an alphanumeric item -- so only a full eleven-digit run is accepted; see decision log
+     *  section 44.7.
+     * :param acctId: the numeric account id.
+     * :returns: the zero-padded eleven-digit key.
+     */
+    private static String acctKey(long acctId) {
+        return String.format("%011d", acctId);
+    }
+
     /** :purpose: Customer identifier of the self-contained fixture row (non-colliding with the 1..50 seed). */
     private static final Long SEED_CUST_ID = 900000003L;
 
@@ -416,7 +428,7 @@ public class OptimisticLockConflictIT {
                 //    entity, and flush the losing update straight into the version conflict.
                 MvcResult result;
                 try {
-                    result = mockMvc.perform(put("/accounts/{id}", SEED_ACCT_ID).session(signedOnSession())
+                    result = mockMvc.perform(put("/accounts/{id}", acctKey(SEED_ACCT_ID)).session(signedOnSession())
                                     .contentType(MediaType.APPLICATION_JSON)
                                     .content(requestJson))
                             .andReturn();
@@ -443,7 +455,7 @@ public class OptimisticLockConflictIT {
         assertThat(error.getMessage()).isEqualTo(OptimisticLockConflictException.MESSAGE);
         assertThat(error.getMessage()).isEqualTo("Record changed by some one else. Please review");
         assertThat(error.getError()).isEqualTo("Conflict");
-        assertThat(error.getPath()).endsWith("/accounts/" + SEED_ACCT_ID);
+        assertThat(error.getPath()).endsWith("/accounts/" + acctKey(SEED_ACCT_ID));
 
         // The winning writer's value survived; the stale losing update never persisted.
         Account persisted = reloadAccount();
@@ -584,7 +596,7 @@ public class OptimisticLockConflictIT {
      */
     private MvcResult dispatchUpdate(AccountUpdateRequestDto request) {
         try {
-            return mockMvc.perform(put("/accounts/{id}", SEED_ACCT_ID).session(signedOnSession())
+            return mockMvc.perform(put("/accounts/{id}", acctKey(SEED_ACCT_ID)).session(signedOnSession())
                             .contentType(MediaType.APPLICATION_JSON)
                             .content(objectMapper.writeValueAsString(request)))
                     .andReturn();

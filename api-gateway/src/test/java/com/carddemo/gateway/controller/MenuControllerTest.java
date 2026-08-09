@@ -36,7 +36,6 @@ import tools.jackson.databind.ObjectMapper;
 import jakarta.servlet.http.HttpSession;
 
 import java.util.Collections;
-import java.util.Map;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -133,25 +132,6 @@ class MenuControllerTest {
      */
     private static final String EXPECTED_COMING_SOON_ADMIN = "This option is coming soon ...";
 
-    /** :purpose: Downstream route shared by every admin (user-management) option. */
-    private static final String USERS_ROUTE = "/users";
-
-    /**
-     * :purpose: Expected legacy-program-to-route mapping for the ten main-menu options,
-     *           mirroring the production PROGRAM_ROUTES table; a documented test guardrail.
-     */
-    private static final Map<String, String> EXPECTED_MAIN_ROUTES = Map.ofEntries(
-            Map.entry("COACTVWC", "/accounts"),
-            Map.entry("COACTUPC", "/accounts"),
-            Map.entry("COCRDLIC", "/cards"),
-            Map.entry("COCRDSLC", "/cards"),
-            Map.entry("COCRDUPC", "/cards"),
-            Map.entry("COTRN00C", "/transactions"),
-            Map.entry("COTRN01C", "/transactions"),
-            Map.entry("COTRN02C", "/transactions"),
-            Map.entry("CORPT00C", "/reports"),
-            Map.entry("COBIL00C", "/billpay"));
-
     /** :purpose: Web application context of the MVC slice, used to build MockMvc. */
     @Autowired
     private WebApplicationContext webApplicationContext;
@@ -206,11 +186,9 @@ class MenuControllerTest {
                         .value(MenuOptions.MAIN_MENU_OPTIONS.get(0).programName()))
                 .andExpect(jsonPath("$.options[0].optionName")
                         .value(MenuOptions.MAIN_MENU_OPTIONS.get(0).optionName()))
-                .andExpect(jsonPath("$.options[0].targetRoute").value("/accounts"))
                 .andExpect(jsonPath("$.options[9].optionNumber").value(10))
                 .andExpect(jsonPath("$.options[9].programName")
                         .value(MenuOptions.MAIN_MENU_OPTIONS.get(9).programName()))
-                .andExpect(jsonPath("$.options[9].targetRoute").value("/billpay"))
                 .andExpect(jsonPath("$.message").doesNotExist());
     }
 
@@ -225,10 +203,12 @@ class MenuControllerTest {
                 .andExpect(jsonPath("$.options", hasSize(MenuOptions.CDEMO_ADMIN_OPT_COUNT)))
                 .andExpect(jsonPath("$.options[0].programName")
                         .value(MenuOptions.ADMIN_MENU_OPTIONS.get(0).programName()))
-                .andExpect(jsonPath("$.options[0].targetRoute").value(USERS_ROUTE))
                 .andExpect(jsonPath("$.options[3].programName")
                         .value(MenuOptions.ADMIN_MENU_OPTIONS.get(3).programName()))
-                .andExpect(jsonPath("$.options[3].targetRoute").value(USERS_ROUTE));
+                // Four distinct administration screens, so each option is identified by its
+                // own program name; no single route could stand for all four.
+                .andExpect(jsonPath("$.options[0].targetRoute").doesNotExist())
+                .andExpect(jsonPath("$.options[3].targetRoute").doesNotExist());
     }
 
     // -----------------------------------------------------------------
@@ -279,7 +259,6 @@ class MenuControllerTest {
                 .andExpect(jsonPath("$.dispatched").value(true))
                 .andExpect(jsonPath("$.programName")
                         .value(MenuOptions.MAIN_MENU_OPTIONS.get(4).programName()))
-                .andExpect(jsonPath("$.targetRoute").value("/cards"))
                 .andExpect(jsonPath("$.message").doesNotExist());
     }
 
@@ -318,7 +297,7 @@ class MenuControllerTest {
     // -----------------------------------------------------------------
 
     @Test
-    @DisplayName("POST /menu/select PF3 returns to /auth (dispatched, no program, no message)")
+    @DisplayName("POST /menu/select PF3 dispatches COSGN00C, the CDEMO-TO-PROGRAM target (no message)")
     @WithMockUser(roles = "USER")
     void mainSelectPf3ReturnsToAuth() throws Exception {
         mockMvc.perform(post("/menu/select").sessionAttr(SESSION_ATTR, userContext())
@@ -327,13 +306,12 @@ class MenuControllerTest {
                         .content(body("1", "PF3")))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.dispatched").value(true))
-                .andExpect(jsonPath("$.targetRoute").value("/auth"))
-                .andExpect(jsonPath("$.programName").doesNotExist())
+                .andExpect(jsonPath("$.programName").value("COSGN00C"))
                 .andExpect(jsonPath("$.message").doesNotExist());
     }
 
     @Test
-    @DisplayName("POST /admin/menu/select PF3 returns to /auth (dispatched, no program, no message)")
+    @DisplayName("POST /admin/menu/select PF3 dispatches COSGN00C, the CDEMO-TO-PROGRAM target (no message)")
     @WithMockUser(roles = "ADMIN")
     void adminSelectPf3ReturnsToAuth() throws Exception {
         mockMvc.perform(post("/admin/menu/select").sessionAttr(SESSION_ATTR, adminContext())
@@ -342,8 +320,7 @@ class MenuControllerTest {
                         .content(body("1", "PF3")))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.dispatched").value(true))
-                .andExpect(jsonPath("$.targetRoute").value("/auth"))
-                .andExpect(jsonPath("$.programName").doesNotExist())
+                .andExpect(jsonPath("$.programName").value("COSGN00C"))
                 .andExpect(jsonPath("$.message").doesNotExist());
     }
 
@@ -357,7 +334,6 @@ class MenuControllerTest {
     @WithMockUser(roles = "USER")
     void mainSelectDispatchesValidOption(int optionNumber) throws Exception {
         String expectedProgram = MenuOptions.MAIN_MENU_OPTIONS.get(optionNumber - 1).programName();
-        String expectedRoute = EXPECTED_MAIN_ROUTES.get(expectedProgram);
         mockMvc.perform(post("/menu/select").sessionAttr(SESSION_ATTR, userContext())
                         .with(csrf())
                         .contentType(MediaType.APPLICATION_JSON)
@@ -365,13 +341,12 @@ class MenuControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.dispatched").value(true))
                 .andExpect(jsonPath("$.programName").value(expectedProgram))
-                .andExpect(jsonPath("$.targetRoute").value(expectedRoute))
                 .andExpect(jsonPath("$.message").doesNotExist());
     }
 
-    @ParameterizedTest(name = "admin option {0} dispatches to its user program and /users")
+    @ParameterizedTest(name = "admin option {0} dispatches to its user program")
     @ValueSource(ints = {1, 2, 3, 4})
-    @DisplayName("POST /admin/menu/select dispatches each valid admin option to its user program and /users")
+    @DisplayName("POST /admin/menu/select dispatches each valid admin option to its user program")
     @WithMockUser(roles = "ADMIN")
     void adminSelectDispatchesValidOption(int optionNumber) throws Exception {
         String expectedProgram = MenuOptions.ADMIN_MENU_OPTIONS.get(optionNumber - 1).programName();
@@ -382,7 +357,6 @@ class MenuControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.dispatched").value(true))
                 .andExpect(jsonPath("$.programName").value(expectedProgram))
-                .andExpect(jsonPath("$.targetRoute").value(USERS_ROUTE))
                 .andExpect(jsonPath("$.message").doesNotExist());
     }
 
@@ -411,7 +385,6 @@ class MenuControllerTest {
                 .andExpect(jsonPath("$.dispatched").value(true))
                 .andExpect(jsonPath("$.programName")
                         .value(MenuOptions.MAIN_MENU_OPTIONS.get(0).programName()))
-                .andExpect(jsonPath("$.targetRoute").value("/accounts"))
                 .andExpect(jsonPath("$.message").doesNotExist());
     }
 

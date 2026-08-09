@@ -40,6 +40,19 @@ public final class SensitiveDataMasker {
     private static final Pattern PAN_PATTERN = Pattern.compile("(?<!\\d)\\d{12,19}(?!\\d)");
 
     /**
+     * :purpose: Matches a whole path segment that is nothing but a candidate PAN, used by
+     *     {@link #maskPath} to redact the ``/cards/{cardNumber}`` variable while leaving a
+     *     segment that merely contains digits alone.
+     */
+    private static final Pattern PAN_SEGMENT_PATTERN = Pattern.compile("\\d{12,19}");
+
+    /**
+     * :purpose: The path segment whose successor is a card number, i.e. the ``/cards``
+     *     prefix of the card detail and card update endpoints.
+     */
+    private static final String CARDS_SEGMENT = "cards/";
+
+    /**
      * :purpose: Number of trailing digits retained when masking, matching the
      *     industry-standard "last four" display convention.
      */
@@ -73,6 +86,67 @@ public final class SensitiveDataMasker {
         } while (matcher.find());
         masked.append(text, cursor, text.length());
         return masked.toString();
+    }
+
+    /**
+     * :purpose: Mask a request path, redacting a PAN only where a card number can
+     *     actually appear: the path segment that follows a ``cards`` segment, which is
+     *     the ``/cards/{cardNumber}`` variable of the card detail and card update
+     *     endpoints. Every other segment is returned verbatim.
+     * :param path: the request URI (query string excluded), possibly ``null``.
+     * :returns: the path with a card-number segment reduced to its last four digits and
+     *     all other segments unchanged.
+     * :note: Applying {@link #maskPan} to a whole request path over-redacted: the
+     *     16-character transaction id of ``/transactions/{id}`` matches the PAN shape, so
+     *     a ``404`` reported ``"/transactions/QS**********0001"`` - a path that never
+     *     existed - while ``/accounts/{id}`` (11 digits) came back intact. A support
+     *     engineer could not match the reported path to the request. Only the card-number
+     *     position carries a PAN, so only it is masked.
+     * :note: {@link #maskPan} remains the right helper for free text (an exception
+     *     message, a driver message, an audited field value), where a PAN can appear
+     *     anywhere and no positional rule applies.
+     */
+    public static String maskPath(String path) {
+        if (path == null || path.isEmpty()) {
+            return path;
+        }
+        int cardsAt = indexOfCardsSegment(path);
+        if (cardsAt < 0) {
+            return path;
+        }
+        int start = cardsAt + CARDS_SEGMENT.length();
+        int end = path.indexOf('/', start);
+        if (end < 0) {
+            end = path.length();
+        }
+        String segment = path.substring(start, end);
+        if (!PAN_SEGMENT_PATTERN.matcher(segment).matches()) {
+            return path;
+        }
+        return path.substring(0, start) + mask(segment) + path.substring(end);
+    }
+
+    /**
+     * :purpose: Locate the ``/cards/`` segment boundary that precedes a card-number path
+     *     variable, matching it as a whole segment so a path such as ``/discardsx/...``
+     *     is never treated as the card endpoint.
+     * :param path: the request URI.
+     * :returns: the index at which the ``/cards/`` segment starts, or ``-1`` when the path
+     *     addresses no card by number.
+     */
+    private static int indexOfCardsSegment(String path) {
+        int from = 0;
+        while (true) {
+            int at = path.indexOf(CARDS_SEGMENT, from);
+            if (at < 0) {
+                return -1;
+            }
+            // A whole segment: preceded by the path root or by another segment boundary.
+            if (at == 0 || path.charAt(at - 1) == '/' || path.charAt(at - 1) == '=') {
+                return at;
+            }
+            from = at + 1;
+        }
     }
 
     /**

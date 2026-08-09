@@ -16,10 +16,11 @@
  *     ten row-selection flags. Wire values (``MM/DD/YY`` date, scale-2 amount
  *     string, 16-character transaction id) are rendered verbatim.
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from 'react';
 import type { ReactElement } from 'react';
 import { useNavigate } from 'react-router';
 import { useScreenChrome } from '../components/Layout';
+import { isBrowseNotice } from '../components/browseNotices';
 import { invalidFieldProps, invalidValueProps } from '../components/ErrorBanner';
 import type { PFKeyDef } from '../components/PFKeyBar';
 import { PfKeyAction, CCDA_TITLE01, CCDA_TITLE02, SCREEN_NAMES } from '../types';
@@ -29,10 +30,17 @@ import { PfKeyAction, CCDA_TITLE01, CCDA_TITLE02, SCREEN_NAMES } from '../types'
  * body heading. The two header title lines are the shared ``COTTL01Y`` pair.
  */
 const SCREEN_NAME = SCREEN_NAMES.COTRN00;
-import type { TranListItemDto } from '../types';
+import type { TranListItemDto, TranListResponseDto } from '../types';
 import { listTransactions, ApiError } from '../api';
-import { useApi, useFocusOnChange, useFocusOnSettled, useInitialFocus } from '../hooks';
+import {
+  useApi,
+  useFocusOnChange,
+  useFocusOnSettled,
+  useInitialFocus,
+  useScreenAction,
+} from '../hooks';
 import { displayText } from '../components/display';
+import { isFilterAllDigits, isFilterNotSupplied, limitToFieldWidth } from './screenFilters';
 
 /** CICS transaction identifier of the legacy screen. */
 const TRANSACTION_ID = 'CT00';
@@ -60,13 +68,39 @@ const SELECTION_VALUE = 'S';
  *     class it carries; the amount column is right-aligned like its ``TAMT00n``
  *     numeric-edited source field.
  */
-const COLUMNS: ReadonlyArray<{ caption: string; className?: string }> = [
-  { caption: 'Sel' },
-  { caption: 'Transaction ID' },
-  { caption: 'Date' },
-  { caption: 'Description' },
-  { caption: 'Amount', className: 'amount' },
+const COLUMNS: ReadonlyArray<{ caption: string; rule: string; className?: string }> = [
+  { caption: 'Sel', rule: '-'.repeat(3) },
+  { caption: 'Transaction ID', rule: '-'.repeat(16) },
+  { caption: 'Date', rule: '-'.repeat(8) },
+  { caption: 'Description', rule: '-'.repeat(26) },
+  { caption: 'Amount', rule: '-'.repeat(12), className: 'amount' },
 ];
+
+/**
+ * :purpose: Accessible name of the browse-table scroll region, so the columns that fall
+ *     outside a narrow viewport are reachable from the keyboard. The clipped columns
+ *     hold no focusable field of their own, so without this the region could only be
+ *     scrolled with a pointer.
+ */
+const TABLE_REGION_LABEL = 'Transaction list columns';
+
+/**
+ * :purpose: The table's floor width in character cells: the sum of every column width
+ *     declared by :data:`COLUMNS`. It is what keeps the last column reachable on a narrow
+ *     viewport. Under ``table-layout: fixed`` the columns carrying an explicit width are
+ *     allocated FIRST and the width-less last one takes only what is left over, so in a
+ *     container narrower than the fixed columns it is allocated zero -- its cells then
+ *     clip to nothing, and because a zero-width column adds nothing to the scrollable
+ *     range, scrolling the region never reveals it either. Holding the table to this
+ *     floor gives the last column its own cells back and puts the shortfall into the
+ *     scroll range instead, while a container WIDER than the floor still hands the slack
+ *     to that column so the right-aligned amount stays against the right edge of the
+ *     frame, where the mapset puts it.
+ */
+const TABLE_MIN_WIDTH_CH = COLUMNS.reduce(
+  (total, column) => total + column.rule.length + 2,
+  0,
+);
 
 /** Rejection message for a row-selection flag other than ``S`` (``COTRN00C``). */
 const MSG_INVALID_SELECTION = 'Invalid selection. Valid value is S';
@@ -85,13 +119,6 @@ function isRowSelectionInvalid(value: string | undefined): boolean {
   const canonical = (value ?? '').trim().toUpperCase();
   return canonical !== '' && canonical !== SELECTION_VALUE;
 }
-
-/**
- * Placeholder occupying the row region when the browse returns nothing. The line-23
- * banner is the only carrier of a legacy message, so this text is deliberately not
- * shaped like one.
- */
-const EMPTY_ROW_TEXT = 'No transactions to display';
 
 /** Static line-21 instruction literal of the mapset. */
 const SELECTION_HINT = "Type 'S' to View Transaction details from the list";
@@ -125,9 +152,6 @@ const FORWARD_LABEL = 'F8=Forward';
 
 /** Route prefix of the transaction-view screen (``CT01`` / ``COTRN01C``). */
 const TRANSACTION_VIEW_ROUTE = '/transactions/';
-
-/** A COBOL ``IS NUMERIC`` class test on the filter: digits only, no sign. */
-const NUMERIC_PATTERN = /^\d+$/;
 
 /**
  * :purpose: Build the symbolic-map field name of a row-selection flag.
@@ -165,16 +189,34 @@ export default function TranListPage(): ReactElement {
   /** Client-side rejection text for the current turn, or the empty string. */
   const [validationMessage, setValidationMessage] = useState('');
 
-  const { data, error, loading, run } = useApi(listTransactions);
+  const { data, error, loading, isInFlight, run } = useApi(listTransactions);
 
   // COTRN00C browses the file itself and returns exactly one screen of rows, so the
   // page shown is the page the service reports; there is no second, client-side slice.
-  const rows: TranListItemDto[] = useMemo(() => data?.transactions ?? [], [data]);
-  const pageNumber = data?.pageNumber ?? FIRST_PAGE;
-  const hasNextPage = data?.nextPage ?? false;
+  /*
+   * The last browse that SUCCEEDED, held so a failed one does not blank the screen.
+   * COTRN00C re-sends the map with ``SET SEND-ERASE-NO TO TRUE`` whenever it publishes a
+   * message about a browse it did not perform -- both paging-boundary branches do exactly
+   * that -- so the rows already painted, and the page number beside them, stay on screen
+   * while line 23 carries the message. Dropping them would discard the operator's browse
+   * position on a message that never claimed the position had changed.
+   */
+  const [lastPage, setLastPage] = useState<TranListResponseDto | null>(null);
+  useEffect(() => {
+    if (data !== null) {
+      setLastPage(data);
+    }
+  }, [data]);
+  const shown = data ?? lastPage;
+
+  const rows: TranListItemDto[] = useMemo(() => shown?.transactions ?? [], [shown]);
+  const pageNumber = shown?.pageNumber ?? FIRST_PAGE;
+  const hasNextPage = shown?.nextPage ?? false;
+  // The message belongs to the CURRENT turn alone: a stale success message must not
+  // reappear beside a fresh failure, so it is never taken from the held page.
   const serverMessage = data?.message ?? '';
-  const serverTranIdFirst = data?.tranIdFirst ?? '';
-  const serverTranIdLast = data?.tranIdLast ?? '';
+  const serverTranIdFirst = shown?.tranIdFirst ?? '';
+  const serverTranIdLast = shown?.tranIdLast ?? '';
 
   // Read the first forward page on entry, from the top of the file.
   useEffect(() => {
@@ -182,7 +224,12 @@ export default function TranListPage(): ReactElement {
   }, [run]);
 
   const handleFilterChange = useCallback((value: string): void => {
-    setTranIdFilter(value);
+    // ``TRNIDIN DFHMDF ... LENGTH=16`` (COTRN00.bms L95-99): the field cannot hold a
+    // seventeenth character, so neither can this one. Applying the limit here rather
+    // than relying on ``maxlength`` alone means a pasted or programmatically supplied
+    // over-length value is refused at the field instead of being clipped on its way to
+    // the browse, so what is submitted is always what is on display.
+    setTranIdFilter(limitToFieldWidth(value, TRAN_ID_LENGTH));
   }, []);
 
   const handleSelectionChange = useCallback((fieldName: string, value: string): void => {
@@ -196,6 +243,12 @@ export default function TranListPage(): ReactElement {
    *     first forward page.
    */
   const handleEnter = useCallback((): void => {
+    // The 3270 keyboard is locked from the moment an attention identifier is sent
+    // until the next map arrives, so an ENTER pressed while the browse is outstanding
+    // is inhibited rather than sent a second time.
+    if (isInFlight()) {
+      return;
+    }
     let selectedFlag = '';
     let selectedTranId = '';
     for (const [index, row] of rows.entries()) {
@@ -218,24 +271,37 @@ export default function TranListPage(): ReactElement {
       return;
     }
 
-    const filter = tranIdFilter.trim();
-    if (filter !== '' && !NUMERIC_PATTERN.test(filter)) {
+    // L206-217 edits the field as received: ``EQUAL SPACES OR LOW-VALUES`` browses from
+    // LOW-VALUES, and anything else must be NUMERIC. The test is on the raw value, so a
+    // tab or a surrounding space is reported rather than trimmed away — trimming first
+    // is what let a tab browse the whole file while reporting success, and what let
+    // ``" 15 "`` stay on the screen while ``15`` went on the wire.
+    const supplied = !isFilterNotSupplied(tranIdFilter);
+    if (supplied && !isFilterAllDigits(tranIdFilter)) {
       setValidationMessage(MSG_TRAN_ID_NUMERIC);
       return;
     }
+    const filter = supplied ? tranIdFilter : '';
 
     setValidationMessage('');
     setSelectionFlags({});
     void run(filter === '' ? {} : { tranIdFilter: filter });
-  }, [navigate, rows, run, selectionFlags, tranIdFilter]);
+  }, [isInFlight, navigate, rows, run, selectionFlags, tranIdFilter]);
 
   /**
    * :purpose: PF7 — page backward. The key is never withdrawn: ``PROCESS-PF7-KEY``
    *     receives the AID unconditionally and its own ``IF CDEMO-CT00-PAGE-NUM > 1``
    *     branch decides between browsing and re-sending the screen with the
    *     top-boundary message, so the AID is always sent and the service decides.
+   * :note: Inhibited while a browse is outstanding (the locked keyboard). The browse
+   *     is keyed by the boundary ids of the page CURRENTLY displayed, so accepting a
+   *     second press before the first answered would re-send the same key and lose
+   *     the step.
    */
   const handleBackward = useCallback((): void => {
+    if (isInFlight()) {
+      return;
+    }
     setValidationMessage('');
     setSelectionFlags({});
     void run({
@@ -245,7 +311,7 @@ export default function TranListPage(): ReactElement {
       tranIdLast: serverTranIdLast,
       nextPage: hasNextPage,
     });
-  }, [hasNextPage, pageNumber, run, serverTranIdFirst, serverTranIdLast]);
+  }, [hasNextPage, isInFlight, pageNumber, run, serverTranIdFirst, serverTranIdLast]);
 
   /**
    * :purpose: PF8 — page forward. Also never withdrawn: ``PROCESS-PF8-KEY`` tests
@@ -253,6 +319,9 @@ export default function TranListPage(): ReactElement {
    *     bottom-boundary message.
    */
   const handleForward = useCallback((): void => {
+    if (isInFlight()) {
+      return;
+    }
     setValidationMessage('');
     setSelectionFlags({});
     void run({
@@ -262,7 +331,7 @@ export default function TranListPage(): ReactElement {
       tranIdLast: serverTranIdLast,
       nextPage: hasNextPage,
     });
-  }, [hasNextPage, pageNumber, run, serverTranIdFirst, serverTranIdLast]);
+  }, [hasNextPage, isInFlight, pageNumber, run, serverTranIdFirst, serverTranIdLast]);
 
   /** :purpose: PF3 — leave the screen for the main menu (legacy ``COMEN01C``). */
   const handleExit = useCallback((): void => {
@@ -283,34 +352,55 @@ export default function TranListPage(): ReactElement {
   // completed map send rather than by mount alone.
   const filterRef = useInitialFocus<HTMLInputElement>();
   useFocusOnSettled(loading, filterRef);
+  // A browse boundary or an empty result keeps the RED COTRN00.bms declares statically
+  // but is announced politely rather than as an alert. The cursor still returns to the
+  // filter for either kind of outcome.
+  const noticeMessage = isBrowseNotice(errorMessage) ? errorMessage : '';
+  const alertMessage = noticeMessage === '' ? errorMessage : '';
+
   useFocusOnChange(errorMessage === '' ? null : errorMessage, filterRef);
 
-  useEffect(() => {
+  // The activators published to the shared frame are identity-stable and always
+  // dispatch to the newest render's handler, so the line-24 legend is not rebuilt on
+  // every keystroke and an AID can never act on a value the screen has replaced.
+  const activateEnter = useScreenAction(handleEnter);
+  const activateExit = useScreenAction(handleExit);
+  const activateBackward = useScreenAction(handleBackward);
+  const activateForward = useScreenAction(handleForward);
+
+  // The frame's header, line-23 message region and line-24 key legend belong to the
+  // SAME map as this body, so they are published in a LAYOUT effect: a CICS program
+  // moved every field into the symbolic map before its one SEND, and nothing
+  // half-built ever reached the terminal. A passive effect would paint the frame
+  // once without them and then move it.
+  useLayoutEffect(() => {
     // Every key the mapset's line-24 legend declares is registered and stays live:
     // COTRN00C rewrites nothing away, and each handler's own branch — or the service's
     // — decides the outcome, so gating a key here would make that branch unreachable.
     const pfKeys: PFKeyDef[] = [
-      { action: PfKeyAction.Enter, label: SUBMIT_LABEL, onActivate: handleEnter },
-      { action: PfKeyAction.PF3, label: EXIT_LABEL, onActivate: handleExit },
-      { action: PfKeyAction.PF7, label: BACKWARD_LABEL, onActivate: handleBackward },
-      { action: PfKeyAction.PF8, label: FORWARD_LABEL, onActivate: handleForward },
+      { action: PfKeyAction.Enter, label: SUBMIT_LABEL, onActivate: activateEnter },
+      { action: PfKeyAction.PF3, label: EXIT_LABEL, onActivate: activateExit },
+      { action: PfKeyAction.PF7, label: BACKWARD_LABEL, onActivate: activateBackward },
+      { action: PfKeyAction.PF8, label: FORWARD_LABEL, onActivate: activateForward },
     ];
     setChrome({
       transactionId: TRANSACTION_ID,
       programName: PROGRAM_NAME,
       title01: CCDA_TITLE01,
       title02: CCDA_TITLE02,
-      errorMessage,
+      errorMessage: alertMessage,
+      noticeMessage,
       infoMessage,
       pfKeys,
       busy: loading,
     });
   }, [
-    errorMessage,
-    handleBackward,
-    handleEnter,
-    handleExit,
-    handleForward,
+    activateBackward,
+    activateEnter,
+    activateExit,
+    activateForward,
+    alertMessage,
+    noticeMessage,
     infoMessage,
     loading,
     setChrome,
@@ -319,7 +409,9 @@ export default function TranListPage(): ReactElement {
   return (
     <section className="tranList" aria-label={SCREEN_NAME}>
       <div className="screenTitleLine">
-        <h2 className="title">{SCREEN_NAME}</h2>
+        {/* COTRN00 row 4 declares the screen name COLOR=NEUTRAL, not the YELLOW of
+            the two header title lines. */}
+        <h3 className="neutral">{SCREEN_NAME}</h3>
         <p className="screenTitleLine__page">
           <span className="prompt">{PAGE_LABEL}</span>{' '}
           <span className="label" data-testid="page-number">
@@ -349,7 +441,38 @@ export default function TranListPage(): ReactElement {
           />
         </div>
 
-        <table className="dataTable">
+        <div
+          className="tableScroll"
+          role="group"
+          aria-label={TABLE_REGION_LABEL}
+          tabIndex={0}
+        >
+        <table
+          className="dataTable dataTable--fixed"
+          style={{ minWidth: `${String(TABLE_MIN_WIDTH_CH)}ch` }}
+        >
+          {/*
+            The BMS rule runs under each caption ARE the column widths -- COTRN00 row 9
+            paints 3 / 16 / 8 / 26 / 12 hyphens -- so they are declared here and the table
+            is laid out from them rather than from its content. Content-driven layout made
+            every header cell move as rows arrived, changed or emptied, which a 3270 column
+            never does. The last column is left to absorb the slack so the right-aligned
+            Amount stays against the right edge of the frame, where the mapset puts it;
+            the table's own floor width (TABLE_MIN_WIDTH_CH) is what stops that slack from
+            being negative on a narrow viewport and collapsing the column to nothing.
+          */}
+          <colgroup>
+            {COLUMNS.map((column, index) => (
+              <col
+                key={column.caption}
+                style={
+                  index === COLUMNS.length - 1
+                    ? undefined
+                    : { width: `${String(column.rule.length + 2)}ch` }
+                }
+              />
+            ))}
+          </colgroup>
           <thead>
             <tr>
               {COLUMNS.map((column) => (
@@ -358,16 +481,31 @@ export default function TranListPage(): ReactElement {
                 </th>
               ))}
             </tr>
+            {/*
+              COTRN00 row 9 paints a run of hyphens under each caption -- 3, 16, 8, 26
+              and 12 characters at columns 2, 8, 27, 38 and 67 -- with the gaps between
+              them left blank. The row is decoration, so it is hidden from assistive
+              technology and takes no part in the header associations.
+            */}
+            <tr className="dataTable__rule" aria-hidden="true">
+              {COLUMNS.map((column) => (
+                <td key={column.caption} className={column.className}>
+                  {column.rule}
+                </td>
+              ))}
+            </tr>
           </thead>
           <tbody>
-            {rows.length === 0 ? (
-              <tr>
-                <td className="neutral" colSpan={COLUMNS.length} data-testid="tran-list-empty">
-                  {EMPTY_ROW_TEXT}
-                </td>
-              </tr>
-            ) : (
-              rows.map((row: TranListItemDto, index: number) => {
+            {/*
+              An empty result renders NO row. COTRN00C paints no "nothing found" literal
+              into the body: it leaves the ten row fields at LOW-VALUES and publishes its
+              message on line 23, so an invented placeholder row would be output the
+              program never produces -- and a non-data row inside the body also picks up
+              the row hover treatment, which belongs to selectable rows alone. Nothing is
+              claimed about a browse that has not answered either, which is the state the
+              screen is in before its first read settles.
+            */}
+            {rows.map((row: TranListItemDto, index: number) => {
                 const fieldName = selectionFieldName(index);
                 const flag = displayText(selectionFlags[fieldName]);
                 const tranId = displayText(row.tranId);
@@ -398,10 +536,10 @@ export default function TranListPage(): ReactElement {
                     <td className="amount">{displayText(row.tranAmt)}</td>
                   </tr>
                 );
-              })
-            )}
+            })}
           </tbody>
         </table>
+        </div>
 
       </div>
 

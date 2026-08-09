@@ -35,11 +35,20 @@ export interface BillPayRequestDto {
  * :field currentBalance: account balance as a decimal money string.
  * :field transactionId: 16-digit zero-padded id of the posted bill-payment
  *   transaction, or ``null`` when no payment was made (declined).
- * :field message: confirmation ("Payment successful...") or error text, or ``null``.
+ * :field message: message the screen reports as a SUCCESS — the confirm prompt or
+ *   the ``Payment successful. ...`` banner — or ``null``.
+ * :field errorMessage: message the screen reports as an ERROR while still
+ *   redisplaying its data — currently only ``You have nothing to pay...`` — or
+ *   ``null``. ``COBIL00`` declares ONE message field, ``ERRMSG POS=(23,1)
+ *   COLOR=RED``, whose colour ``COBIL00C`` overrides with ``MOVE DFHGREEN TO
+ *   ERRMSGC`` on the successful-payment branch alone; the colour therefore carries
+ *   information the text does not, and it travels as the CHOICE of member. At most
+ *   one of the two is ever populated.
  */
 export interface BillPayResponseDto {
   accountId: string;
   currentBalance: string;
   transactionId: string | null;
   message: string | null;
+  errorMessage?: string | null;
 }

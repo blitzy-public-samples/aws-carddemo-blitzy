@@ -248,6 +248,22 @@
             <scope>test</scope>
         </dependency>
 
+        <!--
+          PostgreSQL JDBC driver, TEST scope only. The service modules bring the driver at
+          runtime scope for their own datasource; this module needs it only so its OWN
+          integration tests can reach the migrated container that its test-support classes
+          start (MigratedSchemaContainer / CardDemoSchemaMigrations). Without it Flyway
+          reports "No JDBC driver found to handle jdbc:postgresql://…" the moment a test in
+          this module - rather than in a consuming service - touches that container. Version
+          is managed by the Spring Boot BOM and overridden to a patched release by the root
+          POM's ${postgresql.version}.
+        -->
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
+
     </dependencies>
 
     <build>

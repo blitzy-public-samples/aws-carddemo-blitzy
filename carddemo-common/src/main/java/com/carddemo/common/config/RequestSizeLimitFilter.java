@@ -83,7 +83,7 @@ public class RequestSizeLimitFilter extends OncePerRequestFilter {
                                     FilterChain filterChain) throws ServletException, IOException {
         long declaredLength = request.getContentLengthLong();
         if (declaredLength > maxBodyBytes) {
-            reject(response);
+            reject(response, request.getRequestURI());
             return;
         }
         if (declaredLength >= 0) {
@@ -103,7 +103,7 @@ public class RequestSizeLimitFilter extends OncePerRequestFilter {
             if (!isSizeExceededSignal(ex)) {
                 throw ex;
             }
-            reject(response);
+            reject(response, request.getRequestURI());
         }
     }
 
@@ -131,9 +131,10 @@ public class RequestSizeLimitFilter extends OncePerRequestFilter {
      * :purpose: Complete the response with ``413`` without starting the container
      *     ``ERROR`` dispatch.
      * :param response: the response to complete.
+     * :param requestPath: the request path echoed in the error envelope.
      */
-    private void reject(HttpServletResponse response) {
-        respond(response, HttpStatus.CONTENT_TOO_LARGE);
+    private void reject(HttpServletResponse response, String requestPath) {
+        respond(response, HttpStatus.CONTENT_TOO_LARGE, requestPath);
     }
 
     /**
@@ -141,8 +142,9 @@ public class RequestSizeLimitFilter extends OncePerRequestFilter {
      *     container ``ERROR`` dispatch.
      * :param response: the response to complete.
      * :param status: the status to report.
+     * :param requestPath: the request path echoed in the error envelope.
      */
-    private void respond(HttpServletResponse response, HttpStatus status) {
+    private void respond(HttpServletResponse response, HttpStatus status, String requestPath) {
         if (response.isCommitted()) {
             return;
         }
@@ -152,10 +154,12 @@ public class RequestSizeLimitFilter extends OncePerRequestFilter {
         // so the id is restored after the reset.
         String correlationId = CorrelationIdContext.getCorrelationId();
         response.reset();
-        response.setStatus(status.value());
         if (correlationId != null && !correlationId.isBlank()) {
             response.setHeader(CorrelationIdFilter.CORRELATION_ID_HEADER, correlationId);
         }
+        // The refusal is answered with the documented envelope rather than a bare status
+        // with no body, so a client parses ONE error shape for every failure of this API.
+        ErrorEnvelopeWriter.write(response, status, requestPath);
     }
 
 

@@ -185,6 +185,21 @@
         </dependency>
 
         <!--
+          Awaitility, for the two integration classes that must wait for an
+          ASYNCHRONOUSLY launched Spring Batch execution to reach a terminal status.
+          A fixed sleep either flakes on a loaded host or wastes the whole budget on a
+          fast one; Awaitility polls the execution and returns as soon as it is done,
+          and fails with the observed state rather than with a bare assertion.
+          Version managed by the Spring Boot BOM. Rationale: docs/decision-log.md,
+          section 53.4.
+        -->
+        <dependency>
+            <groupId>org.awaitility</groupId>
+            <artifactId>awaitility</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!--
           Spring MVC test slice: supplies @WebMvcTest, which refreshes a real web
           application context (and therefore a real RequestMappingHandlerMapping) so a
           duplicate request mapping fails the build instead of the deployment.
