@@ -119,26 +119,28 @@ class PresentationAndProseContractTest {
         List<String> properties =
                 List.of(
                         "--blitzy-primary: #5B39F3;",
-                        "--blitzy-primary-dark: #4626D3;",
-                        "--blitzy-primary-navy: #15112B;",
-                        "--blitzy-primary-light: #F2F0FE;",
-                        "--blitzy-primary-deep: #2D176D;",
-                        "--blitzy-accent-teal: #2CE0C5;",
+                        "--blitzy-primary-dark: #2D1C77;",
+                        "--blitzy-primary-navy: #1A105F;",
+                        "--blitzy-primary-light: #7A6DEC;",
+                        "--blitzy-primary-deep: #4101DB;",
+                        "--blitzy-accent-teal: #94FAD5;",
                         "--blitzy-surface-0: #FFFFFF;",
-                        "--blitzy-surface-1: #FAF9FD;",
-                        "--blitzy-surface-2: #F4EFF6;",
-                        "--blitzy-surface-3: #F8F7FB;",
-                        "--blitzy-border: #D8D3E3;",
-                        "--blitzy-border-soft: #ECE9F2;",
+                        "--blitzy-surface-1: #F4EFF6;",
+                        "--blitzy-surface-2: #F2F0FE;",
+                        "--blitzy-surface-3: #F5F5F5;",
+                        "--blitzy-border: #D9D9D9;",
+                        "--blitzy-border-soft: rgba(91, 57, 243, 0.18);",
                         "--blitzy-text: #333333;",
-                        "--blitzy-text-muted: #6F6A7A;",
+                        "--blitzy-text-muted: #999999;",
                         "--blitzy-text-invert: #FFFFFF;",
-                        "--ff-body: \"Inter\", sans-serif;",
-                        "--ff-display: \"Space Grotesk\", sans-serif;",
-                        "--ff-mono: \"Fira Code\", monospace;",
-                        "--gradient-hero:",
-                        "--gradient-divider:",
-                        "--gradient-accent-bar:");
+                        "--ff-body: 'Inter', system-ui, sans-serif;",
+                        "--ff-display: 'Space Grotesk', 'Inter', sans-serif;",
+                        "--ff-mono: 'Fira Code', 'Courier New', monospace;",
+                        "--gradient-hero: linear-gradient(68deg, #7A6DEC 15.56%, #5B39F3 62.74%,"
+                                + " #4101DB 84.44%);",
+                        "--gradient-divider: linear-gradient(135deg, #2D1C77 0%, #5B39F3 100%);",
+                        "--gradient-accent-bar: linear-gradient(90deg, #5B39F3 0%, #94FAD5"
+                                + " 100%);");
         properties.forEach(property -> assertTrue(deck.contains(property), property));
 
         List<String> classes =

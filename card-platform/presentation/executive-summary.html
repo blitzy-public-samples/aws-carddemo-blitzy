@@ -9,28 +9,37 @@
   <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&amp;family=Inter:wght@400;500;600;700&amp;family=Space+Grotesk:wght@500;600;700&amp;display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.css">
   <style>
+    /* Blitzy brand tokens. */
     :root {
       --blitzy-primary: #5B39F3;
-      --blitzy-primary-dark: #4626D3;
-      --blitzy-primary-navy: #15112B;
-      --blitzy-primary-light: #F2F0FE;
-      --blitzy-primary-deep: #2D176D;
-      --blitzy-accent-teal: #2CE0C5;
+      --blitzy-primary-dark: #2D1C77;
+      --blitzy-primary-navy: #1A105F;
+      --blitzy-primary-light: #7A6DEC;
+      --blitzy-primary-deep: #4101DB;
+      --blitzy-accent-teal: #94FAD5;
       --blitzy-surface-0: #FFFFFF;
-      --blitzy-surface-1: #FAF9FD;
-      --blitzy-surface-2: #F4EFF6;
-      --blitzy-surface-3: #F8F7FB;
-      --blitzy-border: #D8D3E3;
-      --blitzy-border-soft: #ECE9F2;
+      --blitzy-surface-1: #F4EFF6;
+      --blitzy-surface-2: #F2F0FE;
+      --blitzy-surface-3: #F5F5F5;
+      --blitzy-border: #D9D9D9;
+      --blitzy-border-soft: rgba(91, 57, 243, 0.18);
       --blitzy-text: #333333;
-      --blitzy-text-muted: #6F6A7A;
+      --blitzy-text-muted: #999999;
       --blitzy-text-invert: #FFFFFF;
-      --ff-body: "Inter", sans-serif;
-      --ff-display: "Space Grotesk", sans-serif;
-      --ff-mono: "Fira Code", monospace;
-      --gradient-hero: linear-gradient(135deg, #2D176D 0%, #5B39F3 55%, #2CE0C5 100%);
-      --gradient-divider: linear-gradient(135deg, #15112B 0%, #2D176D 100%);
-      --gradient-accent-bar: linear-gradient(90deg, #5B39F3 0%, #2CE0C5 100%);
+      --ff-body: 'Inter', system-ui, sans-serif;
+      --ff-display: 'Space Grotesk', 'Inter', sans-serif;
+      --ff-mono: 'Fira Code', 'Courier New', monospace;
+      --gradient-hero: linear-gradient(68deg, #7A6DEC 15.56%, #5B39F3 62.74%, #4101DB 84.44%);
+      --gradient-divider: linear-gradient(135deg, #2D1C77 0%, #5B39F3 100%);
+      --gradient-accent-bar: linear-gradient(90deg, #5B39F3 0%, #94FAD5 100%);
+    }
+
+    /* Deck-local layout values, kept out of the brand token block above. */
+    :root {
+      --stage-pad-block: 70px;
+      --stage-pad-inline: 92px;
+      --card-radius: 22px;
+      --shadow-card: 0 16px 42px rgba(26, 16, 95, 0.09);
     }
 
     * {
@@ -56,7 +65,8 @@
 
     .reveal .slides section {
       height: 100%;
-      padding: 70px 92px;
+      padding-block: var(--stage-pad-block);
+      padding-inline: var(--stage-pad-inline);
     }
 
     .reveal h1,
@@ -96,13 +106,15 @@
       margin: 0.55em 0 0 1.1em;
     }
 
+    /* Inline monospace for short expressions and document names. */
     .reveal code {
-      background: var(--blitzy-primary-light);
+      background: var(--blitzy-surface-2);
       border-radius: 8px;
       color: var(--blitzy-primary-deep);
       font-family: var(--ff-mono);
       font-size: 0.83em;
-      padding: 0.08em 0.34em;
+      padding-block: 0.08em;
+      padding-inline: 0.34em;
     }
 
     .slide-title {
@@ -120,6 +132,9 @@
       color: var(--blitzy-text-invert);
     }
 
+    /* BLITZY [A11Y]: teal #94FAD5 over the lighter hero gradient stop computes about 3.2:1,
+       under the WCAG AA minimum for this text size. Flagged for designer review; the token
+       value stays as enumerated. */
     .slide-title .eyebrow {
       color: var(--blitzy-accent-teal);
     }
@@ -145,10 +160,15 @@
 
     .slide-closing {
       align-content: center;
-      background: var(--gradient-divider);
+      background: var(--blitzy-primary-navy);
       color: var(--blitzy-text-invert);
       display: grid !important;
       gap: 28px;
+    }
+
+    /* Paints the full-viewport background element reveal generates for the closing slide. */
+    .reveal .slide-background.slide-closing {
+      background-color: var(--blitzy-primary-navy);
     }
 
     .slide-closing h2,
@@ -168,8 +188,8 @@
     .kpi-card {
       background: var(--blitzy-surface-0);
       border: 1px solid var(--blitzy-border-soft);
-      border-radius: 22px;
-      box-shadow: 0 16px 42px rgba(45, 23, 109, 0.09);
+      border-radius: var(--card-radius);
+      box-shadow: var(--shadow-card);
       min-height: 220px;
       padding: 28px;
     }
@@ -184,6 +204,9 @@
       margin: 24px 0 14px;
     }
 
+    /* BLITZY [A11Y]: muted #999999 on surface-0 computes about 2.85:1, under the WCAG AA
+       minimum of 4.5:1. Flagged for designer review; the token value stays as enumerated.
+       The same pairing appears in .diagram-legend and .reveal .slide-number. */
     .kpi-label {
       color: var(--blitzy-text-muted);
       font-size: 0.72em;
@@ -266,6 +289,13 @@
       height: 112px;
       stroke-width: 1.4;
       width: 112px;
+    }
+
+    .closing-icon {
+      color: var(--blitzy-accent-teal);
+      height: 84px;
+      stroke-width: 1.5;
+      width: 84px;
     }
 
     .mermaid-frame {
@@ -397,7 +427,7 @@
     .slide-title .slide-number,
     .slide-divider .slide-number,
     .slide-closing .slide-number {
-      color: rgba(255, 255, 255, 0.55);
+      color: rgba(255, 255, 255, 0.72);
     }
   </style>
 </head>
@@ -437,13 +467,13 @@
           </div>
           <div class="kpi-card">
             <i class="kpi-icon" data-lucide="shield-alert" aria-hidden="true"></i>
-            <div class="kpi-value">59</div>
+            <div class="kpi-value">65</div>
             <div class="kpi-label">Business-rule findings surfaced</div>
           </div>
           <div class="kpi-card">
             <i class="kpi-icon" data-lucide="list-checks" aria-hidden="true"></i>
             <div class="kpi-value">300</div>
-            <div class="kpi-label">Primary posting fixture records</div>
+            <div class="kpi-label">Primary posting sample records</div>
           </div>
         </div>
       </section>
@@ -452,7 +482,7 @@
         <span class="slide-number">03</span>
         <div class="eyebrow">Architecture</div>
         <h2>Figure 1 — From shared files to owned schemas</h2>
-        <p>Figure 1 pairs the source state with the delivered event-driven state. The full view is in <code>docs/architecture-before-after.md</code>.</p>
+        <p>Figure 1 pairs the source state with the delivered event-driven state. Every one of the eight legacy datasets ran with recovery and journalling switched off. The full view is in <code>docs/architecture-before-after.md</code>.</p>
         <div class="mermaid-frame">
           <pre class="mermaid">
 graph LR
@@ -462,7 +492,6 @@ graph LR
     J["Nightly JCL batch chain"]
     C -.-> V[("8 shared VSAM datasets")]
     J -.-> V
-    X["Recovery and journalling disabled"] -.-> V
   end
   subgraph A["After"]
     direction TB
@@ -471,10 +500,10 @@ graph LR
     K ==> L["ledger-posting-service"]
     K ==> F["fraud-detection-service"]
     K ==> N["notification-service"]
-    U -.-> D[("6 private schemas")]
-    L -.-> D
-    F -.-> D
-    N -.-> D
+    U -.-> DU[("own schema")]
+    L -.-> DL[("own schema")]
+    F -.-> DF[("own schema")]
+    N -.-> DN[("own schema")]
   end
   V ~~~ R
           </pre>
@@ -492,7 +521,7 @@ graph LR
         <span class="slide-number">05</span>
         <div class="eyebrow">Independent reactions</div>
         <h2>Figure 2 — One outcome event starts the work</h2>
-        <p>Each call emits one outcome event. Three services read that one event, each under its own consumer group. No consumer calls another; topics carry every downstream handoff.</p>
+        <p>Figure 2 shows one outcome event starting three independent reactions. No arrow joins the three consumers, so none of them waits on another. Detail is in <code>docs/event-flow.md</code>.</p>
         <div class="mermaid-frame">
           <pre class="mermaid">
 graph LR
@@ -511,7 +540,7 @@ graph LR
   FA -.-> DL
           </pre>
         </div>
-        <div class="diagram-legend">Legend: solid arrow = request · double arrow = publish or consume · dotted arrow = failed-message route · Figure 2 is detailed in docs/event-flow.md</div>
+        <div class="diagram-legend">Legend: solid arrow = synchronous request · double arrow = event publish or consume · dotted arrow = failed-message route · hexagon = topic</div>
       </section>
 
       <section class="slide-divider">
@@ -537,7 +566,7 @@ graph LR
               <td>Account state can reflect accepted transactions without waiting for the scheduled chain.</td>
             </tr>
             <tr>
-              <td>Fraud detection consumes an existing event and has no legacy ancestor.</td>
+              <td>Fraud detection reads an event that already existed and had no counterpart in the original system.</td>
               <td>A new capability can arrive without changing the authorization service.</td>
             </tr>
             <tr>
@@ -545,7 +574,7 @@ graph LR
               <td>Deployments and schema changes stay inside an explicit boundary.</td>
             </tr>
             <tr>
-              <td>Sixty-five ambiguous rules carry file and line citations.</td>
+              <td>Sixty-five flagged source rules carry file and line citations.</td>
               <td>Owners can approve behavior changes without guessing at source intent.</td>
             </tr>
           </tbody>
@@ -621,7 +650,7 @@ graph LR
             </tr>
             <tr>
               <td>9 sample data files</td>
-              <td>Reused as fixtures by 6 required equivalence test classes</td>
+              <td>Reused by 9 required equivalence test classes</td>
             </tr>
           </tbody>
         </table>
@@ -647,7 +676,7 @@ graph LR
           <tbody>
             <tr>
               <td>Parity uses documented behavior and checked-in sample data, not a live original run.</td>
-              <td>The equivalence suite is a required build stage with published fixture results.</td>
+              <td>The equivalence suite is a required build stage, and its results are published.</td>
             </tr>
             <tr>
               <td>Two known source defects remain for parity.</td>
@@ -675,11 +704,12 @@ graph LR
         <span class="slide-number">14</span>
         <div class="eyebrow">Dependency order</div>
         <h2>Figure 3 — Each capability starts from a proven contract</h2>
+        <p>Figure 3 orders delivery by dependency. Equivalence checks run alongside every stage, not after the last one.</p>
         <div class="mermaid-frame">
           <pre class="mermaid">
 graph LR
   E["event-contracts library compiles"] --> A["First authorization service and event bus"]
-  C["Continuous equivalence suite with fixtures and compatibility library"] --> A
+  C["Continuous equivalence suite with sample data and compatibility library"] --> A
   A --> L["Second ledger posting"]
   A --> F["Third fraud detection"]
   L --> N["Fourth notification"]
@@ -696,7 +726,7 @@ graph LR
         <span class="slide-number">15</span>
         <div class="eyebrow">Ready to extend</div>
         <h2>Developers get a tested path into the system</h2>
-        <p><code>docs/onboarding.md</code> starts the demo; <code>docs/suggested-next-tasks.md</code> carries the approved follow-on queue.</p>
+        <p><code>docs/onboarding.md</code> takes a clean machine to a running stack; <code>docs/suggested-next-tasks.md</code> lists the follow-on work.</p>
         <div class="icon-row" aria-label="Onboarding and extension paths">
           <div>
             <i data-lucide="zap" aria-hidden="true"></i>
@@ -719,6 +749,7 @@ graph LR
 
       <section class="slide-closing">
         <span class="slide-number">16</span>
+        <i class="closing-icon" data-lucide="circle-check" aria-hidden="true"></i>
         <div class="eyebrow">Executive takeaway</div>
         <h2>One event, three independent consumers</h2>
         <ul class="closing-links">

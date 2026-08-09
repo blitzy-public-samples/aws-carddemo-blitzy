@@ -41,67 +41,69 @@ Note that the intent of this application is to provide mainframe coding scenario
 
 ## Modernized card platform
 
-A forward-engineered, event-driven implementation of this application's card-processing behaviour lives
-under [card-platform/](card-platform/). It is a pure addition: nothing under `app/`, `diagrams/` or
-`samples/` changes, and nothing in it calls the mainframe at runtime.
+The `card-platform/` directory reimplements the card-authorization path as six event-driven services, written in Java 25 on Spring Boot 4.1.0 over Apache Kafka and PostgreSQL. Each service deploys on its own and owns a private PostgreSQL schema no other service reads. The services reproduce the documented behaviour of the COBOL programs under `app/`. Nothing under `app/`, `diagrams/` or `samples/` changed, and no service calls the mainframe at runtime.
 
-Six independently deployable services written in Java 25 on Spring Boot 4.1.0 replace the online
-authorization path and the nightly posting job. They exchange events over Apache Kafka, and each owns a
-private PostgreSQL schema no other service reads. One synchronous authorization call publishes one
-event, and two services consume it independently; what those two publish is what reaches the third.
+A client calls one Representational State Transfer (REST) endpoint, `POST /authorizations`, which only `authorization-service` serves. That call publishes exactly one `TransactionAuthorized` event, and `authorization-service` is the only service that writes the decision. The `ledger-posting-service`, `fraud-detection-service` and `notification-service` each consume that event in their own consumer group. None of the three calls another, and none of them blocks the authorization response.
+
+Each row below names the source work a service took over. The programs sit under `app/cbl/` and the batch jobs under `app/jcl/`.
 
 | Service | Replaces |
 | :--- | :--- |
-| `authorization-service` | The synchronous authorization decision, from the validation rules of `app/cbl/CBTRN02C.cbl` and the request contract of `app/cbl/COTRN02C.cbl` |
-| `ledger-posting-service` | The `POSTTRAN` job, run once per event in place of once per night |
-| `fraud-detection-service` | Nothing. A new capability with no COBOL ancestor |
-| `notification-service` | The cardholder-facing tail of `app/cbl/CBSTM03A.CBL` |
-| `account-service` | `COACTVWC` and `COACTUPC`, plus the billing-cycle close |
+| `authorization-service` | The authorization decision: the validation rules of `CBTRN02C` and the request contract of `COTRN02C` |
+| `ledger-posting-service` | The `POSTTRAN` posting job, run once per event instead of once per night |
+| `fraud-detection-service` | Nothing. A capability the COBOL source never had |
+| `notification-service` | The cardholder-facing tail of `CBSTM03A` |
+| `account-service` | `COACTVWC` and `COACTUPC`, plus the billing-cycle reset from `CBACT04C` |
 | `card-service` | `COCRDLIC`, `COCRDSLC` and `COCRDUPC` |
 
-Interest calculation and full statement generation stay as batch processes and are not migrated.
+Interest calculation and full statement generation stay as scheduled batch work, and neither is migrated.
 
-**Getting it running takes a laptop, not a mainframe.** The instructions below in this file describe the
-z/OS installation path and remain accurate for it. For the modernized platform, start here:
+**Running the platform needs a laptop, not a mainframe.** The z/OS instructions below cover the mainframe application and remain accurate. For the platform, start with the onboarding guide:
 
-- [card-platform/docs/onboarding.md](card-platform/docs/onboarding.md) takes a clean machine to a running
-  platform, and lists the five pitfalls that cost time during the build.
-- [card-platform/README.md](card-platform/README.md) is the map of the platform.
-- [card-platform/docs/traceability-matrix.md](card-platform/docs/traceability-matrix.md) maps every one of
-  the 28 programs and 28 copybooks to a target or to a stated exclusion.
-- [card-platform/docs/business-rule-flags.md](card-platform/docs/business-rule-flags.md) records every
-  business rule in this source that is ambiguous, undocumented or inconsistent, with citations.
+- [card-platform/docs/onboarding.md](card-platform/docs/onboarding.md) takes a clean machine to a running platform, and lists the pitfalls that cost time during the build.
+- [card-platform/README.md](card-platform/README.md) maps the platform: its modules, endpoints, events and consumer groups.
+- [card-platform/docker-compose.yml](card-platform/docker-compose.yml) defines the eight demo containers: the six services, one Kafka broker and one PostgreSQL instance.
+- [card-platform/docs/architecture-before-after.md](card-platform/docs/architecture-before-after.md) holds the full-size before and after views.
+- [card-platform/docs/decision-log.md](card-platform/docs/decision-log.md) records why each choice was made, what else was considered, and what risk it carries.
+- [card-platform/docs/business-rule-flags.md](card-platform/docs/business-rule-flags.md) lists every COBOL business rule that reads as ambiguous, undocumented or inconsistent, with the file and line to open.
+- [card-platform/docs/equivalence-results.md](card-platform/docs/equivalence-results.md) reports parity against the original logic, measured with the nine fixtures under `app/data/ASCII/`.
+- [card-platform/docs/suggested-next-tasks.md](card-platform/docs/suggested-next-tasks.md) collects work found during the migration and left out of scope.
 
-Figure 1 compares the retained mainframe application with the independently deployable platform.
+Figure 1 pairs the two states. The BEFORE group shows Customer Information Control System (CICS) programs and Job Control Language (JCL) jobs sharing eight Virtual Storage Access Method (VSAM) datasets. The AFTER group shows one event reaching three consumers, each reading only its own schema.
 
-**Figure 1 — CardDemo Before and After: Shared CICS and VSAM Processing Becomes Event-Driven Services**
+**Figure 1 — CardDemo Before and After: Shared VSAM Datasets and a Nightly Batch Window Become One Event with Three Independent Consumers**
 
 ```mermaid
 graph LR
     subgraph BEFORE["BEFORE — retained mainframe application"]
+        direction TB
         TERM["3270 terminal"]
-        CICS["CICS programs"]
-        BATCH["JCL batch jobs"]
-        VSAM[("8 shared VSAM files")]
-        TERM --> CICS
-        CICS -.-> VSAM
+        ONLINE["CICS programs"]
+        BATCH["Nightly JCL batch"]
+        VSAM[("8 shared VSAM datasets")]
+        TERM --> ONLINE
+        ONLINE -.-> VSAM
         BATCH -.-> VSAM
     end
 
     subgraph AFTER["AFTER — card-platform"]
+        direction TB
         CLIENT["REST client"]
         AUTH["authorization-service"]
-        KAFKA{{"Kafka events"}}
-        CONSUMERS["ledger, fraud, notification"]
-        SUPPORT["account and card services"]
-        DATABASES[("6 private schemas")]
+        TOPIC{{"transaction.authorized"}}
+        LEDGER["ledger-posting-service"]
+        FRAUD["fraud-detection-service"]
+        NOTIFY["notification-service"]
+        SCHEMAS[("6 private schemas")]
         CLIENT --> AUTH
-        AUTH ==> KAFKA
-        KAFKA ==> CONSUMERS
-        SUPPORT ==> KAFKA
-        AUTH -.-> DATABASES
-        CONSUMERS -.-> DATABASES
-        SUPPORT -.-> DATABASES
+        AUTH ==> TOPIC
+        TOPIC ==> LEDGER
+        TOPIC ==> FRAUD
+        TOPIC ==> NOTIFY
+        AUTH -.-> SCHEMAS
+        LEDGER -.-> SCHEMAS
+        FRAUD -.-> SCHEMAS
+        NOTIFY -.-> SCHEMAS
     end
 
     VSAM ~~~ CLIENT
@@ -109,11 +111,11 @@ graph LR
 
 Legend for Figure 1:
 
-- Plain arrows show synchronous interaction or mainframe control flow.
-- Thick arrows show asynchronous Kafka publication and consumption.
-- Dotted arrows show access to persistent data.
-- Cylinders show shared files before modernization and private schemas after it.
-- The original application remains available through the installation path below.
+- Plain arrow: a synchronous call, from a terminal or from a client.
+- Thick arrow: an asynchronous Kafka publish or consume.
+- Dotted arrow: a read or a write of stored data.
+- Rectangle: a program, a batch job or a service. Cylinder: stored data. Hexagon: a Kafka topic.
+- No arrow crosses from the BEFORE group to the AFTER group, because no service calls the mainframe.
 
 <br/>
 
