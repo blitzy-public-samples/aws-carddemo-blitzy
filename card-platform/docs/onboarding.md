@@ -1,24 +1,26 @@
 # Onboarding
 
-This guide takes a clean machine to a running and modifiable CardDemo platform. The existing root `README.md` keeps the separate mainframe installation path. `CONTRIBUTING.md` still governs repository contributions and remains unchanged. Design rationale lives in the [decision log](decision-log.md).
+This guide takes a clean machine to a running, modifiable card platform, and assumes nothing is installed yet. The root [`README.md`](../../README.md) keeps the 324-line z/OS installation path, which is still accurate and is not repeated here. `CONTRIBUTING.md` governs how to contribute, in the same 59 lines, because nothing in this work changed what it says. Every "why" belongs to the [decision log](decision-log.md); this file tells you what to do.
 
 ## Setup
 
 ### Prerequisites
 
-Use the tested versions below. The container images are pinned and never use `latest`.
+Install the versions below. Each one is exact rather than a minimum. The build refuses an older Java and refuses Maven 4, and both container images are pinned by digest as well as by tag.
 
 | Tool | Exact version | Use |
 | :--- | :--- | :--- |
-| Eclipse Temurin OpenJDK | 25.0.4+7 | Compile and test Java 25 modules |
-| Apache Maven | 3.9.16 | Build the nine-module reactor |
-| Docker Engine | 29.7.0 | Run the demo stack |
-| Docker Compose | 5.3.1 | Start the broker, databases, and six services |
-| OpenSSL | 3.x command line | Generate disposable local passwords |
+| Eclipse Temurin OpenJDK | 25.0.4+7 | Compiles and runs all nine modules at release 25 |
+| Apache Maven | 3.9.16 | Builds the reactor. The enforcer refuses Maven 4 |
+| Docker Engine | 29.7.0 | Runs the demo stack |
+| Docker Compose | 5.3.1 | Starts the broker, the database, and the six services |
+| OpenSSL | 3.5.3 | Generates the local passwords and the card-token key |
 
-The runtime stack pulls `apache/kafka:4.2.1` and `postgres:18.4`. Kafka runs in Kafka Raft mode, so no ZooKeeper container exists.
+`jshell` arrives with the JDK, and the setup script needs it on the path.
 
-Spring Boot 4.1.0 supplies the dependency bill of materials. Most dependencies omit their own version and inherit the managed version.
+The stack runs two images, `apache/kafka:4.2.1` and `postgres:18.4`. Neither is ever `:latest`, and each carries a digest beside its tag. The broker version matches the Kafka client version the build resolves, which removes one class of demo-day failure. Kafka runs in Kafka Raft mode, so no ZooKeeper container exists.
+
+Spring Boot 4.1.0 supplies the dependency bill of materials, and almost every dependency omits its own version to inherit the managed one.
 
 ### Start with one command
 
@@ -29,7 +31,7 @@ cd card-platform
 scripts/start-demo.sh
 ```
 
-That is the whole first run. The script packages the reactor, creates `.env` from `.env.example`, fills all nineteen credentials, builds the six images, starts eight containers, and reads `/actuator/health` on each of the six management ports. It prompts for nothing, and re-running it changes no credential that already holds a value.
+That is the whole first run. The script packages the reactor, creates `.env` from `.env.example`, and fills all nineteen credentials. It builds the six images, starts eight containers, and reads `/actuator/health` on each of the six management ports. It prompts for nothing, and re-running it changes no credential that already holds a value.
 
 Three things a clean clone cannot skip, which is why `docker compose up -d --build` alone does not work:
 
@@ -41,7 +43,11 @@ The four demo passwords the script generates are written to `card-platform/.demo
 
 To prepare `.env` without starting anything, run `scripts/generate-env.sh` on its own. It reads the credential names out of `.env.example`, so adding a credential there extends it with no edit.
 
-Run it again after every `git pull`. An existing `.env` is reconciled rather than replaced: every assignment `.env.example` declares and your file does not carry is appended with the example's value, any credential among them is generated in the same run, and no value you already have is read or rewritten. Assignments your file carries that the example no longer declares are named in the output and left in place, because the script cannot tell a retired setting from one you chose. Two kinds of value get more than that. An assignment holding a key this repository publishes is replaced with a generated one, because the authorization and card services refuse to start on a published key and no placeholder marks it. An assignment whose value differs from the example's is reported with both values and left as you set it, which is where a start-up refusal after an upgrade usually comes from: a default this platform tightened looks like a working value in your file. The run ends by proving your file declares all 133 assignments, so a variable Compose requires cannot be silently absent — which is the failure that used to stop `docker compose config` on the first command after an upgrade.
+Run it again after every `git pull`. It reconciles an existing `.env` rather than replacing it. Every assignment `.env.example` declares and your file does not carry is appended with the example's value, and any credential among them is generated in the same run. No value you already hold is read or rewritten.
+
+Three cases get more than that. An assignment your file carries and the example no longer declares is named in the output and left in place. The script cannot tell a retired setting from one you chose. An assignment holding a key this repository publishes is replaced with a generated one, because two services refuse to start on a published key. An assignment whose value differs from the example's is reported with both values and left as you set it.
+
+That third case is where a start-up refusal after an upgrade usually comes from: a default this platform has tightened still looks like a working value in your file. The run ends by proving your file declares all 133 assignments. A variable Compose needs therefore cannot be silently absent, which is the failure that used to stop `docker compose config` on the first command after an upgrade.
 
 The rest of this section is the same work performed by hand. Read it to understand what the script does, or follow it when you want to set a value yourself.
 
@@ -63,7 +69,7 @@ for variable in POSTGRES_PASSWORD \
 done
 ```
 
-Populate Maven’s local dependency cache before generating the encoded hashes:
+Populate Maven's local dependency cache before generating the encoded hashes:
 
 ```bash
 mvn -B -DskipTests package
@@ -100,9 +106,16 @@ sed -i "s|^USER_PASSWORD_HASH=.*|USER_PASSWORD_HASH=$(hash_password "$USER_PASSW
 sed -i "s|^MONITORING_PASSWORD_HASH=.*|MONITORING_PASSWORD_HASH=$(hash_password "$MONITORING_PASSWORD")|" .env
 ```
 
+If `scripts/start-demo.sh` generated the passwords instead, read them back from the file it wrote:
+
+```bash
+ADMIN_PASSWORD="$(sed -n 's/^admin001=//p' .demo-credentials)"
+ACQUIRER_PASSWORD="$(sed -n 's/^acquirer1=//p' .demo-credentials)"
+```
+
 ### The card-token key
 
-`CARD_TOKEN_SECRET` is a `REPLACE` marker and generating it is a required step. A card token is a keyed `HMAC-SHA-256` over the full card number under that secret, prefixed by `CARD_TOKEN_VERSION`, rendered as 64 lower-case hexadecimal characters. The key is what stops a holder of one token recomputing the token of every sixteen-digit card number, so this repository ships none. Only two services read it, the authorization service and the card service, and both refuse to start without it:
+`CARD_TOKEN_SECRET` ships as a `REPLACE` marker, so generating it is a required step. A card token is a keyed `HMAC-SHA-256` over the full card number, prefixed by `CARD_TOKEN_VERSION` and rendered as 64 lower-case hexadecimal characters. The key is what stops a holder of one token recomputing the token of every sixteen-digit card number, so this repository ships none. Only the authorization service and the card service read it, and both refuse to start without it:
 
 ```bash
 sed -i "s|^CARD_TOKEN_SECRET=.*|CARD_TOKEN_SECRET='$(openssl rand -base64 48 | tr -d '/+=')'|" .env
@@ -110,7 +123,9 @@ sed -i "s|^CARD_TOKEN_SECRET=.*|CARD_TOKEN_SECRET='$(openssl rand -base64 48 | t
 
 `CARD_TOKEN_VERSION` is not key material and needs no change. It is part of the message the code covers, so raising it rolls every token over under the same key.
 
-Generating the key is all the stack needs. The 50 `card_token` literals in `services/card-service/src/main/resources/db/migration/V2__seed.sql` are derived under the build-scope key in `pom.xml`, and `CardTokenReconciler` re-derives every one of them under your key as the card service starts. What a change of key does not survive is a token stored elsewhere: `statement_transaction` and `notification_log` in the notification service, `authorization_decision` in the authorization service, and any `SCOPE_CARD_` authority already inside `USER_SCOPES`.
+Generating the key is all the stack needs. The 50 `card_token` literals in `services/card-service/src/main/resources/db/migration/V2__seed.sql` are derived under the build-scope key in `pom.xml`, and `CardTokenReconciler` re-derives every one of them under your key as the card service starts.
+
+What a change of key does not carry is a token stored elsewhere. Four places hold one: `statement_transaction` and `notification_log` in the notification service, `authorization_decision` in the authorization service, and any `SCOPE_CARD_` authority already inside `USER_SCOPES`.
 
 `USER_SCOPES` therefore ships no `SCOPE_CARD_` authority, which means `admin001` reaches every card route and `user0001` reaches none. To give the ordinary identity one card, derive its token under your key using the module you have already built:
 
@@ -137,24 +152,26 @@ docker compose up -d --build
 docker compose ps
 ```
 
-`mvn test` does not run the equivalence classes. Surefire excludes `**/*EquivalenceTest.java`; Failsafe runs them during `verify`.
+`mvn test` does not run the equivalence classes. Surefire excludes `**/*EquivalenceTest.java`, and Failsafe runs those nine classes during `verify`. A green `mvn test` therefore says nothing about source parity.
 
-Every service image copies its packaged archive from that module’s `target/` directory. The Maven command must therefore run before `docker compose up --build`.
+Every service image copies its packaged archive from that module's `target/` directory. The Maven command must run before `docker compose up --build`.
 
-### Ports and network addresses
+### Ports, schemas, and topics
 
-| Service | Business port | Management port | Container business port |
-| :--- | ---: | ---: | ---: |
-| authorization-service | 8081 | 9081 | 8080 |
-| ledger-posting-service | 8082 | 9082 | 8080 |
-| fraud-detection-service | 8083 | 9083 | 8080 |
-| notification-service | 8084 | 9084 | 8080 |
-| account-service | 8085 | 9085 | 8080 |
-| card-service | 8086 | 9086 | 8080 |
+| Service | Host business port | Host management port | Container ports |
+| :--- | ---: | ---: | :--- |
+| authorization-service | 8081 | 9081 | 8080 and 9080 |
+| ledger-posting-service | 8082 | 9082 | 8080 and 9080 |
+| fraud-detection-service | 8083 | 9083 | 8080 and 9080 |
+| notification-service | 8084 | 9084 | 8080 and 9080 |
+| account-service | 8085 | 9085 | 8080 and 9080 |
+| card-service | 8086 | 9086 | 8080 and 9080 |
 
-The Compose network exposes Kafka at `kafka:29092`. Host tools use `localhost:9092`.
+Compose publishes every port on `127.0.0.1`, so none of them answers another machine.
 
-PostgreSQL listens at `postgres:5432` inside Compose and `localhost:5432` on the host. One container hosts six private databases and schemas:
+Kafka answers at `kafka:29092` inside the Compose network and at `localhost:9092` from this machine. The two addresses are separate listeners, so a host tool aimed at the in-network name is refused, and so is a container aimed at the host name. PostgreSQL answers at `postgres:5432` inside the network and at `127.0.0.1:5432` on the host.
+
+One PostgreSQL container holds six private databases, each with one schema no other service reads:
 
 | Service | Database | Schema |
 | :--- | :--- | :--- |
@@ -165,7 +182,59 @@ PostgreSQL listens at `postgres:5432` inside Compose and `localhost:5432` on the
 | account | `carddemo_account` | `account_service` |
 | card | `carddemo_card` | `card_service` |
 
-Flyway creates and migrates each schema. Hibernate uses `ddl-auto: validate` and never generates the model.
+Flyway creates and migrates every schema. Hibernate runs with `ddl-auto: validate` and never generates the model.
+
+Eight topics carry every message the platform sends:
+
+| Topic | Published by | Consumer groups that read it |
+| :--- | :--- | :--- |
+| `transaction.authorized` | authorization | `ledger-posting`, `fraud-detection`, `notification-authorized` |
+| `transaction.declined` | authorization | `ledger-reject` |
+| `transaction.posted` | ledger posting | `notification-posted`, `account-posted` |
+| `fraud.assessed` | fraud detection | `notification-fraud` |
+| `account.state-changed` | account | `authorization-account-state`, `ledger-account-state` |
+| `customer.context-changed` | account | `notification-customer` |
+| `card.updated` | card | `authorization-card-updated` |
+| `carddemo.dead-letter` | every service | nothing; it is read by hand |
+
+Each business topic also has a `.DLT` companion for a record its own consumer cannot process, and `carddemo.dead-letter` is the shared fallback. [Event Flow](event-flow.md) gives the delivery guarantee behind each row.
+
+Figure 1 shows which address to dial from where, because the answer differs between the host and a container.
+
+**Figure 1 — The Local Demo Stack: Eight Containers, Their Published Host Ports, and Their In-Network Addresses**
+
+```mermaid
+graph LR
+    DEV["Developer machine<br/>curl, psql, kubectl"]
+
+    subgraph HOST["Published on 127.0.0.1 only"]
+        BUS["8081 to 8086<br/>business routes"]
+        MGMT["9081 to 9086<br/>management routes"]
+        KHOST["9092<br/>Kafka"]
+        DHOST["5432<br/>PostgreSQL"]
+    end
+
+    subgraph NET["Compose network"]
+        SVC["Six service containers<br/>8080 business, 9080 management"]
+        KAFKA["kafka:29092"]
+        DB["postgres:5432"]
+    end
+
+    DEV --> BUS --> SVC
+    DEV --> MGMT --> SVC
+    DEV --> KHOST --> KAFKA
+    DEV --> DHOST --> DB
+    SVC --- KAFKA
+    SVC --- DB
+```
+
+Legend for Figure 1:
+
+- Each box in the upper group is a host port Compose publishes, bound to loopback.
+- Each box in the lower group is a container address, reachable only from inside the network.
+- An arrow shows which address a tool dials to reach which container.
+- A line with no arrowhead shows a service using the broker or the database from inside the network.
+- Figure 1 maps addresses and nothing else. Both architecture states are in [Architecture, Before and After](architecture-before-after.md).
 
 ### Verify the running stack
 
@@ -178,13 +247,21 @@ for port in 9081 9082 9083 9084 9085 9086; do
 done
 ```
 
+Three management endpoints are exposed: `health`, `metrics`, and `prometheus`. Health is open, and the other two require the monitoring identity, `monitor01` by default.
+
+Logs are structured JSON in logstash format. The root logger and `com.carddemo` both default to INFO, from `LOG_LEVEL` and `LOG_LEVEL_CARDDEMO`. Raise `LOG_LEVEL_CARDDEMO` to DEBUG for one run when tracing a message, and lower it afterwards.
+
 Business routes require HTTP Basic authentication. The administrator username defaults to `admin001`, and the acquiring workload username to `acquirer1`.
 
-Every state-changing request carries one header beyond the credential: `X-CardDemo-Request`, with any non-blank value. A `POST`, `PUT`, `PATCH` or `DELETE` arriving without it answers 403, and so does one declaring a cross-site `Sec-Fetch-Site` or a foreign `Origin`. The reason is that HTTP Basic is a credential a browser attaches by itself, so a page on any other site could otherwise submit a form against a business route and the browser would authenticate it; an HTML form cannot set a request header, which is what makes one header the control. Reads need nothing, which is why the health loop above carries no header. `API_CROSS_SITE_HEADER` renames it, and the value is never inspected, only its presence.
+Every state-changing request carries one header beyond the credential: `X-CardDemo-Request`, with any non-blank value. A `POST`, `PUT`, `PATCH` or `DELETE` arriving without it answers 403, and so does one declaring a cross-site `Sec-Fetch-Site` or a foreign `Origin`. HTTP Basic is a credential a browser attaches by itself, so a page on any other site could otherwise submit a form against a business route. An HTML form cannot set a request header, which is what makes one header the control. Reads need nothing, which is why the health loop above carries no header.
 
-Request volume is bounded as well. Each service allows 600 requests a minute per source address and per identity, 120 state-changing requests, 20 failed authentications, and 64 requests in flight, answering 429 with `Retry-After` past any of them. `API_RATE_*` raises the ceilings for a load run. Management ports are exempt, so a probe is never throttled.
+`API_CROSS_SITE_HEADER` renames that header. Only its presence is inspected, never its value.
 
-`POST /authorizations` admits `ACQUIRER` and `ADMIN` alone. The acquirer is the identity a point-of-sale network presents: the route names its card in the request body, so no path variable carries an identifier an ownership scope can be compared against, and it therefore reaches every card the platform holds. `user0001` is a cardholder identity and receives 403 there.
+Request volume is bounded as well. Each service admits 600 requests a minute per source address and per identity, of which 120 may change state, and it admits 20 failed authentications and 64 requests in flight. Past any of those it answers 429 with `Retry-After`. `API_RATE_*` raises the ceilings for a load run, and management ports are exempt so a probe is never throttled.
+
+`POST /authorizations` admits `ACQUIRER` and `ADMIN` alone. The acquirer is the identity a point-of-sale network presents. That route names its card in the request body, so no path variable carries an identifier an ownership scope could test. It therefore reaches every card the platform holds, and `user0001` is a cardholder identity that receives 403 there.
+
+### Authorize one transaction and watch the fan-out
 
 Submit `POST /authorizations` with the first card in the checked-in fixture:
 
@@ -211,9 +288,9 @@ curl -sS -X POST http://localhost:8081/authorizations \
        \"processingTimestamp\":\"${PROCESSED_AT}\"}"
 ```
 
-The response returns HTTP 200 for an approval and HTTP 422 for a source-equivalent decline. `approved` separates the two outcomes.
+The response returns HTTP 200 for an approval and HTTP 422 for a source-equivalent decline. `approved` separates the two outcomes. [Domain context](#domain-context) lists the four reject reasons a decline can carry.
 
-Both timestamps accept the ten-character date `YYYY-MM-DD` and the twenty-six character record form. `app/cbl/COTRN02C.cbl:L389-L423` validates each as a ten-character date, and a ten-character value is widened to the record width before it reaches the event. No bound relates either value to the clock of the service: reject reason `0103` at `app/cbl/CBTRN02C.cbl:L414-L420` compares the first ten characters of the capture moment against the account expiry date, and nothing else tests the value. A date the tolerant policy declines answers 422 with `Orig Date - Not a valid date...` or `Proc Date - Not a valid date...`, and a body failing several edits reports the one text the source would have reported first.
+Both timestamps accept the ten-character date `YYYY-MM-DD` and the twenty-six character record form. `app/cbl/COTRN02C.cbl:L389-L423` validates each as a ten-character date, and a ten-character value is widened to the record width before it reaches the event. No bound relates either value to the clock of the service. Reject reason `0103` at `app/cbl/CBTRN02C.cbl:L414-L420` compares the first ten characters of the capture moment against the account expiry date, and nothing else tests the value. A date the tolerant policy declines answers 422 with `Orig Date - Not a valid date...` or `Proc Date - Not a valid date...`, and a body failing several edits reports the one text the source would have reported first.
 
 Watch the asynchronous path from inside the broker container:
 
@@ -225,13 +302,22 @@ docker compose exec kafka /opt/kafka/bin/kafka-console-consumer.sh \
   --include 'transaction.authorized|transaction.posted|fraud.assessed'
 ```
 
-An approval produces `TransactionAuthorized`. Ledger and fraud consume it independently. Notification then consumes `TransactionPosted` and the fraud assessment without calling either producer.
+An approval produces `TransactionAuthorized`. Ledger posting and fraud detection consume it independently, under `ledger-posting` and `fraud-detection`. Notification consumes it as well, under `notification-authorized`, so three services react to one event without calling each other or the producer.
 
-Structured logs use JSON. Service packages log at the configured application level, while management metrics are available to the monitoring identity on ports 9081 through 9086.
+The first record of `app/data/ASCII/cardxref.txt` names account `00000000050`, so that is the account the two reads below ask about:
+
+```bash
+curl -sS -u "admin001:${ADMIN_PASSWORD}" \
+  http://localhost:8082/balances/00000000050
+curl -sS -u "admin001:${ADMIN_PASSWORD}" \
+  'http://localhost:8083/fraud-assessments?accountId=00000000050'
+```
+
+The ledger's balance has moved and the fraud service holds a new assessment. Notification keeps its alerts under `GET /notifications/{cardToken}`, and [the card-token key](#the-card-token-key) gives the command that derives the token that route needs.
 
 ### Update an account and a customer
 
-`GET /accounts/{accountId}` and `GET /customers/{customerId}` read the pair, and `PUT /accounts/{accountId}` replaces it. The read shape and the write shape differ on purpose, so a body assembled by echoing the two reads is refused, one field at a time, with the text the source edit carries. The account read names no customer, because `app/cpy/CVACT01Y.cpy` holds no customer identifier; in the fixture account `00000000050` pairs with customer `000000050`.
+`GET /accounts/{accountId}` and `GET /customers/{customerId}` read the pair, and `PUT /accounts/{accountId}` replaces it. The read shape and the write shape differ on purpose. A body assembled by echoing the two reads is therefore refused, one field at a time, with the text the source edit carries. The account read names no customer, because `app/cpy/CVACT01Y.cpy` holds no customer identifier; in the fixture, account `00000000050` pairs with customer `000000050`.
 
 Six differences separate a read from a write, and each answers 422 with one text:
 
@@ -246,9 +332,9 @@ Six differences separate a read from a write, and each answers 422 with one text
 
 Space padding is not one of the differences. Every edit reads its field at the width the copybook declares, so a name padded to 25 characters and a postal code padded to 10 both pass.
 
-A block that is present has to be complete: nine components of `accountData`, ten of `customerData`, and the three Social Security parts together. A component no edit requires may be omitted and keeps its stored value, but that stored value still reaches the edit, so an omitted telephone number whose area code the reference table does not list is refused exactly as a submitted one would be.
+A block that is present has to be complete: nine components of `accountData`, ten of `customerData`, and the three Social Security parts together. A component no edit requires may be omitted and keeps its stored value. That stored value still reaches the edit, so an omitted telephone number whose area code the reference table does not list is refused exactly as a submitted one would be.
 
-The checked-in fixture is read data and it fails the write edits by design: those edits ran on 3270 screen input and never on stored records. All 50 seeded customers fail at least one, and only two carry a state whose postal prefix is among the 240 combinations `app/cpy/CSLKPCDY.cpy` lists. Account `00000000050` needs the fewest corrections, and this body is accepted:
+The checked-in fixture is read data and it fails the write edits by design, because those edits ran on 3270 screen input and never on stored records. All 50 seeded customers fail at least one, and only two carry a state whose postal prefix is among the 240 combinations `app/cpy/CSLKPCDY.cpy` lists. Account `00000000050` needs the fewest corrections, and this body is accepted:
 
 ```bash
 curl -sS -X PUT http://localhost:8085/accounts/00000000050 \
@@ -297,13 +383,13 @@ Four values in it are not the seeded ones. `addressZip` is `97201` rather than `
 
 A write answers 200 with `Changes committed to database` and produces one event per record it changed: `AccountStateChanged` for the account row and `CustomerContextChanged` for the customer row. Run the same body twice and the second call answers 200 with `No change detected with respect to values fetched.` and produces neither. `services/account-service/src/main/resources/openapi.yaml` carries this body as a request example beside a customer-only variant.
 
-One more consequence of replacing the whole record: `currentBalance` and the two cycle counters are components of the request, so a body carrying the figures the caller was shown writes those figures back, and a transaction posted between the read and the write is overwritten. Read the account again before updating it, or send `customerData` alone and leave every account column as stored.
+Replacing the whole record has one more consequence. `currentBalance` and the two cycle counters are components of the request, so a body carrying the figures the caller was shown writes those figures back. A transaction posted between the read and the write is overwritten. Read the account again before updating it, or send `customerData` alone and leave every account column as stored.
 
 ### Run it on a local Kubernetes cluster
 
-`deploy/k8s/` carries the same six services as Deployments, with Kafka, PostgreSQL, a ConfigMap and a Secret template. One step has to happen before `kubectl apply`, and skipping it is the most common way this deployment fails.
+`deploy/k8s/` carries the same six services as Deployments, with Kafka, PostgreSQL, a ConfigMap, and a Secret template. One step has to happen before `kubectl apply`, and skipping it is the most common way this deployment fails.
 
-Each service Deployment names `carddemo/<service>:1.0.0-SNAPSHOT` with `imagePullPolicy: Never`. Nothing publishes those images to a registry, so the kubelet never looks for one and the image has to already be in the cluster node's image store. A cluster that has not been given them reports `ErrImageNeverPull`, which names no cause. Build the images and put them in the cluster with:
+Each service Deployment names `carddemo/<service>:1.0.0-SNAPSHOT` with `imagePullPolicy: Never`. Nothing publishes those images to a registry, so the kubelet never looks for one, and the image has to already be in the cluster node's image store. A cluster that has not been given them reports `ErrImageNeverPull`, which names no cause. Build the images and put them in the cluster with:
 
 ```bash
 cd card-platform
@@ -311,9 +397,9 @@ deploy/k8s/load-images.sh              # runtime read from the current kubectl c
 deploy/k8s/load-images.sh kind         # or name it: kind, minikube, docker-desktop
 ```
 
-The script packages the reactor if an archive is missing, builds all six images, and then loads them the way the runtime requires: `kind load docker-image` for kind, `minikube image load` for minikube, and nothing at all for Docker Desktop, whose cluster shares this machine's Docker daemon. It then reads the node's image list back and fails if no `carddemo` image arrived. `KIND_CLUSTER_NAME` and `MINIKUBE_PROFILE` select a cluster other than the default; `IMAGE_TAG` overrides the tag, which is otherwise the version in `pom.xml`.
+The script packages the reactor if an archive is missing, builds all six images, and then loads them the way the runtime requires. That is `kind load docker-image` for kind, `minikube image load` for minikube, and nothing at all for Docker Desktop, whose cluster shares this machine's Docker daemon. It then reads the node's image list back and fails if no `carddemo` image arrived. `KIND_CLUSTER_NAME` and `MINIKUBE_PROFILE` select a cluster other than the default, and `IMAGE_TAG` overrides the tag, which is otherwise the version in `pom.xml`.
 
-Apply the manifests in the order `deploy/k8s/00-namespace.yaml` documents, which the script prints when it finishes: the namespace, then a filled-in copy of `31-secret.example.yaml` kept **outside** that folder, then the remaining files in filename order with the template excluded. Applying the whole folder would overwrite the Secrets with the placeholders the template publishes, and every workload would refuse to start.
+Apply the manifests in the order `deploy/k8s/00-namespace.yaml` documents, which the script prints when it finishes. That order is the namespace, then a filled-in copy of `31-secret.example.yaml` kept **outside** that folder, then the remaining files in filename order with the template excluded. Applying the whole folder would overwrite the Secrets with the placeholders the template publishes, and every workload would refuse to start.
 
 After a rebuild, the images change but the Pods do not. Restart them:
 
@@ -321,11 +407,13 @@ After a rebuild, the images change but the Pods do not. Restart them:
 kubectl -n carddemo rollout restart deployment
 ```
 
-The Compose stack and the cluster are alternatives rather than layers. The transport differs between them, and [the platform README](../README.md) carries the comparison: Compose serves HTTP on loopback with `SASL_PLAINTEXT`, and the manifests serve HTTPS with `SASL_SSL` and mounted key material.
+The Compose stack and the cluster are alternatives rather than layers, because the transport differs between them. Compose serves HTTP on loopback with `SASL_PLAINTEXT`, and the manifests serve HTTPS with `SASL_SSL` and mounted key material. [The platform README](../README.md) carries the comparison.
 
 ## Domain context
 
-A card authorization asks whether one transaction may proceed. Authorization resolves a card to an account and applies four source rules. An approval emits `TransactionAuthorized`; a decline emits `TransactionDeclined`.
+A card authorization asks whether one transaction may proceed. Authorization resolves the card to an account through the cross-reference record, then applies four rules taken from the source. An approval publishes `TransactionAuthorized` and a decline publishes `TransactionDeclined`. Three services consume the approval independently, and none of them calls another or calls back into authorization.
+
+A reject reason is the code the source assigns when one of those rules refuses a transaction. The batch program moves the code into a four-digit field and copies its text beside the record it rejected. The target carries the same four codes and the same texts, and there is no fifth:
 
 | Code | Source description | Locator |
 | :--- | :--- | :--- |
@@ -334,15 +422,15 @@ A card authorization asks whether one transaction may proceed. Authorization res
 | `0102` | `OVERLIMIT TRANSACTION` | `app/cbl/CBTRN02C.cbl:L410-L412` |
 | `0103` | `TRANSACTION RECEIVED AFTER ACCT EXPIRATION` | `app/cbl/CBTRN02C.cbl:L417-L419` |
 
-A decline is expected business traffic. The source sets return code 4 when any input is rejected at `app/cbl/CBTRN02C.cbl:L229-L230`.
+A decline is expected business traffic rather than an error. The source sets return code 4 when any input was rejected, at `app/cbl/CBTRN02C.cbl:L229-L230`, and then reports a normal end of job.
 
-Each account has a current balance and two cycle accumulators. The credit rule tests cycle credit minus cycle debit plus the transaction amount at `app/cbl/CBTRN02C.cbl:L403-L407`.
+Each account carries a current balance and two cycle accumulators, cycle credit and cycle debit. The credit rule reads the two accumulators and not the balance. It computes cycle credit minus cycle debit plus the transaction amount at `app/cbl/CBTRN02C.cbl:L403-L405`, then tests that figure against the credit limit at `app/cbl/CBTRN02C.cbl:L407`. [Pitfall 5](#5-cycle-counters-need-an-explicit-reset-owner) follows from those two counters, so read it before demonstrating the limit.
 
-Card-to-customer resolution runs through the cross-reference record. The account copybook contains no customer identifier, so the target creates no account-to-customer foreign key.
+Card-to-customer resolution runs through the cross-reference record and through nothing else. `app/cpy/CVACT01Y.cpy` declares no customer identifier, so the target creates no account-to-customer foreign key. [Data Model](data-model.md) gives the shape of each service's tables.
 
-The source platform used Customer Information Control System transactions, Job Control Language jobs, and shared Virtual Storage Access Method datasets. See [Architecture, Before and After](architecture-before-after.md) for both states.
+The source platform ran online transactions under Customer Information Control System (CICS), driven from a 3270 terminal. Batch work ran as Job Control Language (JCL) jobs on a nightly schedule. Both read eight shared Virtual Storage Access Method (VSAM) datasets. [Architecture, Before and After](architecture-before-after.md) shows both states.
 
-Equivalence means reproducing source behavior, including flagged defects. The [business-rule register](business-rule-flags.md) records every open rule with a source locator.
+Equivalence means reproducing the behaviour of that source, including the defects it carries. Every reproduced defect is recorded rather than quietly fixed. The [business-rule register](business-rule-flags.md) lists each one with a source locator, and [Equivalence Results](equivalence-results.md) reports the fixture comparisons.
 
 ## How the platform is laid out
 
@@ -360,9 +448,9 @@ The aggregator builds nine modules in this order:
 | `services/card-service` | Card list, detail, and update |
 | `equivalence-tests` | Cross-service contract and source-parity tests |
 
-The two libraries depend on no internal module. Each service depends on both libraries and no other service. The equivalence module depends on all modules for tests.
+The two libraries depend on no internal module. Each service depends on both libraries and on no other service. The equivalence module depends on every module, at test scope only.
 
-A service-to-service Java import fails compilation and the Maven enforcer names the forbidden dependency. Runtime state crosses service boundaries through governed events and private projections.
+That direction is enforced rather than agreed. A service-to-service Java import fails compilation, and the Maven enforcer names the forbidden dependency instead of leaving a reader with an unresolved symbol. Runtime state crosses a service boundary through a published event and a private projection, never through a call.
 
 Look under these paths when changing a service:
 
@@ -373,10 +461,11 @@ Look under these paths when changing a service:
 | `messaging/` | Consumers, publishers, and dead-letter metadata |
 | `outbox/` | Outbox writer and relay |
 | `entity/` and `repository/` | Private persistence model |
+| `config/` | Security, Kafka, and observability wiring |
 | `src/main/resources/db/migration/` | Flyway schema and seed migrations |
 | `src/main/resources/openapi.yaml` | Hand-written API description |
 
-The platform has no application front-end, schema-registry container, service mesh, cache, or mainframe connector.
+Several things a reader might look for are absent by decision, and the enforcer refuses most of them as dependencies. There is no boilerplate generator and no object-mapping library, and no API documentation generator, because every service carries a hand-written `openapi.yaml`. There is no cache and no key-value store, because the fraud velocity window is a PostgreSQL table. The stack runs no schema registry, no ZooKeeper, no broker or database administration container, no metrics dashboard, no tracing backend, and no service mesh. There is no COBOL compiler, no mainframe connector, and no application front-end, and the [decision log](decision-log.md) carries a row for each absence.
 
 ## How to extend
 
@@ -384,112 +473,159 @@ The platform has no application front-end, schema-registry container, service me
 
 Create a Maven service module and depend on the two shared libraries. Subscribe with a new consumer group, add a `processed_event` table, and commit the marker with the business effect.
 
-Three declarations sit outside Java and are easy to forget. Name the topic and the group in the service's `application.yml`. Add a `grant_consumer` line for the new principal, topic, and group in the `create_acls` function of `docker-compose.yml`, and the matching entry in `deploy/k8s/10-kafka.yaml`; without them the broker refuses the subscription and the service starts but never receives an event. Add the `<topic>.DLT` name to `create_topics` if the consumer routes spent records to a source-specific dead-letter topic rather than the shared fallback.
+Three declarations sit outside Java and are easy to forget. Name the topic and the group in the service's `application.yml`. Add a `grant_consumer` line for the new principal, topic, and group in the `create_acls` function of `docker-compose.yml`, and the matching entry in `deploy/k8s/10-kafka.yaml`. Without those two the broker refuses the subscription, and the service starts but never receives an event. Add the `<topic>.DLT` name to `create_topics` if the consumer routes spent records to its own dead-letter topic rather than to the shared fallback.
 
-No producer changes are required. Fraud detection proves the path because it has no source ancestor and consumes an existing event. Notification proves it a second time: it was added as the third independent reader of `transaction.authorized` under `notification-authorized`, and neither the authorization producer nor the other two consumers changed.
+No producer changes are required. Fraud detection proves the path, because it has no source ancestor and consumes an event that already existed. Notification proves it a second time: it was added as the third independent reader of `transaction.authorized` under `notification-authorized`, and neither the producer nor the other two consumers changed.
 
 ### Add a decline rule
 
-Add a class implementing `DeclineRule` under authorization `domain/rules/`. Preserve source ordering and add the corresponding event-schema and equivalence coverage.
+Add a class implementing `DeclineRule` under the authorization service's `domain/rules/`. Preserve the source ordering, and add the matching event-schema and equivalence coverage. Nothing existing is edited.
 
-The source marks the seam with `ADD MORE VALIDATIONS HERE` at `app/cbl/CBTRN02C.cbl:L377`.
+The source marks the seam itself. `ADD MORE VALIDATIONS HERE` sits at `app/cbl/CBTRN02C.cbl:L377`, inside the validation paragraph that begins at `app/cbl/CBTRN02C.cbl:L370`. The original author marked the extension point, and the target honours it by making extension mean adding a class.
 
 ### Preserve two guarantees
 
-- A new consumer acknowledges only after its business transaction commits.
-- A schema change stays additive and passes `SchemaBackwardCompatibilityTest`.
+- A new consumer owns its idempotency. Check `processed_event` before acting, write the marker inside the transaction that carries the business effect, and acknowledge only after that commit.
+- A schema change stays additive. One that would break an existing consumer fails `SchemaBackwardCompatibilityTest` rather than failing in production.
 
-Kafka publication sits behind a publisher port. Other internal layers remain concrete so each service stays readable in a short walkthrough.
+Kafka publication sits behind a publisher port, so a managed event service could take its place. No other seam is abstracted, because each service is meant to stay readable in a short walkthrough.
 
 ## Common pitfalls
 
+Every pitfall below was measured during the build. Each one gives the symptom you will see, the cause with its locator, and the fix.
+
 ### 1. Java defaults silently to release 17
 
-`<maven.compiler.release>25</maven.compiler.release>` is the property this build compiles from, and every module descriptor declares it beside `<java.version>25</java.version>`. A module that lowers or drops it compiles without a warning at a lower class-file version — major version 61 for release 17 — while the build still succeeds. Two guards catch that: the aggregator's enforcer requires the property to resolve to 25 in every module, and the compile stage of `.github/workflows/ci.yml` reads the release of every class file the reactor wrote and fails on any value other than Java 25's major version 69.
+**Symptom:** nothing at all. No error and no warning, and a confusing runtime or tooling problem surfaces later. That silence is why this one leads the list.
+
+**Cause:** the framework parent defaults the language level and the compiler release to 17. `<maven.compiler.release>25</maven.compiler.release>` is the property this build compiles from, and every module descriptor declares it beside `<java.version>25</java.version>`. A module that lowers or drops it compiles without a warning at a lower class-file version, major version 61 for release 17, while the build still succeeds.
+
+**Fix:** declare the property in every module descriptor. Two guards catch a module that does not. The aggregator's enforcer requires the property to resolve to 25 in every module. The compile stage of `.github/workflows/ci.yml` then reads the release of every class file the reactor wrote, and fails on any value other than major version 69, which is release 25.
 
 `<java.version>` alone changes nothing here. No plugin resolves it, because `card-platform/pom.xml` imports the Spring Boot bill of materials rather than inheriting the Spring Boot parent.
 
 ### 2. Money truncates toward zero
 
-`ROUNDED` appears zero times across all 28 source programs. Use `CobolDecimal` with `RoundingMode.DOWN`; do not replace it with half-up rounding.
+**Symptom:** figures that look right and are wrong by a cent, with no test failing unless a test was written to catch it.
+
+**Cause:** `ROUNDED` appears zero times across all 28 programs under `app/cbl/`, so every arithmetic store truncates toward zero. Half-up is the reflexive Java choice, and it breaks equivalence.
+
+**Fix:** send every monetary computation through `CobolDecimal` in `libs/cobol-compat`, which pins `RoundingMode.DOWN`. Never construct a rounding mode locally. `DecimalTruncationEquivalenceTest` asserts both that truncation gives the expected value and that half-up gives a different one, so a later simplification fails the build.
 
 ### 3. Processing timestamps have two significant fractional digits
 
-`app/cbl/CBTRN02C.cbl:L173-L174` defines hundredths plus a four-character remainder. Line 701 writes four zeros, so raw comparison with a fresh Java timestamp fails.
+**Symptom:** a byte-for-byte timestamp comparison fails on every record, for a reason unrelated to the logic under test.
 
-Normalize processing timestamps to hundredths and four trailing zeros. The [equivalence results](equivalence-results.md) document the tolerance.
+**Cause:** `app/cbl/CBTRN02C.cbl:L159` declares the field as `PIC X(26)`. The redefinition beginning at `app/cbl/CBTRN02C.cbl:L160` ends with a two-digit fractional field at `app/cbl/CBTRN02C.cbl:L173` and a four-character remainder at `app/cbl/CBTRN02C.cbl:L174`. The routine that fills it moves a hundredths value at `app/cbl/CBTRN02C.cbl:L700`, then hard-codes four zero characters at `app/cbl/CBTRN02C.cbl:L701`. `app/cbl/CBTRN02C.cbl:L438` moves the result into the transaction record, so a fresh Java timestamp differs in the last four digits of every row.
+
+**Fix:** normalize processing timestamps to hundredths and four trailing zeros before comparing, or compare under an explicit documented tolerance. The [equivalence results](equivalence-results.md) document the tolerance.
 
 ### 4. Fixture widths differ
 
-`app/data/ASCII/cardxref.txt` contains 36-byte records, while `app/cpy/CVACT03Y.cpy` declares 50. The ASCII fixture omits its 14-byte filler.
+**Symptom:** a loader that assumes the width a copybook declares fails on real fixture data.
 
-Use the width-tolerant fixture loader. The EBCDIC twin supplies the full declared width.
+**Cause:** `app/data/ASCII/cardxref.txt` contains 36-byte records, while `app/cpy/CVACT03Y.cpy` declares 50. The text fixture omits the 14-byte trailing filler, leaving 16 + 9 + 11 = 36 bytes of card number, customer identifier, and account identifier.
+
+**Fix:** use the width-tolerant fixture loader, and treat the EBCDIC twin as the width authority where the two disagree, because it carries the full declared width. The text set also has no security-user fixture although the binary set does, which is why signon fixtures are constructed rather than loaded.
 
 ### 5. Cycle counters need an explicit reset owner
 
-Authorization reads counters that posting grows. Only `app/cbl/CBACT04C.cbl:L353-L354` resets them, and the full interest program is outside the migrated runtime.
+**Symptom:** the demo works, then stops approving anything. This is the pitfall most likely to be reported as a broken demonstration, which is exactly why it is written down.
 
-Call `POST /accounts/{accountId}/cycle-close` before the counters make every later authorization decline. The endpoint resets only the two counters and does not calculate interest.
+**Cause:** authorization reads the two cycle counters that posting grows, at `app/cbl/CBTRN02C.cbl:L403-L407`, and those counters only ever grow. The only source code that zeroes them is `MOVE 0 TO ACCT-CURR-CYC-CREDIT` at `app/cbl/CBACT04C.cbl:L353` and `MOVE 0 TO ACCT-CURR-CYC-DEBIT` at `app/cbl/CBACT04C.cbl:L354`. Both sit inside the interest program, which stays outside the migrated runtime, so available credit shrinks until every transaction declines.
 
-Three services hold part of one `ACCTDAT` record, and the counters move along a chain rather than in one place: the ledger posts and publishes `TransactionPosted`, the account service adds the amount to its own copy and publishes `AccountStateChanged`, and authorization writes that into the snapshot reason code 102 reads. Every link is asynchronous, so a second authorization issued within a few hundred milliseconds of the first can still read the older snapshot. Space repeated calls by a second or two when demonstrating the limit, or read `carddemo.account.posting.applied` on the account service's metrics endpoint to see the amount land before issuing the next call.
+**Fix:** call `POST /accounts/{accountId}/cycle-close` on the account service:
+
+```bash
+curl -sS -X POST http://localhost:8085/accounts/00000000050/cycle-close \
+  -u "admin001:${ADMIN_PASSWORD}" \
+  -H 'X-CardDemo-Request: onboarding' \
+  -H 'Content-Type: application/json'
+```
+
+It answers 200 carrying both accumulators at zero. The route reproduces those two statements and nothing else, and it calculates no interest. It declares a media type although it reads no body, so a call omitting `Content-Type` answers 415 rather than 200. The endpoint exists because the credit rule reads counters that only an out-of-scope program resets, so the target needed a reset owner of its own.
+
+Three services hold part of one `ACCTDAT` record, so the counters move along a chain rather than in one place. The ledger posts and publishes `TransactionPosted`, the account service adds the amount to its own copy and publishes `AccountStateChanged`, and authorization writes that into the snapshot reason code 102 reads. Every link is asynchronous, so a second authorization issued immediately after the first can still read the older snapshot. Space repeated calls out when demonstrating the limit, or read `carddemo.account.posting.applied` on the account service's metrics endpoint to see the amount land first.
 
 ### 6. Rotating the card-token key invalidates checked-in values
 
-A card token is a keyed hash, so it is a function of `CARD_TOKEN_SECRET` and `CARD_TOKEN_VERSION` as much as of the card number. The 50 seeded `card_token` literals look after themselves: `CardTokenReconciler` re-derives them under the configured key each time the card service starts. Two things do not. Any `SCOPE_CARD_` authority in `USER_SCOPES` names a token derived under the previous key, and so does every token a read model already stored. The failure is quiet on the authority: a card detail request simply answers 403 for a card the caller does own. [The card-token key](#the-card-token-key) gives the command that derives a token under a candidate key.
+**Symptom:** a card detail request answers 403 for a card the caller does own, and a stored alert no longer matches its card.
+
+**Cause:** a card token is a keyed hash, so it is a function of `CARD_TOKEN_SECRET` and `CARD_TOKEN_VERSION` as much as of the card number. The 50 seeded `card_token` literals look after themselves, because `CardTokenReconciler` re-derives them under the configured key each time the card service starts. Two things do not. Any `SCOPE_CARD_` authority in `USER_SCOPES` names a token derived under the previous key, and so does every token a read model already stored.
+
+**Fix:** derive the authority again under the new key. [The card-token key](#the-card-token-key) gives the command, and the failure is quiet on the authority, so check it first.
 
 ### 7. The first start needs the network, even though the build does not
 
-`mvn -o … compile` works offline once `~/.m2` is warm, so the build has no undocumented network dependency. Starting the stack does. `docker-compose.yml` pins `postgres:18.4` and `apache/kafka:4.2.1` to a digest as well as a tag, and a digest is what Docker resolves. A machine holding only the `18.4` **tag** — a tag its registry may have moved since — still pulls, so the first `docker compose up` on a fresh host needs a reachable registry. Pull both images once and every later start is local:
+**Symptom:** `docker compose up` fails on a host with no route to a registry, while `mvn -o … compile` succeeds on the same host.
+
+**Cause:** the build has no undocumented network dependency once `~/.m2` is warm. Starting the stack does have one. `docker-compose.yml` pins `postgres:18.4` and `apache/kafka:4.2.1` by digest as well as by tag, and a digest is what Docker resolves. A machine holding only the `18.4` **tag**, which its registry may have moved since, still pulls.
+
+**Fix:** pull both images once and every later start is local:
 
 ```bash
 docker compose pull postgres kafka
 ```
 
-The six service images are never pulled. Each is built locally as `carddemo/<service>:1.0.0-SNAPSHOT`, the Maven project version, which is the same tag `deploy/k8s` names with `imagePullPolicy: Never` and the same tag the container stage of `.github/workflows/ci.yml` builds. That tag is mutable, and `deploy/k8s/README.md` says so and gives the procedure for pinning the six by digest instead. `Never` is why a pull can never substitute other bytes for them on a cluster: this project publishes no image, so `carddemo/<service>` is a registry name it does not own.
+The six service images are never pulled. Each is built locally as `carddemo/<service>:1.0.0-SNAPSHOT`, the Maven project version, which is the tag `deploy/k8s` names with `imagePullPolicy: Never` and the tag the container stage of `.github/workflows/ci.yml` builds. That tag is mutable, and `deploy/k8s/README.md` says so and gives the procedure for pinning the six by digest instead. `Never` is why a pull can never substitute other bytes for them on a cluster. This project publishes no image, so `carddemo/<service>` is a registry name it does not own.
 
 ### 8. A replica needs an event before it holds a row
 
-Authorization's credit snapshot, the ledger's balance projection, notification's cardholder context, and card's cross-reference copy are all replicas of data another service owns. Each is seeded from a repository fixture so the first request is correct, and each is then refreshed only when its owner publishes a change. An account created after deployment therefore has no replica row until its first `AccountStateChanged` arrives, and a consumer that cannot find a required row fails and retries rather than inventing a blank one. Do not read a missing replica row as a decision: the ledger deliberately does not decline a transaction whose projection row is absent, because that would reverse an approval another service already made.
+**Symptom:** a consumer retries instead of completing, for an account the fixture never seeded.
+
+**Cause:** authorization's credit snapshot, the ledger's balance projection, notification's cardholder context, and card's cross-reference copy are all replicas of data another service owns. Each is seeded from a repository fixture so the first request is correct, and each is then refreshed only when its owner publishes a change. An account created after deployment therefore holds no replica row until its first `AccountStateChanged` arrives.
+
+**Fix:** let the retry happen, because a consumer that cannot find a required row fails rather than inventing a blank one. Do not read a missing replica row as a decision either. The ledger deliberately does not decline a transaction whose projection row is absent, because that would reverse an approval another service already made.
 
 ### 9. A contended write gives up after three seconds instead of waiting
 
-The account and card updates read the row they rewrite under a lock, and PostgreSQL waits for a held row indefinitely. `carddemo.write.lock-wait-ms` bounds that wait, reading `WRITE_LOCK_WAIT_MS` and defaulting to three seconds. Hold a row in `psql` with `BEGIN; SELECT ... FOR UPDATE;` and the next update of that row answers 409 rather than blocking, which is deliberate and not a defect: the refusal is the outcome the source composes for a read that does not come back held, and it was unreachable while the wait had no end. The bound is applied per update transaction with `set_config('lock_timeout', ?, true)`, so it never bounds a schema migration or the outbox relay sweep. Ordinary concurrent writes are unaffected — they settle in milliseconds and still answer `Record changed by some one else. Please review` — so if you meet a 409 lock refusal in a demonstration, something is genuinely holding the row.
+**Symptom:** an update answers 409 rather than blocking, while ordinary concurrent writes settle and answer `Record changed by some one else. Please review`.
+
+**Cause:** the account and card updates read the row they rewrite under a lock, and PostgreSQL waits for a held row indefinitely. `carddemo.write.lock-wait-ms` bounds that wait, reading `WRITE_LOCK_WAIT_MS` and defaulting to three seconds. Hold a row in `psql` with `BEGIN; SELECT ... FOR UPDATE;` and the next update of that row meets the bound. The refusal is the outcome the source composes for a read that does not come back held, and it was unreachable while the wait had no end.
+
+**Fix:** treat a 409 lock refusal as a genuine holder rather than a defect. The bound is applied per update transaction with `set_config('lock_timeout', ?, true)`, so it never bounds a schema migration or the outbox relay sweep. If you meet one in a demonstration, something is holding the row.
 
 ### 10. Resubmitting the fixture expiry declines the account you just updated
 
-Both deployment paths are demo profiles, so both apply `classpath:db/demo` in the account service and in the authorization service, which extends all 50 account expiries to 2099-12-31 so a live request is not declined by reason code 103 before anything else happens. Compose reads `AUTHORIZATION_FLYWAY_LOCATIONS` and `ACCOUNT_FLYWAY_LOCATIONS` from `.env`; Kubernetes reads the two keys of the same name from `deploy/k8s/30-configmap.yaml`. Setting both to `classpath:db/migration` is the base-profile opt-out on either path. `GET /accounts/{accountId}` therefore returns `2099-12-31`, while `app/data/ASCII/acctdata.txt` and the request example in `services/account-service/src/main/resources/openapi.yaml` both carry the fixture value `20230309`.
+**Symptom:** every authorization on one account answers 422 with `0103 TRANSACTION RECEIVED AFTER ACCT EXPIRATION` right after a successful account update.
 
-Submit that fixture value and the extension is gone. The account service writes it, publishes `AccountStateChanged` carrying it, the authorization service applies it to the credit snapshot reason code 103 reads, and every later authorization on that account answers 422 with `0103 TRANSACTION RECEIVED AFTER ACCT EXPIRATION`. Nothing failed: one write moved the expiry into the past and the rule read what the write left.
+**Cause:** both deployment paths are demo profiles, so both apply `classpath:db/demo` in the account service and in the authorization service. That overlay extends all 50 account expiries to 2099-12-31, so a live request is not declined by reason code 103 before anything else happens. Compose reads `AUTHORIZATION_FLYWAY_LOCATIONS` and `ACCOUNT_FLYWAY_LOCATIONS` from `.env`, and Kubernetes reads the two keys of the same name from `deploy/k8s/30-configmap.yaml`. `GET /accounts/{accountId}` therefore returns `2099-12-31`, while `app/data/ASCII/acctdata.txt` and the request example in `services/account-service/src/main/resources/openapi.yaml` both carry the fixture value `20230309`.
 
-Send back the expiry the read returned, in the eight-character write form — `20991231` on a demo stack, and the fixture value on a run whose output is compared against the fixture. A second write is the repair: resubmit with `"expirationDate": "20991231"` and the next authorization is approved again.
+Submit that fixture value and the extension is gone. The account service writes it and publishes `AccountStateChanged` carrying it. The authorization service applies that to the credit snapshot reason code 103 reads, and every later authorization on that account is declined. Nothing failed: one write moved the expiry into the past, and the rule read what the write left.
 
-`ACCOUNT_FLYWAY_LOCATIONS` and `AUTHORIZATION_FLYWAY_LOCATIONS` carry the overlay together or not at all, which is why the two copies of that expiry agree until a request changes one of them. [Update an account and a customer](#update-an-account-and-a-customer) gives a body that keeps them in step.
+**Fix:** send back the expiry the read returned, in the eight-character write form. That is `20991231` on a demo stack, and the fixture value on a run whose output is compared against the fixture. A second write is the repair, and the next authorization is approved again.
+
+Setting both location keys to `classpath:db/migration` is the base-profile opt-out on either path. They carry the overlay together or not at all, which is why the two copies of that expiry agree until a request changes one of them. [Update an account and a customer](#update-an-account-and-a-customer) gives a body that keeps them in step.
 
 ### 11. A local Kubernetes cluster cannot pull the six service images
 
-The six Deployments carry `imagePullPolicy: Never`, and no registry holds `carddemo/<service>:1.0.0-SNAPSHOT`. A cluster that has never been given those images reports `ErrImageNeverPull` on every service Pod, and that status names no cause: the images exist on the machine, and the cluster simply cannot see them. Compose does not have this problem because it builds the images into the same daemon it runs them from.
+**Symptom:** every service Pod reports `ErrImageNeverPull`, and that status names no cause.
 
-Run `deploy/k8s/load-images.sh` before the first `kubectl apply`, and again after any rebuild followed by `kubectl -n carddemo rollout restart deployment`. [Run it on a local Kubernetes cluster](#run-it-on-a-local-kubernetes-cluster) gives the whole sequence.
+**Cause:** the six Deployments carry `imagePullPolicy: Never`, and no registry holds `carddemo/<service>:1.0.0-SNAPSHOT`. The images exist on the machine, and the cluster simply cannot see them. Compose does not have this problem, because it builds the images into the same daemon it runs them from.
+
+**Fix:** run `deploy/k8s/load-images.sh` before the first `kubectl apply`, and again after any rebuild, followed by `kubectl -n carddemo rollout restart deployment`. [Run it on a local Kubernetes cluster](#run-it-on-a-local-kubernetes-cluster) gives the whole sequence.
 
 ### 12. A state-changing call without `X-CardDemo-Request` answers 403
 
-Every service refuses a `POST`, `PUT`, `PATCH` or `DELETE` that does not carry the header, that declares a `Sec-Fetch-Site` other than `same-origin` or `same-site`, or that names an `Origin` other than the service it reached. The refusal is 403 with a fixed problem document naming no route, which reads exactly like a role refusal — so a command copied from an older note fails in a way that looks like a permissions problem and is not. Add `-H 'X-CardDemo-Request: 1'` and it works. Reads are unaffected.
+**Symptom:** a `POST` or `PUT` copied from an older note answers 403 with a fixed problem document naming no route, which reads exactly like a role refusal.
 
-A deployment terminating Transport Layer Security at a proxy has to set `SERVER_FORWARD_HEADERS_STRATEGY=framework`, or each service compares `Origin` against the address the proxy dialled rather than the one the browser used, and bounds the proxy's address rather than the caller's. Both filters count inside one process, so several replicas bound each replica rather than the service as a whole; [suggested next tasks](suggested-next-tasks.md) records the shared-store ceiling a deployment beyond a demo wants.
+**Cause:** every service refuses a `POST`, `PUT`, `PATCH` or `DELETE` that carries no such header. It also refuses one declaring a `Sec-Fetch-Site` other than `same-origin` or `same-site`, and one naming an `Origin` other than the service it reached. Reads are unaffected.
+
+**Fix:** add `-H 'X-CardDemo-Request: 1'` and the call works. A deployment terminating Transport Layer Security at a proxy also has to set `SERVER_FORWARD_HEADERS_STRATEGY=framework`. Without it each service compares `Origin` against the address the proxy dialled rather than the one the browser used, and bounds the proxy's address rather than the caller's. Both filters count inside one process, so several replicas bound each replica rather than the service as a whole.
 
 ## Where to go next
 
-- [Platform README](../README.md) — repository map and short quickstart
-- [Architecture, Before and After](architecture-before-after.md) — full migration views
-- [Event Flow](event-flow.md) — every topic, group, and delivery guarantee
-- [Data Model](data-model.md) — service-owned tables and source fields
-- [Decision Log](decision-log.md) — alternatives, reasons, and accepted risks
-- [Business Rule Flags](business-rule-flags.md) — every open source rule with its locator
-- [Suggested Next Tasks](suggested-next-tasks.md) — the follow-up work, with verification criteria
-- [Equivalence Results](equivalence-results.md) — fixture-by-fixture parity evidence
-- [Traceability Matrix](traceability-matrix.md) — complete forward and backward mapping
-- [Business Rule Flags](business-rule-flags.md) — 26 source findings for human review
-- [Equivalence Results](equivalence-results.md) — fixture-by-fixture parity evidence
-- [Suggested Next Tasks](suggested-next-tasks.md) — work discovered and left outside this engagement
+`suggested-next-tasks.md` is the first stop for a second contributor. It carries 52 tasks in 16 groups, each with the evidence that raised it and the criterion that would close it. The groups begin with correctness decisions only a human should make, then the validations this migration deliberately did not add. The rest cover interest and cycle ownership, projection lifecycle, security migration, source hygiene, and test depth.
 
-The root `README.md` remains the mainframe installation guide. `CONTRIBUTING.md` continues to define the contribution process.
+- [Suggested Next Tasks](suggested-next-tasks.md) — the 52 follow-up tasks, with verification criteria
+- [Platform README](../README.md) — repository map and short quickstart
+- [Architecture, Before and After](architecture-before-after.md) — both migration states, at full size
+- [Event Flow](event-flow.md) — every topic, group, and delivery guarantee
+- [Data Model](data-model.md) — service-owned tables and the source fields behind them
+- [Business Rule Flags](business-rule-flags.md) — the 26 source findings left for human review
+- [Equivalence Results](equivalence-results.md) — fixture-by-fixture parity evidence
+- [Decision Log](decision-log.md) — alternatives, reasons, and accepted risks
+- [Traceability Matrix](traceability-matrix.md) — complete forward and backward mapping
+
+The root [`README.md`](../../README.md) still holds the z/OS installation path for the original application, and that path is unchanged. `CONTRIBUTING.md` still governs issues, pull requests, conduct, security reporting, and licensing, and this work changed none of it.
+
