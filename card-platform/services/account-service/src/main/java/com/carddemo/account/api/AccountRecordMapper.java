@@ -126,9 +126,11 @@ final class AccountRecordMapper {
      * <p>The identifier arrives at eleven digit characters, matching
      * {@code WS-CARD-RID-ACCT-ID PIC 9(11)} at {@code app/cbl/COACTVWC.cbl:L78}. Each date arrives
      * as eight characters and reaches the column as ten. Each monetary field arrives as text and
-     * reaches the column truncated to the scale of its Picture clause. A component the request
-     * leaves absent stays absent, and {@code app/cbl/COACTUPC.cbl:L2184-L2185} counts spaces and
-     * {@code LOW-VALUES} as absent.
+     * reaches the column truncated to the scale of its Picture clause. Each text component reaches
+     * the column at the width its Picture clause declares, as the moves at
+     * {@code app/cbl/COACTUPC.cbl:L3962-L4002} and the rewrite at {@code :L4066} leave it. A
+     * component the request leaves absent stays absent, and
+     * {@code app/cbl/COACTUPC.cbl:L2184-L2185} counts spaces and {@code LOW-VALUES} as absent.
      *
      * @param accountId the account identifier at its declared width
      * @param request   the account section of the request, or {@code null} when the body carries
@@ -143,7 +145,8 @@ final class AccountRecordMapper {
             return account;
         }
 
-        account.setActiveStatus(request.activeStatus());
+        account.setActiveStatus(textAtDeclaredWidth(request.activeStatus(),
+                PicClause.ACCT_ACTIVE_STATUS_WIDTH));
         account.setCurrentBalance(amountOf(request.currentBalance(), PicClause.ACCT_CURR_BAL_SCALE));
         account.setCreditLimit(
                 amountOf(request.creditLimit(), PicClause.ACCT_CREDIT_LIMIT_SCALE));
@@ -162,7 +165,7 @@ final class AccountRecordMapper {
                 amountOf(request.currentCycleCredit(), PicClause.ACCT_CURR_CYC_CREDIT_SCALE));
         account.setCurrentCycleDebit(
                 amountOf(request.currentCycleDebit(), PicClause.ACCT_CURR_CYC_DEBIT_SCALE));
-        account.setGroupId(request.groupId());
+        account.setGroupId(textAtDeclaredWidth(request.groupId(), PicClause.ACCT_GROUP_ID_WIDTH));
         return account;
     }
 
@@ -171,8 +174,10 @@ final class AccountRecordMapper {
      *
      * <p>The three Social Security Number parts reach one nine-character field, in the order
      * {@code app/cbl/COACTUPC.cbl:L831} declares, and only when all three are supplied. The date of
-     * birth arrives as eight characters and reaches the column as ten. A component the request
-     * leaves absent stays absent.
+     * birth arrives as eight characters and reaches the column as ten. Each text component reaches
+     * the column at the width its Picture clause declares, as the moves at
+     * {@code app/cbl/COACTUPC.cbl:L4010-L4059} and the rewrite of the 500-byte record at
+     * {@code :L4086} leave it. A component the request leaves absent stays absent.
      *
      * @param request the customer section of the request, or {@code null} when the body carries none
      * @return the customer values, with a value this class cannot convert left absent
@@ -188,27 +193,42 @@ final class AccountRecordMapper {
             customer.setCustomerId(identifierAtWidth(request.customerId(),
                     PicClause.CUST_ID_WIDTH));
         }
-        customer.setFirstName(request.firstName());
-        customer.setMiddleName(request.middleName());
-        customer.setLastName(request.lastName());
-        customer.setAddressLine1(request.addressLine1());
-        customer.setAddressLine2(request.addressLine2());
-        customer.setAddressCity(request.addressCity());
-        customer.setAddressStateCode(request.addressStateCode());
-        customer.setAddressCountryCode(request.addressCountryCode());
-        customer.setAddressZip(request.addressZip());
-        customer.setPhoneNumber1(request.phoneNumber1());
-        customer.setPhoneNumber2(request.phoneNumber2());
+        customer.setFirstName(textAtDeclaredWidth(request.firstName(),
+                PicClause.CUST_FIRST_NAME_WIDTH));
+        customer.setMiddleName(textAtDeclaredWidth(request.middleName(),
+                PicClause.CUST_MIDDLE_NAME_WIDTH));
+        customer.setLastName(textAtDeclaredWidth(request.lastName(),
+                PicClause.CUST_LAST_NAME_WIDTH));
+        customer.setAddressLine1(textAtDeclaredWidth(request.addressLine1(),
+                PicClause.CUST_ADDR_LINE_1_WIDTH));
+        customer.setAddressLine2(textAtDeclaredWidth(request.addressLine2(),
+                PicClause.CUST_ADDR_LINE_2_WIDTH));
+        customer.setAddressCity(textAtDeclaredWidth(request.addressCity(),
+                PicClause.CUST_ADDR_LINE_3_WIDTH));
+        customer.setAddressStateCode(textAtDeclaredWidth(request.addressStateCode(),
+                PicClause.CUST_ADDR_STATE_CD_WIDTH));
+        customer.setAddressCountryCode(textAtDeclaredWidth(request.addressCountryCode(),
+                PicClause.CUST_ADDR_COUNTRY_CD_WIDTH));
+        customer.setAddressZip(textAtDeclaredWidth(request.addressZip(),
+                PicClause.CUST_ADDR_ZIP_WIDTH));
+        customer.setPhoneNumber1(textAtDeclaredWidth(request.phoneNumber1(),
+                PicClause.CUST_PHONE_NUM_1_WIDTH));
+        customer.setPhoneNumber2(textAtDeclaredWidth(request.phoneNumber2(),
+                PicClause.CUST_PHONE_NUM_2_WIDTH));
         if (isSupplied(request.socialSecurityPart1()) && isSupplied(request.socialSecurityPart2())
                 && isSupplied(request.socialSecurityPart3())) {
             customer.setSocialSecurityNumber(socialSecurityNumberOf(request));
         }
-        customer.setGovernmentIssuedId(request.governmentIssuedId());
+        customer.setGovernmentIssuedId(textAtDeclaredWidth(request.governmentIssuedId(),
+                PicClause.CUST_GOVT_ISSUED_ID_WIDTH));
         if (isSupplied(request.dateOfBirth())) {
             customer.setDateOfBirth(storedDateOf(request.dateOfBirth()));
         }
-        customer.setEftAccountId(request.eftAccountId());
-        customer.setPrimaryCardHolderIndicator(request.primaryCardHolderIndicator());
+        customer.setEftAccountId(textAtDeclaredWidth(request.eftAccountId(),
+                PicClause.CUST_EFT_ACCOUNT_ID_WIDTH));
+        customer.setPrimaryCardHolderIndicator(textAtDeclaredWidth(
+                request.primaryCardHolderIndicator(),
+                PicClause.CUST_PRI_CARD_HOLDER_IND_WIDTH));
         customer.setFicoCreditScore(creditScoreOf(request.ficoCreditScore()));
         return customer;
     }
@@ -362,6 +382,28 @@ final class AccountRecordMapper {
                         CustomerDataRequest.SOCIAL_SECURITY_PART_2_MAX_LENGTH)
                 + atDeclaredWidth(request.socialSecurityPart3(),
                         CustomerDataRequest.SOCIAL_SECURITY_PART_3_MAX_LENGTH);
+    }
+
+    /**
+     * Brings a supplied text value to its declared width, and leaves an absent one absent.
+     *
+     * <p>{@code app/cbl/COACTUPC.cbl:L4010-L4059} moves each screen field into the fixed-width field
+     * of {@code CUSTOMER-RECORD} and rewrites the 500-byte record at {@code :L4086}, so a stored
+     * value always occupies its whole field. The account record at {@code :L3962-L4002} and
+     * {@code :L4066} works the same way. A value that is {@code null}, empty, all spaces or
+     * {@code LOW-VALUES} is returned unchanged, because {@code api/AccountController} reads absence
+     * to mean the stored value stands.
+     *
+     * @param value         the value a caller supplied, or {@code null}
+     * @param declaredWidth the width the Picture clause declares
+     * @return the supplied value at that width, a longer value unchanged, and an absent value as it
+     *         arrived
+     */
+    private static String textAtDeclaredWidth(String value, int declaredWidth) {
+        if (!isSupplied(value)) {
+            return value;
+        }
+        return atDeclaredWidth(value, declaredWidth);
     }
 
     /**

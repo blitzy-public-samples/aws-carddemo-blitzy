@@ -5077,6 +5077,12 @@ class PostingEquivalenceTest {
          * the opening balance is the amount itself, matching {@code :L504-L508}. A present key takes
          * the amount on top of its stored balance, matching {@code :L527}.
          *
+         * <p>The sum reaches {@code TRAN-CAT-BAL PIC S9(09)V99}, which holds nine integer digits.
+         * Neither {@code ADD} carries an {@code ON SIZE ERROR} phrase, so a wider sum keeps its
+         * low-order nine digits and its sign. The shipped statement expresses that as {@code MOD};
+         * this model expresses it as
+         * {@link CobolDecimal#truncateToPictureField(BigDecimal, int, int)}, and the two agree.
+         *
          * @param accountId    eleven digits
          * @param typeCode     two characters
          * @param categoryCode four digits
@@ -5098,7 +5104,9 @@ class PostingEquivalenceTest {
                 saveLog.add(CATEGORY_BALANCE_STAGE);
             }
             rows.put(key, new TransactionCategoryBalanceEntity(key,
-                    CobolDecimal.add(opening, amount, PicClause.TRAN_CAT_BAL_SCALE)));
+                    CobolDecimal.truncateToPictureField(
+                            CobolDecimal.add(opening, amount, PicClause.TRAN_CAT_BAL_SCALE),
+                            PicClause.TRAN_CAT_BAL_PRECISION, PicClause.TRAN_CAT_BAL_SCALE)));
             return ONE_ROW_UPSERTED;
         }
 

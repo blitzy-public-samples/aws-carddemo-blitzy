@@ -7,7 +7,7 @@ Every column below names the copybook field and dataset key it came from, with o
 | Source Picture clause | PostgreSQL type | Rule |
 | --- | --- | --- |
 | `PIC 9(n)` with at most 18 digits | `NUMERIC(n,0)`, `BIGINT`, or fixed-width text | Identifiers remain text when leading zeros are significant |
-| `PIC X(n)` | `VARCHAR(n)` or `CHAR(n)` | Use `CHAR` where fixed-width padding is part of the stored contract |
+| `PIC X(n)` | `VARCHAR(n)` or `CHAR(n)` | Use `CHAR` where fixed-width padding is part of the stored contract. Under either type the stored value occupies the whole field, because the source moves a screen field into a fixed-width field and rewrites the record: `app/cbl/COACTUPC.cbl:L4010-L4059` and `:L4086` for the customer record, `:L3962-L4002` and `:L4066` for the account record |
 | `PIC S9(10)V99` | `NUMERIC(12,2)` | Ten integer digits plus sign and two fractional digits |
 | `PIC S9(09)V99` | `NUMERIC(11,2)` | Nine integer digits plus sign and two fractional digits |
 | `PIC S9(04)V99` | `NUMERIC(6,2)` | Disclosure-group interest rate |

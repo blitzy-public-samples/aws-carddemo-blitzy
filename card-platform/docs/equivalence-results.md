@@ -66,7 +66,7 @@ The command was run again after the documentation changes, and every repeat repr
 | `*EquivalenceTest` classes executed | 9 |
 | Required named equivalence classes | 6 present and passing |
 | Checked-in expected-output files | 14, every one read by its declared consumer |
-| Expected-output rows compared | 11,142 |
+| Expected-output rows compared | 11,159 |
 | Failures | 0 |
 | Errors | 0 |
 | Skipped tests | 0 |
@@ -86,7 +86,7 @@ Every one of the fourteen files under `src/test/resources/expected/` is read row
 | `acctdata-final-account-state-model-b.csv` | 492 | `PostingEquivalenceTest` |
 | `dailytran-reject-records-model-b.csv` | 388 | `PostingEquivalenceTest` |
 | `discgrp-interest-rates.csv` | 236 | `InterestCalculationEquivalenceTest` |
-| `synthetic-boundary-cases.csv` | 215 | `AuthorizationDecisionEquivalenceTest` |
+| `synthetic-boundary-cases.csv` | 232 | `AuthorizationDecisionEquivalenceTest` |
 | `fixture-coverage.csv` | 190 | `FixtureCoverageEquivalenceTest` |
 | `cardxref-account-resolution.csv` | 163 | `AuthorizationDecisionEquivalenceTest` |
 | `validation-messages.csv` | 136 | `ValidationEquivalenceTest` |
@@ -109,7 +109,7 @@ The reject record itself is compared as bytes. `renderRejectRecord` copies the f
 | `CardSeedEquivalenceTest` | 7 |
 | `ThreeConsumerAuthorizationFlowIT` | 6 |
 
-The whole reactor ran 5,810 Surefire and 548 Failsafe tests in the same run, with zero failures, zero errors and zero skips. Those two figures belong here rather than in a service guide, because one run identity is easier to keep true than seven. `DocumentationContractTest` counts the `testcase` elements the other reactor projects wrote in the same run and requires this document and the [platform guide](../README.md) to publish figures that agree with them, so a count here cannot drift from the build that produced it.
+The whole reactor ran 5,822 Surefire and 549 Failsafe tests in the same run, with zero failures, zero errors and zero skips. Those two figures belong here rather than in a service guide, because one run identity is easier to keep true than seven. `DocumentationContractTest` counts the `testcase` elements the other reactor projects wrote in the same run and requires this document and the [platform guide](../README.md) to publish figures that agree with them, so a count here cannot drift from the build that produced it.
 
 ## Fixture inventory and results
 
@@ -247,9 +247,9 @@ It was the one asset with neither the shared reader's per-row tracking nor a dec
 
 ### The synthetic cases
 
-`synthetic-boundary-cases.csv` collects every case the fixtures cannot reach, and all 215 of its rows are read by `AuthorizationDecisionEquivalenceTest`. The file says so itself: its `SUMMARY` topic carries `consuming_test_classes = 1` beside `total_cases = 19`, and the class asserts both.
+`synthetic-boundary-cases.csv` collects every case the fixtures cannot reach, and all 232 of its rows are read by `AuthorizationDecisionEquivalenceTest`. The file says so itself: its `SUMMARY` topic carries `consuming_test_classes = 1` beside `total_cases = 20`, and the class asserts both.
 
-The 19 cases fall into six families, and the file's own summary rows state each count, which the class checks against the cases it read and against their sum:
+The 20 cases fall into seven families, and the file's own summary rows state each count, which the class checks against the cases it read and against their sum:
 
 | Case family | Cases | What each constructs |
 |---|---:|---|
@@ -259,14 +259,17 @@ The 19 cases fall into six families, and the file's own summary rows state each 
 | Truncation | 1 | the negative category balance that separates truncation from both alternatives |
 | Rate resolution | 5 | three matched groups including the all-zero-rate one, the default-group fallback, and the double miss that abends |
 | Credit-score bounds | 4 | 299, 300, 850 and 851 against `88 FICO-RANGE-IS-VALID` |
+| Picture-field ceiling | 1 | two authorized amounts whose sum passes the nine integer digits `TRAN-CAT-BAL` holds, and the store that keeps the low-order nine |
 
-Four further topics carry no case. `COVERAGE` records how often each decline reason occurs in the 300-record feed, which is what makes a constructed case necessary at all. `SETUP` records the constructed cross-reference row the account-miss case needs. `SUMMARY` records the counts above. `PROHIBITION` records the discipline the cases are held to: no fixture file is modified, no case is invented, and the narrowing defect is reproduced rather than corrected.
+Four further topics carry no case. `COVERAGE` records how often each decline reason occurs in the 300-record feed, which is what makes a constructed case necessary at all. `SETUP` records the constructed cross-reference row the account-miss case needs. `SUMMARY` records the counts above. `PROHIBITION` records the discipline the cases are held to: no fixture file is modified, no case is invented without the measurement that shows the fixtures cannot reach it, and the narrowing defect is reproduced rather than corrected. The ceiling case is the one addition that discipline has admitted, and the `COVERAGE` row beside it reports that no seeded category balance comes within one integer digit of the field's ceiling.
 
 Two other classes name the file without reading a row of it, which is why the readers column names one class. `ValidationEquivalenceTest` asserts the file is on the test classpath, as the evidence its own boundary rows defer to. `DecimalTruncationEquivalenceTest` names it as the place the truncation-versus-floor separation is recorded, having established the truncation-versus-half-up difference itself.
 
 ## The arithmetic sites
 
 The measured finding comes first. **The `ROUNDED` phrase appears zero times across all 28 programs in `app/cbl/`.** Every arithmetic store therefore truncates toward zero, which is the COBOL default when no rounding phrase is present.
+
+A second measurement sits beside it. **The `ON SIZE ERROR` phrase appears zero times across the same 28 programs.** Every store below therefore drops any digit past its field's width, holds the sign and continues, rather than reporting a condition. The `SYN-CATBAL-CEILING` case of `synthetic-boundary-cases.csv` constructs that boundary and register item 66 of [business-rule flags](business-rule-flags.md) records it.
 
 The truncation claim rests on the sites below, and the set is small enough to enumerate in full. Four sites move money on the posting and payment paths, and the category balance is one of the four reached through two branches. Interest accrual appears as a fifth site because the suite verifies it, though the calculation is not migrated.
 

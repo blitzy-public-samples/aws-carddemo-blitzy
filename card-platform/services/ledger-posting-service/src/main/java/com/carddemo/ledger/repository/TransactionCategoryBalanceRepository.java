@@ -77,6 +77,16 @@ public interface TransactionCategoryBalanceRepository
      * rounding and cannot acquire a third fractional digit. A negative amount lowers the balance,
      * matching a refund on the source path.
      *
+     * <p>{@code MOD} on the conflict arm is the store into that nine-digit field. Neither
+     * {@code ADD} carries an {@code ON SIZE ERROR} phrase, and the phrase appears nowhere in
+     * {@code app/cbl}, so a sum past nine integer digits keeps its low-order nine and drops the
+     * rest. The divisor is ten raised to the nine integer digits the field holds, which
+     * {@code com.carddemo.cobol.PicClause} states as
+     * {@code TRAN_CAT_BAL_PRECISION - TRAN_CAT_BAL_SCALE}, and the remainder carries the sign of
+     * the sum. The insert arm stores the amount itself, which
+     * {@code libs/event-contracts/src/main/resources/schemas/transaction-authorized-v1.json} bounds
+     * to that same field.
+     *
      * <p>The statement is written in Structured Query Language (SQL) rather than the Jakarta
      * Persistence Query Language, which has no upsert. {@code currentSchema} in the datasource
      * Uniform Resource Locator of {@code src/main/resources/application.yml} puts the schema this
@@ -94,8 +104,9 @@ public interface TransactionCategoryBalanceRepository
                    (account_id, type_code, category_code, category_balance)
             VALUES (:accountId, :typeCode, :categoryCode, :amount)
             ON CONFLICT (account_id, type_code, category_code) DO UPDATE
-               SET category_balance =
-                   transaction_category_balance.category_balance + EXCLUDED.category_balance
+               SET category_balance = MOD(
+                   transaction_category_balance.category_balance + EXCLUDED.category_balance,
+                   1000000000)
             """, nativeQuery = true)
     int addToCategoryBalance(@Param("accountId") String accountId,
             @Param("typeCode") String typeCode,

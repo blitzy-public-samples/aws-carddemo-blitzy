@@ -25,6 +25,13 @@ Every item below was discovered during this migration and left outside its scope
 - **Check:** Re-baseline the posting and authorization equivalence suites against the approved intent.
 - **Behavior change:** Yes. Register item 5.
 
+### Decide the ceiling of the reserved cycle exposure
+
+- **Change:** Decide what the authorization service's own reservation columns should do when the exposure they hold passes ten integer digits, then either store them at that width as the posting path now does or widen them and declare the deviation.
+- **Where:** `domain/CycleExposureReservation` sums the effective pending figure and the approved amount, and `pending_cycle_credit` and `pending_cycle_debit` at `src/main/resources/db/migration/V7__cycle_exposure_reservation.sql:L67` and `:L70` are `NUMERIC(12,2)`. Eleven approvals at the `PIC S9(09)V99` maximum inside one reservation lifetime take the sum past that width, and the store would then answer SQLSTATE 22003 and the endpoint would answer 500 rather than a decision. No copybook field sits behind either column, so unlike `category_balance` this one may legitimately be widened, as `velocity_window.total_amount` was.
+- **Check:** Twelve consecutive maximum-magnitude approvals on one account inside the reservation lifetime must answer a decision every time, and no request may answer 500.
+- **Behavior change:** Either arm changes what the credit-limit rule reads at that magnitude, which is why the owner picks the arm. Register item 66 records the same store on the posting path.
+
 ### Confirm the target meaning of reason 109
 
 - **Change:** Confirm that turning an account-update failure into a retried consumer failure that ends on the dead-letter topic is the treatment the project owner wants.

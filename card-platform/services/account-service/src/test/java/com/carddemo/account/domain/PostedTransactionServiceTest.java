@@ -141,6 +141,18 @@ class PostedTransactionServiceTest extends AbstractAccountPostgresTest {
     /** Transaction identifier every call in this class names. Sixteen characters. */
     private static final String TRANSACTION_ID = "0000001000000042";
 
+    /** Account the ceiling test seeds at the widest figure its three fields hold. */
+    private static final String CEILING_ACCOUNT_ID = "00000000928";
+
+    /** The largest figure {@code PIC S9(10)V99} holds, read from the Picture clause. */
+    private static final BigDecimal FIELD_MAXIMUM = BigDecimal.TEN
+            .pow(PicClause.ACCT_CURR_BAL_PRECISION - PicClause.ACCT_CURR_BAL_SCALE)
+            .subtract(BigDecimal.ONE.movePointLeft(PicClause.ACCT_CURR_BAL_SCALE))
+            .setScale(PicClause.ACCT_CURR_BAL_SCALE, RoundingMode.DOWN);
+
+    /** The amount that carries the widest figure one integer digit past the field. */
+    private static final BigDecimal ONE_CENT = new BigDecimal("0.01");
+
     /** The service under test. */
     @Autowired
     private PostedTransactionService service;
@@ -402,6 +414,49 @@ class PostedTransactionServiceTest extends AbstractAccountPostgresTest {
         BigDecimal difference = CobolDecimal.subtract(account.getCurrentCycleCredit(),
                 account.getCurrentCycleDebit(), PicClause.WS_TEMP_BAL_SCALE);
         return CobolDecimal.add(difference, amount, PicClause.WS_TEMP_BAL_SCALE);
+    }
+
+    @Test
+    @DisplayName("A sum past the ten integer digits of ACCT-CURR-BAL is stored at the field width "
+            + "rather than refused, app/cbl/CBTRN02C.cbl:L547-L549")
+    void aSumPastTheFieldWidthIsStoredRatherThanRefused() {
+        seedAccountAtTheFieldMaximum(CEILING_ACCOUNT_ID);
+        BigDecimal sum = CobolDecimal.add(FIELD_MAXIMUM, ONE_CENT, MONEY_SCALE);
+        BigDecimal expected = CobolDecimal.truncateToPictureField(sum,
+                PicClause.ACCT_CURR_BAL_PRECISION, PicClause.ACCT_CURR_BAL_SCALE);
+
+        inOwnTransaction(() -> service.applyPostedAmount(CEILING_ACCOUNT_ID, ONE_CENT,
+                TRANSACTION_ID));
+
+        AccountEntity stored = storedAccount(CEILING_ACCOUNT_ID);
+        assertThat(stored.getCurrentBalance())
+                .as("stored balance, held at the ten integer digits app/cpy/CVACT01Y.cpy:L7 "
+                        + "declares, where NUMERIC(12,2) would have refused the wider sum")
+                .isEqualTo(expected);
+        assertThat(stored.getCurrentCycleCredit())
+                .as("stored cycle credit, held at the same width by app/cbl/CBTRN02C.cbl:L549")
+                .isEqualTo(expected);
+        assertThat(sum)
+                .as("the unstored sum, which carries the high-order digit the store drops")
+                .isNotEqualTo(expected);
+    }
+
+    /**
+     * Seeds one account row whose balance and credit accumulator sit at the field maximum.
+     *
+     * <p>No record of {@code app/data/ASCII/acctdata.txt} reaches this width, so the row is
+     * constructed. One more cent takes both figures past the ten integer digits their fields hold.
+     *
+     * @param accountId the identifier to seed
+     */
+    private void seedAccountAtTheFieldMaximum(String accountId) {
+        seedAccount(accountId);
+        inOwnTransaction(() -> {
+            AccountEntity seeded = accounts.findByAccountId(accountId).orElseThrow();
+            seeded.setCurrentBalance(FIELD_MAXIMUM);
+            seeded.setCurrentCycleCredit(FIELD_MAXIMUM);
+            return accounts.save(seeded);
+        });
     }
 
     /**

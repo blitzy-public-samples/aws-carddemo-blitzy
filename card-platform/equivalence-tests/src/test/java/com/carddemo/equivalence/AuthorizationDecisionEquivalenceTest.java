@@ -177,6 +177,12 @@ class AuthorizationDecisionEquivalenceTest {
     /** The phrase whose complete absence from {@code app/cbl/} pins truncation everywhere. */
     private static final String ROUNDED_PHRASE = "ROUNDED";
 
+    /**
+     * The phrase whose complete absence from {@code app/cbl/} makes every store silent at its
+     * ceiling.
+     */
+    private static final String SIZE_ERROR_PHRASE = "ON SIZE ERROR";
+
     /** The category-balance step of the posting paragraph. */
     private static final String CATEGORY_BALANCE_STEP = "2700-UPDATE-TCATBAL";
 
@@ -258,6 +264,21 @@ class AuthorizationDecisionEquivalenceTest {
     /** The amount that makes the narrowed balance equal the constructed credit limit. */
     private static final BigDecimal NARROWED_EQUALITY_AMOUNT = new BigDecimal("100.00");
 
+    /** The category balance the ceiling case opens with, one cent above zero. */
+    private static final BigDecimal CEILING_OPENING_BALANCE = new BigDecimal("0.01");
+
+    /**
+     * A category-balance sum one integer digit wider than the field, carrying a sign and a
+     * remainder.
+     *
+     * <p>The expected store keeps the low-order nine integer digits, so the remainder is what
+     * survives and the sign survives with it.
+     */
+    private static final BigDecimal NEGATIVE_CEILING_SUM = new BigDecimal("-1000000001.23");
+
+    /** A balance sum one integer digit wider than the ten {@code ACCT-CURR-BAL} holds. */
+    private static final BigDecimal ACCOUNT_CEILING_SUM = new BigDecimal("10000000000.00");
+
     /** The credit limit the three narrowing cases supply. */
     private static final BigDecimal NARROWING_CREDIT_LIMIT = new BigDecimal("100.00");
 
@@ -315,6 +336,9 @@ class AuthorizationDecisionEquivalenceTest {
 
     /** The label prefix of the four credit-score boundary probes. */
     private static final String CREDIT_SCORE_SEQUENCE_PREFIX = "SYN-FICO-";
+
+    /** The label prefix of the case that stores a sum wider than the field that holds it. */
+    private static final String CATEGORY_CEILING_CASE = "SYN-CATBAL-";
 
     /** The lower bound of the credit-score range the source declares. */
     private static final int CREDIT_SCORE_LOW_BOUND = 300;
@@ -2108,6 +2132,7 @@ class AuthorizationDecisionEquivalenceTest {
                     BILLION_CYCLE_CREDIT, NARROWED_EQUALITY_AMOUNT);
             case "SYN-109-REWRITE-FAIL" -> rewriteFailureValue(row.expectedField());
             case "SYN-TRUNC-NEGATIVE" -> negativeTruncationValue(row.expectedField());
+            case "SYN-CATBAL-CEILING" -> categoryCeilingValue(row.expectedField());
             case "COVERAGE" -> unreachabilityValue(row.expectedField());
             case "SETUP" -> syntheticSetupValue(row.expectedField());
             case "SUMMARY" -> syntheticSummaryValue(row.expectedField());
@@ -2305,6 +2330,74 @@ class AuthorizationDecisionEquivalenceTest {
         };
     }
 
+    /**
+     * Resolves the case where one store receives a sum wider than the field that holds it.
+     *
+     * <p>Two amounts inside {@code DALYTRAN-AMT PIC S9(09)V99} sum past the nine integer digits
+     * {@code TRAN-CAT-BAL PIC S9(09)V99} holds at {@code app/cpy/CVTRA01Y.cpy:L9}. The two
+     * {@code ADD} statements that reach that field, at {@code app/cbl/CBTRN02C.cbl:L508} and
+     * {@code :L527}, carry no {@code ON SIZE ERROR} phrase, and the census below reports how often
+     * the phrase appears anywhere under {@code app/cbl/}. The store therefore keeps the low-order
+     * nine integer digits, holds the sign and completes. The last two fields carry the same
+     * measurement for the ten integer digits of {@code ACCT-CURR-BAL} at
+     * {@code app/cpy/CVACT01Y.cpy:L7}.
+     *
+     * @param field the field one row names
+     * @return the value this platform produces for that field
+     */
+    private static String categoryCeilingValue(String field) {
+        BigDecimal amount = pictureFieldMaximum(PicClause.DALYTRAN_AMT_PRECISION,
+                PicClause.DALYTRAN_AMT_SCALE);
+        BigDecimal sum = CobolDecimal.add(CEILING_OPENING_BALANCE, amount,
+                PicClause.TRAN_CAT_BAL_SCALE);
+        BigDecimal stored = CobolDecimal.truncateToPictureField(sum,
+                PicClause.TRAN_CAT_BAL_PRECISION, PicClause.TRAN_CAT_BAL_SCALE);
+        int fieldIntegerDigits = PicClause.TRAN_CAT_BAL_PRECISION - PicClause.TRAN_CAT_BAL_SCALE;
+        return switch (field) {
+            case "input_opening_category_balance" -> plainMoney(CEILING_OPENING_BALANCE);
+            case "input_posted_amount" -> plainMoney(amount);
+            case "posted_amount_is_the_field_maximum" -> yesNo(amount.compareTo(
+                    pictureFieldMaximum(PicClause.TRAN_CAT_BAL_PRECISION,
+                            PicClause.TRAN_CAT_BAL_SCALE)) == 0);
+            case "unrounded_sum" -> plainMoney(sum);
+            case "sum_integer_digits" -> Integer.toString(sum.precision() - sum.scale());
+            case "field_integer_digits" -> Integer.toString(fieldIntegerDigits);
+            case "sum_exceeds_field" ->
+                    yesNo(sum.precision() - sum.scale() > fieldIntegerDigits);
+            case "size_error_phrase_occurrences_in_app_cbl" ->
+                    Long.toString(sizeErrorPhraseOccurrences());
+            case "store_completes_rather_than_failing" -> yesNo(sizeErrorPhraseOccurrences() == 0L);
+            case "expected_stored_category_balance" -> plainMoney(stored);
+            case "high_order_digit_dropped" -> yesNo(stored.compareTo(sum) != 0);
+            case "stored_scale" -> Integer.toString(stored.scale());
+            case "negative_sum_keeps_its_sign" -> plainMoney(CobolDecimal.truncateToPictureField(
+                    NEGATIVE_CEILING_SUM, PicClause.TRAN_CAT_BAL_PRECISION,
+                    PicClause.TRAN_CAT_BAL_SCALE));
+            case "account_field_integer_digits" -> Integer.toString(
+                    PicClause.ACCT_CURR_BAL_PRECISION - PicClause.ACCT_CURR_BAL_SCALE);
+            case "account_store_drops_past_ten_digits" -> yesNo(
+                    CobolDecimal.truncateToPictureField(ACCOUNT_CEILING_SUM,
+                                    PicClause.ACCT_CURR_BAL_PRECISION,
+                                    PicClause.ACCT_CURR_BAL_SCALE)
+                            .compareTo(ACCOUNT_CEILING_SUM) != 0);
+            default -> throw new IllegalStateException(
+                    EXPECTED_SYNTHETIC_FILE + " names unresolved ceiling field " + field);
+        };
+    }
+
+    /**
+     * Returns the largest value one Picture clause holds.
+     *
+     * @param precision the digits the field holds in total
+     * @param scale     the fractional digits the field holds
+     * @return ten raised to the integer digits, less one unit of the last fractional digit
+     */
+    private static BigDecimal pictureFieldMaximum(int precision, int scale) {
+        return BigDecimal.TEN.pow(precision - scale)
+                .subtract(BigDecimal.ONE.movePointLeft(scale))
+                .setScale(scale, RoundingMode.DOWN);
+    }
+
     /** Resolves one of the five rate-resolution cases or one of the four credit-score cases. */
     private static String rateResolutionCaseValue(ExpectedOutcomes.Row row) {
         if (row.recordSequence().startsWith(CREDIT_SCORE_SEQUENCE_PREFIX)) {
@@ -2403,6 +2496,8 @@ class AuthorizationDecisionEquivalenceTest {
                     FIXTURE_ACCOUNTS.values().stream()
                             .filter(AuthorizationDecisionEquivalenceTest::approachesTheNarrowing)
                             .count());
+            case "seeded_category_balances_approaching_nine_integer_digits" ->
+                    Long.toString(seededCategoryBalancesApproachingTheCeiling());
             case "fico_scores_at_either_bound" -> Long.toString(CUSTOMERS.stream()
                     .filter(customer -> customer.ficoCreditScore() == CREDIT_SCORE_LOW_BOUND
                             || customer.ficoCreditScore() == CREDIT_SCORE_HIGH_BOUND)
@@ -2443,6 +2538,8 @@ class AuthorizationDecisionEquivalenceTest {
             case "narrowing_cases" -> Long.toString(casesMatching(NARROWING_CASE_PREFIXES));
             case "reason_109_cases" -> Long.toString(casesMatching(List.of(REWRITE_CASE)));
             case "truncation_cases" -> Long.toString(casesMatching(List.of(TRUNCATION_CASE)));
+            case "category_ceiling_cases" ->
+                    Long.toString(casesMatching(List.of(CATEGORY_CEILING_CASE)));
             case "rate_resolution_cases" ->
                     Long.toString(casesMatching(List.of(RATE_CASE_PREFIX)));
             case "fico_boundary_cases" ->
@@ -2738,6 +2835,32 @@ class AuthorizationDecisionEquivalenceTest {
         }
     }
 
+    /** Counts how often the size-error phrase appears anywhere below {@code app/cbl/}. */
+    private static long sizeErrorPhraseOccurrences() {
+        Path programs = CardDemoFixtureLoader.fixtureDirectory().getParent().getParent()
+                .getParent().resolve(COBOL_PROGRAM_DIRECTORY);
+        try (Stream<Path> files = Files.list(programs)) {
+            return files.filter(Files::isRegularFile)
+                    .mapToLong(AuthorizationDecisionEquivalenceTest::sizeErrorPhrasesIn)
+                    .sum();
+        } catch (IOException unreadable) {
+            throw new UncheckedIOException("cannot list " + programs, unreadable);
+        }
+    }
+
+    /** Counts the size-error phrases one program carries outside its comment lines. */
+    private static long sizeErrorPhrasesIn(Path program) {
+        try {
+            return Files.readAllLines(program, StandardCharsets.UTF_8).stream()
+                    .map(line -> line.replaceAll("\\s+", " ").strip())
+                    .filter(line -> !line.startsWith("*"))
+                    .filter(line -> line.contains(SIZE_ERROR_PHRASE))
+                    .count();
+        } catch (IOException unreadable) {
+            throw new UncheckedIOException("cannot read " + program, unreadable);
+        }
+    }
+
     /** Counts the rounding phrases one program carries outside its comment lines. */
     private static long roundedPhrasesIn(Path program) {
         try {
@@ -2840,6 +2963,22 @@ class AuthorizationDecisionEquivalenceTest {
     }
 
     /** Reports whether one account's accumulators come within one digit of the narrowing. */
+    /**
+     * Counts the seeded category balances already within one integer digit of their field's ceiling.
+     *
+     * <p>The measurement is what makes the ceiling case synthetic: a value the fixture reaches would
+     * belong in a fixture-derived ledger instead.
+     *
+     * @return how many rows of {@code app/data/ASCII/tcatbal.txt} hold eight integer digits or more
+     */
+    private static long seededCategoryBalancesApproachingTheCeiling() {
+        BigDecimal threshold = BigDecimal.TEN.pow(
+                PicClause.TRAN_CAT_BAL_PRECISION - PicClause.TRAN_CAT_BAL_SCALE - 1);
+        return CardDemoFixtureLoader.loadTransactionCategoryBalances().stream()
+                .filter(seed -> seed.balance().abs().compareTo(threshold) >= 0)
+                .count();
+    }
+
     private static boolean approachesTheNarrowing(AccountRecord account) {
         BigDecimal threshold = BigDecimal.TEN.pow(
                 PicClause.WS_TEMP_BAL_PRECISION - PicClause.WS_TEMP_BAL_SCALE - 1);

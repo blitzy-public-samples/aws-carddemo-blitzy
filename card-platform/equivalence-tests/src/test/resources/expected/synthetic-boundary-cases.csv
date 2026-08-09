@@ -1,4 +1,4 @@
-# evaluation_model NOT_APPLICABLE and derived_from SYNTHETIC on every row: every input is constructed, so no posting model applies. Case count 19. Data row count 215. Each case covers a behaviour no combination of the nine app/data/ASCII fixtures reaches. The COVERAGE rows hold those measurements. source_locator carries the COBOL line each case tests. Consuming test: AuthorizationDecisionEquivalenceTest. Every row is bound in one ledger so no case is left unread.
+# evaluation_model NOT_APPLICABLE and derived_from SYNTHETIC on every row: every input is constructed, so no posting model applies. Case count 20. Data row count 232. Each case covers a behaviour no combination of the nine app/data/ASCII fixtures reaches. The COVERAGE rows hold those measurements. source_locator carries the COBOL line each case tests. Consuming test: AuthorizationDecisionEquivalenceTest. Every row is bound in one ledger so no case is left unread.
 evaluation_model,derived_from,record_seq,entity_key,expected_field,expected_value,pic_clause,source_locator
 NOT_APPLICABLE,SYNTHETIC,SYN-100-XREF-MISS,9999999999999999,input_card_number,9999999999999999,X(16),app/cpy/CVTRA06Y.cpy:L15
 NOT_APPLICABLE,SYNTHETIC,SYN-100-XREF-MISS,9999999999999999,xref_read_result,INVALID KEY,X(16),app/cbl/CBTRN02C.cbl:L385
@@ -109,6 +109,21 @@ NOT_APPLICABLE,SYNTHETIC,SYN-TRUNC-NEGATIVE,WS-MONTHLY-INT,value_rounding_floor,
 NOT_APPLICABLE,SYNTHETIC,SYN-TRUNC-NEGATIVE,WS-MONTHLY-INT,distinguishes_down_from_half_up,YES,NONE,app/cbl/CBACT04C.cbl:L464-L465
 NOT_APPLICABLE,SYNTHETIC,SYN-TRUNC-NEGATIVE,WS-MONTHLY-INT,distinguishes_down_from_floor,YES,NONE,app/cbl/CBACT04C.cbl:L464-L465
 NOT_APPLICABLE,SYNTHETIC,SYN-TRUNC-NEGATIVE,WS-MONTHLY-INT,rounded_phrase_occurrences_in_app_cbl,0,NONE,app/cbl/CBTRN02C.cbl:L403-L405
+NOT_APPLICABLE,SYNTHETIC,SYN-CATBAL-CEILING,TRAN-CAT-BAL,input_opening_category_balance,0.01,S9(09)V99,app/cpy/CVTRA01Y.cpy:L9
+NOT_APPLICABLE,SYNTHETIC,SYN-CATBAL-CEILING,TRAN-CAT-BAL,input_posted_amount,999999999.99,S9(09)V99,app/cpy/CVTRA06Y.cpy:L10
+NOT_APPLICABLE,SYNTHETIC,SYN-CATBAL-CEILING,TRAN-CAT-BAL,posted_amount_is_the_field_maximum,yes,S9(09)V99,app/cpy/CVTRA06Y.cpy:L10
+NOT_APPLICABLE,SYNTHETIC,SYN-CATBAL-CEILING,TRAN-CAT-BAL,unrounded_sum,1000000000.00,NONE,app/cbl/CBTRN02C.cbl:L527
+NOT_APPLICABLE,SYNTHETIC,SYN-CATBAL-CEILING,TRAN-CAT-BAL,sum_integer_digits,10,NONE,app/cbl/CBTRN02C.cbl:L527
+NOT_APPLICABLE,SYNTHETIC,SYN-CATBAL-CEILING,TRAN-CAT-BAL,field_integer_digits,9,S9(09)V99,app/cpy/CVTRA01Y.cpy:L9
+NOT_APPLICABLE,SYNTHETIC,SYN-CATBAL-CEILING,TRAN-CAT-BAL,sum_exceeds_field,yes,S9(09)V99,app/cpy/CVTRA01Y.cpy:L9
+NOT_APPLICABLE,SYNTHETIC,SYN-CATBAL-CEILING,TRAN-CAT-BAL,size_error_phrase_occurrences_in_app_cbl,0,NONE,app/cbl/CBTRN02C.cbl:L508
+NOT_APPLICABLE,SYNTHETIC,SYN-CATBAL-CEILING,TRAN-CAT-BAL,store_completes_rather_than_failing,yes,NONE,app/cbl/CBTRN02C.cbl:L512
+NOT_APPLICABLE,SYNTHETIC,SYN-CATBAL-CEILING,TRAN-CAT-BAL,expected_stored_category_balance,0.00,S9(09)V99,app/cbl/CBTRN02C.cbl:L527
+NOT_APPLICABLE,SYNTHETIC,SYN-CATBAL-CEILING,TRAN-CAT-BAL,high_order_digit_dropped,yes,S9(09)V99,app/cbl/CBTRN02C.cbl:L527
+NOT_APPLICABLE,SYNTHETIC,SYN-CATBAL-CEILING,TRAN-CAT-BAL,stored_scale,2,S9(09)V99,app/cpy/CVTRA01Y.cpy:L9
+NOT_APPLICABLE,SYNTHETIC,SYN-CATBAL-CEILING,TRAN-CAT-BAL,negative_sum_keeps_its_sign,-1.23,S9(09)V99,app/cbl/CBTRN02C.cbl:L527
+NOT_APPLICABLE,SYNTHETIC,SYN-CATBAL-CEILING,TRAN-CAT-BAL,account_field_integer_digits,10,S9(10)V99,app/cpy/CVACT01Y.cpy:L7
+NOT_APPLICABLE,SYNTHETIC,SYN-CATBAL-CEILING,TRAN-CAT-BAL,account_store_drops_past_ten_digits,yes,S9(10)V99,app/cbl/CBTRN02C.cbl:L547
 NOT_APPLICABLE,SYNTHETIC,SYN-RATE-MATCHED-01,A000000000|01|0001,input_acct_group_id,A000000000,X(10),app/cpy/CVACT01Y.cpy:L16
 NOT_APPLICABLE,SYNTHETIC,SYN-RATE-MATCHED-01,A000000000|01|0001,input_tran_type_cd,01,X(02),app/cpy/CVTRA01Y.cpy:L7
 NOT_APPLICABLE,SYNTHETIC,SYN-RATE-MATCHED-01,A000000000|01|0001,input_tran_cat_cd,0001,9(04),app/cpy/CVTRA01Y.cpy:L8
@@ -190,6 +205,7 @@ NOT_APPLICABLE,SYNTHETIC,COVERAGE,fixture_unreachability,latest_account_expiry,2
 NOT_APPLICABLE,SYNTHETIC,COVERAGE,fixture_unreachability,latest_expiry_account,00000000022,9(11),app/cpy/CVACT01Y.cpy:L5
 NOT_APPLICABLE,SYNTHETIC,COVERAGE,fixture_unreachability,accounts_with_matched_disclosure_group,0,X(10),app/cpy/CVACT01Y.cpy:L16
 NOT_APPLICABLE,SYNTHETIC,COVERAGE,fixture_unreachability,accumulators_approaching_nine_integer_digits,0,S9(10)V99,app/cpy/CVACT01Y.cpy:L13
+NOT_APPLICABLE,SYNTHETIC,COVERAGE,fixture_unreachability,seeded_category_balances_approaching_nine_integer_digits,0,S9(09)V99,app/cpy/CVTRA01Y.cpy:L9
 NOT_APPLICABLE,SYNTHETIC,COVERAGE,fixture_unreachability,fico_scores_at_either_bound,0,9(03),app/cpy/CVCUS01Y.cpy:L22
 NOT_APPLICABLE,SYNTHETIC,COVERAGE,fixture_unreachability,fico_scores_above_high_bound,0,9(03),app/cpy/CVCUS01Y.cpy:L22
 NOT_APPLICABLE,SYNTHETIC,COVERAGE,fixture_unreachability,negative_balances_with_nonzero_rate,0,S9(04)V99,app/cpy/CVTRA02Y.cpy:L9
@@ -200,11 +216,12 @@ NOT_APPLICABLE,SYNTHETIC,SETUP,synthetic_rows_required,synthetic_xref_row_requir
 NOT_APPLICABLE,SYNTHETIC,SETUP,synthetic_rows_required,card_absent_from_xref_for_case_100,9999999999999999,X(16),app/cbl/CBTRN02C.cbl:L385
 NOT_APPLICABLE,SYNTHETIC,SETUP,synthetic_rows_required,account_absent_from_acctdata,00000000099,9(11),app/cbl/CBTRN02C.cbl:L397
 NOT_APPLICABLE,SYNTHETIC,SETUP,synthetic_rows_required,fixtures_must_not_be_modified,yes,NONE,app/cpy/CVACT03Y.cpy:L4
-NOT_APPLICABLE,SYNTHETIC,SUMMARY,synthetic_cases,total_cases,19,NONE,SYNTHETIC
+NOT_APPLICABLE,SYNTHETIC,SUMMARY,synthetic_cases,total_cases,20,NONE,SYNTHETIC
 NOT_APPLICABLE,SYNTHETIC,SUMMARY,synthetic_cases,authorization_decline_cases,5,9(04),app/cbl/CBTRN02C.cbl:L380-L420
 NOT_APPLICABLE,SYNTHETIC,SUMMARY,synthetic_cases,narrowing_cases,3,S9(09)V99,app/cbl/CBTRN02C.cbl:L187
 NOT_APPLICABLE,SYNTHETIC,SUMMARY,synthetic_cases,reason_109_cases,1,9(04),app/cbl/CBTRN02C.cbl:L556
 NOT_APPLICABLE,SYNTHETIC,SUMMARY,synthetic_cases,truncation_cases,1,S9(09)V99,app/cbl/CBACT04C.cbl:L464-L465
+NOT_APPLICABLE,SYNTHETIC,SUMMARY,synthetic_cases,category_ceiling_cases,1,S9(09)V99,app/cbl/CBTRN02C.cbl:L508
 NOT_APPLICABLE,SYNTHETIC,SUMMARY,synthetic_cases,rate_resolution_cases,5,S9(04)V99,app/cbl/CBACT04C.cbl:L415-L458
 NOT_APPLICABLE,SYNTHETIC,SUMMARY,synthetic_cases,fico_boundary_cases,4,9(03),app/cbl/COACTUPC.cbl:L848-L849
 NOT_APPLICABLE,SYNTHETIC,SUMMARY,synthetic_cases,consuming_test_classes,1,NONE,SYNTHETIC

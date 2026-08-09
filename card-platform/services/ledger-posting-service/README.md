@@ -365,9 +365,9 @@ Use these versions. They are the tested set, not a floor.
 | Consumer groups | `ledger-posting`, `ledger-account-state` |
 | Listener retries | 3 attempts, 1000 ms backoff |
 | Outbox relay | every 500 ms, up to 100 rows, claim timeout `PT2M` |
-| Migrations | Five, listed below |
+| Migrations | Seven, listed below |
 
-Flyway owns this schema and runs six migrations on every start, in this order:
+Flyway owns this schema and runs seven migrations on every start, in this order:
 
 | Migration | What it does |
 | :--- | :--- |
@@ -377,6 +377,7 @@ Flyway owns this schema and runs six migrations on every start, in this order:
 | `V4__account_state_ownership.sql` | Records which writer owns each value column of `account_balance_projection`, correcting the table comment `V3` set: an arriving account change no longer replaces a column the posting path advances |
 | `V5__processed_event_topic_key.sql` | Makes the consumed topic part of the duplicate-delivery marker's identity, so the two listener groups sharing the table can each claim the same event identifier once |
 | `V6__cycle_column_locators.sql` | Re-issues the `cycle_credit` and `cycle_debit` comments with the copybook lines they actually come from, `app/cpy/CVACT01Y.cpy:L13` and `:L14`. `V4` cited `:L12` and `:L13`, one line above each field, and `:L12` is a date. It is a migration rather than an edit because `V4` has run |
+| `V7__category_balance_ceiling.sql` | Records what the four monetary columns do with a sum wider than the COBOL field behind them: they keep the low-order digits and the sign, because none of the five `ADD` statements at `app/cbl/CBTRN02C.cbl:L508`, `:L527`, `:L547`, `:L549` and `:L551` carries an `ON SIZE ERROR` phrase. Until that store was reproduced a sum past nine integer digits reached `category_balance NUMERIC(11,2)`, SQLSTATE 22003 rolled the posting back and an approved authorization reached the dead-letter topic. It is a migration rather than an edit because `V1` has run |
 
 Run the four steps in this order. The Dockerfile copies the packaged archive out of `target/`, and the compose build context is this module directory alone. It reaches neither the parent POM nor the two shared libraries, so Maven has to finish first.
 

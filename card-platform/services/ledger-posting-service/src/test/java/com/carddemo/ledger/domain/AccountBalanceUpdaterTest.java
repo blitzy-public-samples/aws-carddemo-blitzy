@@ -12,6 +12,7 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.carddemo.cobol.PicClause;
 import com.carddemo.ledger.entity.AccountBalanceProjectionEntity;
 import com.carddemo.ledger.repository.AccountBalanceProjectionRepository;
 import jakarta.persistence.LockModeType;
@@ -22,9 +23,12 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.mockito.ArgumentCaptor;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.data.jpa.repository.Lock;
 
 /**
@@ -351,6 +355,96 @@ final class AccountBalanceUpdaterTest {
             updater.updateBalances(ACCOUNT_ID, REFUND_AMOUNT);
 
             assertEquals(new BigDecimal("-250.00"), savedRow().getCycleDebit());
+        }
+    }
+
+    /**
+     * The store at the ceiling of {@code PIC S9(10)V99}.
+     *
+     * <p>{@code app/cbl/CBTRN02C.cbl:L547}, {@code :L549} and {@code :L551} add without an
+     * {@code ON SIZE ERROR} phrase, and the phrase appears in none of the twenty-eight programs
+     * under {@code app/cbl/}, so a sum wider than ten integer digits keeps its low-order ten and its
+     * sign rather than failing. Before this behaviour was reproduced the wider sum reached the
+     * column, {@code NUMERIC(12,2)} refused it with SQLSTATE 22003, and an approved authorization
+     * reached the dead-letter topic instead of an account. No fixture pair reaches this width, so
+     * every value here is constructed.
+     */
+    @Nested
+    @ExtendWith(OutputCaptureExtension.class)
+    @DisplayName("The picture-field ceiling at app/cbl/CBTRN02C.cbl:L547-L551")
+    class PictureFieldCeiling {
+
+        /** The largest value {@code ACCT-CURR-BAL PIC S9(10)V99} holds. */
+        private final BigDecimal fieldMaximum = new BigDecimal("9999999999.99");
+
+        /** The amount that carries a maximum figure one digit past the field. */
+        private final BigDecimal oneCent = new BigDecimal("0.01");
+
+        /** What the low-order ten integer digits of that sum hold. */
+        private final BigDecimal wrapped = new BigDecimal("0.00");
+
+        /** The integer digits the three fields hold, as {@code PicClause} states them. */
+        private final int integerDigits =
+                PicClause.ACCT_CURR_BAL_PRECISION - PicClause.ACCT_CURR_BAL_SCALE;
+
+        @Test
+        @DisplayName("stores the balance at the field width instead of failing (:L547)")
+        void storesTheBalanceAtTheFieldWidth() {
+            storeRow(fieldMaximum, ZERO_ACCUMULATOR, ZERO_ACCUMULATOR);
+
+            BigDecimal posted = updater.updateBalances(ACCOUNT_ID, oneCent);
+
+            assertEquals(wrapped, posted);
+            assertEquals(MONEY_SCALE, posted.scale());
+            assertEquals(wrapped, savedRow().getCurrentBalance());
+        }
+
+        @Test
+        @DisplayName("stores the cycle credit accumulator at the field width (:L549)")
+        void storesTheCycleCreditAtTheFieldWidth() {
+            storeRow(STORED_BALANCE, fieldMaximum, ZERO_ACCUMULATOR);
+
+            updater.updateBalances(ACCOUNT_ID, oneCent);
+
+            AccountBalanceProjectionEntity saved = savedRow();
+            assertEquals(wrapped, saved.getCycleCredit());
+            assertEquals(ZERO_ACCUMULATOR, saved.getCycleDebit());
+        }
+
+        @Test
+        @DisplayName("holds the sign of a negative accumulator past the ceiling (:L551)")
+        void holdsTheSignOfANegativeAccumulatorPastTheCeiling() {
+            storeRow(STORED_BALANCE, ZERO_ACCUMULATOR, fieldMaximum.negate());
+
+            updater.updateBalances(ACCOUNT_ID, oneCent.negate().multiply(new BigDecimal("2")));
+
+            BigDecimal stored = savedRow().getCycleDebit();
+            assertEquals(new BigDecimal("-0.01"), stored);
+            assertTrue(stored.compareTo(BigDecimal.ZERO) < 0);
+        }
+
+        @Test
+        @DisplayName("reports the dropped digit once, naming the capacity and no figure")
+        void reportsTheDroppedDigitWithoutTheFigure(CapturedOutput consoleOutput) {
+            storeRow(fieldMaximum, ZERO_ACCUMULATOR, ZERO_ACCUMULATOR);
+
+            updater.updateBalances(ACCOUNT_ID, oneCent);
+
+            String written = consoleOutput.getAll();
+            assertTrue(written.contains(integerDigits + " integer digits"), written);
+            assertFalse(written.contains(fieldMaximum.toPlainString()), written);
+            assertFalse(written.contains(ACCOUNT_ID), written);
+        }
+
+        @Test
+        @DisplayName("writes no diagnostic when every digit of the sum fits")
+        void writesNoDiagnosticWhenTheSumFits(CapturedOutput consoleOutput) {
+            storeRow(STORED_BALANCE, ZERO_ACCUMULATOR, ZERO_ACCUMULATOR);
+
+            updater.updateBalances(ACCOUNT_ID, POSTED_AMOUNT);
+
+            assertFalse(consoleOutput.getAll().contains("integer digits"),
+                    consoleOutput.getAll());
         }
     }
 }

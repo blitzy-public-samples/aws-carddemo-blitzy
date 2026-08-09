@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.carddemo.account.TestIdentityPasswords;
 import com.carddemo.account.config.CrossSiteRequestFilter;
+import com.carddemo.cobol.PicClause;
 import java.math.BigDecimal;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -244,6 +245,17 @@ class AccountControllerIT {
     /** Family name of seeded customer row 1, without the padding the column carries. */
     private static final String SEEDED_LAST_NAME = "Kessler";
 
+    /** Middle name of seeded customer row 1, without the padding the column carries. */
+    private static final String SEEDED_MIDDLE_NAME = "Madeline";
+
+    /**
+     * A given name shorter than the field, submitted to show what the stored form holds.
+     *
+     * <p>{@code CUST-FIRST-NAME PIC X(25)} at {@code app/cpy/CVCUS01Y.cpy:L6} is five times this
+     * length, so the stored value has to carry twenty trailing spaces.
+     */
+    private static final String SHORTENED_FIRST_NAME = "Aniya";
+
     /** Town of seeded customer row 1, without the padding the column carries. */
     private static final String SEEDED_ADDRESS_CITY = "Altenwerthshire";
 
@@ -436,6 +448,11 @@ class AccountControllerIT {
         jdbcTemplate.update("UPDATE customer SET address_state_code = ?, address_zip = ?"
                         + " WHERE customer_id = ?",
                 SEEDED_ADDRESS_STATE_CODE, SEEDED_ADDRESS_ZIP, SEEDED_CUSTOMER_ID);
+        jdbcTemplate.update("UPDATE customer SET first_name = ?, middle_name = ?"
+                        + " WHERE customer_id = ?",
+                paddedTo(SEEDED_FIRST_NAME, PicClause.CUST_FIRST_NAME_WIDTH),
+                paddedTo(SEEDED_MIDDLE_NAME, PicClause.CUST_MIDDLE_NAME_WIDTH),
+                SEEDED_CUSTOMER_ID);
         jdbcTemplate.update("DELETE FROM outbox_event");
     }
 
@@ -842,6 +859,41 @@ class AccountControllerIT {
         }
 
         @Test
+        @DisplayName("a shortened name is stored and served at the width CUST-FIRST-NAME declares")
+        void aShortenedNameIsStoredAtItsDeclaredWidth() {
+            String submitted = SHORTENED_FIRST_NAME;
+            String body = updateBody(RAISED_CREDIT_LIMIT, PASSING_CREDIT_SCORE)
+                    .replace("\"firstName\":\"" + SEEDED_FIRST_NAME + "\"",
+                            "\"firstName\":\"" + submitted + "\"");
+
+            HttpResponse<String> response = send(authorized(ADMIN_USERNAME, ADMIN_PASSWORD,
+                    "/accounts/" + SEEDED_ACCOUNT_ID)
+                    .header("Content-Type", JSON_MEDIA_TYPE)
+                    .PUT(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
+                    .build());
+            assertEquals(200, response.statusCode(), response.body());
+
+            HttpResponse<String> read = send(authorized(ADMIN_USERNAME, ADMIN_PASSWORD,
+                    "/customers/" + SEEDED_CUSTOMER_ID).GET().build());
+            JsonNode customer = JSON.readTree(read.body());
+            String stored = storedFirstName();
+            assertAll(
+                    () -> assertEquals(PicClause.CUST_FIRST_NAME_WIDTH, stored.length(),
+                            "app/cbl/COACTUPC.cbl:L4010-L4011 moves the screen field into"
+                                    + " CUST-FIRST-NAME PIC X(25) and :L4086 rewrites the 500-byte"
+                                    + " record, so the column holds the whole field: '" + stored
+                                    + "'"),
+                    () -> assertEquals(submitted, stored.trim(),
+                            "and the submitted characters are the ones it holds"),
+                    () -> assertEquals(PicClause.CUST_FIRST_NAME_WIDTH,
+                            customer.get("firstName").asString().length(),
+                            "so a read of an updated row answers the width a read of a seeded row"
+                                    + " answers"),
+                    () -> assertEquals(SEEDED_MIDDLE_NAME, storedMiddleName().trim(),
+                            "an optional component the body omits keeps the value the row held"));
+        }
+
+        @Test
         @DisplayName("the seeded credit score of 274 is refused, and a refused update writes nothing")
         void theSeededOutOfRangeCreditScoreIsRefused() {
             HttpResponse<String> response = send(authorized(ADMIN_USERNAME, ADMIN_PASSWORD,
@@ -1022,6 +1074,39 @@ class AccountControllerIT {
         return jdbcTemplate.queryForObject(
                 "SELECT group_id FROM account WHERE account_id = ?",
                 String.class, SEEDED_ACCOUNT_ID);
+    }
+
+    /**
+     * Reads the stored given name, padding included.
+     *
+     * @return the whole {@code first_name} column of the seeded customer row
+     */
+    /**
+     * Brings one value to a declared width with trailing spaces, as a stored field carries it.
+     *
+     * @param value         the value without padding
+     * @param declaredWidth the width the Picture clause declares
+     * @return the value at that width
+     */
+    private static String paddedTo(String value, int declaredWidth) {
+        return value + " ".repeat(declaredWidth - value.length());
+    }
+
+    private String storedFirstName() {
+        return jdbcTemplate.queryForObject(
+                "SELECT first_name FROM customer WHERE customer_id = ?",
+                String.class, SEEDED_CUSTOMER_ID);
+    }
+
+    /**
+     * Reads the stored middle name, padding included.
+     *
+     * @return the whole {@code middle_name} column of the seeded customer row
+     */
+    private String storedMiddleName() {
+        return jdbcTemplate.queryForObject(
+                "SELECT middle_name FROM customer WHERE customer_id = ?",
+                String.class, SEEDED_CUSTOMER_ID);
     }
 
     /**

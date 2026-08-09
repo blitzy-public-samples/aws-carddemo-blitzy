@@ -5,6 +5,8 @@ import com.carddemo.cobol.PicClause;
 import com.carddemo.ledger.entity.AccountBalanceProjectionEntity;
 import com.carddemo.ledger.repository.AccountBalanceProjectionRepository;
 import java.math.BigDecimal;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 /**
@@ -19,12 +21,24 @@ import org.springframework.stereotype.Service;
  * keeps its stored value. All three fields are {@code PIC S9(10)V99}, at
  * {@code app/cpy/CVACT01Y.cpy:L7}, {@code :L13} and {@code :L14}.
  *
+ * <p>Each of the three stores holds ten integer digits and drops any digit past the tenth. No
+ * {@code ADD} in the paragraph carries an {@code ON SIZE ERROR} phrase and the phrase appears
+ * nowhere in {@code app/cbl}, so a sum wider than the field keeps its low-order ten digits and its
+ * sign. A dropped digit is reported once at warning level, without the figure.
+ *
  * <p>The {@code REWRITE} at {@code app/cbl/CBTRN02C.cbl:L554} becomes a save of a replacement row.
  * Alone among that program's writes, this paragraph tests no file status and calls no abend
  * routine. A missing row throws {@link AccountBalanceRowMissingException}.
+ *
+ * <p>Deviations and flagged findings for this class are recorded in
+ * {@code card-platform/docs/decision-log.md} and
+ * {@code card-platform/docs/business-rule-flags.md}.
  */
 @Service
 public class AccountBalanceUpdater {
+
+    /** Reports a dropped high-order digit, and nothing else. */
+    private static final Logger LOG = LoggerFactory.getLogger(AccountBalanceUpdater.class);
 
     /** Reads one balance row by account identifier and saves the replacement row. */
     private final AccountBalanceProjectionRepository accountBalances;
@@ -61,15 +75,23 @@ public class AccountBalanceUpdater {
         AccountBalanceProjectionEntity stored = accountBalances.findForUpdateById(accountId)
                 .orElseThrow(() -> new AccountBalanceRowMissingException(accountId));
 
-        BigDecimal postedBalance = CobolDecimal.add(stored.getCurrentBalance(), amount,
-                PicClause.ACCT_CURR_BAL_SCALE);
+        BigDecimal postedBalance = storedInPictureField(
+                CobolDecimal.add(stored.getCurrentBalance(), amount,
+                        PicClause.ACCT_CURR_BAL_SCALE),
+                PicClause.ACCT_CURR_BAL_PRECISION, PicClause.ACCT_CURR_BAL_SCALE);
         BigDecimal postedCycleCredit = stored.getCycleCredit();
         BigDecimal postedCycleDebit = stored.getCycleDebit();
         if (amount.signum() >= 0) {
-            postedCycleCredit = CobolDecimal.add(postedCycleCredit, amount,
+            postedCycleCredit = storedInPictureField(
+                    CobolDecimal.add(postedCycleCredit, amount,
+                            PicClause.ACCT_CURR_CYC_CREDIT_SCALE),
+                    PicClause.ACCT_CURR_CYC_CREDIT_PRECISION,
                     PicClause.ACCT_CURR_CYC_CREDIT_SCALE);
         } else {
-            postedCycleDebit = CobolDecimal.add(postedCycleDebit, amount,
+            postedCycleDebit = storedInPictureField(
+                    CobolDecimal.add(postedCycleDebit, amount,
+                            PicClause.ACCT_CURR_CYC_DEBIT_SCALE),
+                    PicClause.ACCT_CURR_CYC_DEBIT_PRECISION,
                     PicClause.ACCT_CURR_CYC_DEBIT_SCALE);
         }
 
@@ -77,6 +99,33 @@ public class AccountBalanceUpdater {
                 postedBalance, postedCycleCredit, postedCycleDebit, stored.getSourceEventId(),
                 stored.getSourceOccurredAt()));
         return postedBalance;
+    }
+
+    /**
+     * Stores one sum in the {@code PIC S9(10)V99} field that holds it.
+     *
+     * <p>{@code app/cbl/CBTRN02C.cbl:L547}, {@code :L549} and {@code :L551} each add without an
+     * {@code ON SIZE ERROR} phrase, so a sum wider than the field keeps its low-order ten integer
+     * digits and its sign. A store that dropped a digit is reported once, naming the capacity and
+     * withholding the figure.
+     *
+     * @param sum       the value one add produced, at the scale of the field it belongs to
+     * @param precision the digits the field holds in total, from {@code PicClause}
+     * @param scale     the fractional digits the field holds, from {@code PicClause}
+     * @return the value the field holds, which is the sum itself when every digit fits
+     */
+    private static BigDecimal storedInPictureField(BigDecimal sum, int precision, int scale) {
+        BigDecimal stored = CobolDecimal.truncateToPictureField(sum, precision, scale);
+        if (stored.compareTo(sum) != 0) {
+            LOG.warn("A posted figure needed more than the {} integer digits the account balance"
+                            + " fields hold at app/cpy/CVACT01Y.cpy:L7, :L13 and :L14, so the"
+                            + " high-order digits were dropped where the source ADD statements at"
+                            + " app/cbl/CBTRN02C.cbl:L547-L551 drop them. The stored figure and the"
+                            + " posted event agree, and both report less than the postings sum to."
+                            + " See docs/business-rule-flags.md.",
+                    precision - scale);
+        }
+        return stored;
     }
 
     /**

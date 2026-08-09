@@ -77,7 +77,7 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class PostedTransactionService {
 
-    /** Writes the two diagnostic lines this class emits, neither carrying a monetary value. */
+    /** Writes the diagnostic lines this class emits, none of them carrying a monetary value. */
     private static final Logger LOG = LoggerFactory.getLogger(PostedTransactionService.class);
 
     /** Reads the account row under a write lock and stores it again. */
@@ -133,13 +133,21 @@ public class PostedTransactionService {
         AccountEntity account = accountRepository.findForUpdateByAccountId(accountId)
                 .orElseThrow(AccountRowMissingException::new);
 
-        account.setCurrentBalance(CobolDecimal.add(account.getCurrentBalance(), amount,
-                PicClause.ACCT_CURR_BAL_SCALE));
+        account.setCurrentBalance(storedInPictureField(
+                CobolDecimal.add(account.getCurrentBalance(), amount,
+                        PicClause.ACCT_CURR_BAL_SCALE),
+                PicClause.ACCT_CURR_BAL_PRECISION, PicClause.ACCT_CURR_BAL_SCALE));
         if (amount.signum() >= 0) {
-            account.setCurrentCycleCredit(CobolDecimal.add(account.getCurrentCycleCredit(), amount,
+            account.setCurrentCycleCredit(storedInPictureField(
+                    CobolDecimal.add(account.getCurrentCycleCredit(), amount,
+                            PicClause.ACCT_CURR_CYC_CREDIT_SCALE),
+                    PicClause.ACCT_CURR_CYC_CREDIT_PRECISION,
                     PicClause.ACCT_CURR_CYC_CREDIT_SCALE));
         } else {
-            account.setCurrentCycleDebit(CobolDecimal.add(account.getCurrentCycleDebit(), amount,
+            account.setCurrentCycleDebit(storedInPictureField(
+                    CobolDecimal.add(account.getCurrentCycleDebit(), amount,
+                            PicClause.ACCT_CURR_CYC_DEBIT_SCALE),
+                    PicClause.ACCT_CURR_CYC_DEBIT_PRECISION,
                     PicClause.ACCT_CURR_CYC_DEBIT_SCALE));
         }
 
@@ -152,6 +160,34 @@ public class PostedTransactionService {
         LOG.info("Transaction {} moved the balance and one billing-cycle accumulator of the account"
                 + " record, and one state change is queued for publication.", transactionId);
         return posted;
+    }
+
+    /**
+     * Stores one sum in the {@code PIC S9(10)V99} field that holds it.
+     *
+     * <p>{@code app/cbl/CBTRN02C.cbl:L547}, {@code :L549} and {@code :L551} each add without an
+     * {@code ON SIZE ERROR} phrase, and the phrase appears in none of the twenty-eight programs
+     * under {@code app/cbl/}, so a sum wider than the field keeps its low-order ten integer digits
+     * and its sign. A store that dropped a digit is reported once, naming the capacity and
+     * withholding the figure.
+     *
+     * @param sum       the value one add produced, at the scale of the field it belongs to
+     * @param precision the digits the field holds in total, from {@link PicClause}
+     * @param scale     the fractional digits the field holds, from {@link PicClause}
+     * @return the value the field holds, which is the sum itself when every digit fits
+     */
+    private static BigDecimal storedInPictureField(BigDecimal sum, int precision, int scale) {
+        BigDecimal stored = CobolDecimal.truncateToPictureField(sum, precision, scale);
+        if (stored.compareTo(sum) != 0) {
+            LOG.warn("A posted figure needed more than the {} integer digits the account record"
+                            + " holds at app/cpy/CVACT01Y.cpy:L7, :L13 and :L14, so the high-order"
+                            + " digits were dropped where the source ADD statements at"
+                            + " app/cbl/CBTRN02C.cbl:L547-L551 drop them. The stored record and the"
+                            + " state change agree, and both report less than the postings sum to."
+                            + " See docs/business-rule-flags.md.",
+                    precision - scale);
+        }
+        return stored;
     }
 
     /**
