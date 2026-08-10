@@ -51,7 +51,7 @@ This service is therefore a declared synthesis of three real programs, not a tra
 | The repository interface shape | `app/cbl/CBSTM03B.CBL` | lines 100 to 112 |
 | The transactional outbox ancestor | `app/cbl/CORPT00C.cbl` | lines 517 to 518 |
 
-Every rule the source leaves ambiguous, undocumented, or inconsistent is listed in [business rule flags](../../docs/business-rule-flags.md), which carries a sixty-five-item register with citations. Identifiers 1 to 26 are the set the specification fixes and 27 upward are appended, so a number always means the same finding.
+Every rule the source leaves ambiguous, undocumented, or inconsistent is listed in [business rule flags](../../docs/business-rule-flags.md), which carries a sixty-six-item register with citations. Identifiers 1 to 26 are the set the specification fixes and 27 upward are appended, so a number always means the same finding.
 
 <br/>
 

@@ -518,14 +518,36 @@ Interest is verified but not migrated. `BillingCycleService` reproduces only the
 | [Suggested Next Tasks](docs/suggested-next-tasks.md) | Follow-up work with locations and verification criteria |
 | [Decision Log](docs/decision-log.md) | Alternatives, reasons, accepted risks, and declared deviations |
 | [Traceability Matrix](docs/traceability-matrix.md) | Bidirectional source-to-target classification |
-| [Business Rule Flags](docs/business-rule-flags.md) | Sixty-five ambiguous, inconsistent, or undocumented source rules, each with its citation and its handling, plus three declared platform departures. Identifiers 1 to 26 are the set the specification fixes; 27 upward are appended in the order they were found, and no identifier is ever reused or renumbered |
+| [Business Rule Flags](docs/business-rule-flags.md) | Sixty-six ambiguous, inconsistent, or undocumented source rules, each with its citation and its handling, plus three declared platform departures. Identifiers 1 to 26 are the set the specification fixes; 27 upward are appended in the order they were found, and no identifier is ever reused or renumbered |
 | [Architecture, Before and After](docs/architecture-before-after.md) | Paired Mermaid migration views |
 | [Event Flow](docs/event-flow.md) | Topics, groups, outboxes, projections, and idempotency |
 | [Data Model](docs/data-model.md) | Service-owned tables and copybook-to-column provenance |
 | [Equivalence Results](docs/equivalence-results.md) | Fixture-by-fixture parity evidence and declared gaps |
 | [Prose Validation](docs/prose-validation.md) | Rule 5 verdicts and per-document scorecards |
+| [Executive Summary](presentation/executive-summary.html) | Sixteen-slide executive deck. Open the file in a browser; see [Opening the executive deck](#opening-the-executive-deck) for its one requirement |
 
 Each service also has a local guide linked from [Services and APIs](#services-and-apis). The root `README.md` retains the separate mainframe installation path.
+
+### Opening the executive deck
+
+`presentation/executive-summary.html` is one file with no build step, and it opens either from a
+`file://` path or over a local server. Both routes render identically.
+
+**It needs network access on the machine that opens it.** The deck is a single authored file, not a
+self-contained one: its slide framework, its diagram renderer, its icon set and its three typefaces
+all load at version-pinned URLs from three hosts, which is what keeps the file free of any local
+asset beside it. Reaching those three hosts is the deck's only requirement.
+
+| Host | What it serves | If it is unreachable |
+| :--- | :--- | :--- |
+| `cdn.jsdelivr.net` | The slide framework, the diagram renderer and the icon set | The slides stop paging and stack into one long scrolling page, the icons do not appear, and each of the three diagram frames shows a short line of text naming the document that holds the same view. Every word of the authored copy stays readable and correctly styled |
+| `fonts.googleapis.com` | The stylesheet naming the three typefaces | The deck still pages and still renders its diagrams and icons. Type falls back to whatever the machine has, so headings and body copy stop being visibly different faces. Nothing is clipped and no slide overflows |
+| `fonts.gstatic.com` | The three typeface files | The same fallback as above |
+
+Two things are worth knowing before showing it to an audience. Nothing inside the page can detect a
+typeface outage, so a font fallback is silent and looks like a styling choice rather than a failure.
+And the deck is a fixed sixteen-by-nine canvas scaled to whatever window it is given, so text
+shrinks with the window rather than reflowing: give it a desktop window or a projector, not a phone.
 
 Use [Suggested Next Tasks](docs/suggested-next-tasks.md) for unresolved business decisions. Do not silently correct a flagged source behavior in production code.
 
