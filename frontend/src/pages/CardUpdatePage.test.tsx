@@ -1234,6 +1234,55 @@ describe('CardUpdatePage — entry state (CCUP-DETAILS-NOT-FETCHED)', () => {
   });
 });
 
+describe('CardUpdatePage — a failed re-read leaves no stale record (COCRDUPC L1053)', () => {
+  it('blanks the displayed record when a re-read finds nothing', async () => {
+    await renderLoadedScreen();
+    // The record really is on screen first, or the assertion below proves nothing.
+    expect(screen.getByTestId('crdname')).toHaveValue(cardRecord.cardEmbossedName);
+    expect(screen.getByTestId('crdstcd')).toHaveValue(cardRecord.cardActiveStatus);
+
+    getCardMock.mockReset();
+    getCardMock.mockRejectedValue(new ApiError(404, 'Card not found'));
+
+    // F12 is CANCEL, whose COCRDUPC path re-reads the record (9000-READ-DATA) to restore
+    // the screen from the file. A re-read that fails must not leave the record it was
+    // replacing on display: 1100-SCREEN-INIT opens `MOVE LOW-VALUES TO CCRDUPAO` and only
+    // a successful read moves a record back into the map. The physical key is used
+    // because COCRDUP.bms keeps the F5/F12 legend field DRK until the confirmation is
+    // prompted -- the AID is live either way.
+    pressPhysicalKey('F12');
+
+    await waitFor(() => {
+      expect(getCardMock).toHaveBeenCalledTimes(1);
+    });
+    await waitFor(() => {
+      expect(errorText()).toBe('Card not found');
+    });
+    expect(screen.getByTestId('crdname')).toHaveValue('');
+    expect(screen.getByTestId('crdstcd')).toHaveValue('');
+    expect(screen.getByTestId('expmon')).toHaveValue('');
+    expect(screen.getByTestId('expyear')).toHaveValue('');
+  });
+
+  it('repopulates the record when the re-read succeeds', async () => {
+    await renderLoadedScreen();
+
+    getCardMock.mockReset();
+    getCardMock.mockResolvedValue(cardRecord);
+
+    pressPhysicalKey('F12');
+
+    await waitFor(() => {
+      expect(getCardMock).toHaveBeenCalledTimes(1);
+    });
+    // Clearing before the read must not stop a good read from painting the record.
+    await waitFor(() => {
+      expect(screen.getByTestId('crdname')).toHaveValue(cardRecord.cardEmbossedName);
+    });
+    expect(screen.getByTestId('crdstcd')).toHaveValue(cardRecord.cardActiveStatus);
+  });
+});
+
 describe('CardUpdatePage — F3 returns to the caller (CDEMO-FROM-PROGRAM)', () => {
   it('returns to the card list when the list handed the selection over', async () => {
     await renderLoadedScreen();

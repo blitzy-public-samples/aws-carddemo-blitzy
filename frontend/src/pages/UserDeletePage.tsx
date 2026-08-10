@@ -20,11 +20,12 @@ import { useLocation, useNavigate } from 'react-router';
 import { useScreenChrome } from '../components/Layout';
 import { invalidFieldProps } from '../components/ErrorBanner';
 import type { PFKeyDef } from '../components/PFKeyBar';
-import { PfKeyAction, CCDA_TITLE01, CCDA_TITLE02 } from '../types';
+import { PfKeyAction, CCDA_TITLE01, CCDA_TITLE02, CCDA_MSG_INVALID_KEY } from '../types';
 import type { UserDto } from '../types';
 import { ApiError, deleteUser, getUser } from '../api';
 import OutputField from '../components/OutputField';
 import {
+  placeCursor,
   useApi,
   useFocusOnChange,
   useFocusOnSettled,
@@ -43,6 +44,9 @@ const PROGRAM_NAME = 'COUSR03C';
 const ADMIN_MENU_ROUTE = '/admin';
 
 /** BMS line-4 screen heading (``INITIAL='Delete User'``). */
+/** DOM id of the USRIDIN key field (``COUSR03.bms`` ``ATTRB=IC``). */
+const USER_ID_ELEMENT_ID = 'usridin';
+
 const HEADING = 'Delete User';
 
 /** BMS line-6 caption of the enterable key field. */
@@ -400,6 +404,23 @@ export default function UserDeletePage(): ReactElement {
     setDetail(null);
     setErrorMessage('');
     setInfoMessage('');
+    // PF4 re-sends the map, and every send honours ``ATTRB=IC`` on USRIDIN. The
+    // token hook above cannot observe a clear that leaves both message states empty,
+    // so the send's cursor placement is performed here; otherwise the cursor stays
+    // on whatever activated the key -- the line-24 ``F4`` button after a click.
+    placeCursor(document.getElementById(USER_ID_ELEMENT_ID));
+  }, []);
+
+  /**
+   * :purpose: ``EVALUATE EIBAID`` ``WHEN OTHER`` (``COUSR03C`` L126-130) — publish
+   *     ``CCDA-MSG-INVALID-KEY`` and re-send the map, whose ``ATTRB=IC`` on USRIDIN
+   *     returns the cursor to the user-id field. No entered value is rejected, so no
+   *     field is faulted and the displayed record is left standing.
+   */
+  const handleUnhandledKey = useCallback((): void => {
+    setInfoMessage('');
+    setErrorMessage(CCDA_MSG_INVALID_KEY);
+    placeCursor(document.getElementById(USER_ID_ELEMENT_ID));
   }, []);
 
   /**
@@ -468,6 +489,7 @@ export default function UserDeletePage(): ReactElement {
   // dispatch to the newest render's handler, so the line-24 legend is not rebuilt on
   // every keystroke and an AID can never act on a value the screen has replaced.
   const activateFetch = useScreenAction(handleFetch);
+  const activateUnhandledKey = useScreenAction(handleUnhandledKey);
   const activateExit = useScreenAction(handleExit);
   const activateClear = useScreenAction(handleClear);
   const activateDelete = useScreenAction(handleDelete);
@@ -524,12 +546,14 @@ export default function UserDeletePage(): ReactElement {
       infoMessage,
       busy,
       pfKeys,
+      onUnhandledKey: activateUnhandledKey,
     });
   }, [
     activateClear,
     activateDelete,
     activateExit,
     activateFetch,
+    activateUnhandledKey,
     busy,
     errorMessage,
     infoMessage,

@@ -512,13 +512,24 @@ export default function CardUpdatePage(): ReactElement {
   /**
    * :purpose: Read a card record and seed the screen from it — ``9000-READ-DATA``. The
    *     keys are edited by the caller, so this issues the request unconditionally; a
-   *     refused read leaves the previously displayed record untouched and lets the
-   *     ``fetchError`` effect publish the server's message.
+   *     refused read returns the screen to ``CCUP-DETAILS-NOT-FETCHED`` with an empty
+   *     record and lets the ``fetchError`` effect publish the server's message.
    * :param account: the ``ACCTSID`` key, or the empty string to read by card alone.
    * :param cardKey: the ``CARDSID`` key.
+   * :note: The record on display is discarded BEFORE the read is issued. ``COCRDUPC``
+   *     reaches its send through ``1100-SCREEN-INIT``, which opens ``MOVE LOW-VALUES TO
+   *     CCRDUPAO`` (L1053), and only a successful ``9000-READ-DATA`` moves a record back
+   *     into the map — so a read that fails must not leave the previous card's number,
+   *     embossed name and expiry standing beside keys that were never found.
    */
   const readRecord = useCallback(
     async (account: string, cardKey: string): Promise<void> => {
+      setCard(null);
+      setCardName('');
+      setCardActiveStatus('');
+      setExpiryMonth('');
+      setExpiryYear('');
+      setChangesValidated(false);
       const record = await runGetCard(cardKey, account === '' ? undefined : account);
       if (record !== undefined) {
         applyCard(record);
@@ -831,6 +842,11 @@ export default function CardUpdatePage(): ReactElement {
       errorMessage,
       infoFieldMessage: infoMessage,
       pfKeys,
+      // ``COACTVWC``/``COACTUPC``/``COCRDLIC``/``COCRDSLC``/``COCRDUPC`` do not answer an
+      // unhandled AID with a message: they ``SET PFK-INVALID TO TRUE``, and when the
+      // struck key is not in the valid set they ``SET CCARD-AID-ENTER TO TRUE`` -- the
+      // key is REWRITTEN to ENTER and the ENTER path runs.
+      onUnhandledKey: handleProcess,
     });
   }, [
     card,

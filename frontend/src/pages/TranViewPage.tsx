@@ -20,10 +20,11 @@ import type { ChangeEvent, ReactElement } from 'react';
 import { useNavigate, useParams } from 'react-router';
 import { useScreenChrome } from '../components/Layout';
 import type { PFKeyDef } from '../components/PFKeyBar';
-import { PfKeyAction, CCDA_TITLE01, CCDA_TITLE02 } from '../types';
+import { PfKeyAction, CCDA_TITLE01, CCDA_TITLE02, CCDA_MSG_INVALID_KEY } from '../types';
 import type { TranViewResponseDto } from '../types';
 import { getTransaction, ApiError } from '../api';
 import {
+  placeCursor,
   useApi,
   useFocusOnChange,
   useFocusOnSettled,
@@ -134,8 +135,9 @@ export default function TranViewPage(): ReactElement {
     }
     setSearchTranId(transactionId);
     setValidationMessage('');
+    reset();
     void run(transactionId);
-  }, [transactionId, run]);
+  }, [transactionId, run, reset]);
 
   const handleSearchTranIdChange = useCallback((event: ChangeEvent<HTMLInputElement>): void => {
     setSearchTranId(event.target.value);
@@ -156,6 +158,14 @@ export default function TranViewPage(): ReactElement {
       return;
     }
     setValidationMessage('');
+    // ``COTRN01C`` L158-170 blanks all thirteen display fields -- TRNIDI, CARDNUMI,
+    // TTYPCDI, TCATCDI, TRNSRCI, TRNAMTI, TDESCI, TORIGDTI, TPROCDTI, MIDI, MNAMEI,
+    // MCITYI, MZIPI -- BEFORE ``PERFORM READ-TRANSACT-FILE``, and repopulates them at
+    // L175-190 inside a SECOND ``IF NOT ERR-FLG-ON``. So a read that fails leaves the
+    // map as the blanking MOVE left it. Clearing here rather than after the failure is
+    // what stops the previous transaction's values -- its FULL card number among them --
+    // from standing beside an id that was never found.
+    reset();
     void run(enteredTranId);
   }, [searchTranId, run, reset]);
 
@@ -177,7 +187,12 @@ export default function TranViewPage(): ReactElement {
     setSearchTranId('');
     setValidationMessage('');
     reset();
-  }, [reset]);
+    // PF4 re-sends the map, and every send honours ``ATTRB=IC`` on TRNIDIN. The
+    // message-token hook above cannot observe a clear that leaves the message region
+    // empty, so this send's cursor placement is performed here; otherwise the cursor
+    // stays on whatever activated the key -- the line-24 ``F4`` button after a click.
+    placeCursor(tranIdRef.current);
+  }, [reset, tranIdRef]);
 
   /** :purpose: PF5 — ``Browse Tran.``: return to the transaction list (``COTRN00C``). */
   const handleBrowse = useCallback((): void => {
@@ -187,10 +202,22 @@ export default function TranViewPage(): ReactElement {
   // The activators published to the shared frame are identity-stable and always
   // dispatch to the newest render's handler, so the line-24 legend is not rebuilt on
   // every keystroke and an AID can never act on a value the screen has replaced.
+  /**
+   * :purpose: ``EVALUATE EIBAID`` ``WHEN OTHER`` (``COTRN01C`` L128-132) — publish
+   *     ``CCDA-MSG-INVALID-KEY`` and re-send the map, whose ``ATTRB=IC`` on TRNIDIN
+   *     returns the cursor to the entry field. The displayed record stands: nothing
+   *     was re-read and no entered value was rejected.
+   */
+  const handleUnhandledKey = useCallback((): void => {
+    setValidationMessage(CCDA_MSG_INVALID_KEY);
+    placeCursor(tranIdRef.current);
+  }, [tranIdRef]);
+
   const activateSearch = useScreenAction(handleSearch);
   const activateExit = useScreenAction(handleExit);
   const activateClear = useScreenAction(handleClear);
   const activateBrowse = useScreenAction(handleBrowse);
+  const activateUnhandledKey = useScreenAction(handleUnhandledKey);
 
   // The frame's header, line-23 message region and line-24 key legend belong to the
   // SAME map as this body, so they are published in a LAYOUT effect: a CICS program
@@ -212,6 +239,7 @@ export default function TranViewPage(): ReactElement {
       errorMessage,
       infoMessage: '',
       pfKeys,
+      onUnhandledKey: activateUnhandledKey,
       busy: loading,
     });
   }, [
@@ -219,6 +247,7 @@ export default function TranViewPage(): ReactElement {
     activateClear,
     activateExit,
     activateSearch,
+    activateUnhandledKey,
     errorMessage,
     loading,
     setChrome,

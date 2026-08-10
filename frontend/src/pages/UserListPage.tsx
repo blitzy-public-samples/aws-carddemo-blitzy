@@ -20,7 +20,7 @@ import { useScreenChrome } from '../components/Layout';
 import { invalidFieldProps } from '../components/ErrorBanner';
 import { isBrowseNotice } from '../components/browseNotices';
 import type { PFKeyDef } from '../components/PFKeyBar';
-import { PfKeyAction, CCDA_TITLE01, CCDA_TITLE02 } from '../types';
+import { PfKeyAction, CCDA_TITLE01, CCDA_TITLE02, CCDA_MSG_INVALID_KEY } from '../types';
 import type {
   UserListItemDto,
   UserListRequestDto,
@@ -28,6 +28,7 @@ import type {
 } from '../types';
 import { listUsers, ApiError } from '../api';
 import {
+  placeCursor,
   useApi,
   useFocusOnChange,
   useFocusOnSettled,
@@ -337,6 +338,17 @@ export default function UserListPage(): ReactElement {
   useFocusOnSettled(loading, searchRef);
   useFocusOnChange(publishedMessage === '' ? null : publishedMessage, searchRef);
 
+  /**
+   * :purpose: ``EVALUATE EIBAID`` ``WHEN OTHER`` (``COUSR00C`` L132-137) — publish
+   *     ``CCDA-MSG-INVALID-KEY`` and re-send the map. ``COUSR00.bms`` declares no
+   *     ``IC`` field, so the program moves the cursor itself with
+   *     ``MOVE -1 TO USRIDINL``, placing it on the user-id filter.
+   */
+  const handleUnhandledKey = useCallback((): void => {
+    setSelectionError(CCDA_MSG_INVALID_KEY);
+    placeCursor(searchRef.current);
+  }, [searchRef]);
+
   // The activators published to the shared frame are identity-stable and always
   // dispatch to the newest render's handler, so the line-24 legend is not rebuilt on
   // every keystroke and an AID can never act on a value the screen has replaced.
@@ -344,6 +356,7 @@ export default function UserListPage(): ReactElement {
   const activateExit = useScreenAction(handleExit);
   const activatePrevPage = useScreenAction(prevPage);
   const activateNextPage = useScreenAction(nextPage);
+  const activateUnhandledKey = useScreenAction(handleUnhandledKey);
 
   // The frame's header, line-23 message region and line-24 key legend belong to the
   // SAME map as this body, so they are published in a LAYOUT effect: a CICS program
@@ -370,6 +383,7 @@ export default function UserListPage(): ReactElement {
       noticeMessage,
       infoMessage: '',
       pfKeys,
+      onUnhandledKey: activateUnhandledKey,
       busy: loading,
     });
   }, [
@@ -377,6 +391,7 @@ export default function UserListPage(): ReactElement {
     activateExit,
     activateNextPage,
     activatePrevPage,
+    activateUnhandledKey,
     errorMessage,
     loading,
     noticeMessage,

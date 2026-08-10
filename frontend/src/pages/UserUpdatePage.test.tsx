@@ -25,6 +25,7 @@
 import { jest } from '@jest/globals';
 import {
   act,
+  createEvent,
   fireEvent,
   render,
   screen,
@@ -34,7 +35,7 @@ import {
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router';
 // The header title lines every screen publishes (``COTTL01Y``).
-import { CCDA_TITLE02 } from '../types';
+import { CCDA_TITLE02, CCDA_MSG_INVALID_KEY } from '../types';
 import type {
   ApiErrorResponse,
   SignonRequestDto,
@@ -727,5 +728,49 @@ describe('UserUpdatePage — line-24 function keys', () => {
       userType: STORED_USER.userType,
       password: ENTERED_PASSWORD,
     });
+  });
+
+  it('returns the cursor to USRIDIN when the F4 legend button clears the screen', async () => {
+    const user = userEvent.setup();
+    await renderFetchedScreen();
+
+    // Clicking the legend button focuses it. COUSR02C PF4 re-sends the map and every
+    // send honours ATTRB=IC on USRIDIN, so the cursor leaves the key and returns to the
+    // key field rather than stranding the operator's next keystroke on a button.
+    await user.click(pfKey(PF4_LABEL));
+
+    await waitFor(() => {
+      expect(field(LABEL_USER_ID)).toHaveValue('');
+    });
+    expect(document.activeElement).toBe(field(LABEL_USER_ID));
+  });
+
+  it('answers the AIDs the legend does not advertise with the invalid-key literal', async () => {
+    await renderFetchedScreen();
+
+    // COUSR02C L127-131: the WHEN OTHER arm publishes CCDA-MSG-INVALID-KEY and
+    // re-sends the map, whose ATTRB=IC on USRIDIN returns the cursor. F7 and F8 are the
+    // recognised AIDs this screen does not declare.
+    for (const key of ['F7', 'F8']) {
+      await act(async () => {
+        fireEvent.keyDown(document, { key });
+        await Promise.resolve();
+      });
+
+      expect(screen.getByRole('alert')).toHaveTextContent(CCDA_MSG_INVALID_KEY);
+      expect(document.activeElement).toBe(field(LABEL_USER_ID));
+      // The fetched record still stands: nothing was re-read and nothing was written.
+      expect(field(LABEL_LAST_NAME)).toHaveValue(STORED_USER.lastName);
+      expect(updateUserMock).not.toHaveBeenCalled();
+    }
+  });
+
+  it('claims an unadvertised AID from the browser', async () => {
+    await renderFetchedScreen();
+
+    const event = createEvent.keyDown(document, { key: 'F7', cancelable: true });
+    fireEvent(document, event);
+
+    expect(event.defaultPrevented).toBe(true);
   });
 });

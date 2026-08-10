@@ -16,7 +16,12 @@ import type { ReactElement } from 'react';
 import { useNavigate } from 'react-router';
 import { useScreenChrome } from '../components/Layout';
 import type { PFKeyDef } from '../components/PFKeyBar';
-import { PfKeyAction, CCDA_TITLE01, CCDA_TITLE02 } from '../types';
+import {
+  PfKeyAction,
+  CCDA_TITLE01,
+  CCDA_TITLE02,
+  CCDA_MSG_INVALID_KEY,
+} from '../types';
 import type {
   TranAddRequestDto,
   TranAddResponseDto,
@@ -324,6 +329,17 @@ const CLEAR_LABEL = 'F4=Clear';
 /** PF5 entry of the mapset line-24 legend. */
 const COPY_LAST_LABEL = 'F5=Copy Last Tran.';
 
+/**
+ * :purpose: Route PF3 leaves for. ``COTRN02C`` L136-L142 transfers to
+ *     ``CDEMO-FROM-PROGRAM``, or to ``COMEN01C`` when no caller set one. The main menu
+ *     is the only program in the application that reaches this screen — ``COMEN02Y``
+ *     option 8 names ``COTRN02C`` and no other program ``XCTL``s to it — and
+ *     ``COMEN01C`` L148 stamps its own name into ``CDEMO-FROM-PROGRAM`` before the
+ *     transfer, so both the menu-driven path and the no-caller default resolve to the
+ *     main menu.
+ */
+const MENU_ROUTE = '/menu';
+
 export default function TranAddPage(): ReactElement {
   const navigate = useNavigate();
   const { setChrome } = useScreenChrome();
@@ -510,12 +526,18 @@ export default function TranAddPage(): ReactElement {
     }
     setInfoMessage('');
     if (flag === '' || flag === 'N') {
-      setForm((previous) => ({ ...previous, confirm: '' }));
       setErrorMessage(MESSAGES.confirmRequired);
+      // Asking for the confirmation is not a rejection of what was typed: `N` is an
+      // accepted value and blank is the state the map is sent in. `COTRN02C` L177-181
+      // moves the message and `MOVE -1 TO CONFIRML` -- the CURSOR -- and marks nothing,
+      // so the control carries no invalid state for a prompt it has not yet answered.
+      setFaultedField(null);
     } else {
+      // Anything other than Y or N IS a rejected value (`COTRN02C` L183-187), so the
+      // control is marked as well as cursored.
       setErrorMessage(MESSAGES.invalidYesNo);
+      setFaultedField('confirm');
     }
-    setFaultedField('confirm');
     focusField('confirm');
   }, [submitAdd]);
 
@@ -548,8 +570,15 @@ export default function TranAddPage(): ReactElement {
   }, [adding, confirmOrAdd, form, publishFailure, resolvingKeys, runKeyFieldEdit]);
 
 
+  /**
+   * :purpose: PF3 — ``RETURN-TO-PREV-SCREEN`` with the caller resolved by
+   *     ``COTRN02C`` L136-L142, which is the main menu on every path into this screen
+   *     (see :data:`MENU_ROUTE`). Leaving for the transaction list instead sent the
+   *     operator to a screen no legacy caller returns them to, and cost them a second
+   *     PF3 to reach the menu they came from.
+   */
   const handleExit = useCallback((): void => {
-    void navigate('/transactions');
+    void navigate(MENU_ROUTE);
   }, [navigate]);
 
   const handleClear = useCallback((): void => {
@@ -620,10 +649,24 @@ export default function TranAddPage(): ReactElement {
   // The activators published to the shared frame are identity-stable and always
   // dispatch to the newest render's handler, so the line-24 legend is not rebuilt on
   // every keystroke and an AID can never act on a value the screen has replaced.
+  /**
+   * :purpose: ``EVALUATE EIBAID`` ``WHEN OTHER`` (``COTRN02C`` L148-152) — publish
+   *     ``CCDA-MSG-INVALID-KEY`` and re-send the map, whose ``ATTRB=IC`` on ACTIDIN
+   *     returns the cursor to the account-id field. Every typed value stands and no
+   *     field is faulted: nothing the operator entered was rejected.
+   */
+  const handleUnhandledKey = useCallback((): void => {
+    setInfoMessage('');
+    setErrorMessage(CCDA_MSG_INVALID_KEY);
+    setFaultedField(null);
+    focusField('acctId');
+  }, []);
+
   const activateEnter = useScreenAction(handleEnter);
   const activateExit = useScreenAction(handleExit);
   const activateClear = useScreenAction(handleClear);
   const activateCopyLast = useScreenAction(handleCopyLast);
+  const activateUnhandledKey = useScreenAction(handleUnhandledKey);
 
   // The frame's header, line-23 message region and line-24 key legend belong to the
   // SAME map as this body, so they are published in a LAYOUT effect: a CICS program
@@ -668,6 +711,9 @@ export default function TranAddPage(): ReactElement {
       errorMessage,
       infoMessage,
       pfKeys,
+      // ``EVALUATE EIBAID`` ``WHEN OTHER`` (``COTRN02C`` L148-152): the keys the
+      // legend does not advertise draw the refusal literal, not silence.
+      onUnhandledKey: activateUnhandledKey,
       // The key-field edit is a lookup, so its round trip is part of the same
       // keyboard-locked interval the write occupies.
       busy: adding || resolvingKeys,
@@ -680,6 +726,7 @@ export default function TranAddPage(): ReactElement {
     activateCopyLast,
     activateEnter,
     activateExit,
+    activateUnhandledKey,
     adding,
     errorMessage,
     infoMessage,

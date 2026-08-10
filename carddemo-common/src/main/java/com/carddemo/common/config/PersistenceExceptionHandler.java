@@ -20,7 +20,6 @@ import com.carddemo.common.exception.OptimisticLockConflictException;
 import com.carddemo.common.exception.PiiEncryptionException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.slf4j.MDC;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.core.annotation.Order;
 import org.springframework.dao.OptimisticLockingFailureException;
@@ -42,9 +41,9 @@ import org.springframework.web.context.request.WebRequest;
  *     detected at transaction commit — after the service method has returned — the
  *     resulting {@link OptimisticLockingFailureException} would otherwise surface as
  *     an unexpected HTTP 500 instead of that outcome.
- * :output: HTTP 409 carrying the standard {@code ErrorResponse} envelope with the
- *     frozen COBOL message, for every service whose classpath includes Spring's ORM
- *     support.
+ * :output: HTTP 409 carrying the standard {@code ErrorResponse} envelope — the frozen COBOL
+ *     message, the conflict error code, the trace id and the correlation id — for every service
+ *     whose classpath includes Spring's ORM support.
  * :note: Declared separately from {@link GlobalExceptionHandler} and guarded by
  *     {@link ConditionalOnClass} because the API gateway carries no persistence
  *     dependencies; loading a handler whose signature references a Spring ORM type
@@ -65,17 +64,26 @@ public class PersistenceExceptionHandler {
      *     COBOL concurrency message.
      * :param ex: the optimistic-locking failure raised by the persistence layer.
      * :param request: the current web request, used for the ``path`` field.
-     * :returns: HTTP 409 with the standard error envelope.
+     * :returns: HTTP 409 with the standard error envelope, carrying
+     *     {@link GlobalExceptionHandler#ERROR_CODE_CONFLICT}.
+     * :note: The envelope is assembled by the shared {@link ErrorResponseFactory}, exactly as
+     *     {@link GlobalExceptionHandler} assembles its own conflict response. Building it here by
+     *     hand left ``correlationId`` and ``errorCode`` null on this path alone, so an account or
+     *     bill-payment conflict — which reaches THIS advice, because the version mismatch is only
+     *     detected when the transaction flushes at commit, after the service's catch has already
+     *     returned — answered with a thinner envelope than a card conflict, which reaches the other
+     *     advice. The message was right either way; what a caller could not do was branch on the
+     *     conflict or correlate the response with its request.
      */
     @ExceptionHandler(OptimisticLockingFailureException.class)
     public ResponseEntity<ErrorResponse> handleOptimisticLockingFailure(
             OptimisticLockingFailureException ex, WebRequest request) {
         HttpStatus status = HttpStatus.CONFLICT;
-        String path = extractPath(request);
-        log.warn("Optimistic-locking failure from the persistence layer at {}: {}", path, ex.getMessage());
-        ErrorResponse body = new ErrorResponse(status.value(), status.getReasonPhrase(),
-                OptimisticLockConflictException.MESSAGE, path);
-        body.setTraceId(resolveTraceId());
+        ErrorResponse body = ErrorResponseFactory.build(status,
+                OptimisticLockConflictException.MESSAGE, request);
+        body.setErrorCode(GlobalExceptionHandler.ERROR_CODE_CONFLICT);
+        log.warn("Optimistic-locking failure from the persistence layer at {}: {}",
+                body.getPath(), ex.getMessage());
         return ResponseEntity.status(status).body(body);
     }
 
@@ -100,13 +108,14 @@ public class PersistenceExceptionHandler {
             throw ex;
         }
         HttpStatus status = HttpStatus.INTERNAL_SERVER_ERROR;
-        String path = extractPath(request);
+        // Assembled by the shared factory for the same reason as the conflict response above: one
+        // envelope shape, and a correlation id on every failure. No error code is published here,
+        // matching GlobalExceptionHandler's own at-rest-encryption response.
+        ErrorResponse body = ErrorResponseFactory.build(status, PiiEncryptionException.MESSAGE,
+                request);
         // The cause is logged for the operator; the response discloses no column,
         // key material or cryptographic detail.
-        log.error("Protected-data conversion failed at {}", path, ex);
-        ErrorResponse body = new ErrorResponse(status.value(), status.getReasonPhrase(),
-                PiiEncryptionException.MESSAGE, path);
-        body.setTraceId(resolveTraceId());
+        log.error("Protected-data conversion failed at {}", body.getPath(), ex);
         return ResponseEntity.status(status).body(body);
     }
 
@@ -128,30 +137,4 @@ public class PersistenceExceptionHandler {
         return false;
     }
 
-    /**
-     * :purpose: Derive the request path for the error envelope from the ``WebRequest``
-     *     description, mirroring {@link GlobalExceptionHandler}.
-     * :param request: the current web request.
-     * :returns: the request URI, or the raw description when it carries no ``uri=`` prefix.
-     */
-    private String extractPath(WebRequest request) {
-        String description = request.getDescription(false);
-        if (description != null && description.startsWith("uri=")) {
-            return description.substring(4);
-        }
-        return description;
-    }
-
-    /**
-     * :purpose: Resolve the correlation identifier for the error envelope, preferring the
-     *     tracing ``traceId`` and falling back to the correlation id.
-     * :returns: the resolved identifier, or ``null`` when neither is present.
-     */
-    private String resolveTraceId() {
-        String traceId = MDC.get("traceId");
-        if (traceId == null || traceId.isBlank()) {
-            traceId = CorrelationIdContext.getCorrelationId();
-        }
-        return traceId;
-    }
 }

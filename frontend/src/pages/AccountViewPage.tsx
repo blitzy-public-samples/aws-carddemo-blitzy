@@ -21,7 +21,13 @@ import type { PFKeyDef } from '../components/PFKeyBar';
 import { PfKeyAction, CCDA_TITLE01, CCDA_TITLE02 } from '../types';
 import type { AccountViewResponseDto } from '../types';
 import { getAccount } from '../api';
-import { useApi, useFocusOnChange, useInitialFocus, useFocusOnSettled } from '../hooks';
+import {
+  useApi,
+  useFocusOnChange,
+  useInitialFocus,
+  useFocusOnSettled,
+  useScreenAction,
+} from '../hooks';
 import { displayField, displayText, SSN_MASK_PREFIX } from '../components/display';
 import OutputField from '../components/OutputField';
 
@@ -121,6 +127,12 @@ export default function AccountViewPage(): ReactElement {
         return;
       }
       setValidationMessage('');
+      // ``1000-SEND-MAP`` reaches every send through ``1100-SCREEN-INIT``, whose first
+      // step is ``MOVE LOW-VALUES TO CACTVWAO`` (L431-432): the output map is blanked
+      // and only a successful ``9300-GETACCTDATA-BYACCT`` moves values back into it. So
+      // a read that fails paints an empty record, not the previous account's balances
+      // and masked PII beside the newly typed number.
+      reset();
       void run(value);
     },
     [reset, run],
@@ -153,6 +165,15 @@ export default function AccountViewPage(): ReactElement {
   // cursor is placed again as soon as the read settles.
   useFocusOnSettled(loading, acctInputRef);
 
+  /**
+   * :purpose: The ENTER AID of ``COACTVWC``: edit the account filter and read the
+   *     record. ``COACTVWC`` L306-314 lists ENTER in its valid AID set and rewrites
+   *     every other AID to it, so this one activator serves both.
+   */
+  const activateEnter = useScreenAction((): void => {
+    fetchAccount(acctInput);
+  });
+
   // The frame's header, line-23 message region and line-24 key legend belong to the
   // SAME map as this body, so they are published in a LAYOUT effect: a CICS program
   // moved every field into the symbolic map before its one SEND, and nothing
@@ -160,6 +181,15 @@ export default function AccountViewPage(): ReactElement {
   // once without them and then move it.
   useLayoutEffect(() => {
     const pfKeys: PFKeyDef[] = [
+      {
+        // Registered but NOT advertised: ``COACTVW.bms`` L372-373 gives line 24 the
+        // single literal '  F3=Exit ', so ENTER is a live AID with no legend entry --
+        // the effect of a BMS legend field that never names it.
+        action: PfKeyAction.Enter,
+        label: 'ENTER=Fetch',
+        onActivate: activateEnter,
+        dark: true,
+      },
       {
         action: PfKeyAction.PF3,
         label: 'F3=Exit',
@@ -179,9 +209,14 @@ export default function AccountViewPage(): ReactElement {
       // COACTVW declares its line-24 legend field COLOR=TURQUOISE, not the YELLOW
       // fifteen of the seventeen mapsets declare.
       pfKeyTone: 'turquoise',
+      // ``COACTVWC``/``COACTUPC``/``COCRDLIC``/``COCRDSLC``/``COCRDUPC`` do not answer an
+      // unhandled AID with a message: they ``SET PFK-INVALID TO TRUE``, and when the
+      // struck key is not in the valid set they ``SET CCARD-AID-ENTER TO TRUE`` -- the
+      // key is REWRITTEN to ENTER and the ENTER path runs.
+      onUnhandledKey: activateEnter,
       busy: loading,
     });
-  }, [errorMessage, loading, navigate, setChrome]);
+  }, [activateEnter, errorMessage, loading, navigate, setChrome]);
 
   return (
     <div className="accountView">
@@ -219,12 +254,6 @@ export default function AccountViewPage(): ReactElement {
           value={acctInput}
           data-testid="acctsid"
           onChange={(event) => setAcctInput(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter') {
-              event.preventDefault();
-              fetchAccount(acctInput);
-            }
-          }}
         />
       </form>
 

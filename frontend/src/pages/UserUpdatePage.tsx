@@ -20,7 +20,7 @@ import { useLocation, useNavigate } from 'react-router';
 import { useScreenChrome } from '../components/Layout';
 import { invalidFieldProps } from '../components/ErrorBanner';
 import type { PFKeyDef } from '../components/PFKeyBar';
-import { PfKeyAction, CCDA_TITLE01, CCDA_TITLE02 } from '../types';
+import { PfKeyAction, CCDA_TITLE01, CCDA_TITLE02, CCDA_MSG_INVALID_KEY } from '../types';
 import type {
   Role,
   UserDto,
@@ -511,6 +511,12 @@ export default function UserUpdatePage(): ReactElement {
     setOutcomeMessage('');
     resetFetch();
     resetUpdate();
+    // PF4 re-sends the map, and every send honours ``ATTRB=IC`` on USRIDIN. The
+    // message-driven cursor effect cannot observe a clear that leaves the message
+    // region and the resolved target unchanged, so the send's cursor placement is
+    // performed here; otherwise the cursor stays on whatever activated the key --
+    // the line-24 ``F4`` button after a pointer click.
+    placeCursor(document.getElementById(DEFAULT_CURSOR_FIELD));
   }, [resetFetch, resetUpdate]);
 
   /**
@@ -537,10 +543,22 @@ export default function UserUpdatePage(): ReactElement {
   // The activators published to the shared frame are identity-stable and always
   // dispatch to the newest render's handler, so the line-24 legend is not rebuilt on
   // every keystroke and an AID can never act on a value the screen has replaced.
+  /**
+   * :purpose: ``EVALUATE EIBAID`` ``WHEN OTHER`` (``COUSR02C`` L127-131) — publish
+   *     ``CCDA-MSG-INVALID-KEY`` and re-send the map, whose ``ATTRB=IC`` on USRIDIN
+   *     returns the cursor to the user-id field. No entered value is rejected.
+   */
+  const handleUnhandledKey = useCallback((): void => {
+    setOutcomeMessage('');
+    setValidationMessage(CCDA_MSG_INVALID_KEY);
+    placeCursor(document.getElementById(DEFAULT_CURSOR_FIELD));
+  }, []);
+
   const activateFetch = useScreenAction(handleFetch);
   const activateClear = useScreenAction(handleClear);
   const activateSave = useScreenAction(handleSave);
   const activateCancel = useScreenAction(handleCancel);
+  const activateUnhandledKey = useScreenAction(handleUnhandledKey);
   const activateExit = useScreenAction((): void => {
     void handleExit();
   });
@@ -570,6 +588,7 @@ export default function UserUpdatePage(): ReactElement {
       errorMessage,
       infoMessage,
       pfKeys,
+      onUnhandledKey: activateUnhandledKey,
       busy,
     });
   }, [
@@ -578,6 +597,7 @@ export default function UserUpdatePage(): ReactElement {
     activateExit,
     activateFetch,
     activateSave,
+    activateUnhandledKey,
     busy,
     errorMessage,
     infoMessage,

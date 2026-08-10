@@ -28,6 +28,10 @@ import com.carddemo.common.security.UserIdNormalizer;
  *  ``CC00``) sign-on SUCCESS-branch COMMAREA population and post-login routing.
  * :note: Field mapping only. It performs no credential verification, no I/O, no
  *  persistence, and no logging, and it never reads the password.
+ * :note: Every mapping here takes a {@link SecurityUser} read from the credential store,
+ *  never a {@link SessionContext} read from a live session. A response built from session
+ *  state would answer a sign-on on the strength of a cookie alone, letting a second
+ *  sign-on for an id that already holds the session succeed with any password at all.
  */
 @Component
 public class SignonMapper {
@@ -47,23 +51,6 @@ public class SignonMapper {
         boolean admin = (userType == SessionContext.UserType.CDEMO_USRTYP_ADMIN);
         String redirectTarget = admin ? "CA00" : "CM00";
         return new SignonResponseDto(user.getSecUsrId(), userType, redirectTarget);
-    }
-
-    /**
-     * :purpose: Build the ``POST /auth/signon`` success-response body from the context a
-     *  live session already carries, for the idempotent re-sign-on of the principal who
-     *  is already signed on. The redirect target is resolved the same way as for a fresh
-     *  verification, so the answer is byte-identical to the one that established the
-     *  session.
-     * :param context: the externalized session context held by the live session.
-     * :returns: a response carrying the session's userId, its userType, and the
-     *  redirectTarget (``CA00`` administrator menu / ``CM00`` regular-user menu).
-     */
-    public SignonResponseDto toSignonResponse(SessionContext context) {
-        SessionContext.UserType userType = context.getUserType();
-        boolean admin = (userType == SessionContext.UserType.CDEMO_USRTYP_ADMIN);
-        String redirectTarget = admin ? "CA00" : "CM00";
-        return new SignonResponseDto(context.getUserId(), userType, redirectTarget);
     }
 
     /**

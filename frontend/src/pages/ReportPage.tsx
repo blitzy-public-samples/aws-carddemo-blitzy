@@ -20,7 +20,13 @@ import { useNavigate } from 'react-router';
 import { useScreenChrome } from '../components/Layout';
 import { invalidFieldProps } from '../components/ErrorBanner';
 import type { PFKeyDef } from '../components/PFKeyBar';
-import { PfKeyAction, REPORT_TYPES, CCDA_TITLE01, CCDA_TITLE02 } from '../types';
+import {
+  PfKeyAction,
+  REPORT_TYPES,
+  CCDA_TITLE01,
+  CCDA_TITLE02,
+  CCDA_MSG_INVALID_KEY,
+} from '../types';
 import type {
   ReportDateParts,
   ReportRequestDto,
@@ -321,11 +327,23 @@ export default function ReportPage(): ReactElement {
    */
   // The faulted control is the one the screen sends the cursor to. Every `CORPT00C`
   // path that reports something ends with `MOVE -1 TO <field>L`, so the cursor target
-  // IS the control the row-23 message is about -- including the confirm prompt, which
-  // this screen reports on the error line, and the messages the SERVER produces, which
-  // no client-side table of message text can enumerate.
+  // IS the control the row-23 message is about -- including the messages the SERVER
+  // produces, which no client-side table of message text can enumerate.
+  //
+  // EXCEPT for the two messages that are not about a value at all. The confirmation
+  // prompt `CORPT00C` publishes over an EMPTY confirm field once the dates have passed
+  // their edits reports what the screen is waiting for, and an entry the operator has not
+  // made yet cannot be wrong; `Invalid key pressed. Please see below...` (the `WHEN OTHER`
+  // branch of `EVALUATE EIBAID`, L191-195) rejects an attention identifier rather than a
+  // field. `"<value>" is not a valid value to confirm...` IS a refused value and still
+  // marks.
+  const isConfirmationPrompt =
+    errorMessage.startsWith(CONFIRM_PROMPT_PREFIX) &&
+    errorMessage.endsWith(CONFIRM_PROMPT_SUFFIX);
   const faultedField: ReportCursorField | null =
-    errorMessage === '' ? null : cursor.field;
+    errorMessage === '' || isConfirmationPrompt || errorMessage === CCDA_MSG_INVALID_KEY
+      ? null
+      : cursor.field;
 
   /**
    * :purpose: Ask for the cursor to be placed on a field, which is the program's
@@ -492,7 +510,21 @@ export default function ReportPage(): ReactElement {
   // The activators published to the shared frame are identity-stable and always
   // dispatch to the newest render's handler, so the line-24 legend is not rebuilt on
   // every keystroke and an AID can never act on a value the screen has replaced.
+  /**
+   * :purpose: ``EVALUATE EIBAID`` ``WHEN OTHER`` (``CORPT00C`` L191-195) — publish
+   *     ``CCDA-MSG-INVALID-KEY`` and re-send the map. ``CORPT00.bms`` gives MONTHLY
+   *     the ``IC`` attribute and the program also ends ``MOVE -1 TO MONTHLYL``, so the
+   *     cursor returns to the monthly report type. Nothing entered was rejected.
+   */
+  const handleUnhandledKey = useCallback((): void => {
+    setInfoMessage('');
+    setMessageReference(null);
+    setErrorMessage(CCDA_MSG_INVALID_KEY);
+    requestCursor('reportType-MONTHLY');
+  }, [requestCursor]);
+
   const activateExit = useScreenAction(handleExit);
+  const activateUnhandledKey = useScreenAction(handleUnhandledKey);
   const activateEnter = useScreenAction((): void => {
     void handleEnter();
   });
@@ -525,11 +557,13 @@ export default function ReportPage(): ReactElement {
       infoMessage,
       messageReference,
       pfKeys,
+      onUnhandledKey: activateUnhandledKey,
       busy: submitting,
     });
   }, [
     activateEnter,
     activateExit,
+    activateUnhandledKey,
     messageReference,
     errorMessage,
     infoMessage,

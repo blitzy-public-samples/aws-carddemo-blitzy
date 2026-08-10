@@ -50,11 +50,18 @@ export interface PFKeyDef {
  *     accepted, whether from a physical key or from a legend button. The shell uses
  *     it to count sends, which is what re-announces a repeated message and
  *     re-captures the header clock.
+ * :param onUnhandledAid: Notified with an AID the active screen does NOT declare. This
+ *     is the ``WHEN OTHER`` arm of the program's ``EVALUATE EIBAID``: a 3270 transmits
+ *     every attention identifier to the program, which always answers -- twelve of the
+ *     seventeen with ``MOVE CCDA-MSG-INVALID-KEY TO WS-MESSAGE``, the other five by
+ *     remapping the key to ENTER (``IF PFK-INVALID SET CCARD-AID-ENTER TO TRUE``).
+ *     Omitting it silently discards the key, which no program does.
  */
 export interface PFKeyBarProps {
   keys: PFKeyDef[];
   inputInhibited?: boolean;
   onAidDispatched?: (action: PfKeyAction) => void;
+  onUnhandledAid?: (action: PfKeyAction) => void;
   tone?: PFKeyBarTone;
 }
 
@@ -121,6 +128,7 @@ export default function PFKeyBar({
   keys,
   inputInhibited = false,
   onAidDispatched,
+  onUnhandledAid,
   tone = 'yellow',
 }: PFKeyBarProps): ReactElement {
   // The legend a page publishes is rebuilt whenever one of its handlers changes
@@ -151,6 +159,10 @@ export default function PFKeyBar({
   useLayoutEffect(() => {
     notifyRef.current = onAidDispatched;
   }, [onAidDispatched]);
+  const unhandledRef = useRef<((action: PfKeyAction) => void) | undefined>(onUnhandledAid);
+  useLayoutEffect(() => {
+    unhandledRef.current = onUnhandledAid;
+  }, [onUnhandledAid]);
 
   // The rendered lock (`inputInhibited`, the disabled legend and `X SYSTEM`) is a
   // committed view state, so it can only refuse a key that arrives in a LATER task than
@@ -212,6 +224,28 @@ export default function PFKeyBar({
       }
       const declared = keysRef.current.find((k) => k.action === action);
       if (declared === undefined) {
+        // An AID the screen does not declare. A 3270 transmits it anyway and the program
+        // answers it -- the ``WHEN OTHER`` arm of its ``EVALUATE EIBAID`` -- so the key is
+        // claimed here too and handed to the screen's own unhandled-key policy rather than
+        // being dropped. Claiming it is also what stops the browser acting on the key
+        // instead: F5 reloading the screen, or F12 opening the inspector, in the middle of
+        // a transaction the operator meant to send.
+        const unhandled = unhandledRef.current;
+        if (unhandled === undefined) {
+          return;
+        }
+        event.preventDefault();
+        // The keyboard is locked for the whole of a transaction, so an AID struck while
+        // one is outstanding is discarded rather than queued -- the same rule the
+        // declared keys follow below.
+        if (inhibitedRef.current) {
+          return;
+        }
+        // The program answers by re-sending its map, so the send is counted exactly as a
+        // declared key's is: that is what re-announces the message region and re-places
+        // the cursor when the SAME key is struck twice.
+        notifyRef.current?.(action);
+        unhandled(action);
         return;
       }
       // The active screen claims this AID, so the browser's own action for the key

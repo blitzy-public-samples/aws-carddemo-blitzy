@@ -1153,6 +1153,161 @@ class TransactionServiceTest {
             assertThat(response.isNextPage()).isFalse();
         }
 
+        /**
+         * :purpose: A filter that matches nothing must still tell the operator why the rows
+         *   stopped. ``STARTBR`` with no key at or after the requested id takes the ``NOTFND``
+         *   arm, which moves ``'You are at the top of the page...'`` into ``WS-MESSAGE`` and
+         *   sends the map [app/cbl/COTRN00C.cbl:L603-L611]; ``SEND-TRNLST-SCREEN`` moves that
+         *   into ``ERRMSGO`` [L531]. Answering 200-with-no-rows and no message left an
+         *   unmatched search indistinguishable from a screen that had not been submitted.
+         * :param filter: a sixteen-digit id positioned beyond the end of the file.
+         */
+        @ParameterizedTest(name = "[{index}] unmatched filter {0} publishes the browse-start literal")
+        @ValueSource(strings = {"9999999999999999", "8888888888888888"})
+        void unmatchedFilterPublishesTheBrowseStartLiteral(String filter) {
+            TransactionListRequestDto request = new TransactionListRequestDto();
+            request.setTranIdFilter(filter);
+            when(transactionRepository.findByTranIdGreaterThanOrderByTranIdAsc(anyString(),
+                    any(Pageable.class))).thenReturn(List.of());
+
+            TransactionListResponseDto response = service.listTransactions(request, null);
+
+            assertThat(response.getMessage()).isEqualTo("You are at the top of the page...");
+            assertThat(response.getTransactions()).isEmpty();
+            assertThat(response.getPageNumber()).isZero();
+            assertThat(response.isNextPage()).isFalse();
+        }
+
+        /**
+         * :purpose: The same ``STARTBR`` arm is reached when the file itself holds nothing, so
+         *   an unfiltered first page of an empty file publishes the same literal.
+         */
+        @Test
+        @DisplayName("an empty file publishes the browse-start literal on the first page")
+        void emptyFilePublishesTheBrowseStartLiteral() {
+            when(transactionRepository.findByTranIdGreaterThanOrderByTranIdAsc(anyString(),
+                    any(Pageable.class))).thenReturn(List.of());
+
+            TransactionListResponseDto response = service.listTransactions(
+                    new TransactionListRequestDto(), null);
+
+            assertThat(response.getMessage()).isEqualTo("You are at the top of the page...");
+        }
+
+        /**
+         * :purpose: Reading ON from a page already on display is a different arm: the fill
+         *   loop's ``READNEXT`` hits ``ENDFILE`` and publishes
+         *   ``'You have reached the bottom of the page...'`` [app/cbl/COTRN00C.cbl:L637-L645].
+         *   The two literals are not interchangeable -- the browse-start one names the top of
+         *   the file, which a page-forward turn has not reached.
+         */
+        @Test
+        @DisplayName("an empty forward page publishes the forward-exhaustion literal")
+        void emptyForwardPagePublishesTheForwardExhaustionLiteral() {
+            TransactionListRequestDto request = new TransactionListRequestDto();
+            request.setAction("PF8");
+            request.setNextPage(true);
+            request.setPageNumber(4);
+            request.setTranIdLast("0000000000000040");
+            when(transactionRepository.findByTranIdGreaterThanOrderByTranIdAsc(anyString(),
+                    any(Pageable.class))).thenReturn(List.of());
+
+            TransactionListResponseDto response = service.listTransactions(request, null);
+
+            assertThat(response.getMessage())
+                    .isEqualTo("You have reached the bottom of the page...");
+        }
+
+        /**
+         * :purpose: A page that fills fewer than ten slots ran the same ``READNEXT`` into
+         *   ``ENDFILE``, so it carries the same literal as an empty forward page.
+         */
+        @Test
+        @DisplayName("a short forward page publishes the forward-exhaustion literal")
+        void shortForwardPagePublishesTheForwardExhaustionLiteral() {
+            when(transactionRepository.findByTranIdGreaterThanOrderByTranIdAsc(anyString(),
+                    any(Pageable.class))).thenReturn(List.of(
+                            transaction("0000000000000001"), transaction("0000000000000002"),
+                            transaction("0000000000000003"), transaction("0000000000000004")));
+
+            TransactionListResponseDto response = service.listTransactions(
+                    new TransactionListRequestDto(), null);
+
+            assertThat(response.getTransactions()).hasSize(4);
+            assertThat(response.getMessage())
+                    .isEqualTo("You have reached the bottom of the page...");
+            assertThat(response.getPageNumber()).isEqualTo(1);
+        }
+
+        /**
+         * :purpose: A full page with more records behind it did not exhaust the browse, so the
+         *   line-23 region stays empty. The next-page flag comes from an existence probe rather
+         *   than from a browse read, which is why a full LAST page is silent too.
+         */
+        @Test
+        @DisplayName("a full page carries no boundary message")
+        void fullPageCarriesNoBoundaryMessage() {
+            when(transactionRepository.findByTranIdGreaterThanOrderByTranIdAsc(anyString(),
+                    any(Pageable.class))).thenReturn(List.of(
+                            transaction("0000000000000001"), transaction("0000000000000002"),
+                            transaction("0000000000000003"), transaction("0000000000000004"),
+                            transaction("0000000000000005"), transaction("0000000000000006"),
+                            transaction("0000000000000007"), transaction("0000000000000008"),
+                            transaction("0000000000000009"), transaction("0000000000000010")));
+            when(transactionRepository.existsByTranIdGreaterThan("0000000000000010"))
+                    .thenReturn(true);
+
+            TransactionListResponseDto response = service.listTransactions(
+                    new TransactionListRequestDto(), null);
+
+            assertThat(response.getMessage()).isNull();
+        }
+
+        /**
+         * :purpose: ``PROCESS-PAGE-BACKWARD`` fills slot ten down to slot one with ``READPREV``;
+         *   running out takes the ``ENDFILE`` arm, which publishes its OWN literal,
+         *   ``'You have reached the top of the page...'`` [app/cbl/COTRN00C.cbl:L671-L679].
+         */
+        @Test
+        @DisplayName("a short backward page publishes the backward-exhaustion literal")
+        void shortBackwardPagePublishesTheBackwardExhaustionLiteral() {
+            TransactionListRequestDto request = new TransactionListRequestDto();
+            request.setAction("PF7");
+            request.setPageNumber(3);
+            request.setTranIdFirst("0000000000000021");
+            when(transactionRepository.findByTranIdLessThanOrderByTranIdDesc(anyString(),
+                    any(Pageable.class))).thenReturn(List.of(
+                            transaction("0000000000000020"),
+                            transaction("0000000000000019")));
+
+            TransactionListResponseDto response = service.listTransactions(request, null);
+
+            assertThat(response.getMessage()).isEqualTo("You have reached the top of the page...");
+        }
+
+        /**
+         * :purpose: A full previous page did not exhaust the backward browse, so it is silent.
+         */
+        @Test
+        @DisplayName("a full backward page carries no boundary message")
+        void fullBackwardPageCarriesNoBoundaryMessage() {
+            TransactionListRequestDto request = new TransactionListRequestDto();
+            request.setAction("PF7");
+            request.setPageNumber(3);
+            request.setTranIdFirst("0000000000000021");
+            when(transactionRepository.findByTranIdLessThanOrderByTranIdDesc(anyString(),
+                    any(Pageable.class))).thenReturn(List.of(
+                            transaction("0000000000000020"), transaction("0000000000000019"),
+                            transaction("0000000000000018"), transaction("0000000000000017"),
+                            transaction("0000000000000016"), transaction("0000000000000015"),
+                            transaction("0000000000000014"), transaction("0000000000000013"),
+                            transaction("0000000000000012"), transaction("0000000000000011")));
+
+            TransactionListResponseDto response = service.listTransactions(request, null);
+
+            assertThat(response.getMessage()).isNull();
+        }
+
         @Test
         @DisplayName("selection 'S' echoes the selected id for the view navigation")
         void selectionEchoesTheSelectedId() {

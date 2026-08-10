@@ -127,15 +127,145 @@ describe('PFKeyBar', () => {
     expect(onSave).toHaveBeenCalledTimes(1);
   });
 
-  it('leaves the browser default alone for an AID the screen does not declare', () => {
+  it('leaves the browser default alone for an undeclared AID when no policy is published', () => {
     const keys: PFKeyDef[] = [
       { action: PfKeyAction.PF3, label: 'F3=Exit', onActivate: jest.fn() },
     ];
     render(<PFKeyBar keys={keys} />);
 
-    // F5 belongs to the browser on a screen whose legend does not claim it.
+    // F5 belongs to the browser on a screen that neither declares it nor publishes an
+    // unhandled-key policy: with no ``WHEN OTHER`` arm to reach, claiming the key would
+    // only take it away from the operator.
     const cancelled = !fireEvent.keyDown(document, { key: 'F5', cancelable: true });
     expect(cancelled).toBe(false);
+  });
+
+  it('claims an undeclared AID and hands it to the unhandled-key policy', () => {
+    const onUnhandled = jest.fn();
+    const keys: PFKeyDef[] = [
+      { action: PfKeyAction.PF3, label: 'F3=Exit', onActivate: jest.fn() },
+    ];
+    render(<PFKeyBar keys={keys} onUnhandledAid={onUnhandled} />);
+
+    // A 3270 transmits every AID and the program answers it -- the ``WHEN OTHER`` arm of
+    // its ``EVALUATE EIBAID``. Claiming the key is also what stops F5 reloading the
+    // screen and F12 opening the inspector in the middle of a transaction. The keys
+    // swept here are the whole recognised AID set (``PfKeyAction``, from the
+    // ``CSSTRPFY`` mapping) less the one this screen declares.
+    for (const key of ['Enter', 'F4', 'F5', 'F7', 'F8', 'F12']) {
+      const event = createEvent.keyDown(document, { key, cancelable: true });
+      fireEvent(document, event);
+      expect(event.defaultPrevented).toBe(true);
+    }
+    expect(onUnhandled).toHaveBeenCalledTimes(6);
+  });
+
+  it('names the struck AID when it hands an undeclared key to the policy', () => {
+    const onUnhandled = jest.fn();
+    render(
+      <PFKeyBar
+        keys={[{ action: PfKeyAction.PF3, label: 'F3=Exit', onActivate: jest.fn() }]}
+        onUnhandledAid={onUnhandled}
+      />,
+    );
+
+    fireEvent.keyDown(document, { key: 'F7' });
+    expect(onUnhandled).toHaveBeenCalledWith(PfKeyAction.PF7);
+  });
+
+  it('discards an undeclared AID struck while the keyboard is locked', () => {
+    const onUnhandled = jest.fn();
+    const keys: PFKeyDef[] = [
+      { action: PfKeyAction.PF3, label: 'F3=Exit', onActivate: jest.fn() },
+    ];
+    render(<PFKeyBar keys={keys} inputInhibited onUnhandledAid={onUnhandled} />);
+
+    // The keyboard is locked from the moment an AID is transmitted until the map
+    // arrives, so the key is still CLAIMED -- the browser must not act on it either --
+    // but it is discarded rather than queued, exactly as a declared key is.
+    const event = createEvent.keyDown(document, { key: 'F5', cancelable: true });
+    fireEvent(document, event);
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(onUnhandled).not.toHaveBeenCalled();
+  });
+
+  it('counts an undeclared AID as a send, so a repeated key re-announces the reply', () => {
+    const onDispatched = jest.fn();
+    const keys: PFKeyDef[] = [
+      { action: PfKeyAction.PF3, label: 'F3=Exit', onActivate: jest.fn() },
+    ];
+    render(
+      <PFKeyBar keys={keys} onAidDispatched={onDispatched} onUnhandledAid={jest.fn()} />,
+    );
+
+    // The program answers by re-sending its map, so the send counts exactly as a
+    // declared key's does: that is what re-announces the message region and re-places
+    // the cursor when the SAME key is struck twice.
+    fireEvent.keyDown(document, { key: 'F7' });
+    fireEvent.keyDown(document, { key: 'F7' });
+    expect(onDispatched).toHaveBeenCalledTimes(2);
+  });
+
+  it('routes an undeclared AID to the latest published policy', () => {
+    const first = jest.fn();
+    const second = jest.fn();
+    const keys: PFKeyDef[] = [
+      { action: PfKeyAction.PF3, label: 'F3=Exit', onActivate: jest.fn() },
+    ];
+    const { rerender } = render(<PFKeyBar keys={keys} onUnhandledAid={first} />);
+    rerender(<PFKeyBar keys={keys} onUnhandledAid={second} />);
+
+    fireEvent.keyDown(document, { key: 'F5' });
+    expect(first).not.toHaveBeenCalled();
+    expect(second).toHaveBeenCalledTimes(1);
+  });
+
+  it('prefers a declared key over the unhandled-key policy', () => {
+    const onExit = jest.fn();
+    const onUnhandled = jest.fn();
+    const keys: PFKeyDef[] = [
+      { action: PfKeyAction.PF3, label: 'F3=Exit', onActivate: onExit },
+    ];
+    render(<PFKeyBar keys={keys} onUnhandledAid={onUnhandled} />);
+
+    fireEvent.keyDown(document, { key: 'F3' });
+    expect(onExit).toHaveBeenCalledTimes(1);
+    expect(onUnhandled).not.toHaveBeenCalled();
+  });
+
+  it('prefers a dark declared key over the unhandled-key policy', () => {
+    const onEnter = jest.fn();
+    const onUnhandled = jest.fn();
+    const keys: PFKeyDef[] = [
+      { action: PfKeyAction.Enter, label: 'ENTER=Fetch', onActivate: onEnter, dark: true },
+      { action: PfKeyAction.PF3, label: 'F3=Exit', onActivate: jest.fn() },
+    ];
+    render(<PFKeyBar keys={keys} onUnhandledAid={onUnhandled} />);
+
+    // A key the legend does not advertise is still DECLARED: COACTVW.bms names only
+    // 'F3=Exit' on line 24, yet ENTER is in COACTVWC's valid AID set.
+    fireEvent.keyDown(document, { key: 'Enter' });
+    expect(onEnter).toHaveBeenCalledTimes(1);
+    expect(onUnhandled).not.toHaveBeenCalled();
+  });
+
+  it('does not reach the unhandled policy for a declared key that is disabled', () => {
+    const onSave = jest.fn();
+    const onUnhandled = jest.fn();
+    const keys: PFKeyDef[] = [
+      { action: PfKeyAction.PF5, label: 'F5=Save', onActivate: onSave, enabled: false },
+    ];
+    render(<PFKeyBar keys={keys} onUnhandledAid={onUnhandled} />);
+
+    // The screen claims the key either way, so the browser cannot act on it; a key the
+    // screen declares is never re-routed to the WHEN OTHER arm.
+    const event = createEvent.keyDown(document, { key: 'F5', cancelable: true });
+    fireEvent(document, event);
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(onSave).not.toHaveBeenCalled();
+    expect(onUnhandled).not.toHaveBeenCalled();
   });
 
   it('routes a keystroke to the latest published handler', () => {

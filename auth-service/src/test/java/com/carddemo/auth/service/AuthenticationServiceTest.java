@@ -35,7 +35,6 @@ import com.carddemo.auth.repository.SecurityUserRepository;
 import com.carddemo.common.domain.SecurityUser;
 import com.carddemo.auth.security.LoginAttemptService;
 import com.carddemo.common.dto.SessionContext;
-import com.carddemo.common.exception.CardDemoException;
 import com.carddemo.common.security.SessionPrincipalIndex;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpSession;
@@ -516,64 +515,157 @@ class AuthenticationServiceTest {
     }
 
     /**
-     * :purpose: A sign-on arriving over a session already signed on as the SAME user is
-     *  answered idempotently from the session it already holds. Nothing about the
-     *  session is changed: the api-gateway is a second Spring Session participant
-     *  holding the same record, so rotating or invalidating it here made the gateway's
-     *  own write-back fail and destroyed a session that was valid.
+     * :purpose: A sign-on arriving over a session already signed on as the SAME user
+     *  still VERIFIES the submitted password. ``COSGN00C`` has one entry path, and
+     *  ``PROCESS-ENTER-KEY`` performs ``READ-USER-SEC-FILE`` and compares the password on
+     *  every ENTER; answering from the session instead would grant access on the strength
+     *  of a cookie alone and let any password at all succeed.
      */
     @Test
-    @DisplayName("Re-sign-on by the same principal returns the live session unchanged")
-    void signon_alreadySignedOnSameUser_isIdempotent() {
+    @DisplayName("Re-sign-on by the same principal still verifies the password")
+    void signon_alreadySignedOnSameUser_stillVerifiesCredential() {
         SessionContext live = new SessionContext();
         live.setUserId("ADMIN001");
         live.setUserType(SessionContext.UserType.CDEMO_USRTYP_ADMIN);
+        SecurityUser user = mock(SecurityUser.class);
+        when(session.getId()).thenReturn("reused-id");
         when(httpRequest.getSession(false)).thenReturn(session);
         when(session.getAttribute(SESSION_KEY)).thenReturn(live);
-        when(signonMapper.toSignonResponse(live))
+        when(session.getAttributeNames()).thenReturn(Collections.enumeration(List.of(SESSION_KEY)));
+        when(securityUserRepository.findBySecUsrId("ADMIN001")).thenReturn(Optional.of(user));
+        when(user.getSecUsrPwd()).thenReturn(STORED_HASH);
+        when(passwordEncoder.matches("password", STORED_HASH)).thenReturn(true);
+        SessionContext fresh = new SessionContext();
+        fresh.setUserId("ADMIN001");
+        when(signonMapper.toSignonResponse(user))
                 .thenReturn(new SignonResponseDto("ADMIN001", SessionContext.UserType.CDEMO_USRTYP_ADMIN, "CA00"));
+        when(signonMapper.toSessionContext(user)).thenReturn(fresh);
 
         SignonResponseDto response =
                 authenticationService.signon(new SignonRequestDto("admin001", "password"), httpRequest);
 
         assertThat(response.getUserId()).isEqualTo("ADMIN001");
         assertThat(response.getRedirectTarget()).isEqualTo("CA00");
+        // The credential store WAS read and the password WAS compared.
+        verify(securityUserRepository).findBySecUsrId("ADMIN001");
+        verify(passwordEncoder).matches("password", STORED_HASH);
+        verify(session).setAttribute(SESSION_KEY, fresh);
+        verify(sessionPrincipalIndex).register("ADMIN001", "reused-id");
+        // The same principal keeps its index entry: there is no outgoing user to drop.
+        verify(sessionPrincipalIndex, never()).deregister(any(), any());
+        // The shared record is still neither rotated nor destroyed.
         verify(httpRequest, never()).changeSessionId();
         verify(httpRequest, never()).getSession(true);
         verify(session, never()).invalidate();
-        verify(session, never()).setAttribute(any(), any());
-        verifyNoInteractions(securityUserRepository);
-        // The credential is not re-verified: the session already carries the identity.
-        // The encoder was used once at construction to build the timing-equalization
-        // hash, so only the verification call itself is asserted absent.
-        verify(passwordEncoder, never()).matches(any(), any());
     }
 
     /**
-     * :purpose: A sign-on arriving over a session already signed on as a DIFFERENT user
-     *  is refused, and the live session survives the refusal. The legacy sign-on screen
-     *  could only be reached by ending the current session first, so the sequence is
-     *  invalid rather than a re-authentication.
+     * :purpose: A sign-on arriving over a session already signed on as the SAME user with
+     *  the WRONG password is refused, and the live session is left exactly as it was. A
+     *  mistyped password must never cost the operator the session they are signed on to.
      */
     @Test
-    @DisplayName("Sign-on as another user over a live session is refused, session intact")
-    void signon_alreadySignedOnDifferentUser_isRefused() {
+    @DisplayName("Wrong password over a live same-user session is refused, session intact")
+    void signon_wrongPasswordOverLiveSameUserSession_leavesSessionIntact() {
         SessionContext live = new SessionContext();
         live.setUserId("ADMIN001");
         live.setUserType(SessionContext.UserType.CDEMO_USRTYP_ADMIN);
+        SecurityUser user = mock(SecurityUser.class);
         when(httpRequest.getSession(false)).thenReturn(session);
         when(session.getAttribute(SESSION_KEY)).thenReturn(live);
+        when(securityUserRepository.findBySecUsrId("ADMIN001")).thenReturn(Optional.of(user));
+        when(user.getSecUsrPwd()).thenReturn(STORED_HASH);
+        when(passwordEncoder.matches("guess", STORED_HASH)).thenReturn(false);
 
         Throwable thrown = catchThrowable(() ->
-                authenticationService.signon(new SignonRequestDto("user0001", "password"), httpRequest));
+                authenticationService.signon(new SignonRequestDto("admin001", "guess"), httpRequest));
 
-        assertThat(thrown).isInstanceOf(CardDemoException.class);
-        assertThat(thrown).hasMessage(
-                "Already signed on. Sign off before signing on as another user.");
+        assertThat(thrown).isInstanceOf(ResponseStatusException.class);
+        assertThat(((ResponseStatusException) thrown).getStatusCode())
+                .isEqualTo(HttpStatus.UNAUTHORIZED);
+        assertThat(thrown).hasMessageContaining(MSG_WRONG_PASSWORD);
+        // Nothing about the live session is touched by a refusal.
+        verify(session, never()).setAttribute(any(), any());
+        verify(session, never()).removeAttribute(any());
+        verify(session, never()).invalidate();
+        verify(httpRequest, never()).changeSessionId();
+        verify(httpRequest, never()).getSession(true);
+        verifyNoInteractions(sessionPrincipalIndex);
+    }
+
+    /**
+     * :purpose: A sign-on arriving over a session already signed on as a DIFFERENT user is
+     *  verified like any other, and on success TAKES OVER the session record: the outgoing
+     *  principal's index entry is dropped and the incoming one is registered against the
+     *  same id, so a later revocation of the outgoing user cannot reach into the session
+     *  the incoming user now holds. No invented refusal literal is published -- ``COSGN00C``
+     *  has five literals and none of them is about being already signed on.
+     */
+    @Test
+    @DisplayName("Sign-on as another user over a live session takes it over and re-indexes")
+    void signon_differentUserOverLiveSession_takesOverAndReindexes() {
+        SessionContext live = new SessionContext();
+        live.setUserId("ADMIN001");
+        live.setUserType(SessionContext.UserType.CDEMO_USRTYP_ADMIN);
+        SecurityUser user = mock(SecurityUser.class);
+        when(session.getId()).thenReturn("reused-id");
+        when(httpRequest.getSession(false)).thenReturn(session);
+        when(session.getAttribute(SESSION_KEY)).thenReturn(live);
+        when(session.getAttributeNames()).thenReturn(Collections.enumeration(List.of(SESSION_KEY)));
+        when(securityUserRepository.findBySecUsrId("USER0001")).thenReturn(Optional.of(user));
+        when(user.getSecUsrPwd()).thenReturn(STORED_HASH);
+        when(passwordEncoder.matches("password", STORED_HASH)).thenReturn(true);
+        SessionContext fresh = new SessionContext();
+        fresh.setUserId("USER0001");
+        when(signonMapper.toSignonResponse(user))
+                .thenReturn(new SignonResponseDto("USER0001", SessionContext.UserType.CDEMO_USRTYP_USER, "CM00"));
+        when(signonMapper.toSessionContext(user)).thenReturn(fresh);
+
+        SignonResponseDto response =
+                authenticationService.signon(new SignonRequestDto("user0001", "password"), httpRequest);
+
+        assertThat(response.getUserId()).isEqualTo("USER0001");
+        assertThat(response.getRedirectTarget()).isEqualTo("CM00");
+        verify(passwordEncoder).matches("password", STORED_HASH);
+        // The outgoing principal is dropped from the index BEFORE the incoming one is
+        // registered against the same session id.
+        verify(sessionPrincipalIndex).deregister("ADMIN001", "reused-id");
+        verify(sessionPrincipalIndex).register("USER0001", "reused-id");
+        // Nothing the previous principal wrote survives into the new sign-on.
+        verify(session).removeAttribute(SESSION_KEY);
+        verify(session).setAttribute(SESSION_KEY, fresh);
         verify(httpRequest, never()).changeSessionId();
         verify(httpRequest, never()).getSession(true);
         verify(session, never()).invalidate();
+    }
+
+    /**
+     * :purpose: A sign-on as a DIFFERENT user with the WRONG password is refused, and the
+     *  session the previous principal holds survives untouched -- neither emptied,
+     *  re-indexed nor invalidated.
+     */
+    @Test
+    @DisplayName("Wrong password as another user leaves the previous session intact")
+    void signon_wrongPasswordAsDifferentUser_leavesPreviousSessionIntact() {
+        SessionContext live = new SessionContext();
+        live.setUserId("ADMIN001");
+        live.setUserType(SessionContext.UserType.CDEMO_USRTYP_ADMIN);
+        SecurityUser user = mock(SecurityUser.class);
+        when(httpRequest.getSession(false)).thenReturn(session);
+        when(session.getAttribute(SESSION_KEY)).thenReturn(live);
+        when(securityUserRepository.findBySecUsrId("USER0001")).thenReturn(Optional.of(user));
+        when(user.getSecUsrPwd()).thenReturn(STORED_HASH);
+        when(passwordEncoder.matches("guess", STORED_HASH)).thenReturn(false);
+
+        Throwable thrown = catchThrowable(() ->
+                authenticationService.signon(new SignonRequestDto("user0001", "guess"), httpRequest));
+
+        assertThat(thrown).isInstanceOf(ResponseStatusException.class);
+        assertThat(((ResponseStatusException) thrown).getStatusCode())
+                .isEqualTo(HttpStatus.UNAUTHORIZED);
         verify(session, never()).setAttribute(any(), any());
-        verifyNoInteractions(securityUserRepository);
+        verify(session, never()).removeAttribute(any());
+        verify(session, never()).invalidate();
+        verifyNoInteractions(sessionPrincipalIndex);
     }
 }

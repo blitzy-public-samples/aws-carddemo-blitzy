@@ -24,6 +24,7 @@
 
 import { jest } from '@jest/globals';
 import {
+  act,
   fireEvent,
   getDefaultNormalizer,
   render,
@@ -640,7 +641,7 @@ describe('AccountViewPage — service failures', () => {
     expect(acctInput().className).toContain('fieldError');
   });
 
-  it('faults the search key in red when the value itself is rejected', () => {
+  it('faults the search key in red when the value itself is rejected', async () => {
     renderAt('/accounts');
 
     submitAccountNumber('1234ABCD567');
@@ -648,10 +649,66 @@ describe('AccountViewPage — service failures', () => {
     expect(acctInput()).toHaveAttribute('aria-invalid', 'true');
     expect(acctInput().className).toContain('fieldError');
 
+    // ENTER is an AID, and a 3270 keyboard stays locked from the moment one is
+    // transmitted until the program replies, so the shell drops a second ENTER that
+    // arrives before the first has been released. That release is a microtask, which
+    // two real key presses always cross and a synchronous test body never does.
+    await act(async () => {
+      await Promise.resolve();
+    });
+
     // 1300 moves DFHDFCOL back before the RED test, so a passing filter is not faulted.
     submitAccountNumber(ACCOUNT_ID);
     expect(acctInput().className).not.toContain('fieldError');
     expect(acctInput()).not.toHaveAttribute('aria-invalid');
+  });
+
+  /** The 28 output cells COACTVW paints from the account and customer records. */
+  const DISPLAY_CELLS = [
+    'acct-active-status', 'acct-open-date', 'acct-credit-limit', 'acct-expiraion-date',
+    'acct-cash-credit-limit', 'acct-reissue-date', 'acct-curr-bal', 'acct-curr-cyc-credit',
+    'acct-group-id', 'acct-curr-cyc-debit', 'cust-id', 'cust-ssn', 'cust-dob-yyyy-mm-dd',
+    'cust-fico-credit-score', 'cust-first-name', 'cust-middle-name', 'cust-last-name',
+    'cust-addr-line-1', 'cust-addr-state-cd', 'cust-addr-line-2', 'cust-addr-zip',
+    'cust-addr-line-3', 'cust-addr-country-cd', 'cust-phone-num-1', 'cust-govt-issued-id',
+    'cust-phone-num-2', 'cust-eft-account-id', 'cust-pri-card-holder-ind',
+  ];
+
+  it('blanks all 28 cells when a lookup fails after a record was displayed', async () => {
+    await renderLoaded();
+    // The record really is on screen first, or the assertion below proves nothing.
+    expect(screen.getByTestId('cust-id').textContent).toBe(account.custId);
+    expect(screen.getByTestId('cust-ssn').textContent).not.toBe('');
+
+    getAccountMock.mockReset();
+    getAccountMock.mockRejectedValue(new ApiError(404, ACCOUNT_NOT_FOUND_ERROR));
+
+    submitAccountNumber('99999999999');
+
+    expect((await screen.findByRole('alert')).textContent).toBe(ACCOUNT_NOT_FOUND_ERROR);
+    // 1000-SEND-MAP reaches every send through 1100-SCREEN-INIT, whose first step is
+    // MOVE LOW-VALUES TO CACTVWAO, and only a successful 9300-GETACCTDATA-BYACCT moves
+    // values back. An absent record therefore paints an empty record -- it does not
+    // leave the previous account's balances and masked PII beside a number nobody found.
+    const populated = DISPLAY_CELLS.filter(
+      (id) => screen.getByTestId(id).textContent !== '',
+    );
+    expect(populated).toEqual([]);
+    // The key the operator typed stays, because it is what they must correct.
+    expect(acctInput()).toHaveValue('99999999999');
+  });
+
+  it('blanks the displayed record when the typed value is refused client-side', async () => {
+    await renderLoaded();
+    expect(screen.getByTestId('cust-id').textContent).toBe(account.custId);
+
+    submitAccountNumber('1234ABCD567');
+
+    expect(screen.getByRole('alert').textContent).toBe(ACCOUNT_NUMBER_ERROR);
+    const populated = DISPLAY_CELLS.filter(
+      (id) => screen.getByTestId(id).textContent !== '',
+    );
+    expect(populated).toEqual([]);
   });
 
   it('recovers on the next submission after a failed fetch', async () => {

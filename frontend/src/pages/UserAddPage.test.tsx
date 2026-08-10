@@ -16,7 +16,7 @@ import { jest } from '@jest/globals';
 import { render, screen, fireEvent, act } from '@testing-library/react';
 import { MemoryRouter, useLocation } from 'react-router';
 // The header title lines every screen publishes (``COTTL01Y``).
-import { CCDA_TITLE01, CCDA_TITLE02 } from '../types';
+import { CCDA_TITLE01, CCDA_TITLE02, CCDA_MSG_INVALID_KEY } from '../types';
 import type { ReactElement } from 'react';
 import type {
   ApiErrorResponse,
@@ -608,5 +608,60 @@ describe('UserAddPage — line-24 function keys', () => {
     expect(screen.queryByRole('alert')).toBeNull();
     expect(screen.getByTestId('error-banner-empty')).toBeInTheDocument();
     expect(addUserMock).not.toHaveBeenCalled();
+  });
+
+  it('returns the cursor to FNAME when the F4 legend button clears the screen', async () => {
+    renderAddUserScreen();
+
+    typeField(LABEL_FIRST_NAME, NEW_USER.firstName);
+
+    // Clicking the legend button focuses it. COUSR01C PF4 re-sends the map and every
+    // send honours ATTRB=IC on FNAME, so the cursor must leave the key and come back to
+    // the first-name field -- the operator's next keystroke belongs in the screen.
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: PF_CLEAR_LABEL }));
+      await Promise.resolve();
+    });
+
+    expect(document.activeElement).toBe(screen.getByLabelText(LABEL_FIRST_NAME));
+  });
+
+  it('answers an AID the legend does not advertise with the invalid-key literal', async () => {
+    renderAddUserScreen();
+
+    // COUSR01C L98-103: the WHEN OTHER arm moves CCDA-MSG-INVALID-KEY into WS-MESSAGE
+    // and ends MOVE -1 TO FNAMEL. F5, F7 and F8 are the recognised AIDs this screen
+    // does not declare; F12 is declared and already carries the same literal.
+    for (const key of ['F5', 'F7', 'F8']) {
+      // Focus is parked elsewhere before each press so the cursor move is measured on
+      // every pass, not only on the one that first put the message on screen: CICS
+      // honours the insert cursor on every send, repeat message or not.
+      screen.getByLabelText(LABEL_LAST_NAME).focus();
+
+      await pressAidKey(key);
+
+      expect(messageText('alert')).toBe(CCDA_MSG_INVALID_KEY);
+      expect(document.activeElement).toBe(screen.getByLabelText(LABEL_FIRST_NAME));
+      expect(addUserMock).not.toHaveBeenCalled();
+    }
+  });
+
+  it('keeps every typed value when an unadvertised AID is refused', async () => {
+    renderAddUserScreen();
+
+    typeField(LABEL_FIRST_NAME, NEW_USER.firstName);
+    typeField(LABEL_LAST_NAME, NEW_USER.lastName);
+
+    await pressAidKey('F7');
+
+    // The program re-sends the map it already holds: nothing the operator entered was
+    // rejected, so nothing is blanked and no field is faulted.
+    expect(screen.getByLabelText<HTMLInputElement>(LABEL_FIRST_NAME).value).toBe(
+      NEW_USER.firstName,
+    );
+    expect(screen.getByLabelText<HTMLInputElement>(LABEL_LAST_NAME).value).toBe(
+      NEW_USER.lastName,
+    );
+    expect(screen.getByLabelText(LABEL_FIRST_NAME).className).not.toContain('fieldError');
   });
 });

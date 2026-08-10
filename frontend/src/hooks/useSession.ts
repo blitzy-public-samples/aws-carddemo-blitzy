@@ -206,24 +206,28 @@ function signedOutState(notice: string | null = null): SessionState {
  *     logged.
  * :returns: a promise resolving to the :ts:type:`SignonResponseDto`; a rejected
  *     ``signon`` (for example a ``401`` wrong-password ``ApiError``) propagates
- *     unchanged to the caller and leaves the session signed out.
+ *     unchanged to the caller and leaves ANY session already held exactly as it was.
+ * :note: Nothing is revoked before the answer is known. ``COSGN00C`` decides what a
+ *     sign-on costs the terminal by reading the credential store and comparing the
+ *     password -- a refusal publishes a literal on line 23 and the operator keeps the
+ *     screen they were on. Ending the current session first would make a mistyped
+ *     password destroy a session the operator is still signed on to, and it would do so
+ *     silently, since the only thing the screen then reports is the refusal. The
+ *     take-over of a live session belongs to the service that verified the credential,
+ *     which reuses the session record and re-indexes the principal in one place.
  */
 async function signIn(
   userId: string,
   password: string,
 ): Promise<SignonResponseDto> {
-  // The legacy sign-on screen was only ever reached by ending the current session
-  // (``RETURN-TO-SIGNON-SCREEN``), so a sign-on never arrived over a live one. The
-  // server is asked first whether one is live, and any live session is revoked
-  // before the credentials are sent, which keeps the same one-session-at-a-time
-  // sequence and leaves exactly one participant replacing the session id.
-  await probeIdentityOnce();
-  if (currentState.user !== null) {
-    await signOut();
-  }
   const request: SignonRequestDto = { userId, password };
   const response = await signon(request);
   setState(stateFor(response.userId, response.userType));
+  // The identity is now known from the answer to the sign-on itself, which is the same
+  // question the probe asks, so the probe is marked SETTLED rather than cleared. Clearing
+  // it would send the next mount back to the server to re-ask what this response just
+  // established, and would let that later answer overwrite the state set here.
+  identityProbe = Promise.resolve();
   return response;
 }
 

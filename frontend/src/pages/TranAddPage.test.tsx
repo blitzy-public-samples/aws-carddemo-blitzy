@@ -133,7 +133,15 @@ beforeAll(async () => {
 /** Route the add screen is mounted at. */
 const ADD_ROUTE = '/transactions/add';
 
-/** Route ``F3=Back`` returns to (``COTRN02C`` ``RETURN-TO-PREV-SCREEN``). */
+/**
+ * Route ``F3=Back`` returns to. ``COTRN02C`` L136-L142 transfers to
+ * ``CDEMO-FROM-PROGRAM``, or to ``COMEN01C`` when no caller set one; the main menu is
+ * the only program that reaches this screen (``COMEN02Y`` option 8) and it stamps its own
+ * name in before the transfer (``COMEN01C`` L148), so both paths resolve to the menu.
+ */
+const MENU_ROUTE = '/menu';
+
+/** Route the transaction LIST is mounted at, which F3 must NOT reach. */
 const LIST_ROUTE = '/transactions';
 
 /** Signed-on user seeded into the session store for every test. */
@@ -275,6 +283,10 @@ function renderScreen(): void {
       <Layout>
         <Routes>
           <Route path={ADD_ROUTE} element={<TranAddPage />} />
+          <Route
+            path={MENU_ROUTE}
+            element={<div data-testid="menuRoute">Main Menu</div>}
+          />
           <Route
             path={LIST_ROUTE}
             element={<div data-testid="tranListRoute">Transaction List</div>}
@@ -571,10 +583,30 @@ describe('TranAddPage — server-generated transaction id', () => {
     await pressEnterAndSettle();
 
     // The corrected value now clears every data edit, so the turn reaches the CONFIRMI
-    // evaluation and publishes its own prompt in place of the stale rejection.
+    // evaluation and publishes its own prompt in place of the stale rejection. The prompt
+    // marks NOTHING: `COTRN02C` L177-181 moves the message and the cursor, and the empty
+    // confirm box holds no value that could be wrong.
     expectErrorLine(MESSAGES.confirmRequired);
     expect(screen.getByLabelText(LABELS.amount)).not.toHaveAttribute('aria-invalid');
-    expect(screen.getByLabelText(LABELS.confirm)).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.getByLabelText(LABELS.confirm)).not.toHaveAttribute('aria-invalid');
+    expect(screen.getByLabelText(LABELS.confirm)).toHaveFocus();
+  });
+
+  it('marks the confirm box only when the value it holds is neither Y nor N', async () => {
+    // The two branches of the closing `EVALUATE CONFIRMI` differ in exactly this: the
+    // prompt is about what the screen is waiting for, the `Invalid value` message is about
+    // what the operator typed (`COTRN02C` L183-187).
+    renderScreen();
+    fillEntry();
+    enterField(LABELS.confirm, 'X');
+
+    await pressEnterAndSettle();
+
+    expectErrorLine(MESSAGES.invalidYesNo);
+    const confirm = screen.getByLabelText(LABELS.confirm);
+    expect(confirm).toHaveAttribute('aria-invalid', 'true');
+    expect(confirm).not.toHaveAttribute('data-faulted');
+    expect(confirm).not.toHaveClass('fieldError');
   });
 
   it('marks a rejected entry field invalid without reddening it', () => {
@@ -666,7 +698,11 @@ describe('TranAddPage — cancelling the add', () => {
 
     expect(addTransactionMock).not.toHaveBeenCalled();
     expectErrorLine(MESSAGES.confirmRequired);
-    expect(screen.getByLabelText(LABELS.confirm)).toHaveValue('');
+    // The typed value STAYS on the screen. Neither branch of the closing
+    // `EVALUATE CONFIRMI` moves anything into `CONFIRMI` -- both move only the message and
+    // `MOVE -1 TO CONFIRML` -- so blanking the box on the `N` path alone was a difference
+    // between the two branches that the program does not have.
+    expect(screen.getByLabelText(LABELS.confirm)).toHaveValue('N');
   });
 
   it('posts nothing when the confirmation is lower-case n', async () => {
@@ -709,21 +745,24 @@ describe('TranAddPage — line-24 function keys', () => {
     expect(screen.getAllByRole('button')).toHaveLength(4);
   });
 
-  it('F3=Back returns to the transaction list route', () => {
+  it('F3=Back returns to the main menu route', () => {
     renderScreen();
 
     fireEvent.click(screen.getByRole('button', { name: 'F3=Back' }));
 
-    expect(screen.getByTestId('tranListRoute')).toBeInTheDocument();
+    expect(screen.getByTestId('menuRoute')).toBeInTheDocument();
+    // The transaction list is not a caller of this screen, so F3 never lands there.
+    expect(screen.queryByTestId('tranListRoute')).not.toBeInTheDocument();
     expect(screen.queryByLabelText(LABELS.acctId)).not.toBeInTheDocument();
   });
 
-  it('the physical F3 key also returns to the transaction list route', () => {
+  it('the physical F3 key also returns to the main menu route', () => {
     renderScreen();
 
     fireEvent.keyDown(document, { key: 'F3' });
 
-    expect(screen.getByTestId('tranListRoute')).toBeInTheDocument();
+    expect(screen.getByTestId('menuRoute')).toBeInTheDocument();
+    expect(screen.queryByTestId('tranListRoute')).not.toBeInTheDocument();
   });
 
   it('F4=Clear empties every field and the line-23 region', async () => {

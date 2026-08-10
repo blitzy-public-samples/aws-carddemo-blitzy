@@ -614,6 +614,29 @@ describe('CardListPage — ACCTSID and CARDSID browse filters', () => {
     expect(listCardsMock).toHaveBeenCalledTimes(1);
   });
 
+  it('paints the refused filter, which COCRDLIC does and eleven other programs do not', async () => {
+    // `COCRDLIC` L873/L878 move `DFHRED` into `ACCTSIDC` and `CARDSIDC`, so these two
+    // controls carry the paint signal as well as the accessible one. The signal is the
+    // `data-faulted` attribute the stylesheet reddens from; a screen whose program has no
+    // `MOVE DFHRED` never emits it.
+    await renderCardListScreen();
+
+    typeInto('acctsid', '1234567890X');
+    await pressEnter();
+
+    const accountFilter = screen.getByTestId('acctsid');
+    expect(accountFilter).toHaveAttribute('data-faulted', 'true');
+    expect(accountFilter).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.getByTestId('cardsid')).not.toHaveAttribute('data-faulted');
+
+    typeInto('acctsid', VALID_ACCOUNT_FILTER);
+    typeInto('cardsid', '444433332222111X');
+    await pressEnter();
+
+    expect(screen.getByTestId('cardsid')).toHaveAttribute('data-faulted', 'true');
+    expect(screen.getByTestId('acctsid')).not.toHaveAttribute('data-faulted');
+  });
+
   it('rejects a non-numeric card filter with the verbatim COCRDLIC message', async () => {
     await renderCardListScreen();
 

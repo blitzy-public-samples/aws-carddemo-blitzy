@@ -22,13 +22,21 @@
  *     ``GET /session`` probe rather than writing the store directly.
  */
 
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import {
+  act,
+  createEvent,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react';
 // Jest's native-ESM runtime does not inject ``jest`` as a global (unlike
 // ``describe`` / ``it`` / ``expect``), so the mock factory is imported explicitly.
 import { jest } from '@jest/globals';
 import { MemoryRouter, Route, Routes } from 'react-router';
 // The header title lines every screen publishes (``COTTL01Y``).
-import { CCDA_TITLE02 } from '../types';
+import { CCDA_TITLE02, CCDA_MSG_INVALID_KEY } from '../types';
 import type { RenderResult } from '@testing-library/react';
 import type { ApiErrorResponse, UserDto } from '../types';
 
@@ -527,5 +535,52 @@ describe('UserDeletePage — line-24 function keys', () => {
     expect(await screen.findByTestId(ADMIN_ROUTE_TESTID)).toBeInTheDocument();
     expect(screen.queryByTestId('user-id')).not.toBeInTheDocument();
     expect(deleteUserMock).not.toHaveBeenCalled();
+  });
+
+  it('returns the cursor to USRIDIN when the F4 legend button clears the screen', async () => {
+    renderScreen({ pathname: DELETE_ROUTE, state: { userId: targetUser.userId } });
+    await waitForRecordDisplayed(targetUser);
+
+    // Clicking the legend button focuses it. COUSR03C PF4 re-sends the map and every
+    // send honours ATTRB=IC on USRIDIN, so the cursor leaves the key and comes back to
+    // the key field; without it the operator's next keystroke goes nowhere.
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: PFKEY_LABEL_PF4 }));
+      await Promise.resolve();
+    });
+
+    expect(screen.getByTestId('user-id')).toHaveValue('');
+    expect(document.activeElement).toBe(screen.getByTestId('user-id'));
+  });
+
+  it('answers the AIDs the legend does not advertise with the invalid-key literal', async () => {
+    renderScreen({ pathname: DELETE_ROUTE, state: { userId: targetUser.userId } });
+    await waitForRecordDisplayed(targetUser);
+
+    // COUSR03C L126-130: the WHEN OTHER arm publishes CCDA-MSG-INVALID-KEY and
+    // re-sends the map, whose ATTRB=IC on USRIDIN returns the cursor. F7 and F8 are the
+    // recognised AIDs this screen does not declare -- PF12 is declared DARK, because
+    // COUSR03.bms line 24 legends only four keys while COUSR03C answers F12 as well.
+    for (const key of ['F7', 'F8']) {
+      await act(async () => {
+        fireEvent.keyDown(document, { key });
+        await Promise.resolve();
+      });
+
+      expect(screen.getByRole('alert')).toHaveTextContent(CCDA_MSG_INVALID_KEY);
+      expect(document.activeElement).toBe(screen.getByTestId('user-id'));
+      // Nothing was re-read and nothing was deleted: the displayed record stands.
+      expect(screen.getByTestId('last-name').textContent).toBe(targetUser.lastName);
+      expect(deleteUserMock).not.toHaveBeenCalled();
+    }
+  });
+
+  it('claims an unadvertised AID from the browser', () => {
+    renderScreen(DELETE_ROUTE);
+
+    const event = createEvent.keyDown(document, { key: 'F7', cancelable: true });
+    fireEvent(document, event);
+
+    expect(event.defaultPrevented).toBe(true);
   });
 });

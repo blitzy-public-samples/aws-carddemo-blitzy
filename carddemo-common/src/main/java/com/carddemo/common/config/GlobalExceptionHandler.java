@@ -48,6 +48,7 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.context.request.WebRequest;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.servlet.NoHandlerFoundException;
 import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExceptionHandler;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
@@ -124,13 +125,35 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     /** :purpose: Code for a keyed record that does not exist. */
     private static final String ERROR_CODE_NOT_FOUND = "RECORD_NOT_FOUND";
 
-    /** :purpose: Code for a record another writer changed first (``@Version`` conflict). */
-    private static final String ERROR_CODE_CONFLICT = "OPTIMISTIC_LOCK_CONFLICT";
+    /**
+     * :purpose: Code for a record another writer changed first (``@Version`` conflict).
+     * :note: Package-private, not private, because {@link PersistenceExceptionHandler} answers the
+     *  SAME outcome for the commit-time variant of this failure and must publish the SAME code.
+     *  Two advices reporting one outcome under two different codes is what let a caller branch
+     *  correctly on a card conflict and not on an account or bill-payment conflict.
+     */
+    static final String ERROR_CODE_CONFLICT = "OPTIMISTIC_LOCK_CONFLICT";
 
     private static final String MSG_BODY_TOO_LARGE = "Request body exceeds the configured maximum size";
 
     /** :purpose: Caller-facing message for a body the framework could not parse. */
     private static final String MSG_BODY_MALFORMED = "Malformed request body";
+
+    /**
+     * :purpose: Caller-facing message for a request parameter whose submitted value could not be
+     *  converted to the type the endpoint declares, used when the owning service registers no
+     *  legacy message of its own for that parameter.
+     * :note: It names neither the parameter's value nor the target type. The framework's own
+     *  wording for this failure quotes the submitted value back at the caller and exposes the
+     *  binding machinery, which is exactly what this handler exists to keep out of the envelope.
+     */
+    private static final String MSG_PARAMETER_MALFORMED = "Malformed request parameter";
+
+    /**
+     * :purpose: Spring's binding-result error code for a value that could not be converted to the
+     *  declared type of the field it was bound into.
+     */
+    private static final String TYPE_MISMATCH_ERROR_CODE = "typeMismatch";
 
     /**
      * :purpose: Optional, service-supplied mapping from a request property to the legacy message
@@ -407,12 +430,37 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
             return super.handleMethodArgumentNotValid(ex, headers, status, request);
         }
         FieldError winner = ordered.get(0);
-        ErrorResponse body = buildBody(HttpStatus.BAD_REQUEST, winner.getDefaultMessage(), request);
+        String reported = fieldErrorMessage(winner);
+        ErrorResponse body = buildBody(HttpStatus.BAD_REQUEST, reported, request);
         body.setErrorCode(ERROR_CODE_VALIDATION);
-        body.addFieldError(winner.getField(), winner.getDefaultMessage());
+        body.addFieldError(winner.getField(), reported);
         log.warn("Request validation failed at {}: reporting '{}' for field '{}' ({} violation(s) evaluated)",
-                loggedPath(request), winner.getDefaultMessage(), winner.getField(), ordered.size());
+                loggedPath(request), reported, winner.getField(), ordered.size());
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).headers(headers).body(body);
+    }
+
+    /**
+     * :purpose: Resolve the message to report for a binding-result field error, substituting a
+     *     CardDemo message for the framework's own wording when the field failed TYPE CONVERSION
+     *     rather than a declared constraint.
+     * :param error: the field error the legacy evaluation order selected.
+     * :returns: the constraint's own message for a constraint violation; otherwise the legacy
+     *     message the owning service registered for the field, or {@link #MSG_PARAMETER_MALFORMED}.
+     * :note: A constraint message is authored by this project and is safe to report verbatim. A
+     *     type-conversion message is authored by Spring, and it both quotes the submitted value and
+     *     names the internal Java types involved — for example
+     *     ``Failed to convert property value of type 'java.lang.String' to required type 'int' for
+     *     property 'pageNumber'; For input string: "abc"`` — so it is never reported. This is the
+     *     same substitution {@link #handleParameterTypeMismatch} makes for a ``@RequestParam``; the
+     *     two exist separately only because a parameter bound into a command OBJECT fails through
+     *     the binding result instead of through its own exception.
+     */
+    private String fieldErrorMessage(FieldError error) {
+        if (!TYPE_MISMATCH_ERROR_CODE.equals(error.getCode())) {
+            return error.getDefaultMessage();
+        }
+        String registered = resolveTypeMismatchMessage(error.getField());
+        return registered == null ? MSG_PARAMETER_MALFORMED : registered;
     }
 
     /**
@@ -486,6 +534,41 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
         }
         log.warn("Constraint validation failed at {}: reporting '{}' ({} violation(s) evaluated)",
                 loggedPath(request), loggedMessage(message), ex.getConstraintViolations().size());
+        return ResponseEntity.status(status).body(body);
+    }
+
+    /**
+     * :purpose: Map a request PARAMETER whose submitted value could not be converted to the type
+     *     the endpoint declares onto HTTP 400 with a CardDemo message, mirroring the treatment
+     *     {@link #handleUnreadableRequestBody} already gives a wrong-typed body property.
+     * :param ex: the type-mismatch failure raised while binding a query, path or header parameter.
+     * :param request: the current web request.
+     * :returns: a ``400 Bad Request`` {@link ResponseEntity} carrying the legacy message the owning
+     *     service registered for that parameter, or {@link #MSG_PARAMETER_MALFORMED} when it
+     *     registered none, plus {@link #ERROR_CODE_VALIDATION} and the parameter's field entry.
+     * :note: Declared for the ``MethodArgumentTypeMismatchException`` SUBTYPE so it outranks the
+     *     inherited handling of ``TypeMismatchException`` without duplicating a mapping for the
+     *     same type. Without it the failure fell through to the framework's ``ProblemDetail``,
+     *     whose detail reads ``Failed to convert 'page' with value: 'abc'`` — Spring's wording,
+     *     carrying the caller's own submitted value back into the envelope's ``message`` and
+     *     leaving ``errorCode`` null, so the failure was neither describable to an operator nor
+     *     branchable by a client.
+     * :note: Only the parameter NAME is read from the exception. Its ``getValue()`` and its message
+     *     both quote the submitted content, which is never reflected to the caller or logged.
+     */
+    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+    public ResponseEntity<ErrorResponse> handleParameterTypeMismatch(
+            MethodArgumentTypeMismatchException ex, WebRequest request) {
+        HttpStatus status = HttpStatus.BAD_REQUEST;
+        String parameter = ex.getName();
+        String registered = parameter == null ? null : resolveTypeMismatchMessage(parameter);
+        String message = registered == null ? MSG_PARAMETER_MALFORMED : registered;
+        ErrorResponse body = buildBody(status, message, request);
+        body.setErrorCode(ERROR_CODE_VALIDATION);
+        if (parameter != null) {
+            body.addFieldError(parameter, message);
+        }
+        log.warn("Type mismatch on request parameter {} at {}", parameter, loggedPath(request));
         return ResponseEntity.status(status).body(body);
     }
 
@@ -823,8 +906,13 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
                                                                        WebRequest request) {
         HttpStatus status = HttpStatus.CONFLICT;
         log.warn("Optimistic-locking failure at {}: {}", loggedPath(request), loggedMessage(ex.getMessage()));
-        return ResponseEntity.status(status)
-                .body(buildBody(status, OptimisticLockConflictException.MESSAGE, request));
+        ErrorResponse body = buildBody(status, OptimisticLockConflictException.MESSAGE, request);
+        // The same outcome as handleOptimisticLockConflict above, so the same code. Whether the
+        // version mismatch is detected by the service's own compare or only when the transaction
+        // flushes is an implementation detail of WHERE it was caught; a caller branching on the
+        // conflict must not have to know which of the two paths ran.
+        body.setErrorCode(ERROR_CODE_CONFLICT);
+        return ResponseEntity.status(status).body(body);
     }
 
     /**

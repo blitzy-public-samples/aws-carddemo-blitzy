@@ -322,6 +322,26 @@ function rowTranIds(): string[] {
 }
 
 /**
+ * :purpose: The transaction ids of the row slots the browse actually FILLED. The map has
+ *     ten slots on every send and ``COTRN00C`` blanks the ones it did not read, so a
+ *     short page paints blank slots that carry no id.
+ * :returns: the non-blank ``Transaction ID`` column values, in display order.
+ */
+function populatedRowTranIds(): string[] {
+  return rowTranIds().filter((tranId) => tranId !== '');
+}
+
+/**
+ * :purpose: The row slots left blank by the browse.
+ * :returns: the count of row lines whose data cells are all empty.
+ */
+function blankRowCount(): number {
+  return dataRows().filter((row) =>
+    [1, 2, 3, 4].every((cellIndex) => (row.cells[cellIndex]?.textContent ?? '') === ''),
+  ).length;
+}
+
+/**
  * :purpose: The row-selection flag fields of the displayed row lines.
  * :returns: one ``SEL000n`` input per displayed row, in display order.
  */
@@ -535,16 +555,64 @@ describe('TranListPage — PF7 / PF8 paging', () => {
     await pressKey('F8');
     await pressKey('F8');
 
-    expect(rowTranIds()).toEqual(tranIdRange(21, 22));
+    expect(populatedRowTranIds()).toEqual(tranIdRange(21, 22));
     expect(screen.getByTestId('page-number')).toHaveTextContent('3');
     expect(pfKey(PF8_LABEL)).toBeEnabled();
     expect(pfKey(PF7_LABEL)).toBeEnabled();
 
     await pressKey('F8');
 
-    expect(rowTranIds()).toEqual(tranIdRange(21, 22));
+    expect(populatedRowTranIds()).toEqual(tranIdRange(21, 22));
     expect(screen.getByTestId('page-number')).toHaveTextContent('3');
     expect(listTransactionsMock).toHaveBeenCalledTimes(4);
+  });
+
+  /**
+   * :purpose: ``COTRN00.bms`` declares ``SEL0001``..``SEL0010`` and their row companions at
+   *     fixed ``POS`` values, and ``COTRN00C`` L289-L292 blanks all ten before filling the
+   *     ones it read, so a two-row last page is still a ten-row grid. Rendering only the
+   *     filled slots collapsed the grid and pulled the line-21 instruction literal and the
+   *     line-24 legend up the frame by the height of every missing row.
+   */
+  it('keeps all ten row slots on a partial last page, the unused ones blank', async () => {
+    await renderScreen();
+
+    await pressKey('F8');
+    await pressKey('F8');
+
+    expect(dataRows()).toHaveLength(10);
+    expect(populatedRowTranIds()).toEqual(tranIdRange(21, 22));
+    expect(blankRowCount()).toBe(8);
+    // The slots the QA reproduction probed by id are present and enterable, exactly as
+    // the unprotected mapset fields are.
+    expect(selectionFields()).toHaveLength(10);
+    for (const slot of [5, 6, 7, 8, 9, 10]) {
+      const field = document.getElementById(`SEL${String(slot).padStart(4, '0')}`);
+      expect(field).not.toBeNull();
+      expect(field).toBeEnabled();
+    }
+  });
+
+  /**
+   * :purpose: A flag typed into a blank slot is ignored on the 3270 — the selection branch
+   *     requires the row's ``TRNID0n`` to be non-blank as well — so it neither navigates
+   *     nor faults its control.
+   */
+  it('ignores a selection flag typed into a blank row slot', async () => {
+    await renderScreen();
+
+    await pressKey('F8');
+    await pressKey('F8');
+
+    const blankSlot = selectionFields()[6];
+    fireEvent.change(blankSlot, { target: { value: 'X' } });
+
+    expect(blankSlot).not.toHaveAttribute('aria-invalid');
+
+    await pressKey('Enter');
+
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(currentPath()).toBe(LIST_ROUTE);
   });
 
   it('pages forward when the F8 legend control itself is activated', async () => {
@@ -814,9 +882,10 @@ describe('TranListPage — request outcomes', () => {
     await renderScreen();
 
     expect(screen.getByRole('alert')).toHaveTextContent(MSG_LOOKUP_FAILED);
-    // No row is painted and no placeholder invented: COTRN00C leaves the ten row fields
-    // at LOW-VALUES and publishes its message on line 23.
-    expect(selectionFields()).toHaveLength(0);
+    // The ten row slots stay on the frame and no placeholder is invented: COTRN00C leaves
+    // the ten row fields at LOW-VALUES and publishes its message on line 23.
+    expect(dataRows()).toHaveLength(10);
+    expect(populatedRowTranIds()).toEqual([]);
     expect(screen.queryByTestId('tran-list-empty')).toBeNull();
   });
 
@@ -865,7 +934,8 @@ describe('TranListPage — request outcomes', () => {
     // reported by the service's own line-23 message alone.
     expect(screen.queryByTestId('tran-list-empty')).toBeNull();
     expect(screen.queryByText(/no transactions to display/i)).toBeNull();
-    expect(selectionFields()).toHaveLength(0);
+    expect(dataRows()).toHaveLength(10);
+    expect(blankRowCount()).toBe(10);
     // ``PROCESS-PF7-KEY`` / ``PROCESS-PF8-KEY`` are always reached; the service,
     // not the screen, decides that there is nothing further to read.
     expect(pfKey(PF7_LABEL)).toBeEnabled();
@@ -897,7 +967,13 @@ describe('TranListPage — request outcomes', () => {
       await Promise.resolve();
     });
     expect(screen.queryByText(/no transactions to display/i)).toBeNull();
-    expect(selectionFields()).toHaveLength(0);
+    // The grid is already at its declared ten rows while the browse is outstanding, so it
+    // does not change shape when the answer arrives; every slot is blank and inhibited.
+    expect(dataRows()).toHaveLength(10);
+    expect(blankRowCount()).toBe(10);
+    for (const field of selectionFields()) {
+      expect(field).toBeDisabled();
+    }
   });
 });
 

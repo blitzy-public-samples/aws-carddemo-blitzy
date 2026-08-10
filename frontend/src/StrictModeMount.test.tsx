@@ -253,6 +253,18 @@ function expectedReads(entryRead: string | null): string[] {
   return entryRead === null ? [] : [entryRead, entryRead];
 }
 
+/**
+ * :purpose: Replace the header clock with a fixed token so two renders taken moments
+ *     apart compare on the screen they painted rather than on the second they were
+ *     painted in. ``Header`` renders ``Time:`` from the wall clock (``EIBTIME``), so a
+ *     comparison that crosses a second boundary would otherwise fail on that alone.
+ * :param text: the rendered screen text.
+ * :returns: the same text with the ``Time: HH:MM:SS`` value masked.
+ */
+function withoutClock(text: string): string {
+  return text.replace(/Time: \d{2}:\d{2}:\d{2}/, 'Time: HH:MM:SS');
+}
+
 describe('StrictMode double mount — every screen', () => {
   afterEach(async () => {
     serverIdentity = null;
@@ -358,7 +370,7 @@ describe('StrictMode double mount — every screen', () => {
         document.querySelector('.screen')?.textContent ?? '';
 
       expect(singleText).not.toBe('');
-      expect(strictText).toBe(singleText);
+      expect(withoutClock(strictText)).toBe(withoutClock(singleText));
     });
   });
 });

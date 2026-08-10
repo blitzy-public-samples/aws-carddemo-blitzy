@@ -23,7 +23,13 @@ import { useScreenChrome } from '../components/Layout';
 import { isBrowseNotice } from '../components/browseNotices';
 import { invalidFieldProps, invalidValueProps } from '../components/ErrorBanner';
 import type { PFKeyDef } from '../components/PFKeyBar';
-import { PfKeyAction, CCDA_TITLE01, CCDA_TITLE02, SCREEN_NAMES } from '../types';
+import {
+  PfKeyAction,
+  CCDA_TITLE01,
+  CCDA_TITLE02,
+  CCDA_MSG_INVALID_KEY,
+  SCREEN_NAMES,
+} from '../types';
 
 /**
  * Row-4 screen name of ``app/bms/COTRN00.bms``, rendered as the screen's own
@@ -33,6 +39,7 @@ const SCREEN_NAME = SCREEN_NAMES.COTRN00;
 import type { TranListItemDto, TranListResponseDto } from '../types';
 import { listTransactions, ApiError } from '../api';
 import {
+  placeCursor,
   useApi,
   useFocusOnChange,
   useFocusOnSettled,
@@ -59,6 +66,16 @@ const TRAN_ID_LENGTH = 16;
 
 /** Width of a row-selection flag (BMS ``SEL0001``..``SEL0010``, ``PIC X(01)``). */
 const SELECTION_LENGTH = 1;
+
+/**
+ * :purpose: The map's row-slot count. ``COTRN00.bms`` declares ``SEL0001``..``SEL0010``,
+ *     ``TRNID01``..``TRNID10`` and their date, description and amount companions at
+ *     fixed ``POS`` values, and ``COTRN00C`` blanks all ten
+ *     (``PERFORM VARYING WS-IDX FROM 1 BY 1 UNTIL WS-IDX > 10 / PERFORM
+ *     INITIALIZE-TRAN-DATA``, L289-L292) before filling only the ones it read. The grid
+ *     therefore holds ten rows on every send, whatever the browse returned.
+ */
+const ROW_SLOT_COUNT = 10;
 
 /** The only accepted row-selection flag; ``COTRN00C`` accepts ``'S'`` or ``'s'``. */
 const SELECTION_VALUE = 'S';
@@ -210,6 +227,18 @@ export default function TranListPage(): ReactElement {
   const shown = data ?? lastPage;
 
   const rows: TranListItemDto[] = useMemo(() => shown?.transactions ?? [], [shown]);
+  /*
+   * The ten fixed row slots of the map, each holding the row the browse put there or
+   * nothing. A short page therefore paints its rows and then blank slots, exactly as
+   * COTRN00C leaves the ten initialised row fields it did not fill. Rendering only the
+   * rows that carried data made the grid shrink to fit them, so the line-21 instruction
+   * literal and the line-24 key legend below it climbed the frame by the height of every
+   * missing row -- a 3270 field never moves off its declared POS.
+   */
+  const slots: ReadonlyArray<TranListItemDto | null> = useMemo(
+    () => Array.from({ length: ROW_SLOT_COUNT }, (_slot, index) => rows[index] ?? null),
+    [rows],
+  );
   const pageNumber = shown?.pageNumber ?? FIRST_PAGE;
   const hasNextPage = shown?.nextPage ?? false;
   // The message belongs to the CURRENT turn alone: a stale success message must not
@@ -360,6 +389,17 @@ export default function TranListPage(): ReactElement {
 
   useFocusOnChange(errorMessage === '' ? null : errorMessage, filterRef);
 
+  /**
+   * :purpose: ``EVALUATE EIBAID`` ``WHEN OTHER`` (``COTRN00C`` L130-134) — publish
+   *     ``CCDA-MSG-INVALID-KEY`` and re-send the map. ``COTRN00.bms`` declares no
+   *     ``IC`` field, so the program moves the cursor itself with
+   *     ``MOVE -1 TO TRNIDINL``, placing it on the transaction-id filter.
+   */
+  const handleUnhandledKey = useCallback((): void => {
+    setValidationMessage(CCDA_MSG_INVALID_KEY);
+    placeCursor(filterRef.current);
+  }, [filterRef]);
+
   // The activators published to the shared frame are identity-stable and always
   // dispatch to the newest render's handler, so the line-24 legend is not rebuilt on
   // every keystroke and an AID can never act on a value the screen has replaced.
@@ -367,6 +407,7 @@ export default function TranListPage(): ReactElement {
   const activateExit = useScreenAction(handleExit);
   const activateBackward = useScreenAction(handleBackward);
   const activateForward = useScreenAction(handleForward);
+  const activateUnhandledKey = useScreenAction(handleUnhandledKey);
 
   // The frame's header, line-23 message region and line-24 key legend belong to the
   // SAME map as this body, so they are published in a LAYOUT effect: a CICS program
@@ -392,6 +433,7 @@ export default function TranListPage(): ReactElement {
       noticeMessage,
       infoMessage,
       pfKeys,
+      onUnhandledKey: activateUnhandledKey,
       busy: loading,
     });
   }, [
@@ -399,6 +441,7 @@ export default function TranListPage(): ReactElement {
     activateEnter,
     activateExit,
     activateForward,
+    activateUnhandledKey,
     alertMessage,
     noticeMessage,
     infoMessage,
@@ -497,20 +540,24 @@ export default function TranListPage(): ReactElement {
           </thead>
           <tbody>
             {/*
-              An empty result renders NO row. COTRN00C paints no "nothing found" literal
-              into the body: it leaves the ten row fields at LOW-VALUES and publishes its
-              message on line 23, so an invented placeholder row would be output the
-              program never produces -- and a non-data row inside the body also picks up
-              the row hover treatment, which belongs to selectable rows alone. Nothing is
-              claimed about a browse that has not answered either, which is the state the
-              screen is in before its first read settles.
+              All ten slots are rendered on every send, carrying data or blank. COTRN00C
+              paints no "nothing found" literal into the body -- it leaves the ten row
+              fields at LOW-VALUES and publishes its message on line 23 -- so a blank slot
+              renders as blank cells rather than as an invented placeholder row. The
+              ``SEL000n`` field of a blank slot stays enterable because the mapset leaves
+              it unprotected, and a flag typed there is ignored exactly as it is on the
+              3270: the program's selection branch requires the row's ``TRNID0n`` to be
+              non-blank as well, so it neither navigates nor faults.
             */}
-            {rows.map((row: TranListItemDto, index: number) => {
+            {slots.map((row: TranListItemDto | null, index: number) => {
                 const fieldName = selectionFieldName(index);
                 const flag = displayText(selectionFlags[fieldName]);
-                const tranId = displayText(row.tranId);
+                const selectable = row !== null && displayText(row.tranId).trim() !== '';
                 return (
-                  <tr key={fieldName} className={flag.trim() === '' ? undefined : 'selected'}>
+                  <tr
+                    key={fieldName}
+                    className={selectable && flag.trim() !== '' ? 'selected' : undefined}
+                  >
                     <td>
                       {/* One-character field per the BMS ``SEL000n`` ``PIC X(01)``
                           layout; the shared stylesheet enlarges its hit area to the
@@ -523,17 +570,17 @@ export default function TranListPage(): ReactElement {
                         name={fieldName}
                         type="text"
                         aria-label={`Select transaction in row ${String(index + 1)}`}
-                        {...invalidValueProps(isRowSelectionInvalid(flag))}
+                        {...invalidValueProps(selectable && isRowSelectionInvalid(flag))}
                         maxLength={SELECTION_LENGTH}
                         size={SELECTION_LENGTH}
                         value={flag}
                         onChange={(event) => handleSelectionChange(fieldName, event.target.value)}
                       />
                     </td>
-                    <td>{tranId}</td>
-                    <td>{displayText(row.tranDate)}</td>
-                    <td>{displayText(row.tranDesc)}</td>
-                    <td className="amount">{displayText(row.tranAmt)}</td>
+                    <td>{row === null ? '' : displayText(row.tranId)}</td>
+                    <td>{row === null ? '' : displayText(row.tranDate)}</td>
+                    <td>{row === null ? '' : displayText(row.tranDesc)}</td>
+                    <td className="amount">{row === null ? '' : displayText(row.tranAmt)}</td>
                   </tr>
                 );
             })}

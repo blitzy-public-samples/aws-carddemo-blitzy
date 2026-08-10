@@ -82,6 +82,12 @@ public class TransactionService {
     private static final String MSG_ALREADY_TOP = "You are already at the top of the page...";
     /** :purpose: COTRN00C L270 PF8 page-forward bottom boundary. */
     private static final String MSG_ALREADY_BOTTOM = "You are already at the bottom of the page...";
+    /** :purpose: COTRN00C L608 ``STARTBR-TRANSACT-FILE`` NOTFND: nothing at or after the browse position. */
+    private static final String MSG_BROWSE_TOP = "You are at the top of the page...";
+    /** :purpose: COTRN00C L642 ``READNEXT-TRANSACT-FILE`` ENDFILE: the forward browse ran out of records. */
+    private static final String MSG_REACHED_BOTTOM = "You have reached the bottom of the page...";
+    /** :purpose: COTRN00C L676 ``READPREV-TRANSACT-FILE`` ENDFILE: the backward browse ran out of records. */
+    private static final String MSG_REACHED_TOP = "You have reached the top of the page...";
     /** :purpose: COTRN02C L199 non-numeric account id. */
     private static final String MSG_ACCT_NUMERIC = "Account ID must be Numeric...";
     /** :purpose: COTRN02C L213 non-numeric card number. */
@@ -252,7 +258,8 @@ public class TransactionService {
      *  selection first, then validate the numeric filter and read the first forward
      *  page from the filter (inclusive) or from the top of the file.
      * :param req: the normalized list request.
-     * :returns: the list response for the selection or the first forward page.
+     * :returns: the list response for the selection or the first forward page; an
+     *  unmatched filter answers with no rows and the browse-start boundary literal.
      * :raises CardDemoException: on an invalid selection flag or a non-numeric filter.
      */
     private TransactionListResponseDto enterList(TransactionListRequestDto req) {
@@ -324,7 +331,7 @@ public class TransactionService {
      *  into ascending display order.
      * :param req: the normalized list request.
      * :returns: the previous page, or the current state carrying the top-boundary
-     *  message.
+     *  message; a short previous page carries the backward-exhaustion literal.
      */
     private TransactionListResponseDto pageBackward(TransactionListRequestDto req) {
         if (req.getPageNumber() <= 1) {
@@ -339,16 +346,28 @@ public class TransactionService {
         rows.sort(Comparator.comparing(Transaction::getTranId));
         TransactionListResponseDto resp = buildPage(rows);
         resp.setPageNumber(Math.max(1, req.getPageNumber() - 1));
+        if (rows.size() < PAGE_SIZE) {
+            // PROCESS-PAGE-BACKWARD fills slot ten down to slot one with READPREV; running out
+            // takes the ENDFILE arm, which publishes MSG_REACHED_TOP [COTRN00C L671-L679].
+            resp.setMessage(MSG_REACHED_TOP);
+        }
         return resp;
     }
 
     /**
      * :purpose: Read a forward page after the cursor id and assemble the response,
-     *  computing the next-page flag with an extra existence probe.
+     *  computing the next-page flag with an extra existence probe and publishing the
+     *  browse-exhaustion literal when the page is empty or short.
      * :param cursor: the exclusive lower-bound cursor id.
      * :param basePageNumber: the page number preceding this page; the returned page
      *  number is one greater when rows are present.
-     * :returns: the assembled forward-page response.
+     * :returns: the assembled forward-page response, carrying a boundary message when
+     *  the browse ran out of records.
+     * :note: The next-page flag comes from an existence probe rather than from a
+     *  browse read, so a FULL last page carries no message: on the 3270 the message on
+     *  that turn comes from the look-ahead ``READNEXT`` after the fill loop, which is
+     *  the probe's analogue and is the same choice ``UserService`` makes for
+     *  ``COUSR00C``. The literals here are the ones the fill loop itself raises.
      */
     private TransactionListResponseDto forwardPage(String cursor, int basePageNumber) {
         List<Transaction> rows = transactionRepository.findByTranIdGreaterThanOrderByTranIdAsc(
@@ -357,8 +376,22 @@ public class TransactionService {
         if (rows.isEmpty()) {
             resp.setPageNumber(basePageNumber);
             resp.setNextPage(false);
+            // A forward browse that yields nothing is never silent on the 3270. Reading from a
+            // fresh position (the ENTER turn, base page zero) is COTRN00C's STARTBR with no key at
+            // or after the requested id, whose NOTFND arm publishes MSG_BROWSE_TOP [L603-L611];
+            // reading on from a page already on display is the fill loop's READNEXT hitting
+            // ENDFILE, whose arm publishes MSG_REACHED_BOTTOM [L637-L645]. Both arms reach
+            // SEND-TRNLST-SCREEN, which moves WS-MESSAGE into ERRMSGO [L531], so the operator
+            // always learns why the rows stopped. Answering 200-with-no-rows and no message left
+            // an unmatched search indistinguishable from a screen that had not been submitted.
+            resp.setMessage(basePageNumber == 0 ? MSG_BROWSE_TOP : MSG_REACHED_BOTTOM);
         } else {
             resp.setPageNumber(basePageNumber + 1);
+            if (rows.size() < PAGE_SIZE) {
+                // A short page means the fill loop itself hit ENDFILE before slot ten, which is
+                // the same READNEXT arm and therefore the same literal [COTRN00C L637-L645].
+                resp.setMessage(MSG_REACHED_BOTTOM);
+            }
         }
         return resp;
     }

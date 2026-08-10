@@ -8,6 +8,7 @@ import ErrorBanner, {
   hasFieldErrors,
   invalidFieldProps,
   invalidValueProps,
+  faultedFieldProps,
 } from './ErrorBanner';
 import type { FieldErrorMap } from '../types';
 
@@ -75,6 +76,27 @@ describe('ErrorBanner', () => {
     expect(screen.getByRole('alert')).toHaveAttribute('id', ERROR_LINE_ID);
     const bound = invalidFieldProps(true)['aria-describedby'];
     expect(document.getElementById(bound ?? '')).not.toBeNull();
+  });
+
+  it('adds the paint signal only for a control the program also reddens', () => {
+    // `data-faulted` is what the stylesheet paints RED from, and it is emitted ONLY by
+    // this helper -- so a screen whose program contains no `MOVE DFHRED` cannot acquire
+    // the frame by marking its control for assistive technology.
+    expect(faultedFieldProps(true)).toEqual({
+      'aria-invalid': true,
+      'aria-describedby': ERROR_LINE_ID,
+      'data-faulted': 'true',
+    });
+    expect(faultedFieldProps(false)).toEqual({});
+    expect(faultedFieldProps(true, 'acctsidHint')).toEqual({
+      'aria-invalid': true,
+      'aria-describedby': `acctsidHint ${ERROR_LINE_ID}`,
+      'data-faulted': 'true',
+    });
+    // The accessible-only helper must never emit it, which is what keeps the twelve
+    // screens that mark without painting free of the frame.
+    expect(invalidFieldProps(true)).not.toHaveProperty('data-faulted');
+    expect(invalidValueProps(true)).not.toHaveProperty('data-faulted');
   });
 
   it('omits the message reference for a value-evident fault', () => {

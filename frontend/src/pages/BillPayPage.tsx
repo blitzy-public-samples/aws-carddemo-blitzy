@@ -23,7 +23,7 @@ import type { ReactElement } from 'react';
 import { useNavigate } from 'react-router';
 import { useScreenChrome } from '../components/Layout';
 import type { PFKeyDef } from '../components/PFKeyBar';
-import { PfKeyAction, CCDA_TITLE01, CCDA_TITLE02 } from '../types';
+import { PfKeyAction, CCDA_TITLE01, CCDA_TITLE02, CCDA_MSG_INVALID_KEY } from '../types';
 import type { BillPayRequestDto, BillPayResponseDto } from '../types';
 import { payBill } from '../api';
 import { useApi, useFocusOnChange, useScreenAction } from '../hooks';
@@ -68,6 +68,28 @@ const MSG_NOTHING_TO_PAY = 'You have nothing to pay...';
  * two spaces in the rendered message.
  */
 const MSG_PAYMENT_SUCCESSFUL = 'Payment successful. ';
+
+/**
+ * :purpose: The line-23 messages that take the cursor WITHOUT faulting the control it
+ *     lands on, because none of them says that the control's content was refused:
+ *
+ *     - ``Confirm to make a bill payment...`` — published by ``COBIL00C`` L237 as soon as
+ *       the balance is on screen, over an EMPTY confirm field. It reports what the screen
+ *       is waiting for, and an entry the operator has not made yet cannot be wrong.
+ *     - ``You have nothing to pay...`` — L200-201 refuses the account's zero BALANCE, not
+ *       the account id the cursor returns to; the id it was keyed with is correct.
+ *     - ``Invalid key pressed. Please see below...`` — the ``WHEN OTHER`` branch of
+ *       ``EVALUATE EIBAID`` (L138-142) rejects an attention identifier, not a field.
+ *
+ *     Every other message on this screen — this screen's own value edits and the ones the
+ *     service produces, which no client-side table could enumerate — does refuse a value,
+ *     and faults the control the cursor lands on.
+ */
+const UNFAULTED_MESSAGES: ReadonlySet<string> = new Set([
+  MSG_CONFIRM_PAYMENT,
+  MSG_NOTHING_TO_PAY,
+  CCDA_MSG_INVALID_KEY,
+]);
 
 /** ``ACTIDIN`` field width (``PIC X(11)``). */
 const ACCT_ID_WIDTH = 11;
@@ -181,7 +203,13 @@ export default function BillPayPage(): ReactElement {
   // CONFIRML`, so the cursor target IS the field the row-23 message is about --
   // including the messages the SERVER produces, which no client-side table of message
   // text can enumerate.
-  const faultedField: CursorField | null = errorMessage === '' ? null : cursor.field;
+  //
+  // EXCEPT for the messages that are not about a value at all (:data:`UNFAULTED_MESSAGES`).
+  // The cursor is a position; `aria-invalid` is an assertion that the control's CONTENT was
+  // refused. `Invalid value. Valid values are (Y/N)...` (L187) IS such a refusal and still
+  // marks.
+  const faultedField: CursorField | null =
+    errorMessage === '' || UNFAULTED_MESSAGES.has(errorMessage) ? null : cursor.field;
 
   /**
    * :purpose: ``INITIALIZE-ALL-FIELDS`` / ``CLEAR-CURRENT-SCREEN`` — blank the
@@ -312,6 +340,17 @@ export default function BillPayPage(): ReactElement {
     placeCursor(published === MSG_NOTHING_TO_PAY ? 'acctId' : 'confirm');
   }, [handleClear, placeCursor, reset, run]);
 
+  /**
+   * :purpose: ``EVALUATE EIBAID`` ``WHEN OTHER`` (``COBIL00C`` L138-142) — publish
+   *     ``CCDA-MSG-INVALID-KEY`` and re-send the map, whose ``ATTRB=IC`` on ACTIDIN
+   *     returns the cursor to the account-id field. Nothing the operator entered was
+   *     rejected, so no field is faulted and any outstanding confirmation stands.
+   */
+  const handleUnhandledKey = useCallback((): void => {
+    setScreenMessage(CCDA_MSG_INVALID_KEY);
+    placeCursor('acctId');
+  }, [placeCursor]);
+
   // The activators published to the shared frame are identity-stable and always
   // dispatch to the newest render's handler, so the line-24 legend is not rebuilt on
   // every keystroke and an AID can never act on a value the screen has replaced.
@@ -320,6 +359,7 @@ export default function BillPayPage(): ReactElement {
   const activateEnter = useScreenAction((): void => {
     void handleEnter();
   });
+  const activateUnhandledKey = useScreenAction(handleUnhandledKey);
 
   // The frame's header, line-23 message region and line-24 key legend belong to the
   // SAME map as this body, so they are published in a LAYOUT effect: a CICS program
@@ -358,12 +398,14 @@ export default function BillPayPage(): ReactElement {
       errorMessage,
       infoMessage,
       pfKeys,
+      onUnhandledKey: activateUnhandledKey,
       busy: submitting,
     });
   }, [
     activateClear,
     activateEnter,
     activateExit,
+    activateUnhandledKey,
     errorMessage,
     infoMessage,
     setChrome,

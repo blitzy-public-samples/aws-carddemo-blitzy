@@ -298,8 +298,8 @@ describe('useSession — the server is the authority', () => {
   });
 });
 
-describe('useSession — sign-in revokes a live session first', () => {
-  it('revokes the live session before sending the new credentials', async () => {
+describe('useSession — sign-in never revokes a session before the answer is known', () => {
+  it('sends the credentials without revoking the live session first', async () => {
     const { result } = await signedIn('USER0001', 'U');
     expect(result.current.isAuthenticated).toBe(true);
 
@@ -317,7 +317,49 @@ describe('useSession — sign-in revokes a live session first', () => {
       await result.current.signIn('ADMIN001', 'pw');
     });
 
-    expect(order).toEqual(['logout', 'signon']);
+    // The take-over belongs to the service that verified the credential: it reuses the
+    // session record and re-indexes the principal. Revoking here first is what made a
+    // mistyped password destroy a session the operator was still signed on to.
+    expect(order).toEqual(['signon']);
+    expect(logoutMock).not.toHaveBeenCalled();
+    expect(result.current.user).toBe('ADMIN001');
+    expect(result.current.isAdmin).toBe(true);
+  });
+
+  it('leaves the live session in place when the credentials are refused', async () => {
+    const { result } = await signedIn('USER0001', 'U');
+    expect(result.current.isAuthenticated).toBe(true);
+
+    signonMock.mockRejectedValue(new FakeApiError(401, 'Wrong Password. Try again ...'));
+
+    await act(async () => {
+      await expect(result.current.signIn('ADMIN001', 'badpw')).rejects.toBeInstanceOf(
+        FakeApiError,
+      );
+    });
+
+    // COSGN00C answers a refusal with a literal on line 23 and the operator keeps the
+    // screen -- and the session -- they were on. Nothing was revoked and nothing local
+    // was cleared, so the operator can still reach the screens they are signed on to.
+    expect(logoutMock).not.toHaveBeenCalled();
+    expect(result.current.isAuthenticated).toBe(true);
+    expect(result.current.user).toBe('USER0001');
+    expect(result.current.isAdmin).toBe(false);
+  });
+
+  it('leaves the live session in place when the SAME user mistypes their password', async () => {
+    const { result } = await signedIn('ADMIN001', 'A');
+
+    signonMock.mockRejectedValue(new FakeApiError(401, 'Wrong Password. Try again ...'));
+
+    await act(async () => {
+      await expect(result.current.signIn('ADMIN001', 'badpw')).rejects.toBeInstanceOf(
+        FakeApiError,
+      );
+    });
+
+    expect(logoutMock).not.toHaveBeenCalled();
+    expect(result.current.isAuthenticated).toBe(true);
     expect(result.current.user).toBe('ADMIN001');
     expect(result.current.isAdmin).toBe(true);
   });

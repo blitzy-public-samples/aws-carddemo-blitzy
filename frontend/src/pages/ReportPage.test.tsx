@@ -29,7 +29,7 @@ import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
 import { jest } from '@jest/globals';
 import { MemoryRouter, Route, Routes } from 'react-router';
 // The header title lines every screen publishes (``COTTL01Y``).
-import { CCDA_TITLE01, CCDA_TITLE02 } from '../types';
+import { CCDA_MSG_INVALID_KEY, CCDA_TITLE01, CCDA_TITLE02 } from '../types';
 import type {
   ApiErrorResponse,
   ReportRequestDto,
@@ -460,9 +460,12 @@ describe('ReportPage — report window required', () => {
     expect(document.querySelectorAll('.fieldError')).toHaveLength(0);
   });
 
-  it('marks the confirm box while the screen is asking for confirmation', async () => {
+  it('cursors the confirm box while asking for confirmation, without marking it', async () => {
     // The confirmation prompt is reported on the error line and ends with
-    // `MOVE -1 TO CONFIRML`, so the confirm box is the control it is about.
+    // `MOVE -1 TO CONFIRML`, so the confirm box is the control it is about -- but it is
+    // the CURSOR the program moves there, not a rejection. The box is empty and `N` is an
+    // accepted answer, so nothing about the entry is invalid yet; `CORPT00C` marks the
+    // control on neither path (it contains no `MOVE DFHRED` at all).
     renderReportScreen();
 
     selectReportType(MONTHLY_CAPTION);
@@ -470,10 +473,30 @@ describe('ReportPage — report window required', () => {
 
     expect(errorText()).toBe(`${CONFIRM_PROMPT_PREFIX}Monthly${CONFIRM_PROMPT_SUFFIX}`);
     const confirm = screen.getByLabelText(CONFIRM_CAPTION.trim());
-    expect(confirm).toBeInvalid();
+    expect(confirm).not.toBeInvalid();
     expect(confirm).toHaveClass('field');
     expect(confirm).not.toHaveClass('fieldError');
+    expect(confirm).not.toHaveAttribute('data-faulted');
+    expect(confirm).toHaveFocus();
     expect(screen.getByLabelText(MONTHLY_CAPTION)).not.toBeInvalid();
+  });
+
+  it('marks the confirm box when the value it holds is not Y or N', async () => {
+    // The rejection path DOES mark: the value standing on the screen was refused by the
+    // edit, which is what `aria-invalid` asserts. It still paints nothing, because
+    // `CORPT00C` moves no `DFHRED` anywhere.
+    renderReportScreen();
+
+    selectReportType(MONTHLY_CAPTION);
+    enterConfirmation('X');
+    await pressEnter();
+
+    const confirm = screen.getByLabelText(CONFIRM_CAPTION.trim());
+    expect(errorText()).toBe(`"X${INVALID_CONFIRM_SUFFIX}`);
+    expect(confirm).toBeInvalid();
+    expect(confirm).not.toHaveClass('fieldError');
+    expect(confirm).not.toHaveAttribute('data-faulted');
+    expect(document.querySelectorAll('.fieldError')).toHaveLength(0);
   });
 
   it('clears the rejection once a window is chosen and confirmed', async () => {
@@ -981,6 +1004,25 @@ describe('ReportPage — the message channel carries the colour (CORPT00C MOVE D
     expect(group).not.toHaveAttribute('aria-invalid');
     expect(screen.getByRole('radio', { name: YEARLY_CAPTION })).toHaveFocus();
     expect(document.activeElement).not.toBe(document.body);
+  });
+
+  /*
+   * `aria-invalid` asserts that a control's CONTENT was refused. The `WHEN OTHER` branch
+   * of `EVALUATE EIBAID` (L191-195) refuses a KEY, so the message it publishes takes the
+   * cursor to `MONTHLY` -- `MOVE -1 TO MONTHLYL` -- without marking anything.
+   */
+  it('takes the cursor without faulting a control for a rejected function key', async () => {
+    renderReportScreen();
+
+    await act(async () => {
+      fireEvent.keyDown(document, { key: 'F12' });
+      await Promise.resolve();
+    });
+
+    expect(errorText()).toBe(CCDA_MSG_INVALID_KEY);
+    expect(screen.getByRole('radiogroup')).not.toHaveAttribute('aria-invalid');
+    expect(document.querySelectorAll('[aria-invalid="true"]')).toHaveLength(0);
+    expect(document.querySelectorAll('[data-faulted]')).toHaveLength(0);
   });
 
   /*

@@ -297,6 +297,12 @@ export default function UserAddPage(): ReactElement {
     setFields(EMPTY_FIELDS);
     setErrorMessage('');
     setInfoMessage('');
+    // ``COUSR01C`` PF4 clears the map and re-sends it, and every send honours
+    // ``ATTRB=IC`` on FNAME. The message-driven cursor effect below cannot observe a
+    // clear that leaves both message states empty and the target field unchanged, so
+    // the send's cursor placement is performed here. Without it the cursor stays on
+    // whatever activated the key -- the line-24 ``F4`` button after a pointer click.
+    placeCursor(document.getElementById(FIELD_ELEMENT_ID.firstName));
   }, []);
 
   const handleSubmit = useCallback(
@@ -343,6 +349,11 @@ export default function UserAddPage(): ReactElement {
   const handleUnhandledKey = useCallback((): void => {
     setInfoMessage('');
     setErrorMessage(CCDA_MSG_INVALID_KEY);
+    // ``COUSR01C`` L98-103 ends ``MOVE -1 TO FNAMEL``, and CICS honours the insert
+    // cursor on EVERY send -- including the send that repeats a message already on
+    // screen. The message-driven effect below cannot see that pass, because neither the
+    // message nor the resolved target changed, so the placement is performed here.
+    placeCursor(document.getElementById(FIELD_ELEMENT_ID.firstName));
   }, []);
 
   // The activators published to the shared frame are identity-stable and always
@@ -383,6 +394,9 @@ export default function UserAddPage(): ReactElement {
       errorMessage,
       infoMessage,
       pfKeys,
+      // ``EVALUATE EIBAID`` ``WHEN OTHER`` (``COUSR01C`` L98-103): every attention
+      // identifier the legend does not advertise draws the same refusal, not silence.
+      onUnhandledKey: activateUnhandledKey,
       busy: loading,
     });
   }, [

@@ -77,8 +77,12 @@ const NO_ACCESS_MESSAGE = 'No access - Admin Only option... ';
 
 /**
  * :purpose: Text announced while the server identity probe is still outstanding, so a
- *     screen reader is told the frame is waiting rather than being left silent. The
- *     shared stylesheet hides it, so no screen gains visible output.
+ *     screen reader is told the frame is waiting rather than being left silent. It is
+ *     ANNOUNCED ONLY: the ``.screen__busy`` rule in ``index.css`` takes the paragraph
+ *     out of the flow and clips it to a single pixel, so the screen gains no visible
+ *     output and the terminal's own busy legend -- ``X SYSTEM`` in the operator
+ *     information area (``.screen__oia``) -- stays the only thing an operator sees
+ *     while a send is outstanding.
  */
 const RESOLVING_ANNOUNCEMENT = 'Checking sign-on';
 

@@ -24,7 +24,6 @@ import com.carddemo.auth.security.LoginAttemptService;
 import com.carddemo.common.domain.SecurityUser;
 import com.carddemo.common.dto.SessionAttributes;
 import com.carddemo.common.dto.SessionContext;
-import com.carddemo.common.exception.CardDemoException;
 import com.carddemo.common.security.SecurityAuditLogger;
 import com.carddemo.common.security.SessionPrincipalIndex;
 import com.carddemo.common.security.UserIdNormalizer;
@@ -71,15 +70,6 @@ public class AuthenticationService {
      *  new user-facing string is introduced.
      */
     private static final String MSG_UNABLE_TO_VERIFY = "Unable to verify the User ...";
-
-    /**
-     * :purpose: Answer for a sign-on that arrives over a session already signed on as a
-     *  different user. The legacy screen could not be reached without ending the current
-     *  session first, so the sequence has no legacy literal; the request is refused and
-     *  the live session is left untouched rather than being destroyed.
-     */
-    private static final String MSG_ALREADY_SIGNED_ON =
-            "Already signed on. Sign off before signing on as another user.";
 
     /**
      * :purpose: Session attribute key under which the externalized
@@ -140,17 +130,20 @@ public class AuthenticationService {
      *  found, the password does not match, or the credential store cannot be read;
      *  ``429 TOO_MANY_REQUESTS`` while the user id is locked out after repeated
      *  failures.
-     * :raises CardDemoException: ``400 BAD_REQUEST`` when the request arrives over a
-     *  session already signed on as a DIFFERENT user; the live session is left intact.
-     * :note: The legacy sign-on screen was only ever reached by ending the current
-     *  session (``COSGN00C`` ``RETURN-TO-SIGNON-SCREEN``), so a sign-on never arrived
-     *  over a live one. A request that does is answered without touching the session:
-     *  the same principal signing on again is idempotent and gets the session it
-     *  already holds, and a different principal is refused. Rotating or invalidating
-     *  the session here cannot work — the api-gateway is a second Spring Session
-     *  participant holding the same record, so deleting its key mid-request makes the
-     *  gateway's own write-back fail and turns a verified sign-on into a 500 while
-     *  destroying a session that was valid.
+     * :note: Every request is answered by verifying the submitted credential, whether or
+     *  not it arrives over a live session. ``COSGN00C`` has exactly one entry path --
+     *  ``PROCESS-ENTER-KEY`` performs ``READ-USER-SEC-FILE`` and compares the password on
+     *  every ENTER -- so no state of the terminal makes the program skip that comparison or
+     *  answer with anything other than its five literals. A live session is therefore
+     *  neither a reason to refuse the request nor a reason to grant it: a verified sign-on
+     *  takes over that session record, and a REFUSED one leaves it exactly as it was, so a
+     *  typo can never cost the operator the session they are still signed on to.
+     * :note: The session record is reused rather than invalidated and re-minted. The
+     *  api-gateway is a second Spring Session participant holding the same record, so
+     *  deleting its key mid-request makes the gateway's own write-back fail: the caller was
+     *  answered ``500`` and, because the replacement id was never persisted, every retry
+     *  was answered ``200`` and then refused ``401`` for ever. ``rotateSession`` strips the
+     *  record instead, which is what makes taking over a live session safe here.
      */
     @Transactional(readOnly = true)
     public SignonResponseDto signon(SignonRequestDto request, HttpServletRequest httpRequest) {
@@ -158,14 +151,13 @@ public class AuthenticationService {
         String userId = UserIdNormalizer.normalizeToKey(enteredUserId);
         String rawPassword = request.getPassword();
 
+        // The principal currently holding this session, read BEFORE the credential is
+        // verified only so that a successful take-over can drop that principal's index
+        // entry. It never short-circuits the verification: answering a sign-on from the
+        // session instead of the credential store would grant access on the strength of a
+        // cookie alone, and would let a second sign-on for the same id succeed with any
+        // password at all.
         SessionContext live = liveSessionContext(httpRequest);
-        if (live != null) {
-            if (!userId.equals(live.getUserId())) {
-                throw new CardDemoException(MSG_ALREADY_SIGNED_ON);
-            }
-            SecurityAuditLogger.authenticationSuccess(userId, httpRequest);
-            return signonMapper.toSignonResponse(live);
-        }
 
         if (loginAttemptService.isLocked(userId)) {
             SecurityAuditLogger.authenticationLocked(userId, httpRequest);
@@ -203,6 +195,12 @@ public class AuthenticationService {
         // rotated first so a session id obtained before sign-on can never become an
         // authenticated one.
         HttpSession session = rotateSession(httpRequest);
+        // The record is being taken over, so the principal that held it no longer does.
+        // Leaving the stale entry behind would make a later revocation of the OUTGOING
+        // user reach into the session the INCOMING user is now signed on to.
+        if (live != null && !live.getUserId().equals(context.getUserId())) {
+            sessionPrincipalIndex.deregister(live.getUserId(), session.getId());
+        }
         session.setAttribute(SESSION_CONTEXT_ATTRIBUTE, context);
         sessionPrincipalIndex.register(context.getUserId(), session.getId());
         SecurityAuditLogger.authenticationSuccess(userId, httpRequest);

@@ -20,7 +20,7 @@
 // Jest's native-ESM runtime does not inject ``jest`` as a global (unlike
 // ``describe`` / ``it`` / ``expect``), so it is imported explicitly.
 import { jest } from '@jest/globals';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { createEvent, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router';
 // The header title lines every screen publishes (``COTTL01Y``).
 import { GENERIC_ERROR_MESSAGE } from '../api/messages';
@@ -741,6 +741,123 @@ describe('CardDetailPage — line-24 function keys', () => {
     fireEvent.keyDown(document.body, { key: 'F3' });
 
     expect(await screen.findByTestId('card-list-route')).toBeInTheDocument();
+  });
+
+  it.each(['F4', 'F5', 'F7', 'F8', 'F12'])(
+    'rewrites the undeclared AID %s to ENTER and runs the search (COCRDSLC L291-299)',
+    async (key) => {
+      renderCardDetail(ROUTE_CARD_NUMBER, VALID_ACCOUNT_FILTER);
+
+      await waitFor(() => {
+        expect(getCardMock).toHaveBeenCalledTimes(1);
+      });
+      await waitForKeyboardRelease();
+
+      // COCRDSLC does not answer an unhandled AID with a message: it SETs PFK-INVALID,
+      // finds the key outside its valid set (ENTER, PF3) and SETs CCARD-AID-ENTER --
+      // the key is REWRITTEN to ENTER, so the search runs and no message is published.
+      const event = createEvent.keyDown(document.body, { key, cancelable: true });
+      fireEvent(document.body, event);
+
+      expect(event.defaultPrevented).toBe(true);
+      await waitFor(() => {
+        expect(getCardMock).toHaveBeenCalledTimes(2);
+      });
+      expect(getCardMock).toHaveBeenLastCalledWith(
+        ROUTE_CARD_NUMBER,
+        VALID_ACCOUNT_FILTER,
+      );
+      expect(screen.queryByRole('alert')).toBeNull();
+    },
+  );
+});
+
+describe('CardDetailPage — a failed lookup leaves no stale record (COCRDSLC L427-428)', () => {
+  it('blanks the three display fields when the next search finds nothing', async () => {
+    renderCardDetail();
+
+    // The record really is on screen first, or the assertion below proves nothing.
+    await waitFor(() => {
+      expect(screen.getByTestId('crdname')).toHaveTextContent(cardDetail.cardEmbossedName);
+    });
+    expect(screen.getByTestId('crdstcd')).toHaveTextContent(cardDetail.cardActiveStatus);
+    await waitForKeyboardRelease();
+
+    getCardMock.mockReset();
+    getCardMock.mockRejectedValue(new ApiError(404, MSG_NO_CARDS_FOUND));
+
+    fireEvent.change(screen.getByTestId('cardsid'), {
+      target: { value: '9999999999999999' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: PF_ENTER_LABEL }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toHaveTextContent(MSG_NO_CARDS_FOUND);
+    });
+    // 1100-SCREEN-INIT opens `MOVE LOW-VALUES TO CCRDSLAO`, so the three display fields
+    // are blank on the map unless 9100-GETCARD-BYACCTCARD has just moved a record into
+    // it. The previous card's embossed name and status do not stay on screen beside keys
+    // that were never found.
+    expect(screen.getByTestId('crdname').textContent).toBe('');
+    expect(screen.getByTestId('crdstcd').textContent).toBe('');
+    expect(screen.getByTestId('expmon').textContent).toBe('');
+    expect(screen.getByTestId('expyear').textContent).toBe('');
+  });
+
+  it('blanks the record when the composite key itself is refused', async () => {
+    renderCardDetail();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('crdname')).toHaveTextContent(cardDetail.cardEmbossedName);
+    });
+    await waitForKeyboardRelease();
+
+    const callsBefore = getCardMock.mock.calls.length;
+    // A blank card number is refused by 2200-EDIT-MAP-INPUTS before anything is read,
+    // and 1100-SCREEN-INIT still blanks the map for the send that reports it.
+    fireEvent.change(screen.getByTestId('cardsid'), { target: { value: '' } });
+    fireEvent.click(screen.getByRole('button', { name: PF_ENTER_LABEL }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('crdname').textContent).toBe('');
+    });
+    expect(screen.getByTestId('crdstcd').textContent).toBe('');
+    expect(getCardMock.mock.calls.length).toBe(callsBefore);
+  });
+
+  it('repopulates the record when the next search succeeds', async () => {
+    renderCardDetail();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('crdname')).toHaveTextContent(cardDetail.cardEmbossedName);
+    });
+    await waitForKeyboardRelease();
+
+    getCardMock.mockReset();
+    getCardMock.mockRejectedValueOnce(new ApiError(404, MSG_NO_CARDS_FOUND));
+    getCardMock.mockResolvedValue(cardDetail);
+
+    fireEvent.change(screen.getByTestId('cardsid'), {
+      target: { value: '9999999999999999' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: PF_ENTER_LABEL }));
+    await waitFor(() => {
+      expect(screen.getByTestId('crdname').textContent).toBe('');
+    });
+
+    fireEvent.change(screen.getByTestId('cardsid'), {
+      target: { value: ROUTE_CARD_NUMBER },
+    });
+    fireEvent.click(screen.getByRole('button', { name: PF_ENTER_LABEL }));
+
+    // Clearing before the read must not stop a good read from painting the record.
+    await waitFor(() => {
+      expect(screen.getByTestId('crdname')).toHaveTextContent(
+        cardDetail.cardEmbossedName,
+      );
+    });
+    expect(screen.getByTestId('crdstcd')).toHaveTextContent(cardDetail.cardActiveStatus);
+    expect(screen.queryByRole('alert')).toBeNull();
   });
 });
 

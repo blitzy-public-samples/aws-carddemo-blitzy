@@ -22,7 +22,13 @@ import { useNavigate } from 'react-router';
 import { useScreenChrome } from '../components/Layout';
 import { invalidFieldProps } from '../components/ErrorBanner';
 import type { PFKeyDef } from '../components/PFKeyBar';
-import { PfKeyAction, CCDA_TITLE01, CCDA_TITLE02, SCREEN_NAMES } from '../types';
+import {
+  PfKeyAction,
+  CCDA_TITLE01,
+  CCDA_TITLE02,
+  CCDA_MSG_INVALID_KEY,
+  SCREEN_NAMES,
+} from '../types';
 import type { MenuOption, MenuResponseDto } from '../types';
 import { getAdminMenu, selectAdminMenuOption } from '../api';
 import {
@@ -225,9 +231,21 @@ export default function AdminMenuPage(): ReactElement {
   // The activators published to the shared frame are identity-stable and always
   // dispatch to the newest render's handler, so the line-24 legend is not rebuilt on
   // every keystroke and an AID can never act on a value the screen has replaced.
+  /**
+   * :purpose: ``EVALUATE EIBAID`` ``WHEN OTHER`` (``COADM01C`` L99-103) — publish
+   *     ``CCDA-MSG-INVALID-KEY`` on line 23 and re-send the map, which returns the
+   *     cursor to the mapset's ``IC`` field. No entered value is rejected, so no
+   *     field is faulted.
+   */
+  const handleUnhandledKey = useCallback((): void => {
+    setActionMessage(CCDA_MSG_INVALID_KEY);
+    placeCursor(optionRef.current);
+  }, [optionRef]);
+
   const activateSubmit = useScreenAction((): void => {
     void handleSubmit();
   });
+  const activateUnhandledKey = useScreenAction(handleUnhandledKey);
   const activateExit = useScreenAction((): void => {
     void handleExit();
   });
@@ -258,9 +276,10 @@ export default function AdminMenuPage(): ReactElement {
       errorMessage,
       infoMessage: '',
       pfKeys,
+      onUnhandledKey: activateUnhandledKey,
       busy,
     });
-  }, [activateExit, activateSubmit, busy, errorMessage, setChrome]);
+  }, [activateExit, activateSubmit, activateUnhandledKey, busy, errorMessage, setChrome]);
 
   return (
     <>

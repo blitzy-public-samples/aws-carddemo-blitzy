@@ -26,7 +26,7 @@
 import { jest } from '@jest/globals';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 // The header title lines every screen publishes (``COTTL01Y``).
-import { CCDA_TITLE01, CCDA_TITLE02 } from '../types';
+import { CCDA_MSG_INVALID_KEY, CCDA_TITLE01, CCDA_TITLE02 } from '../types';
 import type { RenderResult } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router';
@@ -849,5 +849,39 @@ describe('BillPayPage — the balance belongs to the account beside it (COBIL00C
     expect(acctIdField()).toHaveFocus();
     expect(acctIdField().className).not.toContain('fieldError');
     expect(document.querySelectorAll('.fieldError')).toHaveLength(0);
+  });
+
+  /*
+   * `aria-invalid` asserts that a control's CONTENT was refused, so the messages that
+   * refuse something else must take the cursor without it. A rejected attention
+   * identifier (`EVALUATE EIBAID` `WHEN OTHER`, L138-142) refuses a KEY, and
+   * `You have nothing to pay...` (L200-201) refuses the account's zero BALANCE -- the
+   * id the cursor returns to was keyed correctly in both cases.
+   */
+  it('takes the cursor without faulting the control for a rejected function key', async () => {
+    const user = userEvent.setup();
+    renderBillPayScreen();
+
+    await user.type(acctIdField(), ACCOUNT_ID);
+    fireEvent.keyDown(document, { key: 'F12' });
+
+    expect((await screen.findByRole('alert')).textContent).toBe(CCDA_MSG_INVALID_KEY);
+    expect(acctIdField()).not.toHaveAttribute('aria-invalid');
+    expect(confirmField()).not.toHaveAttribute('aria-invalid');
+    expect(acctIdField()).toHaveFocus();
+    expect(document.querySelectorAll('[data-faulted]')).toHaveLength(0);
+  });
+
+  it('takes the cursor without faulting the control when there is nothing to pay', async () => {
+    const user = userEvent.setup();
+    payBillMock.mockResolvedValue(nothingToPayResponse('0.00'));
+    renderBillPayScreen();
+
+    await user.type(acctIdField(), ACCOUNT_ID);
+    await user.click(pfKey('ENTER=Continue'));
+
+    expect((await screen.findByRole('alert')).textContent).toBe(MSG_NOTHING_TO_PAY);
+    expect(acctIdField()).not.toHaveAttribute('aria-invalid');
+    expect(acctIdField()).toHaveFocus();
   });
 });

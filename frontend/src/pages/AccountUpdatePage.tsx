@@ -1637,6 +1637,11 @@ export default function AccountUpdatePage(): ReactElement {
       errorMessage,
       infoFieldMessage: infoMessage,
       pfKeys,
+      // ``COACTVWC``/``COACTUPC``/``COCRDLIC``/``COCRDSLC``/``COCRDUPC`` do not answer an
+      // unhandled AID with a message: they ``SET PFK-INVALID TO TRUE``, and when the
+      // struck key is not in the valid set they ``SET CCARD-AID-ENTER TO TRUE`` -- the
+      // key is REWRITTEN to ENTER and the ENTER path runs.
+      onUnhandledKey: activateProcess,
       busy: loading || saving || validating,
       // Only the rewrite locks the keyboard: it is the one action whose completion the
       // operator must see, because it changes the record.

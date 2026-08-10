@@ -48,6 +48,13 @@ body,
   /* One character cell of frame padding on each side, added OUTSIDE the 80 columns. */
   --term-pad-x: 1ch;
   --term-line: calc(var(--term-font-size) * var(--term-line-height));
+  /*
+   * Thickness of the scroll bars the shell draws itself (the body region at every width
+   * and the document's horizontal pan below 32rem). It is stated once here because the
+   * frame's height cap has to leave the horizontal bar its strip: line 24 is the key
+   * legend, and a bar drawn over it would take the legend with it.
+   */
+  --term-scrollbar: 10px;
 }
 
 /* ------------------------------------------------------------------ */
@@ -120,15 +127,64 @@ body {
  * screen is taller than its region.
  */
 /*
- * Rows 4-22. It takes its nineteen rows as its preferred size and is the one region allowed
- * to give way when the frame is capped, so a screen with more content than the viewport can
- * hold scrolls HERE rather than carrying the status rows off the bottom of the device.
+ * Rows 4-22. Its preferred size is its CONTENT (`flex-basis: auto`), it grows into
+ * whatever the frame has spare, and it is the one region allowed to give way when the
+ * frame is capped -- so a screen with more content than the viewport can hold scrolls
+ * HERE rather than carrying the status rows off the bottom of the device.
+ *
+ * The basis MUST be `auto` rather than a fixed nineteen rows. The frame above declares
+ * `min-height`/`max-height` but no `height`, so it is CONTENT-sized: there is no free
+ * space for `flex-grow` to distribute, and a nineteen-row basis therefore became a
+ * nineteen-row CAP. A screen taller than that -- `/accounts/:id/update`, whose paired
+ * BMS rows wrap on the 80-column frame -- was clipped at 395.2px with its last rows
+ * unreachable, while `min-height: min(24 rows, 100dvh)` still asked the frame for less
+ * height than the body needed. With `auto` the body reports its real height, the frame
+ * grows with it up to the viewport cap, and every field the mapset declares is painted
+ * and hit-testable. The nineteen rows the region is nominally worth are still
+ * guaranteed, by the frame's own 24-row `min-height` and `flex-grow: 1` between them.
  */
 .screen__body {
-  flex: 1 1 calc(19 * var(--term-line));
+  flex: 1 1 auto;
   width: 100%;
   min-height: 0;
   overflow: auto;
+}
+
+/*
+ * The scroll affordance for the body region, at EVERY width. An overlay scroll bar is
+ * painted over the content only while it is being scrolled and claims no layout width,
+ * so a region that had something below its fold gave the operator no cue at all --
+ * `offsetWidth - clientWidth` measured 0. Styling the scrollbar parts is what opts the
+ * region out of the overlay treatment in Chromium, so the bar is a real, permanently
+ * drawn strip for as long as there is anything to scroll to.
+ *
+ * The standard `scrollbar-width`/`scrollbar-color` pair is deliberately NOT declared
+ * alongside these: when both are present Chromium honours the standard properties and
+ * IGNORES these parts, which puts the overlay bar back. It is offered instead to
+ * engines that do not implement the parts, which reserve a classic bar of their own.
+ */
+.screen__body::-webkit-scrollbar {
+  width: var(--term-scrollbar);
+  height: var(--term-scrollbar);
+}
+
+.screen__body::-webkit-scrollbar-track {
+  background: var(--term-bg);
+}
+
+.screen__body::-webkit-scrollbar-thumb {
+  background: var(--term-green-dim);
+}
+
+.screen__body::-webkit-scrollbar-thumb:hover {
+  background: var(--term-green);
+}
+
+@supports not selector(::-webkit-scrollbar) {
+  .screen__body {
+    scrollbar-width: thin;
+    scrollbar-color: var(--term-green-dim) var(--term-bg);
+  }
 }
 
 /*
@@ -155,6 +211,22 @@ body {
   flex-direction: column;
   width: 100%;
   margin-top: auto;
+}
+
+/*
+ * The region is the skip link's target and holds focus programmatically for that
+ * (`tabIndex={-1}`), so it needs the same indicator every other focus target carries.
+ * Without one the jump was silent: the browser's default indicator on a focused
+ * container is a 1px `rgb(16,16,16)` ring, which is invisible on the terminal's black,
+ * so an operator who took the link had no confirmation they had arrived. `:focus`
+ * rather than `:focus-visible` for the same reason the field cursor uses it -- the focus
+ * here is placed by the link, not typed, and `:focus-visible` does not match a
+ * fragment-navigation placement. The ring is drawn INSIDE the box so rows 23-24 keep
+ * their position and the frame cannot be overflowed by it.
+ */
+.screen__status:focus {
+  outline: 2px solid var(--term-yellow);
+  outline-offset: -2px;
 }
 
 /*
@@ -196,6 +268,28 @@ body {
   color: var(--term-turquoise);
   font-weight: bold;
   white-space: pre;
+}
+
+/*
+ * The announcement a guarded route makes while the server has not yet answered whether
+ * the caller is signed on. It is announced and never DISPLAYED: the terminal's own
+ * input-inhibited legend is `X SYSTEM` in the operator information area above, and a
+ * second, differently-worded busy line is output no program produces -- which the
+ * spec-literal rule forbids. It was rendering as a plain, fully legible 20.8px row of
+ * `rgb(230,230,230)` text for as long as the probe took, because the rule its own
+ * docstring promised did not exist. Removed from the flow rather than
+ * `display: none`-d, because a hidden live region is not announced at all.
+ */
+.screen__busy {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 /* ------------------------------------------------------------------ */
@@ -287,17 +381,28 @@ input[size="1"] {
  * and nothing responded to the pointer. Only the border brightens, so the character
  * cell keeps its size and the grid never reflows.
  */
-.field:hover:enabled,
-input:hover:enabled,
-select:hover:enabled,
-textarea:hover:enabled {
+/*
+ * The pointer states are matched inside `:where()`, which contributes NO specificity, so
+ * a control the program has faulted keeps its rejection colour while the pointer is over
+ * it. Written plainly, `.field:hover:enabled` scores (0,3,0) and outranked the faulted
+ * rule below (0,1,1) on specificity alone: hovering a rejected field repainted its border
+ * GREEN and cancelled the only colour the screen had to say the value was refused -- the
+ * one moment the operator is most likely to have the pointer on it. Zeroing the pointer
+ * state's contribution lets the rule that describes the field's STATE win, whichever
+ * attribute carries it, while the hover brightening still applies to every control the
+ * screen has not faulted.
+ */
+.field:where(:hover:enabled),
+input:where(:hover:enabled),
+select:where(:hover:enabled),
+textarea:where(:hover:enabled) {
   border-color: var(--term-green);
 }
 
-.field:active:enabled,
-input:active:enabled,
-select:active:enabled,
-textarea:active:enabled {
+.field:where(:active:enabled),
+input:where(:active:enabled),
+select:where(:active:enabled),
+textarea:where(:active:enabled) {
   border-color: var(--term-green-bright, var(--term-green));
   box-shadow: inset 0 0 0 1px var(--term-green);
 }
@@ -611,29 +716,36 @@ main dl dt {
  * Applied by pages on CDEMO-PGM-REENTER.
  */
 /*
- * The faulted control is identified by ``aria-invalid``, which the shared
- * ``invalidFieldProps`` helper already emits on exactly the one control a screen
- * faults for the current line-23 message. Styling that attribute directly -- rather
- * than a second class the pages would each have to remember to add -- is why the
- * marker now appears everywhere: the semantic state and the painted state cannot
- * drift apart again.
+ * The RED is painted from the two signals a screen raises DELIBERATELY -- the
+ * ``fieldError`` class its ``CSSETATY`` flag map produces, and the ``data-faulted``
+ * attribute ``faultedFieldProps`` emits -- and NOT from ``aria-invalid``.
+ *
+ * Keying it off ``aria-invalid`` painted the frame on all seventeen screens, because
+ * every screen marks its rejected control for assistive technology. Only five programs
+ * move ``DFHRED`` into a field (``COACTUPC``, ``COCRDUPC``, ``COCRDLIC``, ``COCRDSLC``,
+ * ``COACTVWC`` -- the census is in ``components/ErrorBanner.tsx``); on the other twelve
+ * a rejected entry is marked by the cursor and the line-23 message ALONE, so a red frame
+ * there is observable output the mapset never declares, which the spec-literal rule
+ * forbids. The accessible state and the painted state have to be able to differ, and
+ * these selectors are what lets them.
  */
 .fieldError,
-input[aria-invalid='true'],
-select[aria-invalid='true'],
-textarea[aria-invalid='true'] {
+[data-faulted='true'] {
   color: var(--term-red);
   border-color: var(--term-red);
 }
 
 /*
- * A second, non-colour cue for the faulted control, so the fault does not rely on
+ * A second, non-colour cue for the painted control, so the fault does not rely on
  * colour alone. An inset ring thickens the border inside the existing box, so no
  * width, height or baseline changes and the 80x24 grid does not reflow.
  */
-input[aria-invalid='true'],
-select[aria-invalid='true'],
-textarea[aria-invalid='true'] {
+input.fieldError,
+select.fieldError,
+textarea.fieldError,
+input[data-faulted='true'],
+select[data-faulted='true'],
+textarea[data-faulted='true'] {
   box-shadow: inset 0 0 0 1px var(--term-red);
 }
 
@@ -690,6 +802,20 @@ textarea[aria-invalid='true'] {
   color: inherit;
   border-color: currentcolor;
   white-space: nowrap;
+}
+
+/*
+ * The PRESSED key still reverses to black on green. The rule above and the generic
+ * `button:active` both score (0,1,1), so the one declared later won and `color: inherit`
+ * took the legend's own hue into the pressed state: `#ffd21a` text on the `#33ff66`
+ * reverse-video field measures 1.08:1 and the key's label was unreadable for exactly as
+ * long as the operator held it down. Restating the reversal here, after the inherit,
+ * gives the pressed state its foreground back without weakening the reason `inherit`
+ * exists -- a legend field does not change colour when the keyboard locks.
+ */
+.pfKeyBar button:active,
+.pfKeyBar .pfKey:active {
+  color: var(--term-bg);
 }
 
 /*
@@ -932,8 +1058,17 @@ textarea[aria-invalid='true'] {
  */
 
 /* Keep the report-window selection indicator on the GREEN entry-field tone. */
+/*
+ * The report-type selectors carry the terminal accent, and their hit area is floored at
+ * the same 24x24 CSS pixels every one-character entry field on the screens reserves
+ * (WCAG 2.5.8). A radio's intrinsic box is 13px wide, so the target failed on width
+ * while already clearing the height; the control scales to the box it is given, so the
+ * floor enlarges the target rather than padding dead space beside it.
+ */
 .reportPage__types input {
   accent-color: var(--term-green);
+  min-width: 24px;
+  min-height: 24px;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1111,10 +1246,18 @@ textarea[aria-invalid='true'] {
  * grid the detail block below uses, so the keyed row and the detail rows share one column
  * system rather than each finding its own indent.
  */
+/*
+ * The row grows to whatever the tallest cell needs instead of being pinned to one
+ * terminal line. The entry control reserves the 24x24 hit area every editable control
+ * on the screen reserves (WCAG 2.5.8), which is 3.2px more than a 20.8px line, and a
+ * fixed track made the control 22.8px tall -- 1.2px short of the floor the project
+ * adopts everywhere else. Growing the ONE row it occupies costs 3.2px on this screen
+ * and keeps the declared columns, the baseline and the character grid intact.
+ */
 .accountView__search {
   display: grid;
   grid-template-columns: repeat(80, 1ch);
-  grid-auto-rows: var(--term-line);
+  grid-auto-rows: minmax(var(--term-line), auto);
   align-items: baseline;
   width: 100%;
 }
@@ -1125,7 +1268,6 @@ textarea[aria-invalid='true'] {
 
 .accountView__search > input {
   grid-column: 38 / span 11;
-  min-height: 0;
   line-height: var(--term-line);
 }
 
@@ -1585,19 +1727,83 @@ dd.protectedValue {
      * narrower, and the document -- not the frame's interior -- takes up the panning.
      */
     min-width: calc(var(--term-cols) * 1ch + 2 * var(--term-pad-x));
-    min-height: 100vh;
+    /*
+     * The frame keeps the base rule's height behaviour here: it asks for its 24 rows,
+     * grows with its content and is capped at the viewport. Stretching it to `100vh` at
+     * this width alone is what made the shell NON-MONOTONIC -- the same screen was
+     * clipped at 1280, whole at 768 and clipped again at 375 -- because only the
+     * stretched frame had free space for the body region to grow into. The body now
+     * reports its own content height at every width, so no breakpoint has to
+     * compensate for the one above it.
+     */
   }
 
   /*
-   * An overlay scroll bar is invisible until something scrolls it, which is no
-   * affordance at all for a pan the operator has no other way to discover. Giving both
-   * scroll ports a colour opts them out of the overlay treatment, so a visible bar in
-   * the terminal palette is present for as long as there is anything to pan to.
+   * The document is the horizontal scroll port at this width: the 80-column frame is
+   * wider than the viewport and `min-width` above deliberately keeps it that way. The
+   * pan therefore needs a permanently drawn bar, for the same reason the body region
+   * does -- an overlay bar appears only once the operator has already found the pan.
+   * Styling the parts opts the port out of the overlay treatment in Chromium.
    */
-  html,
-  .screen__body {
-    scrollbar-width: thin;
-    scrollbar-color: var(--term-green-dim) var(--term-bg);
+  html::-webkit-scrollbar {
+    width: var(--term-scrollbar);
+    height: var(--term-scrollbar);
+  }
+
+  html::-webkit-scrollbar-track {
+    background: var(--term-bg);
+  }
+
+  html::-webkit-scrollbar-thumb {
+    background: var(--term-green-dim);
+  }
+
+  html::-webkit-scrollbar-thumb:hover {
+    background: var(--term-green);
+  }
+
+  @supports not selector(::-webkit-scrollbar) {
+    html {
+      scrollbar-width: thin;
+      scrollbar-color: var(--term-green-dim) var(--term-bg);
+    }
+  }
+
+  /*
+   * The second, scrollbar-INDEPENDENT cue for that pan, because a scroll bar is not
+   * guaranteed to be drawn at all: a platform that uses overlay scroll bars paints
+   * nothing until the operator is already scrolling, which is no affordance for a pan
+   * they have no other way to discover -- and the columns past the right edge include
+   * controls the operator must type into (the COBIL00 / CORPT00 / COTRN02 confirm
+   * fields). A one-cell shadow fixed to the viewport's right edge says "the frame
+   * continues past here" for as long as there is anywhere to continue to.
+   *
+   * The pan is one-directional: the frame's own box starts at document x=0, so nothing
+   * is ever to the LEFT of the initial position and only a right-hand cue can be
+   * truthful. The cue reports the pan REMAINING rather than merely the fact of
+   * overflow, and it is gated on that overflow by construction: its resting style is
+   * transparent, and the only thing that makes it visible is the document's own inline
+   * scroll timeline, which is INACTIVE when the document has nothing to scroll. So the
+   * cue cannot appear on a width where the frame already fits -- between this
+   * breakpoint and the next the frame fits at some widths and not others, and the
+   * timeline, not a hand-computed width, decides. An engine without scroll-driven
+   * animation leaves it transparent and shows its own classic scroll bar instead,
+   * which is the affordance this stands in for.
+   *
+   * It takes no layout space, is not in the accessibility tree, and passes every
+   * pointer event through, so nothing it covers becomes unreachable.
+   */
+  body::after {
+    content: "";
+    position: fixed;
+    inset-block: 0;
+    right: 0;
+    width: 1ch;
+    background: linear-gradient(to right, rgb(0 0 0 / 0%), var(--term-green-dim));
+    opacity: 0;
+    pointer-events: none;
+    animation: term-pan-cue linear both;
+    animation-timeline: scroll(root inline);
   }
 
   /* Narrower cell padding recovers one character column per cell edge, which is what
@@ -1638,15 +1844,17 @@ dd.protectedValue {
   /*
    * This is the width at which the frame no longer fits and the document pans, and the
    * horizontal scroll bar that pan needs claims a strip of the viewport's bottom edge.
-   * A frame stretched to the full viewport height puts line 24 exactly on that edge, so
-   * the key legend and the scroll bar would occupy the same strip. The frame therefore
-   * takes its own 24 rows back and is as tall as the screen it holds -- which is what a
-   * terminal window taller than its device looks like -- leaving the bar below the
-   * legend rather than over it.
+   * A frame allowed to reach the full viewport height puts line 24 exactly on that
+   * strip, so the key legend and the scroll bar would occupy it together. The frame's
+   * cap therefore gives the bar its thickness back, leaving the bar below the legend
+   * rather than over it. Only the CAP is adjusted: the 24-row floor and its
+   * viewport clamp stay exactly as the base rule declares them, so a short device
+   * still cannot be made to grow a frame taller than itself.
    */
   .screen,
   .terminal {
-    min-height: calc(var(--term-rows) * var(--term-line));
+    max-height: calc(100vh - var(--term-scrollbar));
+    max-height: calc(100dvh - var(--term-scrollbar));
   }
 
   .accountView__search,
@@ -1715,6 +1923,22 @@ dd.protectedValue {
 
 .tableScroll::-webkit-scrollbar-thumb:hover {
   background: var(--term-green);
+}
+
+/*
+ * The pan cue's fade. It is driven by the document's own inline scroll position, not by
+ * time, so it never animates on its own: at rest it is a static value, and it only
+ * changes while the operator is panning. That is also why it is exempt from the
+ * reduced-motion rule below -- there is no motion to reduce.
+ */
+@keyframes term-pan-cue {
+  from {
+    opacity: 0.55;
+  }
+
+  to {
+    opacity: 0;
+  }
 }
 
 /*

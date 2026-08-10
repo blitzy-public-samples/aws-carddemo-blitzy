@@ -71,6 +71,13 @@ import { PfKeyAction } from '../types';
  *     declare ABOVE their ``ERRMSG`` region, rendered NEUTRAL. Publishing the key at all
  *     -- even as an empty string -- reserves the row that field occupies.
  * :param pfKeys: Line-24 function keys and handlers declared for the screen.
+ * :param onUnhandledKey: What the screen does with an attention identifier it does NOT
+ *     declare — the ``WHEN OTHER`` arm of its program's ``EVALUATE EIBAID``. Twelve
+ *     programs publish ``CCDA-MSG-INVALID-KEY`` on line 23 and place the cursor; the
+ *     five account and card screens instead remap the key to ENTER
+ *     (``IF PFK-INVALID SET CCARD-AID-ENTER TO TRUE``), so those publish their ENTER
+ *     activator here. A screen that publishes nothing discards the key, which no
+ *     program does.
  * :param pfKeyTone: Colour the screen's mapset declares on its line-24 legend field;
  *     omitted renders the YELLOW that fifteen of the seventeen mapsets declare.
  * :param noticeMessage: a non-failure condition -- the end of a browse, an empty page --
@@ -100,6 +107,7 @@ export interface ScreenChrome {
   infoFieldMessage?: string;
   messageReference?: string | null;
   pfKeys?: PFKeyDef[];
+  onUnhandledKey?: () => void;
   pfKeyTone?: PFKeyBarTone;
   busy?: boolean;
   locked?: boolean;
@@ -268,6 +276,10 @@ function ScreenFrame({ children }: LayoutProps): ReactElement {
   // holds is a render behind.
   const latestKeysRef = useRef<PFKeyDef[]>(NO_PF_KEYS);
   const dispatchersRef = useRef<Map<PfKeyAction, () => void>>(new Map());
+  // The screen's answer to an AID it does not declare, captured the same way and for the
+  // same reason: the key bar is handed one stable indirection, and the handler it reaches
+  // is always the newest publication's.
+  const latestUnhandledRef = useRef<(() => void) | undefined>(undefined);
 
   const stableDispatcher = useCallback((action: PfKeyAction): (() => void) => {
     const existing = dispatchersRef.current.get(action);
@@ -286,6 +298,7 @@ function ScreenFrame({ children }: LayoutProps): ReactElement {
     (next: ScreenChrome): void => {
       const incoming = next.pfKeys ?? NO_PF_KEYS;
       latestKeysRef.current = incoming;
+      latestUnhandledRef.current = next.onUnhandledKey;
       setChromeState({
         ...next,
         pfKeys: incoming.map((key) => ({
@@ -298,6 +311,7 @@ function ScreenFrame({ children }: LayoutProps): ReactElement {
   );
   const resetChrome = useCallback((): void => {
     latestKeysRef.current = NO_PF_KEYS;
+    latestUnhandledRef.current = undefined;
     setChromeState(EMPTY_CHROME);
   }, []);
   const actions = useMemo<ScreenChromeActions>(
@@ -306,6 +320,11 @@ function ScreenFrame({ children }: LayoutProps): ReactElement {
   );
   const handleAidDispatched = useCallback((): void => {
     setSendCount((previous) => previous + 1);
+  }, []);
+  // Identity-stable, so publishing chrome never rebinds the key bar's listener, and it
+  // reads the newest policy at the moment the key is struck.
+  const handleUnhandledAid = useCallback((): void => {
+    latestUnhandledRef.current?.();
   }, []);
 
   const busy = chrome.busy === true;
@@ -411,6 +430,17 @@ function ScreenFrame({ children }: LayoutProps): ReactElement {
                 tone={chrome.pfKeyTone}
                 inputInhibited={busy}
                 onAidDispatched={handleAidDispatched}
+                /*
+                 * Published whenever the screen has an answer for an undeclared AID, and
+                 * NOT withdrawn while a send is outstanding: the key bar refuses it there
+                 * (the 3270 keyboard lock) but only AFTER claiming the key, which is what
+                 * stops the browser acting on F5 or F12 in the middle of a write. Every
+                 * screen that publishes `locked` publishes `busy` with it, so the bar's own
+                 * inhibit covers both.
+                 */
+                onUnhandledAid={
+                  chrome.onUnhandledKey === undefined ? undefined : handleUnhandledAid
+                }
               />
             </footer>
             {/*

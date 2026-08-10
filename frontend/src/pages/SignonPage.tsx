@@ -28,9 +28,16 @@ import {
   CCDA_TITLE01,
   CCDA_TITLE02,
   CCDA_MSG_THANK_YOU,
+  CCDA_MSG_INVALID_KEY,
 } from '../types';
 import type { Role } from '../types';
-import { useFocusOnChange, useInitialFocus, useScreenAction, useSession } from '../hooks';
+import {
+  placeCursor,
+  useFocusOnChange,
+  useInitialFocus,
+  useScreenAction,
+  useSession,
+} from '../hooks';
 import { ApiError, getAppId, getSysId } from '../api';
 
 /** CICS transaction id of the sign-on screen (``WS-TRANID``). */
@@ -131,6 +138,11 @@ const FAULTED_FIELD_BY_MESSAGE: Readonly<Record<string, 'userId' | 'password'>> 
  *     still returns the cursor to the user id.
  */
 const CURSOR_FIELD_BY_MESSAGE: Readonly<Record<string, 'userId' | 'password'>> = {
+  // `COSGN00C` L91-94 answers an unhandled AID with the message alone and re-sends the
+  // map; `COSGN00.bms` gives USERID the `IC` attribute, so that send returns the cursor
+  // there. No entered value was rejected, so the message is deliberately absent from
+  // `FAULTED_FIELD_BY_MESSAGE`.
+  [CCDA_MSG_INVALID_KEY]: 'userId',
   [MSG_ENTER_USER_ID]: 'userId',
   [MSG_USER_NOT_FOUND]: 'userId',
   [MSG_UNABLE_TO_VERIFY]: 'userId',
@@ -223,6 +235,18 @@ export default function SignonPage(): ReactElement {
   useFocusOnChange(cursorField === 'password' ? errorMessage : null, passwordRef);
   useFocusOnChange(errorMessage === '' && sessionNotice !== null ? sessionNotice : null, userIdRef);
 
+  /**
+   * :purpose: ``EVALUATE EIBAID`` ``WHEN OTHER`` (``COSGN00C`` L91-94) — report the
+   *     unhandled attention identifier on line 23 and re-send the screen.
+   */
+  const handleUnhandledKey = useCallback((): void => {
+    setErrorMessage(CCDA_MSG_INVALID_KEY);
+    // CICS honours ``ATTRB=IC`` on EVERY send, including the send that repeats a message
+    // already on screen. The message-token rules above cannot observe that pass, because
+    // the token is unchanged, so the placement is performed here.
+    placeCursor(userIdRef.current);
+  }, [userIdRef]);
+
   const handleSubmit = useCallback(async (): Promise<void> => {
     if (submitLatch.current) {
       return;
@@ -298,6 +322,7 @@ export default function SignonPage(): ReactElement {
   const activateExit = useScreenAction((): void => {
     void handleExit();
   });
+  const activateUnhandledKey = useScreenAction(handleUnhandledKey);
 
   // The frame's header, line-23 message region and line-24 key legend belong to the
   // SAME map as this body, so they are published in a LAYOUT effect: a CICS program
@@ -338,11 +363,13 @@ export default function SignonPage(): ReactElement {
       errorMessage: screenMessage,
       infoMessage: '',
       pfKeys,
+      onUnhandledKey: activateUnhandledKey,
       busy: submitting,
     });
   }, [
     activateExit,
     activateSubmit,
+    activateUnhandledKey,
     screenMessage,
     plainText,
     setChrome,

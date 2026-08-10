@@ -79,14 +79,33 @@ export function fieldErrorClass(state: FieldErrorState | undefined): string {
 }
 
 /*
- * A boolean counterpart of `fieldErrorClass` for the screens that fault ONE control per
- * message is deliberately NOT provided. The three screens whose programs move `DFHRED`
- * over a field -- `COACTUPC` and `COCRDUPC` through `CSSETATY`, and the card-detail
- * screen -- carry a per-field flag map and use `fieldErrorClass` above. `COSGN00C`,
- * `COTRN02C`, `COBIL00C` and `CORPT00C` contain no `MOVE DFHRED` at all: they mark a
- * rejected entry with `MOVE -1 TO <field>L` -- the cursor -- and the line-23 message, so
- * those four screens pass `invalidFieldProps` alone, which carries the accessible flag
- * and the message reference without painting a frame the mapset never declares.
+ * Which screens may paint a field RED, settled by a census of the seventeen online
+ * programs. A program reddens a field only through `MOVE DFHRED TO <field>C`, either
+ * written inline or expanded from `app/cpy/CSSETATY.cpy`, and exactly five do:
+ *
+ *   COACTUPC  ACCTSIDC inline (L3177, L3183) plus 39 `COPY CSSETATY` expansions, which
+ *             is every enterable field on the screen (ACSTTUS, the three date triples,
+ *             both limits, the name/address/city/state/zip/country group, both phone
+ *             triples, the SSN triple, ACSEFTC, ACSPFLG, ACSTFCO, ACURBAL, ACRCYCR,
+ *             ACRCYDB)
+ *   COCRDUPC  ACCTSIDC, CARDSIDC, CRDNAMEC, CRDSTCDC, EXPMONC, EXPYEARC (twice each)
+ *   COCRDLIC  ACCTSIDC, CARDSIDC and CRDSEL1C..CRDSEL7C
+ *   COCRDSLC  ACCTSIDC and CARDSIDC (twice each)
+ *   COACTVWC  ACCTSIDC (twice)
+ *
+ * The other twelve contain NO `MOVE DFHRED` and no `COPY CSSETATY` at all -- COUSR02C's
+ * single one colours `ERRMSGC`, the message line itself, not a field. Those twelve mark
+ * a rejected entry with `MOVE -1 TO <field>L` (the cursor) and the line-23 message, and
+ * nothing else, so a red frame on them is observable output the mapset never declares.
+ *
+ * Two idioms therefore carry the RED, and the red is driven by them and NOT by
+ * `aria-invalid`, which every screen sets for its own, accessibility reason:
+ *   - `fieldErrorClass` above, for the screens that hold a per-field `CSSETATY` flag map
+ *     (the account and card update screens, the card detail screen, the card list's row
+ *     selection column, the account view's key field);
+ *   - `faultedFieldProps` below, for a control the screen marks from a single condition,
+ *     which emits the paint signal together with the accessible one so a page cannot
+ *     acquire one without the other.
  */
 
 /**
@@ -133,6 +152,35 @@ export function invalidFieldProps(invalid: boolean, hintId?: string): InvalidFie
   }
   if (described.length > 0) {
     props['aria-describedby'] = described.join(' ');
+  }
+  return props;
+}
+
+/**
+ * :purpose: Bindings for a control the program both faults and REPAINTS, on the five
+ *     screens whose source moves ``DFHRED`` into a field (see the census above).
+ * :param data-faulted: The paint signal the stylesheet keys the RED treatment off,
+ *     present only when the control is faulted.
+ */
+export interface FaultedFieldProps extends InvalidFieldProps {
+  'data-faulted'?: 'true';
+}
+
+/**
+ * :purpose: Build the bindings for a faulted control that the program ALSO paints
+ *     ``DFHRED``: the accessible state of :func:`invalidFieldProps` plus the
+ *     ``data-faulted`` attribute the stylesheet paints from.
+ * :param faulted: ``true`` when this control is the one the screen faults.
+ * :param hintId: Optional id of the field's own hint text, forwarded unchanged.
+ * :returns: The accessible bindings, carrying ``data-faulted`` when faulted.
+ * :note: Use this ONLY where the legacy program moves ``DFHRED`` into that field.
+ *     Everywhere else use :func:`invalidFieldProps`, which marks the control for
+ *     assistive technology without painting a frame the mapset never declares.
+ */
+export function faultedFieldProps(faulted: boolean, hintId?: string): FaultedFieldProps {
+  const props: FaultedFieldProps = invalidFieldProps(faulted, hintId);
+  if (faulted) {
+    props['data-faulted'] = 'true';
   }
   return props;
 }

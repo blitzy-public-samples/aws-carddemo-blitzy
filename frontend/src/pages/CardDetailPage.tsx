@@ -286,7 +286,7 @@ export default function CardDetailPage(): ReactElement {
   const [cardInput, setCardInput] = useState(selectedCardNumber);
   const [validationMessage, setValidationMessage] = useState('');
 
-  const { data, loading, error, run } = useApi(getCard);
+  const { data, loading, error, run, reset } = useApi(getCard);
   const card: CardDetailResponseDto | null = data;
 
   // A client-side edit failure keeps the screen on its own literal; otherwise the
@@ -327,6 +327,13 @@ export default function CardDetailPage(): ReactElement {
     (accountFilter: string, cardFilter: string): void => {
       const message = validateSearchFilters(accountFilter, cardFilter);
       setValidationMessage(message);
+      // ``COCRDSLC`` reaches every send through ``1000-SEND-MAP`` -> ``1100-SCREEN-INIT``,
+      // which opens ``MOVE LOW-VALUES TO CCRDSLAO`` (L427-428). The three display fields
+      // are therefore blank on the map unless ``9100-GETCARD-BYACCTCARD`` has just moved
+      // a record into it -- so a refused edit and an absent record both paint an empty
+      // record rather than leaving the previous card's number and embossed name standing
+      // beside keys that were never read.
+      reset();
       if (message === '') {
         // Both edited values are sent: 9100-GETCARD-BYACCTCARD reads by card number
         // and qualifies the record with ACCTSID, so dropping the account would widen
@@ -335,7 +342,7 @@ export default function CardDetailPage(): ReactElement {
         void run(normalizeFilter(cardFilter), normalizeFilter(accountFilter));
       }
     },
-    [run],
+    [reset, run],
   );
 
   const handleSearch = useCallback((): void => {
@@ -358,8 +365,9 @@ export default function CardDetailPage(): ReactElement {
     setAcctInput(selectedAccountId);
     setCardInput(selectedCardNumber);
     setValidationMessage('');
+    reset();
     void run(selectedCardNumber, selectedAccountId === '' ? undefined : selectedAccountId);
-  }, [selectedCardNumber, selectedAccountId, run]);
+  }, [selectedCardNumber, selectedAccountId, run, reset]);
 
   // The activators published to the shared frame are identity-stable and always
   // dispatch to the newest render's handler, so the line-24 legend is not rebuilt on
@@ -389,6 +397,11 @@ export default function CardDetailPage(): ReactElement {
       title02: CCDA_TITLE02,
       errorMessage,
       pfKeys,
+      // ``COACTVWC``/``COACTUPC``/``COCRDLIC``/``COCRDSLC``/``COCRDUPC`` do not answer an
+      // unhandled AID with a message: they ``SET PFK-INVALID TO TRUE``, and when the
+      // struck key is not in the valid set they ``SET CCARD-AID-ENTER TO TRUE`` -- the
+      // key is REWRITTEN to ENTER and the ENTER path runs.
+      onUnhandledKey: activateSearch,
       busy: loading,
     });
   }, [activateSearch, errorMessage, loading, navigate, selectionFrom, setChrome]);

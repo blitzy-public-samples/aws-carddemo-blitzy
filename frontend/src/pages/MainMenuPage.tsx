@@ -21,7 +21,13 @@ import { useLocation, useNavigate } from 'react-router';
 import { useScreenChrome } from '../components/Layout';
 import { invalidFieldProps } from '../components/ErrorBanner';
 import type { PFKeyDef } from '../components/PFKeyBar';
-import { PfKeyAction, CCDA_TITLE01, CCDA_TITLE02, SCREEN_NAMES } from '../types';
+import {
+  PfKeyAction,
+  CCDA_TITLE01,
+  CCDA_TITLE02,
+  CCDA_MSG_INVALID_KEY,
+  SCREEN_NAMES,
+} from '../types';
 import type { MenuOption, MenuResponseDto } from '../types';
 import { getMainMenu, selectMenuOption } from '../api';
 import {
@@ -249,6 +255,17 @@ export default function MainMenuPage(): ReactElement {
     void navigate(SIGNON_ROUTE);
   }, [navigate, signOut]);
 
+  /**
+   * :purpose: ``EVALUATE EIBAID`` ``WHEN OTHER`` (``COMEN01C`` L99-103) — publish
+   *     ``CCDA-MSG-INVALID-KEY`` on line 23 and re-send the map, which returns the
+   *     cursor to the mapset's ``IC`` field. No entered value is rejected, so no
+   *     field is faulted.
+   */
+  const handleUnhandledKey = useCallback((): void => {
+    setValidationMessage(CCDA_MSG_INVALID_KEY);
+    placeCursor(optionRef.current);
+  }, [optionRef]);
+
   // The published activators are identity-stable and always dispatch to the newest
   // render's handler, so the legend is not rebuilt on every keystroke and an AID can
   // never act on an option the screen has already replaced.
@@ -258,6 +275,7 @@ export default function MainMenuPage(): ReactElement {
   const activateExit = useScreenAction((): void => {
     void handleExit();
   });
+  const activateUnhandledKey = useScreenAction(handleUnhandledKey);
 
   // ``pfKeys`` is built inside the effect and must stay out of its dependency
   // list; the effect re-runs only when a handler, the message or the busy state changes.
@@ -287,9 +305,10 @@ export default function MainMenuPage(): ReactElement {
       errorMessage,
       infoMessage: '',
       pfKeys,
+      onUnhandledKey: activateUnhandledKey,
       busy,
     });
-  }, [activateExit, activateSubmit, busy, errorMessage, setChrome]);
+  }, [activateExit, activateSubmit, activateUnhandledKey, busy, errorMessage, setChrome]);
 
   return (
     <>

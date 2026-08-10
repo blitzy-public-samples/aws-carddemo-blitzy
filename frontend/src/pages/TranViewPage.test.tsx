@@ -21,10 +21,19 @@
  *     registered.
  */
 import { jest } from '@jest/globals';
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import {
+  act,
+  cleanup,
+  createEvent,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router';
 // The header title lines every screen publishes (``COTTL01Y``).
-import { CCDA_TITLE01, CCDA_TITLE02 } from '../types';
+import { CCDA_TITLE01, CCDA_TITLE02, CCDA_MSG_INVALID_KEY } from '../types';
 import type { ComponentType } from 'react';
 import type { Role, TranViewResponseDto } from '../types';
 
@@ -440,6 +449,85 @@ describe('TranViewPage — validation messages', () => {
   });
 });
 
+/** ``COTRN01C`` ``NOTFND`` literal the screen publishes for an absent record. */
+const NOT_FOUND_MESSAGE = 'Transaction ID NOT found...';
+
+/** The thirteen fields COTRN01 paints from the transaction record. */
+const DETAIL_LABELS = [
+  'Transaction ID:',
+  'Card Number:',
+  'Type CD:',
+  'Category CD:',
+  'Source:',
+  'Description:',
+  'Amount:',
+  'Orig Date:',
+  'Proc Date:',
+  'Merchant ID:',
+  'Merchant Name:',
+  'Merchant City:',
+  'Merchant Zip:',
+];
+
+describe('TranViewPage — a failed lookup leaves no stale record (COTRN01C L158-170)', () => {
+  it('blanks all thirteen fields, PAN included, when the next id is not found', async () => {
+    await renderLoadedScreen();
+    // The record really is on screen first, or the assertion below proves nothing.
+    expect(detailField('Transaction ID:').textContent).toBe(TRAN_ID);
+    expect(detailField('Card Number:').textContent).toBe(transactionDetail.tranCardNum);
+
+    getTransaction.mockReset();
+    getTransaction.mockRejectedValue(
+      new ApiError(404, 'Request failed with status code 404'),
+    );
+
+    typeSearchTranId('9999999999999999');
+    await activatePfKey(ENTER_KEY_LABEL);
+
+    await waitFor(() => {
+      expect(errorText()).toBe(NOT_FOUND_MESSAGE);
+    });
+    // L158-170 blanks TRNIDI..MZIPI BEFORE `PERFORM READ-TRANSACT-FILE`, and L175-190
+    // repopulates inside a SECOND `IF NOT ERR-FLG-ON`. A failed read therefore leaves
+    // the map as the blanking MOVE left it -- the previous transaction's FULL card
+    // number does not stay on screen beside an id nobody found.
+    const populated = DETAIL_LABELS.filter(
+      (label) => detailField(label).textContent !== '',
+    );
+    expect(populated).toEqual([]);
+    // The key the operator typed stays, because it is what they must correct.
+    expect(searchField().value).toBe('9999999999999999');
+  });
+
+  it('repopulates every field when the next lookup succeeds', async () => {
+    await renderLoadedScreen();
+
+    getTransaction.mockReset();
+    getTransaction.mockRejectedValueOnce(
+      new ApiError(404, 'Request failed with status code 404'),
+    );
+    getTransaction.mockResolvedValue(transactionDetail);
+
+    typeSearchTranId('9999999999999999');
+    await activatePfKey(ENTER_KEY_LABEL);
+    await waitFor(() => {
+      expect(errorText()).toBe(NOT_FOUND_MESSAGE);
+    });
+    expect(detailField('Card Number:').textContent).toBe('');
+
+    typeSearchTranId(TRAN_ID);
+    await activatePfKey(ENTER_KEY_LABEL);
+
+    // Clearing before the read must not stop a good read from painting the record.
+    await waitFor(() => {
+      expect(detailField('Card Number:').textContent).toBe(transactionDetail.tranCardNum);
+    });
+    expect(errorText()).toBe('');
+    const blank = DETAIL_LABELS.filter((label) => detailField(label).textContent === '');
+    expect(blank).toEqual([]);
+  });
+});
+
 describe('TranViewPage — function keys', () => {
   it('publishes the four line-24 keys the mapset legends', async () => {
     await renderLoadedScreen();
@@ -472,5 +560,79 @@ describe('TranViewPage — function keys', () => {
 
     expect(screen.getByTestId('tran-list-screen')).toBeInTheDocument();
     expect(screen.queryByLabelText('Enter Tran ID:')).not.toBeInTheDocument();
+  });
+
+  it('leaves the cursor on TRNIDIN after F4 clears the screen', async () => {
+    await renderLoadedScreen();
+
+    // The legend button takes focus when it is clicked. ``COTRN01C`` PF4 re-sends the
+    // map and every send honours ``ATTRB=IC`` on TRNIDIN, so the cursor must come back
+    // to the entry field rather than stay on the key that was pressed.
+    await activatePfKey(CLEAR_KEY_LABEL);
+
+    expect(document.activeElement).toBe(searchField());
+    expect(searchField().value).toBe('');
+  });
+});
+
+describe('TranViewPage — unhandled attention identifiers (COTRN01C L128-132)', () => {
+  it('answers every AID outside the legend with the invalid-key literal', async () => {
+    // COTRN01C's EVALUATE EIBAID handles ENTER, PF3, PF4 and PF5; its WHEN OTHER arm
+    // moves CCDA-MSG-INVALID-KEY into WS-MESSAGE and re-sends the map. F7, F8 and F12
+    // are the recognised AIDs this screen does not declare.
+    for (const key of ['F7', 'F8', 'F12']) {
+      await renderLoadedScreen();
+
+      await act(async () => {
+        fireEvent.keyDown(document, { key });
+        await Promise.resolve();
+      });
+
+      expect(errorText()).toBe(CCDA_MSG_INVALID_KEY);
+      cleanup();
+      getTransaction.mockReset();
+    }
+  });
+
+  it('claims an undeclared key from the browser, so F12 cannot open the inspector', async () => {
+    await renderLoadedScreen();
+
+    // The browser's own action for the key must be cancelled whether or not the screen
+    // declares it: an undeclared F12 opening the developer tools, or an undeclared F5
+    // reloading the page, in the middle of a transaction the operator meant to send.
+    const event = createEvent.keyDown(document, { key: 'F12', cancelable: true });
+    fireEvent(document, event);
+
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it('returns the cursor to TRNIDIN and leaves the displayed record standing', async () => {
+    await renderLoadedScreen();
+
+    const idBefore = detailField('Transaction ID:').textContent;
+
+    await act(async () => {
+      fireEvent.keyDown(document, { key: 'F12' });
+      await Promise.resolve();
+    });
+
+    // Nothing was re-read, so the thirteen detail fields still hold the record; the
+    // program only republishes the map, which places the cursor on TRNIDIN.
+    expect(detailField('Transaction ID:').textContent).toBe(idBefore);
+    expect(document.activeElement).toBe(searchField());
+    expect(getTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not fault the search field: nothing entered was rejected', async () => {
+    await renderLoadedScreen();
+
+    await act(async () => {
+      fireEvent.keyDown(document, { key: 'F7' });
+      await Promise.resolve();
+    });
+
+    // COTRN01C has no MOVE DFHRED anywhere: the refusal is a message, not a field fault.
+    expect(searchField().className).not.toContain('fieldError');
+    expect(searchField()).not.toHaveAttribute('data-faulted');
   });
 });

@@ -17,7 +17,7 @@ import type { ReactElement } from 'react';
 import { useNavigate } from 'react-router';
 import { useScreenChrome } from '../components/Layout';
 import { isBrowseNotice } from '../components/browseNotices';
-import { invalidFieldProps, invalidValueProps } from '../components/ErrorBanner';
+import { faultedFieldProps, invalidValueProps } from '../components/ErrorBanner';
 import type { PFKeyDef } from '../components/PFKeyBar';
 import { PfKeyAction, CCDA_TITLE01, CCDA_TITLE02 } from '../types';
 import type {
@@ -471,6 +471,11 @@ export default function CardListPage(): ReactElement {
       // INFOMSG is not published to the shared message region: this mapset declares it as
       // its own body field on row 20, and the screen renders it there itself.
       pfKeys,
+      // ``COACTVWC``/``COACTUPC``/``COCRDLIC``/``COCRDSLC``/``COCRDUPC`` do not answer an
+      // unhandled AID with a message: they ``SET PFK-INVALID TO TRUE``, and when the
+      // struck key is not in the valid set they ``SET CCARD-AID-ENTER TO TRUE`` -- the
+      // key is REWRITTEN to ENTER and the ENTER path runs.
+      onUnhandledKey: activateSubmitScreen,
       // COCRDLI declares its line-24 legend field COLOR=TURQUOISE, not the YELLOW
       // fifteen of the seventeen mapsets declare.
       pfKeyTone: 'turquoise',
@@ -502,12 +507,17 @@ export default function CardListPage(): ReactElement {
           <label className="prompt" htmlFor="acctsid">
             {'Account Number    :'}
           </label>
+          {/*
+            COCRDLIC L873 moves DFHRED into ACCTSIDC when the account filter is refused,
+            so this control is PAINTED as well as marked: it takes `faultedFieldProps`
+            rather than `invalidFieldProps`.
+          */}
           <input
             className="field charField charField--acctId"
             data-testid="acctsid"
             disabled={loading}
             id="acctsid"
-            {...invalidFieldProps(screenMessage === ACCOUNT_FILTER_MESSAGE)}
+            {...faultedFieldProps(screenMessage === ACCOUNT_FILTER_MESSAGE)}
             maxLength={ACCOUNT_FILTER_LENGTH}
             name="acctsid"
             onChange={(event) => {
@@ -523,12 +533,13 @@ export default function CardListPage(): ReactElement {
           <label className="prompt" htmlFor="cardsid">
             {'Credit Card Number:'}
           </label>
+          {/* COCRDLIC L878 moves DFHRED into CARDSIDC for the card filter, likewise. */}
           <input
             className="field"
             data-testid="cardsid"
             disabled={loading}
             id="cardsid"
-            {...invalidFieldProps(screenMessage === CARD_FILTER_MESSAGE)}
+            {...faultedFieldProps(screenMessage === CARD_FILTER_MESSAGE)}
             maxLength={CARD_FILTER_LENGTH}
             name="cardsid"
             onChange={(event) => {
