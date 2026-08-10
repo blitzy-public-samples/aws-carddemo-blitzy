@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.carddemo.authorization.AuthorizationServiceDatabase;
 import com.carddemo.authorization.TestIdentityPasswords;
 import com.carddemo.authorization.entity.AuthorizationDecisionEntity;
 import com.carddemo.authorization.entity.CardCrossReferenceEntity;
@@ -83,17 +84,8 @@ class NativeStatementIT {
     /** Rows a conditional native update writes when its guard rejects the row. */
     private static final int NO_ROW_WRITTEN_LOCAL = 0;
 
-    /** Image tag of the database container. */
-    private static final String POSTGRES_IMAGE = "postgres:18.4";
-
-    /** Database name, login name and password of the container, one value for all three. */
-    private static final String CONTAINER_CREDENTIAL = "carddemo";
-
     /** Host and port the broker client is pointed at, where nothing listens. */
     private static final String UNREACHABLE_BROKER = "localhost:1";
-
-    /** Schema Flyway migrates, and the one the connection search path names. */
-    private static final String MIGRATED_SCHEMA = "authorization_service";
 
     /** Batch bound one purge statement is given, larger than any fixture the class stores. */
     private static final int PURGE_BATCH = 1000;
@@ -165,15 +157,13 @@ class NativeStatementIT {
     /** A moment every stamp below is measured from. */
     private static final Instant BASE_MOMENT = Instant.parse("2026-02-01T00:00:00Z");
 
-    private static final PostgreSQLContainer POSTGRES;
-
-    static {
-        POSTGRES = new PostgreSQLContainer(POSTGRES_IMAGE)
-                .withDatabaseName(CONTAINER_CREDENTIAL)
-                .withUsername(CONTAINER_CREDENTIAL)
-                .withPassword(CONTAINER_CREDENTIAL);
-        POSTGRES.start();
-    }
+    /**
+     * The one container the module fork runs, which this class reads a login from.
+     *
+     * <p>{@link AuthorizationServiceDatabase} owns it and hands this class a database of its own inside it.
+     * Nothing here starts or stops a container.
+     */
+    private static final PostgreSQLContainer POSTGRES = AuthorizationServiceDatabase.container();
 
     @DynamicPropertySource
     static void containerProperties(DynamicPropertyRegistry registry) {
@@ -184,17 +174,15 @@ class NativeStatementIT {
     }
 
     /**
-     * Returns the container connection string with {@code currentSchema} appended.
+     * Returns the locator of this class's database, with the service schema on the search path.
      *
-     * <p>{@link PostgreSQLContainer#getJdbcUrl()} already carries one query parameter, so a second
-     * {@code ?} would fold this setting into that parameter's value and lose it.
+     * <p>{@link AuthorizationServiceDatabase} owns the module's one container, hands this class a
+     * database of its own inside it and builds the locator, so nothing here decides a separator.
      *
      * @return the connection string every native statement here resolves its tables through
      */
     private static String migratedSchemaUrl() {
-        String url = POSTGRES.getJdbcUrl();
-        String separator = url.contains("?") ? "&" : "?";
-        return url + separator + "currentSchema=" + MIGRATED_SCHEMA;
+        return AuthorizationServiceDatabase.urlFor(NativeStatementIT.class);
     }
 
     @Autowired
@@ -865,7 +853,7 @@ class NativeStatementIT {
             transactionTemplate.execute(status -> decisions.save(approved));
 
             AuthorizationDecisionEntity stored =
-                    decisions.findByTransactionId("TRAN000000000001").orElseThrow();
+                    decisions.findById("TRAN000000000001").orElseThrow();
             assertTrue(stored.isApproved(), "the outcome is an approval");
             assertNull(stored.getDeclineReasonCode(), "an approval carries no reject code");
             assertEquals(new BigDecimal("12.34"), stored.getAmount(),
@@ -884,7 +872,7 @@ class NativeStatementIT {
             transactionTemplate.execute(status -> decisions.save(declined));
 
             AuthorizationDecisionEntity stored =
-                    decisions.findByTransactionId("TRAN000000000002").orElseThrow();
+                    decisions.findById("TRAN000000000002").orElseThrow();
             assertFalse(stored.isApproved(), "the outcome is a decline");
             assertEquals("0102", stored.getDeclineReasonCode(),
                     "the reject code of app/cbl/CBTRN02C.cbl:L403-L413 is stored");
@@ -893,45 +881,47 @@ class NativeStatementIT {
         }
 
         /**
-         * Asserts the one decided outcome that names neither an account nor an event is stored.
+         * Asserts the one decided outcome that names no account is stored, and still names its event.
          *
          * <p>Reason {@code 0100} fires where the cross-reference read missed, so there is no account
-         * identifier, and every event this platform publishes names an account and is keyed on one.
-         * That outcome therefore publishes nothing, and its row carries a null {@code event_id} as
-         * well as a null {@code account_id}. {@code V13__decision_without_event.sql} dropped the
-         * {@code NOT NULL} that used to force an identifier here and added
-         * {@code ck_authorization_decision_event} so the two columns can only be absent together.
+         * identifier to store. The outcome still publishes one event, because AAP transformation rule
+         * T4 gives one authorization call one event:
+         * {@code schemas/transaction-declined-v2.json}, keyed on the transaction identifier rather
+         * than on an account. {@code V13__decision_without_event.sql} dropped the {@code NOT NULL}
+         * that used to force an identifier here and {@code V15__unresolved_decline_is_published.sql}
+         * requires one of every new row through {@code ck_authorization_decision_event}.
          */
         @Test
-        @DisplayName("a decline resolving no account is stored naming neither account nor event")
+        @DisplayName("a decline resolving no account is stored naming no account and naming its event")
         void aDeclineResolvingNoAccountIsStored() {
+            UUID published = UUID.randomUUID();
             AuthorizationDecisionEntity unresolved = AuthorizationDecisionEntity.declined(
                     "TRAN000000000003", ACTOR, null, "****************",
                     "72e0699beda9afd3f6677b683462371d1648c559acbb5e14a6022d76293dbf5b", new BigDecimal("5.00"),
-                    "0100", "INVALID CARD NUMBER FOUND", BASE_MOMENT, null,
+                    "0100", "INVALID CARD NUMBER FOUND", BASE_MOMENT, published,
                     DECLARED_PROCESSING_TIMESTAMP);
 
             transactionTemplate.execute(status -> decisions.save(unresolved));
 
             AuthorizationDecisionEntity stored =
-                    decisions.findByTransactionId("TRAN000000000003").orElseThrow();
+                    decisions.findById("TRAN000000000003").orElseThrow();
             assertNull(stored.getAccountId(),
                     "reason 0100 resolved no cross-reference row, so it names no account");
-            assertNull(stored.getEventId(),
-                    "and with no account to key an event on, it publishes none and names none");
+            assertEquals(published, stored.getEventId(),
+                    "and it names the transaction-keyed decline event it published through");
             assertEquals("0100", stored.getDeclineReasonCode(),
                     "the reject code of app/cbl/CBTRN02C.cbl:L385-L387 is stored");
         }
 
         /**
-         * Asserts the database refuses the two half-filled shapes the entity also refuses.
+         * Asserts the database refuses a decision row that names no event, with or without an account.
          *
-         * <p>The constraint is what keeps a row from claiming an account with no event or an event
-         * with no account. The entity refuses both in its constructor, and asserting the column
-         * constraint as well means a native insert or a later mapping change cannot slip past it.
+         * <p>The constraint is what keeps a decision from claiming to have published nothing. The
+         * entity refuses the same shape in its constructor, and asserting the column constraint as
+         * well means a native insert or a later mapping change cannot slip past it.
          */
         @Test
-        @DisplayName("a row naming an account without an event, or the reverse, is refused")
+        @DisplayName("a row naming no event is refused, whether or not it resolved an account")
         void aHalfFilledDecisionRowIsRefused() {
             assertThrows(DataIntegrityViolationException.class,
                     () -> transactionTemplate.execute(status -> jdbcTemplate.update(
@@ -944,8 +934,8 @@ class NativeStatementIT {
                             "72e0699beda9afd3f6677b683462371d1648c559acbb5e14a6022d76293dbf5b",
                             new BigDecimal("5.00"), "0102", "OVERLIMIT TRANSACTION",
                             Timestamp.from(BASE_MOMENT), DECLARED_PROCESSING_TIMESTAMP)),
-                    "ck_authorization_decision_event refuses an account with no event: a resolved"
-                            + " outcome always publishes one");
+                    "ck_authorization_decision_event refuses a decision with no event: every decided"
+                            + " call publishes one");
 
             assertThrows(DataIntegrityViolationException.class,
                     () -> transactionTemplate.execute(status -> jdbcTemplate.update(
@@ -953,14 +943,44 @@ class NativeStatementIT {
                                     + " masked_card_number, card_token, amount, approved,"
                                     + " decline_reason_code, decline_reason_description, decided_at,"
                                     + " event_id, declared_processing_timestamp)"
-                                    + " VALUES (?, ?, NULL, ?, ?, ?, false, ?, ?, ?, ?, ?)",
+                                    + " VALUES (?, ?, NULL, ?, ?, ?, false, ?, ?, ?, NULL, ?)",
                             "TRAN000000000010", ACTOR, "****************",
                             "72e0699beda9afd3f6677b683462371d1648c559acbb5e14a6022d76293dbf5b",
                             new BigDecimal("5.00"), "0100", "INVALID CARD NUMBER FOUND",
-                            Timestamp.from(BASE_MOMENT), UUID.randomUUID(),
-                            DECLARED_PROCESSING_TIMESTAMP)),
-                    "and it refuses an event with no account: no event on this platform is keyed on"
-                            + " anything but an account");
+                            Timestamp.from(BASE_MOMENT), DECLARED_PROCESSING_TIMESTAMP)),
+                    "and it refuses the outcome that resolved no account naming no event either,"
+                            + " because that outcome publishes a transaction-keyed one");
+        }
+
+        /**
+         * Asserts a decision that resolved no account is stored with an event identifier, which the
+         * constraint requires and the shape a native insert would otherwise be free to write.
+         *
+         * <p>This is the positive twin of the refusal above, and it is here because the constraint
+         * arrived as {@code NOT VALID}. A constraint that is never exercised on an insert is a
+         * constraint nobody has checked, so one insert of the permitted shape runs through the same
+         * statement path.
+         */
+        @Test
+        @DisplayName("a native insert naming no account and one event is admitted")
+        void aNativeInsertNamingNoAccountAndOneEventIsAdmitted() {
+            UUID published = UUID.randomUUID();
+
+            transactionTemplate.execute(status -> jdbcTemplate.update(
+                    "INSERT INTO authorization_decision (transaction_id, actor, account_id,"
+                            + " masked_card_number, card_token, amount, approved,"
+                            + " decline_reason_code, decline_reason_description, decided_at,"
+                            + " event_id, declared_processing_timestamp)"
+                            + " VALUES (?, ?, NULL, ?, ?, ?, false, ?, ?, ?, ?, ?)",
+                    "TRAN000000000011", ACTOR, "****************",
+                    "72e0699beda9afd3f6677b683462371d1648c559acbb5e14a6022d76293dbf5b",
+                    new BigDecimal("5.00"), "0100", "INVALID CARD NUMBER FOUND",
+                    Timestamp.from(BASE_MOMENT), published, DECLARED_PROCESSING_TIMESTAMP));
+
+            AuthorizationDecisionEntity stored =
+                    decisions.findById("TRAN000000000011").orElseThrow();
+            assertNull(stored.getAccountId(), "the permitted shape names no account");
+            assertEquals(published, stored.getEventId(), "and names the event it published through");
         }
 
         @Test
@@ -1052,9 +1072,9 @@ class NativeStatementIT {
                             BASE_MOMENT.minus(Duration.ofDays(400)), 1000));
 
             assertEquals(1, removed, "one decision is past the horizon");
-            assertFalse(decisions.findByTransactionId("TRAN000000000101").isPresent(),
+            assertFalse(decisions.existsById("TRAN000000000101"),
                     "the expired decision is gone");
-            assertTrue(decisions.findByTransactionId("TRAN000000000102").isPresent(),
+            assertTrue(decisions.existsById("TRAN000000000102"),
                     "a decision inside the horizon stays");
         }
 

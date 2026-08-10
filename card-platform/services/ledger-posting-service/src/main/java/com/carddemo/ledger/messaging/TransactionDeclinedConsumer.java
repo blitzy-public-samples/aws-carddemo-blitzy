@@ -174,10 +174,14 @@ public class TransactionDeclinedConsumer {
         try {
             requireKeyNamesAggregate(messageKey, event);
             switch (transactionTemplate.execute(status -> applyOneEvent(event, consumedTopic))) {
-                // The rejected counter is raised inside RejectRecorder, beside the row it wrote, so
-                // this branch records nothing further. A second increment here would double every
-                // reject the demo reports.
-                case RECORDED -> LOG.debug("Event {} produced one reject row.", event.eventId());
+                // The rejected counter is raised here rather than beside the row, because the
+                // transaction has committed by the time this switch runs. RejectRecorder counted it
+                // inside the transaction, so a rollback left a durable increment reporting a reject
+                // the store never kept. Reaching this arm means the row and its marker committed.
+                case RECORDED -> {
+                    meters.recordTransactionRejected();
+                    LOG.debug("Event {} produced one reject row.", event.eventId());
+                }
                 case DUPLICATE -> meters.recordDuplicateSkipped();
                 // Counted as neither a reject nor a duplicate, because it is neither: no row was
                 // written and no earlier delivery of this event was suppressed. The events-consumed

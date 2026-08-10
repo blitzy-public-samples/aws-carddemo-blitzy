@@ -83,8 +83,12 @@ class FraudAssessmentEntityTest {
     @ValueSource(ints = {0, 1, 50, 99, 100})
     @DisplayName("Every score inside the published bounds is accepted, including both edges")
     void scoreInsideBoundsIsAccepted(int riskScore) {
-        assertDoesNotThrow(() -> assessment(riskScore, List.of()),
+        FraudAssessmentEntity accepted = assertDoesNotThrow(() -> assessment(riskScore, List.of()),
                 "score " + riskScore + " falls inside the published bounds");
+
+        assertEquals(riskScore, accepted.getRiskScore(),
+                "an accepted score has to be stored as the score it was given. Accepting it and"
+                        + " keeping something else is the failure a no-throw check cannot see");
     }
 
     @ParameterizedTest

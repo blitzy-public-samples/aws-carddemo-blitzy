@@ -28,10 +28,10 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
-import org.springframework.data.domain.Limit;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -361,17 +361,30 @@ class NotificationServiceTest {
     /**
      * Stubs the read-model finder for one card token, at the limit the service names.
      *
-     * <p>The stub answers in the order the sort at {@code app/jcl/CREASTMT.JCL:L53} produces,
-     * ascending by card then transaction identifier. It answers only for {@link #PAGE_LIMIT}, so a
+     * <p>{@code rows} is supplied in the order the sort at {@code app/jcl/CREASTMT.JCL:L53}
+     * produces, ascending by card then transaction identifier, because that is the order the alert
+     * presents. The service reads from the newest end so that a bounded alert always carries the
+     * transaction it reports, so this stubs the descending finder with the reverse of what the caller
+     * supplied and the service reverses it back. It answers only for {@link #PAGE_LIMIT}, so a
      * service that read without a limit would find no stubbed answer.</p>
      *
+     * <p>{@code rows} is the card's whole history, so this stub applies the row ceiling the way the
+     * database does: {@link Limit} reaches the statement as a row count, and a real finder returns at
+     * most that many. A stub that answered the whole list would let the service hand a renderer more
+     * rows than {@link NotificationRenderer#requireRenderableRowCount(List)} permits, which no
+     * deployment can do.</p>
+     *
      * @param cardToken the card token the key column holds
-     * @param rows the rows the finder answers
+     * @param rows the card's rows, oldest first
      */
     private void holdRows(String cardToken, List<StatementTransactionEntity> rows) {
+        List<StatementTransactionEntity> newestFirst = new ArrayList<>(rows);
+        Collections.reverse(newestFirst);
+        List<StatementTransactionEntity> upToTheCeiling = newestFirst.subList(0,
+                Math.min(newestFirst.size(), NotificationRenderer.MAXIMUM_STATEMENT_ROWS));
         Mockito.when(this.statementTransactions
-                .findByIdCardTokenOrderByIdTransactionIdAsc(cardToken, PAGE_LIMIT))
-                .thenReturn(rows);
+                .findByIdCardTokenOrderByIdTransactionIdDesc(cardToken, PAGE_LIMIT))
+                .thenReturn(List.copyOf(upToTheCeiling));
     }
 
     /**
@@ -1893,9 +1906,9 @@ class NotificationServiceTest {
                     CURRENT_BALANCE, cardholder(), RenderedFormat.PLAIN_TEXT);
 
             Mockito.verify(statementTransactions)
-                    .findByIdCardTokenOrderByIdTransactionIdAsc(CARD_TOKEN, PAGE_LIMIT);
+                    .findByIdCardTokenOrderByIdTransactionIdDesc(CARD_TOKEN, PAGE_LIMIT);
             Mockito.verify(statementTransactions, Mockito.never())
-                    .findByIdCardTokenOrderByIdTransactionIdAsc(FULL_CARD_NUMBER, PAGE_LIMIT);
+                    .findByIdCardTokenOrderByIdTransactionIdDesc(FULL_CARD_NUMBER, PAGE_LIMIT);
 
             NotificationLogEntity stored = attemptLog.savedRows().get(0);
             assertThat(stored.getCardToken()).isEqualTo(CARD_TOKEN);
@@ -2172,7 +2185,7 @@ class NotificationServiceTest {
 
             assertThat(alert).isEqualTo(TEXT_ALERT);
             Mockito.verify(statementTransactions)
-                    .findByIdCardTokenOrderByIdTransactionIdAsc(CARD_TOKEN, PAGE_LIMIT);
+                    .findByIdCardTokenOrderByIdTransactionIdDesc(CARD_TOKEN, PAGE_LIMIT);
             Mockito.verifyNoMoreInteractions(statementTransactions);
             assertThat(attemptLog.savedRows()).hasSize(1);
         }
@@ -2189,8 +2202,11 @@ class NotificationServiceTest {
      * {@code 15 WS-TRAN-REST PIC X(318)} at {@code app/cbl/CBSTM03A.CBL:L230}. Fifty-one cards and
      * ten transactions per card is the shape the source holds in memory.</p>
      *
-     * <p>Neither ceiling is reproduced. The service reads an ordered list of any length from the
-     * read model. The mapping from that table to the read model is recorded in
+     * <p>Neither ceiling is reproduced. The one ceiling this service applies is its own, additive
+     * and far larger: an alert renders at most
+     * {@link NotificationRenderer#MAXIMUM_STATEMENT_ROWS} rows, and they are the card's most recent
+     * ones, so the transaction the alert reports is always among them. The last test below is that
+     * property. The mapping from that table to the read model is recorded in
      * {@code card-platform/docs/traceability-matrix.md}.</p>
      */
     @Nested
@@ -2271,6 +2287,60 @@ class NotificationServiceTest {
             assertThat(textRenderer.statementCalls())
                     .allSatisfy(call -> assertThat(call.total()).isEqualByComparingTo("2.50"));
             assertThat(attemptLog.savedRows()).hasSize(CARDS_PAST_THE_TABLE);
+        }
+
+        /**
+         * Holds that a card past the renderer's own ceiling still renders and totals the transaction
+         * the alert reports.
+         *
+         * <p>The card is given one row more than
+         * {@link NotificationRenderer#MAXIMUM_STATEMENT_ROWS}, and the newest of them is the
+         * transaction the alert names. Reading the oldest rows under that ceiling would drop exactly
+         * that row, leave the body describing transactions the cardholder had already been shown, and
+         * total a subset that excluded the amount the alert exists to report — while still recording a
+         * rendered-alert row under the omitted identifier.</p>
+         *
+         * <p>Each of the rows past the ceiling carries a distinct amount, so the total identifies
+         * which rows were summed and not merely how many.</p>
+         */
+        @Test
+        @DisplayName("A card past the row ceiling renders the newest rows, and the triggering "
+                + "transaction is in the body and the total")
+        void aCardPastTheCeilingStillRendersAndTotalsTheTriggeringTransaction() {
+            int ceiling = NotificationRenderer.MAXIMUM_STATEMENT_ROWS;
+            int held = ceiling + 1;
+            List<StatementTransactionEntity> oldestFirst = new ArrayList<>(held);
+            for (int index = 1; index <= held; index++) {
+                oldestFirst.add(row(String.format("%016d", index), storedDescription('A', 'B'),
+                        index == held ? "7.00" : "1.00"));
+            }
+            String triggering = String.format("%016d", held);
+            String oldest = String.format("%016d", 1);
+            holdRows(CARD_TOKEN, oldestFirst);
+            NotificationService service = serviceWith(textRenderer);
+
+            service.renderPostedTransactionAlert(CARD_TOKEN, FULL_CARD_NUMBER, triggering, ACCOUNT_ID,
+                    CURRENT_BALANCE, cardholder(), RenderedFormat.PLAIN_TEXT);
+
+            StatementAlertCall call = textRenderer.onlyStatementCall();
+            assertThat(call.rows()).as("the alert renders the ceiling, not the whole history")
+                    .hasSize(ceiling);
+            assertThat(call.rows()).extracting(TransactionRow::transactionId)
+                    .as("the transaction the alert reports is in the body, and the row dropped is "
+                            + "the oldest")
+                    .contains(triggering)
+                    .doesNotContain(oldest);
+            assertThat(call.rows()).extracting(TransactionRow::transactionId)
+                    .as("the rows still present oldest first, as the source sort produced")
+                    .isSorted();
+            assertThat(call.total())
+                    .as("the total covers the rows rendered, including the triggering amount: "
+                            + "199 rows of 1.00 and the 7.00 that triggered the alert")
+                    .isEqualByComparingTo("206.00");
+            assertThat(attemptLog.savedRows()).hasSize(1);
+            assertThat(attemptLog.savedRows().get(0).getTransactionId().strip())
+                    .as("the recorded identifier is the one the body carries")
+                    .isEqualTo(triggering.strip());
         }
     }
 
@@ -2354,9 +2424,9 @@ class NotificationServiceTest {
                     .as("the second card holds no row, and the first card's row is not its own")
                     .isEmpty();
             Mockito.verify(statementTransactions)
-                    .findByIdCardTokenOrderByIdTransactionIdAsc(SAME_TAIL_CARD_TOKEN, PAGE_LIMIT);
+                    .findByIdCardTokenOrderByIdTransactionIdDesc(SAME_TAIL_CARD_TOKEN, PAGE_LIMIT);
             Mockito.verify(statementTransactions, Mockito.never())
-                    .findByIdCardTokenOrderByIdTransactionIdAsc(MASKED_CARD_NUMBER, PAGE_LIMIT);
+                    .findByIdCardTokenOrderByIdTransactionIdDesc(MASKED_CARD_NUMBER, PAGE_LIMIT);
         }
 
         @Test

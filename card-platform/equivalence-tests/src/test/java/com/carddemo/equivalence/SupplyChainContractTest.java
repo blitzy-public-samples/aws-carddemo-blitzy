@@ -275,6 +275,258 @@ class SupplyChainContractTest {
         }
     }
 
+    /**
+     * Holds the build to one exercised toolchain and to archives a second build reproduces.
+     *
+     * <p><b>The drift this stands over.</b> Three files named the toolchain and no two agreed. The
+     * workflow installed {@code JAVA_VERSION: "25"}, which is a release line and resolves to
+     * whatever patch Adoptium published most recently. The enforcer admitted {@code [25,)} and
+     * {@code [3.9.16,4.0.0)}, so JDK 26 and every future Maven 3.9 passed. Onboarding told a reader
+     * to install exactly 25.0.4+7. A build that pins its dependencies by bill of materials, its
+     * images by digest and its actions by commit was choosing its compiler by date.
+     *
+     * <p><b>The archive timestamp belongs beside it.</b> Both answer the same question: whether
+     * two builds of one commit are the same build. Without
+     * {@code project.build.outputTimestamp} the Jar plugin and the Spring Boot repackage stamp every
+     * entry with the moment the build ran, so nothing can tell a rebuild from a change — not a
+     * reader comparing two images, and not the provenance statement the pipeline records over the
+     * six archives.
+     */
+    @Nested
+    @DisplayName("One exercised toolchain, and archives a second build reproduces")
+    class DeterministicBuild {
+
+        @Test
+        @DisplayName("both enforcer ranges end where the exercised toolchain ends")
+        void bothEnforcerRangesEndWhereTheExercisedToolchainEnds() throws IOException {
+            String pom = pom();
+
+            assertThat(pom)
+                    .as("the Java range admits release 25 and nothing later, because a newer major"
+                            + " would run release-25 bytecode on a runtime no test here has used")
+                    .contains("<version>[25,26)</version>")
+                    .doesNotContain("<version>[25,)</version>");
+            assertThat(pom)
+                    .as("the Maven range admits the 3.9.16 patch line and nothing else")
+                    .contains("<version>[3.9.16,3.10.0)</version>")
+                    .doesNotContain("<version>[3.9.16,4.0.0)</version>");
+
+            String workflow = Files.readString(
+                    platformRoot().getParent().resolve(".github/workflows/ci.yml"));
+            assertThat(workflow)
+                    .as("the workflow installs the exact build the ranges and the onboarding table"
+                            + " name, not the release line")
+                    .contains("JAVA_VERSION: \"25.0.4+7\"")
+                    .contains("MAVEN_VERSION: \"3.9.16\"");
+            assertThat(Files.readString(platformRoot().resolve("docs/onboarding.md")))
+                    .as("and onboarding names the same two")
+                    .contains("25.0.4+7")
+                    .contains("3.9.16");
+        }
+
+        @Test
+        @DisplayName("every archive carries one fixed entry timestamp")
+        void everyArchiveCarriesOneFixedEntryTimestamp() throws IOException {
+            assertThat(pom())
+                    .as("without this property two builds of one commit produce two different"
+                            + " archives, and the provenance statement over them says nothing")
+                    .containsPattern(
+                            "<project\\.build\\.outputTimestamp>\\d{4}-\\d{2}-\\d{2}"
+                                    + "T\\d{2}:\\d{2}:\\d{2}Z</project\\.build\\.outputTimestamp>");
+        }
+    }
+
+    /**
+     * Holds every module to declaring the low-level artifacts it programs against.
+     *
+     * <p><b>The inconsistency this stands over.</b> All six services import
+     * {@code org.apache.kafka.clients} and none declared {@code kafka-clients}; five imported
+     * {@code tools.jackson} and only the card service declared {@code jackson-databind}, with a
+     * comment explaining why it must. {@code libs/event-contracts} declared both. The policy was
+     * therefore applied in two modules out of nine, and a module that programs against an API it
+     * does not declare compiles only while some starter keeps supplying it.
+     *
+     * <p>The mapping is deliberately short. A module declares the artifact whose API it imports:
+     * {@code kafka-clients} for {@code org.apache.kafka}, {@code jackson-databind} for
+     * {@code tools.jackson.databind}. {@code jackson-core} and the Jackson 2 annotations arrive with
+     * databind and are not declared, because neither can be absent while databind is present.
+     *
+     * <p>The other half is the reverse: a declaration no source uses. {@code spring-kafka-test} sat
+     * in six modules and only the fraud service imports it; {@code spring-boot-testcontainers} sat
+     * in three and only the notification service imports it. Both halves are derived from the tree
+     * here, so the next module to import or to stop importing one of these fails this test rather
+     * than drifting.
+     */
+    @Nested
+    @DisplayName("Every module declares the artifacts it imports, and nothing it does not")
+    class DirectDependencies {
+
+        /** Package prefix a module may import, and the artifact identifier that supplies it. */
+        private static final Map<String, String> ARTIFACT_OF_PACKAGE = Map.of(
+                "org.apache.kafka.", "kafka-clients",
+                "tools.jackson.databind.", "jackson-databind");
+
+        /** Artifact identifier, and the one package prefix whose import justifies declaring it. */
+        private static final Map<String, String> PACKAGE_OF_TEST_ARTIFACT = Map.of(
+                "spring-kafka-test", "org.springframework.kafka.test",
+                "spring-boot-testcontainers", "org.springframework.boot.testcontainers");
+
+        private static final List<String> MODULES = List.of(
+                "libs/event-contracts",
+                "libs/cobol-compat",
+                "services/authorization-service",
+                "services/ledger-posting-service",
+                "services/fraud-detection-service",
+                "services/notification-service",
+                "services/account-service",
+                "services/card-service",
+                "equivalence-tests");
+
+        @Test
+        @DisplayName("a module that imports an artifact's API declares that artifact")
+        void aModuleThatImportsAnArtifactApiDeclaresIt() throws IOException {
+            List<String> divergences = new ArrayList<>();
+
+            for (String module : MODULES) {
+                String sources = sourcesOf(module);
+                String descriptor = Files.readString(
+                        platformRoot().resolve(module).resolve("pom.xml"));
+                ARTIFACT_OF_PACKAGE.forEach((prefix, artifact) -> {
+                    boolean imported = sources.contains("import " + prefix)
+                            || sources.contains("import static " + prefix);
+                    boolean declared =
+                            descriptor.contains("<artifactId>" + artifact + "</artifactId>");
+                    if (imported && !declared) {
+                        divergences.add(module + " imports " + prefix + "* and declares no "
+                                + artifact);
+                    }
+                    if (!imported && declared) {
+                        divergences.add(module + " declares " + artifact + " and imports no "
+                                + prefix + "*");
+                    }
+                });
+            }
+
+            assertThat(divergences)
+                    .as("the direct-use policy has to hold in every module or in none")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("a test dependency no source uses is not declared")
+        void aTestDependencyNoSourceUsesIsNotDeclared() throws IOException {
+            List<String> divergences = new ArrayList<>();
+
+            for (String module : MODULES) {
+                String sources = sourcesOf(module);
+                String descriptor = Files.readString(
+                        platformRoot().resolve(module).resolve("pom.xml"));
+                PACKAGE_OF_TEST_ARTIFACT.forEach((artifact, prefix) -> {
+                    // An import, not a mention: this class names both packages as literals, and a
+                    // mention would make every module that documents one look like a user of it.
+                    boolean used = sources.contains("import " + prefix)
+                            || sources.contains("import static " + prefix);
+                    boolean declared =
+                            descriptor.contains("<artifactId>" + artifact + "</artifactId>");
+                    if (declared && !used) {
+                        divergences.add(module + " declares " + artifact + " and no source names "
+                                + prefix);
+                    }
+                    if (used && !declared) {
+                        divergences.add(module + " names " + prefix + " and declares no " + artifact);
+                    }
+                });
+            }
+
+            assertThat(divergences)
+                    .as("a declaration nothing uses is a dependency a reader has to account for")
+                    .isEmpty();
+        }
+
+        /** Every Java source of one module, main and test, concatenated. */
+        private static String sourcesOf(String module) throws IOException {
+            Path root = platformRoot().resolve(module).resolve("src");
+            if (!Files.isDirectory(root)) {
+                return "";
+            }
+            StringBuilder combined = new StringBuilder();
+            try (var walk = Files.walk(root)) {
+                for (Path file : walk.filter(Files::isRegularFile)
+                        .filter(path -> path.getFileName().toString().endsWith(".java"))
+                        .toList()) {
+                    combined.append(Files.readString(file)).append('\n');
+                }
+            }
+            return combined.toString();
+        }
+    }
+
+    /**
+     * Holds every Java source of this platform to one import declaration per type.
+     *
+     * <p>A repeated {@code import} compiles, changes nothing and warns nothing, which is why five of
+     * them accumulated across two configuration records and three test classes before a review read
+     * the files. The cost is not the line: an import list a reader cannot scan is an import list
+     * nobody scans, and the second copy of a name is exactly what makes a merge that added one look
+     * like a merge that added none.
+     *
+     * <p>The check reads the sources rather than a compiler setting, because no compiler on this
+     * toolchain reports a duplicate import at all — not as an error and not as a warning under
+     * {@code -Xlint:all}. This is the only thing that would report one.
+     */
+    @Nested
+    @DisplayName("No Java source declares one import twice")
+    class ImportHygiene {
+
+        @Test
+        @DisplayName("every import list names each type once")
+        void everyImportListNamesEachTypeOnce() throws IOException {
+            List<String> divergences = new ArrayList<>();
+
+            for (Path source : platformSources()) {
+                Map<String, Integer> declarations = new LinkedHashMap<>();
+                for (String line : Files.readAllLines(source)) {
+                    String trimmed = line.strip();
+                    if (trimmed.startsWith("import ") && trimmed.endsWith(";")) {
+                        declarations.merge(trimmed, 1, Integer::sum);
+                    }
+                }
+                declarations.forEach((declaration, count) -> {
+                    if (count > 1) {
+                        divergences.add(platformRoot().relativize(source) + " declares "
+                                + declaration + " " + count + " times");
+                    }
+                });
+            }
+
+            assertThat(divergences)
+                    .as("a repeated import compiles and warns nothing, so this is what reports one")
+                    .isEmpty();
+        }
+
+        /** Every Java source under the platform, main and test, in a stable order. */
+        private static List<Path> platformSources() throws IOException {
+            List<Path> sources = new ArrayList<>();
+            for (String module : List.of("libs/event-contracts", "libs/cobol-compat",
+                    "services/authorization-service", "services/ledger-posting-service",
+                    "services/fraud-detection-service", "services/notification-service",
+                    "services/account-service", "services/card-service", "equivalence-tests")) {
+                Path root = platformRoot().resolve(module).resolve("src");
+                if (!Files.isDirectory(root)) {
+                    continue;
+                }
+                try (var walk = Files.walk(root)) {
+                    sources.addAll(walk.filter(Files::isRegularFile)
+                            .filter(path -> path.getFileName().toString().endsWith(".java"))
+                            .sorted()
+                            .toList());
+                }
+            }
+            assertThat(sources).as("the platform's Java sources").isNotEmpty();
+            return sources;
+        }
+    }
+
     /** Returns the {@code enforce-transitive-security-floors} execution element. */
     private static String floorExecution(String pom) {
         int idAt = pom.indexOf("<id>" + FLOOR_EXECUTION + "</id>");

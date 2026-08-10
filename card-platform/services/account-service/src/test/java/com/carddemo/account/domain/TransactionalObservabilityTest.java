@@ -7,6 +7,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -39,7 +40,7 @@ class TransactionalObservabilityTest {
     @Test
     void anAppliedUpdateRecordsSuccessOnlyAfterTheTransactionReturns() {
         AccountUpdateService.TransactionResult committed =
-                new AccountUpdateService.TransactionResult(EditResult.ok(), true, false);
+                new AccountUpdateService.TransactionResult(EditResult.ok(), true, false, null);
         when(transactions.execute(any())).thenReturn(committed);
         AccountUpdateService service = updateService();
 
@@ -51,8 +52,8 @@ class TransactionalObservabilityTest {
 
         InOrder order = inOrder(transactions, meters);
         order.verify(transactions).execute(any());
-        order.verify(meters).recordUpdateLatency(any(Duration.class));
         order.verify(meters).recordUpdateApplied();
+        order.verify(meters).recordUpdateLatency(any(Duration.class));
         verify(meters, never()).recordUpdateFailure();
         verify(meters, never()).recordValidationFailure();
     }
@@ -61,7 +62,7 @@ class TransactionalObservabilityTest {
     void aValidationOutcomeRecordsAfterTheTransactionReturns() {
         EditResult rejected = EditResult.failure("invalid");
         when(transactions.execute(any())).thenReturn(
-                new AccountUpdateService.TransactionResult(rejected, false, true));
+                new AccountUpdateService.TransactionResult(rejected, false, true, null));
 
         updateService().updateAccount(
                 mock(AccountEntity.class),
@@ -71,14 +72,26 @@ class TransactionalObservabilityTest {
 
         InOrder order = inOrder(transactions, meters);
         order.verify(transactions).execute(any());
-        order.verify(meters).recordUpdateLatency(any(Duration.class));
         order.verify(meters).recordValidationFailure();
+        order.verify(meters).recordUpdateLatency(any(Duration.class));
         verify(meters, never()).recordUpdateApplied();
         verify(meters, never()).recordUpdateFailure();
     }
 
+    /**
+     * Asserts a rollback is timed as well as counted.
+     *
+     * <p>This test required the opposite, and the requirement hid the case an operator most needs to
+     * see. Only the arms that returned were timed, so a datastore failing every write slowly showed a
+     * falling call count against an unchanged latency, and the measurement that would have named the
+     * slowness was the one being discarded. Latency is now recorded on every exit, including the one
+     * that leaves through the throw.
+     *
+     * <p>The failure series still separates a rollback from the two outcomes that are not failures, so
+     * nothing about what a rollback means has changed. Only its duration is no longer thrown away.
+     */
     @Test
-    void anUpdateRollbackRecordsOnlyTheFailureSeries() {
+    void anUpdateRollbackIsTimedAsWellAsCounted() {
         when(transactions.execute(any())).thenThrow(new IllegalStateException("commit failed"));
 
         assertThatThrownBy(() -> updateService().updateAccount(
@@ -88,9 +101,37 @@ class TransactionalObservabilityTest {
                 null))
                 .isInstanceOf(IllegalStateException.class);
 
-        verify(meters).recordUpdateFailure();
+        InOrder order = inOrder(meters);
+        order.verify(meters).recordUpdateFailure();
+        order.verify(meters).recordUpdateLatency(any(Duration.class));
         verify(meters, never()).recordUpdateApplied();
-        verify(meters, never()).recordUpdateLatency(any());
+        verify(meters, never()).recordValidationFailure();
+    }
+
+    /**
+     * Asserts every exit is timed exactly once.
+     *
+     * <p>Recording in one place rather than in each arm is what makes that true, and a reader of the
+     * series has to be able to rely on it: a call counted twice halves the reported mean, and the
+     * arms were previously counted in three separate places.
+     */
+    @Test
+    void everyExitIsTimedExactlyOnce() {
+        when(transactions.execute(any())).thenReturn(
+                new AccountUpdateService.TransactionResult(EditResult.ok(), true, false, null));
+        updateService().updateAccount(
+                mock(AccountEntity.class), mock(CustomerEntity.class), null, null);
+        verify(meters, times(1)).recordUpdateLatency(any(Duration.class));
+
+        AccountMeters refused = mock(AccountMeters.class);
+        TransactionTemplate refusing = mock(TransactionTemplate.class);
+        when(refusing.execute(any())).thenThrow(new AccountUpdateService.LockNotTaken(
+                AccountUpdateService.COULD_NOT_LOCK_ACCOUNT,
+                new CannotAcquireLockException("canceling statement due to lock timeout")));
+        new AccountUpdateService(accounts, customers, mock(AccountCustomerLinkRepository.class),
+                changeDetector, outboxWriter, refusing, refused, accountProperties())
+                .updateAccount(mock(AccountEntity.class), mock(CustomerEntity.class), null, null);
+        verify(refused, times(1)).recordUpdateLatency(any(Duration.class));
     }
 
     /**
@@ -118,7 +159,7 @@ class TransactionalObservabilityTest {
                 mock(AccountEntity.class),
                 mock(CustomerEntity.class),
                 null,
-                null);
+                null).verdict();
 
         assertFalse(verdict.valid(), "a lock not taken is a failing verdict");
         assertEquals(AccountUpdateService.COULD_NOT_LOCK_ACCOUNT, verdict.message(),

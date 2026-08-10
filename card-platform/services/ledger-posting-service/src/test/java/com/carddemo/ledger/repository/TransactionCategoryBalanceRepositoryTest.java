@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.carddemo.cobol.CobolDecimal;
 import com.carddemo.cobol.PicClause;
+import com.carddemo.ledger.LedgerServiceDatabase;
 import com.carddemo.ledger.TestIdentityPasswords;
 import com.carddemo.ledger.entity.TransactionCategoryBalanceEntity;
 import com.carddemo.ledger.entity.TransactionCategoryBalanceEntity.TransactionCategoryBalanceId;
@@ -25,8 +26,6 @@ import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 
 /**
@@ -55,7 +54,6 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
  * <p>Flyway owns the schema, so the migrations under test are the shipped ones. No broker is reached:
  * a stand-in replaces the producer template and the relay.
  */
-@Testcontainers
 @SpringBootTest(properties = {
     // The two listeners of this service must not retry an absent broker.
     "spring.kafka.listener.auto-startup=false",
@@ -78,9 +76,6 @@ class TransactionCategoryBalanceRepositoryTest {
     /** A generated value for this run, matching no provider credential shape. */
     private static final String DATABASE_SECRET = "a-generated-database-value-for-the-category";
 
-    /** The schema Flyway migrates into, which is also the one the shipped URL selects. */
-    private static final String SCHEMA = "ledger_service";
-
     /** An account no row of {@code V2__seed.sql} carries, so its key starts absent. */
     private static final String NEW_ACCOUNT = "00000000099";
 
@@ -93,16 +88,13 @@ class TransactionCategoryBalanceRepositoryTest {
     /** The one row either arm of the statement writes. */
     private static final int ONE_ROW = 1;
 
-    /** The image tag the compose stack pins. */
-    @Container
-    static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:18.4")
-            .withDatabaseName("carddemo_ledger")
-            .withUsername(DATABASE_LOGIN)
-            .withPassword(DATABASE_SECRET);
-
-    static {
-        POSTGRES.start();
-    }
+    /**
+     * The one container the module fork runs, which this class reads a login from.
+     *
+     * <p>{@link LedgerServiceDatabase} owns it and hands this class a database of its own inside it.
+     * Nothing here starts or stops a container.
+     */
+    static final PostgreSQLContainer POSTGRES = LedgerServiceDatabase.container();
 
     /** Replaces the producer template, so the context starts with no broker reachable. */
     @MockitoBean
@@ -137,7 +129,7 @@ class TransactionCategoryBalanceRepositoryTest {
     @DynamicPropertySource
     static void containerDatasource(DynamicPropertyRegistry registry) {
         registry.add("spring.datasource.url",
-                () -> POSTGRES.getJdbcUrl() + "&currentSchema=" + SCHEMA);
+                () -> LedgerServiceDatabase.urlFor(TransactionCategoryBalanceRepositoryTest.class));
         registry.add("spring.datasource.username", POSTGRES::getUsername);
         registry.add("spring.datasource.password", POSTGRES::getPassword);
     }
@@ -162,7 +154,7 @@ class TransactionCategoryBalanceRepositoryTest {
      * Adds one amount through the statement under test.
      *
      * @param amount the signed amount to add
-     * @return the row count the statement answered
+     * @return 1 when the store wrapped past the field, and 0 when it stayed inside
      */
     private int add(String amount) {
         return boundary.execute(status -> categoryBalances.addToCategoryBalance(NEW_ACCOUNT,
@@ -180,6 +172,12 @@ class TransactionCategoryBalanceRepositoryTest {
                 .orElseThrow();
         return row.getCategoryBalance();
     }
+
+    /** The answer of a store that stayed inside the field. */
+    private static final int NO_WRAP = 0;
+
+    /** The answer of a store that lost the high-order digits. */
+    private static final int WRAPPED = 1;
 
     /** The largest value the field holds, from its Picture clause. */
     private static BigDecimal fieldMaximum() {
@@ -199,7 +197,8 @@ class TransactionCategoryBalanceRepositoryTest {
             int applied = add("504.77");
 
             assertAll(
-                    () -> assertEquals(ONE_ROW, applied, "the insert arm reports one row"),
+                    () -> assertEquals(NO_WRAP, applied,
+                            "the insert arm stores the amount whole, so nothing wrapped"),
                     () -> assertEquals(new BigDecimal("504.77"), storedBalance(),
                             "INITIALIZE then ADD makes the opening balance the amount"));
         }
@@ -212,9 +211,26 @@ class TransactionCategoryBalanceRepositoryTest {
             int applied = add("-4.77");
 
             assertAll(
-                    () -> assertEquals(ONE_ROW, applied, "the conflict arm reports one row"),
+                    () -> assertEquals(NO_WRAP, applied,
+                            "a sum inside the field wrapped nothing"),
                     () -> assertEquals(new BigDecimal("500.00"), storedBalance(),
                             "a negative amount lowers the balance, as a refund does"));
+        }
+
+        @Test
+        @DisplayName("a store past the field reports the wrap it performed")
+        void aStorePastTheFieldReportsTheWrap() {
+            add(fieldMaximum().toPlainString());
+
+            int applied = add("2.00");
+
+            assertAll(
+                    () -> assertEquals(WRAPPED, applied,
+                            "the statement reports the store that lost the high-order digits,"
+                                    + " so the overflow is not silent at runtime"),
+                    () -> assertEquals(new BigDecimal("1.99"), storedBalance(),
+                            "the low-order nine digits remain, as a COBOL ADD with no ON SIZE"
+                                    + " ERROR phrase leaves them"));
         }
 
         @Test
@@ -223,7 +239,8 @@ class TransactionCategoryBalanceRepositoryTest {
             int applied = add(fieldMaximum().toPlainString());
 
             assertAll(
-                    () -> assertEquals(ONE_ROW, applied),
+                    () -> assertEquals(NO_WRAP, applied,
+                            "the ceiling itself is inside the field, so nothing wrapped"),
                     () -> assertEquals(fieldMaximum(), storedBalance(),
                             "nine integer digits and two fractional digits reach the column"));
         }
@@ -268,8 +285,20 @@ class TransactionCategoryBalanceRepositoryTest {
                                     PicClause.TRAN_CAT_BAL_SCALE),
                             storedBalance(),
                             "the remainder carries the sign of the sum, as the COBOL store does"),
-                    () -> assertTrue(storedBalance().compareTo(BigDecimal.ZERO) < 0,
-                            "a debit stays a debit"));
+                    // The line above compares the column against the same helper the production
+                    // upsert is built from, so a defect shared by both reads as agreement. The
+                    // literal below is worked out from the copybook instead: TRAN-CAT-BAL is
+                    // PIC S9(09)V99 at app/cpy/CVTRA01Y.cpy:L9, so the field holds nine integer
+                    // digits. -1.23 plus -999999999.99 is -1000000001.22, whose low-order nine
+                    // integer digits are 000000001, and the sign is kept. Hence -1.22 exactly.
+                    // BigDecimal equality compares the scale too, so this pins the stored scale at
+                    // two as well as the value.
+                    () -> assertEquals(new BigDecimal("-1.22"), storedBalance(),
+                            "the stored remainder is -1.22: -1000000001.22 truncated to the nine"
+                                    + " integer digits app/cpy/CVTRA01Y.cpy:L9 declares"),
+                    () -> assertEquals(-1, storedBalance().signum(),
+                            "a debit stays a debit, and the sign survives the truncation rather"
+                                    + " than the magnitude being taken first"));
         }
 
         @Test

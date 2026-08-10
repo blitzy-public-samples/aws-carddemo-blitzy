@@ -15,6 +15,7 @@ import com.carddemo.cobol.PicClause;
 import com.carddemo.events.EventEnvelope;
 import com.carddemo.events.TransactionAuthorized;
 import com.carddemo.events.TransactionPosted;
+import com.carddemo.ledger.LedgerServiceDatabase;
 import com.carddemo.ledger.TestIdentityPasswords;
 import com.carddemo.ledger.entity.OutboxEventEntity;
 import com.carddemo.ledger.entity.TransactionEntity;
@@ -44,7 +45,6 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
-import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
@@ -368,12 +368,15 @@ final class PostingServiceTest {
         }
 
         @Test
-        @DisplayName("app/cbl/CBTRN02C.cbl:L444 yields nothing, and a null event runs no update")
-        void theMethodYieldsNothingAndRefusesANullEvent() throws NoSuchMethodException {
+        @DisplayName("app/cbl/CBTRN02C.cbl:L444 answers whether the category store wrapped, and a"
+                + " null event runs no update")
+        void theMethodAnswersTheWrapAndRefusesANullEvent() throws NoSuchMethodException {
             assertThat(PostingService.class
                     .getMethod("postTransaction", TransactionAuthorized.class, String.class)
                     .getReturnType())
-                    .isEqualTo(void.class);
+                    .as("the caller reports the wrap after this transaction commits, so the answer"
+                            + " has to leave the method")
+                    .isEqualTo(boolean.class);
 
             assertThatThrownBy(() -> postingService.postTransaction(null, ACCOUNT_ID))
                     .isInstanceOf(NullPointerException.class);
@@ -641,7 +644,6 @@ final class PostingServiceTest {
             "TOPIC_DEAD_LETTER_SUFFIX=.DLT",
             "spring.jpa.hibernate.ddl-auto=validate"
     })
-    @Testcontainers
     class TransactionBoundary {
 
         /** The login this group's database server accepts, and the name of its database. */
@@ -652,9 +654,6 @@ final class PostingServiceTest {
 
         /** The sixteen-character key of the posting this group commits. */
         private static final String COMMITTED_ID = "SLICE-COMMIT-001";
-
-        /** The schema Flyway migrates into, which every statement resolves against. */
-        private static final String MIGRATED_SCHEMA = "ledger_service";
 
         /** A publication instant far enough back that every retention horizon here precedes it. */
         private static final java.time.Instant RETENTION_EXPIRED_AT =
@@ -667,16 +666,13 @@ final class PostingServiceTest {
         /** Rows the bounded retention delete removes per statement when a test wants them all. */
         private static final int RETENTION_BATCH_SIZE = 1000;
 
-        /** The database server this group runs against, started once for the group. */
-        private static final PostgreSQLContainer POSTGRES =
-                new PostgreSQLContainer("postgres:18.4")
-                        .withDatabaseName(DATABASE_LOGIN)
-                        .withUsername(DATABASE_LOGIN)
-                        .withPassword(DATABASE_LOGIN);
-
-        static {
-            POSTGRES.start();
-        }
+        /**
+         * The one container the module fork runs, which this class reads a login from.
+         *
+         * <p>{@link LedgerServiceDatabase} owns it and hands this class a database of its own inside it.
+         * Nothing here starts or stops a container.
+         */
+        private static final PostgreSQLContainer POSTGRES = LedgerServiceDatabase.container();
 
         /** The replaced publish channel, held so no message leaves this group. */
         @MockitoBean
@@ -706,9 +702,6 @@ final class PostingServiceTest {
          */
         private org.springframework.jdbc.core.JdbcTemplate jdbc;
 
-        /** The private schema this service owns, which the shipped connection string names. */
-        private static final String SERVICE_SCHEMA = "ledger_service";
-
         /** Points the datasource at the started server, on the schema the shipped URL names. */
         @DynamicPropertySource
         static void datasourceProperties(DynamicPropertyRegistry registry) {
@@ -726,8 +719,7 @@ final class PostingServiceTest {
          * unqualified name resolves.
          */
         private static String jdbcUrlOnTheServiceSchema() {
-            String url = POSTGRES.getJdbcUrl();
-            return url + (url.contains("?") ? "&" : "?") + "currentSchema=" + SERVICE_SCHEMA;
+            return LedgerServiceDatabase.urlFor(PostingServiceTest.class);
         }
 
         /** Reads the five beans this group drives out of the started context. */

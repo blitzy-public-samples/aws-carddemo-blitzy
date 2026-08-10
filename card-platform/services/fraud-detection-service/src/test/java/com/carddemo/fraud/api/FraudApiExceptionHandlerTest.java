@@ -59,6 +59,16 @@ final class FraudApiExceptionHandlerTest {
     /** An account identifier of the declared width, so a refusal comes from another value. */
     private static final String ACCOUNT = "00000000007";
 
+    /**
+     * The one detail every {@code page} value receives.
+     *
+     * <p>It is one text rather than one per value because the answer is the same in every case: this
+     * route does not serve a page number at all, so there is no bound to report and nothing about the
+     * value to describe.
+     */
+    private static final String PAGE_REFUSAL = "The page parameter is not supported. Continue a page"
+            + " by returning the cursor the previous answer named, in the X-Fraud-Cursor header.";
+
     /** The four members the document declares, and no fifth. */
     private static final List<String> DECLARED_MEMBERS =
             List.of("type", "title", "status", "detail");
@@ -98,7 +108,6 @@ final class FraudApiExceptionHandlerTest {
     @DisplayName("A value outside its declared bounds answers 400 as one problem document")
     void aValueOutsideItsDeclaredBoundsAnswersOneProblemDocument() throws Exception {
         String sizeBounds = "The size parameter reads as a number from 1 through 200.";
-        String pageBounds = "The page parameter reads as a number from 0 through 1000000.";
 
         assertProblem(perform(get(COLLECTION_ROUTE).param("accountId", "1")), 400,
                 ApiProblem.BAD_REQUEST, ApiProblem.INVALID_REQUEST_CONTENT);
@@ -109,7 +118,7 @@ final class FraudApiExceptionHandlerTest {
         assertProblem(perform(get(COLLECTION_ROUTE).param("accountId", ACCOUNT)
                 .param("size", "abc")), 400, ApiProblem.BAD_REQUEST, sizeBounds);
         assertProblem(perform(get(COLLECTION_ROUTE).param("accountId", ACCOUNT)
-                .param("page", "-1")), 400, ApiProblem.BAD_REQUEST, pageBounds);
+                .param("page", "-1")), 400, ApiProblem.BAD_REQUEST, PAGE_REFUSAL);
         assertProblem(perform(get(ITEM_ROUTE, "short")), 400, ApiProblem.BAD_REQUEST,
                 ApiProblem.INVALID_REQUEST_CONTENT);
     }
@@ -117,21 +126,60 @@ final class FraudApiExceptionHandlerTest {
     /**
      * Asserts a paging parameter that arrived carrying no characters answers 400, never a default.
      *
-     * <p>A parameter declared as a number with a default takes that default for {@code ?page=} as
-     * well as for an omitted {@code page}, so the caller receives the first page and a {@code 200}
-     * that states nothing about what it did. The detail names the parameter and how to omit it.
+     * <p>A parameter declared as a number with a default takes that default for {@code ?size=} as
+     * well as for an omitted {@code size}, so the caller receives twenty rows and a {@code 200} that
+     * states nothing about what it did. The detail names the parameter and how to omit it.
+     *
+     * <p>An empty {@code page} is refused too, but for the other reason: no value of {@code page} is
+     * served at all, so it never reaches the bounds check.
      */
     @Test
     @DisplayName("A paging parameter that arrived empty answers 400 as one problem document")
     void aPagingParameterThatArrivedEmptyAnswersOneProblemDocument() throws Exception {
         assertProblem(perform(get(COLLECTION_ROUTE).param("accountId", ACCOUNT)
-                        .param("page", "")), 400, ApiProblem.BAD_REQUEST,
-                "The page parameter arrived carrying no value. Omit it to take the default, or send"
-                        + " a number from 0 through 1000000.");
+                        .param("page", "")), 400, ApiProblem.BAD_REQUEST, PAGE_REFUSAL);
         assertProblem(perform(get(COLLECTION_ROUTE).param("accountId", ACCOUNT)
                         .param("size", "")), 400, ApiProblem.BAD_REQUEST,
                 "The size parameter arrived carrying no value. Omit it to take the default, or send"
                         + " a number from 1 through 200.");
+    }
+
+    /**
+     * A page number is refused at every value, and the refusal names the header that replaces it.
+     *
+     * <p>An offset is reached by reading and discarding every row before it, so no page number is
+     * served. The detail tells a caller what to send instead, which is the one thing it needs to
+     * know: a refusal that only said no would leave it unable to reach the next page at all.
+     */
+    @Test
+    @DisplayName("Every page number answers 400 naming the cursor header instead")
+    void everyPageNumberAnswersFourHundredNamingTheCursorHeader() throws Exception {
+        for (String page : java.util.List.of("0", "1", "1000000", "1000001", "2147483648", "many")) {
+            assertProblem(perform(get(COLLECTION_ROUTE).param("accountId", ACCOUNT)
+                    .param("page", page)), 400, ApiProblem.BAD_REQUEST, PAGE_REFUSAL);
+        }
+    }
+
+    /**
+     * A cursor this route did not issue answers 400, and the detail carries no part of the value.
+     *
+     * <p>A cursor holds a transaction identifier. Echoing the value a caller sent would copy that
+     * identifier into the response body and into any log built from it, so the detail names the
+     * shape instead.
+     */
+    @Test
+    @DisplayName("An unreadable cursor answers 400 and the detail echoes no part of it")
+    void anUnreadableCursorAnswersFourHundredWithoutEchoingIt() throws Exception {
+        String cursorDetail = "The X-Fraud-Cursor header reads as an assessment time and a"
+                + " transaction identifier of 16 characters, joined by |. Send back the cursor the"
+                + " previous answer named, or omit the header to start at the newest assessment.";
+
+        for (String cursor : java.util.List.of("nonsense", "2026-02-14T09:15:30Z",
+                "2026-02-14T09:15:30Z|short", "yesterday|0000000000683580")) {
+            assertProblem(perform(get(COLLECTION_ROUTE).param("accountId", ACCOUNT)
+                            .header(FraudAssessmentController.CURSOR_HEADER, cursor)),
+                    400, ApiProblem.BAD_REQUEST, cursorDetail);
+        }
     }
 
     /** Asserts the required account parameter not arriving answers the same shape. */

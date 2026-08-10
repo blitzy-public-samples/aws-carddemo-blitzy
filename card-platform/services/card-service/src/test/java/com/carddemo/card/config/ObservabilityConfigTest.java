@@ -25,7 +25,10 @@ class ObservabilityConfigTest {
             ObservabilityConfig.METRIC_CARD_OUTBOX_ABANDONED,
             ObservabilityConfig.METRIC_CARD_DEAD_LETTERS_FAILED,
             ObservabilityConfig.METRIC_CARD_UPDATE_LATENCY,
-            ObservabilityConfig.METRIC_CARD_PUBLISH_LATENCY);
+            ObservabilityConfig.METRIC_CARD_PUBLISH_LATENCY,
+            ObservabilityConfig.METRIC_CARD_XREF_AGREED,
+            ObservabilityConfig.METRIC_CARD_XREF_CORRECTED,
+            ObservabilityConfig.METRIC_CARD_XREF_MISSING);
 
     private static final ApplicationContextRunner RUNNER = new ApplicationContextRunner()
             .withBean(MeterRegistry.class, () -> {

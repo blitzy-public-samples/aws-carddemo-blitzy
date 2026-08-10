@@ -33,8 +33,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
-import org.springframework.data.domain.PageRequest;
-import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Limit;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
@@ -126,9 +125,10 @@ final class FraudAssessmentControllerTest {
      * Stands the controller up over a stubbed repository before each test.
      *
      * <p>No framework page resolver is registered, deliberately. The collection route declares
-     * {@code page} and {@code size} as request parameters of its own with stated bounds, so a value
-     * outside them answers 400 instead of being coerced or clamped. Registering a resolver here would
-     * hide that: it would answer 200 for every value a test could send.</p>
+     * {@code size} as a request parameter of its own with a stated bound, so a value outside it
+     * answers 400 instead of being coerced or clamped, and it refuses {@code page} outright.
+     * Registering a resolver here would hide both: it would answer 200 for every value a test
+     * could send.</p>
      *
      * <p>A validator is registered so the bounds on those parameters and the pattern on the account
      * identifier are enforced, which is what turns an out-of-range value into a client error.</p>
@@ -282,10 +282,10 @@ final class FraudAssessmentControllerTest {
         List<FraudAssessmentEntity> stored = List.of(
                 assessmentRow(STORED_TRANSACTION, ACCOUNT, SCORE, List.of(VELOCITY), true),
                 assessmentRow(SECOND_TRANSACTION, ACCOUNT, CLEARED_SCORE, List.of(), false));
-        when(assessments.findByAccountIdOrderByAssessedAtDesc(eq(ACCOUNT), any()))
+        when(assessments.findByAccountIdOrderByAssessedAtDescTransactionIdDesc(eq(ACCOUNT), any()))
                 .thenReturn(stored);
 
-        List<Map<String, Object>> body = readArray(mockMvc
+        List<Map<String, Object>> body = readAssessments(mockMvc
                 .perform(get(COLLECTION_ROUTE).param("accountId", ACCOUNT))
                 .andExpect(status().isOk())
                 .andReturn());
@@ -301,7 +301,7 @@ final class FraudAssessmentControllerTest {
     @Test
     @DisplayName("an account holding no assessment answers 200 with an empty array, never 404")
     void anAccountHoldingNoAssessmentAnswersAnEmptyArray() throws Exception {
-        when(assessments.findByAccountIdOrderByAssessedAtDesc(
+        when(assessments.findByAccountIdOrderByAssessedAtDescTransactionIdDesc(
                 eq(ACCOUNT_WITHOUT_ASSESSMENTS), any())).thenReturn(List.of());
 
         MvcResult result = mockMvc
@@ -311,7 +311,11 @@ final class FraudAssessmentControllerTest {
 
         assertNotEquals(404, result.getResponse().getStatus(),
                 "an account holding no assessment answers 404");
-        assertTrue(readArray(result).isEmpty(), "the answer carries an element");
+        assertTrue(readAssessments(result).isEmpty(), "the answer carries an element");
+        assertEquals(Boolean.FALSE, readObject(result).get("nextPageExists"),
+                "an account with no rows claims a further page");
+        assertFalse(readObject(result).containsKey("nextCursor"),
+                "an answer with no further page carries a cursor");
     }
 
     @Test
@@ -365,53 +369,172 @@ final class FraudAssessmentControllerTest {
     }
 
     @Test
-    @DisplayName("the collection route forwards the page number and page size it was given, unsorted")
-    void theCollectionRouteForwardsPageNumberOneAndPageSizeThree() throws Exception {
-        when(assessments.findByAccountIdOrderByAssessedAtDesc(eq(ACCOUNT), any()))
+    @DisplayName("the page size it was given is read with one lookahead row, and no more")
+    void thePageSizeItWasGivenIsReadWithOneLookaheadRow() throws Exception {
+        when(assessments.findByAccountIdOrderByAssessedAtDescTransactionIdDesc(eq(ACCOUNT), any()))
                 .thenReturn(List.of());
 
         mockMvc.perform(get(COLLECTION_ROUTE)
                         .param("accountId", ACCOUNT)
-                        .param("page", "1")
                         .param("size", "3"))
                 .andExpect(status().isOk());
 
-        Pageable forwarded = capturedPage();
-        assertEquals(1, forwarded.getPageNumber(), "the repository reads another page number");
-        assertEquals(3, forwarded.getPageSize(), "the repository reads another page size");
-        assertFalse(forwarded.getSort().isSorted(), "the forwarded page carries a sort order");
+        assertEquals(3 + FraudAssessmentController.LOOKAHEAD_ROW_COUNT, capturedLimit().max(),
+                "the read asks for the page and one row past it, so whether a further page exists is"
+                        + " answered without counting the account's remaining rows");
     }
 
     @Test
-    @DisplayName("the collection route forwards page size seven, unsorted")
-    void theCollectionRouteForwardsPageSizeSeven() throws Exception {
-        when(assessments.findByAccountIdOrderByAssessedAtDesc(eq(ACCOUNT), any()))
-                .thenReturn(List.of());
-
-        mockMvc.perform(get(COLLECTION_ROUTE)
-                        .param("accountId", ACCOUNT)
-                        .param("size", "7"))
-                .andExpect(status().isOk());
-
-        Pageable forwarded = capturedPage();
-        assertEquals(7, forwarded.getPageSize(), "the repository reads another page size");
-        assertFalse(forwarded.getSort().isSorted(), "the forwarded page carries a sort order");
-    }
-
-    @Test
-    @DisplayName("naming no page and no size returns the first page at the declared default size")
-    void namingNoPageAndNoSizeReturnsTheFirstPageAtTheDefaultSize() throws Exception {
-        when(assessments.findByAccountIdOrderByAssessedAtDesc(eq(ACCOUNT), any()))
+    @DisplayName("naming no cursor and no size reads the newest page at the declared default size")
+    void namingNoCursorAndNoSizeReadsTheNewestPageAtTheDefaultSize() throws Exception {
+        when(assessments.findByAccountIdOrderByAssessedAtDescTransactionIdDesc(eq(ACCOUNT), any()))
                 .thenReturn(List.of());
 
         mockMvc.perform(get(COLLECTION_ROUTE).param("accountId", ACCOUNT))
                 .andExpect(status().isOk());
 
-        Pageable forwarded = capturedPage();
-        assertEquals(FraudAssessmentController.FIRST_PAGE, forwarded.getPageNumber(),
-                "a caller naming no page receives another page");
-        assertEquals(FraudAssessmentController.DEFAULT_PAGE_SIZE, forwarded.getPageSize(),
+        assertEquals(
+                FraudAssessmentController.DEFAULT_PAGE_SIZE
+                        + FraudAssessmentController.LOOKAHEAD_ROW_COUNT,
+                capturedLimit().max(),
                 "a caller naming no size receives another number of rows");
+        verify(assessments, never()).findPageAfter(any(), any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("a cursor reads the page after the position it names, bound to the account asked for")
+    void aCursorReadsThePageAfterThePositionItNames() throws Exception {
+        when(assessments.findPageAfter(eq(ACCOUNT), any(), any(), any())).thenReturn(List.of());
+
+        mockMvc.perform(get(COLLECTION_ROUTE)
+                        .param("accountId", ACCOUNT)
+                        .header(FraudAssessmentController.CURSOR_HEADER,
+                                ASSESSED_AT + "|" + SECOND_TRANSACTION))
+                .andExpect(status().isOk());
+
+        verify(assessments).findPageAfter(eq(ACCOUNT), eq(ASSESSED_AT), eq(SECOND_TRANSACTION),
+                any());
+        verify(assessments, never())
+                .findByAccountIdOrderByAssessedAtDescTransactionIdDesc(any(), any());
+    }
+
+    @Test
+    @DisplayName("a cursor is bound to the requested account, never to the one that issued it")
+    void aCursorIsBoundToTheRequestedAccount() throws Exception {
+        when(assessments.findPageAfter(eq(ACCOUNT_WITHOUT_ASSESSMENTS), any(), any(), any()))
+                .thenReturn(List.of());
+
+        mockMvc.perform(get(COLLECTION_ROUTE)
+                        .param("accountId", ACCOUNT_WITHOUT_ASSESSMENTS)
+                        .header(FraudAssessmentController.CURSOR_HEADER,
+                                ASSESSED_AT + "|" + STORED_TRANSACTION))
+                .andExpect(status().isOk());
+
+        verify(assessments).findPageAfter(eq(ACCOUNT_WITHOUT_ASSESSMENTS), any(), any(), any());
+        verify(assessments, never()).findPageAfter(eq(ACCOUNT), any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("a full page names the cursor of its last served row and never of the lookahead row")
+    void aFullPageNamesTheCursorOfItsLastServedRow() throws Exception {
+        List<FraudAssessmentEntity> stored = List.of(
+                assessmentRow(STORED_TRANSACTION, ACCOUNT, SCORE, List.of(VELOCITY), true),
+                assessmentRow(SECOND_TRANSACTION, ACCOUNT, CLEARED_SCORE, List.of(), false));
+        when(assessments.findByAccountIdOrderByAssessedAtDescTransactionIdDesc(eq(ACCOUNT), any()))
+                .thenReturn(stored);
+
+        MvcResult result = mockMvc.perform(get(COLLECTION_ROUTE)
+                        .param("accountId", ACCOUNT)
+                        .param("size", "1"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        List<Map<String, Object>> rows = readAssessments(result);
+        assertEquals(1, rows.size(), "the lookahead row was served rather than only counted");
+        assertEquals(STORED_TRANSACTION, rows.get(0).get("transactionId"));
+        assertEquals(Boolean.TRUE, readObject(result).get("nextPageExists"));
+        assertEquals(ASSESSED_AT + "|" + STORED_TRANSACTION, readObject(result).get("nextCursor"),
+                "the cursor names a row other than the last one served, which would either repeat a"
+                        + " row on the next page or skip one");
+    }
+
+    @Test
+    @DisplayName("a page shorter than the size asked for names no cursor and claims no further page")
+    void aShortPageNamesNoCursor() throws Exception {
+        List<FraudAssessmentEntity> stored = List.of(
+                assessmentRow(STORED_TRANSACTION, ACCOUNT, SCORE, List.of(VELOCITY), true));
+        when(assessments.findByAccountIdOrderByAssessedAtDescTransactionIdDesc(eq(ACCOUNT), any()))
+                .thenReturn(stored);
+
+        MvcResult result = mockMvc.perform(get(COLLECTION_ROUTE)
+                        .param("accountId", ACCOUNT)
+                        .param("size", "5"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        assertEquals(1, readAssessments(result).size());
+        assertEquals(Boolean.FALSE, readObject(result).get("nextPageExists"));
+        assertFalse(readObject(result).containsKey("nextCursor"),
+                "the last page carries a cursor, so a caller walking the history never stops");
+    }
+
+    @Test
+    @DisplayName("the cursor a page names is accepted back, so a walk of the history terminates")
+    void theCursorAPageNamesIsAcceptedBack() throws Exception {
+        List<FraudAssessmentEntity> stored = List.of(
+                assessmentRow(STORED_TRANSACTION, ACCOUNT, SCORE, List.of(VELOCITY), true),
+                assessmentRow(SECOND_TRANSACTION, ACCOUNT, CLEARED_SCORE, List.of(), false));
+        when(assessments.findByAccountIdOrderByAssessedAtDescTransactionIdDesc(eq(ACCOUNT), any()))
+                .thenReturn(stored);
+
+        String cursor = String.valueOf(readObject(mockMvc.perform(get(COLLECTION_ROUTE)
+                        .param("accountId", ACCOUNT)
+                        .param("size", "1"))
+                .andExpect(status().isOk())
+                .andReturn()).get("nextCursor"));
+
+        when(assessments.findPageAfter(eq(ACCOUNT), any(), any(), any())).thenReturn(List.of());
+
+        MvcResult second = mockMvc.perform(get(COLLECTION_ROUTE)
+                        .param("accountId", ACCOUNT)
+                        .param("size", "1")
+                        .header(FraudAssessmentController.CURSOR_HEADER, cursor))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        verify(assessments).findPageAfter(eq(ACCOUNT), eq(ASSESSED_AT), eq(STORED_TRANSACTION),
+                any());
+        assertEquals(Boolean.FALSE, readObject(second).get("nextPageExists"),
+                "the second page of an exhausted history claims a third");
+    }
+
+    @Test
+    @DisplayName("a cursor this route did not issue answers 400 and reads no row")
+    void aMalformedCursorAnswersFourHundred() throws Exception {
+        List<String> malformed = List.of(
+                "",
+                "|",
+                ASSESSED_AT.toString(),
+                ASSESSED_AT + "|",
+                ASSESSED_AT + "|" + SHORT_TRANSACTION,
+                ASSESSED_AT + "|" + LONG_TRANSACTION,
+                "yesterday|" + STORED_TRANSACTION,
+                STORED_TRANSACTION + "|" + ASSESSED_AT);
+
+        for (String cursor : malformed) {
+            MvcResult result = mockMvc.perform(get(COLLECTION_ROUTE)
+                            .param("accountId", ACCOUNT)
+                            .header(FraudAssessmentController.CURSOR_HEADER, cursor))
+                    .andExpect(status().isBadRequest())
+                    .andReturn();
+
+            String body = result.getResponse().getContentAsString();
+            assertFalse(body.contains(STORED_TRANSACTION) || body.contains(SECOND_TRANSACTION),
+                    "the refusal echoes a transaction identifier read out of the cursor: " + cursor);
+            assertNothingLeaks(body);
+        }
+
+        verifyNoInteractions(assessments);
     }
 
     @Test
@@ -443,7 +566,7 @@ final class FraudAssessmentControllerTest {
     @Test
     @DisplayName("the ceiling itself is accepted and forwarded whole")
     void theCeilingItselfIsAcceptedAndForwardedWhole() throws Exception {
-        when(assessments.findByAccountIdOrderByAssessedAtDesc(eq(ACCOUNT), any()))
+        when(assessments.findByAccountIdOrderByAssessedAtDescTransactionIdDesc(eq(ACCOUNT), any()))
                 .thenReturn(List.of());
 
         mockMvc.perform(get(COLLECTION_ROUTE)
@@ -452,7 +575,10 @@ final class FraudAssessmentControllerTest {
                                 String.valueOf(FraudAssessmentController.MAXIMUM_PAGE_SIZE)))
                 .andExpect(status().isOk());
 
-        assertEquals(FraudAssessmentController.MAXIMUM_PAGE_SIZE, capturedPage().getPageSize(),
+        assertEquals(
+                FraudAssessmentController.MAXIMUM_PAGE_SIZE
+                        + FraudAssessmentController.LOOKAHEAD_ROW_COUNT,
+                capturedLimit().max(),
                 "the ceiling was not forwarded whole");
     }
 
@@ -468,12 +594,20 @@ final class FraudAssessmentControllerTest {
     }
 
     @Test
-    @DisplayName("a negative page number answers 400 rather than being read as the first page")
-    void aNegativePageNumberAnswersFourHundred() throws Exception {
-        mockMvc.perform(get(COLLECTION_ROUTE)
-                        .param("accountId", ACCOUNT)
-                        .param("page", "-1"))
-                .andExpect(status().isBadRequest());
+    @DisplayName("every page number is refused, so no offset is reachable at any value")
+    void everyPageNumberIsRefused() throws Exception {
+        List<String> pageNumbers = List.of("0", "1", "-1", "1000000", "1000001", "2147483647",
+                "many", "");
+
+        for (String page : pageNumbers) {
+            MvcResult result = mockMvc.perform(get(COLLECTION_ROUTE)
+                            .param("accountId", ACCOUNT)
+                            .param("page", page))
+                    .andExpect(status().isBadRequest())
+                    .andReturn();
+
+            assertNothingLeaks(result.getResponse().getContentAsString());
+        }
 
         verifyNoInteractions(assessments);
     }
@@ -523,11 +657,12 @@ final class FraudAssessmentControllerTest {
                 .map(method -> List.<Class<?>>of(method.getParameterTypes()))
                 .orElseThrow(() -> new AssertionError("the controller declares no collection route"));
 
-        assertEquals(List.of(String.class, String.class, String.class, String.class), parameterTypes,
-                "the collection route takes the account identifier and three parameters of its own,"
-                        + " each read as text; a framework page argument would decide the page"
-                        + " silently instead, and a number with a default would read a present-empty"
-                        + " value as an omitted one");
+        assertEquals(List.of(String.class, String.class, String.class, String.class, String.class),
+                parameterTypes,
+                "the collection route takes the account identifier, the cursor and three parameters"
+                        + " of its own, each read as text; a framework page argument would decide the"
+                        + " page silently instead, and a number with a default would read a"
+                        + " present-empty value as an omitted one");
     }
 
     @Test
@@ -544,34 +679,34 @@ final class FraudAssessmentControllerTest {
     }
 
     @Test
-    @DisplayName("an omitted paging value takes its default and reads the first page")
-    void anOmittedPagingValueTakesItsDefault() throws Exception {
-        when(assessments.findByAccountIdOrderByAssessedAtDesc(eq(ACCOUNT), any()))
+    @DisplayName("an omitted size takes its default and reads the newest page")
+    void anOmittedSizeTakesItsDefault() throws Exception {
+        when(assessments.findByAccountIdOrderByAssessedAtDescTransactionIdDesc(eq(ACCOUNT), any()))
                 .thenReturn(List.of());
 
         mockMvc.perform(get(COLLECTION_ROUTE).param("accountId", ACCOUNT))
                 .andExpect(status().isOk());
 
-        ArgumentCaptor<PageRequest> requested = ArgumentCaptor.forClass(PageRequest.class);
-        verify(assessments)
-                .findByAccountIdOrderByAssessedAtDesc(eq(ACCOUNT), requested.capture());
-
-        assertEquals(FraudAssessmentController.FIRST_PAGE,
-                requested.getValue().getPageNumber(), "the first page");
-        assertEquals(FraudAssessmentController.DEFAULT_PAGE_SIZE,
-                requested.getValue().getPageSize(), "the default rows one page carries");
+        assertEquals(
+                FraudAssessmentController.DEFAULT_PAGE_SIZE
+                        + FraudAssessmentController.LOOKAHEAD_ROW_COUNT,
+                capturedLimit().max(),
+                "the default rows one page carries, plus the one lookahead row");
     }
 
     @Test
-    @DisplayName("a page number past its ceiling is refused rather than overflowing an offset")
-    void aPageNumberPastItsCeilingIsRefused() throws Exception {
-        mockMvc.perform(get(COLLECTION_ROUTE)
-                        .param("accountId", ACCOUNT)
-                        .param("page", String.valueOf(
-                                FraudAssessmentController.MAXIMUM_PAGE_NUMBER + 1)))
-                .andExpect(status().isBadRequest());
+    @DisplayName("the controller declares no page-number ceiling, because it reads no offset")
+    void theControllerDeclaresNoPageNumberCeiling() {
+        List<String> offenders = Arrays.stream(FraudAssessmentController.class
+                        .getDeclaredFields())
+                .map(java.lang.reflect.Field::getName)
+                .filter(name -> name.contains("PAGE_NUMBER") || "FIRST_PAGE".equals(name))
+                .toList();
 
-        verifyNoInteractions(assessments);
+        assertEquals(List.of(), offenders,
+                "a page-number bound is a bound on an offset this route does not read: reaching a"
+                        + " page by number costs every row before it, and the cursor exists so that"
+                        + " cost never arises. Fields left behind: " + offenders);
     }
 
     /**
@@ -595,12 +730,12 @@ final class FraudAssessmentControllerTest {
     }
 
     /**
-     * @return the forwarded page
+     * @return the row count the newest-page read asked for
      */
-    private Pageable capturedPage() {
-        ArgumentCaptor<Pageable> forwarded = ArgumentCaptor.forClass(Pageable.class);
-        verify(assessments)
-                .findByAccountIdOrderByAssessedAtDesc(eq(ACCOUNT), forwarded.capture());
+    private Limit capturedLimit() {
+        ArgumentCaptor<Limit> forwarded = ArgumentCaptor.forClass(Limit.class);
+        verify(assessments).findByAccountIdOrderByAssessedAtDescTransactionIdDesc(eq(ACCOUNT),
+                forwarded.capture());
         return forwarded.getValue();
     }
 
@@ -617,14 +752,17 @@ final class FraudAssessmentControllerTest {
     }
 
     /**
-     * Reads one response body as an array of objects.
+     * Reads the rows one page answer carries.
+     *
+     * <p>The collection route answers an envelope rather than a bare array, because a page has to
+     * say whether another page follows it and where that page starts.
      *
      * @param result the answer to read
-     * @return one element per object, each keyed by property name
+     * @return one element per assessment, each keyed by property name
      * @throws Exception if the body cannot be read as characters
      */
-    private static List<Map<String, Object>> readArray(MvcResult result) throws Exception {
-        return JSON.readValue(result.getResponse().getContentAsString(),
+    private static List<Map<String, Object>> readAssessments(MvcResult result) throws Exception {
+        return JSON.convertValue(readObject(result).get("assessments"),
                 new TypeReference<List<Map<String, Object>>>() { });
     }
 

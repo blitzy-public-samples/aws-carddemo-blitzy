@@ -22,7 +22,7 @@ import org.springframework.transaction.support.TransactionTemplate;
  * Storage Access Method file whose lifetime the Job Control Language owns, and
  * {@code app/jcl/POSTTRAN.jcl} deletes and redefines its output rather than pruning it.
  *
- * <h2>Why each delete is bounded and drained</h2>
+ * <h2>Each delete is bounded and drained</h2>
  *
  * <p>Both tables are on the hot write path. {@code outbox_event} is written by every account update
  * and every cycle close and swept by the relay on a fixed delay, and {@code processed_event} is

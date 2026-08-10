@@ -2,6 +2,7 @@ package com.carddemo.authorization.config;
 
 import com.carddemo.authorization.messaging.DeadLetterMetadata;
 import com.carddemo.events.DeadLetterEnvelope;
+import com.carddemo.events.correlation.EventCorrelation;
 import com.carddemo.events.serde.EventContracts;
 
 import java.nio.ByteBuffer;
@@ -244,9 +245,8 @@ public class KafkaConsumerConfig {
         requireAtLeast(maxAttempts, FIRST_DELIVERY, "carddemo.consumer.retry.max-attempts");
         requireAtLeast(backoffMs, 0L, "carddemo.consumer.retry.backoff-ms");
 
-        Counter deadLettered = Counter.builder(ObservabilityConfig.FAILURES_COUNTER)
-                .tag(ObservabilityConfig.STAGE_TAG, ObservabilityConfig.REPLICA_STAGE)
-                .register(meters);
+        Counter deadLettered =
+                ObservabilityConfig.failureCounter(meters, ObservabilityConfig.REPLICA_STAGE);
 
         DeadLetterPublishingRecoverer route =
                 new SanitizingRecoverer(deadLetterKafkaTemplate, deadLetterTopic);
@@ -293,6 +293,9 @@ public class KafkaConsumerConfig {
 
         configurer.configure(factory, consumerFactory);
         factory.setCommonErrorHandler(replicaConsumerErrorHandler);
+        // The correlation fields of one delivery reach the structured log context here, in one
+        // place rather than in each listener, and leave it again when the delivery ends.
+        factory.setRecordInterceptor(new CorrelationRecordInterceptor<>());
         factory.getContainerProperties().setDeliveryAttemptHeader(true);
         requireImmediateManualAcknowledgement(factory.getContainerProperties().getAckMode());
 
@@ -475,6 +478,18 @@ public class KafkaConsumerConfig {
                     allowed.add(name, header.value());
                 }
             }
+            // The two correlation identifiers reach the dead-letter record as well, so a spent
+            // record names the call behind it and not only the event that failed. Each is
+            // re-rendered from a strict parse rather than copied, so a producer cannot place
+            // arbitrary bytes on the diagnostic through a header this method admits.
+            EventCorrelation.headersFor(
+                            EventCorrelation
+                                    .read(headers, EventCorrelation.CORRELATION_ID_HEADER)
+                                    .orElse(null),
+                            EventCorrelation
+                                    .read(headers, EventCorrelation.CAUSATION_ID_HEADER)
+                                    .orElse(null))
+                    .forEach(allowed::add);
             return allowed;
         }
 

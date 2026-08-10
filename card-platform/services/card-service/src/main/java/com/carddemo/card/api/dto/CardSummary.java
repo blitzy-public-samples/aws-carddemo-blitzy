@@ -30,12 +30,30 @@ import java.util.regex.Pattern;
  *                     {@code accountId} of every account-keyed event schema and the Kafka message
  *                     key of those events; {@code TransactionDeclined} version 2 is keyed on a
  *                     transaction identifier instead.
- * @param activeStatus the one-character active status, carried through with no interpretation
+ * @param activeStatus the one-character active status, {@value #ACTIVE_STATUS_YES} or
+ *        {@value #ACTIVE_STATUS_NO} from {@code 88 FLG-YES-NO-VALID} at
+ *        {@code app/cbl/COCRDUPC.cbl:L91}
  */
 public record CardSummary(String cardNumber, String accountId, String activeStatus) {
 
     /** Digits an account identifier holds, from {@code CARD-ACCT-ID PIC 9(11)} at L6. */
     private static final int ACCOUNT_ID_DIGITS = 11;
+
+    /**
+     * The affirmative value of {@code active_status}, from
+     * {@code 88 FLG-YES-NO-VALID VALUES 'Y', 'N'.} at {@code app/cbl/COCRDUPC.cbl:L91}.
+     *
+     * <p>Public because two response records carry the column and one domain governs both. It is
+     * declared here rather than on {@code entity/CardEntity} so that a response never depends on the
+     * persistence layer to know what it may answer.
+     */
+    public static final String ACTIVE_STATUS_YES = "Y";
+
+    /**
+     * The negative value of {@code active_status}, from the same condition name at
+     * {@code app/cbl/COCRDUPC.cbl:L91}.
+     */
+    public static final String ACTIVE_STATUS_NO = "N";
 
     /** The one form the card number component takes: twelve mask characters then four digits. */
     private static final String MASKED_CARD_NUMBER_PATTERN = "^\\*{12}[0-9]{4}$";
@@ -55,10 +73,13 @@ public record CardSummary(String cardNumber, String accountId, String activeStat
     /**
      * Checks that the card number is masked and the account identifier holds eleven digits.
      *
-     * @throws NullPointerException     when {@code cardNumber} or {@code accountId} is null
+     * @throws NullPointerException     when {@code cardNumber}, {@code accountId} or
+     *                                  {@code activeStatus} is null
      * @throws IllegalArgumentException when {@code cardNumber} is not twelve mask characters
-     *                                  followed by four digits, or when {@code accountId} is any
-     *                                  other width or holds a character other than an ASCII digit
+     *                                  followed by four digits, when {@code accountId} is any
+     *                                  other width or holds a character other than an ASCII digit,
+     *                                  or when {@code activeStatus} is neither
+     *                                  {@value #ACTIVE_STATUS_YES} nor {@value #ACTIVE_STATUS_NO}
      */
     public CardSummary {
         if (cardNumber == null) {
@@ -82,6 +103,37 @@ public record CardSummary(String cardNumber, String accountId, String activeStat
                 throw new IllegalArgumentException("accountId holds a character other than a digit"
                         + " at position " + (position + 1));
             }
+        }
+        requireActiveStatusFlag(activeStatus);
+    }
+
+    /**
+     * Refuses an active status outside the two values the column may hold.
+     *
+     * <p>{@code 88 FLG-YES-NO-VALID VALUES 'Y', 'N'.} at {@code app/cbl/COCRDUPC.cbl:L91} is the
+     * domain, tested at {@code app/cbl/COCRDUPC.cbl:L1861-L1863}. Three places now hold a card row to
+     * it: {@code api/dto/CardUpdateRequest} on the way in, {@code ck_card_active_status} in
+     * {@code src/main/resources/db/migration/V5__xref_reconciliation_and_status_domain.sql} for every
+     * writer including a direct load, and this method on the way out. Before those two additions the
+     * column was {@code CHAR(1)} with no constraint and a read answered whatever a row held, inside a
+     * contract that named two values.
+     *
+     * <p>The source folds no case on this field, so a lower-case {@code y} is refused rather than
+     * accepted and corrected.
+     *
+     * @param value the status a response is being built with
+     * @throws NullPointerException     when {@code value} is null
+     * @throws IllegalArgumentException when it is neither {@value #ACTIVE_STATUS_YES} nor
+     *                                  {@value #ACTIVE_STATUS_NO}
+     */
+    public static void requireActiveStatusFlag(String value) {
+        if (value == null) {
+            throw new NullPointerException("activeStatus is required");
+        }
+        if (!ACTIVE_STATUS_YES.equals(value) && !ACTIVE_STATUS_NO.equals(value)) {
+            throw new IllegalArgumentException("activeStatus holds '" + value + "' and CARD-ACTIVE-"
+                    + "STATUS holds " + ACTIVE_STATUS_YES + " or " + ACTIVE_STATUS_NO
+                    + ", from 88 FLG-YES-NO-VALID at app/cbl/COCRDUPC.cbl:L91");
         }
     }
 

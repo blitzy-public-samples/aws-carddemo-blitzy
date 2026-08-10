@@ -405,4 +405,39 @@ public class CardCrossReferenceEntity {
         this.observedAt = observedAt;
         return true;
     }
+
+    /**
+     * Brings the account identifier of this replica row into step with the card row that owns the
+     * mapping, and records that the row was observed.
+     *
+     * <p>This service owns {@code card}, and {@code CARD-ACCT-ID PIC 9(11)} at
+     * {@code app/cpy/CVACT02Y.cpy:L6} is the authoritative card-to-account mapping. The replica
+     * carries the same mapping from {@code XREF-ACCT-ID PIC 9(11)} at
+     * {@code app/cpy/CVACT03Y.cpy:L7}, taken from a fixture, and nothing in the source keeps the two
+     * files in step: {@code app/cbl/COCRDUPC.cbl:L356} reads {@code *COPY CVACT03Y.} commented out,
+     * so the update program never opened the cross-reference at all. A divergence between the two is
+     * therefore possible in the source and was possible here, and this method is what closes it.
+     *
+     * <p>The observation time moves whether or not the mapping did, because the row was read and
+     * compared either way, and a reader of {@code observed_at} is asking when this service last
+     * confirmed the row rather than when it last changed it. The event columns are left alone: no
+     * event carried this correction, and claiming one would misreport where the value came from.
+     *
+     * @param authoritativeAccountId the account identifier the owning card row holds, exactly eleven
+     *                               digits with leading zeros
+     * @param observedAt             when this service compared the row
+     * @return true when the mapping disagreed and was corrected, and false when it already agreed
+     * @throws NullPointerException if either argument is null
+     */
+    public boolean reconcileAccountId(String authoritativeAccountId, Instant observedAt) {
+        Objects.requireNonNull(authoritativeAccountId, "authoritativeAccountId");
+        Objects.requireNonNull(observedAt, "observedAt");
+
+        this.observedAt = observedAt;
+        if (authoritativeAccountId.equals(this.accountId)) {
+            return false;
+        }
+        this.accountId = authoritativeAccountId;
+        return true;
+    }
 }

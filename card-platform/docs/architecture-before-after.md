@@ -324,7 +324,7 @@ Each service owns one database, one schema, and the tables below. Column types, 
 | account | `carddemo_account`, `account_service` | `account`, `customer`, `disclosure_group`, `account_customer_link`, `us_phone_area_code`, `us_state_code`, `us_state_zip_prefix`, `outbox_event`, `processed_event` |
 | card | `carddemo_card`, `card_service` | `card`, `card_xref`, `outbox_event`, `processed_event` |
 
-Three services hold a copy of the cross-reference relationship, which is the deliberate replacement for one `CCXREF` dataset shared by six programs in Figure 1. Two of the three are keyed on the card, because authorization and card both answer questions asked about a card. The account copy is keyed on the account and holds no card number, because its one query asks which customer an account belongs to; a card number replicated into a schema that reads no card would be a Primary Account Number with no reader. **The three copies do not share a lifecycle, and calling them all event-current would overstate two of them.**
+Three services hold a copy of the cross-reference relationship, which is the deliberate replacement for one `CCXREF` dataset shared by six programs in Figure 1. Two of the three are keyed on the card, because authorization and card both answer questions asked about a card. The account copy is keyed on the account and holds no card number, because its one query asks which customer an account belongs to. A card number replicated into a schema that reads no card would be a Primary Account Number with no reader. **The three copies do not share a lifecycle, and calling them all event-current would overstate two of them.**
 
 | Copy | How it is loaded | What keeps it current | Who reads it |
 | --- | --- | --- | --- |
@@ -345,7 +345,7 @@ Each row states one mapping between Figure 1 and Figure 2, and none argues for i
 | `EXEC CICS XCTL` with a Communication Area | `app/cbl/COMEN01C.cbl:L152-L155` | Stateless route or in-process call. The Communication Area becomes a request payload |
 | Pseudo-conversational return carrying the Communication Area | `app/cbl/COSGN00C.cbl:L98-L101` | Stateless request and response. Identity arrives on every call, and no conversation state is kept |
 | VSAM keyed dataset plus alternate-index path | `app/jcl/XREFFILE.jcl:L43-L44` and `:L74` | PostgreSQL table plus secondary index, inside one private schema |
-| COBOL copybook record layout | Copybooks under `app/cpy/` | Jakarta Persistence entity, Flyway migration, and event field, or a recorded omission |
+| Common Business Oriented Language (COBOL) copybook record layout | Copybooks under `app/cpy/` | Jakarta Persistence entity, Flyway migration, and event field, or a recorded omission |
 | JCL job step naming a program | `app/jcl/POSTTRAN.jcl:L23` | Kafka listener method, triggered by an event rather than by a clock |
 | Sequential daily-transaction flat file | `app/jcl/POSTTRAN.jcl:L30-L31` | The `transaction.authorized` topic. The file becomes a stream |
 | Generation Data Group reject dataset | `app/jcl/POSTTRAN.jcl:L34-L38` | A `rejected_transaction` row holding the 350-character refused record whole, plus a `TransactionDeclined` event. Both are business outcomes, as the source reject is: `app/cbl/CBTRN02C.cbl:L230` answers a reject with return code 4, not an abend. The dead-letter topics are **not** this row's equivalent |

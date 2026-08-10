@@ -22,7 +22,7 @@ import java.util.UUID;
  * of one identifier on one topic violates that primary key. All four listeners write here, and each
  * commits its row in the same local transaction as the read-model row it guards.</p>
  *
- * <p><b>Why the topic is part of the identity.</b> Four listener groups share this table and read
+ * <p><b>The topic is part of the identity.</b> Four listener groups share this table and read
  * four different topics, and the event identifiers on those topics are assigned independently by
  * three different producing services. Two events on two topics may therefore carry the same
  * identifier without either producer being at fault. Keyed on the identifier alone, the second of

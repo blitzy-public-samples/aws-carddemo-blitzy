@@ -35,10 +35,12 @@ import tools.jackson.databind.JsonNode;
  *       command this replica has to carry out, because nothing else zeroes the two accumulators the
  *       posting path adds to at {@code app/cbl/CBTRN02C.cbl:L548-L551}.</li>
  *   <li>{@code ACCOUNT_UPDATED} is the field update the online path performs at
- *       {@code app/cbl/COACTUPC.cbl:L4066}. It changes fields the account service owns, and it
- *       carries that service's copy of the balance and the two accumulators. That copy is not
- *       authoritative here: the account service consumes no {@code TransactionPosted}, so its copy
- *       does not carry any movement the posting path applied. Writing it over this projection
+ *       {@code app/cbl/COACTUPC.cbl:L4066}, and it is also what the account service publishes after
+ *       it has applied a posted amount to its own record. Either form carries that service's copy of
+ *       the balance and the two accumulators, and neither is authoritative here. That service applies
+ *       the same posting arithmetic, but only for the events it has already consumed, so its copy
+ *       trails this projection by every posting still in flight; and the second form is a copy of
+ *       this service's own output arriving one hop later. Writing either over this projection
  *       discards the posting arithmetic of {@code app/cbl/CBTRN02C.cbl:L545-L560}, which is the one
  *       thing this service owns.</li>
  * </ul>

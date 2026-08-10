@@ -2,6 +2,7 @@ package com.carddemo.ledger.outbox;
 
 import com.carddemo.events.EventEnvelope;
 import com.carddemo.events.TransactionPosted;
+import com.carddemo.events.correlation.EventCorrelation;
 import com.carddemo.events.serde.EventContracts;
 import com.carddemo.ledger.entity.OutboxEventEntity;
 import com.carddemo.ledger.repository.OutboxEventRepository;
@@ -92,8 +93,32 @@ public class OutboxWriter {
             throw new IllegalArgumentException(
                     EventContracts.describeViolations(eventType, violations));
         }
-        return outboxEvents.save(new OutboxEventEntity(envelope.eventId(), eventType,
-                envelope.aggregateId(), payload, clock.instant()));
+        return outboxEvents.save(correlated(new OutboxEventEntity(envelope.eventId(), eventType,
+                envelope.aggregateId(), payload, clock.instant())));
+    }
+
+    /**
+     * Stamps one row with the two correlation identifiers the writing thread is working under.
+     *
+     * <p>ADDITIVE. The values come from the ambient scope
+     * {@code config/CorrelationContextFilter} or the listener opened, rather than from a parameter,
+     * so no domain method between that scope and this writer carries an identifier it does not
+     * otherwise use.
+     *
+     * <p>A row written outside any scope starts its own trace: it adopts its own event identifier
+     * as the correlation identifier, so every published record carries one and a reader can always
+     * join a record to what followed it. Causation stays absent on such a row, because nothing
+     * caused it, and an absent causation contributes no record header when
+     * {@code outbox/OutboxRelay} publishes the row.
+     *
+     * @param row the row about to be saved
+     * @return the same row, stamped
+     */
+    private static OutboxEventEntity correlated(OutboxEventEntity row) {
+        row.recordCorrelation(
+                EventCorrelation.currentCorrelationId().orElseGet(row::getEventId),
+                EventCorrelation.currentEventId().orElse(null));
+        return row;
     }
 
     /**

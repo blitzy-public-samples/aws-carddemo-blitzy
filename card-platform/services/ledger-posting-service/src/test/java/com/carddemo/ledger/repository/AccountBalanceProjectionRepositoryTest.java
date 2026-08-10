@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.carddemo.ledger.LedgerServiceDatabase;
 import com.carddemo.ledger.TestIdentityPasswords;
 import com.carddemo.ledger.entity.AccountBalanceProjectionEntity;
 import com.carddemo.ledger.outbox.OutboxRelay;
@@ -24,8 +25,6 @@ import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 
 /**
@@ -50,7 +49,6 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
  * <p>Flyway owns the schema, so the migration under test is the shipped one. No broker is reached: a
  * stand-in replaces the producer template and the relay.
  */
-@Testcontainers
 @SpringBootTest(properties = {
     // The two listeners of this service must not retry an absent broker.
     "spring.kafka.listener.auto-startup=false",
@@ -82,16 +80,13 @@ class AccountBalanceProjectionRepositoryTest {
     /** An instant after {@link #EARLIER}, for the change that must win. */
     private static final Instant LATER = Instant.parse("2026-02-01T00:00:00Z");
 
-    /** The image tag the compose stack pins. */
-    @Container
-    static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:18.4")
-            .withDatabaseName("carddemo_ledger")
-            .withUsername(DATABASE_LOGIN)
-            .withPassword(DATABASE_SECRET);
-
-    static {
-        POSTGRES.start();
-    }
+    /**
+     * The one container the module fork runs, which this class reads a login from.
+     *
+     * <p>{@link LedgerServiceDatabase} owns it and hands this class a database of its own inside it.
+     * Nothing here starts or stops a container.
+     */
+    static final PostgreSQLContainer POSTGRES = LedgerServiceDatabase.container();
 
     /** Replaces the producer template, so the context starts with no broker reachable. */
     @MockitoBean
@@ -114,9 +109,6 @@ class AccountBalanceProjectionRepositoryTest {
      */
     private TransactionTemplate boundary;
 
-    /** The schema Flyway migrates into, which is also the one the shipped URL selects. */
-    private static final String SCHEMA = "ledger_service";
-
     /**
      * Points the context at the container, selecting the schema the shipped URL selects.
      *
@@ -130,7 +122,7 @@ class AccountBalanceProjectionRepositoryTest {
     @DynamicPropertySource
     static void containerDatasource(DynamicPropertyRegistry registry) {
         registry.add("spring.datasource.url",
-                () -> POSTGRES.getJdbcUrl() + "&currentSchema=" + SCHEMA);
+                () -> LedgerServiceDatabase.urlFor(AccountBalanceProjectionRepositoryTest.class));
         registry.add("spring.datasource.username", POSTGRES::getUsername);
         registry.add("spring.datasource.password", POSTGRES::getPassword);
     }

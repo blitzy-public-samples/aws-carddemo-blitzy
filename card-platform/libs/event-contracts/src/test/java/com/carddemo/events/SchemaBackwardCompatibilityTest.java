@@ -227,16 +227,13 @@ class SchemaBackwardCompatibilityTest {
     /** The account mutation contract the account service publishes. */
     private static final String ACCOUNT_STATE = "schemas/account-state-changed-v1.json";
 
-    /** The original card mutation contract, retained so old records remain readable. */
-    private static final String CARD_STATE_V1 = "schemas/card-updated-v1.json";
-
-    /** The current card mutation contract, which carries no embossed cardholder name. */
-    private static final String CARD_STATE = "schemas/card-updated-v2.json";
+    /** The one card mutation contract, which carries no embossed cardholder name. */
+    private static final String CARD_STATE = "schemas/card-updated-v1.json";
 
     /** Every document this baseline covers, written as literals and never derived from a name. */
     private static final List<String> DOCUMENTS =
             List.of(AUTHORIZED, DECLINED, POSTED, FLAGGED, CLEARED, ACCOUNT_STATE,
-                    CARD_STATE_V1, CARD_STATE);
+                    CARD_STATE);
 
     /**
      * The five documents whose events pass through the posting path.
@@ -252,7 +249,7 @@ class SchemaBackwardCompatibilityTest {
 
     /** The two documents an account or card mutation publishes. */
     private static final List<String> STATE_CHANGE_DOCUMENTS =
-            List.of(ACCOUNT_STATE, CARD_STATE_V1, CARD_STATE);
+            List.of(ACCOUNT_STATE, CARD_STATE);
 
     /**
      * The five documents whose Java record this module ships, so a record-to-document parity check
@@ -266,7 +263,7 @@ class SchemaBackwardCompatibilityTest {
 
     /** The four documents that declare a masked card number. */
     private static final List<String> MASKED_CARD_DOCUMENTS =
-            List.of(AUTHORIZED, DECLINED, POSTED, CARD_STATE_V1, CARD_STATE);
+            List.of(AUTHORIZED, DECLINED, POSTED, CARD_STATE);
 
     /** The three documents that declare no card number in any form. */
     private static final List<String> CARD_FREE_DOCUMENTS =
@@ -295,7 +292,6 @@ class SchemaBackwardCompatibilityTest {
             FLAGGED, "FraudFlagged",
             CLEARED, "FraudCleared",
             ACCOUNT_STATE, "AccountStateChanged",
-            CARD_STATE_V1, "CardUpdated",
             CARD_STATE, "CardUpdated");
 
     /** The nine keywords every document declares, in the relative order they appear. */
@@ -436,8 +432,6 @@ class SchemaBackwardCompatibilityTest {
                     "maskedcard", "pan", "cvv", "reason", "note"),
             ACCOUNT_STATE, List.of("cardnumber", "maskedcard", "pan", "cvv", "transactionid",
                     "riskscore", "filler", "customerid"),
-            CARD_STATE_V1, List.of("cvv", "verificationvalue", "currentbalance", "creditlimit",
-                    "riskscore", "transactionid", "filler"),
             CARD_STATE, List.of("cvv", "verificationvalue", "currentbalance", "creditlimit",
                     "riskscore", "transactionid", "filler", "embossedname"));
 
@@ -2115,8 +2109,6 @@ class SchemaBackwardCompatibilityTest {
         sets.put(CLEARED, requiredSet("transactionId", "accountId", "assessedAt"));
         sets.put(ACCOUNT_STATE, requiredSet("accountId", "currentBalance", "creditLimit",
                 "currentCycleCredit", "currentCycleDebit", "expirationDate", "changeKind"));
-        sets.put(CARD_STATE_V1, requiredSet("accountId", "maskedCardNumber", "embossedName",
-                "expirationDate", "activeStatus"));
         sets.put(CARD_STATE, requiredSet("accountId", "maskedCardNumber",
                 "expirationDate", "activeStatus"));
         return Map.copyOf(sets);
@@ -2506,9 +2498,6 @@ class SchemaBackwardCompatibilityTest {
      */
     private static ObjectNode validPayloadFor(String document) {
         ObjectNode payload = envelopeFor(TITLES.get(document));
-        if (CARD_STATE.equals(document)) {
-            payload.put("schemaVersion", 2);
-        }
         if (!STATE_CHANGE_DOCUMENTS.contains(document)) {
             payload.put("transactionId", TRANSACTION_ID);
         }
@@ -2561,11 +2550,8 @@ class SchemaBackwardCompatibilityTest {
                 payload.put("expirationDate", EXPIRATION_DATE);
                 payload.put(CHANGE_KIND_PROPERTY, ACCOUNT_UPDATED);
             }
-            case CARD_STATE_V1, CARD_STATE -> {
+            case CARD_STATE -> {
                 payload.put(MASKED_CARD_PROPERTY, MASKED_CARD_NUMBER);
-                if (CARD_STATE_V1.equals(document)) {
-                    payload.put("embossedName", "PAULA A CHRISTOFFERSEN");
-                }
                 payload.put("expirationDate", EXPIRATION_DATE);
                 payload.put("activeStatus", ACTIVE_STATUS);
             }
@@ -3165,6 +3151,137 @@ class SchemaBackwardCompatibilityTest {
     }
 
     /**
+     * The event types whose successive versions form one additive chain, with the version that
+     * governs a separately keyed subject rather than a successor.
+     *
+     * <p>{@code transaction-declined-v2.json} is the one document that is not a successor of the
+     * version below it. It governs an authorization whose card resolved no account, declares no
+     * {@code accountId} and keys on the transaction identifier, so it is a subject of its own rather
+     * than a step in the declined chain. Every other version of every event type is a successor, and
+     * {@link #everyVersionAcceptsWhatItsPredecessorRequires()} measures it as one.
+     */
+    private static final Map<String, Integer> SEPARATELY_GOVERNED_VERSIONS =
+            Map.of("TransactionDeclined", 2);
+
+    /**
+     * Asserts every governed version accepts every payload its predecessor required.
+     *
+     * <p>This is the check a version number alone does not give. A consumer written against version
+     * <em>n</em> holds that version's {@code required} set, so a producer that moves to version
+     * <em>n plus one</em> may only add to it: a version that drops, renames, retypes or narrows a
+     * property its predecessor required breaks that consumer even though the number went up. AAP
+     * 0.8.6 states the requirement as "new consumers can be added without breaking existing ones",
+     * and AAP 0.3.1 states the mechanic: evolution is additive only.
+     *
+     * <p>The assertion is made two ways for every adjacent pair, so neither can pass alone. First the
+     * {@code required} set of the later version must contain every name the earlier one required.
+     * Second, every property the earlier version declares and the later version also declares must
+     * carry an identical schema, so a retype or a narrowing is caught even where the name survives.
+     *
+     * <p>{@link #SEPARATELY_GOVERNED_VERSIONS} names the one version that is a subject of its own
+     * rather than a successor, and it is skipped as a predecessor and as a successor. Every other
+     * pair is measured, and a new document added to
+     * {@code libs/event-contracts/src/main/resources/schemas} is measured the moment
+     * {@code EventSchemas} governs it, because the pairs are read from the schema table rather than
+     * listed here.
+     */
+    @Test
+    void everyVersionAcceptsWhatItsPredecessorRequires() {
+        int pairsMeasured = 0;
+
+        for (String eventType : EventSchemas.governedEventTypes()) {
+            List<Integer> versions = EventSchemas.governedVersions(eventType);
+            Integer separate = SEPARATELY_GOVERNED_VERSIONS.get(eventType);
+            List<Integer> chain = new ArrayList<>(versions);
+            chain.removeIf(version -> version.equals(separate));
+
+            for (int index = 1; index < chain.size(); index++) {
+                int earlierVersion = chain.get(index - 1);
+                int laterVersion = chain.get(index);
+                String earlier = EventSchemas.resourceFor(eventType, earlierVersion);
+                String later = EventSchemas.resourceFor(eventType, laterVersion);
+                JsonNode earlierDocument = readDocument(earlier);
+                JsonNode laterDocument = readDocument(later);
+
+                Set<String> earlierRequired = requiredNamesOf(earlierDocument);
+                Set<String> laterRequired = requiredNamesOf(laterDocument);
+                for (String name : earlierRequired) {
+                    assertTrue(laterRequired.contains(name),
+                            () -> eventType + " version " + laterVersion + " drops required property"
+                                    + " \"" + name + "\", which version " + earlierVersion
+                                    + " requires. A consumer holding version " + earlierVersion
+                                    + " refuses every record the current producer writes. Add a"
+                                    + " property in a later version, never remove one, or govern the"
+                                    + " narrower payload as a separate subject and name it in"
+                                    + " SEPARATELY_GOVERNED_VERSIONS with its reason.");
+                }
+
+                JsonNode earlierProperties = earlierDocument.path("properties");
+                JsonNode laterProperties = laterDocument.path("properties");
+                for (String name : namesOf(earlierProperties)) {
+                    if ("schemaVersion".equals(name)) {
+                        continue;
+                    }
+                    JsonNode laterProperty = laterProperties.path(name);
+                    if (laterProperty.isMissingNode()) {
+                        continue;
+                    }
+                    assertEquals(assertionKeywordsOf(earlierProperties.path(name)),
+                            assertionKeywordsOf(laterProperty),
+                            () -> eventType + " version " + laterVersion + " changes the assertion"
+                                    + " keywords of property \"" + name + "\", which version "
+                                    + earlierVersion + " also declares. A retype or a narrowing"
+                                    + " refuses a value the earlier contract admits, so it breaks a"
+                                    + " consumer as surely as a removal does.");
+                }
+                pairsMeasured++;
+            }
+        }
+
+        assertEquals(3, pairsMeasured,
+                "three adjacent version pairs exist on this platform: TransactionAuthorized 1 to 2,"
+                        + " TransactionPosted 1 to 2, and TransactionDeclined 1 to 3 with version 2"
+                        + " governed separately. A pair added or removed without this figure moving"
+                        + " means the chain was read from a stale list.");
+    }
+
+    /**
+     * Reads the {@code required} names one document declares.
+     *
+     * @param document the parsed document
+     * @return the required names, in document order
+     */
+    private static Set<String> requiredNamesOf(JsonNode document) {
+        Set<String> names = new LinkedHashSet<>();
+        for (JsonNode name : document.path("required")) {
+            names.add(name.stringValue());
+        }
+        return names;
+    }
+
+    /**
+     * Reads the assertion keywords of one property schema, dropping the annotations that carry no
+     * constraint.
+     *
+     * <p>{@code description}, {@code examples} and {@code $comment} are annotations: an edit to one
+     * of them admits and refuses exactly the same values, so comparing them would report prose as a
+     * compatibility break.
+     *
+     * @param property the property schema
+     * @return the keyword names mapped to their values, with the annotations removed
+     */
+    private static Map<String, JsonNode> assertionKeywordsOf(JsonNode property) {
+        Map<String, JsonNode> keywords = new LinkedHashMap<>();
+        for (String keyword : namesOf(property)) {
+            if (ANNOTATION_KEYWORDS.contains(keyword)) {
+                continue;
+            }
+            keywords.put(keyword, property.path(keyword));
+        }
+        return keywords;
+    }
+
+    /**
      * Asserts the schema table selects a document by event type AND contract version, and that
      * exactly four contracts carry more than one version.
      *
@@ -3200,16 +3317,13 @@ class SchemaBackwardCompatibilityTest {
         assertEquals(POSTED_ENRICHED, EventSchemas.resourceFor("TransactionPosted", 2),
                 "version 2 of the posted contract selects the version-two document");
 
-        assertEquals(List.of(1, 2), EventSchemas.governedVersions("CardUpdated"),
-                "the card-update contract is governed at both versions");
-        assertEquals(CARD_STATE_V1, EventSchemas.resourceFor("CardUpdated", 1),
-                "version 1 of the card-update contract selects the original document");
-        assertEquals(CARD_STATE, EventSchemas.resourceFor("CardUpdated", 2),
-                "version 2 of the card-update contract selects the redacted document");
+        assertEquals(List.of(1), EventSchemas.governedVersions("CardUpdated"),
+                "the card-update contract is governed at one version");
+        assertEquals(CARD_STATE, EventSchemas.resourceFor("CardUpdated", 1),
+                "version 1 of the card-update contract selects the one card document");
 
         Set<String> multiVersionTypes =
-                Set.of("TransactionDeclined", "TransactionAuthorized", "TransactionPosted",
-                        "CardUpdated");
+                Set.of("TransactionDeclined", "TransactionAuthorized", "TransactionPosted");
         for (String eventType : EventSchemas.governedEventTypes()) {
             if (multiVersionTypes.contains(eventType)) {
                 assertNull(EventSchemas.resourceFor(eventType,

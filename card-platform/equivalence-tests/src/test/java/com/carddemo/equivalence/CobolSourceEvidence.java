@@ -16,7 +16,7 @@ import java.util.regex.Pattern;
 /**
  * Reads the CardDemo sources so an expected value can be checked against the program it came from.
  *
- * <h2>Why the expectation files need this</h2>
+ * <h2>What the expectation files need from this</h2>
  *
  * <p>Many checked-in expectations state a fact about the COBOL rather than a value a service
  * computes: which verb writes a record, which field a branch adds into, what a Picture clause

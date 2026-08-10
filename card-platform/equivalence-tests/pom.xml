@@ -92,14 +92,19 @@
       <artifactId>spring-boot-starter-test</artifactId>
       <scope>test</scope>
     </dependency>
+
+    <!-- The broker client and the JSON binder, declared because this module's tests import
+         org.apache.kafka.clients and tools.jackson.databind directly. libs/event-contracts and
+         the six services declare them for the same reason: a module that programs against an
+         API it does not declare compiles only while something else keeps supplying it. -->
     <dependency>
-      <groupId>org.springframework.boot</groupId>
-      <artifactId>spring-boot-testcontainers</artifactId>
+      <groupId>org.apache.kafka</groupId>
+      <artifactId>kafka-clients</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>
-      <groupId>org.springframework.kafka</groupId>
-      <artifactId>spring-kafka-test</artifactId>
+      <groupId>tools.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
       <scope>test</scope>
     </dependency>
 
@@ -174,7 +179,7 @@
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-jar-plugin</artifactId>
-        <version>3.5.0</version>
+        <version>3.5.1</version>
         <configuration>
           <classesDirectory>${project.build.testOutputDirectory}</classesDirectory>
         </configuration>

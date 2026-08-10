@@ -12,6 +12,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
@@ -76,6 +77,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestMethod;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.HandlerMethod;
@@ -152,9 +154,16 @@ final class NotificationHistoryControllerTest {
     /** A run of sixteen digits, the shape of a full card number. */
     private static final Pattern SIXTEEN_DIGIT_RUN = Pattern.compile("[0-9]{16}");
 
-    /** The four properties the response envelope carries, whether or not the card holds a row. */
+    /**
+     * The properties the response envelope carries on a last page.
+     *
+     * <p>{@code nextCursor} is absent here because every body this class builds is a last page: a
+     * cursor is present exactly when a further page exists, and {@code Paging} covers the case where
+     * one does.
+     */
     private static final List<String> ENVELOPE_PROPERTIES =
-            List.of("cardNumber", "transactionCount", "totalAmount", "transactions");
+            List.of("cardNumber", "transactionCount", "totalAmount", "transactions",
+                    "nextPageExists");
 
     /**
      * The four envelope properties that carry data. A failing body holds none of them, and it
@@ -221,11 +230,14 @@ final class NotificationHistoryControllerTest {
     private static final String ORDER_FRAGMENT = "OrderBy";
 
     /**
-     * The limit every request reaches the read model with. The response covers the whole history of
-     * one card, matching {@code app/cbl/CBSTM03A.CBL:L429}, which totals every row of one card
-     * between two key breaks.
+     * The limit a request with no page size reaches the read model with.
+     *
+     * <p>The default page and one lookahead row. The route once passed {@link Limit#unlimited()}, so
+     * one request read every retained row of a card; the count and the total still cover the whole
+     * card, but they come from an aggregate rather than from the rows.
      */
-    private static final Limit WHOLE_HISTORY = Limit.unlimited();
+    private static final Limit FIRST_PAGE =
+            Limit.of(NotificationHistoryController.DEFAULT_PAGE_SIZE + 1);
 
     /** The first transaction identifier, at the sixteen characters L23 declares. */
     private static final String FIRST_TRANSACTION_ID = "TRN0000000000001";
@@ -270,6 +282,60 @@ final class NotificationHistoryControllerTest {
         mockMvc = MockMvcBuilders.standaloneSetup(controller)
                 .setControllerAdvice(new NotificationApiExceptionHandler())
                 .build();
+    }
+
+    /**
+     * Stubs the whole-history aggregate for {@link #CARD_TOKEN} over the rows supplied.
+     *
+     * <p>The count and the masked number come from the rows, so a test that changes the rows changes
+     * the aggregate with them and the two cannot drift. The total is supplied rather than derived,
+     * because reproducing the source's accumulation is
+     * {@code domain/NotificationService}'s work and is asserted there.
+     *
+     * @param rows  the rows the card holds in all
+     * @param total the total those rows carry
+     */
+    private void aggregateOver(List<StatementTransactionEntity> rows, BigDecimal total) {
+        when(statementTransactions.totalsOfCard(CARD_TOKEN)).thenReturn(new FakeTotals(
+                rows.size(), total,
+                rows.stream().map(StatementTransactionEntity::getAmount)
+                        .map(BigDecimal::abs)
+                        .reduce(BigDecimal.ZERO.setScale(2), BigDecimal::add),
+                rows.isEmpty() ? null : rows.get(0).getMaskedCardNumber()));
+        when(notifications.totalOfCard(eq(CARD_TOKEN), any())).thenReturn(total);
+    }
+
+    /**
+     * The aggregate row the read model answers with, as a value rather than a mock.
+     *
+     * @param transactionCount rows the card holds in all
+     * @param totalAmount      their exact sum
+     * @param absoluteTotal    the sum of their magnitudes
+     * @param maskedCardNumber the masked number those rows carry, or {@code null} where none does
+     */
+    private record FakeTotals(long transactionCount, BigDecimal totalAmount,
+            BigDecimal absoluteTotal, String maskedCardNumber)
+            implements StatementTransactionRepository.CardHistoryTotals {
+
+        @Override
+        public long getTransactionCount() {
+            return transactionCount;
+        }
+
+        @Override
+        public BigDecimal getTotalAmount() {
+            return totalAmount;
+        }
+
+        @Override
+        public BigDecimal getAbsoluteTotal() {
+            return absoluteTotal;
+        }
+
+        @Override
+        public String getMaskedCardNumber() {
+            return maskedCardNumber;
+        }
     }
 
     /**
@@ -423,9 +489,9 @@ final class NotificationHistoryControllerTest {
         void threeRowsInTheReadModel() {
             rowsInTheReadModel = threeRows();
             when(statementTransactions
-                    .findByIdCardTokenOrderByIdTransactionIdAsc(CARD_TOKEN, WHOLE_HISTORY))
+                    .findByIdCardTokenOrderByIdTransactionIdAsc(CARD_TOKEN, FIRST_PAGE))
                     .thenReturn(threeRows());
-            when(notifications.totalOf(anyList())).thenReturn(THREE_ROW_TOTAL);
+            aggregateOver(rowsInTheReadModel, THREE_ROW_TOTAL);
         }
 
         /** Asserts a card number with rows answers 200 carrying its count, total and items. */
@@ -442,12 +508,12 @@ final class NotificationHistoryControllerTest {
 
         /** Asserts the envelope carries five properties, named and ordered as the record is. */
         @Test
-        void theEnvelopeCarriesFourPropertiesAndNoFifth() throws Exception {
+        void theEnvelopeCarriesItsPropertiesAndNoOther() throws Exception {
             JsonNode body = MAPPER.readTree(historyBody());
 
             assertEquals(ENVELOPE_PROPERTIES, List.copyOf(body.propertyNames()),
                     "envelope property names, in that order");
-            assertEquals(4, body.size(), "envelope property count");
+            assertEquals(ENVELOPE_PROPERTIES.size(), body.size(), "envelope property count");
             assertFalse(body.has("cardToken"), "the storage key reaches no body");
         }
 
@@ -731,12 +797,19 @@ final class NotificationHistoryControllerTest {
     @Nested
     class HistoryOfACardWithNoRow {
 
-        /** Places no row behind the read model. */
+        /**
+         * Places no row behind the read model.
+         *
+         * <p>The aggregate answers first and reports a count of zero, which is how the route tells a
+         * card with no history from a card with some. {@code COUNT} always answers, so an empty card
+         * is a row of zeros carrying no masked number rather than an absent row.
+         */
         @BeforeEach
         void noRowInTheReadModel() {
             when(statementTransactions
-                    .findByIdCardTokenOrderByIdTransactionIdAsc(CARD_TOKEN, WHOLE_HISTORY))
+                    .findByIdCardTokenOrderByIdTransactionIdAsc(CARD_TOKEN, FIRST_PAGE))
                     .thenReturn(List.of());
+            aggregateOver(List.of(), NO_ROW_TOTAL);
         }
 
         /** Asserts a token with no row answers 404 carrying the documented text and the template. */
@@ -808,7 +881,7 @@ final class NotificationHistoryControllerTest {
             when(statementTransactions
                     .findByIdCardTokenOrderByIdTransactionIdAsc(eq(CARD_TOKEN), any(Limit.class)))
                     .thenReturn(threeRows());
-            when(notifications.totalOf(anyList())).thenReturn(THREE_ROW_TOTAL);
+            aggregateOver(threeRows(), THREE_ROW_TOTAL);
 
             mockMvc.perform(get(ROUTE, CARD_TOKEN)).andExpect(status().isOk());
 
@@ -876,16 +949,22 @@ final class NotificationHistoryControllerTest {
         @Test
         void theEndpointReadsThroughTheAscendingFinderAlone() throws Exception {
             when(statementTransactions
-                    .findByIdCardTokenOrderByIdTransactionIdAsc(CARD_TOKEN, WHOLE_HISTORY))
+                    .findByIdCardTokenOrderByIdTransactionIdAsc(CARD_TOKEN, FIRST_PAGE))
                     .thenReturn(threeRows());
-            when(notifications.totalOf(anyList())).thenReturn(THREE_ROW_TOTAL);
+            aggregateOver(threeRows(), THREE_ROW_TOTAL);
 
             mockMvc.perform(get(ROUTE, CARD_TOKEN))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.transactionCount").value(3));
 
+            // Two reads answer one request: the aggregate over the key, and one bounded page of it.
+            // The continuation finder belongs to a request carrying a cursor and this one carries none.
+            verify(statementTransactions).totalsOfCard(CARD_TOKEN);
             verify(statementTransactions)
-                    .findByIdCardTokenOrderByIdTransactionIdAsc(CARD_TOKEN, WHOLE_HISTORY);
+                    .findByIdCardTokenOrderByIdTransactionIdAsc(CARD_TOKEN, FIRST_PAGE);
+            verify(statementTransactions, never())
+                    .findByIdCardTokenAndIdTransactionIdGreaterThanOrderByIdTransactionIdAsc(
+                            any(), any(), any());
             verify(statementTransactions, never()).deleteProcessedBefore(anyString(), eq(1));
             verify(statementTransactions, never()).findAll();
             verifyNoMoreInteractions(statementTransactions);
@@ -951,95 +1030,216 @@ final class NotificationHistoryControllerTest {
     }
 
     /**
-     * The absence of paging.
+     * Paging, and the bound on it.
      *
      * <p>{@code app/cbl/CBSTM03A.CBL} reads every row of one card between two key breaks and
-     * {@code app/cbl/CBSTM03A.CBL:L429} totals all of them, so a bounded page would report a count
-     * and a total over rows the source totalled in full. The route therefore declares no paging
-     * parameter and reads the whole history.</p>
+     * {@code app/cbl/CBSTM03A.CBL:L429} totals all of them, so the count and the total this route
+     * publishes cover the whole card. They are read as one aggregate over the key, which is what lets
+     * the entries themselves be paged without reporting a statement over part of a card.</p>
+     *
+     * <p>The entries are paged because the route once read every retained row of a card into one
+     * response. A card's history grows by one entry per posted transaction until retention removes
+     * entries, so query work, heap and response bytes all followed how long a cardholder had been
+     * transacting, and nothing capped any of them.</p>
      */
     @Nested
-    class NoPaging {
+    class Paging {
 
-        /** Asserts the lookup names the whole history rather than a bounded page. */
-        @Test
-        void theLookupNamesTheWholeHistory() throws Exception {
-            when(statementTransactions
-                    .findByIdCardTokenOrderByIdTransactionIdAsc(eq(CARD_TOKEN), any(Limit.class)))
-                    .thenReturn(threeRows());
-            when(notifications.totalOf(anyList())).thenReturn(THREE_ROW_TOTAL);
-
-            mockMvc.perform(get(ROUTE, CARD_TOKEN)).andExpect(status().isOk());
-
-            assertEquals(Limit.unlimited(), appliedLimit(), "the limit applied");
-            assertFalse(appliedLimit().isLimited(), "the limit applied names a row count");
-        }
-
-        /** Asserts the handler declares one parameter, and that it is the path variable. */
-        @Test
-        void theHandlerDeclaresThePathVariableAlone() throws Exception {
-            Method handler = NotificationHistoryController.class.getDeclaredMethod("historyOfCard",
-                    String.class);
-
-            assertEquals(1, handler.getParameterCount(), "declared parameter count");
-            assertNotNull(handler.getParameters()[0].getAnnotation(PathVariable.class),
-                    "the one parameter is the path variable");
-            for (Method method : NotificationHistoryController.class.getDeclaredMethods()) {
-                for (Parameter parameter : method.getParameters()) {
-                    assertNull(parameter.getAnnotation(RequestParam.class),
-                            method.getName() + " reads a query parameter");
-                }
-            }
-        }
-
-        /** Asserts no declared member of the controller is named for paging. */
-        @Test
-        void noDeclaredMemberIsNamedForPaging() {
-            List<String> names = new ArrayList<>();
-            Arrays.stream(NotificationHistoryController.class.getDeclaredFields())
-                    .forEach(field -> names.add(field.getName().toLowerCase(Locale.ROOT)));
-            Arrays.stream(NotificationHistoryController.class.getDeclaredMethods())
-                    .forEach(method -> names.add(method.getName().toLowerCase(Locale.ROOT)));
-
-            for (String paging : List.of("page", "size", "limit", "offset", "cursor", "sort")) {
-                for (String name : names) {
-                    assertFalse(name.contains(paging), name + " is named for " + paging);
-                }
-            }
+        /** Stubs the aggregate for every test of this group. */
+        @BeforeEach
+        void oneCardWithThreeRows() {
+            aggregateOver(threeRows(), THREE_ROW_TOTAL);
         }
 
         /**
-         * Asserts a stray paging value in the query string changes nothing.
+         * Asserts a request naming no page size reads the default page and one lookahead row, and
+         * never an unbounded limit.
+         */
+        @Test
+        void theLookupNamesABoundedPage() throws Exception {
+            when(statementTransactions
+                    .findByIdCardTokenOrderByIdTransactionIdAsc(eq(CARD_TOKEN), any(Limit.class)))
+                    .thenReturn(threeRows());
+
+            mockMvc.perform(get(ROUTE, CARD_TOKEN)).andExpect(status().isOk());
+
+            assertTrue(appliedLimit().isLimited(), "the limit applied names a row count");
+            assertEquals(Limit.of(NotificationHistoryController.DEFAULT_PAGE_SIZE + 1),
+                    appliedLimit(), "the default page and one lookahead row");
+            assertNotEquals(Limit.unlimited(), appliedLimit(),
+                    "an unbounded read is what this route was fixed to stop making");
+        }
+
+        /** Asserts the page size a caller asks for is the page size read, plus the lookahead row. */
+        @Test
+        void theRequestedPageSizeIsTheOneRead() throws Exception {
+            when(statementTransactions
+                    .findByIdCardTokenOrderByIdTransactionIdAsc(eq(CARD_TOKEN), any(Limit.class)))
+                    .thenReturn(threeRows());
+
+            mockMvc.perform(get(ROUTE, CARD_TOKEN)
+                            .param(NotificationHistoryController.PAGE_SIZE_PARAMETER, "3"))
+                    .andExpect(status().isOk());
+
+            assertEquals(Limit.of(4), appliedLimit(), "three asked for, one read beyond it");
+        }
+
+        /**
+         * Asserts the ceiling is enforced rather than trusted.
          *
-         * <p>The route declares no query parameter, so a value a caller invents is neither read nor
-         * refused, and the answer stays the whole history.
+         * <p>A caller that asks for more than the ceiling is refused instead of served a larger page,
+         * so the bound cannot be talked past.
+         */
+        @Test
+        void aPageSizeAboveTheCeilingIsRefused() throws Exception {
+            mockMvc.perform(get(ROUTE, CARD_TOKEN)
+                            .param(NotificationHistoryController.PAGE_SIZE_PARAMETER,
+                                    String.valueOf(NotificationHistoryController.MAX_PAGE_SIZE + 1)))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.message")
+                            .value(NotificationHistoryController.PAGE_SIZE_MESSAGE));
+
+            verify(statementTransactions, never())
+                    .findByIdCardTokenOrderByIdTransactionIdAsc(any(), any());
+        }
+
+        /** Asserts a page size below the floor, and one that is not a number, are both refused. */
+        @ParameterizedTest
+        @ValueSource(strings = {"0", "-1", "abc", "1.5", "", " ", "9999999999999999999"})
+        void aPageSizeOutsideTheRangeIsRefused(String pageSize) throws Exception {
+            mockMvc.perform(get(ROUTE, CARD_TOKEN)
+                            .param(NotificationHistoryController.PAGE_SIZE_PARAMETER, pageSize))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.message")
+                            .value(NotificationHistoryController.PAGE_SIZE_MESSAGE));
+        }
+
+        /** Asserts a cursor of the wrong width is refused and reaches no lookup. */
+        @Test
+        void aCursorOfTheWrongWidthIsRefused() throws Exception {
+            mockMvc.perform(get(ROUTE, CARD_TOKEN)
+                            .header(NotificationHistoryController.CURSOR_HEADER, "TOO-SHORT"))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.message")
+                            .value(NotificationHistoryController.CURSOR_MESSAGE));
+
+            verify(statementTransactions, never()).totalsOfCard(any());
+        }
+
+        /**
+         * Asserts a cursor continues the walk through the keyset finder, exclusive of the row it names.
+         */
+        @Test
+        void aCursorReadsTheContinuationFinder() throws Exception {
+            when(statementTransactions
+                    .findByIdCardTokenAndIdTransactionIdGreaterThanOrderByIdTransactionIdAsc(
+                            eq(CARD_TOKEN), eq(FIRST_TRANSACTION_ID), any(Limit.class)))
+                    .thenReturn(List.of(row(SECOND_TRANSACTION_ID, "-125.00")));
+
+            mockMvc.perform(get(ROUTE, CARD_TOKEN)
+                            .header(NotificationHistoryController.CURSOR_HEADER,
+                                    FIRST_TRANSACTION_ID))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.transactions.length()").value(1));
+
+            verify(statementTransactions, never())
+                    .findByIdCardTokenOrderByIdTransactionIdAsc(any(), any());
+        }
+
+        /**
+         * Asserts a full page reports a further page and the cursor to ask for it, and does not serve
+         * the lookahead row.
+         */
+        @Test
+        void aFullPageReportsAFurtherPageAndWithholdsTheLookaheadRow() throws Exception {
+            when(statementTransactions
+                    .findByIdCardTokenOrderByIdTransactionIdAsc(eq(CARD_TOKEN), any(Limit.class)))
+                    .thenReturn(threeRows());
+
+            mockMvc.perform(get(ROUTE, CARD_TOKEN)
+                            .param(NotificationHistoryController.PAGE_SIZE_PARAMETER, "2"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.transactions.length()").value(2))
+                    .andExpect(jsonPath("$.nextPageExists").value(true))
+                    .andExpect(jsonPath("$.nextCursor").value(SECOND_TRANSACTION_ID));
+        }
+
+        /** Asserts a last page reports no further page and carries no cursor. */
+        @Test
+        void aLastPageCarriesNoCursor() throws Exception {
+            when(statementTransactions
+                    .findByIdCardTokenOrderByIdTransactionIdAsc(eq(CARD_TOKEN), any(Limit.class)))
+                    .thenReturn(threeRows());
+
+            mockMvc.perform(get(ROUTE, CARD_TOKEN))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.transactions.length()").value(3))
+                    .andExpect(jsonPath("$.nextPageExists").value(false))
+                    .andExpect(jsonPath("$.nextCursor").doesNotExist());
+        }
+
+        /** Asserts a cursor that has run past the last row answers 404 rather than an empty page. */
+        @Test
+        void aCursorPastTheLastRowAnswersNotFound() throws Exception {
+            when(statementTransactions
+                    .findByIdCardTokenAndIdTransactionIdGreaterThanOrderByIdTransactionIdAsc(
+                            eq(CARD_TOKEN), eq(THIRD_TRANSACTION_ID), any(Limit.class)))
+                    .thenReturn(List.of());
+
+            mockMvc.perform(get(ROUTE, CARD_TOKEN)
+                            .header(NotificationHistoryController.CURSOR_HEADER,
+                                    THIRD_TRANSACTION_ID))
+                    .andExpect(status().isNotFound())
+                    .andExpect(jsonPath("$.message")
+                            .value(NotificationHistoryController.NO_HISTORY_MESSAGE));
+        }
+
+        /** Asserts the handler declares the path variable, the cursor header and the page size. */
+        @Test
+        void theHandlerDeclaresThePathVariableTheCursorAndThePageSize() throws Exception {
+            Method handler = NotificationHistoryController.class.getDeclaredMethod("historyOfCard",
+                    String.class, String.class, String.class);
+
+            assertEquals(3, handler.getParameterCount(), "declared parameter count");
+            assertNotNull(handler.getParameters()[0].getAnnotation(PathVariable.class),
+                    "the first parameter is the path variable");
+            assertNotNull(handler.getParameters()[1].getAnnotation(RequestHeader.class),
+                    "the cursor travels in a header");
+            assertNotNull(handler.getParameters()[2].getAnnotation(RequestParam.class),
+                    "the page size travels in a query parameter");
+        }
+
+        /**
+         * Asserts the paging values a caller might invent under another name change nothing.
+         *
+         * <p>Only {@value NotificationHistoryController#PAGE_SIZE_PARAMETER} is read, so a value sent
+         * under any other name is neither read nor refused, and the answer stays the default page.
          *
          * @param parameter the name the caller invents
-         * @throws Exception when the request cannot be performed
          */
         @ParameterizedTest
-        @ValueSource(strings = {"pageSize", "page", "size", "limit", "offset", "cursor", "sort"})
+        @ValueSource(strings = {"page", "size", "limit", "offset", "cursor", "sort"})
         void aStrayPagingValueChangesNothing(String parameter) throws Exception {
             when(statementTransactions
                     .findByIdCardTokenOrderByIdTransactionIdAsc(eq(CARD_TOKEN), any(Limit.class)))
                     .thenReturn(threeRows());
-            when(notifications.totalOf(anyList())).thenReturn(THREE_ROW_TOTAL);
 
             mockMvc.perform(get(ROUTE, CARD_TOKEN).param(parameter, "1"))
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.transactionCount").value(3));
+                    .andExpect(jsonPath("$.transactions.length()").value(3));
 
-            assertEquals(Limit.unlimited(), appliedLimit(), "the limit applied");
+            assertEquals(Limit.of(NotificationHistoryController.DEFAULT_PAGE_SIZE + 1),
+                    appliedLimit(), "the default page is unaffected by a name this route ignores");
         }
 
         /**
-         * Captures the limit the one lookup named.
+         * Reads the limit the lookup was called with.
          *
-         * @return that limit
+         * @return the captured limit
          */
         private Limit appliedLimit() {
             ArgumentCaptor<Limit> applied = ArgumentCaptor.forClass(Limit.class);
-            verify(statementTransactions, org.mockito.Mockito.atLeastOnce())
+            verify(statementTransactions)
                     .findByIdCardTokenOrderByIdTransactionIdAsc(eq(CARD_TOKEN), applied.capture());
             return applied.getValue();
         }
@@ -1054,6 +1254,18 @@ final class NotificationHistoryControllerTest {
     @Nested
     @ExtendWith(OutputCaptureExtension.class)
     class FaultResponses {
+
+        /**
+         * Lets the aggregate answer, so a fault stubbed on the page read is the fault reached.
+         *
+         * <p>The route reads the aggregate first, to tell a card with history from one without. A group
+         * that stubbed only the page read would fault on the aggregate instead and assert against the
+         * wrong call.
+         */
+        @BeforeEach
+        void oneCardWithThreeRows() {
+            aggregateOver(threeRows(), THREE_ROW_TOTAL);
+        }
 
         /**
          * Asserts a fault leaves one {@code ERROR} line naming the route and carrying the fault.
@@ -1077,7 +1289,7 @@ final class NotificationHistoryControllerTest {
                 throws Exception {
             String faultMessage = "connection refused to host 6 port 4";
             when(statementTransactions
-                    .findByIdCardTokenOrderByIdTransactionIdAsc(CARD_TOKEN, WHOLE_HISTORY))
+                    .findByIdCardTokenOrderByIdTransactionIdAsc(CARD_TOKEN, FIRST_PAGE))
                     .thenThrow(new IllegalStateException("connection refused to host 6 port 4"));
 
             mockMvc.perform(get(ROUTE, CARD_TOKEN))
@@ -1103,7 +1315,7 @@ final class NotificationHistoryControllerTest {
         @Test
         void aFaultInsideTheLookupAnswersFiveHundred() throws Exception {
             when(statementTransactions
-                    .findByIdCardTokenOrderByIdTransactionIdAsc(CARD_TOKEN, WHOLE_HISTORY))
+                    .findByIdCardTokenOrderByIdTransactionIdAsc(CARD_TOKEN, FIRST_PAGE))
                     .thenThrow(new IllegalStateException("connection refused to host 6 port 4"));
 
             String body = mockMvc.perform(get(ROUTE, CARD_TOKEN))
@@ -1138,112 +1350,107 @@ final class NotificationHistoryControllerTest {
     /**
      * The list the total is taken over.
      *
-     * <p>The endpoint reads the rows of one card and then asks {@link NotificationService} for their
-     * total, reproducing {@code ADD TRNX-AMT TO WS-TOTAL-AMT} at
-     * {@code app/cbl/CBSTM03A.CBL:L429}. The response carries that total as a single value, so no
-     * assertion over the body can say which list produced it: a handler that returned the rows the
-     * lookup gave it while totalling an empty list, or a list belonging to another card, would
-     * satisfy every other group of this class.
+     * <p>The endpoint reads one aggregate over the card's key and asks {@link NotificationService} to
+     * turn it into the value {@code ADD TRNX-AMT TO WS-TOTAL-AMT} at {@code app/cbl/CBSTM03A.CBL:L429}
+     * would have accumulated. The response carries the count and the total as two single values, so
+     * no assertion over the body alone can say what they were computed from: a handler that counted
+     * the items on the page would satisfy every other group of this class while reporting a statement
+     * over part of a card.
      *
-     * <p>Two things close that gap here. The stub computes its answer from the list it is handed
-     * rather than from a value fixed in advance, so a total taken over the wrong list carries the
-     * wrong value into the body. And the list itself is captured and compared against the rows the
-     * lookup returned, element by element and in order.
+     * <p>Two things close that gap here. One test gives the aggregate a history far longer than the
+     * page, so a count taken from the items carries the wrong figure into the body. The other asserts
+     * the aggregate is consulted, and consulted once: reading it per row would give back exactly what
+     * bounding the page bought.
      */
     @Nested
-    class TheTotalledList {
+    class TheTotalledMetadata {
 
-        /** The rows the lookup answers with, and the only rows the total may be taken over. */
+        /** The rows the card holds in all, and the rows the page returns. */
         private List<StatementTransactionEntity> rowsInTheReadModel;
 
-        /** Stubs the lookup and makes the total a function of the list it is handed. */
+        /** Stubs the page and the aggregate over the same rows. */
         @BeforeEach
-        void totalTheListHandedOver() {
+        void oneCardWithThreeRows() {
             rowsInTheReadModel = threeRows();
             when(statementTransactions
-                    .findByIdCardTokenOrderByIdTransactionIdAsc(CARD_TOKEN, WHOLE_HISTORY))
+                    .findByIdCardTokenOrderByIdTransactionIdAsc(CARD_TOKEN, FIRST_PAGE))
                     .thenReturn(rowsInTheReadModel);
-            when(notifications.totalOf(anyList())).thenAnswer(invocation -> {
-                List<StatementTransactionEntity> handed = invocation.getArgument(0);
-                BigDecimal total = BigDecimal.ZERO.setScale(2);
-                for (StatementTransactionEntity handedRow : handed) {
-                    total = CobolDecimal.add(total, handedRow.getAmount(), 2);
-                }
-                return total;
-            });
+            aggregateOver(rowsInTheReadModel, THREE_ROW_TOTAL);
         }
 
         /**
-         * Asserts the total in the body is the total of the rows the lookup returned.
+         * Asserts the count and the total in the body come from the aggregate over the card's key.
          *
-         * <p>The stub totals what it is handed, so the value in the body is evidence about the list
-         * rather than about the stub.
+         * <p>They used to be taken over the list the lookup returned, which was every row of the card
+         * because the lookup was unbounded. With a bounded page that would report a statement over
+         * part of a card, and {@code app/cbl/CBSTM03A.CBL:L429} totals every row of one card between
+         * two key breaks. Both figures are therefore read once over the key.
          */
         @Test
-        void theTotalIsTheTotalOfTheRowsTheLookupReturned() throws Exception {
+        void theCountAndTheTotalComeFromTheAggregate() throws Exception {
             mockMvc.perform(get(ROUTE, CARD_TOKEN))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.transactionCount").value(rowsInTheReadModel.size()))
                     .andExpect(jsonPath("$.totalAmount").value(THREE_ROW_TOTAL.toPlainString()));
+
+            verify(statementTransactions).totalsOfCard(CARD_TOKEN);
+            verify(notifications).totalOfCard(eq(CARD_TOKEN), any());
         }
 
         /**
-         * Asserts the captured list is the lookup's own rows, in the lookup's own order.
+         * Asserts the published count is the aggregate's and not the number of items on the page.
          *
-         * <p>{@code totalOf(anyList())} accepts any list, so the argument is captured and compared
-         * rather than matched. Order is part of the comparison because the read model is ordered by
-         * transaction identifier and a total taken over a reordered copy would still be right,
-         * which is exactly the kind of agreement that hides a defect.
+         * <p>This is the assertion that a page cannot satisfy by accident. The aggregate reports a
+         * history longer than the page, and the body has to carry the longer figure beside the three
+         * items it holds.
          */
         @Test
-        void theCapturedListIsTheLookupsOwnRowsInOrder() throws Exception {
-            mockMvc.perform(get(ROUTE, CARD_TOKEN)).andExpect(status().isOk());
-
-            @SuppressWarnings("unchecked")
-            ArgumentCaptor<List<StatementTransactionEntity>> totalled =
-                    ArgumentCaptor.forClass(List.class);
-            verify(notifications).totalOf(totalled.capture());
-
-            assertEquals(rowsInTheReadModel, totalled.getValue(),
-                    "the total was taken over the rows the lookup returned, in their order");
-        }
-
-        /**
-         * Asserts a total is taken over the rows read and over nothing else, so an empty read model
-         * has no total taken at all.
-         *
-         * <p>A handler that wrote a zero of its own would answer a body it never asked the domain
-         * for, and the endpoint answers no body at all for a card with no row: the masked number that
-         * body carries is read from a row. Both halves are asserted as interactions rather than as
-         * values, because a value alone cannot tell the two apart.
-         */
-        @Test
-        void aTotalIsTakenOverTheRowsReadAndOverNothingElse() throws Exception {
-            when(statementTransactions
-                    .findByIdCardTokenOrderByIdTransactionIdAsc(CARD_TOKEN, WHOLE_HISTORY))
-                    .thenReturn(List.of());
-
-            mockMvc.perform(get(ROUTE, CARD_TOKEN)).andExpect(status().isNotFound());
-
-            verify(notifications, never()).totalOf(anyList());
-
-            when(statementTransactions
-                    .findByIdCardTokenOrderByIdTransactionIdAsc(CARD_TOKEN, WHOLE_HISTORY))
-                    .thenReturn(threeRows());
-            when(notifications.totalOf(anyList())).thenReturn(THREE_ROW_TOTAL);
+        void theCountDescribesTheHistoryAndNotThePage() throws Exception {
+            when(statementTransactions.totalsOfCard(CARD_TOKEN)).thenReturn(new FakeTotals(
+                    900L, THREE_ROW_TOTAL, THREE_ROW_TOTAL.abs(), MASKED_CARD_NUMBER));
 
             mockMvc.perform(get(ROUTE, CARD_TOKEN))
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.totalAmount").value(THREE_ROW_TOTAL.toPlainString()));
+                    .andExpect(jsonPath("$.transactionCount").value(900))
+                    .andExpect(jsonPath("$.transactions.length()")
+                            .value(rowsInTheReadModel.size()));
+        }
 
-            @SuppressWarnings("unchecked")
-            ArgumentCaptor<List<StatementTransactionEntity>> totalled =
-                    ArgumentCaptor.forClass(List.class);
-            verify(notifications).totalOf(totalled.capture());
+        /**
+         * Asserts no total is taken for a card the aggregate reports as empty, and one is for a card
+         * it reports as holding rows.
+         *
+         * <p>A handler that wrote a zero of its own would answer a body it never asked the domain for,
+         * and the endpoint answers no body at all for a card with no row: the masked number that body
+         * carries is read from a row. Both halves are asserted as interactions, because a value alone
+         * cannot tell the two apart.
+         */
+        @Test
+        void aTotalIsTakenOverTheHistoryReadAndOverNothingElse() throws Exception {
+            aggregateOver(List.of(), NO_ROW_TOTAL);
 
-            assertEquals(threeRows(), totalled.getValue(),
-                    "the endpoint asked for a total over the rows the lookup returned rather than "
-                            + "writing one of its own");
+            mockMvc.perform(get(ROUTE, CARD_TOKEN)).andExpect(status().isNotFound());
+
+            verify(notifications, never()).totalOfCard(any(), any());
+
+            aggregateOver(threeRows(), THREE_ROW_TOTAL);
+
+            mockMvc.perform(get(ROUTE, CARD_TOKEN)).andExpect(status().isOk());
+
+            verify(notifications).totalOfCard(eq(CARD_TOKEN), any());
+        }
+
+        /**
+         * Asserts the aggregate is read once per request rather than once per row.
+         *
+         * <p>The whole point of the aggregate is that its cost does not follow the history, so a
+         * second read of it per request would give back what the page bound was bought with.
+         */
+        @Test
+        void theAggregateIsReadOncePerRequest() throws Exception {
+            mockMvc.perform(get(ROUTE, CARD_TOKEN)).andExpect(status().isOk());
+
+            verify(statementTransactions, times(1)).totalsOfCard(CARD_TOKEN);
         }
     }
 

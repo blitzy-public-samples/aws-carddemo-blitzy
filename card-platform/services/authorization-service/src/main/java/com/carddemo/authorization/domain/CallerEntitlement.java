@@ -9,7 +9,7 @@ import java.util.Objects;
  * <p>ADDITIVE in full. The gap it closes is that {@code POST /authorizations} admitted any identity
  * holding an ordinary role and then authorized whatever subject the request resolved to. Because a
  * request may name an account identifier alone and
- * {@code domain/AuthorizationService#resolveCardNumber} reads the first card of that account, an
+ * {@code domain/AuthorizationService#resolveCard} reads the first card of that account, an
  * ordinary credential could move money against any account in the platform without ever knowing a
  * card number. Every other ownership-scoped route on the platform compares the requested identifier
  * against the caller's authorities; this one did not.

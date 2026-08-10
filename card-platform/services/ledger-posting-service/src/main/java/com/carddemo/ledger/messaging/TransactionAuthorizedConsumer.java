@@ -150,11 +150,26 @@ public class TransactionAuthorizedConsumer {
         long startedAt = System.nanoTime();
         try {
             requireKeyNamesAggregate(messageKey, event);
-            if (Boolean.TRUE.equals(transactionTemplate.execute(
-                    status -> applyOneEvent(event, messageKey, consumedTopic)))) {
+            Applied outcome = transactionTemplate.execute(
+                    status -> applyOneEvent(event, messageKey, consumedTopic));
+            if (outcome != null && outcome.posted()) {
                 meters.recordTransactionPosted();
             } else {
                 meters.recordDuplicateSkipped();
+            }
+            if (outcome != null && outcome.categoryBalanceWrapped()) {
+                meters.recordCategoryBalanceWrapped();
+                // Reported after the commit, so the line describes a stored balance rather than one
+                // a rollback would have removed. The sum passed the nine integer digits
+                // TRANCAT-BAL PIC S9(09)V99 holds and kept its low-order nine, which is what an ADD
+                // with no ON SIZE ERROR phrase does at app/cbl/CBTRN02C.cbl:L508 and :L527. The
+                // event identifier and the two low-cardinality codes name the row; the account
+                // identifier is not named here, and no amount and no balance is either.
+                LOG.warn("The category balance of type {} category {} reached by event {} passed the"
+                        + " nine integer digits its column holds and kept the low-order nine. The"
+                        + " stored balance is the wrapped value, as the source leaves it.",
+                        event.transactionTypeCode(), event.merchantCategoryCode(),
+                        event.eventId());
             }
         } catch (RuntimeException failure) {
             meters.recordProcessFailure();
@@ -185,24 +200,53 @@ public class TransactionAuthorizedConsumer {
      * @param messageKey    the key the record arrived under, which
      *                      {@link #requireKeyNamesAggregate} has already checked against the payload
      * @param consumedTopic the topic the record arrived on, half of the marker key
-     * @return {@code true} when this delivery posted, and {@code false} when a marker already
-     *         covered the event on the topic it arrived on
+     * @return what this delivery did, which the caller reports once this transaction has committed
      */
-    private boolean applyOneEvent(TransactionAuthorized event, String messageKey,
+    private Applied applyOneEvent(TransactionAuthorized event, String messageKey,
             String consumedTopic) {
         UUID eventId = event.eventId();
         if (processedEvents.existsById(markerKey(eventId, consumedTopic))) {
             LOG.debug("Event {} already carries a marker for the topic it arrived on, so this"
                     + " delivery posted nothing.", eventId);
-            return false;
+            return Applied.ALREADY_APPLIED;
         }
 
         // The key the record arrived under travels on rather than the aggregate identifier read
         // back out of the payload. PostingService makes the same check, and a check whose two
         // operands come from one field can never fail.
-        postingService.postTransaction(event, messageKey);
+        boolean categoryBalanceWrapped = postingService.postTransaction(event, messageKey);
         processedEvents.save(marker(eventId, consumedTopic));
-        return true;
+        return categoryBalanceWrapped ? Applied.POSTED_WITH_WRAPPED_CATEGORY_BALANCE
+                : Applied.POSTED;
+    }
+
+    /**
+     * What one delivery did, read after its transaction has committed.
+     *
+     * <p>Every value here is a durable fact by the time it is read. The consumer counts and reports
+     * from these rather than from inside the transaction, so a rollback leaves no count and no line
+     * claiming a row that was removed.
+     */
+    private enum Applied {
+
+        /** A marker already covered the event on the topic it arrived on, so nothing changed. */
+        ALREADY_APPLIED,
+
+        /** The delivery posted, and every store stayed inside the field that holds it. */
+        POSTED,
+
+        /** The delivery posted, and the category-balance store lost its high-order digits. */
+        POSTED_WITH_WRAPPED_CATEGORY_BALANCE;
+
+        /** @return whether this delivery posted rather than finding a marker */
+        boolean posted() {
+            return this != ALREADY_APPLIED;
+        }
+
+        /** @return whether the category-balance store wrapped past nine integer digits */
+        boolean categoryBalanceWrapped() {
+            return this == POSTED_WITH_WRAPPED_CATEGORY_BALANCE;
+        }
     }
 
     /**

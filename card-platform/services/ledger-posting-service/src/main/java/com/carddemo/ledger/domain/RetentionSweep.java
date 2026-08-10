@@ -40,7 +40,7 @@ import org.springframework.transaction.support.TransactionTemplate;
  * so writing a sixth generation deletes the oldest. The three balance and transaction tables of
  * this service carry no horizon and are not swept: those are the ledger itself.
  *
- * <h2>Why each delete is bounded and drained</h2>
+ * <h2>Each delete is bounded and drained</h2>
  *
  * <p>All three tables are on the hot write path. {@code outbox_event} is written by every posting and
  * swept by the relay on a fixed delay of half a second, and {@code processed_event} is written by

@@ -3,7 +3,7 @@ package com.carddemo.fraud.repository;
 import com.carddemo.fraud.entity.FraudAssessmentEntity;
 import java.time.Instant;
 import java.util.List;
-import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Limit;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
@@ -21,14 +21,61 @@ import org.springframework.stereotype.Repository;
 public interface FraudAssessmentRepository extends JpaRepository<FraudAssessmentEntity, String> {
 
     /**
-     * One account's assessments, newest first. {@code accountId} is opaque text of eleven digits, so
-     * a leading zero survives.
+     * One account's newest assessments, at most {@code limit} of them.
+     *
+     * <p>{@code accountId} is opaque text of eleven digits, so a leading zero survives.
+     *
+     * <p>The order is assessment time descending and then transaction identifier descending. The
+     * second column is not decoration: assessment time is not unique, because one consumer batch
+     * assesses several transactions and the rows can land on the same microsecond. Ordering by time
+     * alone leaves those rows in whatever order the plan happens to produce, so a page boundary
+     * falling inside a group of equal times can repeat a row on one page and skip another. The
+     * identifier is the primary key, so adding it makes the order total and the boundary exact.
+     *
+     * <p>Index {@code ix_fraud_assessment_account_cursor} carries these three columns in this
+     * order, so the page is read from the index rather than sorted out of the account's history.
      *
      * @param accountId the account whose assessments to return, eleven digits of text
-     * @param pageable  how many rows to return and where to start
-     * @return the assessments, newest first, empty when the account holds none
+     * @param limit     how many rows to return, one more than the page serves
+     * @return the newest rows in that order, empty when the account holds none
      */
-    List<FraudAssessmentEntity> findByAccountIdOrderByAssessedAtDesc(String accountId, Pageable pageable);
+    List<FraudAssessmentEntity> findByAccountIdOrderByAssessedAtDescTransactionIdDesc(
+            String accountId, Limit limit);
+
+    /**
+     * The page of one account's assessments following one row of that account.
+     *
+     * <p>The bound is the pair the cursor names, and it is exclusive: a row is returned when its
+     * assessment time is older, or when its time is equal and its identifier sorts lower. That is
+     * the same total order {@link #findByAccountIdOrderByAssessedAtDescTransactionIdDesc} applies,
+     * so the row the cursor names is never returned twice and no row between two pages is skipped.
+     *
+     * <p>The account equality is repeated here rather than trusted from the cursor. The cursor
+     * names a position, not an entitlement, so binding the query to the account the caller asked
+     * for keeps a cursor issued for one account from reading another's rows.
+     *
+     * <p>Cost does not grow with the page reached. The predicate is a range over
+     * {@code ix_fraud_assessment_account_cursor}, so the tenth page and the ten-thousandth page
+     * both read one page of index entries. An offset does grow: it reads and discards every row
+     * before the one asked for.
+     *
+     * @param accountId  the account whose assessments to return, eleven digits of text
+     * @param assessedAt the assessment time the cursor names, the exclusive upper bound
+     * @param transactionId the identifier the cursor names, breaking a tie on {@code assessedAt}
+     * @param limit      how many rows to return, one more than the page serves
+     * @return the rows following that position, empty when the position is the account's oldest
+     */
+    @Query("""
+           SELECT a FROM FraudAssessmentEntity a
+            WHERE a.accountId = :accountId
+              AND (a.assessedAt < :assessedAt
+                   OR (a.assessedAt = :assessedAt AND a.transactionId < :transactionId))
+            ORDER BY a.assessedAt DESC, a.transactionId DESC
+           """)
+    List<FraudAssessmentEntity> findPageAfter(@Param("accountId") String accountId,
+            @Param("assessedAt") Instant assessedAt,
+            @Param("transactionId") String transactionId,
+            Limit limit);
 
     /**
      * Deletes at most {@code limit} assessments recorded before the given instant, and returns how

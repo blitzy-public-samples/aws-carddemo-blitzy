@@ -913,6 +913,47 @@ class ApiSurfaceSecurityContractTest {
     }
 
     /**
+     * Values bound at one fully qualified configuration path.
+     *
+     * <p>{@link #valuesOf} matches a leaf key wherever it appears, which is enough for a key this
+     * platform declares once and wrong for one it declares twice. Actuator exposure and structured
+     * logging both carry a leaf named {@code exclude}, so a reader of the leaf alone cannot tell a
+     * denylisted endpoint from a withheld log member. This walks the indentation to build each key's
+     * path, so the caller names the whole path and matches only that.
+     *
+     * @param configuration configuration text to read
+     * @param path          the dotted path to match, such as {@code a.b.c}
+     * @return every value bound at that path, in file order
+     */
+    private static List<String> valuesAtPath(String configuration, String path) {
+        List<String> values = new ArrayList<>();
+        List<String> ancestry = new ArrayList<>();
+        List<Integer> indents = new ArrayList<>();
+
+        for (String line : configuration.split("\\R")) {
+            String trimmed = line.trim();
+            if (trimmed.isEmpty() || trimmed.startsWith("#") || trimmed.startsWith("-")
+                    || !trimmed.contains(":")) {
+                continue;
+            }
+            int indent = line.indexOf(trimmed.charAt(0));
+            while (!indents.isEmpty() && indents.get(indents.size() - 1) >= indent) {
+                indents.remove(indents.size() - 1);
+                ancestry.remove(ancestry.size() - 1);
+            }
+            String key = trimmed.substring(0, trimmed.indexOf(':')).trim();
+            String value = trimmed.substring(trimmed.indexOf(':') + 1).trim();
+
+            ancestry.add(key);
+            indents.add(indent);
+            if (String.join(".", ancestry).equals(path)) {
+                values.add(value);
+            }
+        }
+        return values;
+    }
+
+    /**
      * The literal a placeholder chain falls back to.
      *
      * <p>A configuration value is a chain such as {@code ${OUTER:${INNER:literal}}}. The literal is
@@ -1953,10 +1994,50 @@ class ApiSurfaceSecurityContractTest {
                     assertFalse(exposed.contains(diagnostic),
                             module + " exposes the " + diagnostic + " endpoint");
                 }
-                assertTrue(valuesOf(APPLICATION_YAMLS.get().get(module), "exclude").isEmpty(),
-                        module + " names an exclusion, so its exposure is a denylist rather than "
-                                + "the allowlist this contract reads");
+                assertTrue(valuesAtPath(APPLICATION_YAMLS.get().get(module),
+                                "management.endpoints.web.exposure.exclude").isEmpty(),
+                        module + " names an actuator exclusion, so its exposure is a denylist "
+                                + "rather than the allowlist this contract reads");
             }
+        }
+
+        /**
+         * The exclusion rule above reads a whole path, and this proves it still fires.
+         *
+         * <p>The rule used to read the leaf key alone, which was sufficient while {@code exclude}
+         * appeared once in these files. It now appears twice: structured logging withholds a member
+         * by the same leaf name. A rule narrowed to stop matching the second one could just as easily
+         * have stopped matching the first, and would then pass on a denylisted actuator endpoint,
+         * which is the exposure it exists to prevent. Both shapes are checked here so the narrowing
+         * is held to distinguishing them rather than to ignoring both.
+         */
+        @Test
+        @DisplayName("the exclusion rule separates an actuator denylist from a withheld log member")
+        void theExclusionRuleSeparatesAnActuatorDenylistFromAWithheldLogMember() {
+            String denylisted = """
+                    management:
+                      endpoints:
+                        web:
+                          exposure:
+                            include: health
+                            exclude: env,beans
+                    """;
+            String withheldMember = """
+                    logging:
+                      structured:
+                        json:
+                          exclude:
+                            - stack_trace
+                    """;
+
+            assertEquals(List.of("env,beans"),
+                    valuesAtPath(denylisted, "management.endpoints.web.exposure.exclude"),
+                    "the rule has to keep reading an actuator denylist, or narrowing it removed the "
+                            + "protection rather than the false report");
+            assertTrue(valuesAtPath(withheldMember,
+                            "management.endpoints.web.exposure.exclude").isEmpty(),
+                    "a withheld log member is not an actuator denylist, and reading it as one is "
+                            + "what made this rule report a service that exposes nothing");
         }
 
         /**

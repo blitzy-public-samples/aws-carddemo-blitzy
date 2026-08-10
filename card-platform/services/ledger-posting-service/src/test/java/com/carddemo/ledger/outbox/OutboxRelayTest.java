@@ -5,7 +5,9 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -24,10 +26,14 @@ import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
+import org.apache.kafka.clients.producer.ProducerRecord;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -48,15 +54,35 @@ import tools.jackson.databind.json.JsonMapper;
  * transaction. The repository, the broker template and the recording surface are stubbed; the state
  * machine under test is {@code entity/OutboxEventEntity} and it is the real one.
  *
+ * <p>A refused send backs off the account it names and no other. Ordering per account is the claim
+ * query's job rather than the pass's: {@code claimDueRows} answers with the due head row of each
+ * aggregate, so the rows of one window name distinct accounts and a stalled account's later events
+ * wait behind its own unpublished head. Two tests below hold that, and the database-level property
+ * they rest on is asserted in {@code repository/OutboxEventRepositoryTest} of the account service
+ * and in {@code KafkaDeliveryGuaranteeContractTest}, which reads the claim of all five relays.
+ *
  * <p>One asymmetry is asserted rather than assumed. A row the broker refuses reaches
  * {@code recordRefusedRow}, which publishes a dead letter when the row is abandoned. A row whose
- * event type has no destination is backed off in the sweep itself and reaches no dead letter at any
- * attempt count, so it is abandoned silently and only the abandoned-row counter reports it. Two
- * tests below hold both halves of that, so a change to either is visible.
+ * event type has no destination was bound for no topic, so no diagnostic can declare a source topic
+ * for it: it is abandoned silently and only the abandoned-row counter and the error log report it.
+ * Two tests below hold both halves of that, so a change to either is visible.
  */
 class OutboxRelayTest {
 
     private static final String ACCOUNT_ID = "00000000077";
+
+    /**
+     * A second account, so a window's rows name distinct accounts.
+     *
+     * <p>{@code claimDueRows} answers with the due head row of each aggregate and never two rows of
+     * one account, so a pass that holds several rows holds them for several accounts. A test that
+     * built two rows of one account would assert against a batch the claim cannot produce.
+     */
+    private static final String OTHER_ACCOUNT_ID = "00000000078";
+
+    /** A third account, for the window that refuses every send. */
+    private static final String THIRD_ACCOUNT_ID = "00000000079";
+
     private static final String POSTED_TOPIC = "transaction.posted";
     private static final String DECLINED_TOPIC = "transaction.declined";
 
@@ -117,6 +143,9 @@ class OutboxRelayTest {
     /** Step recorded when the row is saved carrying its published state. */
     private static final String MARK_STEP = "mark";
 
+    /** Rows the stubbed store holds, so a re-read inside a later transaction finds them. */
+    private final Map<UUID, OutboxEventEntity> stored = new HashMap<>();
+
     private OutboxEventRepository outboxEvents;
     private KafkaTemplate<String, Object> kafkaTemplate;
     private LedgerMeters meters;
@@ -128,6 +157,7 @@ class OutboxRelayTest {
     @BeforeEach
     @SuppressWarnings("unchecked")
     void setUp() {
+        stored.clear();
         outboxEvents = mock(OutboxEventRepository.class);
         kafkaTemplate = mock(KafkaTemplate.class);
         meters = mock(LedgerMeters.class);
@@ -135,7 +165,17 @@ class OutboxRelayTest {
         insideTransaction = new AtomicBoolean();
 
         when(outboxEvents.save(any(OutboxEventEntity.class)))
-                .thenAnswer(call -> call.getArgument(0));
+                .thenAnswer(call -> {
+                    OutboxEventEntity saved = call.getArgument(0);
+                    stored.put(saved.getEventId(), saved);
+                    return saved;
+                });
+        // The relay records each outcome in a transaction of its own and re-reads the row inside it,
+        // because the claim has committed by then and saving the copy the claim loaded would write
+        // pre-claim state back over it. A store keyed by identifier answers that read with the row
+        // the claim saved, so these tests keep asserting against the instance they created.
+        when(outboxEvents.findById(any(UUID.class)))
+                .thenAnswer(call -> Optional.ofNullable(stored.get(call.getArgument(0))));
         when(outboxEvents.findByRelayStateAndClaimedAtBeforeOrderByClaimedAtAsc(
                 any(), any(), any())).thenReturn(List.of());
         when(transactionTemplate.execute(any())).thenAnswer(call -> {
@@ -158,7 +198,7 @@ class OutboxRelayTest {
     void aDueRowIsClaimedBeforeItIsPublishedAndMarked() {
         OutboxEventEntity row = postedRow();
         when(outboxEvents.claimDueRows(any(), any())).thenReturn(List.of(row));
-        when(kafkaTemplate.send(eq(POSTED_TOPIC), eq(ACCOUNT_ID), any()))
+        when(kafkaTemplate.send(recordFor(POSTED_TOPIC, ACCOUNT_ID)))
                 .thenAnswer(call -> {
                     assertThat(row.getRelayState())
                             .isEqualTo(OutboxEventEntity.RelayState.CLAIMED);
@@ -170,7 +210,7 @@ class OutboxRelayTest {
 
         assertTrue(row.isPublished());
         assertThat(row.getClaimedBy()).isNull();
-        verify(kafkaTemplate).send(eq(POSTED_TOPIC), eq(ACCOUNT_ID), any());
+        verify(kafkaTemplate).send(recordFor(POSTED_TOPIC, ACCOUNT_ID));
         verify(meters, never()).recordFailure(LedgerMeters.PUBLISH_STAGE);
         // The publish-success series is what tells a stalled relay from an idle one: the
         // outbox-write count keeps rising while a broker is unreachable, and this one does not.
@@ -181,7 +221,7 @@ class OutboxRelayTest {
     void aRowTheBrokerRefusedIsNeverCountedAsPublished() {
         OutboxEventEntity row = postedRow();
         when(outboxEvents.claimDueRows(any(), any())).thenReturn(List.of(row));
-        when(kafkaTemplate.send(eq(POSTED_TOPIC), eq(ACCOUNT_ID), any()))
+        when(kafkaTemplate.send(recordFor(POSTED_TOPIC, ACCOUNT_ID)))
                 .thenReturn(CompletableFuture.failedFuture(
                         new IllegalStateException("broker unavailable")));
 
@@ -193,13 +233,15 @@ class OutboxRelayTest {
     }
 
     @Test
-    void aBrokerFailureBacksOffTheRowAndStopsTheSweep() {
-        OutboxEventEntity first = postedRow();
-        OutboxEventEntity second = postedRow();
-        when(outboxEvents.claimDueRows(any(), any())).thenReturn(List.of(first, second));
-        when(kafkaTemplate.send(eq(POSTED_TOPIC), anyString(), any()))
+    void aBrokerFailureBacksOffItsOwnRowAndLeavesTheOtherAccountsToTheSameSweep() {
+        OutboxEventEntity refused = postedRow();
+        OutboxEventEntity otherAccount = postedRowFor(OTHER_ACCOUNT_ID);
+        when(outboxEvents.claimDueRows(any(), any())).thenReturn(List.of(refused, otherAccount));
+        when(kafkaTemplate.send(recordFor(POSTED_TOPIC, ACCOUNT_ID)))
                 .thenReturn(CompletableFuture.failedFuture(
                         new IllegalStateException("broker unavailable")));
+        when(kafkaTemplate.send(recordFor(POSTED_TOPIC, OTHER_ACCOUNT_ID)))
+                .thenReturn(CompletableFuture.completedFuture(null));
         org.mockito.Mockito.doAnswer(call -> {
             assertThat(insideTransaction.get()).isFalse();
             return null;
@@ -207,12 +249,38 @@ class OutboxRelayTest {
 
         relay.publishPendingEvents();
 
-        assertThat(first.getRelayState()).isEqualTo(OutboxEventEntity.RelayState.PENDING);
-        assertThat(first.getAttemptCount()).isEqualTo(1);
-        assertThat(first.getNextAttemptAt()).isAfter(first.getLastAttemptAt());
-        assertThat(second.getAttemptCount()).isZero();
-        verify(kafkaTemplate, times(1)).send(eq(POSTED_TOPIC), anyString(), any());
+        assertThat(refused.getRelayState()).isEqualTo(OutboxEventEntity.RelayState.PENDING);
+        assertThat(refused.getAttemptCount()).isEqualTo(1);
+        assertThat(refused.getNextAttemptAt()).isAfter(refused.getLastAttemptAt());
+        assertTrue(otherAccount.isPublished(),
+                "one account's refused send backs that account off and no other, so the row of "
+                        + "another account claimed by the same pass is still published");
+        verify(kafkaTemplate).send(recordFor(POSTED_TOPIC, ACCOUNT_ID));
+        verify(kafkaTemplate).send(recordFor(POSTED_TOPIC, OTHER_ACCOUNT_ID));
         verify(meters).recordFailure(LedgerMeters.PUBLISH_STAGE);
+        verify(meters).recordEventsPublished(1L);
+    }
+
+    @Test
+    void everyAccountOfOneWindowIsAttemptedWhenEverySendIsRefused() {
+        List<OutboxEventEntity> rows = List.of(postedRow(), postedRowFor(OTHER_ACCOUNT_ID),
+                postedRowFor(THIRD_ACCOUNT_ID));
+        when(outboxEvents.claimDueRows(any(), any())).thenReturn(rows);
+        when(kafkaTemplate.send(recordOn(POSTED_TOPIC)))
+                .thenReturn(CompletableFuture.failedFuture(
+                        new IllegalStateException("broker unavailable")));
+
+        relay.publishPendingEvents();
+
+        assertThat(rows).allSatisfy(row -> {
+            assertThat(row.getRelayState()).isEqualTo(OutboxEventEntity.RelayState.PENDING);
+            assertThat(row.getAttemptCount())
+                    .as("each account's failure is recorded on that account's row alone")
+                    .isEqualTo(1);
+        });
+        verify(kafkaTemplate, times(3)).send(recordOn(POSTED_TOPIC));
+        verify(meters, times(3)).recordFailure(LedgerMeters.PUBLISH_STAGE);
+        verify(meters, never()).recordEventsPublished(org.mockito.ArgumentMatchers.anyLong());
     }
 
     @Test
@@ -222,14 +290,14 @@ class OutboxRelayTest {
         when(outboxEvents.findByRelayStateAndClaimedAtBeforeOrderByClaimedAtAsc(
                 any(), any(), any())).thenReturn(List.of(row));
         when(outboxEvents.claimDueRows(any(), any())).thenReturn(List.of(row));
-        when(kafkaTemplate.send(eq(POSTED_TOPIC), eq(ACCOUNT_ID), any()))
+        when(kafkaTemplate.send(recordFor(POSTED_TOPIC, ACCOUNT_ID)))
                 .thenReturn(CompletableFuture.completedFuture(null));
 
         relay.publishPendingEvents();
 
         assertTrue(row.isPublished());
         assertThat(row.getAttemptCount()).isEqualTo(1);
-        verify(kafkaTemplate).send(eq(POSTED_TOPIC), eq(ACCOUNT_ID), any());
+        verify(kafkaTemplate).send(recordFor(POSTED_TOPIC, ACCOUNT_ID));
         verify(meters).recordFailure(LedgerMeters.PUBLISH_STAGE);
     }
 
@@ -266,13 +334,13 @@ class OutboxRelayTest {
 
         OutboxEventEntity posted = postedRow();
         when(outboxEvents.claimDueRows(any(), any())).thenReturn(List.of(posted));
-        when(kafkaTemplate.send(eq(POSTED_TOPIC), eq(ACCOUNT_ID), any()))
+        when(kafkaTemplate.send(recordFor(POSTED_TOPIC, ACCOUNT_ID)))
                 .thenReturn(CompletableFuture.completedFuture(null));
 
         relay.publishPendingEvents();
 
         assertTrue(posted.isPublished());
-        verify(kafkaTemplate, never()).send(eq(DECLINED_TOPIC), anyString(), any());
+        verify(kafkaTemplate, never()).send(recordOn(DECLINED_TOPIC));
     }
 
     @Test
@@ -298,7 +366,7 @@ class OutboxRelayTest {
         OutboxEventEntity row = postedRow();
         when(outboxEvents.claimDueRows(any(), any())).thenReturn(List.of(row));
         List<String> order = new ArrayList<>();
-        when(kafkaTemplate.send(eq(POSTED_TOPIC), eq(ACCOUNT_ID), any()))
+        when(kafkaTemplate.send(recordFor(POSTED_TOPIC, ACCOUNT_ID)))
                 .thenAnswer(call -> {
                     order.add(SEND_STEP);
                     assertThat(row.isPublished()).isFalse();
@@ -307,6 +375,7 @@ class OutboxRelayTest {
                 });
         when(outboxEvents.save(any(OutboxEventEntity.class))).thenAnswer(call -> {
             OutboxEventEntity saved = call.getArgument(0);
+            stored.put(saved.getEventId(), saved);
             if (saved.isPublished()) {
                 order.add(MARK_STEP);
             }
@@ -323,7 +392,7 @@ class OutboxRelayTest {
     void aRefusedSendLeavesTheRowUnpublishedAndUnclaimed() {
         OutboxEventEntity row = postedRow();
         when(outboxEvents.claimDueRows(any(), any())).thenReturn(List.of(row));
-        when(kafkaTemplate.send(eq(POSTED_TOPIC), eq(ACCOUNT_ID), any()))
+        when(kafkaTemplate.send(recordFor(POSTED_TOPIC, ACCOUNT_ID)))
                 .thenReturn(CompletableFuture.failedFuture(
                         new IllegalStateException("broker unavailable")));
 
@@ -333,7 +402,7 @@ class OutboxRelayTest {
         assertThat(row.getPublishedAt()).isNull();
         assertThat(row.getClaimedBy()).isNull();
         assertThat(row.getRelayState()).isEqualTo(OutboxEventEntity.RelayState.PENDING);
-        verify(kafkaTemplate, never()).send(eq(DEAD_LETTER_TOPIC), anyString(), any());
+        verify(kafkaTemplate, never()).send(recordOn(DEAD_LETTER_TOPIC));
         verify(meters, never()).recordAbandonedRow();
     }
 
@@ -345,7 +414,7 @@ class OutboxRelayTest {
         when(outboxEvents.claimDueRows(any(), any()))
                 .thenReturn(List.of(mine))
                 .thenReturn(List.of(theirs));
-        when(kafkaTemplate.send(eq(POSTED_TOPIC), eq(ACCOUNT_ID), any()))
+        when(kafkaTemplate.send(recordFor(POSTED_TOPIC, ACCOUNT_ID)))
                 .thenAnswer(call -> CompletableFuture.completedFuture(null));
 
         relay.publishPendingEvents();
@@ -354,7 +423,7 @@ class OutboxRelayTest {
         assertTrue(mine.isPublished());
         assertTrue(theirs.isPublished());
         assertThat(mine.getEventId()).isNotEqualTo(theirs.getEventId());
-        verify(kafkaTemplate, times(2)).send(eq(POSTED_TOPIC), eq(ACCOUNT_ID), any());
+        verify(kafkaTemplate, times(2)).send(recordFor(POSTED_TOPIC, ACCOUNT_ID));
         verify(outboxEvents, times(2)).claimDueRows(any(), any());
     }
 
@@ -370,7 +439,7 @@ class OutboxRelayTest {
 
         assertThat(claimedElsewhere.isPublished()).isFalse();
         assertThat(claimedElsewhere.getClaimedBy()).isEqualTo(OTHER_INSTANCE);
-        verify(kafkaTemplate, never()).send(anyString(), anyString(), any());
+        verify(kafkaTemplate, never()).send(anyRecord());
     }
 
     @Test
@@ -378,7 +447,7 @@ class OutboxRelayTest {
         OutboxEventEntity unroutable = rowOfUnknownType();
         OutboxEventEntity routable = postedRow();
         when(outboxEvents.claimDueRows(any(), any())).thenReturn(List.of(unroutable, routable));
-        when(kafkaTemplate.send(eq(POSTED_TOPIC), eq(ACCOUNT_ID), any()))
+        when(kafkaTemplate.send(recordFor(POSTED_TOPIC, ACCOUNT_ID)))
                 .thenReturn(CompletableFuture.completedFuture(null));
 
         relay.publishPendingEvents();
@@ -389,7 +458,7 @@ class OutboxRelayTest {
         assertTrue(routable.isPublished(),
                 "an unroutable row is skipped rather than stopping the sweep, unlike a refused "
                         + "send");
-        verify(kafkaTemplate).send(eq(POSTED_TOPIC), eq(ACCOUNT_ID), any());
+        verify(kafkaTemplate).send(recordFor(POSTED_TOPIC, ACCOUNT_ID));
         verify(meters).recordFailure(LedgerMeters.PUBLISH_STAGE);
         verify(meters, never()).recordAbandonedRow();
     }
@@ -399,10 +468,10 @@ class OutboxRelayTest {
         OutboxEventEntity row = postedRow();
         failUpToTheCeiling(row);
         when(outboxEvents.claimDueRows(any(), any())).thenReturn(List.of(row));
-        when(kafkaTemplate.send(eq(POSTED_TOPIC), eq(ACCOUNT_ID), any()))
+        when(kafkaTemplate.send(recordFor(POSTED_TOPIC, ACCOUNT_ID)))
                 .thenReturn(CompletableFuture.failedFuture(
                         new IllegalStateException("broker unavailable")));
-        when(kafkaTemplate.send(eq(DEAD_LETTER_TOPIC), eq(ACCOUNT_ID), any()))
+        when(kafkaTemplate.send(recordFor(DEAD_LETTER_TOPIC, ACCOUNT_ID)))
                 .thenReturn(CompletableFuture.completedFuture(null));
         org.mockito.Mockito.doAnswer(call -> {
             assertThat(insideTransaction.get()).isFalse();
@@ -438,7 +507,7 @@ class OutboxRelayTest {
 
         assertThat(row.getRelayState()).isEqualTo(OutboxEventEntity.RelayState.ABANDONED);
         verify(meters).recordAbandonedRow();
-        verify(kafkaTemplate, never()).send(eq(DEAD_LETTER_TOPIC), anyString(), any());
+        verify(kafkaTemplate, never()).send(recordOn(DEAD_LETTER_TOPIC));
     }
 
     @Test
@@ -446,10 +515,10 @@ class OutboxRelayTest {
         OutboxEventEntity row = postedRow();
         failUpToTheCeiling(row);
         when(outboxEvents.claimDueRows(any(), any())).thenReturn(List.of(row));
-        when(kafkaTemplate.send(eq(POSTED_TOPIC), eq(ACCOUNT_ID), any()))
+        when(kafkaTemplate.send(recordFor(POSTED_TOPIC, ACCOUNT_ID)))
                 .thenReturn(CompletableFuture.failedFuture(
                         new IllegalStateException("broker unavailable")));
-        when(kafkaTemplate.send(eq(DEAD_LETTER_TOPIC), eq(ACCOUNT_ID), any()))
+        when(kafkaTemplate.send(recordFor(DEAD_LETTER_TOPIC, ACCOUNT_ID)))
                 .thenReturn(CompletableFuture.completedFuture(null));
 
         relay.publishPendingEvents();
@@ -466,10 +535,10 @@ class OutboxRelayTest {
         OutboxEventEntity row = postedRow();
         failUpToTheCeiling(row);
         when(outboxEvents.claimDueRows(any(), any())).thenReturn(List.of(row));
-        when(kafkaTemplate.send(eq(POSTED_TOPIC), eq(ACCOUNT_ID), any()))
+        when(kafkaTemplate.send(recordFor(POSTED_TOPIC, ACCOUNT_ID)))
                 .thenReturn(CompletableFuture.failedFuture(
                         new IllegalStateException("broker unavailable")));
-        when(kafkaTemplate.send(eq(DEAD_LETTER_TOPIC), eq(ACCOUNT_ID), any()))
+        when(kafkaTemplate.send(recordFor(DEAD_LETTER_TOPIC, ACCOUNT_ID)))
                 .thenReturn(CompletableFuture.failedFuture(
                         new IllegalStateException("dead-letter topic unavailable")));
 
@@ -492,7 +561,7 @@ class OutboxRelayTest {
         relay.publishPendingEvents();
 
         verify(meters).recordFailure(LedgerMeters.PUBLISH_STAGE);
-        verify(kafkaTemplate, never()).send(anyString(), anyString(), any());
+        verify(kafkaTemplate, never()).send(anyRecord());
         verify(meters, never()).recordAbandonedRow();
     }
 
@@ -501,7 +570,7 @@ class OutboxRelayTest {
         List<Duration> waits = new ArrayList<>();
         OutboxEventEntity row = postedRow();
         when(outboxEvents.claimDueRows(any(), any())).thenReturn(List.of(row));
-        when(kafkaTemplate.send(eq(POSTED_TOPIC), eq(ACCOUNT_ID), any()))
+        when(kafkaTemplate.send(recordFor(POSTED_TOPIC, ACCOUNT_ID)))
                 .thenReturn(CompletableFuture.failedFuture(
                         new IllegalStateException("broker unavailable")));
 
@@ -535,12 +604,28 @@ class OutboxRelayTest {
         assertThat(row.getRelayState()).isEqualTo(OutboxEventEntity.RelayState.PENDING);
     }
 
-    /** @return the one dead letter this sweep published */
+    /**
+     * Selects the dead letter out of everything the sweep sent.
+     *
+     * <p>A sweep that abandons a row sends twice on one template: the refused destination send
+     * first, then the dead letter. Both reach the same single-argument overload, so the record is
+     * picked by topic rather than by call count, and exactly one such record is required.
+     *
+     * @return the one dead letter this sweep published
+     */
+    @SuppressWarnings("unchecked")
     private DeadLetterEnvelope deadLetterSent() {
-        ArgumentCaptor<Object> published = ArgumentCaptor.forClass(Object.class);
-        verify(kafkaTemplate).send(eq(DEAD_LETTER_TOPIC), eq(ACCOUNT_ID), published.capture());
-        assertThat(published.getValue()).isInstanceOf(DeadLetterEnvelope.class);
-        return (DeadLetterEnvelope) published.getValue();
+        ArgumentCaptor<ProducerRecord<String, Object>> published =
+                ArgumentCaptor.forClass(ProducerRecord.class);
+        verify(kafkaTemplate, atLeastOnce()).send(published.capture());
+        List<ProducerRecord<String, Object>> letters = published.getAllValues().stream()
+                .filter(record -> DEAD_LETTER_TOPIC.equals(record.topic()))
+                .toList();
+        assertThat(letters).hasSize(1);
+        ProducerRecord<String, Object> sent = letters.getFirst();
+        assertThat(sent.key()).isEqualTo(ACCOUNT_ID);
+        assertThat(sent.value()).isInstanceOf(DeadLetterEnvelope.class);
+        return (DeadLetterEnvelope) sent.value();
     }
 
     /** @return a row whose event type this relay configures no destination for */
@@ -561,7 +646,17 @@ class OutboxRelayTest {
     }
 
     private OutboxEventEntity postedRow() {
-        TransactionPosted event = TransactionPosted.forAccount(ACCOUNT_ID, TRANSACTION_ID,
+        return postedRowFor(ACCOUNT_ID);
+    }
+
+    /**
+     * Writes one posted-event row keyed by the given account.
+     *
+     * @param accountId the eleven-digit account the row is keyed by, and its message key
+     * @return the stored row
+     */
+    private OutboxEventEntity postedRowFor(String accountId) {
+        TransactionPosted event = TransactionPosted.forAccount(accountId, TRANSACTION_ID,
                 POSTED_BALANCE, POSTED_AT, POSTED_AMOUNT, MASKED_CARD_NUMBER);
         return writer.write(event);
     }
@@ -594,5 +689,41 @@ class OutboxRelayTest {
                         5_000L), 168L),
                 new LedgerProperties.ProcessedEvent(720L, 168L),
                 new LedgerProperties.Retention(3_600_000L, 90));
+    }
+
+    /**
+     * Matches one record addressed to a topic and keyed on an aggregate.
+     *
+     * <p>The relay sends a {@code ProducerRecord} rather than a topic, a key and a value, because the
+     * two correlation identifiers of the row travel as record headers. This matcher reads the topic
+     * and the key off that record, so every expectation below says what it said before.
+     *
+     * @param topic the destination topic
+     * @param key   the message key
+     * @return the matcher
+     */
+    private static ProducerRecord<String, Object> recordFor(String topic, String key) {
+        return argThat((ProducerRecord<String, Object> record) -> record != null
+                && topic.equals(record.topic()) && key.equals(record.key()));
+    }
+
+    /**
+     * Matches one record addressed to a topic, under any key.
+     *
+     * @param topic the destination topic
+     * @return the matcher
+     */
+    private static ProducerRecord<String, Object> recordOn(String topic) {
+        return argThat((ProducerRecord<String, Object> record) -> record != null
+                && topic.equals(record.topic()));
+    }
+
+    /**
+     * Matches any record at all.
+     *
+     * @return the matcher
+     */
+    private static ProducerRecord<String, Object> anyRecord() {
+        return any();
     }
 }

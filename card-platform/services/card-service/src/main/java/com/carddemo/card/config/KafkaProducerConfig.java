@@ -1,5 +1,7 @@
 package com.carddemo.card.config;
 
+import com.carddemo.card.messaging.EventPublisherPort;
+import com.carddemo.card.messaging.KafkaEventPublisher;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -129,5 +131,30 @@ public class KafkaProducerConfig {
         // key and the first hundred characters of the payload into the log line.
         template.setProducerListener(new SafeProducerListener<>());
         return template;
+    }
+
+    /**
+     * Builds the one publisher of this service from values the bound properties have already checked.
+     *
+     * <p>The publisher used to be a scanned component whose constructor read three property
+     * placeholders of its own. Two named a topic and were harmless. The third,
+     * {@code carddemo.outbox.relay.publish-timeout}, was a second binding of a value
+     * {@link CardProperties.Outbox.Relay} also binds, and a second binding meets none of the
+     * constraints the record declares: zero and a negative duration both started the service and then
+     * failed every send the moment it was issued. Building the publisher here means the timeout it
+     * holds is the one the validated record produced, so a refused value stops start-up instead.
+     *
+     * @param kafkaTemplate the pinned template every card event travels through
+     * @param properties    the bound and validated {@code carddemo} block
+     * @return the publisher {@code outbox/OutboxRelay} calls
+     */
+    @Bean
+    public EventPublisherPort cardEventPublisher(
+            KafkaTemplate<String, String> kafkaTemplate, CardProperties properties) {
+        CardProperties.Kafka.Topics topics = properties.kafka().topics();
+        return new KafkaEventPublisher(kafkaTemplate,
+                topics.cardUpdated(),
+                topics.deadLetter(),
+                properties.outbox().relay().publishTimeout());
     }
 }

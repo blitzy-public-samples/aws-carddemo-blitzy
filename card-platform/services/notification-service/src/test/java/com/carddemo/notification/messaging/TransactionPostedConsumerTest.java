@@ -311,10 +311,10 @@ class TransactionPostedConsumerTest {
     void theClaimTheRowAndTheAlertCommitAsOneUnit() {
         deliver(postedEvent());
 
-        assertThat(this.sequence).containsExactly(TRANSACTION_BEGUN, MARKER_CLAIMED, ROW_READ,
+        assertThat(this.sequence).containsExactly(TRANSACTION_BEGUN, MARKER_CLAIMED,
                 ROW_WRITTEN, ALERT_RENDERED, TRANSACTION_COMMITTED, OFFSET_COMMITTED);
         assertThat(insideTheUnit()).as("the callback the listener handed the template ran")
-                .containsExactly(MARKER_CLAIMED, ROW_READ, ROW_WRITTEN, ALERT_RENDERED)
+                .containsExactly(MARKER_CLAIMED, ROW_WRITTEN, ALERT_RENDERED)
                 .doesNotContain(OFFSET_COMMITTED);
         assertThat(this.transactionManager.unitsBegun()).isEqualTo(1);
         assertThat(this.transactionManager.unitsCommitted()).isEqualTo(1);
@@ -499,7 +499,9 @@ class TransactionPostedConsumerTest {
 
         assertThat(this.statementTransactions.writeCalls()).isEqualTo(2);
         assertThat(this.statementTransactions.rowCount()).isEqualTo(1);
-        assertThat(this.sequence).contains(ROW_READ);
+        // Two deliveries, two write statements, one row. The second is an upsert onto the held key
+        // rather than a read followed by a merge, so no read appears in the sequence at all.
+        assertThat(this.sequence).doesNotContain(ROW_READ);
     }
 
     /**
@@ -573,7 +575,7 @@ class TransactionPostedConsumerTest {
 
         assertThatThrownBy(() -> deliver(postedEvent())).isInstanceOf(DataAccessException.class);
 
-        assertThat(this.sequence).containsExactly(TRANSACTION_BEGUN, MARKER_CLAIMED, ROW_READ,
+        assertThat(this.sequence).containsExactly(TRANSACTION_BEGUN, MARKER_CLAIMED,
                 ROW_WRITTEN, TRANSACTION_ROLLED_BACK);
         assertThat(this.sequence).doesNotContain(OFFSET_COMMITTED);
         assertThat(this.transactionManager.unitsRolledBack()).isEqualTo(1);
@@ -907,25 +909,49 @@ class TransactionPostedConsumerTest {
 
         int writeCalls() { return this.writeCalls; }
 
+        // One statement stores a row, so nothing reads the key first. The listener used to read it to
+        // choose a debug message and then merge, which cost three round trips per event and left the
+        // sequence assertions below recording a read that changed nothing.
         @Override
-        public Optional<StatementTransactionEntity> findById(StatementTransactionId key) {
-            this.sequence.add(ROW_READ);
-            return Optional.ofNullable(this.rows.get(key));
-        }
-
-        @Override
-        public <S extends StatementTransactionEntity> S save(S row) {
+        public int upsertRow(String cardToken, String transactionId, String maskedCardNumber,
+                String typeCode, String categoryCode, String source, String description,
+                BigDecimal amount, String merchantId, String merchantName, String merchantCity,
+                String merchantZip, String originTimestamp, String processingTimestamp) {
             this.sequence.add(ROW_WRITTEN);
             this.writeCalls++;
             if (this.writeFault != null) {
                 throw this.writeFault;
             }
+            StatementTransactionEntity row = new StatementTransactionEntity(
+                    new StatementTransactionId(cardToken, transactionId), maskedCardNumber, typeCode,
+                    categoryCode, source, description, amount, merchantId, merchantName, merchantCity,
+                    merchantZip, originTimestamp, processingTimestamp);
+            // Replaces under the key, which is what ON CONFLICT DO UPDATE does, so a redelivery leaves
+            // one row and the stored list records both attempts.
             this.rows.put(row.getId(), row);
             this.stored.add(row);
-            return row;
+            return 1;
         }
 
         // Operations the listener leaves alone.
+        @Override
+        public Optional<StatementTransactionEntity> findById(StatementTransactionId key) {
+            throw unused();
+        }
+
+        @Override
+        public <S extends StatementTransactionEntity> S save(S row) { throw unused(); }
+
+        @Override
+        public List<StatementTransactionEntity>
+                findByIdCardTokenAndIdTransactionIdGreaterThanOrderByIdTransactionIdAsc(
+                        String cardToken, String afterTransactionId, Limit limit) {
+            throw unused();
+        }
+
+        @Override
+        public CardHistoryTotals totalsOfCard(String cardToken) { throw unused(); }
+
         @Override public boolean existsById(StatementTransactionId key) { throw unused(); }
         @Override public List<StatementTransactionEntity> findAll() { throw unused(); }
         @Override public long count() { throw unused(); }
@@ -936,6 +962,10 @@ class TransactionPostedConsumerTest {
 
         @Override
         public List<StatementTransactionEntity> findByIdCardTokenOrderByIdTransactionIdAsc(
+                String cardToken, Limit limit) { throw unused(); }
+
+        @Override
+        public List<StatementTransactionEntity> findByIdCardTokenOrderByIdTransactionIdDesc(
                 String cardToken, Limit limit) { throw unused(); }
 
         @Override

@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -37,6 +38,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.mockito.ArgumentCaptor;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.TransientDataAccessResourceException;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.kafka.support.Acknowledgment;
@@ -208,10 +210,41 @@ final class TransactionDeclinedConsumerTest {
                     "the row, the marker and the offset commit in that order");
             assertEquals(1.0D, registry.counter("carddemo.ledger.events.consumed").count(),
                     "one delivery is one event read");
-            assertEquals(0.0D, outcome("rejected"),
+            assertEquals(1.0D, outcome("rejected"),
                     "the counter WS-REJECT-COUNT at app/cbl/CBTRN02C.cbl:L186 stands for is raised"
-                            + " inside RejectRecorder, beside the row it wrote. Raising it here as"
-                            + " well would double every reject the demo reports");
+                            + " here, after the transaction closed, and exactly once. RejectRecorder"
+                            + " raised it beside the row and inside the transaction, so a rollback"
+                            + " left a durable count for a reject the store never kept");
+        }
+
+        /**
+         * A rollback leaves no reject counted, and counts one failure instead.
+         *
+         * <p>This is the assertion the earlier arrangement could not make. The counter was raised
+         * beside the row, inside the transaction, so a rollback undid the row and kept the count. The
+         * count now follows the commit, so a refused write leaves the reject series flat and the
+         * failure series carrying the attempt.
+         */
+        @Test
+        @DisplayName("a rolled-back refusal counts no reject and one failure")
+        void aRolledBackRefusalCountsNoRejectAndOneFailure() {
+            doThrow(new DataIntegrityViolationException("rejected_transaction refused"))
+                    .when(rejectRecorder)
+                    .recordReject(any(FeedTransaction.class), any(DeclineReason.class));
+
+            assertThrows(DataIntegrityViolationException.class,
+                    () -> consumer.onTransactionDeclined(declined(DeclineReason.OVER_CREDIT_LIMIT),
+                            ACCOUNT_ID, TOPIC, acknowledgment));
+
+            assertEquals(0.0D, outcome("rejected"),
+                    "a reject the store never kept is not counted");
+            assertEquals(1.0D, registry.counter("carddemo.ledger.failures", "stage", "process")
+                            .count(),
+                    "the attempt is counted as a failure instead");
+            assertEquals(1.0D, registry.counter("carddemo.ledger.events.consumed").count(),
+                    "the delivery still arrived");
+            assertEquals(List.of(BEGIN, ROLLBACK), journal,
+                    "the transaction rolled back and no offset was committed");
         }
 
         @Test

@@ -11,6 +11,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
+import com.carddemo.card.CardServiceDatabase;
 import com.carddemo.card.TestIdentityPasswords;
 import com.carddemo.card.api.dto.CardUpdateRequest;
 import com.carddemo.card.api.dto.CardUpdateResponse.RefreshedCard;
@@ -47,8 +48,6 @@ import org.springframework.orm.jpa.JpaSystemException;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 
 /**
@@ -96,10 +95,15 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
  * {@link #snapshotOf(String, LocalDate, String)} below repeats those two conventions, so a
  * snapshot a test builds matches one the service builds.
  *
- * <p>That folded snapshot is what the comparison reads. It is not what a refusal answers with: the
- * private {@code storedValuesOf} beside it pads without folding, so the five values a caller reads
- * back are the five the columns hold. The assertions on a refused name below therefore expect the
- * letter case the other writer stored.
+ * <p>That one folded snapshot is what the comparison reads AND what a refusal answers with, because
+ * the source has only one. {@code 9300-CHECK-CHANGE-IN-REC.} runs
+ * {@code INSPECT CARD-EMBOSSED-NAME CONVERTING LIT-LOWER TO LIT-UPPER} at
+ * {@code app/cbl/COCRDUPC.cbl:L1499-L1501} over the record field <em>in place</em> rather than over a
+ * copy of it, so the field is already upper case when the comparison at
+ * {@code app/cbl/COCRDUPC.cbl:L1504} reads it and when the
+ * {@code MOVE CARD-EMBOSSED-NAME TO CCUP-OLD-CRDNAME} at {@code app/cbl/COCRDUPC.cbl:L1513}
+ * refreshes the operator's field. The assertions on a refused name below therefore expect upper case,
+ * whatever letter case the other writer stored, and the stored column keeps that writer's case.
  *
  * <h2>How this class runs</h2>
  *
@@ -136,18 +140,8 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
                 "MONITORING_PASSWORD_HASH=" + TestIdentityPasswords.MONITORING_PASSWORD_HASH,
                 "carddemo.outbox.relay.fixed-delay-ms=3600000"
         })
-@Testcontainers
 @DisplayName("the card update concurrency comparison, over the migrated card schema")
 class CardChangeDetectionTest {
-
-    /** The image tag {@code card-platform/docker-compose.yml} also names. */
-    private static final String POSTGRES_IMAGE = "postgres:18.4";
-
-    /**
-     * The database name, the login name and the password of the container, one value for all
-     * three. {@code card-platform/.env.example} declares the same value.
-     */
-    private static final String POSTGRES_CREDENTIAL = "carddemo";
 
     /**
      * The schema Flyway creates, from {@code spring.flyway.schemas} and
@@ -166,17 +160,12 @@ class CardChangeDetectionTest {
     private static final int EMBOSSED_NAME_WIDTH = 50;
 
     /**
-     * The one container every method in this class shares.
+     * The one container the module fork runs, which this class reads a login from.
      *
-     * <p>The class comes from {@code org.testcontainers.postgresql}, the package Testcontainers
-     * 2.0.5 ships it in. {@link Container} on a static field gives one container per class, and
-     * {@link Testcontainers} starts it before the Spring context reads a property below.
+     * <p>{@link CardServiceDatabase} owns it and hands this class a database of its own inside it.
+     * Nothing here starts or stops a container.
      */
-    @Container
-    static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer(POSTGRES_IMAGE)
-            .withDatabaseName(POSTGRES_CREDENTIAL)
-            .withUsername(POSTGRES_CREDENTIAL)
-            .withPassword(POSTGRES_CREDENTIAL);
+    static final PostgreSQLContainer POSTGRES = CardServiceDatabase.container();
 
     /**
      * Points the Spring datasource at the running container.
@@ -196,15 +185,12 @@ class CardChangeDetectionTest {
     /**
      * Returns the container connection string with {@code currentSchema} appended.
      *
-     * <p>Testcontainers appends one query parameter of its own, so the separator is {@code &}
-     * whenever a {@code ?} is present and {@code ?} otherwise.
+     * <p>The facility builds the locator, so no separator is decided here.
      *
      * @return the connection string whose search path holds {@value #MIGRATED_SCHEMA}
      */
     private static String migratedSchemaUrl() {
-        String url = POSTGRES.getJdbcUrl();
-        String separator = url.contains("?") ? "&" : "?";
-        return url + separator + "currentSchema=" + MIGRATED_SCHEMA;
+        return CardServiceDatabase.urlFor(CardChangeDetectionTest.class);
     }
 
     /** The service under test, injected through its transactional proxy. */
@@ -393,9 +379,9 @@ class CardChangeDetectionTest {
                     () -> assertEquals(UpdateOutcome.CHANGED_BEFORE_UPDATE, response.outcome()),
                     () -> assertEquals(CardValidationMessages.DATA_WAS_CHANGED_BEFORE_UPDATE,
                             response.message()),
-                    () -> assertEquals("Marlene Kuhn",
+                    () -> assertEquals("MARLENE KUHN",
                             response.refreshedCard().embossedName().strip(),
-                            "the letter case column embossed_name holds"));
+                            "the refreshed name is folded: the INSPECT at app/cbl/COCRDUPC.cbl:L1499-L1501 converts the record field in place, so the MOVE at :L1513 refreshes from the folded value"));
         }
 
         /**
@@ -661,8 +647,8 @@ class CardChangeDetectionTest {
                     () -> assertEquals(UpdateOutcome.CHANGED_BEFORE_UPDATE, response.outcome()),
                     () -> assertTrue(response.hasRefreshedCard()),
                     () -> assertNotNull(refreshed),
-                    () -> assertEquals("Odette Kilback", refreshed.embossedName().strip(),
-                            "the letter case column embossed_name holds"),
+                    () -> assertEquals("ODETTE KILBACK", refreshed.embossedName().strip(),
+                            "the refreshed name is folded: the INSPECT at app/cbl/COCRDUPC.cbl:L1499-L1501 converts the record field in place, so the MOVE at :L1513 refreshes from the folded value"),
                     () -> assertEquals("2027", refreshed.expiryYear()),
                     () -> assertEquals("04", refreshed.expiryMonth()),
                     () -> assertEquals("02", refreshed.expiryDay()),
@@ -781,9 +767,12 @@ class CardChangeDetectionTest {
                     () -> assertEquals(UpdateOutcome.UPDATED, applied.outcome()),
                     () -> assertEquals("allene brown", storedAfterUpdate),
                     () -> assertEquals(UpdateOutcome.CHANGED_BEFORE_UPDATE, refused.outcome()),
-                    () -> assertEquals("allene brown",
+                    () -> assertEquals("ALLENE BROWN",
                             refused.refreshedCard().embossedName().strip(),
-                            "the answer carries the characters the column holds"));
+                            "the column keeps the submitted case and the refreshed answer folds "
+                                    + "it, which is what the source does: the INSPECT at "
+                                    + "app/cbl/COCRDUPC.cbl:L1499-L1501 converts the record field "
+                                    + "in place before the MOVE at :L1513 reads it"));
         }
     }
 
@@ -1156,9 +1145,9 @@ class CardChangeDetectionTest {
                     () -> assertEquals(UpdateOutcome.CHANGED_BEFORE_UPDATE, refused.outcome()),
                     () -> assertEquals(CardValidationMessages.DATA_WAS_CHANGED_BEFORE_UPDATE,
                             refused.message()),
-                    () -> assertEquals("Roselyn Boyer",
+                    () -> assertEquals("ROSELYN BOYER",
                             refused.refreshedCard().embossedName().strip(),
-                            "the letter case column embossed_name holds"),
+                            "the refreshed name is folded: the INSPECT at app/cbl/COCRDUPC.cbl:L1499-L1501 converts the record field in place, so the MOVE at :L1513 refreshes from the folded value"),
                     () -> assertEquals("N", refused.refreshedCard().activeStatus()));
         }
     }

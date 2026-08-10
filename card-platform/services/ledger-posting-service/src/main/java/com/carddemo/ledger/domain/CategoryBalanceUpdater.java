@@ -29,8 +29,11 @@ import org.springframework.stereotype.Service;
 @Service
 public class CategoryBalanceUpdater {
 
-    /** Rows one upsert writes, on either arm. */
-    private static final int ROWS_ONE_UPSERT_WRITES = 1;
+    /** The answer of a store that stayed inside the field. */
+    private static final int STORE_INSIDE_FIELD = 0;
+
+    /** The answer of a store that lost the high-order digits. */
+    private static final int STORE_WRAPPED = 1;
 
     /** Adds the amount to one keyed balance, inserting the row when the table holds none. */
     private final TransactionCategoryBalanceRepository categoryBalances;
@@ -59,6 +62,11 @@ public class CategoryBalanceUpdater {
      * {@link TransactionCategoryBalanceId} on this path: a malformed key part fails before any
      * statement reaches the database.
      *
+     * <p>The answer says whether the store lost the high-order digits. The caller reports that after
+     * its transaction commits, so a wrap is visible at runtime without a claim being made about a row
+     * a rollback would remove. The wrap itself is reproduced rather than prevented, because the
+     * source performs the same store with no {@code ON SIZE ERROR} phrase.
+     *
      * @param accountId            eleven digits, from {@code XREF-ACCT-ID PIC 9(11)} at
      *                             {@code app/cpy/CVACT03Y.cpy:L7}
      * @param transactionTypeCode  two characters, from {@code DALYTRAN-TYPE-CD PIC X(02)} at
@@ -67,11 +75,12 @@ public class CategoryBalanceUpdater {
      *                             {@code app/cpy/CVTRA06Y.cpy:L7}
      * @param amount               the signed amount, from {@code DALYTRAN-AMT PIC S9(09)V99} at
      *                             {@code app/cpy/CVTRA06Y.cpy:L10}
+     * @return {@code true} when the store wrapped past nine integer digits
      * @throws NullPointerException     if any argument is null
      * @throws IllegalArgumentException if a key part is not the shape its column holds
-     * @throws IllegalStateException    if the upsert reports any row count other than one
+     * @throws IllegalStateException    if the statement answers anything but the two it can answer
      */
-    public void updateCategoryBalance(String accountId,
+    public boolean updateCategoryBalance(String accountId,
                                       String transactionTypeCode,
                                       String merchantCategoryCode,
                                       BigDecimal amount) {
@@ -81,12 +90,14 @@ public class CategoryBalanceUpdater {
         BigDecimal addend =
                 CobolDecimal.add(BigDecimal.ZERO, amount, PicClause.TRAN_CAT_BAL_SCALE);
 
-        int written = categoryBalances.addToCategoryBalance(key.getAccountId(), key.getTypeCode(),
+        int wrapped = categoryBalances.addToCategoryBalance(key.getAccountId(), key.getTypeCode(),
                 key.getCategoryCode(), addend);
 
-        if (written != ROWS_ONE_UPSERT_WRITES) {
-            throw new IllegalStateException("one category balance upsert writes "
-                    + ROWS_ONE_UPSERT_WRITES + " row and this one reported " + written);
+        if (wrapped != STORE_WRAPPED && wrapped != STORE_INSIDE_FIELD) {
+            throw new IllegalStateException("the category balance upsert answers "
+                    + STORE_INSIDE_FIELD + " or " + STORE_WRAPPED + " and this one answered "
+                    + wrapped);
         }
+        return wrapped == STORE_WRAPPED;
     }
 }

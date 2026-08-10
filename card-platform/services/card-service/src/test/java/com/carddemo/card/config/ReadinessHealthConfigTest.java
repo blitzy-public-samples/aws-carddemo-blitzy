@@ -3,6 +3,8 @@ package com.carddemo.card.config;
 import com.carddemo.card.entity.OutboxEventEntity;
 import com.carddemo.card.repository.OutboxEventRepository;
 
+import java.time.Instant;
+import java.util.Optional;
 import java.util.List;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -78,14 +80,15 @@ class ReadinessHealthConfigTest {
      * Asserts readiness reports up for a service that registers no listener.
      *
      * <p>This service consumes nothing, so its registry holds no container and there is nothing that
-     * could be failing to run. That is now a consequence of the rule rather than a literal zero written
-     * into the configuration: readiness compares the containers that registered against the containers
-     * that are running, and an empty set satisfies it.
+     * could be failing to run. It is the one service for which that answer is correct, and readiness
+     * says so by declaring zero rather than by comparing the registry against itself. The comparison
+     * an empty registry satisfies is what let every consuming service report ready while short of its
+     * listeners.
      *
-     * <p>The property that this service declares no listener is held at build time by
-     * {@code equivalence-tests} {@code ProjectionBootstrapContractTest}, which enumerates every
-     * listener of every service. A listener added here without being declared there fails that suite,
-     * which is a firmer guard than a health probe because it runs before anything is deployed.
+     * <p>Two build-time guards keep the zero honest. {@code ProjectionBootstrapContractTest} enumerates
+     * every listener of every service, and {@code ReadinessListenerExpectationContractTest} holds this
+     * service's declared count against its own sources. A listener added here fails both before
+     * anything is deployed, which is a firmer guard than a health probe.
      */
     @Test
     @DisplayName("reports ready while registering no Kafka listener")
@@ -132,6 +135,93 @@ class ReadinessHealthConfigTest {
 
         assertThat(indicator.health().getStatus()).isEqualTo(Status.UP);
         assertThat(indicator.health().getStatus()).isEqualTo(Status.DOWN);
+    }
+
+    @Test
+    @DisplayName("reports the backlog it read beside the reading")
+    void reportsTheBacklogItRead() {
+        OutboxEventRepository repository = mock(OutboxEventRepository.class);
+        when(repository.existsByRelayState(OutboxEventEntity.RelayState.ABANDONED))
+                .thenReturn(false);
+        when(repository.countDueBefore(any())).thenReturn(3L);
+        when(repository.findEarliestDueBefore(any()))
+                .thenReturn(Optional.of(Instant.now().minusSeconds(45)));
+
+        Health health = config.outboxHealthIndicator(repository).health();
+
+        assertThat(health.getStatus()).isEqualTo(Status.UP);
+        assertThat(health.getDetails())
+                .as("the rows waiting, so a stopped relay is visible before the first abandonment")
+                .containsEntry("due", 3L)
+                .as("three rows waiting under a minute is a relay keeping up")
+                .containsEntry("state", ReadinessHealthConfig.BACKLOG_CLEAR);
+        assertThat((Long) health.getDetails().get("oldestDueAgeSeconds"))
+                .as("how long the longest-waiting row has waited")
+                .isGreaterThanOrEqualTo(44L);
+    }
+
+    @Test
+    @DisplayName("a backlog alone does not fail readiness")
+    void aBacklogAloneDoesNotFailReadiness() {
+        OutboxEventRepository repository = mock(OutboxEventRepository.class);
+        when(repository.existsByRelayState(OutboxEventEntity.RelayState.ABANDONED))
+                .thenReturn(false);
+        when(repository.countDueBefore(any())).thenReturn(5_000L);
+        when(repository.findEarliestDueBefore(any()))
+                .thenReturn(Optional.of(Instant.now().minusSeconds(3_600)));
+
+        Health health = config.outboxHealthIndicator(repository).health();
+
+        assertThat(health.getStatus())
+                .as("a broker hiccup reports its backlog without removing this pod from service")
+                .isEqualTo(Status.UP);
+        assertThat(health.getDetails())
+                .containsEntry("due", 5_000L)
+                .as("the backlog is named as behind, which is a reading and not an eviction")
+                .containsEntry("state", ReadinessHealthConfig.BACKLOG_BEHIND);
+    }
+
+    @Test
+    @DisplayName("an abandoned row reports the backlog beside the reason it is down")
+    void anAbandonedRowReportsTheBacklogBesideTheReason() {
+        OutboxEventRepository repository = mock(OutboxEventRepository.class);
+        when(repository.existsByRelayState(OutboxEventEntity.RelayState.ABANDONED))
+                .thenReturn(true);
+        when(repository.countDueBefore(any())).thenReturn(2L);
+        when(repository.findEarliestDueBefore(any())).thenReturn(Optional.empty());
+
+        Health health = config.outboxHealthIndicator(repository).health();
+
+        assertThat(health.getStatus()).isEqualTo(Status.DOWN);
+        assertThat(health.getDetails())
+                .as("the abandoned row remains the reason, and the backlog is context beside it")
+                .containsEntry("state", "abandoned-row")
+                .containsEntry("due", 2L)
+                .containsEntry("oldestDueAgeSeconds", 0L);
+    }
+
+    @Test
+    @DisplayName("the backlog is named against a threshold on size and one on age")
+    void theBacklogIsNamedAgainstBothThresholds() {
+        assertThat(ReadinessHealthConfig.backlogState(0L, 0L))
+                .as("an empty outbox").isEqualTo(ReadinessHealthConfig.BACKLOG_CLEAR);
+        assertThat(ReadinessHealthConfig.backlogState(
+                ReadinessHealthConfig.BACKLOG_DUE_THRESHOLD - 1, 0L))
+                .as("one row below the size threshold")
+                .isEqualTo(ReadinessHealthConfig.BACKLOG_CLEAR);
+        assertThat(ReadinessHealthConfig.backlogState(
+                ReadinessHealthConfig.BACKLOG_DUE_THRESHOLD, 0L))
+                .as("a burst larger than the size threshold, whatever its age")
+                .isEqualTo(ReadinessHealthConfig.BACKLOG_BEHIND);
+        assertThat(ReadinessHealthConfig.backlogState(
+                1L, ReadinessHealthConfig.BACKLOG_AGE_THRESHOLD_SECONDS - 1))
+                .as("one row waiting just inside the age threshold")
+                .isEqualTo(ReadinessHealthConfig.BACKLOG_CLEAR);
+        assertThat(ReadinessHealthConfig.backlogState(
+                1L, ReadinessHealthConfig.BACKLOG_AGE_THRESHOLD_SECONDS))
+                .as("one row waiting past the age threshold names a stopped relay that a size"
+                        + " reading alone would report as healthy")
+                .isEqualTo(ReadinessHealthConfig.BACKLOG_BEHIND);
     }
 
     /**

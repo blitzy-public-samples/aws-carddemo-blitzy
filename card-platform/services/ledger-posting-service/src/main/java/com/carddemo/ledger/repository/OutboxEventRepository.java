@@ -5,6 +5,7 @@ import jakarta.persistence.LockModeType;
 import jakarta.persistence.QueryHint;
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import org.springframework.data.domain.Limit;
 import org.springframework.data.jpa.repository.Lock;
@@ -97,6 +98,15 @@ public interface OutboxEventRepository extends ListCrudRepository<OutboxEventEnt
      * Index {@code ix_outbox_event_claimable} covers both columns. Ordering by
      * {@code next_attempt_at} takes the longest-waiting row first.
      *
+     * <p>A correlated absence check admits only the oldest non-terminal row of each account, so one
+     * batch never holds two rows of one account. Recording each outcome separately is what makes
+     * that necessary: if an older row of an account failed while a newer one succeeded, the retry of
+     * the older row would reach the topic behind the newer one, and the account identifier is the
+     * message key, so every consumer of that account would see the two events out of order. It is
+     * also what lets one unpublishable row pause its own account and leave every other account
+     * eligible, and what makes the pass safe to issue several sends at once. Partial index
+     * {@code ix_outbox_event_aggregate_head} covers the check.
+     *
      * <p>The caller runs this inside a transaction and calls
      * {@link OutboxEventEntity#claim(String, java.time.Instant)} on each row it takes, which
      * records which instance won. The lock lasts only as long as that transaction, and
@@ -107,8 +117,8 @@ public interface OutboxEventRepository extends ListCrudRepository<OutboxEventEnt
      *
      * @param now   the current time, against which {@code next_attempt_at} is compared
      * @param limit how many rows to claim, at least one
-     * @return the claimed rows, longest-waiting first, at most {@code limit} of them, and empty
-     *         when no row is due
+     * @return the claimed account heads, longest-waiting first, at most {@code limit} of them, and
+     *         empty when no row is due
      */
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @QueryHints(@QueryHint(name = "jakarta.persistence.lock.timeout", value = SKIP_LOCKED_TIMEOUT))
@@ -117,6 +127,18 @@ public interface OutboxEventRepository extends ListCrudRepository<OutboxEventEnt
             WHERE row.relayState =
                     com.carddemo.ledger.entity.OutboxEventEntity.RelayState.PENDING
               AND row.nextAttemptAt <= :now
+              AND NOT EXISTS (
+                    SELECT preceding.eventId FROM OutboxEventEntity preceding
+                    WHERE preceding.aggregateId = row.aggregateId
+                      AND preceding.relayState IN (
+                          com.carddemo.ledger.entity.OutboxEventEntity.RelayState.PENDING,
+                          com.carddemo.ledger.entity.OutboxEventEntity.RelayState.CLAIMED)
+                      AND (
+                          preceding.createdAt < row.createdAt
+                          OR (preceding.createdAt = row.createdAt
+                              AND preceding.eventId < row.eventId)
+                      )
+              )
             ORDER BY row.nextAttemptAt ASC, row.eventId ASC
             """)
     List<OutboxEventEntity> claimDueRows(@Param("now") Instant now, Limit limit);
@@ -138,4 +160,46 @@ public interface OutboxEventRepository extends ListCrudRepository<OutboxEventEnt
     @QueryHints(@QueryHint(name = "jakarta.persistence.lock.timeout", value = SKIP_LOCKED_TIMEOUT))
     List<OutboxEventEntity> findByRelayStateAndClaimedAtBeforeOrderByClaimedAtAsc(
             OutboxEventEntity.RelayState relayState, Instant claimedBefore, Limit limit);
+
+    /**
+     * Counts the rows awaiting an attempt whose attempt is already due.
+     *
+     * <p>Readiness reported only whether a row had been abandoned, which happens after every attempt
+     * of that row is spent. A broker unreachable for minutes therefore left a growing backlog and a
+     * readiness document with nothing in it, because no row had run out of attempts yet. This is the
+     * number that moves first.
+     *
+     * <p>The count is restricted to rows that are due, so a row deliberately waiting out its backoff
+     * is not reported as a backlog. Both columns it reads are the two of the
+     * {@code relay_state, next_attempt_at} index, so the count is answered from that index.
+     *
+     * @param now the current time, against which {@code next_attempt_at} is compared
+     * @return how many rows are due for an attempt, and zero when none is
+     */
+    @Query("""
+            SELECT COUNT(row) FROM OutboxEventEntity row
+            WHERE row.relayState =
+                    com.carddemo.ledger.entity.OutboxEventEntity.RelayState.PENDING
+              AND row.nextAttemptAt <= :now
+            """)
+    long countDueBefore(@Param("now") Instant now);
+
+    /**
+     * Returns when the longest-waiting due row became due, or empty when no row is due.
+     *
+     * <p>A count alone cannot separate a service that is busy from one that is stuck. Three rows due
+     * for forty minutes is a stopped relay, and three hundred due for two seconds is a burst being
+     * worked through. The age derived from this value is what tells them apart.
+     *
+     * @param now the current time, against which {@code next_attempt_at} is compared
+     * @return the earliest {@code next_attempt_at} among due rows, or empty when none is due
+     */
+    @Query("""
+            SELECT MIN(row.nextAttemptAt) FROM OutboxEventEntity row
+            WHERE row.relayState =
+                    com.carddemo.ledger.entity.OutboxEventEntity.RelayState.PENDING
+              AND row.nextAttemptAt <= :now
+            """)
+    Optional<Instant> findEarliestDueBefore(@Param("now") Instant now);
+
 }

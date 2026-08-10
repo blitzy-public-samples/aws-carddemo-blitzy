@@ -426,7 +426,12 @@ public class CardController {
             return ResponseEntity.status(statusOf(missing)).body(missing);
         }
 
-        CardUpdateResponse outcome = cardUpdates.updateCard(named.get().getCardNumber(), request);
+        // The row resolved above is handed on, so the service validates against it instead of
+        // reading the same key a second time. The locked compare-and-swap read inside the update
+        // transaction still happens: that read is the one the rewrite depends on, and a row read
+        // before the transaction opened cannot stand in for it.
+        CardUpdateResponse outcome =
+                cardUpdates.updateCard(named.get().getCardNumber(), request, named.get());
         log.info("A card update answered outcome {}", outcome.outcome());
 
         HttpStatus status = statusOf(outcome);

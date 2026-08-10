@@ -43,8 +43,6 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.data.jpa.repository.support.JpaRepositoryFactory;
 import org.springframework.data.repository.Repository;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 
 /**
@@ -69,20 +67,24 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
  * record it has already read. A missing row therefore has no balance to add to, so the seed has to
  * cover every fixture account.
  */
-@Testcontainers
 class RepositorySurfaceTest {
 
-    /** Image tag of the database container, matching the {@code postgres} service in compose. */
-    private static final String POSTGRES_IMAGE = "postgres:18.4";
+    /**
+     * The one container the module fork runs, which this class reads a login from.
+     *
+     * <p>{@link EquivalenceDatabase} owns it and hands this class a database of its own inside it.
+     * Nothing here starts or stops a container.
+     */
+    private static final PostgreSQLContainer POSTGRES = EquivalenceDatabase.container();
 
-    /** One instance for both services under test. */
-    @Container
-    @SuppressWarnings("resource")
-    private static final PostgreSQLContainer POSTGRES =
-            new PostgreSQLContainer(POSTGRES_IMAGE)
-                    .withDatabaseName("carddemo")
-                    .withUsername("carddemo")
-                    .withPassword("carddemo-repository-surface");
+    /**
+     * The database inside that container which belongs to this class alone.
+     *
+     * <p>No schema is selected on the connection: every schema this class needs is built by the
+     * migrations it runs, and every native statement below qualifies its table name or sets
+     * hibernate.default_schema.
+     */
+    private static final String DATABASE_URL = EquivalenceDatabase.urlFor(RepositorySurfaceTest.class);
 
     /** The physical naming strategy Spring Boot 4.1.0 installs by default. */
     private static final String PHYSICAL_NAMING_STRATEGY =
@@ -399,7 +401,7 @@ class RepositorySurfaceTest {
      */
     private static SessionFactory build(String module, String schema, Class<?>... entities) {
         Flyway.configure()
-                .dataSource(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword())
+                .dataSource(DATABASE_URL, POSTGRES.getUsername(), POSTGRES.getPassword())
                 .locations("filesystem:" + migrationDirectory(module))
                 .schemas(schema)
                 .defaultSchema(schema)
@@ -409,7 +411,7 @@ class RepositorySurfaceTest {
 
         Map<String, Object> settings = new HashMap<>();
         settings.put("hibernate.connection.driver_class", "org.postgresql.Driver");
-        settings.put("hibernate.connection.url", POSTGRES.getJdbcUrl());
+        settings.put("hibernate.connection.url", DATABASE_URL);
         settings.put("hibernate.connection.username", POSTGRES.getUsername());
         settings.put("hibernate.connection.password", POSTGRES.getPassword());
         settings.put("hibernate.default_schema", schema);

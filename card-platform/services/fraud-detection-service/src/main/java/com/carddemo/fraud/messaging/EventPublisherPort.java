@@ -14,7 +14,7 @@ import java.util.concurrent.CompletionStage;
  * {@code app/cbl/CORPT00C.cbl:L515-L523} writes one record to a Customer Information Control System
  * (CICS) transient data queue, and a separate job reads that record later.
  *
- * <p><b>Why this interface exists.</b> It is the one swappable seam this platform declares. Every
+ * <p><b>What this interface is.</b> It is the one swappable seam this platform declares. Every
  * other producing service already published through an interface of this name, and this one held a
  * {@code KafkaTemplate} directly, so the broker choice was a compile-time dependency of its relay
  * rather than a configuration decision. Substituting a managed event service — which the platform

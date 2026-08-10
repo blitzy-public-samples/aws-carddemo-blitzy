@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.carddemo.account.AccountServiceDatabase;
 import com.carddemo.account.TestIdentityPasswords;
 import com.carddemo.account.config.CrossSiteRequestFilter;
 import com.carddemo.cobol.PicClause;
@@ -29,8 +30,6 @@ import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
@@ -103,12 +102,8 @@ import tools.jackson.databind.json.JsonMapper;
                 "carddemo.outbox.relay.fixed-delay-ms=3600000",
                 "carddemo.retention.sweep-interval-ms=3600000"
         })
-@Testcontainers
 @DisplayName("The account read, customer read, update and cycle-close surface over the migrated schema")
 class AccountControllerIT {
-
-    /** The image tag {@code card-platform/docker-compose.yml} also names. */
-    private static final String POSTGRES_IMAGE = "postgres:18.4";
 
     /** The header every state-changing call of this service has to carry. */
     private static final String CONTENT_TYPE_HEADER = "Content-Type";
@@ -125,19 +120,6 @@ class AccountControllerIT {
 
     /** A content type a browser can send cross-origin with no preflight, which is the forged shape. */
     private static final String FORM_MEDIA_TYPE = "application/x-www-form-urlencoded";
-
-    /**
-     * The database name, the login name and the password of the container, one value for all three.
-     * {@code card-platform/.env.example} declares the same value.
-     */
-    private static final String POSTGRES_CREDENTIAL = "carddemo";
-
-    /**
-     * The schema Flyway creates and migrates, from {@code spring.flyway.schemas} and
-     * {@code spring.jpa.properties.hibernate.default_schema} in
-     * {@code src/main/resources/application.yml}.
-     */
-    private static final String MIGRATED_SCHEMA = "account_service";
 
     /** Host and port the broker client is pointed at, where nothing listens. */
     static final String UNREACHABLE_BROKER = "localhost:1";
@@ -158,14 +140,20 @@ class AccountControllerIT {
     static final String USER_PASSWORD = TestIdentityPasswords.USER_PASSWORD;
 
     /**
-     * Migrations under {@code src/main/resources/db/migration}, V1 through V8.
+     * Migrations under {@code src/main/resources/db/migration}, V1 through V9.
      *
      * <p>{@code V8__subject_request_posture.sql} carries no data-definition statement. It re-issues
      * the {@code customer.social_security_number} comment, which used to say an erasure request
      * cleared the value with the rest of the row while no export or erasure workflow exists anywhere
      * on this platform to do that.</p>
+     *
+     * <p>{@code V9__outbox_correlation.sql} adds the two nullable correlation columns
+     * {@code outbox_event} records, so a published record can carry the unit of work behind it.</p>
+     * <p>{@code V10__outbox_aggregate_head_index.sql} adds one index to {@code outbox_event} and no
+     * table. The relay claims the due head row of each account rather than the oldest due rows
+     * outright, and that claim reads the table by aggregate and arrival order.</p>
      */
-    private static final int MIGRATION_COUNT = 8;
+    private static final int MIGRATION_COUNT = 10;
 
     /** Rows {@code V2__seed.sql} loads into {@code account}, from {@code app/data/ASCII/acctdata.txt}. */
     private static final int SEEDED_ACCOUNT_COUNT = 50;
@@ -317,6 +305,31 @@ class AccountControllerIT {
     private static final String PASSING_ADDRESS_ZIP = "27601";
 
     /**
+     * The same passing postal code in the ZIP+4 form thirty of the fifty seeded customer rows hold.
+     *
+     * <p>{@code CUST-ADDR-ZIP PIC X(10)} at {@code app/cpy/CVCUS01Y.cpy:L14} holds ten characters
+     * and {@code app/cbl/COACTUPC.cbl:L1607} edits five of them, so the source accepts this and the
+     * combination test still pairs the state with {@code 27}.
+     */
+    private static final String PASSING_ADDRESS_ZIP_PLUS_FOUR = PASSING_ADDRESS_ZIP + "-6716";
+
+    /**
+     * A credit limit of eleven integer digits, which {@code AccountDataRequest.MONEY_MAX_LENGTH}
+     * admits at fourteen characters and {@code ACCT-CREDIT-LIMIT PIC S9(10)V99} cannot hold.
+     *
+     * <p>{@code credit_limit} is {@code NUMERIC(12,2)}, so this value used to reach the database and
+     * raise SQLSTATE 22003.
+     */
+    private static final String ELEVEN_INTEGER_DIGIT_LIMIT = "12345678901.99";
+
+    /**
+     * What the column holds after the store above: the low-order ten integer digits and the sign,
+     * which is the outcome of a COBOL {@code MOVE} into the narrower field. No program under
+     * {@code app/cbl/} carries an {@code ON SIZE ERROR} phrase to do anything else.
+     */
+    private static final String ELEVEN_DIGITS_AS_STORED = "2345678901.99";
+
+    /**
      * The text the credit-score edit answers with, from {@code 'FICO Score'} and
      * {@code ': should be between 300 and 850'} at {@code app/cbl/COACTUPC.cbl:L2522-L2523}. The
      * literal is typed here, so no production constant is compared against itself.
@@ -373,17 +386,12 @@ class AccountControllerIT {
     private static final JsonMapper JSON = JsonMapper.builder().build();
 
     /**
-     * The container every test in this class shares.
+     * The one container the module fork runs, which this class reads a login from.
      *
-     * <p>{@code org.testcontainers.postgresql.PostgreSQLContainer} is the class Testcontainers
-     * 2.0.5 ships; the one under {@code org.testcontainers.containers} carries a deprecation. The
-     * replacement takes no type argument.
+     * <p>{@link AccountServiceDatabase} owns it and hands this class a database of its own inside it.
+     * Nothing here starts or stops a container.
      */
-    @Container
-    static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer(POSTGRES_IMAGE)
-            .withDatabaseName(POSTGRES_CREDENTIAL)
-            .withUsername(POSTGRES_CREDENTIAL)
-            .withPassword(POSTGRES_CREDENTIAL);
+    static final PostgreSQLContainer POSTGRES = AccountServiceDatabase.container();
 
     /**
      * Points the Spring datasource at the running container.
@@ -409,9 +417,7 @@ class AccountControllerIT {
      * @return the locator the context connects with
      */
     private static String migratedSchemaUrl() {
-        String url = POSTGRES.getJdbcUrl();
-        String separator = url.contains("?") ? "&" : "?";
-        return url + separator + "currentSchema=" + MIGRATED_SCHEMA;
+        return AccountServiceDatabase.urlFor(AccountControllerIT.class);
     }
 
     /** Port the embedded server took, which the random-port web environment settles at refresh. */
@@ -468,10 +474,10 @@ class AccountControllerIT {
                             + " WHERE version IS NOT NULL ORDER BY installed_rank");
 
             assertEquals(MIGRATION_COUNT, applied.size(),
-                    "db/migration carries V1 through V8 and Flyway applied every one");
+                    "db/migration carries V1 through V10 and Flyway applied every one");
             assertTrue(applied.stream().allMatch(row -> Boolean.TRUE.equals(row.get("success"))),
                     "a migration that failed would leave a row reporting failure: " + applied);
-            assertEquals(List.of("1", "2", "3", "4", "5", "6", "7", "8"),
+            assertEquals(List.of("1", "2", "3", "4", "5", "6", "7", "8", "9", "10"),
                     applied.stream().map(row -> String.valueOf(row.get("version"))).toList(),
                     "the versions applied, in the order Flyway applied them");
         }
@@ -858,6 +864,105 @@ class AccountControllerIT {
                             "the relay publishes after the commit, so both rows are unpublished"));
         }
 
+        /**
+         * A postal code the read model returns has to be accepted back by this route.
+         *
+         * <p>{@code app/cbl/COACTUPC.cbl:L1606} moves the whole {@code PIC X(10)} field into the edit
+         * area and {@code app/cbl/COACTUPC.cbl:L1607} then moves 5 into
+         * {@code WS-EDIT-ALPHANUM-LENGTH}, so every test of {@code 1245-EDIT-NUM-REQD} reads
+         * {@code WS-EDIT-ALPHANUM-ONLY(1:5)} and positions six to ten are carried without being
+         * inspected. Thirty of the fifty seeded customer rows hold a ZIP+4 and the other twenty hold
+         * five digits padded to ten, and editing the full width refused all fifty: a value this
+         * service had just returned from {@code GET} answered 422 on {@code PUT}.
+         */
+        @Test
+        @DisplayName("a ZIP+4 postal code is accepted, stored whole, and served back unchanged")
+        void aZipPlusFourPostalCodeRoundTrips() {
+            String body = updateBody(RAISED_CREDIT_LIMIT, PASSING_CREDIT_SCORE)
+                    .replace("\"addressZip\":\"" + PASSING_ADDRESS_ZIP + "\"",
+                            "\"addressZip\":\"" + PASSING_ADDRESS_ZIP_PLUS_FOUR + "\"");
+
+            HttpResponse<String> response = send(authorized(ADMIN_USERNAME, ADMIN_PASSWORD,
+                    "/accounts/" + SEEDED_ACCOUNT_ID)
+                    .header("Content-Type", JSON_MEDIA_TYPE)
+                    .PUT(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
+                    .build());
+
+            assertEquals(200, response.statusCode(), response.body());
+
+            String stored = storedAddressZip();
+            HttpResponse<String> read = send(authorized(ADMIN_USERNAME, ADMIN_PASSWORD,
+                    "/customers/" + SEEDED_CUSTOMER_ID).GET().build());
+            assertEquals(200, read.statusCode(), read.body());
+            String served = JSON.readTree(read.body()).get("addressZip").asString();
+
+            assertAll(
+                    () -> assertEquals(PASSING_ADDRESS_ZIP_PLUS_FOUR, stored,
+                            "every character reaches address_zip VARCHAR(10), so the four digits"
+                                    + " past the edited width are not discarded"),
+                    () -> assertEquals(PicClause.CUST_ADDR_ZIP_WIDTH, stored.length(),
+                            "and the column holds the whole ten-character field"),
+                    () -> assertEquals(PASSING_ADDRESS_ZIP_PLUS_FOUR, served,
+                            "the read serves what was stored"),
+                    () -> assertEquals(200, send(authorized(ADMIN_USERNAME, ADMIN_PASSWORD,
+                                    "/accounts/" + SEEDED_ACCOUNT_ID)
+                            .header("Content-Type", JSON_MEDIA_TYPE)
+                            .PUT(HttpRequest.BodyPublishers.ofString(
+                                    updateBody(RAISED_CREDIT_LIMIT, PASSING_CREDIT_SCORE)
+                                            .replace("\"addressZip\":\"" + PASSING_ADDRESS_ZIP
+                                                            + "\"",
+                                                    "\"addressZip\":\"" + served + "\""),
+                                    StandardCharsets.UTF_8))
+                            .build()).statusCode(),
+                            "and sending that served value straight back is accepted, which is the"
+                                    + " round trip that used to answer 422"));
+        }
+
+        /**
+         * A figure the request grammar accepts but the field cannot hold takes the store semantics of
+         * a COBOL {@code MOVE}, not a database overflow.
+         *
+         * <p>{@code AccountDataRequest.MONEY_MAX_LENGTH} is fifteen, the width
+         * {@code WS-EDIT-SIGNED-NUMBER-9V2-X PIC X(15)} at {@code app/cbl/COACTUPC.cbl:L55}
+         * receives, and the currency-tolerant grammar accepts eleven integer digits inside it. Every
+         * money column is {@code NUMERIC(12,2)} because {@code ACCT-CREDIT-LIMIT PIC S9(10)V99} holds
+         * ten integer digits, so such a value used to reach the database, raise SQLSTATE 22003 and
+         * answer 500. A database overflow is not validation.
+         *
+         * <p>The delivered behaviour drops the high-order digits and keeps the sign, which is what
+         * {@code app/cbl/COBIL00C.cbl:L224} does carrying {@code ACCT-CURR-BAL} into the narrower
+         * {@code TRAN-AMT}, and no program under {@code app/cbl/} carries an {@code ON SIZE ERROR}
+         * phrase to do anything else. The dropped digit is reported once at warning level, naming the
+         * capacity and withholding the figure.
+         */
+        @Test
+        @DisplayName("an eleven-integer-digit limit stores its low-order ten digits rather than "
+                + "answering 500")
+        void anElevenIntegerDigitLimitTakesTheCobolMoveOutcome() {
+            HttpResponse<String> response = send(authorized(ADMIN_USERNAME, ADMIN_PASSWORD,
+                    "/accounts/" + SEEDED_ACCOUNT_ID)
+                    .header("Content-Type", JSON_MEDIA_TYPE)
+                    .PUT(HttpRequest.BodyPublishers.ofString(
+                            updateBody(ELEVEN_INTEGER_DIGIT_LIMIT, PASSING_CREDIT_SCORE),
+                            StandardCharsets.UTF_8))
+                    .build());
+
+            assertAll(
+                    () -> assertNotEquals(500, response.statusCode(),
+                            "a valid submitted figure must not reach the database as an overflow: "
+                                    + response.body()),
+                    () -> assertEquals(200, response.statusCode(), response.body()),
+                    () -> assertEquals(new BigDecimal(ELEVEN_DIGITS_AS_STORED),
+                            storedCreditLimit(),
+                            "the column holds the low-order ten integer digits and the two"
+                                    + " fractional ones, which is what a MOVE into PIC S9(10)V99"
+                                    + " leaves"),
+                    () -> assertEquals(PicClause.ACCT_CREDIT_LIMIT_PRECISION
+                                    - PicClause.ACCT_CREDIT_LIMIT_SCALE,
+                            storedCreditLimit().precision() - storedCreditLimit().scale(),
+                            "and it holds exactly the ten integer digits the field declares"));
+        }
+
         @Test
         @DisplayName("a shortened name is stored and served at the width CUST-FIRST-NAME declares")
         void aShortenedNameIsStoredAtItsDeclaredWidth() {
@@ -877,18 +982,21 @@ class AccountControllerIT {
                     "/customers/" + SEEDED_CUSTOMER_ID).GET().build());
             JsonNode customer = JSON.readTree(read.body());
             String stored = storedFirstName();
+            String expected = submitted
+                    + " ".repeat(PicClause.CUST_FIRST_NAME_WIDTH - submitted.length());
             assertAll(
-                    () -> assertEquals(PicClause.CUST_FIRST_NAME_WIDTH, stored.length(),
+                    () -> assertEquals(200, read.statusCode(),
+                            "the follow-up read has to answer before its body means anything: "
+                                    + read.body()),
+                    () -> assertEquals(expected, stored,
                             "app/cbl/COACTUPC.cbl:L4010-L4011 moves the screen field into"
                                     + " CUST-FIRST-NAME PIC X(25) and :L4086 rewrites the 500-byte"
-                                    + " record, so the column holds the whole field: '" + stored
-                                    + "'"),
-                    () -> assertEquals(submitted, stored.trim(),
-                            "and the submitted characters are the ones it holds"),
-                    () -> assertEquals(PicClause.CUST_FIRST_NAME_WIDTH,
-                            customer.get("firstName").asString().length(),
-                            "so a read of an updated row answers the width a read of a seeded row"
-                                    + " answers"),
+                                    + " record, so the column holds the submitted characters"
+                                    + " followed by padding to the whole field"),
+                    () -> assertEquals(expected, customer.get("firstName").asString(),
+                            "and the read answers that field character for character. Asserting"
+                                    + " only its length would pass on any wrong value 25 characters"
+                                    + " wide"),
                     () -> assertEquals(SEEDED_MIDDLE_NAME, storedMiddleName().trim(),
                             "an optional component the body omits keeps the value the row held"));
         }
@@ -956,7 +1064,7 @@ class AccountControllerIT {
      * Builds one complete update body: one new limit, one credit score, and every other component
      * the two blocks declare mandatory carrying the value the seeded row already holds.
      *
-     * <p><b>Why a present block travels complete.</b> Nine components of the account block and
+     * <p><b>A present block travels complete.</b> Nine components of the account block and
      * fourteen of the customer block carry a mandatory-field edit in {@code 1200-EDIT-MAP-INPUTS}
      * at {@code app/cbl/COACTUPC.cbl:L1470-L1676}, and those edits refuse an absent value exactly
      * as they refuse a blank one — the map area a 3270 screen sends is fixed width, so an operator
@@ -1077,11 +1185,6 @@ class AccountControllerIT {
     }
 
     /**
-     * Reads the stored given name, padding included.
-     *
-     * @return the whole {@code first_name} column of the seeded customer row
-     */
-    /**
      * Brings one value to a declared width with trailing spaces, as a stored field carries it.
      *
      * @param value         the value without padding
@@ -1092,6 +1195,22 @@ class AccountControllerIT {
         return value + " ".repeat(declaredWidth - value.length());
     }
 
+    /**
+     * Reads the stored postal code, padding included.
+     *
+     * @return the whole {@code address_zip} column of the seeded customer row
+     */
+    private String storedAddressZip() {
+        return jdbcTemplate.queryForObject(
+                "SELECT address_zip FROM customer WHERE customer_id = ?",
+                String.class, SEEDED_CUSTOMER_ID);
+    }
+
+    /**
+     * Reads the stored given name, padding included.
+     *
+     * @return the whole {@code first_name} column of the seeded customer row
+     */
     private String storedFirstName() {
         return jdbcTemplate.queryForObject(
                 "SELECT first_name FROM customer WHERE customer_id = ?",

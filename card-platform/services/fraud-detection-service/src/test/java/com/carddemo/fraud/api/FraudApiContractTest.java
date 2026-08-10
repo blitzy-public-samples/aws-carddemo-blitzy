@@ -81,6 +81,14 @@ final class FraudApiContractTest {
     /** The one base path the controller declares. */
     private static final String BASE_PATH = "/fraud-assessments";
 
+    /**
+     * Shape a header parameter's name takes: an {@code X-} extension prefix, then one or more
+     * hyphen-joined words each beginning with a capital. This is the convention a header field
+     * follows, and it is deliberately not camel case.
+     */
+    private static final java.util.regex.Pattern HEADER_FIELD_NAME =
+            java.util.regex.Pattern.compile("^X(-[A-Z][a-z]+)+$");
+
     /** The one path template the controller declares below its base path. */
     private static final String ITEM_PATH_TEMPLATE = "/{transactionId}";
 
@@ -225,13 +233,63 @@ final class FraudApiContractTest {
     }
 
     @Test
-    @DisplayName("The controller nests one record, and it declares six components in order")
+    @DisplayName("The assessment record declares six components in order")
     void theControllerNestsOneRecordOfSixComponents() {
         Class<?> record = responseRecord();
         List<String> declared = Arrays.stream(record.getRecordComponents())
                 .map(RecordComponent::getName).toList();
         assertEquals(RESPONSE_COMPONENTS, declared,
                 "the response record declares its components in this order");
+    }
+
+    /**
+     * The set of records nested in the controller is closed at three, each with a stated job.
+     *
+     * <p>Naming the set keeps a fourth from appearing unnoticed. {@code AssessmentPage} is the
+     * envelope one page answers, {@code FraudAssessment} is one row of it, and {@code Position} is
+     * the pair a cursor names, which never leaves the class.
+     */
+    @Test
+    @DisplayName("The controller nests the page envelope, the assessment and the cursor position")
+    void theControllerNestsOnlyTheThreeRecordsItsAnswerNeeds() {
+        Set<String> nested = Arrays.stream(FraudAssessmentController.class.getDeclaredClasses())
+                .filter(Class::isRecord)
+                .map(Class::getSimpleName)
+                .collect(java.util.stream.Collectors.toSet());
+
+        assertEquals(Set.of("AssessmentPage", "FraudAssessment", "Position"), nested,
+                "records nested in the controller");
+    }
+
+    /**
+     * The page envelope declares the rows and the two values that describe the page after them.
+     *
+     * <p>No whole-history count appears. Counting an account's rows reads every one of them, which
+     * is the work a page exists to avoid, so the envelope answers whether more rows exist rather
+     * than how many.
+     */
+    @Test
+    @DisplayName("The page envelope declares the rows, the paging flag and the cursor, and no count")
+    void thePageEnvelopeDeclaresItsThreeComponents() {
+        List<String> declared = Arrays.stream(
+                        nestedRecordNamed("AssessmentPage").getRecordComponents())
+                .map(RecordComponent::getName).toList();
+
+        assertEquals(List.of("assessments", "nextPageExists", "nextCursor"), declared,
+                "the page envelope declares its components in this order");
+    }
+
+    /**
+     * The cursor position stays inside the controller.
+     *
+     * <p>It is bookkeeping for one read, not a shape a caller receives. A public one would become an
+     * interface this route has to keep.
+     */
+    @Test
+    @DisplayName("The cursor position is private to the controller")
+    void theCursorPositionIsPrivateToTheController() {
+        assertTrue(Modifier.isPrivate(nestedRecordNamed("Position").getModifiers()),
+                "the cursor position is reachable from outside the controller");
     }
 
     @Test
@@ -481,7 +539,7 @@ final class FraudApiContractTest {
     void theAccountParameterFixesElevenDigits() throws NoSuchMethodException {
         Annotation[] declared = FraudAssessmentController.class
                 .getDeclaredMethod("assessmentsOfAccount", String.class, String.class,
-                        String.class, String.class)
+                        String.class, String.class, String.class)
                 .getParameterAnnotations()[0];
         RequestParam bound = annotationOfType(declared, RequestParam.class);
         Pattern shape = annotationOfType(declared, Pattern.class);
@@ -515,13 +573,15 @@ final class FraudApiContractTest {
         for (int index = 0; index < controllerLines.size(); index++) {
             String line = controllerLines.get(index).strip();
             boolean isAnnotation = line.startsWith("@");
-            boolean isPageRequest = line.contains("PageRequest.of(");
-            if ((isAnnotation || isPageRequest) && line.chars().anyMatch(Character::isDigit)) {
+            // Limit.of is where the row count reaches the query, as PageRequest.of once was. A
+            // literal here would be a page bound that no constant names and no test can read.
+            boolean isRowCount = line.contains("Limit.of(") || line.contains("PageRequest.of(");
+            if ((isAnnotation || isRowCount) && line.chars().anyMatch(Character::isDigit)) {
                 offenders.add(CONTROLLER_FILE_NAME + ":" + (index + 1));
             }
         }
         assertEquals(List.of(), offenders,
-                "annotation sites and page requests holding a numeric literal");
+                "annotation sites and row-count limits holding a numeric literal");
     }
 
     @Test
@@ -724,7 +784,15 @@ final class FraudApiContractTest {
             Object declared = asMap(asMap(entry.getValue(), entry.getKey()).get("get"),
                     entry.getKey() + " get").get("parameters");
             for (Object parameter : asList(declared, entry.getKey() + " parameters")) {
-                names.add(String.valueOf(asMap(parameter, "parameter").get("name")));
+                Map<String, Object> read = asMap(parameter, "parameter");
+                // A header parameter is excluded, and only a header parameter. Camel case is the
+                // convention for a property, a path variable and a query parameter, and Title-Case
+                // with hyphens is the convention for a header field: X-Fraud-Cursor reads the way
+                // Content-Type does. The convention headers do follow is asserted separately by
+                // everyHeaderParameterReadsAsAHeaderField, so nothing here goes unchecked.
+                if (!"header".equals(read.get("in"))) {
+                    names.add(String.valueOf(read.get("name")));
+                }
             }
         }
         List<String> offenders = names.stream().filter(name -> name.contains("_")
@@ -732,6 +800,36 @@ final class FraudApiContractTest {
         assertAll(
                 () -> assertFalse(names.isEmpty(), "the description enumerates names"),
                 () -> assertEquals(List.of(), offenders, "names outside camel case"));
+    }
+
+    /**
+     * Every header parameter reads as a header field, and every one is an extension header.
+     *
+     * <p>This is the other half of {@link #everyEnumeratedNameIsCamelCase}, which excludes header
+     * parameters because their naming convention is not camel case. Excluding them without checking
+     * them would leave a name shape unasserted.
+     */
+    @Test
+    @DisplayName("Every header parameter reads as a hyphenated extension header field")
+    void everyHeaderParameterReadsAsAHeaderField() {
+        List<String> headers = new ArrayList<>();
+        for (Map.Entry<String, Object> entry : paths().entrySet()) {
+            Object declared = asMap(asMap(entry.getValue(), entry.getKey()).get("get"),
+                    entry.getKey() + " get").get("parameters");
+            for (Object parameter : asList(declared, entry.getKey() + " parameters")) {
+                Map<String, Object> read = asMap(parameter, "parameter");
+                if ("header".equals(read.get("in"))) {
+                    headers.add(String.valueOf(read.get("name")));
+                }
+            }
+        }
+
+        assertFalse(headers.isEmpty(), "the document declares a header parameter");
+        List<String> offenders = headers.stream()
+                .filter(name -> !HEADER_FIELD_NAME.matcher(name).matches())
+                .toList();
+        assertEquals(List.of(), offenders,
+                "header names outside the X-Title-Case shape a header field takes: " + offenders);
     }
 
     @Test
@@ -844,15 +942,33 @@ final class FraudApiContractTest {
     }
 
     /**
-     * Returns the one record nested in the controller.
+     * Returns the record describing one assessment.
      *
-     * @return the nested response record
+     * <p>The controller nests three records, and the set is closed by
+     * {@link #theControllerNestsOnlyTheThreeRecordsItsAnswerNeeds}. This helper names the one the
+     * assessment tests are about, rather than taking whichever record happens to be declared first:
+     * a reflective order is not a contract, and a helper that trusted it would start asserting
+     * against a different record the moment one was added.
+     *
+     * @return the nested assessment record
      */
     private static Class<?> responseRecord() {
-        List<Class<?>> records = Arrays.stream(FraudAssessmentController.class.getDeclaredClasses())
-                .filter(Class::isRecord).toList();
-        assertEquals(1, records.size(), "records nested in the controller: " + records);
-        return records.get(0);
+        return nestedRecordNamed("FraudAssessment");
+    }
+
+    /**
+     * Returns one record nested in the controller by simple name.
+     *
+     * @param simpleName the record to return
+     * @return that record
+     */
+    private static Class<?> nestedRecordNamed(String simpleName) {
+        return Arrays.stream(FraudAssessmentController.class.getDeclaredClasses())
+                .filter(Class::isRecord)
+                .filter(nested -> simpleName.equals(nested.getSimpleName()))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError(
+                        "the controller nests no record named " + simpleName));
     }
 
     /**

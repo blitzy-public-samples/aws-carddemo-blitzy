@@ -131,6 +131,11 @@ public interface NotificationRenderer {
      * {@code app/cbl/CBSTM03A.CBL:L458-L504} had no such ceiling, because it wrote each record to a
      * sequential file and held one at a time.
      *
+     * <p>The rows it selects are the card's most recent ones, so the transaction an alert reports is
+     * always among them and the total it carries always includes that transaction. The read that
+     * applies this ceiling runs from the newest end for that reason; see
+     * {@code domain/NotificationService.renderableRows}.
+     *
      * <p>This number bounds one rendered alert alone.
      * {@code GET /notifications/{cardToken}} returns every row of one card and reads no ceiling from
      * here, matching {@code app/cbl/CBSTM03A.CBL:L429}, which totals every row of one card between

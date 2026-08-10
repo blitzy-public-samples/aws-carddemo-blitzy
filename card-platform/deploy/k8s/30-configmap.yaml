@@ -144,7 +144,11 @@ data:
   CARD_KAFKA_USER: "carddemo-card"
 
   # Event topics
-  # 10-kafka.yaml creates all seven event topics at start.
+  # 10-kafka.yaml creates the whole inventory at start, which is fourteen topics: the
+  # seven event topics named below, one dead-letter topic for each of the six of them a
+  # consumer reads, and the shared fallback. The broker creates none on demand, so a name
+  # this ConfigMap misspells reaches a service as UNKNOWN_TOPIC_OR_PARTITION rather than
+  # as a silently created topic nothing else writes to.
   #
   # One authorization call publishes one event: to the first topic on an
   # approval and to the second on a decline. The ledger posting and fraud
@@ -162,13 +166,16 @@ data:
   # Fallback for the exceptional case where a recovery record has no source topic.
   # Normal consumer failures route to the source topic plus the suffix below.
   TOPIC_DEAD_LETTER: "carddemo.dead-letter"
-  # This produces transaction.authorized.DLT, transaction.posted.DLT,
-  # fraud.assessed.DLT and customer.context-changed.DLT. One dead-letter topic
-  # therefore carries one source wire shape.
+  # This produces one dead-letter topic per consumed source topic, and there are six of
+  # those: transaction.authorized.DLT, transaction.declined.DLT, transaction.posted.DLT,
+  # fraud.assessed.DLT, account.state-changed.DLT and customer.context-changed.DLT. One
+  # dead-letter topic therefore carries one source wire shape. card.updated is the seventh
+  # event topic and has no counterpart, because its only consumer routes a spent record to
+  # the shared topic above as a governed envelope rather than replaying the card shape.
   TOPIC_DEAD_LETTER_SUFFIX: ".DLT"
 
   # Consumer groups
-  # Ten groups, one per active listener. Each group receives its own copy of
+  # Eleven groups, one per active listener. Each group receives its own copy of
   # every event, and two listeners sharing one group would split the events
   # between them. Ledger posting, fraud detection and notification are the three
   # independent readers of transaction.authorized.
@@ -222,6 +229,13 @@ data:
   # otherwise cost one event permanently: the row stays CLAIMED and the claim query
   # reads PENDING rows only. card-platform/.env.example carries the same value.
   OUTBOX_RELAY_CLAIM_TIMEOUT: "PT2M"
+  # Longest one send waits for the broker before messaging/KafkaEventPublisher fails the
+  # stage it returned, as an ISO-8601 duration. The row then stays unpublished and the next
+  # sweep claims it again, so a slow broker delays an event and never loses one. Only the
+  # three services that bind it read it — authorization, account and card — and the
+  # whole-ConfigMap pull carries it to the other three, which ignore it.
+  # card-platform/.env.example carries the same value.
+  OUTBOX_RELAY_PUBLISH_TIMEOUT: "PT10S"
   # Milliseconds one sweep may spend waiting for broker acknowledgements before it stops
   # and leaves the rest of its batch to the next sweep. Read once per pass as a monotonic
   # deadline, so a slow broker costs one pass rather than an unbounded one. It stays above
@@ -249,6 +263,12 @@ data:
   # defines the source's reject generation group with LIMIT(5) and SCRATCH, so a sixth
   # write deletes the oldest generation.
   LEDGER_REJECTED_RETENTION_DAYS: "90"
+  # Days a row of authorization_decision and unresolved_card_attempt remains. Each is the
+  # attribution record of a financial decision rather than a message in flight, so it
+  # outlives the outbox row that carried the event, and a year is the horizon the
+  # authorization service ships. Only that service reads this, and the whole-ConfigMap pull
+  # carries it to the other five, which ignore it.
+  DECISION_RETENTION_DAYS: "365"
   # OUTBOX_RELAY_INSTANCE_ID is deliberately NOT a key here, and this is the one
   # exception to the parity invariant in the header worth explaining twice. It names
   # the relay instance that won a row, so its value has to differ per replica. The
@@ -287,6 +307,16 @@ data:
   # covers the approval whose event is dead-lettered and never arrives.
   DECISION_RESERVATION_TTL: "PT15M"
   # card-platform/.env.example carries both values.
+
+  # Update serialization
+  # Only the account and card services read this, and the whole-ConfigMap pull carries it to
+  # the other four, which ignore it. Milliseconds a locked read of the row an update is about
+  # to rewrite waits for a writer already holding it, before the datastore refuses the lock
+  # and the update answers the documented lock-failure outcome. PostgreSQL waits for ever
+  # when this is unset, so a contended write would hold its request open for as long as the
+  # other writer held the row. Applied per update transaction, so it never bounds a Flyway
+  # migration. card-platform/.env.example carries the same value.
+  WRITE_LOCK_WAIT_MS: "3000"
 
   # Consumer resilience
   # Delivery attempts a consumer makes, then the milliseconds it waits between
@@ -331,8 +361,17 @@ data:
 
   # Request-surface controls
   # One policy for all six services, so these keys sit here rather than in a per-service
-  # ConfigMap. card-platform/.env.example and the shared environment block of
-  # card-platform/docker-compose.yml carry the same six values.
+  # ConfigMap. card-platform/.env.example carries all seven values. Six of them reach every
+  # container through the shared environment block of card-platform/docker-compose.yml; the
+  # body ceiling below is the exception, because only the three services that accept a
+  # request body install config/RequestBodyCeilingFilter, so Compose passes it to the
+  # authorization, account and card containers only.
+  #
+  # Bytes the largest legitimate request body occupies. A request declaring more is refused
+  # by config/RequestBodyCeilingFilter, and one declaring no length at all is bounded by the
+  # parser through config/JsonReadCeilingConfig. The widest legitimate body holds
+  # DALYTRAN-DESC PIC X(100) at app/cpy/CVTRA06Y.cpy:L9.
+  API_MAX_REQUEST_BODY_BYTES: "65536"
   #
   # The header names what a state-changing request has to carry. A browser attaches a cached
   # HTTP Basic credential to a request a foreign page caused, and an HTML form can set no

@@ -3,6 +3,7 @@ package com.carddemo.card.api.dto;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.carddemo.cobol.PanMasker;
@@ -432,6 +433,36 @@ final class CardDetailResponseTest {
     /** Builds a clearly synthetic sixteen-digit card value. */
     private static String syntheticCardNumber(long serial) {
         return "9999" + syntheticDigits(12, serial);
+    }
+
+    /**
+     * Asserts this read contract holds the active status to the domain the API publishes.
+     *
+     * <p>The domain is {@code 88 FLG-YES-NO-VALID VALUES 'Y', 'N'.} at
+     * {@code app/cbl/COCRDUPC.cbl:L91}. One helper carries it,
+     * {@link CardSummary#requireActiveStatusFlag(String)}, so the list row and this detail row
+     * cannot come apart, and {@code ck_card_active_status} in
+     * {@code V5__xref_reconciliation_and_status_domain.sql} holds the column to the same pair for
+     * every writer. Before all three, a row loaded outside the update path could be answered with a
+     * third value inside a schema that enumerates two.
+     */
+    @Test
+    void theActiveStatusIsHeldToTheSourceDomain() {
+        assertEquals(CardSummary.ACTIVE_STATUS_NO,
+                new CardDetailResponse(SYNTHETIC_MASKED_CARD_NUMBER, SYNTHETIC_ACCOUNT_ID,
+                        SYNTHETIC_EMBOSSED_NAME, SYNTHETIC_EXPIRATION_DATE,
+                        CardSummary.ACTIVE_STATUS_NO).activeStatus(),
+                "N is one of the two values the column may hold");
+        assertThrows(NullPointerException.class,
+                () -> new CardDetailResponse(SYNTHETIC_MASKED_CARD_NUMBER, SYNTHETIC_ACCOUNT_ID,
+                        SYNTHETIC_EMBOSSED_NAME, SYNTHETIC_EXPIRATION_DATE, null),
+                "a detail row with no status is not a row this contract can answer");
+        for (String outside : List.of("X", "y", "n", " ", "")) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> new CardDetailResponse(SYNTHETIC_MASKED_CARD_NUMBER, SYNTHETIC_ACCOUNT_ID,
+                            SYNTHETIC_EMBOSSED_NAME, SYNTHETIC_EXPIRATION_DATE, outside),
+                    "'" + outside + "' is outside 88 FLG-YES-NO-VALID and must be refused");
+        }
     }
 
     /** Builds a zero-padded synthetic digit string. */

@@ -1,8 +1,10 @@
 package com.carddemo.card.config;
 
 import io.micrometer.core.instrument.Counter;
+
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
+
 import java.util.Objects;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.micrometer.metrics.autoconfigure.MeterRegistryCustomizer;
@@ -10,7 +12,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 /**
- * Registers the nine meters the card service measures its work through. This class records nothing;
+ * Registers the eight meters the card service measures its work through. This class records nothing;
  * each bean below is injected by name into the class that performs the work.
  *
  * <p>No COBOL program and no copybook declares a meter. The nearest source construct is
@@ -55,6 +57,28 @@ public class ObservabilityConfig {
      * condition inside paragraph {@code 9300-CHECK-CHANGE-IN-REC} at {@code :L1498-L1523}.
      */
     public static final String METRIC_CARD_UPDATE_CONFLICTS = "carddemo.card.update.conflicts";
+
+    /**
+     * Counts card-update requests whose cross-reference replica row already agreed with the card row
+     * that owns the mapping. {@code domain/CardCrossReferenceReconciler.java} increments it.
+     */
+    public static final String METRIC_CARD_XREF_AGREED = "carddemo.card.xref.agreed";
+
+    /**
+     * Counts replica rows this service corrected because their account identifier disagreed with the
+     * card row that owns the mapping. Any movement here is a divergence that had gone unnoticed.
+     * {@code domain/CardCrossReferenceReconciler.java} increments it.
+     */
+    public static final String METRIC_CARD_XREF_CORRECTED = "carddemo.card.xref.corrected";
+
+    /**
+     * Counts card-update requests whose card number has no replica row at all. This service cannot
+     * create one: {@code XREF-CUST-ID PIC 9(09)} at {@code app/cpy/CVACT03Y.cpy:L6} is a mandatory
+     * column and {@code app/cpy/CVACT02Y.cpy} carries no customer identifier, so there is nothing
+     * truthful to write. The gap is reported rather than invented.
+     * {@code domain/CardCrossReferenceReconciler.java} increments it.
+     */
+    public static final String METRIC_CARD_XREF_MISSING = "carddemo.card.xref.missing";
 
     /** Card events published to the broker. ADDITIVE, with no card program ancestor. */
     public static final String METRIC_CARD_EVENTS_PUBLISHED = "carddemo.card.events.published";
@@ -133,6 +157,48 @@ public class ObservabilityConfig {
         Objects.requireNonNull(registry, "registry");
         return Counter.builder(METRIC_CARD_UPDATE_CONFLICTS)
                 .description("Card updates refused after a concurrent change")
+                .register(registry);
+    }
+
+    /**
+     * Counts replica rows already in step with the card row that owns the mapping.
+     *
+     * @param registry the meter registry Spring Boot supplies
+     * @return the registered counter, named {@link #METRIC_CARD_XREF_AGREED}
+     */
+    @Bean
+    public Counter cardCrossReferenceAgreedCounter(MeterRegistry registry) {
+        Objects.requireNonNull(registry, "registry");
+        return Counter.builder(METRIC_CARD_XREF_AGREED)
+                .description("Cross-reference replica rows already in step with the card row")
+                .register(registry);
+    }
+
+    /**
+     * Counts replica rows corrected because their account identifier had diverged.
+     *
+     * @param registry the meter registry Spring Boot supplies
+     * @return the registered counter, named {@link #METRIC_CARD_XREF_CORRECTED}
+     */
+    @Bean
+    public Counter cardCrossReferenceCorrectedCounter(MeterRegistry registry) {
+        Objects.requireNonNull(registry, "registry");
+        return Counter.builder(METRIC_CARD_XREF_CORRECTED)
+                .description("Cross-reference replica rows corrected against the card row")
+                .register(registry);
+    }
+
+    /**
+     * Counts card numbers with no replica row, which this service reports and cannot create.
+     *
+     * @param registry the meter registry Spring Boot supplies
+     * @return the registered counter, named {@link #METRIC_CARD_XREF_MISSING}
+     */
+    @Bean
+    public Counter cardCrossReferenceMissingCounter(MeterRegistry registry) {
+        Objects.requireNonNull(registry, "registry");
+        return Counter.builder(METRIC_CARD_XREF_MISSING)
+                .description("Card numbers holding no cross-reference replica row")
                 .register(registry);
     }
 
@@ -277,4 +343,5 @@ public class ObservabilityConfig {
         }
         return registry -> registry.config().commonTags(TAG_SERVICE, applicationName);
     }
+
 }

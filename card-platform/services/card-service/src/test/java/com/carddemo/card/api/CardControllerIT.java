@@ -1,9 +1,11 @@
 package com.carddemo.card.api;
 
+import com.carddemo.events.correlation.EventCorrelation;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import com.carddemo.card.CardServiceDatabase;
 import com.carddemo.card.TestIdentityPasswords;
 import com.carddemo.card.config.CrossSiteRequestFilter;
 import com.carddemo.card.entity.CardEntity;
@@ -51,8 +53,6 @@ import org.springframework.web.bind.annotation.RequestMethod;
 import org.springframework.web.servlet.mvc.method.RequestMappingInfo;
 import org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerMapping;
 import org.springframework.web.util.pattern.PathPatternParser;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
@@ -216,26 +216,9 @@ import tools.jackson.databind.json.JsonMapper;
                 "carddemo.outbox.relay.fixed-delay-ms=3600000",
                 "carddemo.retention.sweep-interval-ms=3600000"
         })
-@Testcontainers
 @ExtendWith(OutputCaptureExtension.class)
 @DisplayName("The card list, read and update surface over the migrated schema and the seeded rows")
 class CardControllerIT {
-
-    /** The image tag {@code card-platform/docker-compose.yml} also names. */
-    private static final String POSTGRES_IMAGE = "postgres:18.4";
-
-    /**
-     * The database name, the login name and the password of the container, one value for all three.
-     * {@code card-platform/.env.example} declares the same value.
-     */
-    private static final String POSTGRES_CREDENTIAL = "carddemo";
-
-    /**
-     * The schema Flyway creates, from {@code spring.flyway.schemas} and
-     * {@code spring.jpa.properties.hibernate.default_schema} in
-     * {@code src/main/resources/application.yml}.
-     */
-    private static final String MIGRATED_SCHEMA = "card_service";
 
     /** Login name of the administrator identity, from {@code ADMIN_USERNAME} in the same file. */
     private static final String ADMIN_USERNAME = "admin001";
@@ -357,6 +340,14 @@ class CardControllerIT {
     /** Package name every log line this class inspects was emitted under. */
     private static final String APPLICATION_LOGGER_PREFIX = "com.carddemo";
 
+    /** Request header naming the correlation identifier of one call. */
+    private static final String CORRELATION_ID_REQUEST_HEADER =
+            EventCorrelation.CORRELATION_ID_REQUEST_HEADER;
+
+    /** The one form a correlation identifier takes on the wire. */
+    private static final java.util.regex.Pattern UUID_FORM = java.util.regex.Pattern.compile(
+            "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$");
+
     /** Longest one request waits for an answer, including a request that waits on a row lock. */
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(60);
 
@@ -382,17 +373,12 @@ class CardControllerIT {
     private static final JsonMapper JSON = JsonMapper.builder().build();
 
     /**
-     * The container every test in this class shares.
+     * The one container the module fork runs, which this class reads a login from.
      *
-     * <p>{@code org.testcontainers.containers.PostgreSQLContainer} carries a deprecation in
-     * Testcontainers 2.0.5, and {@code org.testcontainers.postgresql.PostgreSQLContainer} is the
-     * replacement. The replacement takes no type argument.
+     * <p>{@link CardServiceDatabase} owns it and hands this class a database of its own inside it.
+     * Nothing here starts or stops a container.
      */
-    @Container
-    static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer(POSTGRES_IMAGE)
-            .withDatabaseName(POSTGRES_CREDENTIAL)
-            .withUsername(POSTGRES_CREDENTIAL)
-            .withPassword(POSTGRES_CREDENTIAL);
+    static final PostgreSQLContainer POSTGRES = CardServiceDatabase.container();
 
     /**
      * Points the Spring datasource at the running container.
@@ -417,9 +403,7 @@ class CardControllerIT {
      * @return the uniform resource locator the context connects with
      */
     private static String migratedSchemaUrl() {
-        String url = POSTGRES.getJdbcUrl();
-        String separator = url.contains("?") ? "&" : "?";
-        return url + separator + "currentSchema=" + MIGRATED_SCHEMA;
+        return CardServiceDatabase.urlFor(CardControllerIT.class);
     }
 
     /** Port the embedded server took, which the random-port web environment settles at refresh. */
@@ -848,10 +832,104 @@ class CardControllerIT {
                                             ROW_1_CARD_VERIFICATION_VALUE)),
                             "no record carries the card verification value"));
         }
+
+        /**
+         * Every application log record carries the stable members a reader queries on.
+         *
+         * <p>Reading {@code logger_name} and {@code message} alone was not enough. A build stayed
+         * green while no record named the service that wrote it and no record named the call it
+         * belonged to, which is the state an observability review found: the context was inside
+         * English message text, so joining one request to the records it produced meant reading
+         * prose.
+         *
+         * <p>Three members are asserted. {@code service} comes from
+         * {@code logging.structured.json.add} and names which of the six services wrote the record.
+         * {@code correlationId} comes from the Mapped Diagnostic Context
+         * {@code config/CorrelationContextFilter} opens, and it holds the value the caller supplied.
+         * {@code level} is the framework's own and is asserted so a renamed member is caught here
+         * rather than in a dashboard.
+         *
+         * @param output the captured console output the extension supplies
+         */
+        @Test
+        @DisplayName("every application record names the service and the call it belongs to")
+        void everyApplicationRecordNamesTheServiceAndTheCall(CapturedOutput output) {
+            String correlationId = "3f2504e0-4f89-41d3-9a0c-0305e82c3301";
+
+            send(authorized("/cards/" + tokenOf(ROW_1_CARD_NUMBER))
+                    .header(CORRELATION_ID_REQUEST_HEADER, correlationId)
+                    .GET()
+                    .build());
+            updateCard(ROW_1_CARD_NUMBER, "Marisol Reyes", "2028", "11", ROW_1_EXPIRY_DAY,
+                    ACTIVE_STATUS_NO, correlationId);
+
+            List<JsonNode> records = applicationLogRecords(output);
+
+            assertAll("the stable members of every application record",
+                    () -> assertFalse(records.isEmpty(),
+                            "the two calls wrote at least one application log record"),
+                    () -> assertTrue(records.stream().allMatch(record -> "card-service"
+                                    .equals(record.path("service").stringValue(null))),
+                            "every record names the service that wrote it"),
+                    () -> assertTrue(records.stream().allMatch(
+                                    record -> record.path("level").stringValue(null) != null),
+                            "every record names its level"),
+                    () -> assertTrue(records.stream().anyMatch(record -> correlationId
+                                    .equals(record.path("correlationId").stringValue(null))),
+                            "one record carries the correlation identifier the caller supplied"));
+        }
+
+        /**
+         * A caller that supplies no correlation identifier is given one, and it is echoed back.
+         *
+         * <p>The echo is how a caller learns the identifier to quote when reporting a problem, and
+         * the generated value is what keeps a record joinable when a caller supplies nothing.
+         */
+        @Test
+        @DisplayName("an absent correlation header is generated and echoed on the answer")
+        void anAbsentCorrelationHeaderIsGeneratedAndEchoed() {
+            HttpResponse<String> answer =
+                    send(authorized("/cards/" + tokenOf(ROW_1_CARD_NUMBER)).GET().build());
+
+            String echoed = answer.headers().firstValue(CORRELATION_ID_REQUEST_HEADER).orElse(null);
+
+            assertAll("the echoed identifier",
+                    () -> assertEquals(200, answer.statusCode(), "the read answers"),
+                    () -> assertTrue(echoed != null && UUID_FORM.matcher(echoed).matches(),
+                            "the answer echoes one generated identifier, and carried " + echoed));
+        }
+
+        /**
+         * A correlation header that is not one identifier is replaced rather than carried.
+         *
+         * <p>The value reaches a structured log member, so accepting arbitrary text would let a
+         * caller widen a field or write a line of its own. The filter parses strictly and generates
+         * a value when the parse fails.
+         */
+        @Test
+        @DisplayName("a correlation header that is not one identifier is replaced")
+        void aMalformedCorrelationHeaderIsReplaced() {
+            String injected = "not-an-identifier";
+
+            HttpResponse<String> answer = send(authorized("/cards/" + tokenOf(ROW_1_CARD_NUMBER))
+                    .header(CORRELATION_ID_REQUEST_HEADER, injected)
+                    .GET()
+                    .build());
+
+            String echoed = answer.headers().firstValue(CORRELATION_ID_REQUEST_HEADER).orElse("");
+
+            assertAll("the refused identifier",
+                    () -> assertEquals(200, answer.statusCode(), "the read still answers"),
+                    () -> assertFalse(echoed.contains(injected),
+                            "the supplied text does not become the identifier"),
+                    () -> assertTrue(UUID_FORM.matcher(echoed).matches(),
+                            "a generated identifier takes its place"));
+        }
     }
 
     /**
-     * {@code PUT /cards}, where each of the seven answers of {@code app/cbl/COCRDUPC.cbl} becomes
+     * {@code PUT /cards/{cardToken}}, where each of the seven answers of
+     * {@code app/cbl/COCRDUPC.cbl} becomes
      * observable.
      *
      * <p>Every text below is a literal typed in this file and every comparison is exact equality. A
@@ -1477,15 +1555,48 @@ class CardControllerIT {
      */
     private HttpResponse<String> updateCard(String cardNumber, String embossedName,
             String expiryYear, String expiryMonth, String expiryDay, String activeStatus) {
+        return updateCard(cardNumber, embossedName, expiryYear, expiryMonth, expiryDay,
+                activeStatus, null);
+    }
+
+    /**
+     * Submits one card update, naming the correlation identifier of the call.
+     *
+     * @param cardNumber    the full sixteen-digit card number, which this method tokenizes
+     * @param embossedName  the cardholder name to write
+     * @param expiryYear    four characters
+     * @param expiryMonth   two characters
+     * @param expiryDay     two characters
+     * @param activeStatus  {@code Y} or {@code N}
+     * @param correlationId the identifier the caller supplies, or {@code null} to supply none
+     * @return the answer
+     */
+    private HttpResponse<String> updateCard(String cardNumber, String embossedName,
+            String expiryYear, String expiryMonth, String expiryDay, String activeStatus,
+            String correlationId) {
         String body = "{\"embossedName\":\"" + embossedName + "\""
                 + ",\"expiryYear\":\"" + expiryYear + "\""
                 + ",\"expiryMonth\":\"" + expiryMonth + "\""
                 + ",\"expiryDay\":\"" + expiryDay + "\""
                 + ",\"activeStatus\":\"" + activeStatus + "\"}";
-        return send(authorized("/cards/" + PanMasker.cardToken(cardNumber))
-                .header("Content-Type", "application/json")
+        HttpRequest.Builder request = authorized("/cards/" + PanMasker.cardToken(cardNumber))
+                .header("Content-Type", "application/json");
+        if (correlationId != null) {
+            request = request.header(CORRELATION_ID_REQUEST_HEADER, correlationId);
+        }
+        return send(request
                 .PUT(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
                 .build());
+    }
+
+    /**
+     * Returns the token one card number resolves to, which is what a route carries.
+     *
+     * @param cardNumber the full sixteen-digit card number
+     * @return the token {@code PanMasker} derives
+     */
+    private static String tokenOf(String cardNumber) {
+        return PanMasker.cardToken(cardNumber);
     }
 
     /**
@@ -1675,6 +1786,25 @@ class CardControllerIT {
      */
     private static List<String> applicationLogMessages(CapturedOutput output) {
         List<String> messages = new ArrayList<>();
+        for (JsonNode record : applicationLogRecords(output)) {
+            messages.add(record.get("message").asString());
+        }
+        return messages;
+    }
+
+    /**
+     * Returns every captured log record one application logger emitted, whole.
+     *
+     * <p>{@link #applicationLogMessages(CapturedOutput)} reads the message of each. This method
+     * exists because the message is not the whole contract: {@code service}, {@code correlationId}
+     * and the framework's own members are what a reader queries on, and asserting them needs the
+     * object rather than one of its values.
+     *
+     * @param output the captured console output
+     * @return the records, in the order they were written
+     */
+    private static List<JsonNode> applicationLogRecords(CapturedOutput output) {
+        List<JsonNode> records = new ArrayList<>();
         for (String line : output.getAll().split("\n")) {
             String candidate = line.strip();
             if (candidate.isEmpty() || candidate.charAt(0) != '{') {
@@ -1692,10 +1822,10 @@ class CardControllerIT {
                 continue;
             }
             if (logger.asString().startsWith(APPLICATION_LOGGER_PREFIX)) {
-                messages.add(message.asString());
+                records.add(record);
             }
         }
-        return messages;
+        return records;
     }
 
     /**

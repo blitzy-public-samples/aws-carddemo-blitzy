@@ -1,5 +1,6 @@
 package com.carddemo.events;
 
+import com.carddemo.events.correlation.CorrelatedEvent;
 import java.time.Instant;
 import java.util.Collections;
 import java.util.LinkedHashSet;
@@ -89,7 +90,7 @@ public record FraudFlagged(
         int riskScore,
         List<String> triggeredRules,
         Instant assessedAt,
-        String accountId) {
+        String accountId) implements CorrelatedEvent {
 
     /**
      * The value {@code eventType} carries on every instance.

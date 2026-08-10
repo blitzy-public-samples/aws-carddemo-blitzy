@@ -1,5 +1,6 @@
 package com.carddemo.events;
 
+import com.carddemo.events.correlation.CorrelatedEvent;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -58,16 +59,16 @@ import tools.jackson.databind.ser.std.ToStringSerializer;
  * the canonical constructor refuses it, so version 2 declares no {@code accountId} and keys on
  * {@code transactionId} instead.
  *
- * <p>NO PRODUCER PUBLISHES VERSION 2. An unresolved card is recorded by the authorization service in
- * its own {@code unresolved_card_attempt} and {@code authorization_decision} tables, answered to the
- * caller as a decline carrying reason {@code 0100}, and no outbox row is written for it. Every
- * published alternative breaks a promise a consumer relies on. An {@code accountId} taken from the
- * request attributes one caller's declined attempt to an account the platform never resolved; an
- * invented one collides with the real key space of {@code XREF-ACCT-ID PIC 9(11)}; and a key that is
- * not an account puts a record on a topic whose partitioning every consumer reads as per-account
- * ordering. The source takes the same position on its own synchronous path, answering a card number
- * the cross-reference does not carry at {@code app/cbl/COTRN02C.cbl:L620-L636} with a screen message
- * and no reject record at all.
+ * <p>VERSION 2 IS PUBLISHED, KEYED ON THE TRANSACTION IDENTIFIER. An unresolved card is recorded by
+ * the authorization service in its own {@code unresolved_card_attempt} and
+ * {@code authorization_decision} tables, answered to the caller as a decline carrying reason
+ * {@code 0100}, and published as one outbox row in the same local transaction, so every decided
+ * authorization call publishes exactly one event. The key is the transaction identifier rather than an
+ * account identifier: an {@code accountId} taken from the request would attribute one caller's
+ * declined attempt to an account the platform never resolved, and an invented one would collide with
+ * the real key space of {@code XREF-ACCT-ID PIC 9(11)}. A consumer therefore reads two sanctioned key
+ * widths on this topic and tells them apart by width. Rationale:
+ * {@code card-platform/docs/decision-log.md}.
  *
  * <p>Version 2 is kept rather than removed, because a record written under it stays readable for as
  * long as the topic retains it and a consumer that meets one has to be able to read it.
@@ -187,7 +188,8 @@ public record TransactionDeclined(
         @JsonInclude(JsonInclude.Include.NON_NULL) String merchantName,
         @JsonInclude(JsonInclude.Include.NON_NULL) String merchantCity,
         @JsonInclude(JsonInclude.Include.NON_NULL) String merchantZip,
-        @JsonInclude(JsonInclude.Include.NON_NULL) String originTimestamp) {
+        @JsonInclude(JsonInclude.Include.NON_NULL) String originTimestamp)
+        implements CorrelatedEvent {
 
     /**
      * The routing discriminator this record carries, and the {@code eventType} the schema document
@@ -744,9 +746,9 @@ public record TransactionDeclined(
     /**
      * Builds the declined event for a card the cross-reference resolved no account for.
      *
-     * <p>This is the only path that builds {@link #UNRESOLVED_ACCOUNT_SCHEMA_VERSION}, and no
-     * current producer calls it. It takes no account identifier, because at this point none exists
-     * that the platform itself established:
+     * <p>This is the only path that builds {@link #UNRESOLVED_ACCOUNT_SCHEMA_VERSION}, and the
+     * authorization service calls it for reject code {@code 0100}. It takes no account identifier,
+     * because at this point none exists that the platform itself established:
      * {@code app/cbl/CBTRN02C.cbl:L382-L387} has just missed on the keyed read of the
      * cross-reference file. An identifier a caller supplied alongside the card number is not
      * evidence of ownership, and publishing it here would attribute one caller's declined attempt to

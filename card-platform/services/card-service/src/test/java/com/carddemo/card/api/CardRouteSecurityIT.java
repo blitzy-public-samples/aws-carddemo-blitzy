@@ -1,5 +1,6 @@
 package com.carddemo.card.api;
 
+import com.carddemo.card.CardServiceDatabase;
 import com.carddemo.card.TestIdentityPasswords;
 import com.carddemo.card.config.CrossSiteRequestFilter;
 import com.carddemo.cobol.PanMasker;
@@ -25,8 +26,6 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
@@ -36,7 +35,7 @@ import tools.jackson.databind.json.JsonMapper;
  * reads back what an unauthenticated caller, an unentitled caller, the entitled caller and the
  * administrator each receive.
  *
- * <p><b>Why this class exists beside the unit tests of the same routes.</b> The controller tests here
+ * <p><b>What this class measures that the unit tests of the same routes cannot.</b> The controller tests here
  * stand the handler up without a filter, so they reach it without authenticating and can observe
  * neither the {@code 401} of a missing credential nor the {@code 403} of an identity reaching for
  * something it does not hold. The module's {@code SecurityConfigTest} exercises the ownership
@@ -81,18 +80,8 @@ import tools.jackson.databind.json.JsonMapper;
                 "carddemo.outbox.relay.fixed-delay-ms=3600000",
                 "carddemo.retention.sweep-interval-ms=3600000"
         })
-@Testcontainers
 @DisplayName("Every card business route through the real filter chain")
 class CardRouteSecurityIT {
-
-    /** The image tag {@code card-platform/docker-compose.yml} also names. */
-    private static final String POSTGRES_IMAGE = "postgres:18.4";
-
-    /** Database name, login name and password of the container, one value for all three. */
-    private static final String CONTAINER_CREDENTIAL = "carddemo";
-
-    /** Schema Flyway migrates, and the one the connection search path names. */
-    private static final String SERVICE_SCHEMA = "card_service";
 
     /** Host and port the broker client is pointed at, where nothing listens. */
     static final String UNREACHABLE_BROKER = "localhost:1";
@@ -181,12 +170,13 @@ class CardRouteSecurityIT {
     /** Reads one response body. */
     private static final JsonMapper JSON = JsonMapper.builder().build();
 
-    /** The container every test in this class shares. */
-    @Container
-    static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer(POSTGRES_IMAGE)
-            .withDatabaseName(CONTAINER_CREDENTIAL)
-            .withUsername(CONTAINER_CREDENTIAL)
-            .withPassword(CONTAINER_CREDENTIAL);
+    /**
+     * The one container the module fork runs, which this class reads a login from.
+     *
+     * <p>{@link CardServiceDatabase} owns it and hands this class a database of its own inside it.
+     * Nothing here starts or stops a container.
+     */
+    static final PostgreSQLContainer POSTGRES = CardServiceDatabase.container();
 
     /** The port the embedded container bound. */
     @LocalServerPort
@@ -231,8 +221,7 @@ class CardRouteSecurityIT {
      * @return the connection string
      */
     private static String jdbcUrlOnServiceSchema() {
-        String url = POSTGRES.getJdbcUrl();
-        return url + (url.contains("?") ? "&" : "?") + "currentSchema=" + SERVICE_SCHEMA;
+        return CardServiceDatabase.urlFor(CardRouteSecurityIT.class);
     }
 
     @Nested

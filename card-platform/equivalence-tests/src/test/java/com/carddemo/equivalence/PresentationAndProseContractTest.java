@@ -2,14 +2,26 @@ package com.carddemo.equivalence;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.ArrayList;
+import java.util.HexFormat;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.TreeSet;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -17,16 +29,32 @@ import org.junit.jupiter.api.Test;
 /**
  * Protects the Rule 4 presentation and Rule 5 prose-validation deliverables.
  *
- * <p>The checks intentionally inspect the shipped artifacts rather than a generated representation. A
- * presentation that compiles but loses a slide visual, lifecycle hook, or pinned dependency is not the
+ * <p>The checks inspect the shipped artifacts rather than a generated representation. A presentation
+ * that compiles but loses a slide visual, a lifecycle hook, or a pinned dependency is not the
  * required deliverable.
+ *
+ * <p>Where a check asserts a fact about the platform, it reads that fact from the artifact that owns
+ * it and compares the deck against it: the flag register owns the finding count, the traceability
+ * matrix owns the source classification, the service listener configuration owns the failure
+ * routing, and the services directory owns the service and schema inventory. Both sides of every
+ * such comparison are read at run time, so a deck that drifts from its own evidence fails here
+ * instead of shipping.
  */
 class PresentationAndProseContractTest {
 
+    /** Heading the flagged-rule register opens its numbered rows under. */
+    private static final String REGISTER_SECTION_START = "## Register coverage";
+
+    /** Heading that closes those rows, so later tables of the register are not counted. */
+    private static final String REGISTER_SECTION_END =
+            "## The largest item: a named program that does not exist";
+
+    /** One {@code class="..."} attribute of the deck's markup. */
+    private static final Pattern CLASS_ATTRIBUTE = Pattern.compile("class=\"([^\"]*)\"");
+
     private static final Pattern SECTION =
             Pattern.compile("(?s)<section\\b([^>]*)>(.*?)</section>");
-    private static final Pattern RESOURCE =
-            Pattern.compile("(?:href|src)=\"([^\"]+)\"");
+    private static final Pattern RESOURCE = Pattern.compile("(?:href|src)=\"([^\"]+)\"");
     private static final Pattern REPORT =
             Pattern.compile(
                     "(?ms)^### \\d+\\. .*?$(.*?)(?=^### \\d+\\. |^## Exemptions applied)");
@@ -36,16 +64,254 @@ class PresentationAndProseContractTest {
     private static final Pattern FORBIDDEN_SEQUENCE_WORD =
             Pattern.compile(
                     "(?i)\\b(?:gantt|timeline|week|sprint|quarter|january|february|march|april|may|june|july|august|september|october|november|december)\\b");
+    private static final Pattern STYLE_BLOCK = Pattern.compile("(?s)<style>(.*?)</style>");
+    private static final Pattern SCRIPT_BLOCK = Pattern.compile("(?s)<script\\b[^>]*>(.*?)</script>");
+    private static final Pattern MODULE_SCRIPT =
+            Pattern.compile("(?s)<script type=\"module\">(.*?)</script>");
+    private static final Pattern MERMAID_BLOCK =
+            Pattern.compile("(?s)<pre class=\"mermaid\">(.*?)</pre>");
+    private static final Pattern MERMAID_NODE =
+            Pattern.compile(
+                    "([A-Za-z][A-Za-z0-9_]*)(?:\\[\\(\"|\\[\"|\\{\\{\")([^\"]*)\"(?:\\)\\]|\\]|\\}\\})");
+    private static final Pattern MERMAID_EDGE =
+            Pattern.compile(
+                    "([A-Za-z][A-Za-z0-9_]*)\\s*(?:-\\.->|==>|-->|~~~)\\s*(?:\\|[^|]*\\|\\s*)?([A-Za-z][A-Za-z0-9_]*)");
+    private static final Pattern TABLE = Pattern.compile("(?s)<table\\b[^>]*>(.*?)</table>");
+    private static final Pattern TABLE_HEADER = Pattern.compile("<th\\b([^>]*)>");
+    private static final Pattern TABLE_HEAD = Pattern.compile("(?s)<thead\\b[^>]*>(.*?)</thead>");
+    private static final Pattern KPI_CARD =
+            Pattern.compile(
+                    "(?s)<div class=\"kpi-value\">(.*?)</div>\\s*<div class=\"kpi-label\">(.*?)</div>");
+    private static final Pattern REGISTER_ROW = Pattern.compile("(?m)^\\|\\s*(\\d+)\\s*\\|");
+    private static final Pattern SCHEMA_STEM = Pattern.compile("carddemo_([a-z]+)");
+    private static final Pattern WORD_CHARACTER = Pattern.compile("[0-9A-Za-z]");
+    private static final Pattern TAG = Pattern.compile("(?s)<[^>]+>");
+
+    /** Rule 4 caps the body text of a content slide. */
+    private static final int RULE_FOUR_WORD_LIMIT = 40;
+
+    /** The three classic assets that can carry a Subresource Integrity digest. */
+    private static final List<String> INTEGRITY_PINNED_ASSETS =
+            List.of(
+                    "reveal.js@5.1.0/dist/reveal.css",
+                    "reveal.js@5.1.0/dist/reveal.js",
+                    "lucide@0.460.0/dist/umd/lucide.min.js");
+
+    /** The event families the platform contract requires, independent of their version count. */
+    private static final List<String> CORE_EVENT_FAMILIES =
+            List.of(
+                    "transaction-authorized",
+                    "transaction-declined",
+                    "transaction-posted",
+                    "fraud-flagged",
+                    "fraud-cleared");
+
+    /** The one target that carries no digest, because a report cannot hold its own. */
+    private static final int SELF_TARGET = 10;
+
+    /**
+     * The nineteen Rule 5 targets, in the order {@code docs/prose-validation.md} numbers them.
+     *
+     * <p>Every path is resolved against the platform root, so {@code ../README.md} reaches the
+     * repository-root guide that the report scores one section of.
+     */
+    private static final List<String> PROSE_TARGETS =
+            List.of(
+                    "docs/decision-log.md",
+                    "docs/traceability-matrix.md",
+                    "docs/architecture-before-after.md",
+                    "docs/event-flow.md",
+                    "docs/data-model.md",
+                    "docs/onboarding.md",
+                    "docs/suggested-next-tasks.md",
+                    "docs/business-rule-flags.md",
+                    "docs/equivalence-results.md",
+                    "docs/prose-validation.md",
+                    "README.md",
+                    "services/authorization-service/README.md",
+                    "services/ledger-posting-service/README.md",
+                    "services/fraud-detection-service/README.md",
+                    "services/notification-service/README.md",
+                    "services/account-service/README.md",
+                    "services/card-service/README.md",
+                    "../README.md",
+                    "presentation/executive-summary.html");
+
+    /**
+     * The twenty-two principle rows every report section must carry, spelled as the rule spells them.
+     *
+     * <p>A previous revision of the report renamed fourteen of these, which made the scorecard
+     * unverifiable against the rule it claimed to apply. The names are asserted literally here.
+     */
+    private static final List<String> PRINCIPLE_ROWS =
+            List.of(
+                    "V1: Find a subject you care about",
+                    "V2: Do not ramble",
+                    "V3: Keep it simple",
+                    "V4: Have the guts to cut",
+                    "V5: Sound like yourself",
+                    "V6: Say what you mean",
+                    "V7: Pity the reader",
+                    "V8: Start close to the end",
+                    "V9: The Dignity Test",
+                    "V10: The Indifference Detector",
+                    "V11: The Indianapolis Test",
+                    "V12: Humor as Trust Signal",
+                    "A1: Plate Glass Clarity",
+                    "A2: Short Words, Simple Structures",
+                    "A3: Logical Sequence",
+                    "A4: Ideas Carry the Weight",
+                    "A5: Conversational Informality",
+                    "A6: No Ornamental Language",
+                    "A7: Functional Dialogue",
+                    "A8: Anticipate Reader Questions",
+                    "A9: Efficiency Over Polish",
+                    "A10: Respect the Reader's Intelligence");
+
+    /** Principles an over-length sentence offends. */
+    private static final Set<String> SENTENCE_PRINCIPLES = Set.of("V3", "A2");
+
+    /** Principles an over-long paragraph offends. */
+    private static final Set<String> PARAGRAPH_PRINCIPLES = Set.of("V2");
+
+    /** Principles a buzzword offends. */
+    private static final Set<String> BUZZWORD_PRINCIPLES = Set.of("V5", "A6");
+
+    private static final int LONG_SENTENCE_WORDS = 30;
+    private static final int LONG_PARAGRAPH_SENTENCES = 5;
+    private static final int MINIMUM_REWRITE_REDUCTION_PERCENT = 15;
+
+    private static final Pattern PROSE_BUZZWORD =
+            Pattern.compile(
+                    "(?i)\\b(?:leverage|utilize|facilitate|synergy|holistic|paradigm|robust|seamless"
+                            + "|best-of-breed|going forward)\\b");
+    private static final Pattern FENCED_BLOCK = Pattern.compile("(?ms)^```.*?^```");
+    private static final Pattern INLINE_CODE = Pattern.compile("`[^`]*`");
+    private static final Pattern MARKDOWN_LINK = Pattern.compile("\\[([^\\]]*)\\]\\([^)]*\\)");
+    private static final Pattern LIST_MARKER = Pattern.compile("^(?:[-*+]\\s+|\\d+\\.\\s+)");
+    private static final Pattern DECIMAL_POINT = Pattern.compile("(\\d)\\.(\\d)");
+    private static final Pattern SINGLE_INITIAL = Pattern.compile("\\b([A-Z])\\.");
+    private static final Pattern SENTENCE_BOUNDARY =
+            Pattern.compile("[.!?][\"'\u2019\u201d)\\]*]*(?=\\s+[*\"\u201c(\\[\\dA-Z])");
+    private static final Pattern WORD_ORNAMENT = Pattern.compile("[*_>]");
+    private static final List<String> ABBREVIATIONS =
+            List.of(
+                    "e.g.", "i.e.", "etc.", "vs.", "approx.", "cf.", "Mr.", "Ms.", "Dr.", "No.",
+                    "Fig.", "al.");
+    private static final String GUARD = "\u0000";
+    private static final String SCORED_README_SECTION = "## Modernized card platform";
+
+    /** What a fresh measurement of one target found. */
+    private record ProseMeasurement(
+            int longSentences,
+            int longParagraphs,
+            int buzzwords,
+            String worstSentence,
+            int worstSentenceWords,
+            List<String> worstParagraph) {
+
+        int hard() {
+            return buzzwords;
+        }
+
+        int soft() {
+            return longSentences + longParagraphs;
+        }
+
+        String verdict() {
+            if (hard() >= 4) {
+                return "ROUGH DRAFT";
+            }
+            return hard() >= 1 || soft() >= 4 ? "NEEDS WORK" : "CLEAN";
+        }
+    }
 
     private static Path platformRoot;
     private static String deck;
+    private static String deckMarkup;
+    private static String deckStyle;
+    private static String deckScript;
     private static String prose;
+    private static String flagRegister;
+    private static String traceability;
+    private static List<String> slides;
+    private static List<String> diagrams;
+
+    /** Service module name to the stem of the one private schema it owns. */
+    private static Map<String, String> serviceSchemas;
+
+    /** Services whose listeners route a refused record to their own source topic plus a suffix. */
+    private static Set<String> sourceSuffixServices;
+
+    /** Services that reach only the one shared dead-letter topic. */
+    private static Set<String> sharedFallbackServices;
+
+    /** The shared dead-letter topic name, as every service configuration defaults it. */
+    private static String sharedDeadLetterTopic;
+
+    /** The suffix a source-routing listener appends to its own topic. */
+    private static String deadLetterSuffix;
 
     @BeforeAll
     static void loadArtifacts() throws IOException {
         platformRoot = locatePlatformRoot();
         deck = Files.readString(platformRoot.resolve("presentation/executive-summary.html"));
         prose = Files.readString(platformRoot.resolve("docs/prose-validation.md"));
+        flagRegister = Files.readString(platformRoot.resolve("docs/business-rule-flags.md"));
+        traceability = Files.readString(platformRoot.resolve("docs/traceability-matrix.md"));
+
+        deckStyle = firstGroup(STYLE_BLOCK, deck, "inline <style> block");
+        deckScript = firstGroup(MODULE_SCRIPT, deck, "inline <script type=\"module\"> block");
+        deckMarkup = SCRIPT_BLOCK.matcher(STYLE_BLOCK.matcher(deck).replaceAll(" ")).replaceAll(" ");
+
+        slides = new ArrayList<>();
+        Matcher section = SECTION.matcher(deckMarkup);
+        while (section.find()) {
+            slides.add(section.group(2));
+        }
+
+        diagrams = new ArrayList<>();
+        Matcher diagram = MERMAID_BLOCK.matcher(deckMarkup);
+        while (diagram.find()) {
+            diagrams.add(diagram.group(1));
+        }
+
+        serviceSchemas = new LinkedHashMap<>();
+        sourceSuffixServices = new LinkedHashSet<>();
+        sharedFallbackServices = new LinkedHashSet<>();
+        for (String service : listServiceModules()) {
+            String configuration =
+                    Files.readString(
+                            platformRoot.resolve(
+                                    "services/" + service + "/src/main/resources/application.yml"));
+            serviceSchemas.put(service, singleSchemaStem(service, configuration));
+
+            String topic = defaultOf(configuration, "dead-letter");
+            assertNotNull(topic, service + " configures no shared dead-letter topic");
+            if (sharedDeadLetterTopic == null) {
+                sharedDeadLetterTopic = topic;
+            }
+            assertEquals(
+                    sharedDeadLetterTopic,
+                    topic,
+                    "One shared dead-letter topic means one name, and " + service + " differs");
+
+            String suffix = defaultOf(configuration, "dead-letter-suffix");
+            if (suffix == null) {
+                sharedFallbackServices.add(service);
+                continue;
+            }
+            sourceSuffixServices.add(service);
+            if (deadLetterSuffix == null) {
+                deadLetterSuffix = suffix;
+            }
+            assertEquals(
+                    deadLetterSuffix,
+                    suffix,
+                    "One wire shape per dead-letter topic means one suffix, and "
+                            + service
+                            + " differs");
+        }
     }
 
     @Test
@@ -60,26 +326,20 @@ class PresentationAndProseContractTest {
     @Test
     @DisplayName("the deck has exactly sixteen unnested slides")
     void theDeckHasExactlySixteenUnnestedSlides() {
-        Matcher matcher = SECTION.matcher(deck);
-        int count = 0;
-        while (matcher.find()) {
-            count++;
-            assertFalse(
-                    matcher.group(2).contains("<section"),
-                    "A top-level slide must not contain a vertical sub-slide");
-        }
-        assertEquals(16, count);
-        assertEquals(16, occurrences(deck, "</section>"));
+        slides.forEach(
+                body ->
+                        assertFalse(
+                                body.contains("<section"),
+                                "A top-level slide must not contain a vertical sub-slide"));
+        assertEquals(16, slides.size());
+        assertEquals(16, occurrences(deckMarkup, "</section>"));
     }
 
     @Test
     @DisplayName("every slide contains a rendering non-text visual")
     void everySlideContainsARenderingNonTextVisual() {
-        Matcher matcher = SECTION.matcher(deck);
-        int slide = 0;
-        while (matcher.find()) {
-            slide++;
-            String body = matcher.group(2);
+        for (int index = 0; index < slides.size(); index++) {
+            String body = slides.get(index);
             boolean hasVisual =
                     body.contains("data-lucide=")
                             || body.contains("<table")
@@ -87,9 +347,25 @@ class PresentationAndProseContractTest {
                             || body.contains("class=\"kpi-grid\"")
                             || body.contains("class=\"icon-row\"")
                             || body.contains("class=\"accent-bar\"");
-            assertTrue(hasVisual, "Slide " + slide + " is text-only");
+            assertTrue(hasVisual, "Slide " + (index + 1) + " is text-only");
         }
-        assertEquals(16, slide);
+        assertEquals(16, slides.size());
+    }
+
+    @Test
+    @DisplayName("every content slide stays within the Rule 4 body-word limit")
+    void everyContentSlideStaysWithinTheRuleFourWordLimit() {
+        for (int index = 0; index < slides.size(); index++) {
+            int words = bodyWordCount(slides.get(index));
+            assertTrue(
+                    words <= RULE_FOUR_WORD_LIMIT,
+                    "Slide "
+                            + (index + 1)
+                            + " carries "
+                            + words
+                            + " body words, above the Rule 4 limit of "
+                            + RULE_FOUR_WORD_LIMIT);
+        }
     }
 
     @Test
@@ -111,6 +387,21 @@ class PresentationAndProseContractTest {
                     resource.group(1).startsWith("https://"),
                     "A deck resource is not an absolute HTTPS URL: " + resource.group(1));
         }
+    }
+
+    @Test
+    @DisplayName("every classic content-delivery asset carries a digest and an anonymous origin")
+    void everyClassicContentDeliveryAssetCarriesADigestAndAnAnonymousOrigin() {
+        for (String asset : INTEGRITY_PINNED_ASSETS) {
+            String tag = enclosingTag(deck, asset);
+            assertTrue(
+                    tag.contains("integrity=\"sha384-"),
+                    "No SHA-384 digest pins " + asset + ": " + tag);
+            assertTrue(
+                    tag.contains("crossorigin=\"anonymous\""),
+                    "A digest without an anonymous origin cannot be verified for " + asset);
+        }
+        assertEquals(INTEGRITY_PINNED_ASSETS.size(), occurrences(deck, "integrity=\"sha384-"));
     }
 
     @Test
@@ -141,7 +432,7 @@ class PresentationAndProseContractTest {
                         "--gradient-divider: linear-gradient(135deg, #2D1C77 0%, #5B39F3 100%);",
                         "--gradient-accent-bar: linear-gradient(90deg, #5B39F3 0%, #94FAD5"
                                 + " 100%);");
-        properties.forEach(property -> assertTrue(deck.contains(property), property));
+        properties.forEach(property -> assertTrue(deckStyle.contains(property), property));
 
         List<String> classes =
                 List.of(
@@ -158,324 +449,434 @@ class PresentationAndProseContractTest {
                         "brand-lockup",
                         "hero-icon",
                         "icon-row");
+        Set<String> applied = classesAppliedInMarkup(deck);
         classes.forEach(
                 className -> {
-                    assertTrue(deck.contains("." + className), "Missing style for " + className);
                     assertTrue(
-                            deck.contains(className),
-                            "Required visual class is not used: " + className);
+                            deckStyle.contains("." + className),
+                            "The inline style block defines no rule for " + className);
+                    assertTrue(
+                            applied.contains(className),
+                            "Required visual class is styled and never applied to an element: "
+                                    + className
+                                    + ". The deck carries the rule and no slide uses it, so the"
+                                    + " visual it defines does not appear. Classes applied in the"
+                                    + " markup: "
+                                    + applied);
                 });
     }
 
+    /**
+     * Returns every class name applied to an element in the deck's markup.
+     *
+     * <p>The style block is removed first, and that is the whole point. An earlier form of the
+     * assertion above read {@code deck.contains("." + className)} and then
+     * {@code deck.contains(className)}: the second follows from the first, because a rule named
+     * {@code .kpi-card} contains the text {@code kpi-card}. A review found it could not fail for the
+     * reason it existed — a class defined in the theme and applied to nothing passed both checks.
+     * Collecting the {@code class} attributes of the remaining markup asks the question the second
+     * assertion was written to ask.</p>
+     *
+     * @param deck the whole HTML document
+     * @return the class names the markup applies, each once
+     */
+    private static Set<String> classesAppliedInMarkup(String deck) {
+        String markup = deck.replaceAll("(?is)<style\\b[^>]*>.*?</style>", " ");
+        assertFalse(markup.contains("--blitzy-primary:"),
+                "the style block has to be removed before the markup is read, or every styled class"
+                        + " counts as an applied one and the assertion is circular again");
+
+        Set<String> applied = new LinkedHashSet<>();
+        Matcher attribute = CLASS_ATTRIBUTE.matcher(markup);
+        while (attribute.find()) {
+            for (String name : attribute.group(1).trim().split("\\s+")) {
+                if (!name.isEmpty()) {
+                    applied.add(name);
+                }
+            }
+        }
+        assertFalse(applied.isEmpty(), "the deck applies no class at all, so it carries no markup"
+                + " this assertion can measure");
+        return applied;
+    }
+
     @Test
-    @DisplayName("the three named Mermaid diagrams cover both states, event flow and dependency order")
-    void theThreeNamedMermaidDiagramsCoverTheRequiredViews() {
-        assertEquals(3, occurrences(deck, "<pre class=\"mermaid\""));
-        assertTrue(deck.contains("Figure 1 — From shared files to owned schemas"));
-        assertTrue(deck.contains("subgraph B[\"Before\"]"));
-        assertTrue(deck.contains("subgraph A[\"After\"]"));
-        assertTrue(deck.contains("Figure 2 — One outcome event starts the work"));
-        assertTrue(deck.contains("transaction.authorized"));
-        assertTrue(deck.contains("transaction.posted"));
-        assertTrue(deck.contains("fraud.assessed"));
-        assertTrue(deck.contains("carddemo.dead-letter"));
-        assertTrue(deck.contains("Figure 3 — Each capability starts from a proven contract"));
-        assertTrue(deck.contains("Continuous equivalence suite"));
+    @DisplayName("small text and decoration use tokens that clear the contrast floor")
+    void smallTextAndDecorationUseTokensThatClearTheContrastFloor() {
+        assertTrue(deckStyle.contains("--blitzy-text-muted: #999999;"));
+        assertFalse(
+                deckStyle.contains("color: var(--blitzy-text-muted)"),
+                "#999999 on any deck surface falls below the contrast floor, so it must not"
+                        + " colour text");
+
+        assertTrue(declarationOf(".kpi-label").contains("color: var(--blitzy-text)"));
+        assertTrue(declarationOf(".diagram-legend").contains("color: var(--blitzy-text)"));
+        assertTrue(declarationOf(".reveal .slide-number").contains("color: var(--blitzy-text)"));
+
+        String eyebrow = declarationOf(".slide-title .eyebrow");
+        assertTrue(eyebrow.contains("color: var(--blitzy-accent-teal)"));
+        assertTrue(
+                eyebrow.contains("background: var(--blitzy-primary-navy)"),
+                "The teal eyebrow needs its own dark backing to clear the contrast floor");
+
+        assertEquals(
+                slides.size(),
+                occurrences(deckMarkup, "<span class=\"slide-number\" aria-hidden=\"true\">"),
+                "Every decorative slide number must be hidden from assistive technology");
+    }
+
+    @Test
+    @DisplayName("the deck honours reduced motion and restores a visible keyboard focus ring")
+    void theDeckHonoursReducedMotionAndRestoresAVisibleKeyboardFocusRing() {
+        assertTrue(deckStyle.contains("@media (prefers-reduced-motion: reduce)"));
+        assertTrue(deckStyle.contains(".reveal .controls button:focus-visible"));
+        assertTrue(deckStyle.contains(":focus-visible"));
+        assertTrue(declarationOf(".reveal .controls button:focus-visible").contains("outline:"));
+        assertTrue(deck.contains("transition: \"slide\""));
+    }
+
+    /**
+     * Requires every data table to announce itself and to scope every header cell it declares.
+     *
+     * <p>A caption is what a screen reader reads before the cells, so a table without one arrives as
+     * a grid of values with no subject.
+     *
+     * <p>Scope is checked where it is declared rather than uniformly. A cell in the head row heads a
+     * column and says {@code scope="col"}. The first cell of each body row heads that row and says
+     * {@code scope="row"}, which is what lets a value in the second column be read as the answer to
+     * the row it sits on. Requiring {@code col} of every header cell would reject the row headers the
+     * deck's four tables use, and those row headers are the reason the tables read at all. A header
+     * cell declaring no scope is the case this refuses.
+     */
+    @Test
+    @DisplayName("every data table is announced with a caption and scoped header cells")
+    void everyDataTableIsAnnouncedWithACaptionAndColumnScopes() {
+        Matcher table = TABLE.matcher(deckMarkup);
+        int tables = 0;
+        while (table.find()) {
+            tables++;
+            String body = table.group(1);
+            assertTrue(body.contains("<caption"), "Table " + tables + " carries no caption");
+
+            int columnHeaders = 0;
+            Matcher head = TABLE_HEAD.matcher(body);
+            while (head.find()) {
+                Matcher headCell = TABLE_HEADER.matcher(head.group(1));
+                while (headCell.find()) {
+                    columnHeaders++;
+                    assertTrue(
+                            headCell.group(1).contains("scope=\"col\""),
+                            "Head cell "
+                                    + columnHeaders
+                                    + " of table "
+                                    + tables
+                                    + " declares no column scope");
+                }
+            }
+            assertTrue(columnHeaders > 0, "Table " + tables + " declares no column header");
+
+            Matcher header = TABLE_HEADER.matcher(body);
+            int headers = 0;
+            while (header.find()) {
+                headers++;
+                assertTrue(
+                        header.group(1).contains("scope=\"col\"")
+                                || header.group(1).contains("scope=\"row\""),
+                        "Header " + headers + " of table " + tables + " declares no scope");
+            }
+            assertTrue(headers > 0, "Table " + tables + " has no header cell");
+        }
+        assertEquals(4, tables);
+    }
+
+    @Test
+    @DisplayName("every diagram carries an accessible title and description")
+    void everyDiagramCarriesAnAccessibleTitleAndDescription() {
+        assertEquals(3, diagrams.size());
+        for (int index = 0; index < diagrams.size(); index++) {
+            String diagram = diagrams.get(index);
+            assertTrue(
+                    diagram.contains("accTitle:"),
+                    "Diagram " + (index + 1) + " declares no accessible title");
+            assertTrue(
+                    diagram.contains("accDescr:"),
+                    "Diagram " + (index + 1) + " declares no accessible description");
+        }
+    }
+
+    @Test
+    @DisplayName("the three named diagrams cover both states, event flow and dependency order")
+    void theThreeNamedDiagramsCoverBothStatesEventFlowAndDependencyOrder() {
+        assertEquals(3, occurrences(deckMarkup, "<pre class=\"mermaid\">"),
+                "Rule 2 requires all three views, and each travels as one Mermaid block");
+        assertTrue(deckMarkup.contains("Figure 1 — From shared files to owned schemas"));
+        assertTrue(deckMarkup.contains("Figure 2 — One outcome event starts the work"));
+        assertTrue(deckMarkup.contains("Figure 3 — Each capability starts from a proven contract"));
+        assertTrue(deckMarkup.contains("Continuous equivalence suite"));
+
+        Map<String, String> firstFigure = nodeLabels(diagrams.get(0));
+        assertTrue(
+                firstFigure.values().stream().anyMatch(label -> label.startsWith("Before")),
+                "Rule 2 requires the before state to be labelled as such");
+        assertTrue(
+                firstFigure.values().stream().anyMatch(label -> label.startsWith("After")),
+                "Rule 2 requires the after state to be labelled as such");
+
+        assertTrue(deckMarkup.contains("transaction.authorized"));
+        assertTrue(deckMarkup.contains("transaction.posted"));
+        assertTrue(deckMarkup.contains("fraud.assessed"));
+        assertTrue(deckMarkup.contains("carddemo.dead-letter"));
+
         assertFalse(FORBIDDEN_SEQUENCE_WORD.matcher(deck).find());
-        String proseWithoutRequiredStageDimensions =
+        String deckWithoutRequiredStageDimensions =
                 deck.replace("width: 1920", "").replace("height: 1080", "");
         assertFalse(
                 Pattern.compile("\\b(?:19|20)\\d{2}\\b")
-                        .matcher(proseWithoutRequiredStageDimensions)
+                        .matcher(deckWithoutRequiredStageDimensions)
                         .find());
+    }
+
+    @Test
+    @DisplayName("the diagrams show every service reaching one private schema and no other consumer")
+    void theDiagramsShowEveryServiceReachingOnePrivateSchemaAndNoOtherConsumer() {
+        Map<String, String> firstFigure = nodeLabels(diagrams.get(0));
+        Set<String> drawn = new LinkedHashSet<>(firstFigure.values());
+        serviceSchemas.forEach(
+                (service, schema) -> {
+                    assertTrue(
+                            drawn.contains(service),
+                            "Figure 1 omits the service " + service);
+                    assertTrue(
+                            drawn.contains(schema + " schema"),
+                            "Figure 1 omits the private schema of " + service);
+                });
+        assertEquals(
+                serviceSchemas.size(),
+                drawn.stream().filter(label -> label.endsWith(" schema")).count(),
+                "Figure 1 must show one private schema per service and no more");
+
+        for (int index = 0; index < diagrams.size(); index++) {
+            String diagram = diagrams.get(index);
+            Map<String, String> labels = nodeLabels(diagram);
+            Set<String> consumerIdentifiers = new LinkedHashSet<>();
+            labels.forEach(
+                    (identifier, label) -> {
+                        if (sourceSuffixServices.contains(label)) {
+                            consumerIdentifiers.add(identifier);
+                        }
+                    });
+            for (String[] edge : edges(diagram)) {
+                assertFalse(
+                        consumerIdentifiers.contains(edge[0])
+                                && consumerIdentifiers.contains(edge[1]),
+                        "Figure "
+                                + (index + 1)
+                                + " couples two event consumers directly: "
+                                + labels.get(edge[0])
+                                + " to "
+                                + labels.get(edge[1]));
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("the deck depicts the failure routing the services are configured to use")
+    void theDeckDepictsTheFailureRoutingTheServicesAreConfiguredToUse() {
+        assertFalse(sourceSuffixServices.isEmpty());
+        assertFalse(sharedFallbackServices.isEmpty());
+
+        String eventFlow = diagrams.get(1);
+        Map<String, String> labels = nodeLabels(eventFlow);
+        Set<String> suffixSinks = identifiersLabelledWith(labels, deadLetterSuffix);
+        Set<String> sharedSinks = identifiersLabelledWith(labels, sharedDeadLetterTopic);
+        assertFalse(suffixSinks.isEmpty(), "Figure 2 draws no source-specific dead-letter route");
+        assertFalse(sharedSinks.isEmpty(), "Figure 2 draws no shared dead-letter fallback");
+
+        Set<String> drawnSuffixServices = new TreeSet<>();
+        Set<String> drawnSharedServices = new TreeSet<>();
+        for (String[] edge : edges(eventFlow)) {
+            String origin = labels.get(edge[0]);
+            if (origin == null) {
+                continue;
+            }
+            if (suffixSinks.contains(edge[1])) {
+                drawnSuffixServices.add(origin);
+            }
+            if (sharedSinks.contains(edge[1])) {
+                drawnSharedServices.add(origin);
+            }
+        }
+
+        assertEquals(
+                new TreeSet<>(sourceSuffixServices),
+                drawnSuffixServices,
+                "Figure 2 must route exactly the services configured with a dead-letter suffix to"
+                        + " their own source topic");
+        assertTrue(
+                sharedFallbackServices.containsAll(drawnSharedServices),
+                "Figure 2 routes a suffix-configured service to the shared fallback: "
+                        + drawnSharedServices);
+        assertFalse(drawnSharedServices.isEmpty());
+    }
+
+    @Test
+    @DisplayName("the deck reports the finding count, coverage and inventory its evidence records")
+    void theDeckReportsTheFindingCountCoverageAndInventoryItsEvidenceRecords() {
+        int registerSize = registerSize();
+        assertTrue(
+                flagRegister.contains("All " + registerSize + " register items"),
+                "The register heading disagrees with its own table");
+        assertEquals(
+                String.valueOf(registerSize),
+                kpiValueFor("Business-rule findings"),
+                "The headline metric disagrees with the flag register");
+        assertTrue(
+                deckMarkup.contains("All " + registerSize + " flagged source rules"),
+                "The business-value row disagrees with the flag register");
+
+        assertTrue(deckMarkup.contains(classificationOf("app/cbl/")));
+        assertTrue(deckMarkup.contains(classificationOf("app/cpy/")));
+
+        assertEquals(
+                "8 \u2192 " + serviceSchemas.size(),
+                kpiValueFor("Shared datasets to private schemas"),
+                "The datastore metric disagrees with the service inventory");
+
+        for (String family : CORE_EVENT_FAMILIES) {
+            assertTrue(
+                    Files.isRegularFile(
+                            platformRoot.resolve(
+                                    "libs/event-contracts/src/main/resources/schemas/"
+                                            + family
+                                            + "-v1.json")),
+                    "The deck claims a core event contract with no schema: " + family);
+        }
+        List<String> families = eventSchemaFamilies();
+        long businessTypes = families.stream().filter(family -> !"dead-letter".equals(family)).count();
+        assertEquals(
+                String.valueOf(businessTypes),
+                kpiValueFor("Event types, " + eventSchemaDocuments().size() + " schemas"),
+                "The contract metric disagrees with the shipped event schemas");
+    }
+
+    /** The schema documents the contract library publishes, by file name. */
+    private static List<String> eventSchemaDocuments() {
+        Path schemas =
+                platformRoot.resolve("libs/event-contracts/src/main/resources/schemas");
+        try (var documents = Files.list(schemas)) {
+            return documents
+                    .map(path -> path.getFileName().toString())
+                    .filter(name -> name.endsWith(".json"))
+                    .sorted()
+                    .toList();
+        } catch (IOException unreadable) {
+            throw new UncheckedIOException("Cannot read " + schemas, unreadable);
+        }
+    }
+
+    /**
+     * The event families those documents govern, one entry per family however many versions it has.
+     *
+     * <p>The deck's headline metric names both numbers, and the two moved apart once: withdrawing the
+     * unpublished {@code card-updated} version two document left the label claiming fourteen
+     * documents where thirteen shipped. Reading the directory is what keeps the slide honest.
+     */
+    private static List<String> eventSchemaFamilies() {
+        return eventSchemaDocuments().stream()
+                .map(name -> name.replaceFirst("-v\\d+\\.json$", ""))
+                .distinct()
+                .sorted()
+                .toList();
     }
 
     @Test
     @DisplayName("Reveal, Mermaid and Lucide use navigation-safe lifecycle hooks")
     void revealMermaidAndLucideUseNavigationSafeLifecycleHooks() {
-        assertTrue(deck.contains("startOnLoad: false"));
-        assertTrue(deck.contains("theme: \"base\""));
-        assertTrue(deck.contains("htmlLabels: false"));
-        assertTrue(deck.contains("wrappingWidth: 420"));
-        assertTrue(deck.contains("primaryColor: \"#F2F0FE\""));
-        assertTrue(deck.contains("primaryTextColor: \"#333333\""));
-        assertTrue(deck.contains("primaryBorderColor: \"#5B39F3\""));
-        assertTrue(deck.contains("lineColor: \"#999999\""));
-        assertTrue(deck.contains("secondaryColor: \"#F4EFF6\""));
-        assertTrue(deck.contains("fontFamily: \"Inter, system-ui, sans-serif\""));
-        assertTrue(deck.contains("titleColor: \"#333333\""));
-        assertTrue(deck.contains("Reveal.on(\"ready\""));
-        assertTrue(deck.contains("Reveal.on(\"slidechanged\""));
-        assertTrue(deck.contains("renderAllDiagrams();"));
-        assertTrue(deck.contains("renderDiagramsIn(event.currentSlide);"));
-        assertEquals(2, occurrences(deck, "renderLucideIcons();"));
-        assertTrue(deck.contains("await mermaid.run({ nodes })"));
-        assertTrue(deck.contains("hash: true"));
-        assertTrue(deck.contains("transition: \"slide\""));
-        assertTrue(deck.contains("controlsTutorial: false"));
-        assertTrue(deck.contains("width: 1920"));
-        assertTrue(deck.contains("height: 1080"));
-        assertTrue(deck.contains(".reveal .progress"));
-        assertTrue(deck.contains("display: none !important"));
+        assertTrue(deckScript.contains("startOnLoad: false"));
+        assertTrue(deckScript.contains("theme: \"base\""));
+        assertTrue(deckScript.contains("htmlLabels: false"));
+        assertTrue(deckScript.contains("wrappingWidth: 420"));
+        assertTrue(deckScript.contains("primaryColor: \"#F2F0FE\""));
+        assertTrue(deckScript.contains("primaryTextColor: \"#333333\""));
+        assertTrue(deckScript.contains("primaryBorderColor: \"#5B39F3\""));
+        assertTrue(deckScript.contains("lineColor: \"#999999\""));
+        assertTrue(deckScript.contains("secondaryColor: \"#F4EFF6\""));
+        assertTrue(deckScript.contains("Reveal.on(\"ready\""));
+        assertTrue(deckScript.contains("Reveal.on(\"slidechanged\""));
+        assertEquals(2, occurrences(deckScript, "renderMermaidFor(event.currentSlide)"));
+        assertTrue(occurrences(deckScript, "renderLucideIcons();") >= 2);
+
+        // A diagram is drawn once. The marker records the source each block was drawn from, and it
+        // is written only after the run resolves, so a failed diagram is attempted again on the next
+        // visit and a successful one is left alone. Without the marker every return to a diagram
+        // slide restored the raw source and drew it again.
+        assertTrue(
+                deckScript.contains("mermaidRendered.get(node) !== mermaidSources.get(node)"),
+                "the deck has to skip a block already drawn from the source it still holds");
+        assertTrue(
+                deckScript.contains("mermaidRendered.set(node, mermaidSources.get(node))"),
+                "the marker has to be written, and after the run rather than before it");
+        assertTrue(
+                deckScript.contains("await mermaid.run({ nodes })"),
+                "the queued task has to await the library it resolved, not a global");
+
+        // The icon guard has to test for the class as well as the attribute. The library copies the
+        // name attribute onto the graphic it draws, so a guard reading "[data-lucide]" alone matches
+        // finished icons, never reaches zero on a slide that has any, and rebuilds all seventeen on
+        // every navigation. The class is what the library always adds to its own output, so it is
+        // what separates a waiting placeholder from a drawn icon.
+        assertTrue(
+                deckScript.contains("[data-lucide]:not(.lucide)"),
+                "the icon guard has to exclude icons already drawn, or it never returns early");
+        assertTrue(deckScript.contains("hash: true"));
+        assertTrue(deckScript.contains("transition: \"slide\""));
+        assertTrue(deckScript.contains("controlsTutorial: false"));
+        assertTrue(deckScript.contains("width: 1920"));
+        assertTrue(deckScript.contains("height: 1080"));
+        assertTrue(deckStyle.contains(".reveal .progress"));
+        assertTrue(deckStyle.contains("display: none !important"));
     }
 
-    /**
-     * Locks in the lifecycle properties that decide whether the diagrams survive real use.
-     *
-     * <p>Each assertion stands for one way the diagrams were previously lost. A cache keyed on a DOM
-     * node is orphaned when reveal replaces a slide with a clone. A static Mermaid import as the
-     * module's first statement means one unreachable host stops {@code Reveal.initialize} from ever
-     * running, which blanks the whole deck. Rendering only the current slide leaves the print export
-     * and the overview thumbnails showing raw diagram source. Mutating the live slide transform
-     * during a render leaves a stale transform behind when a resize lands in the same window.</p>
-     */
     @Test
-    @DisplayName("the diagram lifecycle survives cloning, an unreachable library, print and overview")
-    void theDiagramLifecycleSurvivesCloningAnUnreachableLibraryPrintAndOverview() {
-        assertEquals(3, occurrences(deck, "data-diagram=\""));
-        assertEquals(3, occurrences(deck, "data-diagram-label=\""));
-        assertTrue(deck.contains("diagramSources.set(node.dataset.diagram"));
-        assertFalse(deck.contains("WeakMap"), "a node-keyed cache cannot survive slide cloning");
+    @DisplayName("the diagram lifecycle is serialized, self-contained and degrades readably")
+    void theDiagramLifecycleIsSerializedSelfContainedAndDegradesReadably() {
+        assertTrue(
+                Pattern.compile("import\\(\\s*\"https://[^\"]*mermaid@11\\.4\\.0")
+                        .matcher(deckScript)
+                        .find(),
+                "Mermaid must load through an import expression so a failure is catchable");
+        assertFalse(
+                Pattern.compile("(?m)^\\s*import\\s").matcher(deckScript).find(),
+                "A static import failure aborts the whole module, including Reveal start-up");
+        assertTrue(deckScript.contains(".catch("), "The Mermaid import declares no failure path");
+        assertTrue(
+                deckScript.contains("if (window.Reveal)"),
+                "Reveal start-up must not assume the library loaded");
+        assertTrue(deckScript.contains("Reveal.initialize({"));
+        assertTrue(
+                deckScript.contains("if (window.lucide)")
+                        || deckScript.contains("if (!window.lucide)"),
+                "Icon rendering must not assume the library loaded");
+
+        int queueStart = deckScript.indexOf("mermaidRenderQueue = mermaidRenderQueue.then(");
+        int reset = deckScript.indexOf("removeAttribute(\"data-processed\")");
+        assertTrue(queueStart >= 0, "Diagram renders are not serialized through a queue");
+        assertTrue(reset >= 0, "The diagram source is never reset before a re-render");
+        assertTrue(
+                reset > queueStart,
+                "Resetting a diagram outside the queue lets one navigation mutate a block another"
+                        + " render is inside");
 
         assertFalse(
-                deck.contains("import mermaid from"),
-                "a static Mermaid import blocks Reveal.initialize when the library is unreachable");
-        assertTrue(deck.contains("import(MERMAID_MODULE_URL)"));
-        assertTrue(deck.contains("typeof Reveal === \"undefined\""));
-        assertTrue(deck.contains("showDiagramNotice"));
-        assertTrue(deck.contains(".mermaid-notice"));
+                deckScript.contains("slides.style.transform"),
+                "Writing Reveal's own stage transform strands the deck at a stale scale");
+        assertTrue(deckScript.contains("Reveal.layout()"), "A rendered diagram must trigger a refit");
 
-        assertFalse(
-                deck.contains("slides.style.transform"),
-                "a render must not write the live slide transform");
-        assertTrue(deck.contains("mermaid-render-stage"));
-        assertTrue(deck.contains("renderingDiagrams.has(key)"));
-        assertTrue(deck.contains("renderedDiagrams.has(key)"));
-
-        assertTrue(deck.contains("history: true"));
-        assertTrue(deck.contains("controlsBackArrows: \"visible\""));
-        assertTrue(deck.contains("scrollActivationWidth: 0"));
-        assertTrue(deck.contains("margin: 0"));
-        assertEquals(2, occurrences(deck, " defer src=\"https://cdn.jsdelivr.net/"));
-        assertEquals(2, occurrences(deck, "rel=\"preload\" as=\"style\""));
-    }
-
-    /**
-     * Locks the visual system to its tokens and keeps each painted surface to a single layer.
-     *
-     * <p>A gradient declared on a section as well as on the background element reveal generates for
-     * it is painted twice over two differently sized boxes, and the percentage stops then leave a
-     * rectangular seam. A radius or an ink written as a literal drifts from the token that governs
-     * the same surface elsewhere. A diagram capped below the width of the frame that holds it is
-     * scaled down a second time and its labels stop being readable.</p>
-     */
-    @Test
-    @DisplayName("the visual system paints each surface once and reads every value from a token")
-    void theVisualSystemPaintsEachSurfaceOnceAndReadsEveryValueFromAToken() {
-        assertTrue(deck.contains(".reveal .slide-background.slide-title"));
-        assertTrue(deck.contains(".reveal .slide-background.slide-divider"));
-        assertTrue(deck.contains(".reveal .slide-background.slide-closing"));
-        assertTrue(deck.contains("background-image: var(--gradient-hero);"));
-        assertTrue(deck.contains("background-image: var(--gradient-divider);"));
-        assertFalse(
-                deck.contains("background: var(--gradient-hero);"),
-                "the hero gradient must be painted on the background element only");
-        assertFalse(
-                deck.contains("background: var(--gradient-divider);"),
-                "the divider gradient must be painted on the background element only");
-
-        // A browser that cannot reach the slide framework gets no background element at all, and the
-        // two gradient slides hold inverted ink. Each keeps a gradient on the section itself for
-        // exactly that state, scoped so it stops applying once reveal reports itself ready.
-        assertTrue(deck.contains(".reveal:not(.ready) section.slide-title"));
-        assertTrue(deck.contains(".reveal:not(.ready) section.slide-divider"));
-        assertEquals(
-                2,
-                occurrences(deck, "background-image: var(--gradient-hero);"),
-                "the hero gradient covers the background element and the framework-less section");
-        assertEquals(
-                2,
-                occurrences(deck, "background-image: var(--gradient-divider);"),
-                "the divider gradient covers the background element and the framework-less section");
-
-        assertEquals(3, occurrences(deck, "border-radius: var(--card-radius);"));
-        assertFalse(deck.contains("border-radius: 20px"), "a card radius must come from the token");
-        assertTrue(deck.contains("--ink-invert-strong: rgba(255, 255, 255, 0.92);"));
-        assertTrue(deck.contains("--ink-invert-soft: rgba(255, 255, 255, 0.72);"));
-        assertEquals(
-                2,
-                occurrences(deck, "rgba(255, 255, 255, 0."),
-                "the inverted inks are declared once each and used through their tokens");
-
-        assertTrue(deck.contains("--diagram-frame-width: 1680px;"));
-        assertTrue(deck.contains("--diagram-height: 580px;"));
-        assertEquals(2, occurrences(deck, "max-width: var(--diagram-frame-width);"));
-        assertTrue(deck.contains("max-height: var(--diagram-height);"));
-        assertFalse(deck.contains("max-width: 1600px"), "the diagram may use the whole frame width");
-        assertTrue(deck.contains("fontSize: \"24px\""));
-        assertTrue(deck.contains(".mermaid text"));
-        assertTrue(deck.contains(".mermaid .cluster-label text"));
-        assertTrue(deck.contains("font-family: var(--ff-body) !important;"));
-        assertTrue(deck.contains("  B ~~~ A"), "the two states sit side by side, each laid out down");
-
-        assertTrue(deck.contains("align-items: start;"));
-        assertFalse(deck.contains("min-height: 300px"), "a table must keep its own row heights");
-    }
-
-    /**
-     * Holds the deck to what a keyboard and a screen reader need from it.
-     *
-     * <p>Reveal strips the outline from its own navigation buttons and leaves the chevrons black
-     * whatever sits behind them, and it names neither the slides nor the diagrams. Each assertion
-     * here stands for one of those gaps: a focus ring drawn in two colours so one of the pair always
-     * separates from the background, an explicit control colour that follows reveal's own dark-slide
-     * mark, a named region per slide, a named graphic per diagram, scoped table headers with a row
-     * header naming each body row, named groups over the two grids, and a motion preference the deck
-     * actually reads. The secondary ink is a deck-local value because the brand token it replaces is
-     * enumerated and must keep its published value.</p>
-     */
-    @Test
-    @DisplayName("the deck is operable by keyboard and legible to a screen reader")
-    void theDeckIsOperableByKeyboardAndLegibleToAScreenReader() {
-        assertTrue(deck.contains(".reveal .controls button:focus-visible"));
-        assertTrue(deck.contains("0 0 0 3px var(--blitzy-text-invert),"));
-        assertTrue(deck.contains("0 0 0 6px var(--blitzy-primary-navy);"));
-        assertTrue(deck.contains(".reveal .controls {"));
-        assertTrue(deck.contains(".reveal.has-dark-background .controls"));
-        assertTrue(deck.contains(".reveal:has(section.present.has-dark-background) .controls"));
-
-        assertTrue(deck.contains(".slide-title .eyebrow {"));
-        assertTrue(deck.contains("      color: var(--blitzy-text-invert);\n      font-size: 0.8em;"));
-        assertTrue(deck.contains("--ink-muted: #6B6B6B;"));
-        assertEquals(3, occurrences(deck, "color: var(--ink-muted);"));
-        assertFalse(
-                deck.contains("color: var(--blitzy-text-muted);"),
-                "the enumerated muted token is too light for text on a white surface");
-        assertTrue(deck.contains("--blitzy-text-muted: #999999;"), "the token keeps its value");
-        assertFalse(deck.contains("BLITZY [A11Y]"), "no contrast waiver survives");
-
-        assertEquals(16, occurrences(deck, "aria-label=\"Slide "));
-        assertEquals(3, occurrences(deck, "data-diagram-label=\""));
-        assertTrue(deck.contains("svg.setAttribute(\"aria-label\", label)"));
-        assertTrue(deck.contains("createElementNS(svg.namespaceURI, \"title\")"));
-
-        assertEquals(8, occurrences(deck, "<th scope=\"col\">"));
-        assertEquals(15, occurrences(deck, "<th scope=\"row\">"));
-        assertEquals(4, occurrences(deck, "aria-labelledby=\""));
-        assertEquals(4, occurrences(deck, "<h2 id=\""));
-        assertTrue(deck.contains(".reveal table thead th {"));
-        assertTrue(deck.contains(".reveal table tbody th {"));
-        assertEquals(2, occurrences(deck, "role=\"group\""));
-        assertTrue(deck.contains("<ul class=\"closing-links\" aria-label=\""));
-
-        assertTrue(deck.contains("@media (prefers-reduced-motion: reduce)"));
-        assertTrue(deck.contains("transition: none !important;"));
-
-        assertTrue(deck.contains("nameNavigationControls();"));
-        assertTrue(deck.contains("controls.setAttribute(\"aria-label\", \"Slide navigation\")"));
-        // The control strip is an aside. An aside is not permitted to take a navigation role, and
-        // an accessibility checker reports one as invalid, so the strip takes a name and nothing
-        // else: the complementary role an aside already carries is what holds that name.
-        assertFalse(
-                deck.contains("controls.setAttribute(\"role\""),
-                "the control strip must not be given a role its element cannot take");
-        assertFalse(deck.contains("role=\"navigation\""));
-    }
-
-    /**
-     * Counts the register on disk and holds every claim about its size to that count.
-     *
-     * <p>The deck stated one number and the register held another, which is the kind of drift a
-     * reader cannot detect from the slide alone. Counting the rows here rather than restating the
-     * number means the next appended finding fails this test until every claim about the register
-     * moves with it.</p>
-     */
-    @Test
-    @DisplayName("every claim about the register size equals the number of rows the register holds")
-    void everyClaimAboutTheRegisterSizeEqualsTheNumberOfRowsTheRegisterHolds() throws IOException {
-        String register = Files.readString(platformRoot.resolve("docs/business-rule-flags.md"));
-        Matcher row = Pattern.compile("(?m)^\\| *(\\d+) *\\|").matcher(register);
-        int highest = 0;
-        int rows = 0;
-        while (row.find()) {
-            rows++;
-            highest = Math.max(highest, Integer.parseInt(row.group(1).trim()));
-        }
-        assertEquals(rows, highest, "the register is numbered from one with no gap and no repeat");
-        assertTrue(rows > 0);
-
-        String spelled = spellOut(rows);
-        assertTrue(
-                register.contains("All " + rows + " register items"),
-                "the register states its own size as " + rows);
-        assertTrue(
-                deck.contains("<div class=\"kpi-value\">" + rows + "</div>"),
-                "the deck metric card states " + rows);
-        assertTrue(
-                deck.contains(spelled + " flagged source rules carry file and line citations."),
-                "the deck table row states " + spelled);
-
-        String platformReadme = Files.readString(platformRoot.resolve("README.md"));
-        assertTrue(
-                platformReadme.contains(spelled + " ambiguous, inconsistent, or undocumented"),
-                "the platform guide states " + spelled);
-        String authorizationReadme =
-                Files.readString(platformRoot.resolve("services/authorization-service/README.md"));
-        assertTrue(
-                authorizationReadme.contains("a " + spelled.toLowerCase() + "-item register"),
-                "the authorization guide states " + spelled.toLowerCase());
-    }
-
-    /**
-     * Every typeface weight the deck asks for is a weight the deck paints.
-     *
-     * <p>The font request names nine family and weight combinations because those are the ones the
-     * rule enumerates, so the request itself must not be trimmed. Three of them reached no element,
-     * which meant the deck advertised type it never used. Each now has one home.</p>
-     */
-    @Test
-    @DisplayName("the deck paints every typeface weight its font request asks for")
-    void theDeckPaintsEveryTypefaceWeightItsFontRequestAsksFor() {
-        assertTrue(deck.contains("family=Inter:wght@400;500;600;700"));
-        assertTrue(deck.contains("family=Space+Grotesk:wght@500;600;700"));
-        assertTrue(deck.contains("family=Fira+Code:wght@400;500"));
-
-        assertTrue(deck.contains("      font-weight: 500;\n      margin: 0.5em 0;"), "Inter 500");
-        assertTrue(
-                deck.contains("      font-size: 0.8em;\n      font-weight: 600;\n"
-                        + "      line-height: 1.2;"),
-                "Space Grotesk 600");
-        assertTrue(
-                deck.contains("      font-size: 2.15em;\n      font-weight: 500;\n"
-                        + "      margin-top: 34px;"),
-                "Space Grotesk 500");
-        assertEquals(3, occurrences(deck, "font-weight: 700;"));
-        assertEquals(2, occurrences(deck, "font-weight: 600;"));
-    }
-
-    /**
-     * The deck reaches three hosts on every open, and the platform guide has to say so.
-     *
-     * <p>A single authored file is not a self-contained one. The rule that governs the deck forbids
-     * a local asset beside it, so the dependency cannot be removed and the honest resolution is to
-     * name it: which hosts, what each one serves, and what a reader sees when one is unreachable.
-     * The guide also has to say that a typeface outage is silent, because nothing inside the page
-     * can detect one.</p>
-     */
-    @Test
-    @DisplayName("the platform guide states the deck's network requirement and its degradation")
-    void thePlatformGuideStatesTheDecksNetworkRequirementAndItsDegradation() throws IOException {
-        String platformReadme = Files.readString(platformRoot.resolve("README.md"));
-        assertTrue(platformReadme.contains("### Opening the executive deck"));
-        assertTrue(platformReadme.contains("presentation/executive-summary.html"));
-        assertTrue(platformReadme.contains("It needs network access on the machine that opens it"));
-        assertTrue(platformReadme.contains("not a\nself-contained one"));
-        assertTrue(platformReadme.contains("cdn.jsdelivr.net"));
-        assertTrue(platformReadme.contains("fonts.googleapis.com"));
-        assertTrue(platformReadme.contains("fonts.gstatic.com"));
-        assertTrue(platformReadme.contains("Nothing inside the page can detect a"));
-        assertTrue(platformReadme.contains("file://"));
-        assertTrue(platformReadme.contains("fixed sixteen-by-nine canvas"));
+        assertTrue(deckStyle.contains(".diagram-fallback"));
+        assertTrue(declarationOf(".reveal pre.mermaid.diagram-fallback").contains("white-space: normal"));
+        assertTrue(deckScript.contains("classList.add(\"diagram-fallback\")"));
+        assertTrue(deckStyle.contains("body.deck-static"));
+        assertTrue(deckScript.contains("classList.add(\"deck-static\")"));
     }
 
     @Test
@@ -492,6 +893,43 @@ class PresentationAndProseContractTest {
                         .noneMatch(codePoint -> codePoint >= 0x1F300 && codePoint <= 0x1FAFF),
                 "The executive deck contains an emoji code point");
     }
+
+    /**
+     * The twelve Vonnegut principle names, exactly as the governing rules document writes them.
+     *
+     * <p>An earlier revision of the report invented names for V8 and V10 through V12, so a reader
+     * comparing the report against the rule could not tell which principle a row scored. The names
+     * are asserted rather than the numbers alone because the number without the rule's own name is
+     * what allowed the drift.
+     */
+    private static final List<String> VONNEGUT_PRINCIPLES =
+            List.of(
+                    "V1: Find a subject you care about",
+                    "V2: Do not ramble",
+                    "V3: Keep it simple",
+                    "V4: Have the guts to cut",
+                    "V5: Sound like yourself",
+                    "V6: Say what you mean",
+                    "V7: Pity the reader",
+                    "V8: Start close to the end",
+                    "V9: The Dignity Test",
+                    "V10: The Indifference Detector",
+                    "V11: The Indianapolis Test",
+                    "V12: Humor as Trust Signal");
+
+    /** The ten Asimov principle names, exactly as the governing rules document writes them. */
+    private static final List<String> ASIMOV_PRINCIPLES =
+            List.of(
+                    "A1: Plate Glass Clarity",
+                    "A2: Short Words, Simple Structures",
+                    "A3: Logical Sequence",
+                    "A4: Ideas Carry the Weight",
+                    "A5: Conversational Informality",
+                    "A6: No Ornamental Language",
+                    "A7: Functional Dialogue",
+                    "A8: Anticipate Reader Questions",
+                    "A9: Efficiency Over Polish",
+                    "A10: Respect the Reader's Intelligence");
 
     @Test
     @DisplayName("the prose report declares the required method, boundaries and nineteen targets")
@@ -515,18 +953,260 @@ class PresentationAndProseContractTest {
             assertEquals(10, occurrencesMatching(report, "(?m)^\\| A10?:|^\\| A[1-9]:"));
             assertTrue(report.contains("**Per-violation entries:**"));
         }
-        assertEquals(19, count);
+        assertEquals(PROSE_TARGETS.size(), count);
+
+        assertEquals(
+                PROSE_TARGETS.size(),
+                occurrencesMatching(
+                        prose,
+                        "(?m)^\\| \\d+ \\| .* \\| (?:CLEAN|NEEDS WORK|ROUGH DRAFT) \\| \\d+ \\| \\d+ \\|$"),
+                "the summary table carries one row per scored target, each carrying one of the three"
+                        + " verdicts the rule defines rather than a verdict of its own");
+    }
+
+    /**
+     * Asserts every scorecard row names its principle with the rule's own wording.
+     *
+     * <p>Twenty-two rows appear once per report, so each name appears once per target. Counting rather than merely finding is what catches a report that scores a principle
+     * under a name of its own invention in some of its sections and the rule's name in others.
+     */
+    @Test
+    @DisplayName("every scorecard names the twenty-two principles the rules document declares")
+    void everyScorecardNamesThePrinciplesTheRulesDocumentDeclares() {
+        for (String principle : VONNEGUT_PRINCIPLES) {
+            assertEquals(
+                    PROSE_TARGETS.size(),
+                    occurrences(prose, "| " + principle + " |"),
+                    "principle row missing or renamed: " + principle);
+        }
+        for (String principle : ASIMOV_PRINCIPLES) {
+            assertEquals(
+                    PROSE_TARGETS.size(),
+                    occurrences(prose, "| " + principle + " |"),
+                    "principle row missing or renamed: " + principle);
+        }
     }
 
     @Test
-    @DisplayName("the prose verdicts, counts and exemptions are self-consistent")
-    void theProseVerdictsCountsAndExemptionsAreSelfConsistent() {
-        assertEquals(19, occurrences(prose, "| CLEAN | 0 | 0 |"));
+    @DisplayName("the twenty-two principle rows of every report read the rule's own names in order")
+    void thePrincipleRowsReadTheRuleNamesInOrder() {
+        for (int number = 1; number <= PROSE_TARGETS.size(); number++) {
+            String section = reportSection(number);
+            int cursor = -1;
+            for (String row : PRINCIPLE_ROWS) {
+                int at = section.indexOf("| " + row + " |");
+                assertTrue(
+                        at >= 0,
+                        "Section "
+                                + number
+                                + " does not name principle \""
+                                + row
+                                + "\" exactly as the rule names it");
+                assertTrue(
+                        at > cursor,
+                        "Section " + number + " lists principle " + row + " out of order");
+                cursor = at;
+            }
+            assertEquals(
+                    PRINCIPLE_ROWS.size(),
+                    occurrencesMatching(section, "(?m)^\\| [VA]\\d+: "),
+                    "Section " + number + " carries a principle row the rule does not define");
+        }
+    }
+
+    @Test
+    @DisplayName("every published verdict and count equals a fresh measurement of that target")
+    void theProseVerdictsAndCountsEqualAFreshMeasurement() throws IOException {
+        int publishedClean = 0;
+        int measuredClean = 0;
+        for (int number = 1; number <= PROSE_TARGETS.size(); number++) {
+            String target = PROSE_TARGETS.get(number - 1);
+            ProseMeasurement measured = measure(target);
+            String section = reportSection(number);
+
+            String summaryRow =
+                    "| %d | `%s` | %s | %d | %d |"
+                            .formatted(
+                                    number,
+                                    target,
+                                    measured.verdict(),
+                                    measured.hard(),
+                                    measured.soft());
+            assertTrue(
+                    prose.contains(summaryRow),
+                    "The summary table does not publish the measurement of "
+                            + target
+                            + ". Measured row: "
+                            + summaryRow);
+
+            String verdictLine =
+                    "**Overall verdict:** **%s** — %d hard violations, %d soft violations."
+                            .formatted(measured.verdict(), measured.hard(), measured.soft());
+            assertTrue(
+                    section.contains(verdictLine),
+                    "Section " + number + " does not publish " + verdictLine);
+
+            String measuredLine =
+                    "**Measured:** %d sentences over thirty words, %d paragraphs over five sentences, %d buzzword uses."
+                            .formatted(
+                                    measured.longSentences(),
+                                    measured.longParagraphs(),
+                                    measured.buzzwords());
+            assertTrue(
+                    section.contains(measuredLine),
+                    "Section " + number + " does not publish " + measuredLine);
+
+            assertPrincipleResults(section, number, measured);
+            assertEntriesCoverEveryViolation(section, number, measured);
+
+            publishedClean += occurrences(section, "**Overall verdict:** **CLEAN**");
+            measuredClean += "CLEAN".equals(measured.verdict()) ? 1 : 0;
+        }
         assertEquals(
-                19,
-                occurrences(
-                        prose,
-                        "**Overall verdict:** **CLEAN** — 0 hard violations, 0 soft violations."));
+                measuredClean,
+                publishedClean,
+                "The report publishes a different number of CLEAN verdicts than the measurement finds");
+        assertTrue(
+                measuredClean < PROSE_TARGETS.size() || !prose.contains("do not reach CLEAN"),
+                "The report narrates a shortfall that the measurement does not find");
+    }
+
+    /**
+     * Holds each principle row to the result the measurement implies.
+     *
+     * <p>Five principles are measured. The other seventeen must read {@code Not measured}, because a
+     * pass this report cannot demonstrate is the self-attestation a review already rejected once.
+     */
+    private static void assertPrincipleResults(
+            String section, int number, ProseMeasurement measured) {
+        for (String row : PRINCIPLE_ROWS) {
+            String key = row.substring(0, row.indexOf(':'));
+            String expected;
+            if (SENTENCE_PRINCIPLES.contains(key)) {
+                expected = measured.longSentences() > 0 ? "Soft violation" : "Pass";
+            } else if (PARAGRAPH_PRINCIPLES.contains(key)) {
+                expected = measured.longParagraphs() > 0 ? "Soft violation" : "Pass";
+            } else if (BUZZWORD_PRINCIPLES.contains(key)) {
+                expected = measured.buzzwords() > 0 ? "Hard violation" : "Pass";
+            } else {
+                expected = "Not measured";
+            }
+            Matcher matcher =
+                    Pattern.compile(
+                                    "(?m)^\\| "
+                                            + Pattern.quote(row)
+                                            + " \\| [^|]+ \\| ([^|]+) \\|")
+                            .matcher(section);
+            assertTrue(
+                    matcher.find(),
+                    "Section " + number + " has no row for principle " + row);
+            assertEquals(
+                    expected,
+                    matcher.group(1).strip(),
+                    "Section " + number + " publishes the wrong result for " + row);
+        }
+    }
+
+    /** Requires an entry for every kind of violation measured, and none where none was measured. */
+    private static void assertEntriesCoverEveryViolation(
+            String section, int number, ProseMeasurement measured) {
+        String entries = section.substring(section.indexOf("**Per-violation entries:**"));
+        if (measured.soft() == 0 && measured.hard() == 0) {
+            assertTrue(
+                    entries.contains("None. This target has no measured violation."),
+                    "Section " + number + " measures clean and must say so under its entries");
+            return;
+        }
+        if (measured.longSentences() > 0) {
+            assertTrue(
+                    entries.contains("**" + number + ".1 — V3: Keep it simple**"),
+                    "Section " + number + " measures an over-length sentence and owes entry " + number + ".1");
+        }
+        if (measured.longParagraphs() > 0) {
+            assertTrue(
+                    entries.contains("— V2: Do not ramble**"),
+                    "Section " + number + " measures an over-long paragraph and owes a V2 entry");
+            Matcher split = Pattern.compile("Start a new paragraph at \"([^\"]+)\"").matcher(entries);
+            int named = 0;
+            while (split.find()) {
+                String prefix = asScored(split.group(1));
+                assertTrue(
+                        measured.worstParagraph().stream()
+                                .anyMatch(sentence -> sentence.startsWith(prefix)),
+                        "Section "
+                                + number
+                                + " names a split point that begins no sentence of the measured paragraph: "
+                                + prefix);
+                named++;
+            }
+            assertTrue(named > 0, "Section " + number + " gives no split point");
+        }
+    }
+
+    @Test
+    @DisplayName("every published rewrite is shorter than its offender and reads under thirty words a sentence")
+    void thePublishedRewritesAreShorterThanTheirOffenders() throws IOException {
+        Pattern entry =
+                Pattern.compile(
+                        "(?ms)^\\*\\*(\\d+)\\.1 — V3: Keep it simple\\*\\*.*?soft violation, (\\d+) words\\.\\n"
+                                + "\\n> (.+?)\\n\\n\\*\\*Rewrite\\*\\* — (\\d+) words, (\\d+)% shorter:\\n"
+                                + "\\n> (.+?)\\n");
+        Matcher matcher = entry.matcher(prose);
+        int checked = 0;
+        while (matcher.find()) {
+            int number = Integer.parseInt(matcher.group(1));
+            int declaredOffenderWords = Integer.parseInt(matcher.group(2));
+            String offender = matcher.group(3).strip();
+            int declaredRewriteWords = Integer.parseInt(matcher.group(4));
+            int declaredReduction = Integer.parseInt(matcher.group(5));
+            String rewrite = matcher.group(6).strip();
+
+            ProseMeasurement measured = measure(PROSE_TARGETS.get(number - 1));
+            assertEquals(
+                    measured.worstSentenceWords(),
+                    declaredOffenderWords,
+                    "Entry " + number + ".1 declares a length the measurement does not give");
+            assertEquals(
+                    measured.worstSentence(),
+                    asScored(offender),
+                    "Entry " + number + ".1 quotes a passage that is not the measured worst sentence");
+            assertEquals(
+                    declaredRewriteWords,
+                    wordCount(asScored(rewrite)),
+                    "Entry " + number + ".1 declares a rewrite length that does not match its rewrite");
+            int reduction =
+                    Math.round(
+                            100f
+                                    * (declaredOffenderWords - declaredRewriteWords)
+                                    / declaredOffenderWords);
+            assertEquals(
+                    reduction,
+                    declaredReduction,
+                    "Entry " + number + ".1 declares a reduction its two lengths do not give");
+            assertTrue(
+                    reduction >= MINIMUM_REWRITE_REDUCTION_PERCENT,
+                    "Entry " + number + ".1 cuts only " + reduction + "%, and the rule asks for fifteen");
+            for (String sentence : sentences(asScored(rewrite))) {
+                assertTrue(
+                        wordCount(sentence) <= LONG_SENTENCE_WORDS,
+                        "Entry "
+                                + number
+                                + ".1 proposes a replacement sentence of "
+                                + wordCount(sentence)
+                                + " words");
+            }
+            checked++;
+        }
+        int owed = 0;
+        for (String target : PROSE_TARGETS) {
+            owed += measure(target).longSentences() > 0 ? 1 : 0;
+        }
+        assertEquals(owed, checked, "The report owes one worked rewrite for every target with a long sentence");
+    }
+
+    @Test
+    @DisplayName("the prose exemptions and terminology are self-consistent")
+    void theProseVerdictsCountsAndExemptionsAreSelfConsistent() {
         assertTrue(prose.contains("## Exemptions applied"));
         assertTrue(prose.contains("PIC S9(09)V99"));
         assertTrue(prose.contains("technical specification's section 0.8"));
@@ -537,36 +1217,526 @@ class PresentationAndProseContractTest {
                                 "(?i)\\b(?:leverage|utilize|facilitate|synergy|holistic|paradigm)\\b")
                         .matcher(prose)
                         .find());
-        assertFalse(
-                Pattern.compile("(?i)\\b(?:minor|major|moderate)\\b")
-                        .matcher(prose)
-                        .find());
+        assertFalse(Pattern.compile("(?i)\\b(?:minor|major|moderate)\\b").matcher(prose).find());
+    }
+
+    /** Counts the register rows and proves the identifiers run unbroken from one. */
+    private static int registerSize() {
+        Set<Integer> identifiers = new TreeSet<>();
+        Matcher row = REGISTER_ROW.matcher(flagRegister);
+        while (row.find()) {
+            assertTrue(
+                    identifiers.add(Integer.valueOf(row.group(1))),
+                    "The flag register repeats identifier " + row.group(1));
+        }
+        assertFalse(identifiers.isEmpty(), "The flag register has no numbered rows");
+        int expected = 1;
+        for (Integer identifier : identifiers) {
+            assertEquals(
+                    expected++,
+                    identifier.intValue(),
+                    "The flag register skips an identifier, so a citation would repoint");
+        }
+        return identifiers.size();
+    }
+
+    /** Reads the classification breakdown the traceability matrix records for a source location. */
+    private static String classificationOf(String sourceLocation) {
+        Matcher row =
+                Pattern.compile(
+                                "(?m)^\\|\\s*`"
+                                        + Pattern.quote(sourceLocation)
+                                        + "`\\s*\\|[^|]*\\|([^|]*)\\|")
+                        .matcher(traceability);
+        assertTrue(row.find(), "The traceability matrix has no coverage row for " + sourceLocation);
+        return row.group(1).trim();
+    }
+
+    /** Reads the headline metric whose label carries the given fragment. */
+    private static String kpiValueFor(String labelFragment) {
+        Matcher card = KPI_CARD.matcher(deckMarkup);
+        while (card.find()) {
+            if (card.group(2).contains(labelFragment)) {
+                return card.group(1).trim();
+            }
+        }
+        throw new AssertionError("The deck carries no headline metric labelled " + labelFragment);
+    }
+
+    /** Body words of one slide: the eyebrow, paragraphs, bullets and diagram legend. */
+    private static int bodyWordCount(String slideBody) {
+        String text = slideBody;
+        text = text.replaceAll("(?s)<pre class=\"mermaid\">.*?</pre>", " ");
+        text = text.replaceAll("(?s)<table\\b.*?</table>", " ");
+        text = text.replaceAll("(?s)<h[1-3]\\b[^>]*>.*?</h[1-3]>", " ");
+        text = text.replaceAll("(?s)<span class=\"slide-number\"[^>]*>.*?</span>", " ");
+        text = stripBalancedDiv(text, "kpi-grid");
+        text = stripBalancedDiv(text, "icon-row");
+        text = TAG.matcher(text).replaceAll(" ").replace('\u00b7', ' ');
+        int words = 0;
+        for (String token : text.split("\\s+")) {
+            if (!token.isEmpty() && WORD_CHARACTER.matcher(token).find()) {
+                words++;
+            }
+        }
+        return words;
+    }
+
+    /** Removes a division and everything nested inside it, honouring nested divisions. */
+    private static String stripBalancedDiv(String source, String className) {
+        Pattern opener = Pattern.compile("<div class=\"" + Pattern.quote(className) + "\"[^>]*>");
+        Pattern anyDivision = Pattern.compile("</?div\\b[^>]*>");
+        String result = source;
+        while (true) {
+            Matcher open = opener.matcher(result);
+            if (!open.find()) {
+                return result;
+            }
+            Matcher scan = anyDivision.matcher(result);
+            scan.region(open.end(), result.length());
+            int depth = 1;
+            int closeEnd = -1;
+            while (scan.find()) {
+                depth += scan.group().startsWith("</") ? -1 : 1;
+                if (depth == 0) {
+                    closeEnd = scan.end();
+                    break;
+                }
+            }
+            if (closeEnd < 0) {
+                return result.substring(0, open.start());
+            }
+            result = result.substring(0, open.start()) + " " + result.substring(closeEnd);
+        }
+    }
+
+    /** Maps every diagram node identifier to its label. */
+    private static Map<String, String> nodeLabels(String diagram) {
+        Map<String, String> labels = new LinkedHashMap<>();
+        Matcher node = MERMAID_NODE.matcher(diagram);
+        while (node.find()) {
+            labels.put(node.group(1), node.group(2).trim());
+        }
+        return labels;
+    }
+
+    /** Lists every diagram edge as an origin and destination identifier pair. */
+    private static List<String[]> edges(String diagram) {
+        String reduced = MERMAID_NODE.matcher(diagram).replaceAll("$1");
+        List<String[]> found = new ArrayList<>();
+        Matcher edge = MERMAID_EDGE.matcher(reduced);
+        while (edge.find()) {
+            found.add(new String[] {edge.group(1), edge.group(2)});
+        }
+        return found;
+    }
+
+    private static Set<String> identifiersLabelledWith(
+            Map<String, String> labels, String fragment) {
+        Set<String> identifiers = new LinkedHashSet<>();
+        labels.forEach(
+                (identifier, label) -> {
+                    if (label.contains(fragment)) {
+                        identifiers.add(identifier);
+                    }
+                });
+        return identifiers;
+    }
+
+    /** Returns the declaration body of one style rule. */
+    private static String declarationOf(String selector) {
+        Matcher rule =
+                Pattern.compile(
+                                "(?s)(?<![\\w.-])"
+                                        + Pattern.quote(selector)
+                                        + "\\s*(?:,[^{}]*)?\\{(.*?)\\}")
+                        .matcher(deckStyle);
+        assertTrue(rule.find(), "The inline style block declares no rule for " + selector);
+        return rule.group(1);
+    }
+
+    /** Returns the whole element that references a resource, so its attributes can be read. */
+    private static String enclosingTag(String document, String resource) {
+        int reference = document.indexOf(resource);
+        assertTrue(reference >= 0, "The deck does not reference " + resource);
+        int open = document.lastIndexOf('<', reference);
+        int close = document.indexOf('>', reference);
+        assertTrue(open >= 0 && close > open, "Malformed element around " + resource);
+        return document.substring(open, close + 1);
+    }
+
+    private static List<String> listServiceModules() throws IOException {
+        try (Stream<Path> modules = Files.list(platformRoot.resolve("services"))) {
+            List<String> names =
+                    modules.filter(Files::isDirectory).map(path -> path.getFileName().toString())
+                            .sorted()
+                            .toList();
+            assertFalse(names.isEmpty(), "No service modules were found");
+            return names;
+        }
+    }
+
+    /** Confirms one service owns exactly one schema and returns its stem. */
+    private static String singleSchemaStem(String service, String configuration) {
+        Set<String> stems = new TreeSet<>();
+        Matcher stem = SCHEMA_STEM.matcher(configuration);
+        while (stem.find()) {
+            stems.add(stem.group(1));
+        }
+        assertEquals(
+                1,
+                stems.size(),
+                "Database per service requires exactly one schema for " + service + ", found " + stems);
+        return stems.iterator().next();
     }
 
     /**
-     * Writes a register size the way the prose writes it, so the count and the words cannot part.
+     * Reads the default a configuration property falls back to when its variable is unset.
      *
-     * <p>The register is numbered from one, so only the sizes a growing register actually reaches
-     * are covered. An unrecognised size fails loudly rather than returning something plausible.</p>
+     * <p>Returns {@code null} when the property is absent, which is how a service that routes only
+     * to the shared topic is told apart from one that routes to its own source topic.
      */
-    private static String spellOut(int value) {
-        List<String> units =
-                List.of(
-                        "Zero", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight",
-                        "Nine", "Ten", "Eleven", "Twelve", "Thirteen", "Fourteen", "Fifteen",
-                        "Sixteen", "Seventeen", "Eighteen", "Nineteen");
-        List<String> tens =
-                List.of(
-                        "", "", "Twenty", "Thirty", "Forty", "Fifty", "Sixty", "Seventy", "Eighty",
-                        "Ninety");
-        if (value < units.size()) {
+    private static String defaultOf(String configuration, String property) {
+        Matcher setting =
+                Pattern.compile(
+                                "(?m)^\\s*"
+                                        + Pattern.quote(property)
+                                        + ":\\s*\"?\\$\\{[A-Z_]+:([^}]*)\\}\"?\\s*$")
+                        .matcher(configuration);
+        return setting.find() ? setting.group(1) : null;
+    }
+
+    private static String firstGroup(Pattern pattern, String source, String description) {
+        Matcher matcher = pattern.matcher(source);
+        assertTrue(matcher.find(), "The deck has no " + description);
+        return matcher.group(1);
+    }
+
+    /**
+     * Ties every published count of the flagged-rule register to the register itself.
+     *
+     * <p>Three artifacts state the size of {@code docs/business-rule-flags.md}: the deck's
+     * findings-surfaced metric card, the deck's business-value table, and the platform guide's
+     * document index. A review found all three stating sixty-five while the register carried
+     * sixty-six rows, which is stale evidence in the two artifacts a customer and a new developer
+     * read first. The register's own heading is already held to its rows by
+     * {@code DocumentationContractTest}, so binding these three to the same figure closes the loop.
+     */
+    @Test
+    @DisplayName("the deck and the platform guide state the register's own finding count")
+    void theDeckAndPlatformGuideStateTheRegisterCount() throws IOException {
+        String register = Files.readString(platformRoot.resolve("docs/business-rule-flags.md"));
+        int coverageFrom = register.indexOf(REGISTER_SECTION_START);
+        int coverageTo = register.indexOf(REGISTER_SECTION_END);
+        assertTrue(coverageFrom >= 0 && coverageTo > coverageFrom,
+                "the register must carry its coverage section between " + REGISTER_SECTION_START
+                        + " and " + REGISTER_SECTION_END);
+        String coverage = register.substring(coverageFrom, coverageTo);
+        int findings = occurrencesMatching(coverage, "(?m)^\\|\\s*\\d+\\s+[^|]*\\|");
+        assertTrue(findings >= 26,
+                "the register fixes identifiers 1 to 26, so it cannot hold fewer rows: " + findings);
+
+        String digits = String.valueOf(findings);
+        String word = spelled(findings);
+        String capitalised = Character.toUpperCase(word.charAt(0)) + word.substring(1);
+
+        Matcher card = Pattern.compile(
+                "(?s)<div class=\"kpi-value\">(\\d+)</div>\\s*"
+                        + "<div class=\"kpi-label\">Business-rule findings surfaced</div>")
+                .matcher(deck);
+        assertTrue(card.find(),
+                "the deck must carry a metric card labelled \"Business-rule findings surfaced\"");
+        assertEquals(digits, card.group(1),
+                "the deck's findings metric must be the number of rows the register carries");
+
+        assertTrue(
+                deck.contains("All " + digits + " flagged source rules carry file and line citations."),
+                "the deck's business-value table must state all " + digits
+                        + " flagged source rules, which is what the register carries");
+
+        String guide = Files.readString(platformRoot.resolve("README.md"));
+        assertTrue(guide.contains(capitalised
+                        + " ambiguous, inconsistent, or undocumented source rules"),
+                "the platform guide's document index must state " + capitalised
+                        + " source rules, which is what the register carries");
+    }
+
+    /**
+     * Spells one count below one hundred, so a published word form can be derived rather than pinned.
+     *
+     * @param value the count to spell, from 1 to 99
+     * @return the count in lower-case words, hyphenated above twenty
+     * @throws IllegalArgumentException when the value falls outside 1 to 99
+     */
+    private static String spelled(int value) {
+        List<String> units = List.of("zero", "one", "two", "three", "four", "five", "six", "seven",
+                "eight", "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen",
+                "sixteen", "seventeen", "eighteen", "nineteen");
+        List<String> tens = List.of("twenty", "thirty", "forty", "fifty", "sixty", "seventy",
+                "eighty", "ninety");
+        if (value < 1 || value > 99) {
+            throw new IllegalArgumentException("no word form is defined for " + value);
+        }
+        if (value < 20) {
             return units.get(value);
         }
-        if (value < 100) {
-            String ten = tens.get(value / 10);
-            return value % 10 == 0 ? ten : ten + "-" + units.get(value % 10).toLowerCase();
+        String ten = tens.get(value / 10 - 2);
+        return value % 10 == 0 ? ten : ten + "-" + units.get(value % 10);
+    }
+
+    /**
+     * Binds the prose report to the exact text it scored.
+     *
+     * <p>A review found the report claiming every target CLEAN against text that had moved beneath it:
+     * the root guide, the deck, the onboarding guide, the equivalence results, the flagged-rule
+     * register, the decision log and the traceability matrix had all changed after the scoring pass,
+     * so the verdicts described documents that no longer existed. A digest per target turns that from
+     * something a reader has to notice into something this build refuses: change a scored file and the
+     * report fails here until the pass is run again over the new text.
+     *
+     * <p>Target 10 is the report itself and carries no digest, because a file cannot publish a digest
+     * of its own bytes. The report says so in the row where a digest would sit, and this test requires
+     * that statement rather than a value.
+     */
+    @Test
+    @DisplayName("the prose report publishes the digest of every text it scored")
+    void theProseReportIsBoundToTheTextItScored() throws IOException {
+        for (int number = 1; number <= PROSE_TARGETS.size(); number++) {
+            String target = PROSE_TARGETS.get(number - 1);
+            String row = digestRow(number);
+            assertTrue(row != null, "the content binding table must carry a row for target " + number);
+            if (number == SELF_TARGET) {
+                assertTrue(row.contains("carries no digest"),
+                        "target " + number + " is the report itself, so its row must say it carries no"
+                                + " digest rather than publish one: " + row);
+                continue;
+            }
+            String measured =
+                    sha256(Files.readAllBytes(platformRoot.resolve(target).normalize()));
+            assertTrue(row.contains(measured),
+                    "target " + number + " (" + target + ") now hashes to " + measured
+                            + ", so its text changed after it was scored. Run the Rule 5 pass over the"
+                            + " new text and publish the new digest. The row reads: " + row);
         }
-        throw new IllegalArgumentException("No spelling is defined for a register of " + value);
+    }
+
+    /**
+     * Requires the report to score every target it lists and to publish the measurement behind it.
+     *
+     * <p>A verdict with no measurement beside it is an assertion. The report therefore carries one
+     * summary row, one numbered section and one measurement row per target, and this test counts all
+     * three against the target list rather than against a number written in prose.
+     */
+    @Test
+    @DisplayName("the prose report scores every target it lists and publishes each measurement")
+    void theProseReportScoresEveryTargetItLists() {
+        for (int number = 1; number <= PROSE_TARGETS.size(); number++) {
+            assertTrue(prose.contains("\n### " + number + ". "),
+                    "the report must carry a numbered section for target " + number);
+        }
+        assertEquals(PROSE_TARGETS.size(), occurrencesMatching(prose, "(?m)^### \\d+\\. "),
+                "the report must carry exactly one numbered section per target");
+
+        String measurement = section("## Measurement", "## Summary");
+        assertEquals(PROSE_TARGETS.size(), occurrencesMatching(measurement, "(?m)^\\| *\\d+ \\|"),
+                "every target must appear once in the measurement table");
+
+        String summary = section("## Summary", "## Content binding");
+        assertEquals(PROSE_TARGETS.size(),
+                occurrencesMatching(
+                        summary,
+                        "(?m)^\\| *\\d+ \\|[^\\n]*\\| (?:CLEAN|NEEDS WORK|ROUGH DRAFT) \\|"),
+                "every target must appear once in the summary table, carrying the verdict its own"
+                        + " measurement gives it");
+    }
+
+    /**
+     * Returns one section of the prose report.
+     *
+     * @param start the heading the section opens with
+     * @param end   the heading that closes it
+     * @return the text between the two headings
+     */
+    private static String section(String start, String end) {
+        int from = prose.indexOf(start);
+        int to = prose.indexOf(end);
+        assertTrue(from >= 0 && to > from,
+                "the report must carry " + start + " before " + end);
+        return prose.substring(from, to);
+    }
+
+    /**
+     * Returns the content-binding row for one target.
+     *
+     * @param number the target number the report uses
+     * @return the whole row, or {@code null} when the table carries no row for that target
+     */
+    private static String digestRow(int number) {
+        Matcher row = Pattern.compile("(?m)^\\| *" + number + " \\|([^\\n]*)$").matcher(binding());
+        return row.find() ? row.group(1) : null;
+    }
+
+    /** Returns the content-binding section of the report. */
+    private static String binding() {
+        return section("## Content binding", "## Per-document reports");
+    }
+
+    /**
+     * Digests one file's bytes.
+     *
+     * @param content the bytes to digest
+     * @return the digest as lower-case hexadecimal
+     */
+    private static String sha256(byte[] content) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(content));
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException("SHA-256 must be present in the JDK", impossible);
+        }
+    }
+
+    /**
+     * Measures one target the way {@code docs/prose-validation.md} declares it is measured.
+     *
+     * <p>Prose only is scored. Fenced blocks, table rows, headings, horizontal rules and blockquoted
+     * passages are dropped, inline code collapses to one token, and consecutive body lines rejoin into
+     * the paragraph the author wrote, while a list item stays a paragraph of its own.
+     */
+    private static ProseMeasurement measure(String target) throws IOException {
+        String text = Files.readString(platformRoot.resolve(target).normalize());
+        int longSentences = 0;
+        int buzzwords = 0;
+        String worstSentence = "";
+        int worstSentenceWords = 0;
+        List<String> worstParagraph = List.of();
+        List<String> longParagraphs = new ArrayList<>();
+        for (String block : scoredBlocks(target, text)) {
+            List<String> sentences = sentences(block);
+            if (sentences.size() > LONG_PARAGRAPH_SENTENCES) {
+                longParagraphs.add(block);
+                if (sentences.size() > worstParagraph.size()) {
+                    worstParagraph = sentences;
+                }
+            }
+            for (String sentence : sentences) {
+                int words = wordCount(sentence);
+                if (words > LONG_SENTENCE_WORDS) {
+                    longSentences++;
+                    if (words > worstSentenceWords) {
+                        worstSentenceWords = words;
+                        worstSentence = sentence;
+                    }
+                }
+            }
+            Matcher buzzword = PROSE_BUZZWORD.matcher(block);
+            while (buzzword.find()) {
+                buzzwords++;
+            }
+        }
+        return new ProseMeasurement(
+                longSentences,
+                longParagraphs.size(),
+                buzzwords,
+                worstSentence,
+                worstSentenceWords,
+                worstParagraph);
+    }
+
+    private static List<String> scoredBlocks(String target, String text) {
+        String body;
+        if (target.endsWith(".html")) {
+            body =
+                    text.replaceAll("(?is)<style\\b.*?</style>", " ")
+                            .replaceAll("(?is)<script\\b.*?</script>", " ")
+                            .replaceAll("(?is)<pre\\b.*?</pre>", " ")
+                            .replaceAll("(?s)<!--.*?-->", " ")
+                            .replaceAll("(?s)<[^>]+>", "\n");
+        } else {
+            body = FENCED_BLOCK.matcher(text).replaceAll("");
+        }
+        if (target.equals("../README.md")) {
+            int at = body.indexOf(SCORED_README_SECTION);
+            assertTrue(at >= 0, "The scored section is absent from the repository-root guide");
+            int end = body.indexOf("\n## ", at + 1);
+            body = end > at ? body.substring(at, end) : body.substring(at);
+        }
+        body = INLINE_CODE.matcher(body).replaceAll("CODE");
+        List<String> blocks = new ArrayList<>();
+        boolean fresh = true;
+        for (String rawLine : body.split("\n", -1)) {
+            String line = rawLine.strip();
+            if (line.isEmpty()
+                    || line.startsWith("|")
+                    || line.startsWith("#")
+                    || line.startsWith("---")
+                    || line.startsWith(">")) {
+                fresh = true;
+                continue;
+            }
+            boolean listed = LIST_MARKER.matcher(line).find();
+            line = LIST_MARKER.matcher(line).replaceFirst("");
+            line = MARKDOWN_LINK.matcher(line).replaceAll(matchResult -> matchResult.group(1));
+            line = line.replace("**", "").replace("__", "");
+            if (fresh || listed || blocks.isEmpty()) {
+                blocks.add(line);
+            } else {
+                blocks.set(blocks.size() - 1, blocks.get(blocks.size() - 1) + " " + line);
+            }
+            fresh = false;
+        }
+        return blocks;
+    }
+
+    private static List<String> sentences(String block) {
+        String guarded = block;
+        for (String abbreviation : ABBREVIATIONS) {
+            guarded =
+                    Pattern.compile("(?<![A-Za-z])" + Pattern.quote(abbreviation))
+                            .matcher(guarded)
+                            .replaceAll(
+                                    Matcher.quoteReplacement(abbreviation.replace(".", GUARD)));
+        }
+        guarded = DECIMAL_POINT.matcher(guarded).replaceAll("$1" + GUARD + "$2");
+        guarded = SINGLE_INITIAL.matcher(guarded).replaceAll("$1" + GUARD);
+        List<String> parts = new ArrayList<>();
+        Matcher boundary = SENTENCE_BOUNDARY.matcher(guarded);
+        int start = 0;
+        while (boundary.find()) {
+            parts.add(guarded.substring(start, boundary.end()));
+            start = boundary.end();
+        }
+        parts.add(guarded.substring(start));
+        List<String> sentences = new ArrayList<>();
+        for (String part : parts) {
+            String sentence = part.replace(GUARD, ".").strip();
+            if (!sentence.isEmpty()) {
+                sentences.add(sentence);
+            }
+        }
+        return sentences;
+    }
+
+    private static int wordCount(String text) {
+        String stripped = WORD_ORNAMENT.matcher(text).replaceAll("").strip();
+        return stripped.isEmpty() ? 0 : stripped.split("\\s+").length;
+    }
+
+    /** Renders a quoted passage the way the measurement sees it, so the two can be compared. */
+    private static String asScored(String quoted) {
+        return INLINE_CODE
+                .matcher(quoted)
+                .replaceAll("CODE")
+                .replace("**", "")
+                .replace("__", "")
+                .strip();
+    }
+
+    private static String reportSection(int number) {
+        Matcher matcher =
+                Pattern.compile("(?ms)^### " + number + "\\. .*?(?=^### \\d+\\. |^## Exemptions applied)")
+                        .matcher(prose);
+        assertTrue(matcher.find(), "The prose report has no section " + number);
+        return matcher.group();
     }
 
     private static Path locatePlatformRoot() {

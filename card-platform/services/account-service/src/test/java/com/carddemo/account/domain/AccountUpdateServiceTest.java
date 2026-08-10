@@ -202,7 +202,7 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
             Keys keys = persistedPair();
 
             EditResult verdict = service.updateAccount(account(keys), customer(keys),
-                    account(keys), customer(keys));
+                    account(keys), customer(keys)).verdict();
 
             assertThat(verdict.valid()).isTrue();
             assertThat(verdict.message())
@@ -225,7 +225,7 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
             submitted.setActiveStatus("X");
             EditResult verdict =
                     service.updateAccount(submitted, customer(keys), account(keys, "X"),
-                            customer(keys));
+                            customer(keys)).verdict();
 
             assertThat(verdict.message()).isEqualTo(AccountUpdateService.NO_CHANGE_DETECTED);
             assertThat(verdict.message()).doesNotContain(MUST_BE_YES_OR_NO);
@@ -240,9 +240,9 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
             submitted.setCreditLimit(new BigDecimal("20300.00"));
 
             EditResult applied = service.updateAccount(submitted, customer(keys), account(keys),
-                    customer(keys));
+                    customer(keys)).verdict();
             EditResult resubmitted = service.updateAccount(account(keys, "Y", "20300.00"),
-                    customer(keys), account(keys, "Y", "20300.00"), customer(keys));
+                    customer(keys), account(keys, "Y", "20300.00"), customer(keys)).verdict();
 
             assertThat(applied.valid()).isTrue();
             assertThat(applied.hasMessage()).isFalse();
@@ -273,7 +273,7 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
             submitted.setFicoCreditScore(BigDecimal.ZERO);
             submitted.setAddressStateCode("1A");
 
-            EditResult verdict = service.updateAccount(account(keys), submitted, null, null);
+            EditResult verdict = service.updateAccount(account(keys), submitted, null, null).verdict();
 
             assertThat(verdict.valid()).isTrue();
             assertThat(verdict.hasMessage()).isFalse();
@@ -285,7 +285,7 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
         @DisplayName("A blank account identifier answers the L489 to L490 text")
         void aBlankIdentifierAnswersTheNoInputText() {
             EditResult verdict = service.updateAccount(new AccountEntity(), new CustomerEntity(),
-                    null, null);
+                    null, null).verdict();
 
             assertThat(verdict.valid()).isFalse();
             assertThat(verdict.message())
@@ -324,9 +324,9 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
             futureDate.setDateOfBirth(LocalDate.now().plusYears(1).format(TEN_CHARACTER_DATE));
 
             EditResult held = service.updateAccount(account(keys), impossibleMonth, account(keys),
-                    customer(keys));
+                    customer(keys)).verdict();
             EditResult opened = service.updateAccount(account(keys), futureDate, account(keys),
-                    customer(keys));
+                    customer(keys)).verdict();
 
             assertThat(held.valid()).isFalse();
             assertThat(held.message())
@@ -348,9 +348,9 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
             scoreBelowRange.setFicoCreditScore(new BigDecimal("274"));
 
             EditResult held = service.updateAccount(account(keys), zeroScore, account(keys),
-                    customer(keys));
+                    customer(keys)).verdict();
             EditResult opened = service.updateAccount(account(keys), scoreBelowRange, account(keys),
-                    customer(keys));
+                    customer(keys)).verdict();
 
             assertThat(held.message())
                     .isEqualTo(AccountUpdateService.FICO_SCORE_LABEL + MUST_NOT_BE_ZERO)
@@ -370,9 +370,9 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
             unlistedState.setAddressStateCode("ZZ");
 
             EditResult held = service.updateAccount(account(keys), notAlphabetic, account(keys),
-                    customer(keys));
+                    customer(keys)).verdict();
             EditResult opened = service.updateAccount(account(keys), unlistedState, account(keys),
-                    customer(keys));
+                    customer(keys)).verdict();
 
             assertThat(held.message())
                     .isEqualTo(AccountUpdateService.STATE_LABEL + ALPHABETS_ONLY)
@@ -392,9 +392,9 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
             unlistedPair.setAddressZip("12546     ");
 
             EditResult held = service.updateAccount(account(keys), notNumericPostcode,
-                    account(keys), customer(keys));
+                    account(keys), customer(keys)).verdict();
             EditResult opened = service.updateAccount(account(keys), unlistedPair, account(keys),
-                    customer(keys));
+                    customer(keys)).verdict();
 
             assertThat(held.message())
                     .isEqualTo(AccountUpdateService.ZIP_LABEL + MUST_BE_ALL_NUMERIC)
@@ -429,7 +429,7 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
             submitted.setAddressCity("12345");
 
             EditResult verdict = service.updateAccount(account(keys), submitted, account(keys),
-                    customer(keys));
+                    customer(keys)).verdict();
 
             assertThat(verdict.message())
                     .isEqualTo(AccountUpdateService.CITY_LABEL + ALPHABETS_ONLY);
@@ -445,7 +445,7 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
             submitted.setAddressLine2("12345 67890");
 
             EditResult verdict = service.updateAccount(account(keys), submitted, account(keys),
-                    customer(keys));
+                    customer(keys)).verdict();
             flushAndDetach();
 
             assertThat(verdict.valid()).isTrue();
@@ -486,7 +486,7 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
             submitted.setActiveStatus(null);
 
             EditResult verdict = service.updateAccount(submitted, customer(keys), account(keys),
-                    customer(keys));
+                    customer(keys)).verdict();
 
             assertThat(verdict.valid()).isFalse();
             assertThat(verdict.message())
@@ -507,7 +507,7 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
             submitted.setOpenDate(null);
 
             EditResult verdict = service.updateAccount(submitted, customer(keys), account(keys),
-                    customer(keys));
+                    customer(keys)).verdict();
 
             assertThat(verdict.valid()).isFalse();
             assertThat(verdict.message())
@@ -524,7 +524,7 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
             submitted.setCreditLimit(null);
 
             EditResult verdict = service.updateAccount(submitted, customer(keys), account(keys),
-                    customer(keys));
+                    customer(keys)).verdict();
 
             assertThat(verdict.valid()).isFalse();
             assertThat(verdict.message())
@@ -541,7 +541,7 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
             submitted.setCurrentBalance(null);
 
             EditResult verdict = service.updateAccount(submitted, customer(keys), account(keys),
-                    customer(keys));
+                    customer(keys)).verdict();
 
             assertThat(verdict.valid()).isFalse();
             assertThat(verdict.message()).contains("must be supplied.");
@@ -556,7 +556,7 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
             submitted.setAddressLine2("A change so the gate opens");
 
             EditResult verdict = service.updateAccount(account(keys),
-                    withoutSocialSecurityNumber(submitted), account(keys), customer(keys));
+                    withoutSocialSecurityNumber(submitted), account(keys), customer(keys)).verdict();
 
             assertThat(verdict.valid()).isFalse();
             assertThat(verdict.message()).contains("must be supplied.");
@@ -571,7 +571,7 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
             submitted.setFicoCreditScore(null);
 
             EditResult verdict = service.updateAccount(account(keys), submitted, account(keys),
-                    customer(keys));
+                    customer(keys)).verdict();
 
             assertThat(verdict.valid()).isFalse();
             assertThat(verdict.message())
@@ -587,7 +587,7 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
             submitted.setFirstName(null);
 
             EditResult verdict = service.updateAccount(account(keys), submitted, account(keys),
-                    customer(keys));
+                    customer(keys)).verdict();
 
             assertThat(verdict.valid()).isFalse();
             assertThat(verdict.message())
@@ -603,7 +603,7 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
             submitted.setAddressLine1(null);
 
             EditResult verdict = service.updateAccount(account(keys), submitted, account(keys),
-                    customer(keys));
+                    customer(keys)).verdict();
 
             assertThat(verdict.valid()).isFalse();
             assertThat(verdict.message()).isEqualTo("Address Line 1 must be supplied.");
@@ -618,7 +618,7 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
             submitted.setPrimaryCardHolderIndicator(null);
 
             EditResult verdict = service.updateAccount(account(keys), submitted, account(keys),
-                    customer(keys));
+                    customer(keys)).verdict();
 
             assertThat(verdict.valid()).isFalse();
             assertThat(verdict.message()).contains("must be supplied.");
@@ -632,13 +632,13 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
             AccountEntity absent = account(absentKeys);
             absent.setActiveStatus(null);
             EditResult absentVerdict = service.updateAccount(absent, customer(absentKeys),
-                    account(absentKeys), customer(absentKeys));
+                    account(absentKeys), customer(absentKeys)).verdict();
 
             Keys blankKeys = persistedPair();
             AccountEntity blank = account(blankKeys);
             blank.setActiveStatus(" ");
             EditResult blankVerdict = service.updateAccount(blank, customer(blankKeys),
-                    account(blankKeys), customer(blankKeys));
+                    account(blankKeys), customer(blankKeys)).verdict();
 
             assertThat(absentVerdict.message()).isEqualTo(blankVerdict.message());
         }
@@ -654,7 +654,7 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
             submittedCustomer.setFirstName(null);
 
             EditResult verdict = service.updateAccount(submitted, submittedCustomer, account(keys),
-                    customer(keys));
+                    customer(keys)).verdict();
 
             assertThat(verdict.message())
                     .isEqualTo(AccountUpdateService.ACCOUNT_STATUS_LABEL + MUST_BE_SUPPLIED);
@@ -687,7 +687,7 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
             submitted.setGovernmentIssuedId("");
 
             EditResult verdict = service.updateAccount(account(keys), submitted, account(keys),
-                    customer(keys));
+                    customer(keys)).verdict();
 
             assertThat(verdict.valid()).isTrue();
             assertThat(verdict.hasMessage()).isFalse();
@@ -723,7 +723,7 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
             submitted.setCreditLimit(new BigDecimal("20300.00"));
 
             EditResult verdict = service.updateAccount(submitted, customer(keys), account(keys),
-                    customer(keys));
+                    customer(keys)).verdict();
             flushAndDetach();
 
             assertThat(verdict.valid()).isTrue();
@@ -740,7 +740,7 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
             submitted.setFirstName("Renamed");
 
             EditResult verdict = service.updateAccount(account(keys), submitted, account(keys),
-                    customer(keys));
+                    customer(keys)).verdict();
             flushAndDetach();
 
             assertThat(verdict.valid()).isTrue();
@@ -759,7 +759,7 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
             submittedCustomer.setFirstName("Renamed");
 
             EditResult verdict = service.updateAccount(submittedAccount, submittedCustomer,
-                    account(keys), customer(keys));
+                    account(keys), customer(keys)).verdict();
             flushAndDetach();
 
             assertThat(verdict.valid()).isTrue();
@@ -774,7 +774,7 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
             Keys keys = persistedPair();
 
             EditResult verdict = service.updateAccount(account(keys), customer(keys), account(keys),
-                    customer(keys));
+                    customer(keys)).verdict();
             flushAndDetach();
 
             assertThat(verdict.valid()).isTrue();
@@ -792,7 +792,7 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
             submitted.setAddressLine2("A second line no edit reads");
 
             EditResult verdict = service.updateAccount(account(keys), submitted, account(keys),
-                    customer(keys));
+                    customer(keys)).verdict();
             flushAndDetach();
 
             assertThat(verdict.valid()).isTrue();
@@ -855,7 +855,7 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
             submitted.setCurrentCycleCredit(null);
 
             EditResult verdict = service.updateAccount(submitted, customer(keys), account(keys),
-                    customer(keys));
+                    customer(keys)).verdict();
 
             assertThat(verdict.message())
                     .isEqualTo("Current Cycle Credit Limi" + MUST_BE_SUPPLIED)
@@ -871,7 +871,7 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
             submitted.setCurrentCycleDebit(null);
 
             EditResult verdict = service.updateAccount(submitted, customer(keys), account(keys),
-                    customer(keys));
+                    customer(keys)).verdict();
 
             assertThat(verdict.message())
                     .isEqualTo("Current Cycle Debit Limit" + MUST_BE_SUPPLIED);
@@ -907,7 +907,7 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
             submittedCustomer.setFicoCreditScore(BigDecimal.ZERO);
 
             EditResult verdict = service.updateAccount(submittedAccount, submittedCustomer,
-                    account(keys), customer(keys));
+                    account(keys), customer(keys)).verdict();
 
             assertThat(verdict.message())
                     .isEqualTo(AccountUpdateService.ACCOUNT_STATUS_LABEL + MUST_BE_YES_OR_NO)
@@ -925,7 +925,7 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
 
             assertThatCode(() -> {
                 EditResult verdict = service.updateAccount(submitted, customer(keys),
-                        account(keys), customer(keys));
+                        account(keys), customer(keys)).verdict();
                 assertThat(verdict.valid()).isFalse();
                 assertThat(verdict.hasMessage()).isTrue();
             }).doesNotThrowAnyException();
@@ -962,7 +962,7 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
             submitted.setAccountId(other.accountId());
 
             EditResult verdict = service.updateAccount(submitted, customer(keys), account(keys),
-                    customer(keys));
+                    customer(keys)).verdict();
 
             assertThat(verdict.valid()).isFalse();
             assertThat(verdict.message())
@@ -978,7 +978,7 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
             persist(account(keys, "Y", "20200.00", "Premium00 "), customer(keys), keys);
 
             EditResult verdict = service.updateAccount(account(keys, "Y", "20200.00", "PREMIUM00"),
-                    customer(keys), account(keys, "Y", "20200.00", "Premium00 "), customer(keys));
+                    customer(keys), account(keys, "Y", "20200.00", "Premium00 "), customer(keys)).verdict();
 
             assertThat(verdict.message()).isEqualTo(AccountUpdateService.NO_CHANGE_DETECTED);
         }
@@ -993,7 +993,7 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
             submitted.setOpenDate("2014/11/20");
 
             EditResult verdict = service.updateAccount(submitted, customer(keys), account(keys),
-                    customer(keys));
+                    customer(keys)).verdict();
             flushAndDetach();
 
             assertThat(verdict.valid()).isTrue();
@@ -1011,7 +1011,7 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
             submitted.setActiveStatus("y");
 
             EditResult verdict = service.updateAccount(submitted, customer(keys), account(keys),
-                    customer(keys));
+                    customer(keys)).verdict();
 
             assertThat(verdict.message()).isEqualTo(AccountUpdateService.NO_CHANGE_DETECTED);
         }
@@ -1026,7 +1026,7 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
             submitted.setPhoneNumber1("[908]119.8310  ");
 
             EditResult verdict = service.updateAccount(account(keys), submitted, account(keys),
-                    customer(keys));
+                    customer(keys)).verdict();
 
             assertThat(verdict.message()).isEqualTo(AccountUpdateService.NO_CHANGE_DETECTED);
         }
@@ -1041,7 +1041,7 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
             submitted.setAddressZip("27604");
 
             EditResult verdict = service.updateAccount(account(keys), submitted, account(keys),
-                    customer(keys));
+                    customer(keys)).verdict();
 
             assertThat(verdict.message()).isEqualTo(AccountUpdateService.NO_CHANGE_DETECTED);
         }
@@ -1056,7 +1056,7 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
             submitted.setDateOfBirth("1961/06/08");
 
             EditResult verdict = service.updateAccount(account(keys), submitted, account(keys),
-                    customer(keys));
+                    customer(keys)).verdict();
             flushAndDetach();
 
             assertThat(verdict.valid()).isTrue();
@@ -1074,7 +1074,7 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
             submitted.setPrimaryCardHolderIndicator("y");
 
             EditResult verdict = service.updateAccount(account(keys), submitted, account(keys),
-                    customer(keys));
+                    customer(keys)).verdict();
 
             assertThat(verdict.message()).isEqualTo(AccountUpdateService.NO_CHANGE_DETECTED);
         }
@@ -1091,13 +1091,43 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
             withinScale.setCurrentBalance(new BigDecimal("1940.01"));
 
             EditResult unchanged = service.updateAccount(belowScale, customer(keys), account(keys),
-                    customer(keys));
+                    customer(keys)).verdict();
             EditResult changed = service.updateAccount(withinScale, customer(keys), account(keys),
-                    customer(keys));
+                    customer(keys)).verdict();
 
             assertThat(unchanged.message()).isEqualTo(AccountUpdateService.NO_CHANGE_DETECTED);
             assertThat(changed.valid()).isTrue();
             assertThat(changed.hasMessage()).isFalse();
+        }
+
+        /**
+         * The snapshot an update answers with carries the stored values, not the submitted ones.
+         *
+         * <p>This is why the snapshot is read off the locked row rather than assembled from what the
+         * caller sent. {@code applyAccountFields} stores each amount at the scale of its Picture
+         * clause, so a submitted balance carrying a third decimal is not the balance that commits.
+         * Reporting the request back would answer a value the table does not hold, and it would look
+         * right in every test that only compared it against the request.
+         */
+        @Test
+        @Transactional
+        @DisplayName("The snapshot an update answers with is the stored row, at the stored scale")
+        void theSnapshotCarriesTheStoredValuesRatherThanTheSubmittedOnes() {
+            Keys keys = persistedPair();
+            AccountEntity submitted = account(keys);
+            submitted.setCurrentBalance(new BigDecimal("2500.019"));
+
+            AccountUpdateOutcome outcome =
+                    service.updateAccount(submitted, customer(keys), account(keys), customer(keys));
+
+            assertThat(outcome.verdict().valid()).isTrue();
+            assertThat(outcome.account()).as("a written pass answers with the row it wrote")
+                    .isNotNull();
+            assertThat(outcome.account().currentBalance())
+                    .as("the snapshot carries the balance the column holds, truncated to two "
+                            + "decimals, rather than the three-decimal value submitted")
+                    .isEqualByComparingTo(new BigDecimal("2500.01"));
+            assertThat(outcome.account().accountId()).isEqualTo(keys.accountId());
         }
 
         @Test
@@ -1112,9 +1142,9 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
             changedNumber.setSocialSecurityNumber("020973889");
 
             EditResult padded = service.updateAccount(account(keys), paddedIdentifier,
-                    account(keys), customer(keys, "0053581   "));
+                    account(keys), customer(keys, "0053581   ")).verdict();
             EditResult numberChanged = service.updateAccount(account(keys), changedNumber,
-                    account(keys), customer(keys));
+                    account(keys), customer(keys)).verdict();
 
             assertThat(padded.message()).isEqualTo(AccountUpdateService.NO_CHANGE_DETECTED);
             assertThat(numberChanged.valid()).isTrue();
@@ -1143,7 +1173,7 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
             submitted.setCreditLimit(new BigDecimal("20300.00"));
 
             EditResult verdict = service.updateAccount(submitted, customer(keys),
-                    account(keys, "Y", "20100.00"), customer(keys));
+                    account(keys, "Y", "20100.00"), customer(keys)).verdict();
             flushAndDetach();
 
             assertThat(verdict.valid()).isFalse();
@@ -1187,7 +1217,7 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
             submitted.setCreditLimit(new BigDecimal("20300.00"));
 
             EditResult verdict = service.updateAccount(submitted, customer(keys), account(keys),
-                    customer(keys));
+                    customer(keys)).verdict();
             flushAndDetach();
 
             assertThat(verdict.valid()).isTrue();
@@ -1251,7 +1281,7 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
             submittedCustomer.setFirstName("Renamed");
 
             EditResult verdict = service.updateAccount(submitted, submittedCustomer,
-                    account(keys, "Y", "20100.00"), submittedCustomer);
+                    account(keys, "Y", "20100.00"), submittedCustomer).verdict();
             flushAndDetach();
 
             assertThat(verdict.valid()).isFalse();
@@ -1297,7 +1327,7 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
             submitted.setCurrentBalance(new BigDecimal("-1940.55"));
 
             EditResult verdict = service.updateAccount(submitted, customer(keys), account(keys),
-                    customer(keys));
+                    customer(keys)).verdict();
             flushAndDetach();
 
             assertThat(verdict.valid()).isTrue();
@@ -1315,7 +1345,7 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
             submitted.setEftAccountId("$053581756");
 
             EditResult verdict = service.updateAccount(account(keys), submitted, account(keys),
-                    customer(keys));
+                    customer(keys)).verdict();
 
             assertThat(verdict.message())
                     .isEqualTo(AccountUpdateService.EFT_ACCOUNT_ID_LABEL + MUST_BE_ALL_NUMERIC);
@@ -1330,7 +1360,7 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
             submitted.setOpenDate("2014-02-30");
 
             EditResult verdict = service.updateAccount(submitted, customer(keys), account(keys),
-                    customer(keys));
+                    customer(keys)).verdict();
 
             assertThat(verdict.valid()).isFalse();
             assertThat(verdict.message()).startsWith(AccountUpdateService.OPEN_DATE_LABEL);
@@ -1345,7 +1375,7 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
             submitted.setExpirationDate("2025-02-30");
 
             EditResult verdict = service.updateAccount(submitted, customer(keys), account(keys),
-                    customer(keys));
+                    customer(keys)).verdict();
 
             assertThat(verdict.valid()).isFalse();
             assertThat(verdict.message()).startsWith(AccountUpdateService.EXPIRY_DATE_LABEL);
@@ -1360,7 +1390,7 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
             submitted.setReissueDate("2025-02-30");
 
             EditResult verdict = service.updateAccount(submitted, customer(keys), account(keys),
-                    customer(keys));
+                    customer(keys)).verdict();
 
             assertThat(verdict.valid()).isFalse();
             assertThat(verdict.message()).startsWith(AccountUpdateService.REISSUE_DATE_LABEL);
@@ -1375,7 +1405,7 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
             submitted.setDateOfBirth("1961-13-08");
 
             EditResult verdict = service.updateAccount(account(keys), submitted, account(keys),
-                    customer(keys));
+                    customer(keys)).verdict();
 
             assertThat(verdict.valid()).isFalse();
             assertThat(verdict.message()).startsWith(AccountUpdateService.DATE_OF_BIRTH_LABEL);
@@ -1441,9 +1471,9 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
             behind.setDateOfBirth(captured.minusDays(1).format(TEN_CHARACTER_DATE));
 
             EditResult aheadVerdict = service.updateAccount(account(keys), ahead, account(keys),
-                    customer(keys));
+                    customer(keys)).verdict();
             EditResult behindVerdict = service.updateAccount(account(keys), behind,
-                    account(keys), customer(keys));
+                    account(keys), customer(keys)).verdict();
 
             assertThat(aheadVerdict.valid()).isFalse();
             assertThat(aheadVerdict.message())
@@ -1665,7 +1695,7 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
             refuseTheLock(keys, onTheCustomerRead, systemFault);
 
             EditResult verdict = service.updateAccount(raisedLimit(keys), customer(keys),
-                    account(keys), customer(keys));
+                    account(keys), customer(keys)).verdict();
 
             String expected = onTheCustomerRead
                     ? AccountUpdateService.COULD_NOT_LOCK_CUSTOMER
@@ -1706,7 +1736,7 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
             refuseTheLock(keys, onTheCustomerRead, false);
 
             EditResult verdict = service.updateAccount(raisedLimit(keys), customer(keys),
-                    account(keys), customer(keys));
+                    account(keys), customer(keys)).verdict();
 
             assertThat(verdict.message())
                     .doesNotContain(keys.accountId())
@@ -1762,7 +1792,7 @@ class AccountUpdateServiceTest extends AbstractAccountPostgresTest {
 
             Mockito.reset(lockedAccounts);
             EditResult second = service.updateAccount(raisedLimit(keys), customer(keys),
-                    account(keys), customer(keys));
+                    account(keys), customer(keys)).verdict();
 
             assertThat(second.valid()).isTrue();
             assertThat(second.hasMessage()).isFalse();

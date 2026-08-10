@@ -25,9 +25,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
-import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.postgresql.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Testcontainers;
 
 /**
  * Applies every service's Flyway migrations to a real PostgreSQL instance, then asks Hibernate to
@@ -56,23 +54,24 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  * entity field names verbatim against snake-case column names and report a false mismatch on every
  * multi-word field.
  */
-@Testcontainers
 class SchemaValidationTest {
 
     /**
-     * Image tag of the database container, matching the {@code postgres} service in
-     * {@code card-platform/docker-compose.yml}.
+     * The one container the module fork runs, which this class reads a login from.
+     *
+     * <p>{@link EquivalenceDatabase} owns it and hands this class a database of its own inside it.
+     * Nothing here starts or stops a container.
      */
-    private static final String POSTGRES_IMAGE = "postgres:18.4";
+    private static final PostgreSQLContainer POSTGRES = EquivalenceDatabase.container();
 
-    /** One instance for all six services, as the compose file and deployment manifests declare. */
-    @Container
-    @SuppressWarnings("resource")
-    private static final PostgreSQLContainer POSTGRES =
-            new PostgreSQLContainer(POSTGRES_IMAGE)
-                    .withDatabaseName("carddemo")
-                    .withUsername("carddemo")
-                    .withPassword("carddemo-schema-validation");
+    /**
+     * The database inside that container which belongs to this class alone.
+     *
+     * <p>No schema is selected on the connection: every schema this class needs is built by the
+     * migrations it runs, and every native statement below qualifies its table name or sets
+     * hibernate.default_schema.
+     */
+    private static final String DATABASE_URL = EquivalenceDatabase.urlFor(SchemaValidationTest.class);
 
     /**
      * The physical naming strategy Spring Boot 4.1.0 installs by default, which converts a camel-case
@@ -135,7 +134,7 @@ class SchemaValidationTest {
      *
      * <p>These are the types the first migration of each service declares. The authorization service
      * later widens {@code aggregate_id} to {@code VARCHAR(16)} in
-     * {@code V5__outbox_transaction_key.sql}, because one of its events is keyed by transaction
+     * {@code V4__outbox_transaction_key.sql}, because one of its events is keyed by transaction
      * identifier rather than by account identifier: the decline for a card that resolves to no
      * account has no account identifier to key on. This comparison reads {@code CREATE TABLE} only,
      * so it measures the shape every service starts from, which is the shape one relay contract
@@ -291,7 +290,7 @@ class SchemaValidationTest {
     @DisplayName("Flyway migrations and entity mappings agree for every service")
     void migrationsAndEntitiesAgree(Service service) {
         Flyway.configure()
-                .dataSource(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword())
+                .dataSource(DATABASE_URL, POSTGRES.getUsername(), POSTGRES.getPassword())
                 .locations("filesystem:" + migrationDirectory(service.module()))
                 .schemas(service.schema())
                 .defaultSchema(service.schema())
@@ -301,7 +300,7 @@ class SchemaValidationTest {
 
         Map<String, Object> settings = new HashMap<>();
         settings.put("hibernate.connection.driver_class", "org.postgresql.Driver");
-        settings.put("hibernate.connection.url", POSTGRES.getJdbcUrl());
+        settings.put("hibernate.connection.url", DATABASE_URL);
         settings.put("hibernate.connection.username", POSTGRES.getUsername());
         settings.put("hibernate.connection.password", POSTGRES.getPassword());
         settings.put("hibernate.default_schema", service.schema());

@@ -1,5 +1,6 @@
 package com.carddemo.card.config;
 
+import java.time.Duration;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -53,6 +54,11 @@ class CardPropertiesTest {
             assertThat(properties.processedEvent().brokerRetentionHours()).isEqualTo(168L);
             assertThat(properties.retention().sweepIntervalMs()).isEqualTo(3_600_000L);
             assertThat(properties.outbox().relay().maxDurationMs()).isEqualTo(5_000L);
+            assertThat(properties.outbox().relay().claimTimeout())
+                    .isEqualTo(Duration.ofMinutes(2L));
+            assertThat(properties.outbox().relay().publishTimeout())
+                    .as("the send bound the publisher is built with, not a second binding of it")
+                    .isEqualTo(Duration.ofSeconds(10L));
         });
     }
 
@@ -222,6 +228,34 @@ class CardPropertiesTest {
     void aZeroSweepDeadlineStopsStartUp() {
         shipped.withPropertyValues("carddemo.outbox.relay.max-duration-ms=0")
                 .run(context -> assertThat(context).hasFailed());
+    }
+
+    /**
+     * Asserts a publish timeout that gives a send no time at all stops start-up.
+     *
+     * <p>This value used to reach the publisher through a constructor {@code @Value}, a second binding
+     * of the same property that met no constraint declared on the record. Only {@code null} was
+     * refused, so zero and a negative duration both started the service and then failed every send the
+     * moment it was issued: each event stayed unpublished, each sweep claimed the same rows again, and
+     * the only evidence was one timeout per attempt. It is a component of the bound record now, and the
+     * publisher is built from that record, so a refused value is a start-up failure naming the
+     * property.
+     */
+    @Test
+    @DisplayName("a relay publish timeout of zero stops start-up")
+    void aNonPositiveRelayPublishTimeoutStopsStartUp() {
+        shipped.withPropertyValues("carddemo.outbox.relay.publish-timeout=PT0S")
+                .run(context -> {
+                    assertThat(context).hasFailed();
+                    assertThat(context.getStartupFailure())
+                            .hasStackTraceContaining("publishTimeout");
+                });
+        shipped.withPropertyValues("carddemo.outbox.relay.publish-timeout=PT-5S")
+                .run(context -> {
+                    assertThat(context).hasFailed();
+                    assertThat(context.getStartupFailure())
+                            .hasStackTraceContaining("publishTimeout");
+                });
     }
 
     /**

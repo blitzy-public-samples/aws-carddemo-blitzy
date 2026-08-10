@@ -1,5 +1,6 @@
 package com.carddemo.card.outbox;
 
+import com.carddemo.card.CardServiceDatabase;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -44,21 +45,21 @@ import org.springframework.context.annotation.Primary;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.transaction.IllegalTransactionStateException;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 /**
- * Asserts that {@link OutboxWriter} joins the transaction its caller opened, stores one row of
+ * Asserts that {@link OutboxWriter} requires the transaction its caller opened, stores one row of
  * {@code outbox_event}, and publishes nothing.
  *
- * <p>The centre of this class is the propagation assertion. Every test below reads the propagation
- * from the rows that survive a rollback, and no test reads an annotation.
+ * <p>The centre of this class is the propagation assertion, and no test makes it by reading an
+ * annotation. Three tests read the propagation from the rows that survive a rollback, and a fourth
+ * reads it from the refusal a call made with no transaction in progress takes.
  *
  * <p>Provenance of the pattern. The CardDemo source carries one asynchronous handoff, in paragraph
  * {@code WIRTE-JOBSUB-TDQ} at {@code app/cbl/CORPT00C.cbl:L515}. That paragraph writes one record to
@@ -113,7 +114,6 @@ import tools.jackson.databind.ObjectMapper;
                 "carddemo.outbox.relay.fixed-delay-ms=" + OutboxWriterTest.STOOD_DOWN_SWEEP_MS,
                 "carddemo.retention.sweep-interval-ms=" + OutboxWriterTest.STOOD_DOWN_SWEEP_MS
         })
-@Testcontainers
 @DisplayName("OutboxWriter: one local transaction, one row, no publish")
 class OutboxWriterTest {
 
@@ -125,15 +125,6 @@ class OutboxWriterTest {
      * test.
      */
     static final String STOOD_DOWN_SWEEP_MS = "86400000";
-
-    /** The image tag {@code card-platform/docker-compose.yml} also names. */
-    private static final String POSTGRES_IMAGE = "postgres:18.4";
-
-    /**
-     * The database name, the login name and the password of the container, one value for all three.
-     * {@code card-platform/.env.example} declares the same value.
-     */
-    private static final String POSTGRES_CREDENTIAL = "carddemo";
 
     /**
      * The schema Flyway creates, from {@code spring.flyway.schemas} and
@@ -226,7 +217,7 @@ class OutboxWriterTest {
             UUID.fromString("3a7c1d0e-4b52-4f18-9c6a-8d2e5f7b1049");
 
     /**
-     * The nine properties {@code card-updated-v2.json} lists in its {@code required} array, in the
+     * The nine properties {@code card-updated-v1.json} lists in its {@code required} array, in the
      * order that document lists them. Five carry the envelope and four carry the card.
      */
     private static final List<String> CONTRACT_PROPERTIES = List.of("eventId", "eventType",
@@ -244,17 +235,12 @@ class OutboxWriterTest {
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     /**
-     * The one container every test in this class shares.
+     * The one container the module fork runs, which this class reads a login from.
      *
-     * <p>The class name comes from {@code org.testcontainers.postgresql}, the package
-     * Testcontainers 2.0.5 ships it in. {@link Container} on a static field gives one container per
-     * class, and {@link Testcontainers} starts it before the Spring context reads a property below.
+     * <p>{@link CardServiceDatabase} owns it and hands this class a database of its own inside it.
+     * Nothing here starts or stops a container.
      */
-    @Container
-    static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer(POSTGRES_IMAGE)
-            .withDatabaseName(POSTGRES_CREDENTIAL)
-            .withUsername(POSTGRES_CREDENTIAL)
-            .withPassword(POSTGRES_CREDENTIAL);
+    static final PostgreSQLContainer POSTGRES = CardServiceDatabase.container();
 
     /**
      * Points the Spring datasource at the running container.
@@ -276,16 +262,13 @@ class OutboxWriterTest {
     /**
      * Returns the container uniform resource locator with {@code currentSchema} appended.
      *
-     * <p>Testcontainers appends one query parameter of its own, so the separator is {@code &}
-     * whenever a {@code ?} is present and {@code ?} otherwise.
+     * <p>The facility builds the locator, so no separator is decided here.
      *
      * @return the connection uniform resource locator whose search path holds
      *         {@value #MIGRATED_SCHEMA}
      */
     private static String migratedSchemaUrl() {
-        String url = POSTGRES.getJdbcUrl();
-        String separator = url.contains("?") ? "&" : "?";
-        return url + separator + "currentSchema=" + MIGRATED_SCHEMA;
+        return CardServiceDatabase.urlFor(OutboxWriterTest.class);
     }
 
     /** The writer under test, taken from the context so that its transaction proxy is in play. */
@@ -354,9 +337,10 @@ class OutboxWriterTest {
     /**
      * The card change and the event row commit together, or neither of them commits.
      *
-     * <p>Three tests read that property from the database. The first commits and finds both rows.
-     * The second fails between the two writes and finds neither. The third calls the writer, fails
-     * after it, and finds that the event row went with the card change.
+     * <p>Four tests read that property. The first commits and finds both rows. The second fails
+     * between the two writes and finds neither. The third calls the writer, fails after it, and finds
+     * that the event row went with the card change. The fourth calls the writer with no transaction
+     * in progress and finds the call refused.
      */
     @Nested
     @DisplayName("One local transaction carries the card change and the event row")
@@ -429,6 +413,28 @@ class OutboxWriterTest {
                     .as("the card change rolled back with the event row")
                     .isEqualTo(INSERTED_EMBOSSED_NAME);
         }
+
+        /**
+         * A write with no transaction in progress is refused rather than committing alone.
+         *
+         * <p>{@code MANDATORY} propagation is what makes the atomicity of the card change and its
+         * event a property the container holds rather than a convention the call sites keep. Under
+         * the default {@code REQUIRED} this call would have opened a transaction of its own and
+         * committed an event row describing a card change that never happened.
+         */
+        @Test
+        @DisplayName("a write with no transaction in progress is refused and stores nothing")
+        void aWriteWithNoTransactionInProgressIsRefused() {
+            CardEntity card = storedCard(INSERTED_CARD_NUMBER);
+
+            assertThatThrownBy(() -> outboxWriter.writeCardUpdated(card))
+                    .as("the writer joins a transaction and opens none, so it has none to use here")
+                    .isInstanceOf(IllegalTransactionStateException.class);
+
+            assertThat(storedEventCount())
+                    .as("a refused write leaves no row, so no event outlives its card change")
+                    .isZero();
+        }
     }
 
     /**
@@ -453,9 +459,7 @@ class OutboxWriterTest {
         @Test
         @DisplayName("the stored row is the one durable artefact of a direct write")
         void theStoredRowIsTheOneDurableArtefactOfADirectWrite() {
-            CardEntity card = storedCard(INSERTED_CARD_NUMBER);
-
-            UUID written = outboxWriter.writeCardUpdated(card).getEventId();
+            UUID written = writeEventFor(INSERTED_CARD_NUMBER).getEventId();
 
             assertThat(storedEvent(written)).isPresent();
             assertThat(storedEventCount()).isEqualTo(1L);
@@ -478,7 +482,7 @@ class OutboxWriterTest {
         @Test
         @DisplayName("the row carries the discriminator CardUpdated inside its column width")
         void theRowCarriesTheDiscriminatorInsideItsColumnWidth() {
-            outboxWriter.writeCardUpdated(storedCard(INSERTED_CARD_NUMBER));
+            writeEventFor(INSERTED_CARD_NUMBER);
 
             Map<String, Object> columns = storedEventColumns().getFirst();
             assertThat(columns.get("event_type")).isEqualTo(CardUpdated.EVENT_TYPE);
@@ -491,7 +495,7 @@ class OutboxWriterTest {
         @Test
         @DisplayName("the account key holds eleven digits with its leading zeros kept")
         void theAccountKeyHoldsElevenDigitsWithItsLeadingZerosKept() {
-            outboxWriter.writeCardUpdated(storedCard(SHORT_KEY_CARD_NUMBER));
+            writeEventFor(SHORT_KEY_CARD_NUMBER);
 
             String key = String.valueOf(storedEventColumns().getFirst().get("aggregate_id"));
             assertThat(key)
@@ -505,8 +509,7 @@ class OutboxWriterTest {
         @Test
         @DisplayName("the column and the payload carry one account key, character for character")
         void theColumnAndThePayloadCarryOneAccountKey() {
-            OutboxEventEntity row = storedEvent(
-                    outboxWriter.writeCardUpdated(storedCard(SHORT_KEY_CARD_NUMBER)).getEventId())
+            OutboxEventEntity row = storedEvent(writeEventFor(SHORT_KEY_CARD_NUMBER).getEventId())
                     .orElseThrow();
 
             JsonNode payload = MAPPER.readTree(row.getPayload());
@@ -518,8 +521,7 @@ class OutboxWriterTest {
         @Test
         @DisplayName("the payload carries all five envelope values and the row takes its identifier")
         void thePayloadCarriesAllFiveEnvelopeValues() {
-            OutboxEventEntity row = storedEvent(
-                    outboxWriter.writeCardUpdated(storedCard(INSERTED_CARD_NUMBER)).getEventId())
+            OutboxEventEntity row = storedEvent(writeEventFor(INSERTED_CARD_NUMBER).getEventId())
                     .orElseThrow();
 
             JsonNode payload = MAPPER.readTree(row.getPayload());
@@ -551,7 +553,7 @@ class OutboxWriterTest {
             JsonNode payload = MAPPER.readTree(storedPayloadOf(INSERTED_CARD_NUMBER));
 
             assertThat(payload.propertyNames())
-                    .as("card-updated-v2.json lists these nine and closes its property set")
+                    .as("card-updated-v1.json lists these nine and closes its property set")
                     .containsExactlyInAnyOrderElementsOf(CONTRACT_PROPERTIES);
             assertThat(payload.get("accountId").stringValue()).isEqualTo(INSERTED_ACCOUNT_ID);
             assertThat(payload.get("expirationDate").stringValue())
@@ -603,8 +605,7 @@ class OutboxWriterTest {
         @Test
         @DisplayName("the payload is JavaScript Object Notation the event record reads back whole")
         void thePayloadIsNotationTheEventRecordReadsBackWhole() {
-            OutboxEventEntity row = storedEvent(
-                    outboxWriter.writeCardUpdated(storedCard(INSERTED_CARD_NUMBER)).getEventId())
+            OutboxEventEntity row = storedEvent(writeEventFor(INSERTED_CARD_NUMBER).getEventId())
                     .orElseThrow();
 
             CardUpdated parsed = MAPPER.readValue(row.getPayload(), CardUpdated.class);
@@ -770,14 +771,30 @@ class OutboxWriterTest {
     }
 
     /**
+     * Reads one card and stores one event for it, both inside one transaction of its own.
+     *
+     * <p>{@link OutboxWriter#writeCardUpdated(CardEntity)} carries
+     * {@code @Transactional(propagation = MANDATORY)}, so it takes the transaction of its caller and
+     * refuses a call that arrives without one. Production reaches it from
+     * {@code domain/CardUpdateService}, which owns that boundary around the card write and the event
+     * row together; a test calling the writer directly opens the same boundary here.
+     *
+     * @param cardNumber the sixteen-character key of the card the event describes
+     * @return the row the writer saved, detached once the transaction closes
+     */
+    private OutboxEventEntity writeEventFor(String cardNumber) {
+        return inNewTransaction(() ->
+                outboxWriter.writeCardUpdated(cards.findByCardNumber(cardNumber).orElseThrow()));
+    }
+
+    /**
      * Stores one event for the named card and answers with the text the row holds.
      *
      * @param cardNumber the sixteen-character key of the card the event describes
      * @return the stored payload, as the column holds it
      */
     private String storedPayloadOf(String cardNumber) {
-        UUID written = outboxWriter.writeCardUpdated(storedCard(cardNumber)).getEventId();
-        return storedEvent(written).orElseThrow().getPayload();
+        return storedEvent(writeEventFor(cardNumber).getEventId()).orElseThrow().getPayload();
     }
 
     /**

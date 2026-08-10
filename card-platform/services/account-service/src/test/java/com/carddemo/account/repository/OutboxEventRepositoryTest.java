@@ -131,8 +131,8 @@ class OutboxEventRepositoryTest extends AbstractAccountPostgresTest {
     }
 
     @Test
-    @DisplayName("The interface declares exactly the six methods named here")
-    void declaredMethodInventoryHoldsSixNames() {
+    @DisplayName("The interface declares exactly the eight methods named here")
+    void declaredMethodInventoryHoldsEightNames() {
         List<String> declared = Arrays.stream(OutboxEventRepository.class.getDeclaredMethods())
                 .filter(method -> !method.isSynthetic())
                 .map(Method::getName)
@@ -141,11 +141,82 @@ class OutboxEventRepositoryTest extends AbstractAccountPostgresTest {
 
         assertThat(declared).containsExactly(
                 "claimDueRows",
+                "countDueBefore",
                 "deletePublishedBefore",
                 "existsByRelayState",
                 DEAD_LETTER_FINDER,
                 PENDING_FINDER,
-                "findByRelayStateAndClaimedAtBeforeOrderByClaimedAtAsc");
+                "findByRelayStateAndClaimedAtBeforeOrderByClaimedAtAsc",
+                "findEarliestDueBefore");
+    }
+
+    @Test
+    @DisplayName("The backlog count holds the pending rows already due and no other row")
+    @Transactional
+    void theBacklogCountHoldsPendingRowsAlreadyDue() {
+        emptyTheOutbox();
+        Instant now = BASE_INSTANT.plusSeconds(10);
+        outboxEvents.saveAll(List.of(
+                pendingRow("e1", BASE_INSTANT.plusSeconds(1)),
+                pendingRow("e2", BASE_INSTANT.plusSeconds(2)),
+                pendingRow("e3", now.plusSeconds(60)),
+                publishedRow("e4", BASE_INSTANT.plusSeconds(1)),
+                abandonedRow("e5", BASE_INSTANT.plusSeconds(1))));
+        flushAndDetach();
+
+        long due = outboxEvents.countDueBefore(now);
+
+        assertThat(due)
+                .as("the two pending rows already due, and not the row due later, the published"
+                        + " row or the abandoned row")
+                .isEqualTo(2L);
+    }
+
+    @Test
+    @DisplayName("The earliest due instant names the longest-waiting row")
+    @Transactional
+    void theEarliestDueInstantNamesTheLongestWaitingRow() {
+        emptyTheOutbox();
+        Instant oldest = BASE_INSTANT.plusSeconds(1);
+        outboxEvents.saveAll(List.of(
+                pendingRow("f1", BASE_INSTANT.plusSeconds(3)),
+                pendingRow("f2", oldest),
+                pendingRow("f3", BASE_INSTANT.plusSeconds(2))));
+        flushAndDetach();
+
+        assertThat(outboxEvents.findEarliestDueBefore(BASE_INSTANT.plusSeconds(10)))
+                .as("the instant the longest-waiting due row became due")
+                .contains(oldest);
+    }
+
+    @Test
+    @DisplayName("The earliest due instant is empty when the outbox owes nothing yet")
+    @Transactional
+    void theEarliestDueInstantIsEmptyWhenNothingIsDue() {
+        emptyTheOutbox();
+        Instant now = BASE_INSTANT.plusSeconds(10);
+        outboxEvents.saveAll(List.of(
+                pendingRow("f4", now.plusSeconds(60)),
+                publishedRow("f5", BASE_INSTANT.plusSeconds(1))));
+        flushAndDetach();
+
+        assertThat(outboxEvents.findEarliestDueBefore(now))
+                .as("no answer, because the only pending row falls due later")
+                .isEmpty();
+        assertThat(outboxEvents.countDueBefore(now))
+                .as("the backlog is empty at the same instant").isZero();
+    }
+
+    /**
+     * Removes every row so a backlog reading sees only the rows the calling test wrote.
+     *
+     * <p>The caller carries {@link Transactional}, so this removal is rolled back with the test. A
+     * row another test committed is therefore restored, and the reading here stays deterministic
+     * whatever order the class runs in.
+     */
+    private void emptyTheOutbox() {
+        outboxEvents.deleteAll();
+        flushAndDetach();
     }
 
     @Test

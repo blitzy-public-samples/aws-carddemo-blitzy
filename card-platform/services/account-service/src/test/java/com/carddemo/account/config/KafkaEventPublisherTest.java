@@ -2,8 +2,8 @@ package com.carddemo.account.config;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.carddemo.account.messaging.AccountStateChanged;
@@ -19,8 +19,11 @@ import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import org.apache.kafka.clients.producer.ProducerRecord;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+import org.mockito.ArgumentMatchers;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.support.SendResult;
 import tools.jackson.databind.ObjectMapper;
@@ -84,13 +87,36 @@ class KafkaEventPublisherTest {
     }
 
     @Test
-    @DisplayName("a send the broker acknowledges completes the stage")
+    @DisplayName("a send the broker acknowledges completes the stage, and carries the topic, the "
+            + "account identifier and the payload it was given")
     void aSendTheBrokerAcknowledgesCompletesTheStage() throws Exception {
         KafkaTemplate<String, String> template = acknowledging();
         EventPublisherPort publisher = publisher(template, SHORT_BOUND);
+        String event = payload();
 
-        publisher.publish(STATE_TOPIC, ACCOUNT_ID, payload())
-                .toCompletableFuture().get(PATIENCE.toMillis(), TimeUnit.MILLISECONDS);
+        CompletableFuture<Void> publication =
+                publisher.publish(STATE_TOPIC, ACCOUNT_ID, event).toCompletableFuture();
+
+        publication.get(PATIENCE.toMillis(), TimeUnit.MILLISECONDS);
+        assertThat(publication)
+                .as("the stage a caller receives completes on an acknowledged send, and the relay "
+                        + "marks the row published only when it does")
+                .isCompleted();
+        ArgumentCaptor<ProducerRecord<String, String>> sent = ArgumentCaptor.captor();
+        verify(template).send(sent.capture());
+        assertThat(sent.getValue().topic())
+                .as("the topic the record reached. Awaiting the stage alone proved only that a "
+                        + "mocked future was already complete, and would have passed on a send to "
+                        + "the wrong topic or on no send at all")
+                .isEqualTo(STATE_TOPIC);
+        assertThat(sent.getValue().key())
+                .as("the message key, which has to be the account identifier so every event for "
+                        + "one account lands on one partition and stays ordered")
+                .isEqualTo(ACCOUNT_ID);
+        assertThat(sent.getValue().value())
+                .as("the record value, which has to be the payload the outbox row stored, "
+                        + "unaltered")
+                .isEqualTo(event);
     }
 
     @Test
@@ -163,7 +189,7 @@ class KafkaEventPublisherTest {
     @SuppressWarnings("unchecked")
     private static KafkaTemplate<String, String> neverAcknowledging() {
         KafkaTemplate<String, String> template = mock(KafkaTemplate.class);
-        when(template.send(anyString(), anyString(), anyString()))
+        when(template.send(ArgumentMatchers.<ProducerRecord<String, String>>any()))
                 .thenReturn(new CompletableFuture<SendResult<String, String>>());
         return template;
     }
@@ -172,7 +198,7 @@ class KafkaEventPublisherTest {
     @SuppressWarnings("unchecked")
     private static KafkaTemplate<String, String> acknowledging() {
         KafkaTemplate<String, String> template = mock(KafkaTemplate.class);
-        when(template.send(anyString(), anyString(), anyString()))
+        when(template.send(ArgumentMatchers.<ProducerRecord<String, String>>any()))
                 .thenReturn(CompletableFuture.completedFuture(null));
         return template;
     }

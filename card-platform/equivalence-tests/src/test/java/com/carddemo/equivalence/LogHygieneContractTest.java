@@ -37,6 +37,14 @@ import org.junit.jupiter.api.Test;
  * applied, because a comment that explains why a throwable is withheld is documentation rather than
  * a use of one.
  *
+ * <p>Reading sources cannot hold a call this platform does not write, and one such call renders a
+ * throwable this platform never passes: Spring Kafka reports a delivery it has given up on through
+ * {@code LogAccessor.error(Throwable, Supplier)}. {@link #everyServiceWithholdsTheThrowableMember}
+ * holds the configuration that suppresses that rendering in all six services, and
+ * {@link FrameworkThrowableRenderingTest} proves the configuration does suppress it by running the
+ * call and reading what was written. The two together cover both halves: what is declared, and what
+ * that declaration does.
+ *
  * <p>The rule is the framework's own. SLF4J attaches the final argument as a throwable when the
  * argument list carries one more value than the message carries placeholders, and substitutes it
  * otherwise. Reading that arity is what tells {@code log.error("failed", fault)} from
@@ -110,6 +118,21 @@ class LogHygieneContractTest {
     private static final List<String> MASKING_SITES = List.of(
             "ledger-posting-service AccountStateChangedConsumer.java",
             "card-service CardUpdateService.java");
+
+    /**
+     * The one logstash member that renders a throwable, and the one every service withholds.
+     *
+     * <p>Every rule above governs a call this platform writes. This one governs a call it does not:
+     * Spring Kafka reports a delivery it has given up on through
+     * {@code LogAccessor.error(Throwable, Supplier)} from {@code SeekUtils}, whose level no property
+     * lowers, and the member renders the exception message ahead of the frames.
+     */
+    private static final String THROWABLE_MEMBER = "stack_trace";
+
+    /** Path below {@code logging.structured.json} that withholds a member from every record. */
+    private static final Pattern WITHHELD_MEMBERS =
+            Pattern.compile("^\\s*exclude:\\s*$\\n(?:^\\s*#[^\\n]*$\\n)*((?:^\\s*-\\s*\\S+\\s*$\\n)+)",
+                    Pattern.MULTILINE);
 
     @Test
     @DisplayName("no logger call anywhere passes the throwable itself")
@@ -224,6 +247,31 @@ class LogHygieneContractTest {
                 "a default is what an operator gets who starts a service directly rather than "
                         + "through compose or Kubernetes, and a DEBUG default writes identifiers "
                         + "into every log a deployment collects: " + offending);
+    }
+
+    @Test
+    @DisplayName("every service withholds the one member that renders a throwable")
+    void everyServiceWithholdsTheThrowableMember() {
+        List<String> offending = new ArrayList<>();
+
+        for (String module : MODULES) {
+            Path configuration = repositoryRoot().resolve(SERVICES_DIRECTORY).resolve(module)
+                    .resolve(APPLICATION_YAML);
+            Matcher withheld = WITHHELD_MEMBERS.matcher(readText(configuration));
+            if (!withheld.find()) {
+                offending.add(module + " withholds no member at all");
+                continue;
+            }
+            if (!withheld.group(1).contains(THROWABLE_MEMBER)) {
+                offending.add(module + " withholds " + collapse(withheld.group(1)));
+            }
+        }
+
+        assertEquals(List.of(), offending,
+                "the rules above hold every call this platform writes, and none of them reaches the "
+                        + "call Spring Kafka writes when it gives up on a delivery: withholding "
+                        + THROWABLE_MEMBER + " is what keeps an exception message quoting a rejected "
+                        + "payload out of the log, and these do not withhold it: " + offending);
     }
 
     @Test

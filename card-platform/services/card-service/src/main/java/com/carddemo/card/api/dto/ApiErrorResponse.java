@@ -16,10 +16,10 @@ package com.carddemo.card.api.dto;
  *        no other.
  * @param route the route template of the failing endpoint, with each path variable left as its
  *        brace-delimited name. The caller supplies the mapping pattern, for example
- *        {@code /cards} or {@code /cards/{cardToken}}, so no card number and no account identifier
- *        reaches the response body or a log line that copies it. The two routes that name one card
- *        carry it as a path variable, and the template holds the name {@code cardNumber} in place of
- *        the value.
+ *        {@code /cards} or {@code /cards/{cardToken}}, so no card token, no card number and no
+ *        account identifier reaches the response body or a log line that copies it. The two routes
+ *        that name one card carry that card's token as a path variable, and the template holds the
+ *        name {@code cardToken} in place of the value.
  */
 public record ApiErrorResponse(int status, String message, String route) {
 

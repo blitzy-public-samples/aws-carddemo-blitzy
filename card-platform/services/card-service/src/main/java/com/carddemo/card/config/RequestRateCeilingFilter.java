@@ -16,6 +16,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.security.autoconfigure.web.servlet.SecurityFilterProperties;
 import org.springframework.core.annotation.Order;
@@ -75,9 +76,12 @@ import org.springframework.web.filter.OncePerRequestFilter;
  * header a caller writes cannot bound that caller; a deployment behind a proxy sets
  * {@code server.forward-headers-strategy} so the container resolves the client address itself.
  *
- * <p>The map of counters is bounded at {@link #MAX_TRACKED_KEYS}. Past it the expired windows are
+ * <p>The map of counters is bounded at {@link #MAX_TRACKED_KEYS}. Past it the rolled windows are
  * removed first, and a key that still finds no room shares one overflow window, so an attacker
- * varying the address or the username cannot grow this map without limit.
+ * varying the address or the username cannot grow this map without limit. That removal walks the
+ * whole map, so it runs at most once every tenth of a window and never twice at once; a caller
+ * sending a run of addresses nobody has seen before therefore pays for one walk rather than one per
+ * address.
  *
  * <p>Decisions: {@code card-platform/docs/decision-log.md}.
  */
@@ -133,6 +137,14 @@ public class RequestRateCeilingFilter extends OncePerRequestFilter {
     /** Length of one window, in milliseconds. */
     private final long windowMillis;
 
+    /**
+     * Shortest interval between two expiry sweeps of the counter map, a tenth of one window.
+     *
+     * <p>Derived rather than configured: a sweep exists to reclaim rolled windows, so how often one
+     * is worth running follows the length of a window and nothing else.
+     */
+    private final long expirySweepIntervalMillis;
+
     /** Requests one source, and one identity, may make inside one window. */
     private final long requestsPerWindow;
 
@@ -156,6 +168,14 @@ public class RequestRateCeilingFilter extends OncePerRequestFilter {
 
     /** Requests in flight at this moment. */
     private final AtomicInteger inFlight = new AtomicInteger();
+
+    /**
+     * When the last expiry sweep ran, on the same clock the windows are stamped from.
+     *
+     * <p>{@link Long#MIN_VALUE} until the first sweep, so the first key that finds the map full
+     * sweeps rather than waiting out an interval that never started.
+     */
+    private final AtomicLong lastExpirySweepMillis = new AtomicLong(Long.MIN_VALUE);
 
     /**
      * Takes every ceiling and registers one counter per ceiling.
@@ -194,6 +214,9 @@ public class RequestRateCeilingFilter extends OncePerRequestFilter {
         }
 
         this.windowMillis = windowSeconds * 1000L;
+        // A tenth of a window, and never less than one millisecond: the shortest window a caller may
+        // configure is one second, and a tenth of that is still a hundred milliseconds.
+        this.expirySweepIntervalMillis = Math.max(1L, this.windowMillis / 10L);
         this.requestsPerWindow = requestsPerWindow;
         this.writeRequestsPerWindow = writeRequestsPerWindow;
         this.authenticationFailuresPerWindow = authenticationFailuresPerWindow;
@@ -344,14 +367,46 @@ public class RequestRateCeilingFilter extends OncePerRequestFilter {
             return tracked;
         }
         if (this.windows.size() >= MAX_TRACKED_KEYS) {
-            long expiredBefore = now - this.windowMillis;
-            this.windows.entrySet().removeIf(entry -> !OVERFLOW_KEY.equals(entry.getKey())
-                    && entry.getValue().startedBefore(expiredBefore));
+            removeExpiredWindows(now);
         }
         if (this.windows.size() >= MAX_TRACKED_KEYS) {
             return this.windows.computeIfAbsent(OVERFLOW_KEY, unused -> new FixedWindow(now));
         }
         return this.windows.computeIfAbsent(key, unused -> new FixedWindow(now));
+    }
+
+    /**
+     * Removes the windows that have rolled, at most once every {@link #expirySweepIntervalMillis}.
+     *
+     * <p>The sweep walks every entry, so it is {@value #MAX_TRACKED_KEYS} comparisons. Running it
+     * for each arriving key was the defect: once the map was full, a run of keys nobody had seen
+     * before turned one cheap lookup each into one full walk each, and a caller sending such a run
+     * spent this service's processor time rather than its own.
+     *
+     * <p>Two guards make one sweep serve them all. The interval is what stops a second walk from
+     * following the first, and the compare-and-set is what stops two threads walking at once: a
+     * thread that loses it has nothing to do, because the thread that won is removing the same
+     * entries it would have removed.
+     *
+     * <p>The interval is a tenth of a window rather than a fixed number of milliseconds, so it
+     * follows the configured window instead of contradicting it. A window that has rolled is
+     * therefore reclaimed within a tenth of a window of rolling, and every key arriving before that
+     * shares the overflow window exactly as it did before, which is the same admission the map's
+     * bound has always produced.
+     *
+     * @param now the current instant, in milliseconds
+     */
+    private void removeExpiredWindows(long now) {
+        long swept = this.lastExpirySweepMillis.get();
+        if (swept != Long.MIN_VALUE && now - swept < this.expirySweepIntervalMillis) {
+            return;
+        }
+        if (!this.lastExpirySweepMillis.compareAndSet(swept, now)) {
+            return;
+        }
+        long expiredBefore = now - this.windowMillis;
+        this.windows.entrySet().removeIf(entry -> !OVERFLOW_KEY.equals(entry.getKey())
+                && entry.getValue().startedBefore(expiredBefore));
     }
 
     /**
@@ -373,6 +428,18 @@ public class RequestRateCeilingFilter extends OncePerRequestFilter {
      */
     int trackedKeyCount() {
         return this.windows.size();
+    }
+
+    /**
+     * Reports when the last expiry sweep of the counter map ran.
+     *
+     * <p>The value a test reads to prove one sweep served a whole burst of keys nobody had seen
+     * before, rather than one sweep serving each of them.
+     *
+     * @return the sweep instant in milliseconds, or {@link Long#MIN_VALUE} before the first sweep
+     */
+    long lastExpirySweepAt() {
+        return this.lastExpirySweepMillis.get();
     }
 
     /**

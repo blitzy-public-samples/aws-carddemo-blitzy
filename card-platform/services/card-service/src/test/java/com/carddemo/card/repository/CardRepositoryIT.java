@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.carddemo.card.CardServiceDatabase;
 import com.carddemo.card.TestIdentityPasswords;
 import com.carddemo.card.api.dto.CardValidationMessages;
 import com.carddemo.card.domain.CardQueryService.CardListRow;
@@ -57,8 +58,6 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 
 /**
@@ -136,18 +135,11 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
                 "USER_PASSWORD_HASH=" + TestIdentityPasswords.USER_PASSWORD_HASH,
                 "MONITORING_PASSWORD_HASH=" + TestIdentityPasswords.MONITORING_PASSWORD_HASH
         })
-@Testcontainers
 @DisplayName("CardRepository over the migrated card schema: keys, the account index, and paging")
 class CardRepositoryIT {
 
     /** The image tag {@code card-platform/docker-compose.yml} also names. */
     private static final String POSTGRES_IMAGE = "postgres:18.4";
-
-    /**
-     * The database name, the login name and the password of the container, one value for all
-     * three. {@code card-platform/.env.example} declares the same value.
-     */
-    private static final String POSTGRES_CREDENTIAL = "carddemo";
 
     /**
      * The schema Flyway creates, from {@code spring.jpa.properties.hibernate.default_schema} and
@@ -185,8 +177,23 @@ class CardRepositoryIT {
      * correction is a migration rather than an edit to {@code V1} because {@code V1} has run, and a
      * comment-only migration adds a history row and changes no table, so every other assertion in
      * this class reads exactly as it did at version 3.
+     *
+     * <p>Version 5 is {@code V5__xref_reconciliation_and_status_domain.sql}. It adds one constraint,
+     * {@code ck_card_active_status}, which {@link ActiveStatusDomain} asserts, and re-issues the
+     * {@code card_xref} comment now that {@code domain/CardCrossReferenceReconciler} reconciles the
+     * replica on the update path. Both values the seed loads satisfy the constraint, so every other
+     * assertion in this class reads exactly as it did at version 4.
+
+     * <p>Version 6 is {@code V6__outbox_correlation.sql}, which adds the two nullable correlation
+     * columns {@code outbox_event} records so a published record can name the unit of work behind
+     * it. It touches no table this class reads.
+     * <p>Version 7 is {@code V7__outbox_aggregate_head_index.sql}, which adds one index to
+     * {@code outbox_event} and no table. The relay claims the due head row of each account rather
+     * than the oldest due rows outright, which is what keeps two events of one account from being in
+     * flight at once, and that claim reads the table by aggregate and arrival order.
      */
-    private static final List<String> MIGRATION_VERSIONS = List.of("1", "2", "3", "4");
+    private static final List<String> MIGRATION_VERSIONS =
+            List.of("1", "2", "3", "4", "5", "6", "7");
 
     /**
      * Card number of the row a test inserts to place a second card on one account.
@@ -220,6 +227,17 @@ class CardRepositoryIT {
      * at {@code app/cbl/COCRDUPC.cbl:L91}.
      */
     private static final String ACTIVE_STATUS_YES = "Y";
+
+    /** The other value the same condition name declares, from {@code app/cbl/COCRDUPC.cbl:L91}. */
+    private static final String ACTIVE_STATUS_NO = "N";
+
+    /**
+     * A one-character status outside that condition name, used to prove the constraint refuses one.
+     *
+     * <p>The column is {@code CHAR(1)}, so a wider value would be refused on width alone and would
+     * prove nothing about the domain.
+     */
+    private static final String ACTIVE_STATUS_OUTSIDE_DOMAIN = "X";
 
     /**
      * Reads whether one named index of one named table is unique, from the system catalog.
@@ -268,19 +286,12 @@ class CardRepositoryIT {
             """;
 
     /**
-     * The one container every test in this class shares.
+     * The one container the module fork runs, which this class reads a login from.
      *
-     * <p>The class name comes from {@code org.testcontainers.postgresql}, the package
-     * Testcontainers 2.0.5 ships it in.
-     * {@code org.testcontainers.containers.PostgreSQLContainer} carries a deprecation on the same
-     * artifact. {@link Container} on a static field gives one container per class, and
-     * {@link Testcontainers} starts it before the Spring context reads a property below.
+     * <p>{@link CardServiceDatabase} owns it and hands this class a database of its own inside it.
+     * Nothing here starts or stops a container.
      */
-    @Container
-    static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer(POSTGRES_IMAGE)
-            .withDatabaseName(POSTGRES_CREDENTIAL)
-            .withUsername(POSTGRES_CREDENTIAL)
-            .withPassword(POSTGRES_CREDENTIAL);
+    static final PostgreSQLContainer POSTGRES = CardServiceDatabase.container();
 
     /**
      * Points the Spring datasource at the running container.
@@ -293,8 +304,8 @@ class CardRepositoryIT {
      * <p>The uniform resource locator carries {@code currentSchema}, which
      * {@link #migratedSchemaUrl()} appends. {@code hibernate.default_schema} qualifies a mapped
      * query alone, so a native statement such as
-     * {@link OutboxEventRepository#claimDueRows(java.time.Instant, int)} resolves its unqualified
-     * table name against the connection search path instead.
+     * {@link OutboxEventRepository#deletePublishedBefore(java.time.Instant, int)} resolves its
+     * unqualified table name against the connection search path instead.
      *
      * @param registry the registry the Spring test context supplies
      */
@@ -308,16 +319,13 @@ class CardRepositoryIT {
     /**
      * Returns the container uniform resource locator with {@code currentSchema} appended.
      *
-     * <p>Testcontainers already appends one query parameter of its own, so the separator is
-     * {@code &} whenever a {@code ?} is present and {@code ?} otherwise.
+     * <p>The facility builds the locator, so no separator is decided here.
      *
      * @return the connection uniform resource locator whose search path holds
      *         {@value #MIGRATED_SCHEMA}
      */
     private static String migratedSchemaUrl() {
-        String url = POSTGRES.getJdbcUrl();
-        String separator = url.contains("?") ? "&" : "?";
-        return url + separator + "currentSchema=" + MIGRATED_SCHEMA;
+        return CardServiceDatabase.urlFor(CardRepositoryIT.class);
     }
 
     /** The repository under test. */
@@ -659,7 +667,7 @@ class CardRepositoryIT {
         }
 
         /**
-         * Asserts the Flyway history carries versions 1 through 3, all successful.
+         * Asserts the Flyway history carries versions 1 through 5, all successful.
          *
          * <p>A schema name is an identifier, so it joins the statement text rather than arriving
          * as a bind value. The value comes from
@@ -765,13 +773,6 @@ class CardRepositoryIT {
         }
 
         /**
-         * Asserts a row this service inserts carries the same derivation, and reads back by token.
-         *
-         * <p>The insert goes through the entity constructor, which is the Java side of the
-         * derivation, and the flush drives it to the database before the lookup runs. The lookup is
-         * the translation a paging cursor depends on.
-         */
-        /**
          * Asserts the reconciler rewrites a stored token that belongs to another key, and only that
          * row.
          *
@@ -834,6 +835,13 @@ class CardRepositoryIT {
             return cardRepository.findAll().stream().map(CardEntity::getCardNumber).sorted().toList();
         }
 
+        /**
+         * Asserts a row this service inserts carries the same derivation, and reads back by token.
+         *
+         * <p>The insert goes through the entity constructor, which is the Java side of the
+         * derivation, and the flush drives it to the database before the lookup runs. The lookup is
+         * the translation a paging cursor depends on.
+         */
         @Test
         @DisplayName("an inserted row carries the derived token and findByCardToken reaches it")
         void anInsertedRowIsReachableByItsToken() {
@@ -897,6 +905,117 @@ class CardRepositoryIT {
                             "8888888888888888"),
                     "ck_card_card_token_hex must refuse a value that is not sixty-four lower-case "
                             + "hexadecimal characters");
+        }
+    }
+
+    /**
+     * Proves {@code active_status} carries the domain the API states, in the catalog and against
+     * real writes.
+     *
+     * <p>The domain is {@code 88 FLG-YES-NO-VALID VALUES 'Y', 'N'.} at
+     * {@code app/cbl/COCRDUPC.cbl:L91}, tested at {@code app/cbl/COCRDUPC.cbl:L1861-L1863}.
+     * {@code V1__schema.sql} declared the column {@code CHAR(1) NOT NULL} and constrained nothing,
+     * so the width was the only rule a direct load had to satisfy and a row could hold a third
+     * value the read contracts said it never would. {@code V5} adds
+     * {@code ck_card_active_status}.
+     *
+     * <p>A catalog check alone would prove little, so both values the source admits are written and
+     * a third is attempted.
+     */
+    @Nested
+    @Transactional
+    @DisplayName("The active-status domain, from 88 FLG-YES-NO-VALID")
+    class ActiveStatusDomain {
+
+        /** Inserts one card row carrying the supplied status, through the migrated columns. */
+        private void insertWithStatus(String cardNumber, String activeStatus) {
+            jdbcTemplate.update("INSERT INTO " + schema + ".card (card_number, account_id, "
+                            + "card_verification_value, embossed_name, expiration_date, "
+                            + "active_status, card_token) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    cardNumber, ROW_1_ACCOUNT_ID, SYNTHETIC_CARD_VERIFICATION_VALUE,
+                    SYNTHETIC_EMBOSSED_NAME, SYNTHETIC_EXPIRATION_DATE, activeStatus,
+                    PanMasker.cardToken(cardNumber));
+        }
+
+        /**
+         * Asserts the constraint is present on the table and names the two values.
+         *
+         * <p>The definition is read from the catalog rather than from the migration text, so a
+         * constraint dropped or replaced by a later migration fails here.
+         */
+        @Test
+        @DisplayName("ck_card_active_status is present and admits Y and N only")
+        void theConstraintIsPresentAndNamesBothValues() {
+            List<String> definitions = jdbcTemplate.queryForList("""
+                    SELECT pg_get_constraintdef(c.oid)
+                      FROM pg_constraint c
+                      JOIN pg_class t ON t.oid = c.conrelid
+                      JOIN pg_namespace n ON n.oid = t.relnamespace
+                     WHERE n.nspname = ? AND t.relname = 'card'
+                       AND c.conname = 'ck_card_active_status'
+                    """, String.class, schema);
+
+            assertEquals(1, definitions.size(),
+                    "V5 declares exactly one ck_card_active_status on card");
+            String definition = definitions.get(0);
+            assertAll(
+                    () -> assertTrue(definition.contains("'Y'"),
+                            "the constraint must admit Y: " + definition),
+                    () -> assertTrue(definition.contains("'N'"),
+                            "the constraint must admit N: " + definition),
+                    () -> assertTrue(definition.startsWith("CHECK"),
+                            "the domain belongs to a CHECK rather than to a trigger: "
+                                    + definition));
+        }
+
+        /**
+         * Asserts both values the source condition name declares insert.
+         *
+         * <p>A constraint that refused either one would refuse the fixture: the fifty seeded rows
+         * carry both.
+         */
+        @Test
+        @DisplayName("both Y and N insert, because both are in the source domain")
+        void bothValuesOfTheDomainInsert() {
+            insertWithStatus(syntheticCardNumber(900_101L), ACTIVE_STATUS_YES);
+            insertWithStatus(syntheticCardNumber(900_102L), ACTIVE_STATUS_NO);
+
+            assertEquals(SEEDED_ROW_COUNT + 2, cardRepository.count(),
+                    "both rows were accepted, so the constraint admits the whole domain");
+        }
+
+        /**
+         * Asserts a third value is refused by the database rather than by the update path alone.
+         *
+         * <p>This insert bypasses every Java validation, which is exactly the writer the API could
+         * not see. Before {@code V5} it succeeded, and {@code GET /cards/&#123;cardToken&#125;} then
+         * returned the row inside a contract that enumerates two values.
+         */
+        @Test
+        @DisplayName("a status outside the domain is refused by the database")
+        void aStatusOutsideTheDomainIsRefused() {
+            assertThrows(DataIntegrityViolationException.class,
+                    () -> insertWithStatus(syntheticCardNumber(900_103L),
+                            ACTIVE_STATUS_OUTSIDE_DOMAIN),
+                    "ck_card_active_status must refuse a status the source condition name does not"
+                            + " declare");
+        }
+
+        /**
+         * Asserts every seeded row satisfies the domain.
+         *
+         * <p>{@code app/data/ASCII/carddata.txt} carries {@code Y} and {@code N} only, so the
+         * constraint validated against the loaded table rather than requiring it to be rewritten.
+         */
+        @Test
+        @DisplayName("all fifty seeded rows hold Y or N")
+        void everySeededRowHoldsAValueOfTheDomain() {
+            Long outside = jdbcTemplate.queryForObject("SELECT count(*) FROM " + schema
+                    + ".card WHERE active_status NOT IN ('Y', 'N')", Long.class);
+
+            assertEquals(0L, outside,
+                    "a seeded row outside the domain would mean the fixture and the contract"
+                            + " disagree");
         }
     }
 
@@ -1458,30 +1577,38 @@ class CardRepositoryIT {
     }
 
     /**
-     * The native claim statement of {@link OutboxEventRepository}, run against the migrated schema.
+     * The claim statement of {@link OutboxEventRepository}, run against the migrated schema.
      *
      * <p>ADDITIVE. No CardDemo program relays an event, so no source paragraph corresponds.
      *
-     * <p>{@code claimDueRows} is the one statement of this service written as native Structured
-     * Query Language (SQL), because {@code FOR UPDATE SKIP LOCKED} has no Java Persistence Query
-     * Language form. A native statement resolves an unqualified table name against the connection
-     * search path rather than through {@code hibernate.default_schema}, so these tests are what
-     * prove {@code currentSchema} reaches the connection. Every assertion below fails with
-     * {@code relation "outbox_event" does not exist} if it does not.
+     * <p>{@code claimDueRows} carries a pessimistic write lock and a lock timeout of {@code -2},
+     * which Hibernate renders as {@code FOR NO KEY UPDATE ... SKIP LOCKED}. Neither the lock, the
+     * skip, nor the correlated absence check that admits one row per account is exercised by
+     * {@code ddl-auto: validate} or by the derived-query check Spring Data runs at start-up, so the
+     * assertions below are what run them. The retention delete of the same interface is native
+     * Structured Query Language (SQL) and names {@code outbox_event} unqualified, so it fails with
+     * {@code relation "outbox_event" does not exist} unless {@code currentSchema} reached the
+     * connection.
      *
      * <p>Each test opens its own transaction and rolls it back, which is also what the row lock
-     * {@code FOR UPDATE} takes needs.
+     * needs.
      */
     @Nested
     @Transactional
-    @DisplayName("The native outbox claim statement, over the migrated schema")
+    @DisplayName("The outbox claim statement, over the migrated schema")
     class OutboxClaim {
 
         /** Event type every row below carries, from {@code messaging/CardUpdated}. */
         private static final String EVENT_TYPE = "CardUpdated";
 
-        /** Account identifier every row below carries as its message key, eleven digits. */
+        /** Account identifier a row carries as its message key unless a test names another. */
         private static final String AGGREGATE_ID = "00000000011";
+
+        /** A second account, so a test can prove two accounts are claimed independently. */
+        private static final String OTHER_AGGREGATE_ID = "00000000012";
+
+        /** A third account, so the due-time ordering can be read across three heads. */
+        private static final String THIRD_AGGREGATE_ID = "00000000013";
 
         /** One short payload. The column holds 8192 octets and no assertion reads this text. */
         private static final String PAYLOAD = "{\"eventType\":\"CardUpdated\"}";
@@ -1489,31 +1616,81 @@ class CardRepositoryIT {
         /** The instance name a claim records, from {@code carddemo.outbox.relay.instance-id}. */
         private static final String INSTANCE = "card-relay-under-test";
 
+        /** The reason a failed attempt records. It names a refusal and quotes no event value. */
+        private static final String REFUSED = "refused";
+
         /**
-         * Writes one row due at {@code dueAt} and forces it to the database.
+         * The lower of the two identifiers the same-instant test writes, and the head it expects.
          *
-         * <p>The returned instance is the one {@code save} answers with, which is the managed copy.
-         * An entity carrying an assigned identifier is not new, so the store merges it and the
-         * argument stays detached; a mutation applied to the argument would reach no column.
+         * <p>Both identifiers are fixed rather than drawn at random, and the two orderings that
+         * could apply agree on which is lower. PostgreSQL orders the {@code uuid} type as an
+         * unsigned sequence of octets, while {@link UUID#compareTo(UUID)} compares each half as a
+         * signed long, so a test that drew two random identifiers and predicted the head with
+         * {@code compareTo} would agree with the database on roughly half of its runs. The head the
+         * statement admits is the database's choice, and these two values name it unambiguously.
+         */
+        private static final UUID LOWER_EVENT_ID =
+                UUID.fromString("00000000-0000-4000-8000-000000000001");
+
+        /** The higher of the two identifiers the same-instant test writes, under either ordering. */
+        private static final UUID HIGHER_EVENT_ID =
+                UUID.fromString("00000000-0000-4000-8000-000000000002");
+
+        /**
+         * Writes one row of {@link #AGGREGATE_ID} due at {@code dueAt} and forces it to the database.
          *
          * @param dueAt when the row becomes claimable, which the constructor also uses as
          *              {@code created_at}
          * @return the managed row
          */
         private OutboxEventEntity storeRowDueAt(Instant dueAt) {
+            return storeRowDueAt(dueAt, AGGREGATE_ID);
+        }
+
+        /**
+         * Writes one row of the named account due at {@code dueAt}, under a fresh identifier.
+         *
+         * @param dueAt       when the row becomes claimable, which the constructor also uses as
+         *                    {@code created_at}
+         * @param aggregateId the eleven-digit account identifier the row keys on
+         * @return the managed row
+         */
+        private OutboxEventEntity storeRowDueAt(Instant dueAt, String aggregateId) {
+            return storeRowDueAt(dueAt, aggregateId, UUID.randomUUID());
+        }
+
+        /**
+         * Writes one row of the named account due at {@code dueAt} and forces it to the database.
+         *
+         * <p>The returned instance is the one {@code save} answers with, which is the managed copy.
+         * An entity carrying an assigned identifier is not new, so the store merges it and the
+         * argument stays detached; a mutation applied to the argument would reach no column.
+         *
+         * @param dueAt       when the row becomes claimable, which the constructor also uses as
+         *                    {@code created_at}
+         * @param aggregateId the eleven-digit account identifier the row keys on
+         * @param eventId     the primary key the row takes
+         * @return the managed row
+         */
+        private OutboxEventEntity storeRowDueAt(Instant dueAt, String aggregateId, UUID eventId) {
             OutboxEventEntity stored = outboxEventRepository.save(new OutboxEventEntity(
-                    UUID.randomUUID(), EVENT_TYPE, AGGREGATE_ID, PAYLOAD, dueAt));
+                    eventId, EVENT_TYPE, aggregateId, PAYLOAD, dueAt));
             entityManager.flush();
             return stored;
         }
 
+        /**
+         * Three accounts rather than three rows of one, because the statement answers with the due
+         * head row of each account. Ordering by due time is across accounts, and the case below
+         * covers what happens within one.
+         */
         @Test
         @DisplayName("the statement resolves outbox_event and returns the longest-waiting rows")
         void theStatementResolvesTheTableAndOrdersByDueTime() {
             Instant now = Instant.parse("2024-03-01T12:00:00Z");
-            OutboxEventEntity oldest = storeRowDueAt(now.minusSeconds(300));
-            OutboxEventEntity middle = storeRowDueAt(now.minusSeconds(200));
-            storeRowDueAt(now.minusSeconds(100));
+            OutboxEventEntity oldest = storeRowDueAt(now.minusSeconds(300), AGGREGATE_ID);
+            OutboxEventEntity middle = storeRowDueAt(now.minusSeconds(200), OTHER_AGGREGATE_ID);
+            storeRowDueAt(now.minusSeconds(100), THIRD_AGGREGATE_ID);
 
             List<UUID> claimed = outboxEventRepository.claimDueRows(now, Limit.of(2)).stream()
                     .map(OutboxEventEntity::getEventId).toList();
@@ -1521,6 +1698,141 @@ class CardRepositoryIT {
             assertEquals(List.of(oldest.getEventId(), middle.getEventId()), claimed,
                     "the statement returns the two longest-waiting rows, in that order, which is "
                             + "also proof that the unqualified table name resolved");
+        }
+
+        /**
+         * A newer row of one account never overtakes an older row of that account.
+         *
+         * <p>The relay publishes each claimed row and records each outcome on its own, so a batch
+         * holding two rows of one account can publish the newer one and leave the older one to a
+         * retry. A row in backoff produces the same reordering on its own: its
+         * {@code next_attempt_at} lies in the future while the newer row of that account is due
+         * now. The account identifier is the message key, and Kafka orders within a partition, so
+         * either outcome reaches every consumer of that account in the wrong order and stays that
+         * way.
+         *
+         * <p>The third row proves the guard is per account rather than per table: it is the head of
+         * a different account, so the paused account does not hold it back.
+         */
+        @Test
+        @DisplayName("a newer row of one account waits behind its older row during backoff")
+        void aNewerRowWaitsBehindAnOlderRowOfTheSameAccount() {
+            Instant now = Instant.parse("2024-03-01T12:00:00Z");
+            OutboxEventEntity older = storeRowDueAt(now.minusSeconds(300), AGGREGATE_ID);
+            older.claim(INSTANCE, now.minusSeconds(290));
+            older.recordFailure(REFUSED, now.minusSeconds(280), now.plusSeconds(30));
+            OutboxEventEntity newer = storeRowDueAt(now.minusSeconds(100), AGGREGATE_ID);
+            OutboxEventEntity otherAccount =
+                    storeRowDueAt(now.minusSeconds(50), OTHER_AGGREGATE_ID);
+            entityManager.flush();
+
+            List<UUID> claimed = outboxEventRepository.claimDueRows(now, Limit.of(10)).stream()
+                    .map(OutboxEventEntity::getEventId).toList();
+
+            assertAll("the claim admits one head per account",
+                    () -> assertEquals(List.of(otherAccount.getEventId()), claimed,
+                            "the newer row of the paused account stays behind it, and the head of "
+                                    + "the other account is unaffected"),
+                    () -> assertFalse(claimed.contains(newer.getEventId()),
+                            "publishing the newer row first would reverse the order on the "
+                                    + "partition that account keys on"),
+                    () -> assertEquals(OutboxEventEntity.RelayState.PENDING, older.getRelayState(),
+                            "the older row is pending and waiting on its backoff, not terminal"));
+        }
+
+        /**
+         * A row the relay gave up on releases the account it was holding.
+         *
+         * <p>The absence check names {@code PENDING} and {@code CLAIMED} alone. Were it to name
+         * every state, one abandoned row would stop every later row of that account for as long as
+         * retention kept it, which is a worse failure than the reordering the check prevents.
+         */
+        @Test
+        @DisplayName("an abandoned head no longer blocks the next row of that account")
+        void anAbandonedHeadReleasesTheAccount() {
+            Instant now = Instant.parse("2024-03-01T12:00:00Z");
+            OutboxEventEntity abandoned = storeRowDueAt(now.minusSeconds(600), AGGREGATE_ID);
+            for (int attempt = 0; attempt < OutboxEventEntity.MAX_DELIVERY_ATTEMPTS; attempt++) {
+                Instant attemptedAt = now.minusSeconds(590L - attempt);
+                abandoned.claim(INSTANCE, attemptedAt);
+                abandoned.recordFailure(REFUSED, attemptedAt, attemptedAt);
+            }
+            OutboxEventEntity next = storeRowDueAt(now.minusSeconds(100), AGGREGATE_ID);
+            entityManager.flush();
+
+            List<UUID> claimed = outboxEventRepository.claimDueRows(now, Limit.of(10)).stream()
+                    .map(OutboxEventEntity::getEventId).toList();
+
+            assertAll("a terminal head holds nothing back",
+                    () -> assertEquals(OutboxEventEntity.RelayState.ABANDONED,
+                            abandoned.getRelayState(),
+                            "ten refusals reach the ceiling and abandon the row"),
+                    () -> assertEquals(List.of(next.getEventId()), claimed,
+                            "the next row of that account becomes the head"));
+        }
+
+        /**
+         * Two rows written in the same instant still have one head, and it is the same one every
+         * time.
+         *
+         * <p>{@code created_at} alone cannot order them, so the absence check falls through to
+         * {@code event_id}. Without that fall-through neither row would precede the other, both
+         * would be heads, and a batch could hold both.
+         *
+         * <p>The higher identifier is written first, so passing cannot come from insert order.
+         */
+        @Test
+        @DisplayName("two rows of one account written in the same instant order on the event key")
+        void rowsWrittenInTheSameInstantOrderOnTheEventKey() {
+            Instant now = Instant.parse("2024-03-01T12:00:00Z");
+            Instant sameInstant = now.minusSeconds(120);
+            storeRowDueAt(sameInstant, AGGREGATE_ID, HIGHER_EVENT_ID);
+            storeRowDueAt(sameInstant, AGGREGATE_ID, LOWER_EVENT_ID);
+            entityManager.flush();
+
+            List<UUID> claimed = outboxEventRepository.claimDueRows(now, Limit.of(10)).stream()
+                    .map(OutboxEventEntity::getEventId).toList();
+
+            assertEquals(List.of(LOWER_EVENT_ID), claimed,
+                    "the lower event identifier is the head, so the pair has one deterministic "
+                            + "order rather than none");
+        }
+
+        /**
+         * Publishing an account's earlier row makes its later row the head of that account.
+         *
+         * <p>The guard is a restriction on the claim rather than on the sweep, so the proof has to
+         * show the claim advancing: the later row is absent while the earlier one is unpublished and
+         * present once it is published. The other account's row is claimed in both passes, which is
+         * what makes the restriction per account rather than per table.
+         */
+        @Test
+        @DisplayName("publishing an account's earlier row promotes its later row to the head")
+        void publishingTheEarlierRowPromotesTheLaterRowOfThatAccount() {
+            Instant now = Instant.parse("2024-03-01T12:00:00Z");
+            OutboxEventEntity first = storeRowDueAt(now.minusSeconds(300), AGGREGATE_ID);
+            OutboxEventEntity second = storeRowDueAt(now.minusSeconds(200), AGGREGATE_ID);
+            OutboxEventEntity otherAccount =
+                    storeRowDueAt(now.minusSeconds(100), OTHER_AGGREGATE_ID);
+            entityManager.flush();
+
+            List<UUID> firstClaim = outboxEventRepository.claimDueRows(now, Limit.of(10)).stream()
+                    .map(OutboxEventEntity::getEventId).toList();
+
+            first.markPublished(now);
+            entityManager.flush();
+            List<UUID> secondClaim = outboxEventRepository.claimDueRows(now, Limit.of(10)).stream()
+                    .map(OutboxEventEntity::getEventId).toList();
+
+            assertAll(
+                    () -> assertEquals(List.of(first.getEventId(), otherAccount.getEventId()),
+                            firstClaim,
+                            "one head row per account: this account's earlier row and the other "
+                                    + "account's row, and not this account's later row"),
+                    () -> assertEquals(List.of(second.getEventId(), otherAccount.getEventId()),
+                            secondClaim,
+                            "publishing the earlier row makes the later row of that account the "
+                                    + "head, so the next claim reaches it"));
         }
 
         @Test

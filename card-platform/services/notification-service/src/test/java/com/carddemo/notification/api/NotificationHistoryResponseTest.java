@@ -1,5 +1,6 @@
 package com.carddemo.notification.api;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
@@ -76,14 +77,29 @@ final class NotificationHistoryResponseTest {
      * The four component names, in the order {@link NotificationHistoryResponse} declares them.
      */
     private static final List<String> DECLARED_COMPONENTS = List.of(
-            "cardNumber", "transactionCount", "totalAmount", "transactions");
+            "cardNumber", "transactionCount", "totalAmount", "transactions", "nextPageExists",
+            "nextCursor");
 
     /**
-     * Paging and cursor names, lower-cased. The history route carries no paging parameter. No
-     * component names one.
+     * The properties a serialized last page carries.
+     *
+     * <p>{@code nextCursor} is absent rather than null. The schema declares it a string and not a
+     * nullable one, and a cursor is present exactly when there is a further page to ask for, so the
+     * record serializes with nulls omitted. Every response this class builds is a last page.
      */
-    private static final List<String> PAGING_NAMES = List.of("page", "size", "limit", "offset",
-            "cursor", "sort", "nextpage", "hasnext", "totalpages", "links");
+    private static final List<String> LAST_PAGE_PROPERTIES =
+            DECLARED_COMPONENTS.subList(0, DECLARED_COMPONENTS.size() - 1);
+
+    /**
+     * Paging names this response does not carry, lower-cased.
+     *
+     * <p>The route pages its entries, so {@code nextPageExists} and {@code nextCursor} do name paging
+     * and are the two the body publishes. What stays out is every name implying a different paging
+     * model: an offset, a page number, a total page count or a link envelope. A keyset walk has none of
+     * those, and publishing one would invite a request this route cannot serve.</p>
+     */
+    private static final List<String> PAGING_NAMES = List.of("pagenumber", "pageindex", "offset",
+            "totalpages", "pagecount", "links", "sort");
 
     /**
      * Fields other services own, lower-cased. The statement program renders six of them, and the
@@ -234,10 +250,11 @@ final class NotificationHistoryResponseTest {
                 "NotificationHistoryResponse is a record");
     }
 
-    /** Asserts the response declares four components and no fifth. */
+    /** Asserts the response declares six components and no seventh. */
     @Test
-    void theResponseDeclaresFourComponents() {
-        assertEquals(4, NotificationHistoryResponse.class.getRecordComponents().length,
+    void theResponseDeclaresSixComponents() {
+        assertEquals(DECLARED_COMPONENTS.size(),
+                NotificationHistoryResponse.class.getRecordComponents().length,
                 "component count");
     }
 
@@ -250,7 +267,7 @@ final class NotificationHistoryResponseTest {
     @Test
     void theComponentNamesFollowTheOrderTheRecordDeclares() {
         assertEquals(DECLARED_COMPONENTS, componentNames(),
-                "the four component names, in declaration order");
+                "the six component names, in declaration order");
     }
 
     /** Asserts the declared type of each component. */
@@ -346,7 +363,7 @@ final class NotificationHistoryResponseTest {
 
         List<String> values = everyAccessorValue(responseWithThreeRows());
 
-        assertEquals(4 + 3 * 12, values.size(), "accessors read");
+        assertEquals(DECLARED_COMPONENTS.size() + 3 * 12, values.size(), "accessors read");
         for (String value : values) {
             assertFalse(value.contains(cardNumber), "no accessor returns the card number");
             assertFalse(SIXTEEN_DIGIT_RUN.matcher(value).find(),
@@ -388,13 +405,13 @@ final class NotificationHistoryResponseTest {
         }
     }
 
-    /** Asserts the body carries four properties, named and ordered as the record declares them. */
+    /** Asserts the body carries its properties, named and ordered as the record declares them. */
     @Test
-    void theSerializedBodyCarriesFourPropertiesInDeclarationOrder() {
+    void theSerializedBodyCarriesEveryPropertyInDeclarationOrder() {
         JsonNode body = bodyOf(responseWithThreeRows());
 
-        assertEquals(DECLARED_COMPONENTS, propertiesOf(body), "property names, in that order");
-        assertEquals(4, body.size(), "property count");
+        assertEquals(LAST_PAGE_PROPERTIES, propertiesOf(body), "property names, in that order");
+        assertEquals(LAST_PAGE_PROPERTIES.size(), body.size(), "property count");
         assertTrue(body.get("cardNumber").isString(), "the display value travels as text");
         assertTrue(body.get("totalAmount").isString(), "the total travels as text");
         assertTrue(body.get("transactions").isArray(), "the transactions travel as an array");
@@ -411,8 +428,8 @@ final class NotificationHistoryResponseTest {
     void aBodyForACardWithNoRowStillNamesItsCard() {
         JsonNode body = bodyOf(emptyResponse());
 
-        assertEquals(DECLARED_COMPONENTS, propertiesOf(body), "property names, in that order");
-        assertEquals(4, body.size(), "property count");
+        assertEquals(LAST_PAGE_PROPERTIES, propertiesOf(body), "property names, in that order");
+        assertEquals(LAST_PAGE_PROPERTIES.size(), body.size(), "property count");
         assertEquals(MASKED_CARD_NUMBER, body.get("cardNumber").stringValue(),
                 "the display value is present");
     }
@@ -437,7 +454,8 @@ final class NotificationHistoryResponseTest {
         for (int size = 0; size <= rows.size(); size++) {
             List<StatementTransactionEntity> page = rows.subList(0, size);
             NotificationHistoryResponse response =
-                    NotificationHistoryResponse.fromCardRows(MASKED_CARD_NUMBER, ZERO_TOTAL, page);
+                    NotificationHistoryResponse.fromCardRows(MASKED_CARD_NUMBER, page.size(), ZERO_TOTAL,
+                            page, false);
 
             assertEquals(response.transactions().size(), response.transactionCount(),
                     "count equals the item count at size " + size);
@@ -522,14 +540,14 @@ final class NotificationHistoryResponseTest {
     @Test
     void aTotalPastTwoFractionalDigitsIsRefusedForBothSigns() {
         IllegalArgumentException positive = assertThrows(IllegalArgumentException.class,
-                () -> NotificationHistoryResponse.fromCardRows(MASKED_CARD_NUMBER, TOTAL_PAST_SCALE_TWO,
-                        List.of()),
+                () -> NotificationHistoryResponse.fromCardRows(MASKED_CARD_NUMBER, 0,
+                        TOTAL_PAST_SCALE_TWO, List.of(), false),
                 "a total at three fractional digits");
         assertTrue(positive.getMessage().contains("scale"), "the message names the scale");
 
         IllegalArgumentException negative = assertThrows(IllegalArgumentException.class,
-                () -> NotificationHistoryResponse.fromCardRows(MASKED_CARD_NUMBER,
-                        NEGATIVE_TOTAL_PAST_SCALE_TWO, List.of()),
+                () -> NotificationHistoryResponse.fromCardRows(MASKED_CARD_NUMBER, 0,
+                        NEGATIVE_TOTAL_PAST_SCALE_TWO, List.of(), false),
                 "a negative total at three fractional digits");
         assertTrue(negative.getMessage().contains("scale"), "the message names the scale");
     }
@@ -667,7 +685,7 @@ final class NotificationHistoryResponseTest {
     void aBodyForACardWithNoRowCarriesNoForbiddenProperty() {
         List<String> names = lowerCasePropertyNames(bodyOf(emptyResponse()));
 
-        assertEquals(4, names.size(), "property count");
+        assertEquals(LAST_PAGE_PROPERTIES.size(), names.size(), "property count");
         for (String owned : FIELDS_OTHER_SERVICES_OWN) {
             for (String name : names) {
                 assertFalse(name.contains(owned), "no property names " + owned);
@@ -684,7 +702,7 @@ final class NotificationHistoryResponseTest {
         String cardNumber = fullCardNumber();
 
         IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
-                () -> new NotificationHistoryResponse(cardNumber, 0, "0.00", List.of()),
+                () -> new NotificationHistoryResponse(cardNumber, 0, "0.00", List.of(), false, null),
                 "a card number in the display component");
 
         assertFalse(refused.getMessage().contains(cardNumber), "no message names a card number");
@@ -694,38 +712,90 @@ final class NotificationHistoryResponseTest {
     @Test
     void aCardTokenWhereTheMaskedCardNumberBelongsIsRefused() {
         assertThrows(IllegalArgumentException.class,
-                () -> new NotificationHistoryResponse(CARD_TOKEN, 0, "0.00", List.of()),
+                () -> new NotificationHistoryResponse(CARD_TOKEN, 0, "0.00", List.of(), false, null),
                 "a card token in the display component");
         assertThrows(IllegalArgumentException.class,
                 () -> new NotificationHistoryResponse(MASKED_CARD_NUMBER.replace('*', '0'), 0,
-                        "0.00", List.of()),
+                        "0.00", List.of(), false, null),
                 "a value carrying no mask character");
         assertEquals(PanMasker.CARD_TOKEN_LENGTH, CARD_TOKEN.length(), "token width");
         assertTrue(CARD_TOKEN.matches(PanMasker.CARD_TOKEN_PATTERN), "token shape");
     }
 
-    /** Asserts the constructor refuses a count that disagrees with the items supplied. */
+    /**
+     * Asserts the constructor refuses a count smaller than the items supplied, and admits a larger one.
+     *
+     * <p>The count covers the card's whole history and the items cover one page of it, so a count above
+     * the items is the ordinary case on any card whose history needs more than one page. A count below
+     * them describes a page carrying rows the card does not hold, which cannot be true.</p>
+     */
     @Test
-    void aCountThatDisagreesWithTheItemsIsRefused() {
+    void aCountSmallerThanTheItemsIsRefused() {
         List<NotificationTransactionItem> one = responseWithOneRow().transactions();
 
         assertThrows(IllegalArgumentException.class,
-                () -> new NotificationHistoryResponse(MASKED_CARD_NUMBER, 2, "0.00", one),
-                "a count above the items supplied");
+                () -> new NotificationHistoryResponse(MASKED_CARD_NUMBER, 0, "0.00", one, false,
+                        null),
+                "a count below the items supplied");
         assertThrows(IllegalArgumentException.class,
-                () -> new NotificationHistoryResponse(MASKED_CARD_NUMBER, -1, "0.00", List.of()),
+                () -> new NotificationHistoryResponse(MASKED_CARD_NUMBER, -1, "0.00", List.of(),
+                        false, null),
                 "a negative count");
+        assertDoesNotThrow(
+                () -> new NotificationHistoryResponse(MASKED_CARD_NUMBER, 2, "0.00", one, false,
+                        null),
+                "a whole-history count above the page is what a further page looks like");
+    }
+
+    /**
+     * Asserts the cursor is present exactly when a further page exists.
+     *
+     * <p>A cursor on a last page would ask a caller to fetch an empty page, and a missing one on a
+     * further page would strand the walk halfway through a history.</p>
+     */
+    @Test
+    void aCursorDisagreeingWithTheFurtherPageFlagIsRefused() {
+        List<NotificationTransactionItem> one = responseWithOneRow().transactions();
+
+        assertThrows(IllegalArgumentException.class,
+                () -> new NotificationHistoryResponse(MASKED_CARD_NUMBER, 2, "0.00", one, true, null),
+                "a further page with no cursor to ask for it");
+        assertThrows(IllegalArgumentException.class,
+                () -> new NotificationHistoryResponse(MASKED_CARD_NUMBER, 1, "0.00", one, false,
+                        FIRST_TRANSACTION_ID),
+                "a cursor on a last page");
+        assertThrows(IllegalArgumentException.class,
+                () -> new NotificationHistoryResponse(MASKED_CARD_NUMBER, 2, "0.00", one, true, " "),
+                "a blank cursor");
+        assertDoesNotThrow(
+                () -> new NotificationHistoryResponse(MASKED_CARD_NUMBER, 2, "0.00", one, true,
+                        FIRST_TRANSACTION_ID),
+                "a further page and the cursor that asks for it");
+    }
+
+    /**
+     * Asserts the factory refuses a further page over a page carrying no row.
+     *
+     * <p>The cursor is the identifier of the last row of the page, so there is nothing to build one
+     * from.</p>
+     */
+    @Test
+    void aFurtherPageOverNoRowIsRefused() {
+        assertThrows(IllegalArgumentException.class,
+                () -> NotificationHistoryResponse.fromCardRows(MASKED_CARD_NUMBER, 5, ZERO_TOTAL,
+                        List.of(), true),
+                "a further page after an empty page");
     }
 
     /** Asserts the constructor refuses a total outside the shape the record declares. */
     @Test
     void aTotalOutsideTheDeclaredShapeIsRefused() {
         assertThrows(IllegalArgumentException.class,
-                () -> new NotificationHistoryResponse(MASKED_CARD_NUMBER, 0, "0", List.of()),
+                () -> new NotificationHistoryResponse(MASKED_CARD_NUMBER, 0, "0", List.of(), false, null),
                 "a total without its two fractional digits");
         assertThrows(IllegalArgumentException.class,
                 () -> new NotificationHistoryResponse(MASKED_CARD_NUMBER, 0, "1234567890.00",
-                        List.of()),
+                        List.of(), false, null),
                 "a total at ten integer digits");
     }
 
@@ -739,13 +809,14 @@ final class NotificationHistoryResponseTest {
         List<NotificationTransactionItem> one = responseWithOneRow().transactions();
 
         NotificationHistoryResponse response =
-                new NotificationHistoryResponse(SECOND_MASKED_CARD_NUMBER, 1, "0.00", one);
+                new NotificationHistoryResponse(SECOND_MASKED_CARD_NUMBER, 1, "0.00", one, false,
+                        null);
 
         assertEquals(SECOND_MASKED_CARD_NUMBER, response.cardNumber(), "the value supplied");
         assertNotEquals(MASKED_CARD_NUMBER, SECOND_MASKED_CARD_NUMBER,
                 "two cards ending in different digits mask apart");
         assertThrows(NullPointerException.class,
-                () -> new NotificationHistoryResponse(null, 1, "0.00", one),
+                () -> new NotificationHistoryResponse(null, 1, "0.00", one, false, null),
                 "items with no display value beside them");
     }
 
@@ -753,20 +824,20 @@ final class NotificationHistoryResponseTest {
     @Test
     void aNullArgumentToTheFactoryIsRefusedByName() {
         NullPointerException noCardNumber = assertThrows(NullPointerException.class,
-                () -> NotificationHistoryResponse.fromCardRows(null, ZERO_TOTAL, List.of()),
+                () -> NotificationHistoryResponse.fromCardRows(null, 0, ZERO_TOTAL, List.of(), false),
                 "a null masked card number");
         assertTrue(noCardNumber.getMessage().contains("maskedCardNumber"),
                 "the message names the argument");
 
         NullPointerException noTotal = assertThrows(NullPointerException.class,
-                () -> NotificationHistoryResponse.fromCardRows(MASKED_CARD_NUMBER, null,
-                        List.of()),
+                () -> NotificationHistoryResponse.fromCardRows(MASKED_CARD_NUMBER, 0, null,
+                        List.of(), false),
                 "a null total");
         assertTrue(noTotal.getMessage().contains("total"), "the message names the argument");
 
         NullPointerException noRows = assertThrows(NullPointerException.class,
-                () -> NotificationHistoryResponse.fromCardRows(MASKED_CARD_NUMBER, ZERO_TOTAL,
-                        null),
+                () -> NotificationHistoryResponse.fromCardRows(MASKED_CARD_NUMBER, 0, ZERO_TOTAL,
+                        null, false),
                 "null rows");
         assertTrue(noRows.getMessage().contains("rows"), "the message names the argument");
     }
@@ -796,8 +867,9 @@ final class NotificationHistoryResponseTest {
      * @return the response
      */
     private static NotificationHistoryResponse responseWithThreeRows() {
-        return NotificationHistoryResponse.fromCardRows(MASKED_CARD_NUMBER, TOTAL_AT_SCALE_TWO,
-                threeRows());
+        List<StatementTransactionEntity> rows = threeRows();
+        return NotificationHistoryResponse.fromCardRows(MASKED_CARD_NUMBER, rows.size(),
+                TOTAL_AT_SCALE_TWO, rows, false);
     }
 
     /**
@@ -806,8 +878,8 @@ final class NotificationHistoryResponseTest {
      * @return the response
      */
     private static NotificationHistoryResponse responseWithOneRow() {
-        return NotificationHistoryResponse.fromCardRows(MASKED_CARD_NUMBER, TOTAL_AT_SCALE_TWO,
-                List.of(row(FIRST_TRANSACTION_ID)));
+        return NotificationHistoryResponse.fromCardRows(MASKED_CARD_NUMBER, 1,
+                TOTAL_AT_SCALE_TWO, List.of(row(FIRST_TRANSACTION_ID)), false);
     }
 
     /**
@@ -817,8 +889,8 @@ final class NotificationHistoryResponseTest {
      * @return the response
      */
     private static NotificationHistoryResponse responseWithTotal(BigDecimal total) {
-        return NotificationHistoryResponse.fromCardRows(MASKED_CARD_NUMBER, total,
-                List.of(row(FIRST_TRANSACTION_ID)));
+        return NotificationHistoryResponse.fromCardRows(MASKED_CARD_NUMBER, 1, total,
+                List.of(row(FIRST_TRANSACTION_ID)), false);
     }
 
     /**
@@ -827,7 +899,8 @@ final class NotificationHistoryResponseTest {
      * @return the response
      */
     private static NotificationHistoryResponse emptyResponse() {
-        return NotificationHistoryResponse.fromCardRows(MASKED_CARD_NUMBER, ZERO_TOTAL, List.of());
+        return NotificationHistoryResponse.fromCardRows(MASKED_CARD_NUMBER, 0, ZERO_TOTAL,
+                List.of(), false);
     }
 
     /**

@@ -3,6 +3,7 @@ package com.carddemo.ledger.outbox;
 import static org.junit.jupiter.api.Assertions.assertTimeout;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
@@ -14,6 +15,7 @@ import com.carddemo.ledger.config.ObservabilityConfig;
 import com.carddemo.ledger.entity.OutboxEventEntity;
 import com.carddemo.ledger.repository.OutboxEventRepository;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import org.apache.kafka.clients.producer.ProducerRecord;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
@@ -69,13 +71,17 @@ class OutboxRelayDeadlineTest {
                 any(OutboxEventEntity.RelayState.class), any(Instant.class), eq(Limit.of(1))))
                 .thenReturn(List.of());
         when(rows.claimDueRows(any(Instant.class), eq(Limit.of(1)))).thenReturn(List.of(row));
+        // The relay records the outcome of one send in a transaction of its own and re-reads the row
+        // inside it, because the claim has committed by then and saving the copy the claim loaded
+        // would write pre-claim state back over it. This answers that read with the same row.
+        when(rows.findById(any(UUID.class))).thenReturn(java.util.Optional.of(row));
         when(row.getEventId()).thenReturn(UUID.randomUUID());
         when(row.getEventType()).thenReturn(TransactionPosted.EVENT_TYPE);
         when(row.getAggregateId()).thenReturn(ACCOUNT_ID);
         when(row.getPayload()).thenReturn(postedPayload());
         when(row.getAttemptCount()).thenReturn(1);
         when(row.getRelayState()).thenReturn(OutboxEventEntity.RelayState.PENDING);
-        when(template.send(eq(POSTED_TOPIC), eq(ACCOUNT_ID), any()))
+        when(template.send(postedRecord()))
                 .thenAnswer(invocation -> neverAcknowledged);
 
         OutboxRelay relay = new OutboxRelay(rows, template, JsonMapper.builder().build(),
@@ -85,7 +91,7 @@ class OutboxRelayDeadlineTest {
         assertTimeout(Duration.ofSeconds(2L), relay::publishPendingEvents);
         verify(row).recordFailure(eq("RelayDeadlineExceededException"), any(Instant.class),
                 any(Instant.class));
-        verify(template).send(eq(POSTED_TOPIC), eq(ACCOUNT_ID), any());
+        verify(template).send(postedRecord());
     }
 
     /**
@@ -155,6 +161,28 @@ class OutboxRelayDeadlineTest {
         relay.publishPendingEvents();
 
         verify(rows).claimDueRows(any(Instant.class), eq(Limit.of(1)));
-        verify(template, org.mockito.Mockito.never()).send(anyString(), anyString(), any());
+        verify(template, org.mockito.Mockito.never()).send(anyRecord());
+    }
+
+    /**
+     * Matches one record addressed to the posted topic and keyed on the account.
+     *
+     * <p>The relay sends a {@code ProducerRecord} rather than a topic, a key and a value, because the
+     * two correlation identifiers of the row travel as record headers.
+     *
+     * @return the matcher
+     */
+    private static ProducerRecord<String, Object> postedRecord() {
+        return argThat((ProducerRecord<String, Object> record) -> record != null
+                && POSTED_TOPIC.equals(record.topic()) && ACCOUNT_ID.equals(record.key()));
+    }
+
+    /**
+     * Matches any record at all.
+     *
+     * @return the matcher
+     */
+    private static ProducerRecord<String, Object> anyRecord() {
+        return any();
     }
 }

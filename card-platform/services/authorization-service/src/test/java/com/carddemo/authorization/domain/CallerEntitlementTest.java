@@ -52,19 +52,38 @@ class CallerEntitlementTest {
         @Test
         @DisplayName("reaches an account it holds no scope for")
         void reachesAnAccountItHoldsNoScopeFor() {
+            RequestCaller caller = RequestCaller.administrator(ACTOR);
+
             assertDoesNotThrow(() -> CallerEntitlement.require(
-                    RequestCaller.administrator(ACTOR), RESOLVED_ACCOUNT, CARD_NUMBER),
+                    caller, RESOLVED_ACCOUNT, CARD_NUMBER),
                     "the administrator reaches every subject here, as it does on every "
                             + "ownership-scoped route of this platform");
+
+            assertAll(
+                    () -> assertTrue(caller.reachesEverySubject(),
+                            "and it is admitted by the blanket limb, which is the whole of the"
+                                    + " administrator's entitlement"),
+                    () -> assertFalse(caller.ownsAccount(RESOLVED_ACCOUNT),
+                            "not by ownership: it holds no scope over this account, so a check that"
+                                    + " admitted it by ownership would be admitting it for a reason"
+                                    + " that is not true"));
         }
 
         @Test
         @DisplayName("reaches a card that resolved no account at all")
         void reachesACardThatResolvedNoAccount() {
-            assertDoesNotThrow(() -> CallerEntitlement.require(
-                    RequestCaller.administrator(ACTOR), null, CARD_NUMBER),
+            RequestCaller caller = RequestCaller.administrator(ACTOR);
+
+            assertDoesNotThrow(() -> CallerEntitlement.require(caller, null, CARD_NUMBER),
                     "reject code 0100 at app/cbl/CBTRN02C.cbl:L385-L387 is a decision an "
                             + "administrator may still ask for");
+
+            assertAll(
+                    () -> assertTrue(caller.reachesEverySubject(),
+                            "admitted by the blanket limb"),
+                    () -> assertFalse(caller.ownsAccount(null),
+                            "and not by owning the account that does not exist, which is the only"
+                                    + " other limb an absent account could reach"));
         }
     }
 
@@ -83,18 +102,35 @@ class CallerEntitlementTest {
         @Test
         @DisplayName("reaches an account it holds no scope for")
         void reachesAnAccountItHoldsNoScopeFor() {
+            RequestCaller caller = RequestCaller.acquirer(ACTOR);
+
             assertDoesNotThrow(() -> CallerEntitlement.require(
-                    RequestCaller.acquirer(ACTOR), RESOLVED_ACCOUNT, CARD_NUMBER),
+                    caller, RESOLVED_ACCOUNT, CARD_NUMBER),
                     "an acquirer legitimately presents transactions for cards it does not own");
+
+            assertAll(
+                    () -> assertTrue(caller.reachesEverySubject(),
+                            "an acquiring workload owns no row, so the blanket limb is the only one"
+                                    + " that can admit it. A check that dropped that limb would"
+                                    + " decline every call on the one route this identity is for"),
+                    () -> assertFalse(caller.ownsAccount(RESOLVED_ACCOUNT),
+                            "and it holds no ownership scope to be admitted by"));
         }
 
         @Test
         @DisplayName("reaches a card that resolved no account at all")
         void reachesACardThatResolvedNoAccount() {
-            assertDoesNotThrow(() -> CallerEntitlement.require(
-                    RequestCaller.acquirer(ACTOR), null, CARD_NUMBER),
+            RequestCaller caller = RequestCaller.acquirer(ACTOR);
+
+            assertDoesNotThrow(() -> CallerEntitlement.require(caller, null, CARD_NUMBER),
                     "reject code 0100 at app/cbl/CBTRN02C.cbl:L385-L387 is the answer an acquirer "
                             + "presenting an unknown card is owed");
+
+            assertAll(
+                    () -> assertTrue(caller.reachesEverySubject(),
+                            "admitted by the blanket limb"),
+                    () -> assertFalse(caller.ownsCard(PanMasker.cardToken(CARD_NUMBER)),
+                            "and not by owning the card it merely presented"));
         }
 
         @Test
@@ -113,17 +149,43 @@ class CallerEntitlementTest {
         @Test
         @DisplayName("reaches the account its own scope names")
         void reachesTheAccountItsScopeNames() {
+            RequestCaller caller = ownerOfAccount(RESOLVED_ACCOUNT);
+
             assertDoesNotThrow(() -> CallerEntitlement.require(
-                    ownerOfAccount(RESOLVED_ACCOUNT), RESOLVED_ACCOUNT, CARD_NUMBER),
+                    caller, RESOLVED_ACCOUNT, CARD_NUMBER),
                     "the comparison is against the account the cross-reference row named");
+
+            assertAll(
+                    () -> assertFalse(caller.reachesEverySubject(),
+                            "this identity carries no blanket authority, so admission here has to"
+                                    + " come from its own scope. Without this the case would pass"
+                                    + " against a check that admitted everyone"),
+                    () -> assertTrue(caller.ownsAccount(RESOLVED_ACCOUNT),
+                            "and its scope names the account the cross-reference resolved"),
+                    () -> assertFalse(caller.ownsCard(PanMasker.cardToken(CARD_NUMBER)),
+                            "it holds no card scope, so the card limb is not what admitted it"));
         }
 
         @Test
         @DisplayName("reaches a card its own scope names when it holds no account scope")
         void reachesACardItsScopeNames() {
+            RequestCaller caller = ownerOfCard(CARD_NUMBER);
+
             assertDoesNotThrow(() -> CallerEntitlement.require(
-                    ownerOfCard(CARD_NUMBER), RESOLVED_ACCOUNT, CARD_NUMBER),
+                    caller, RESOLVED_ACCOUNT, CARD_NUMBER),
                     "a cardholder entitled to one card reaches it whichever account it belongs to");
+
+            assertAll(
+                    () -> assertFalse(caller.reachesEverySubject(),
+                            "no blanket authority, so the card limb is what admitted it"),
+                    () -> assertFalse(caller.ownsAccount(RESOLVED_ACCOUNT),
+                            "and no account scope either, which is the point: the card is reached"
+                                    + " whichever account it belongs to"),
+                    () -> assertTrue(caller.ownsCard(PanMasker.cardToken(CARD_NUMBER)),
+                            "the scope names the card by its token"),
+                    () -> assertFalse(caller.ownsCard(CARD_NUMBER),
+                            "and by its token rather than by its number, so a check comparing the"
+                                    + " raw number would refuse the owner of the card"));
         }
 
         @Test

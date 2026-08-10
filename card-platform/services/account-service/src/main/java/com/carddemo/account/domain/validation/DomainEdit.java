@@ -64,12 +64,36 @@ public @interface DomainEdit {
     /**
      * The width the edit inspects, from the Picture clause of the source field.
      *
-     * <p>Only the edits that take a width read this member. A value wider than the width is refused
-     * rather than edited on its first characters.
+     * <p>Only the edits that take a width read this member. It is the value the source moves into
+     * {@code WS-EDIT-ALPHANUM-LENGTH} at {@code app/cbl/COACTUPC.cbl:L62}, and every test of the
+     * edit reads {@code WS-EDIT-ALPHANUM-ONLY(1:WS-EDIT-ALPHANUM-LENGTH)}, so positions past it are
+     * not inspected.
      *
      * @return the width, defaulting to zero for the edits that take none
      */
     int width() default 0;
+
+    /**
+     * The width the field itself holds, when it is wider than the width the edit inspects.
+     *
+     * <p>For almost every edited field the two are the same, and this member defaults to
+     * {@link #width()} rather than being restated. The postal code is the exception the source
+     * itself creates: {@code ACUP-NEW-CUST-ADDR-ZIP PIC X(10)} at
+     * {@code app/cbl/COACTUPC.cbl:L809} and {@code CUST-ADDR-ZIP PIC X(10)} at
+     * {@code app/cpy/CVCUS01Y.cpy:L14} both hold ten characters, while
+     * {@code app/cbl/COACTUPC.cbl:L1607} moves 5 into the edited length. Positions six to ten are
+     * carried, stored and returned, and never edited, so {@code 19852-6716} passes the source edit
+     * on its first five characters.
+     *
+     * <p>The distinction matters because the width a value may carry and the width an edit inspects
+     * are different questions. A validator refuses content past the width the field holds, since a
+     * Representational State Transfer caller can send a value no fixed-width screen field could;
+     * it edits only the first {@link #width()} positions, since that is all the source reads.
+     * Collapsing the two refused every stored ZIP+4 value the seed data holds.
+     *
+     * @return the width the field holds, or zero to take {@link #width()}
+     */
+    int heldWidth() default 0;
 
     /**
      * The constraint groups this edit belongs to.

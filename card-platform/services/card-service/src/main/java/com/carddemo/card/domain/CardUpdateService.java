@@ -88,9 +88,10 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
  * answers with the instance the first read had already loaded.
  *
  * <p>The card row and the event row commit together or neither commits.
- * {@link OutboxWriter#writeCardUpdated(CardEntity)} joins the transaction this class opens. That
- * atomicity is ADDITIVE: every file definition in {@code app/csd/CARDDEMO.CSD} carries
- * {@code RECOVERY(NONE)} and {@code JOURNAL(NO)}.
+ * {@link OutboxWriter#writeCardUpdated(CardEntity)} carries
+ * {@code @Transactional(propagation = MANDATORY)}, so it joins the transaction this class opens and
+ * refuses a caller that opened none. That atomicity is ADDITIVE: every file definition in
+ * {@code app/csd/CARDDEMO.CSD} carries {@code RECOVERY(NONE)} and {@code JOURNAL(NO)}.
  *
  * <h2>What this class does not add</h2>
  *
@@ -289,6 +290,12 @@ public class CardUpdateService {
     /** Stores the event row that commits with the card row. */
     private final OutboxWriter outboxWriter;
 
+    /**
+     * Brings the {@code card_xref} replica of this service into step with the card row inside the one
+     * transaction that saves that row and writes the event.
+     */
+    private final CardCrossReferenceReconciler crossReferenceReconciler;
+
     /** Applies the constraints {@link CardUpdateRequest} declares, one property at a time. */
     private final Validator validator;
 
@@ -318,6 +325,7 @@ public class CardUpdateService {
      * @param cards                  the repository over table {@code card}
      * @param cardQueries            the read side, which fetches the stored card
      * @param outboxWriter           the writer of the event row
+     * @param crossReferenceReconciler brings the cross-reference replica into step with the card row
      * @param validator              the validator that applies the request constraints
      * @param entityManager          the unit of work whose flush sends the queued statements
      * @param updatesApplied         counter of updates that committed
@@ -329,7 +337,8 @@ public class CardUpdateService {
      * @throws NullPointerException if any argument is {@code null}
      */
     public CardUpdateService(CardRepository cards, CardQueryService cardQueries,
-            OutboxWriter outboxWriter, Validator validator, EntityManager entityManager,
+            OutboxWriter outboxWriter, CardCrossReferenceReconciler crossReferenceReconciler,
+            Validator validator, EntityManager entityManager,
             @Qualifier("cardUpdatesAppliedCounter") Counter updatesApplied,
             @Qualifier("cardUpdateConflictCounter") Counter updateConflicts,
             @Qualifier("cardInfrastructureFailureCounter") Counter infrastructureFailures,
@@ -339,6 +348,8 @@ public class CardUpdateService {
         this.entityManager = Objects.requireNonNull(entityManager, "entityManager is required");
         this.cardQueries = Objects.requireNonNull(cardQueries, "cardQueries is required");
         this.outboxWriter = Objects.requireNonNull(outboxWriter, "outboxWriter is required");
+        this.crossReferenceReconciler = Objects.requireNonNull(crossReferenceReconciler,
+                "crossReferenceReconciler is required");
         this.validator = Objects.requireNonNull(validator, "validator is required");
         this.updatesApplied = Objects.requireNonNull(updatesApplied, "updatesApplied is required");
         this.updateConflicts =
@@ -363,12 +374,42 @@ public class CardUpdateService {
      * @throws NullPointerException if {@code cardNumber} or {@code request} is {@code null}
      */
     public CardUpdateResponse updateCard(String cardNumber, CardUpdateRequest request) {
+        return updateCard(cardNumber, request, null);
+    }
+
+    /**
+     * Applies one card update against a row the caller has already read.
+     *
+     * <p>Same outcomes and same order as {@link #updateCard(String, CardUpdateRequest)}, with one
+     * statement fewer. A caller that resolved the card to reach its number is holding the row this
+     * method would otherwise read a second time: {@code api/CardController} resolves a token to a
+     * card before it can name the card at all, so the read it performs and the read this method
+     * performed answered the same key with the same row.
+     *
+     * <p>{@code resolved} replaces the unlocked read and nothing else. Every edit still runs, in
+     * source order, and the locked read of {@link #applyUpdate} still happens: that read is the
+     * compare-and-swap of {@code app/cbl/COCRDUPC.cbl:L1429}, and a row read before the transaction
+     * opened cannot stand in for a row held under a lock.
+     *
+     * <p>A {@code resolved} row naming another card is not used. The number this method was given is
+     * the one that decides, so a mismatch falls back to the read rather than acting on a row the
+     * caller did not name.
+     *
+     * @param cardNumber the card the update names, which arrives in the request path
+     * @param request    the submitted update, as it arrived
+     * @param resolved   the row the caller already read for {@code cardNumber}, or {@code null} to
+     *                   have this method read it
+     * @return the outcome, never {@code null}
+     * @throws NullPointerException if {@code cardNumber} or {@code request} is {@code null}
+     */
+    public CardUpdateResponse updateCard(String cardNumber, CardUpdateRequest request,
+            CardEntity resolved) {
         Objects.requireNonNull(cardNumber, "cardNumber is required");
         Objects.requireNonNull(request, "request is required");
 
         long startedAt = System.nanoTime();
         try {
-            return decide(cardNumber, request);
+            return decide(cardNumber, request, resolved);
         } finally {
             updateLatency.record(System.nanoTime() - startedAt, TimeUnit.NANOSECONDS);
         }
@@ -385,7 +426,8 @@ public class CardUpdateService {
      * @param request    the submitted update
      * @return the outcome
      */
-    private CardUpdateResponse decide(String cardNumber, CardUpdateRequest request) {
+    private CardUpdateResponse decide(String cardNumber, CardUpdateRequest request,
+            CardEntity resolved) {
         if (isAbsent(cardNumber, CARD_NUMBER_WIDTH)) {
             log.info("A card update supplied no card number");
             return CardUpdateResponse.validationRejected(CardValidationMessages.PROMPT_FOR_CARD);
@@ -398,7 +440,14 @@ public class CardUpdateService {
                     CardValidationMessages.CARD_FILTER_NOT_NUMERIC);
         }
 
-        Optional<CardEntity> stored = cardQueries.findByCardNumber(padKey(cardNumber));
+        // The row the caller already read, when it read this card. Compared on the padded key the
+        // read below would have used, so a supplied row for another card is ignored rather than
+        // trusted: the number this method was given is the one that decides.
+        String key = padKey(cardNumber);
+        Optional<CardEntity> stored =
+                resolved != null && key.equals(resolved.getCardNumber())
+                        ? Optional.of(resolved)
+                        : cardQueries.findByCardNumber(key);
         if (stored.isEmpty()) {
             log.info("A card update named no stored card, {}", masked);
             return CardUpdateResponse.cardNotFound();
@@ -458,9 +507,11 @@ public class CardUpdateService {
      * three values the map admits. The card number, the account identifier and the card verification
      * value are carried through, as {@code app/cbl/COCRDUPC.cbl:L1462-L1465} carries them.
      *
-     * <p>Two answers read the row this method locked, and each reads a different snapshot of it. The
-     * comparison reads {@link #snapshotOf}, whose name is folded on both sides. A refusal answers with
-     * {@link #storedValuesOf}, whose name is not, so the caller reads what the column holds.
+     * <p>One snapshot serves both purposes. {@link #snapshotOf} folds the embossed name, the
+     * comparison reads it, and a refusal answers with the same values. That is what the source does:
+     * {@code 9300-CHECK-CHANGE-IN-REC.} folds the record field in place at
+     * {@code app/cbl/COCRDUPC.cbl:L1499-L1501}, so the {@code MOVE} at
+     * {@code app/cbl/COCRDUPC.cbl:L1513} refreshes the operator's field from the folded value.
      *
      * <p>{@link EntityManager#flush()} closes the guarded block, so the statements of the row write
      * and the event write reach the database while this method can still see a refusal of either one.
@@ -525,9 +576,13 @@ public class CardUpdateService {
         if (!current.equals(fetched)) {
             updateConflicts.increment();
             log.info("A card update lost a race against another writer, {}", masked);
-            // The comparison reads the folded snapshot and the answer carries the unfolded one, so
-            // the caller reads the name the row holds rather than the name the comparison needed.
-            return CardUpdateResponse.changedBeforeUpdate(storedValuesOf(card));
+            // The answer carries the same folded snapshot the comparison read, which is what the
+            // source answers with. 9300-CHECK-CHANGE-IN-REC. runs
+            // INSPECT CARD-EMBOSSED-NAME CONVERTING LIT-LOWER TO LIT-UPPER over the record field
+            // IN PLACE at app/cbl/COCRDUPC.cbl:L1499-L1501, so the
+            // MOVE CARD-EMBOSSED-NAME TO CCUP-OLD-CRDNAME at :L1513 carries the already-folded
+            // value into the field the operator reviews.
+            return CardUpdateResponse.changedBeforeUpdate(current);
         }
 
         try {
@@ -535,6 +590,12 @@ public class CardUpdateService {
                     request.activeStatus());
             cards.save(card);
             outboxWriter.writeCardUpdated(card);
+            // The replica of the card-to-account mapping this service owns is brought into step
+            // here, in the transaction that saves the card row and queues the event, so the three
+            // either all move or none of them do. app/cbl/COCRDUPC.cbl:L356 reads
+            // *COPY CVACT03Y. commented out, so the source update program never opened the
+            // cross-reference and nothing kept the two copies in step.
+            crossReferenceReconciler.reconcile(card);
             // Both statements reach the database here rather than at commit. save() and the outbox
             // write only queue their statements, so a database refusing either one raised its
             // exception after this block had been left and after the catch below could see it: the
@@ -654,11 +715,22 @@ public class CardUpdateService {
     }
 
     /**
-     * Reads the five values the concurrency comparison uses, name folded.
+     * Reads the five values the concurrency comparison uses, and that a refusal answers with, name
+     * folded.
      *
-     * <p>This snapshot is for comparing and not for answering. {@link #storedValuesOf} is the one a
-     * refusal carries, and the two differ in exactly one value: the name this one folds to upper case
-     * and that one leaves as the row holds it.
+     * <p>One snapshot serves both. The source has no second one: the {@code INSPECT ... CONVERTING}
+     * at {@code app/cbl/COCRDUPC.cbl:L1499-L1501} names {@code CARD-EMBOSSED-NAME} itself rather than
+     * a copy of it, so the record field is upper case by the time the comparison at
+     * {@code app/cbl/COCRDUPC.cbl:L1504} reads it and by the time the {@code MOVE} at
+     * {@code app/cbl/COCRDUPC.cbl:L1513} carries it into {@code CCUP-OLD-CRDNAME}. The value the
+     * operator reviews after a lost race is therefore the folded one.
+     *
+     * <p>An earlier revision answered with the unfolded value on the ground that
+     * {@code GET /cards/&#123;cardToken&#125;} returns the mixed-case name for the same row. That
+     * reasoning traded source fidelity for internal consistency and contradicted the decision
+     * recorded under "The embossed name is folded on both sides of the concurrency comparison" in
+     * {@code card-platform/docs/decision-log.md}. The account service legitimately does the opposite,
+     * because {@code app/cbl/COACTUPC.cbl:L4109-L4193} folds a copy rather than the record area.
      *
      * <p>{@code app/cbl/COCRDUPC.cbl:L1512-L1517} refreshes exactly these once the comparison at
      * {@code app/cbl/COCRDUPC.cbl:L1503-L1508} fails. Every value is carried as text, matching the
@@ -686,37 +758,6 @@ public class CardUpdateService {
         LocalDate expiration = card.getExpirationDate();
         return new RefreshedCard(
                 upperCased(padded(card.getEmbossedName(), EMBOSSED_NAME_WIDTH)),
-                digits(expiration.getYear(), EXPIRY_YEAR_WIDTH),
-                digits(expiration.getMonthValue(), EXPIRY_MONTH_WIDTH),
-                digits(expiration.getDayOfMonth(), EXPIRY_DAY_WIDTH),
-                padded(card.getActiveStatus(), ACTIVE_STATUS_WIDTH));
-    }
-
-    /**
-     * Reads the five values a refusal answers with, exactly as the row holds them.
-     *
-     * <p>The same five values as {@link #snapshotOf}, and the name is not folded. A caller that lost a
-     * race reads what the row holds, so that resubmitting the body it is given is a body the
-     * comparison accepts. {@code app/data/ASCII/carddata.txt} carries mixed-case names such as
-     * {@code Aniya Von}, and answering {@code ANIYA VON} told a caller the row held a value it did
-     * not: {@code GET /cards/{cardToken}} returns the mixed-case name for the same row, so two routes of
-     * one service disagreed about one column.
-     *
-     * <p>The fold belongs to the comparison alone. {@code 9300-CHECK-CHANGE-IN-REC.} at
-     * {@code app/cbl/COCRDUPC.cbl:L1499-L1501} runs {@code INSPECT ... CONVERTING} over the record
-     * area in place, so the {@code MOVE} at {@code app/cbl/COCRDUPC.cbl:L1513} carries the folded name
-     * into the refreshed field and the source's own screen shows the folded value. That is an artifact
-     * of folding a record area rather than a copy of it, and it is not a rule: the refreshed values
-     * exist for a human to review before resubmitting, and the openapi document of this route declares
-     * the member as the values the row holds and publishes {@code Ward Jones} for it.
-     *
-     * @param card the locked card row
-     * @return the snapshot, name unfolded
-     */
-    private static RefreshedCard storedValuesOf(CardEntity card) {
-        LocalDate expiration = card.getExpirationDate();
-        return new RefreshedCard(
-                padded(card.getEmbossedName(), EMBOSSED_NAME_WIDTH),
                 digits(expiration.getYear(), EXPIRY_YEAR_WIDTH),
                 digits(expiration.getMonthValue(), EXPIRY_MONTH_WIDTH),
                 digits(expiration.getDayOfMonth(), EXPIRY_DAY_WIDTH),

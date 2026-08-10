@@ -44,7 +44,7 @@ import org.springframework.data.repository.Repository;
  * the deployment when the table holds any other number. Every business column is
  * {@code NOT NULL}, so a row has to exist before the posting path can add an amount to it.
  *
- * <h2>Why no create-on-miss</h2>
+ * <h2>No create-on-miss</h2>
  *
  * <p>{@code 2800-UPDATE-ACCOUNT-REC} at {@code app/cbl/CBTRN02C.cbl:L545-L560} adds the amount and
  * issues {@code REWRITE}. On {@code INVALID KEY} it moves 109 and
@@ -135,10 +135,15 @@ public interface AccountBalanceProjectionRepository
      * produced by {@code 2800-UPDATE-ACCOUNT-REC} at {@code app/cbl/CBTRN02C.cbl:L545-L560}: the
      * amount is added to the balance at {@code :L547} and to one of the two accumulators at
      * {@code :L548-L551}. An account change carries the account service's own copy of those three
-     * fields, and that copy carries no posting this service applied, because the account service
-     * consumes no {@code TransactionPosted}. Writing it over this row therefore discarded the
-     * posting arithmetic, and it did so silently: the detail rows still summed to the movement the
-     * balance no longer showed.
+     * fields. That service applies the same arithmetic to its own record — its
+     * {@code messaging/TransactionPostedConsumer} consumes {@code TransactionPosted} and calls
+     * {@code domain/PostedTransactionService.applyPostedAmount} — so what arrives is not a copy
+     * without the postings. It is a copy that trails them: it holds every posting whose event it has
+     * already consumed and none of the rest, and nothing bounds that gap, because a relay backlog, a
+     * paused listener or a retry each widen it. Writing a trailing copy over this row moved the
+     * balance backwards, the next posting then added to a figure that had lost movements, and nothing
+     * reported either step: the detail rows still summed to the movement the balance no longer
+     * showed.
      *
      * <p>One statement rather than read-then-write, so two deliveries racing on one new account
      * cannot both insert. Replaying the topic converges on the same rows.

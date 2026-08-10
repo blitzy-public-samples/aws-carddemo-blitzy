@@ -396,20 +396,25 @@ final class OpenApiContractTest {
     }
 
     /**
-     * Asserts the response contract names the event an unresolved card publishes.
+     * Asserts the response contract names the contract and the key an unresolved-card decline
+     * publishes under, and the two tables that record it.
      */
     @Test
     void theDocumentDescribesTheUnresolvedCardOutcome() {
         String declined = String.valueOf(schemaOf("DeclinedAuthorization").get("description"));
         assertTrue(declined.contains("INVALID KEY"),
                 "the 0100 branch follows a keyed read that resolved no account");
-        assertTrue(declined.contains("publishes no event"),
-                "the one decided outcome that publishes nothing has to say so, or a reader plans a"
-                        + " consumer around an event that never arrives");
+        assertTrue(declined.contains("schemas/transaction-declined-v2.json"),
+                "the one decided outcome whose event names no account has to name the contract it"
+                        + " publishes under, or a reader validates it against the wrong document");
+        assertTrue(declined.contains("transaction identifier"),
+                "and it has to say the event is keyed on the transaction identifier, because a"
+                        + " consumer partitioning by account would look for it on the wrong"
+                        + " partition");
         assertTrue(declined.contains("unresolved_card_attempt")
                         && declined.contains("authorization_decision"),
-                "and it has to name where the outcome is recorded instead, so publishing nothing"
-                        + " does not read as losing the request");
+                "and it has to name where the outcome is recorded beside the event, so the two rows"
+                        + " and the event read as one committed outcome");
     }
 
     /**

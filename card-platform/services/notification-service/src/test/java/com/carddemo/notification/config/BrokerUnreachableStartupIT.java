@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.carddemo.notification.NotificationServiceDatabase;
 import com.carddemo.notification.TestIdentityPasswords;
 import java.io.IOException;
 import java.net.InetSocketAddress;
@@ -41,8 +42,6 @@ import org.springframework.kafka.listener.ContainerProperties;
 import org.springframework.kafka.listener.MessageListenerContainer;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 
 /**
@@ -84,15 +83,8 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
                 "MONITORING_PASSWORD_HASH=" + TestIdentityPasswords.MONITORING_PASSWORD_HASH,
                 "management.server.port=${server.port}"
         })
-@Testcontainers
 @DisplayName("Notification service start-up while no broker answers")
 class BrokerUnreachableStartupIT {
-
-    /** Image tag of the database container, pinned to the platform version. */
-    private static final String POSTGRES_IMAGE = "postgres:18.4";
-
-    /** Database name, login name and password of the container, one value for all three. */
-    private static final String CONTAINER_CREDENTIAL = "carddemo";
 
     /** Schema Flyway migrates and the persistence layer places every entity in. */
     private static final String SERVICE_SCHEMA = "notification_service";
@@ -186,14 +178,12 @@ class BrokerUnreachableStartupIT {
             ObservabilityConfig.NotificationMetrics.UNKNOWN);
 
     /**
-     * The database this context migrates and validates against. No broker container joins it, and
-     * that absence is what this class asserts the consequences of.
+     * The one container the module fork runs, which this class reads a login from.
+     *
+     * <p>{@link NotificationServiceDatabase} owns it and hands this class a database of its own inside it.
+     * Nothing here starts or stops a container.
      */
-    @Container
-    static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer(POSTGRES_IMAGE)
-            .withDatabaseName(CONTAINER_CREDENTIAL)
-            .withUsername(CONTAINER_CREDENTIAL)
-            .withPassword(CONTAINER_CREDENTIAL);
+    static final PostgreSQLContainer POSTGRES = NotificationServiceDatabase.container();
 
     @Autowired
     private ConfigurableApplicationContext context;
@@ -234,8 +224,7 @@ class BrokerUnreachableStartupIT {
      * @return a connection string carrying {@code currentSchema=notification_service}
      */
     private static String jdbcUrlOnServiceSchema() {
-        String url = POSTGRES.getJdbcUrl();
-        return url + (url.contains("?") ? "&" : "?") + "currentSchema=" + SERVICE_SCHEMA;
+        return NotificationServiceDatabase.urlFor(BrokerUnreachableStartupIT.class);
     }
 
     @Test

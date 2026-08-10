@@ -12,9 +12,17 @@ Install the versions below. Each one is exact rather than a minimum. The build r
 | :--- | :--- | :--- |
 | Eclipse Temurin OpenJDK | 25.0.4+7 | Compiles and runs all nine modules at release 25 |
 | Apache Maven | 3.9.16 | Builds the reactor. The enforcer refuses Maven 4 |
-| Docker Engine | 29.7.0 | Runs the demo stack |
-| Docker Compose | 5.3.1 | Starts the broker, the database, and the six services |
-| OpenSSL | 3.5.3 | Generates the local passwords and the card-token key |
+| Docker Engine | 29.7.0 or later | Runs the demo stack |
+| Docker Compose | 5.3.1 or later | Starts the broker, the database, and the six services |
+| OpenSSL | 3.5.3 or later | Generates the local passwords and the card-token key |
+
+Two of those five rows are exact and three are floors, and the difference is not editorial. The
+enforcer plugin refuses a build outside `[25,26)` for the language level and `[3.9.16,3.10.0)` for
+Maven, so those two versions are requirements: a newer Maven fails the build rather than passing it.
+Nothing in this repository constrains Docker Engine, Docker Compose or OpenSSL, so the versions given
+for them are the ones the delivered stack was exercised on and the floor a later release stands on.
+Read a floor as "this or newer": the demo needs Compose to support `--wait` and profiles, and the
+credential script needs `openssl rand` and `openssl dgst -hmac`, all of which are long-standing.
 
 `jshell` arrives with the JDK, and the setup script needs it on the path.
 
@@ -35,7 +43,7 @@ That is the whole first run. The script packages the reactor, creates `.env` fro
 
 Three things a clean clone cannot skip, which is why `docker compose up -d --build` alone does not work:
 
-- every `services/*/Dockerfile` copies a packaged archive out of its own module's `target/` directory, and a fresh checkout carries none;
+- the `{bcrypt}` hash of each identity password is produced by `jshell` reading `spring-security-crypto` out of the local Maven repository, which the packaging step is what populates;
 - `docker-compose.yml` reads nineteen credentials that nothing in this repository supplies, because a credential published here would be a credential everyone holds;
 - `.env`, where those credentials live, does not exist until it is copied.
 
@@ -47,7 +55,7 @@ Run it again after every `git pull`. It reconciles an existing `.env` rather tha
 
 Three cases get more than that. An assignment your file carries and the example no longer declares is named in the output and left in place. The script cannot tell a retired setting from one you chose. An assignment holding a key this repository publishes is replaced with a generated one, because two services refuse to start on a published key. An assignment whose value differs from the example's is reported with both values and left as you set it.
 
-That third case is where a start-up refusal after an upgrade usually comes from: a default this platform has tightened still looks like a working value in your file. The run ends by proving your file declares all 133 assignments. A variable Compose needs therefore cannot be silently absent, which is the failure that used to stop `docker compose config` on the first command after an upgrade.
+That third case is where a start-up refusal after an upgrade usually comes from: a default this platform has tightened still looks like a working value in your file. The run ends by proving your file declares all 134 assignments. A variable Compose needs therefore cannot be silently absent, which is the failure that used to stop `docker compose config` on the first command after an upgrade.
 
 The rest of this section is the same work performed by hand. Read it to understand what the script does, or follow it when you want to set a value yourself.
 
@@ -57,7 +65,12 @@ Run the following commands from the repository root:
 
 ```bash
 cd card-platform
-cp .env.example .env
+
+# install -m 600 rather than cp. This file holds fourteen passwords and the card-token key a
+# moment from now, and cp creates it under the umask -- 0644 on a default account, readable
+# by every local user. install sets the mode as it creates the file, so there is no window in
+# which the credentials are world-readable. scripts/generate-env.sh protects the same file.
+install -m 600 .env.example .env
 
 for variable in POSTGRES_PASSWORD \
   AUTHORIZATION_DB_PASSWORD LEDGER_DB_PASSWORD FRAUD_DB_PASSWORD \
@@ -100,11 +113,17 @@ hash_password() {
   unset DEMO_PASSWORD
 }
 
-sed -i "s|^ADMIN_PASSWORD_HASH=.*|ADMIN_PASSWORD_HASH=$(hash_password "$ADMIN_PASSWORD")|" .env
-sed -i "s|^ACQUIRER_PASSWORD_HASH=.*|ACQUIRER_PASSWORD_HASH=$(hash_password "$ACQUIRER_PASSWORD")|" .env
-sed -i "s|^USER_PASSWORD_HASH=.*|USER_PASSWORD_HASH=$(hash_password "$USER_PASSWORD")|" .env
-sed -i "s|^MONITORING_PASSWORD_HASH=.*|MONITORING_PASSWORD_HASH=$(hash_password "$MONITORING_PASSWORD")|" .env
+sed -i "s|^ADMIN_PASSWORD_HASH=.*|ADMIN_PASSWORD_HASH='$(hash_password "$ADMIN_PASSWORD")'|" .env
+sed -i "s|^ACQUIRER_PASSWORD_HASH=.*|ACQUIRER_PASSWORD_HASH='$(hash_password "$ACQUIRER_PASSWORD")'|" .env
+sed -i "s|^USER_PASSWORD_HASH=.*|USER_PASSWORD_HASH='$(hash_password "$USER_PASSWORD")'|" .env
+sed -i "s|^MONITORING_PASSWORD_HASH=.*|MONITORING_PASSWORD_HASH='$(hash_password "$MONITORING_PASSWORD")'|" .env
 ```
+
+The single quotes on all four are not optional. A bcrypt value starts `{bcrypt}$2a$10$`, and Compose
+expands `$` in an unquoted dotenv value: written bare, the hash reaches the container truncated to
+`{bcrypt}$2a$10` and every sign-on answers 401 for a reason the value on disk does not show.
+`scripts/generate-env.sh` and the pipeline both write these quoted, and the card-token key below is
+quoted for the same reason.
 
 If `scripts/start-demo.sh` generated the passwords instead, read them back from the file it wrote:
 
@@ -115,7 +134,7 @@ ACQUIRER_PASSWORD="$(sed -n 's/^acquirer1=//p' .demo-credentials)"
 
 ### The card-token key
 
-`CARD_TOKEN_SECRET` ships as a `REPLACE` marker, so generating it is a required step. A card token is a keyed `HMAC-SHA-256` over the full card number, prefixed by `CARD_TOKEN_VERSION` and rendered as 64 lower-case hexadecimal characters. The key is what stops a holder of one token recomputing the token of every sixteen-digit card number, so this repository ships none. Only the authorization service and the card service read it, and both refuse to start without it:
+`CARD_TOKEN_SECRET` ships as a `REPLACE` marker, so generating it is a required step. A card token is a keyed `HMAC-SHA-256` over the full card number, prefixed by `CARD_TOKEN_VERSION` and rendered as 64 lower-case hexadecimal characters. The key is what stops a holder of one token recomputing the token of every sixteen-digit card number, so this repository ships no deployable runtime key. It does publish two: the build-scope key `pom.xml` supplies to the test suites, and the bootstrap key the Kubernetes Secret template carries. Both are refused by name at start-up, so neither can become a deployment's key by accident. Only the authorization service and the card service read it, and both refuse to start without it:
 
 ```bash
 sed -i "s|^CARD_TOKEN_SECRET=.*|CARD_TOKEN_SECRET='$(openssl rand -base64 48 | tr -d '/+=')'|" .env
@@ -148,13 +167,16 @@ Run the full verification lifecycle before building images:
 
 ```bash
 mvn -B clean verify
+scripts/check-published-test-counts.sh
 docker compose up -d --build
 docker compose ps
 ```
 
 `mvn test` does not run the equivalence classes. Surefire excludes `**/*EquivalenceTest.java`, and Failsafe runs those nine classes during `verify`. A green `mvn test` therefore says nothing about source parity.
 
-Every service image copies its packaged archive from that module's `target/` directory. The Maven command must run before `docker compose up --build`.
+`scripts/check-published-test-counts.sh` is the second line of that command block, and it belongs there rather than in a documentation task. It counts the `testcase` elements of every report the build wrote and fails when a figure published in [equivalence results](equivalence-results.md) or the [platform guide](../README.md) disagrees, or when a module holding an integration class produced no Failsafe report at all. Run it after adding a test and it tells you which published figure to restate; `--print` shows the measured numbers on their own.
+
+The image build needs nothing from `target/`. Each `services/*/Dockerfile` compiles its own module in a Java Development Kit 25 builder stage, from the `card-platform` context. `docker compose up --build` therefore works on a clean clone once `.env` holds real credentials. `mvn -B clean verify` above is what proves the suite, not what feeds the images.
 
 ### Ports, schemas, and topics
 
@@ -249,7 +271,13 @@ done
 
 Three management endpoints are exposed: `health`, `metrics`, and `prometheus`. Health is open, and the other two require the monitoring identity, `monitor01` by default.
 
-Logs are structured JSON in logstash format. The root logger and `com.carddemo` both default to INFO, from `LOG_LEVEL` and `LOG_LEVEL_CARDDEMO`. Raise `LOG_LEVEL_CARDDEMO` to DEBUG for one run when tracing a message, and lower it afterwards.
+Logs are structured JavaScript Object Notation (JSON) in logstash format. Every record carries a `service` member naming which of the six services wrote it. A record written while handling a request or a delivery also carries `correlationId`, `causationId`, `eventId`, `eventType` and `transactionId`, each as a top-level member.
+
+Following one authorization across all six services means filtering on `correlationId`. Send `X-Correlation-Id` on the request and that value is used; send nothing and the service generates one and returns it in the same response header. Each event carries it onward in the `carddemo-correlation-id` Kafka header, and every consumer puts it back on its own records. `causationId` names the immediate parent event, so a chain can be read one hop at a time rather than only as a set.
+
+The root logger and `com.carddemo` both default to INFO, from `LOG_LEVEL` and `LOG_LEVEL_CARDDEMO`. Raise `LOG_LEVEL_CARDDEMO` to DEBUG for one run when you want the per-step detail behind a correlated chain, and lower it afterwards. DEBUG adds volume rather than joinability, which the correlation members already supply at INFO.
+
+One member is deliberately absent. `stack_trace` is withheld in every service. It is the one logstash member that renders an exception message. A framework path exists that would write a rejected payload there, past every rule this platform applies to its own logging. Each service reports its own failures as a type chain with the record coordinates instead.
 
 Business routes require HTTP Basic authentication. The administrator username defaults to `admin001`, and the acquiring workload username to `acquirer1`.
 
@@ -290,7 +318,11 @@ curl -sS -X POST http://localhost:8081/authorizations \
 
 The response returns HTTP 200 for an approval and HTTP 422 for a source-equivalent decline. `approved` separates the two outcomes. [Domain context](#domain-context) lists the four reject reasons a decline can carry.
 
-Both timestamps accept the ten-character date `YYYY-MM-DD` and the twenty-six character record form. `app/cbl/COTRN02C.cbl:L389-L423` validates each as a ten-character date, and a ten-character value is widened to the record width before it reaches the event. No bound relates either value to the clock of the service. Reject reason `0103` at `app/cbl/CBTRN02C.cbl:L414-L420` compares the first ten characters of the capture moment against the account expiry date, and nothing else tests the value. A date the tolerant policy declines answers 422 with `Orig Date - Not a valid date...` or `Proc Date - Not a valid date...`, and a body failing several edits reports the one text the source would have reported first.
+Both timestamps accept the ten-character date `YYYY-MM-DD` and the twenty-six character record form. `app/cbl/COTRN02C.cbl:L389-L423` validates each as a ten-character date, and a ten-character value is widened to the record width before it reaches the event.
+
+No bound relates either value to the clock of the service. Reject reason `0103` at `app/cbl/CBTRN02C.cbl:L414-L420` compares the first ten characters of the capture moment against the account expiry date, and nothing else tests the value.
+
+A date the tolerant policy declines answers 422 with `Orig Date - Not a valid date...` or `Proc Date - Not a valid date...`. A body failing several edits reports the one text the source would have reported first.
 
 Watch the asynchronous path from inside the broker container:
 
@@ -313,7 +345,7 @@ curl -sS -u "admin001:${ADMIN_PASSWORD}" \
   'http://localhost:8083/fraud-assessments?accountId=00000000050'
 ```
 
-The ledger's balance has moved and the fraud service holds a new assessment. Notification keeps its alerts under `GET /notifications/{cardToken}`, and [the card-token key](#the-card-token-key) gives the command that derives the token that route needs.
+The ledger's balance has moved and the fraud service holds a new assessment. The assessment sits in the `assessments` array of one page, beside a `nextPageExists` that is false while the account holds only this one; a longer history answers a `nextCursor` as well, and returning it in the `X-Fraud-Cursor` header asks for the page after it. Notification keeps its alerts under `GET /notifications/{cardToken}` and pages the same way, and [the card-token key](#the-card-token-key) gives the command that derives the token that route needs.
 
 ### Update an account and a customer
 
@@ -397,14 +429,17 @@ deploy/k8s/load-images.sh              # runtime read from the current kubectl c
 deploy/k8s/load-images.sh kind         # or name it: kind, minikube, docker-desktop
 ```
 
-The script packages the reactor if an archive is missing, builds all six images, and then loads them the way the runtime requires. That is `kind load docker-image` for kind, `minikube image load` for minikube, and nothing at all for Docker Desktop, whose cluster shares this machine's Docker daemon. It then reads the node's image list back and fails if no `carddemo` image arrived. `KIND_CLUSTER_NAME` and `MINIKUBE_PROFILE` select a cluster other than the default, and `IMAGE_TAG` overrides the tag, which is otherwise the version in `pom.xml`.
+The script builds all six images from source, then loads them the way the runtime requires. Each `Dockerfile` compiles its module in a Java Development Kit 25 builder stage, so no archive has to exist on this machine first. That is `kind load docker-image` for kind, `minikube image load` for minikube, and nothing at all for Docker Desktop, whose cluster shares this machine's Docker daemon. It then reads the node's image list back and fails if no `carddemo` image arrived. `KIND_CLUSTER_NAME` and `MINIKUBE_PROFILE` select a cluster other than the default. `IMAGE_TAG` names the tag to build, and the script refuses one the manifests do not request. `imagePullPolicy: Never` makes the kubelet run the tag `kustomization.yaml` sets or refuse the Pod, so any other tag fails exactly as loading nothing would. The same check catches `kustomization.yaml` drifting from the version in `pom.xml`.
 
-Apply the manifests in the order `deploy/k8s/00-namespace.yaml` documents, which the script prints when it finishes. That order is the namespace, then a filled-in copy of `31-secret.example.yaml` kept **outside** that folder, then the remaining files in filename order with the template excluded. Applying the whole folder would overwrite the Secrets with the placeholders the template publishes, and every workload would refuse to start.
+Apply the manifests in the order `deploy/k8s/00-namespace.yaml` documents, which the script prints when it finishes. That order is the namespace, then a filled-in copy of `31-secret.example.yaml` kept **outside** that folder, then `kubectl apply -k deploy/k8s` for everything else. `kustomization.yaml` lists the ten manifests to apply and omits the template, so the third step cannot overwrite the Secrets with the placeholders it publishes. Applying the folder with `kubectl apply -f` instead would overwrite them, and would also fail on `kustomization.yaml` itself, which is not a Kubernetes API object.
 
-After a rebuild, the images change but the Pods do not. Restart them:
+After a rebuild, the images change but the Pods do not. Restart the six application Deployments, which the script prints for you. Naming them matters. `rollout restart deployment` with no argument restarts every Deployment in the namespace, which cycles the broker and the database too. That drops every consumer group and every open connection for no reason.
 
 ```bash
-kubectl -n carddemo rollout restart deployment
+kubectl -n carddemo rollout restart \
+  deployment/authorization-service deployment/ledger-posting-service \
+  deployment/fraud-detection-service deployment/notification-service \
+  deployment/account-service deployment/card-service
 ```
 
 The Compose stack and the cluster are alternatives rather than layers, because the transport differs between them. Compose serves HTTP on loopback with `SASL_PLAINTEXT`, and the manifests serve HTTPS with `SASL_SSL` and mounted key material. [The platform README](../README.md) carries the comparison.
@@ -603,7 +638,7 @@ Setting both location keys to `classpath:db/migration` is the base-profile opt-o
 
 **Cause:** the six Deployments carry `imagePullPolicy: Never`, and no registry holds `carddemo/<service>:1.0.0-SNAPSHOT`. The images exist on the machine, and the cluster simply cannot see them. Compose does not have this problem, because it builds the images into the same daemon it runs them from.
 
-**Fix:** run `deploy/k8s/load-images.sh` before the first `kubectl apply`, and again after any rebuild, followed by `kubectl -n carddemo rollout restart deployment`. [Run it on a local Kubernetes cluster](#run-it-on-a-local-kubernetes-cluster) gives the whole sequence.
+**Fix:** run `deploy/k8s/load-images.sh` before the first `kubectl apply`, and again after any rebuild, followed by `kubectl -n carddemo rollout restart` naming the six application Deployments. [Run it on a local Kubernetes cluster](#run-it-on-a-local-kubernetes-cluster) gives the whole sequence.
 
 ### 12. A state-changing call without `X-CardDemo-Request` answers 403
 
@@ -612,6 +647,22 @@ Setting both location keys to `classpath:db/migration` is the base-profile opt-o
 **Cause:** every service refuses a `POST`, `PUT`, `PATCH` or `DELETE` that carries no such header. It also refuses one declaring a `Sec-Fetch-Site` other than `same-origin` or `same-site`, and one naming an `Origin` other than the service it reached. Reads are unaffected.
 
 **Fix:** add `-H 'X-CardDemo-Request: 1'` and the call works. A deployment terminating Transport Layer Security at a proxy also has to set `SERVER_FORWARD_HEADERS_STRATEGY=framework`. Without it each service compares `Origin` against the address the proxy dialled rather than the one the browser used, and bounds the proxy's address rather than the caller's. Both filters count inside one process, so several replicas bound each replica rather than the service as a whole.
+
+### 13. An older demo volume fails Flyway validation after pulling this revision
+
+**Symptom:** a service that started fine yesterday now exits at start-up, and the log names a Flyway checksum mismatch for a migration version it had already applied.
+
+**Cause:** the comment headers of twenty-four migrations were reduced to mechanics and source locators, so this log rather than an executable file carries every decision behind them. Flyway computes a migration's checksum over the whole file, comments included, and `spring.flyway.validate-on-migrate` is `true` in all six services, so a database holding the earlier files refuses the newer ones. No statement changed: nothing about a table, a column, a constraint, an index or a row is different.
+
+**Fix:** discard the demo database and let the stack rebuild it, `docker compose down -v` followed by `docker compose up -d --build --wait`. A database whose rows matter instead needs `flyway repair` against each service schema, which rewrites the stored checksums and leaves the data alone. A fresh clone and every test run are unaffected, because each creates an empty database and applies the whole history in one pass.
+
+### 14. Changing the partition count does not change how many threads read it
+
+**Symptom:** `KAFKA_TOPIC_PARTITIONS` is raised to six, every topic is created with six partitions, and consumer lag still clears at the rate three partitions used to clear it. Or the opposite: it is lowered to one, and each service starts three consumers where two of them are assigned nothing and take part in every rebalance.
+
+**Cause:** two settings, on purpose. `KAFKA_TOPIC_PARTITIONS` is read by the container that creates the topics. `spring.kafka.listener.concurrency` is read by each service and ships as `3`, the same number, from `SPRING_KAFKA_LISTENER_CONCURRENCY`. Neither derives from the other, because each service's connection pool is sized against the thread count: the notification service reads four topics, so three threads each is twelve listener threads, and `spring.datasource.hikari.maximum-pool-size` is eighteen for exactly that reason. A concurrency that followed the broker would raise the thread count of every service without raising any pool, and the first symptom of that is a delivery failing on a three-second wait for a connection.
+
+**Fix:** change both, and check the pool of any service you raise. Set `SPRING_KAFKA_LISTENER_CONCURRENCY` to the new partition count, then `SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE` to that count times the number of topics the service reads, plus its scheduled tasks, plus a margin for request handling. `RetentionSweepContractTest.everyScheduledTaskHasASchedulerThreadOfItsOwn` and `KafkaDeliveryGuaranteeContractTest.ConsumerThroughput` fail the build if the concurrency and the shipped partition count come apart, or if a service schedules more tasks than its scheduler has threads. Ordering is safe in both directions and needs no thought: Kafka assigns one partition to exactly one consumer of a group, and the account identifier is the message key of every event this platform publishes.
 
 ## Where to go next
 
@@ -622,10 +673,9 @@ Setting both location keys to `classpath:db/migration` is the base-profile opt-o
 - [Architecture, Before and After](architecture-before-after.md) — both migration states, at full size
 - [Event Flow](event-flow.md) — every topic, group, and delivery guarantee
 - [Data Model](data-model.md) — service-owned tables and the source fields behind them
-- [Business Rule Flags](business-rule-flags.md) — the 26 source findings left for human review
+- [Business Rule Flags](business-rule-flags.md) — the 66-item register of source findings left for human review. Identifiers 1 to 26 are the subset the specification fixes; 27 upward were appended as they were found
 - [Equivalence Results](equivalence-results.md) — fixture-by-fixture parity evidence
 - [Decision Log](decision-log.md) — alternatives, reasons, and accepted risks
 - [Traceability Matrix](traceability-matrix.md) — complete forward and backward mapping
 
 The root [`README.md`](../../README.md) still holds the z/OS installation path for the original application, and that path is unchanged. `CONTRIBUTING.md` still governs issues, pull requests, conduct, security reporting, and licensing, and this work changed none of it.
-

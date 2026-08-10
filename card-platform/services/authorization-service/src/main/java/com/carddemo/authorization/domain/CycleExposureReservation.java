@@ -163,6 +163,17 @@ public class CycleExposureReservation {
      * keeps its outstanding exposure counted for as long as it keeps authorizing, and an account whose
      * approvals stopped arriving releases its exposure once the lifetime has passed.
      *
+     * <p>Each sum is stored at the width the accumulator it mirrors holds, which is
+     * {@code ACCT-CURR-CYC-CREDIT PIC S9(10)V99} and {@code ACCT-CURR-CYC-DEBIT PIC S9(10)V99} at
+     * {@code app/cpy/CVACT01Y.cpy:L12-L13} and columns {@code pending_cycle_credit} and
+     * {@code pending_cycle_debit} at {@code NUMERIC(12,2)}. Ten integer digits hold at most two
+     * approvals of the widest {@code DALYTRAN-AMT PIC S9(09)V99} amount before an eleventh digit
+     * would be needed, and a COBOL {@code ADD} with no {@code ON SIZE ERROR} phrase discards that
+     * digit where it stands rather than failing.
+     * {@link CobolDecimal#truncateToPictureField(BigDecimal, int, int)} performs that store, so a
+     * long run of maximum approvals inside one reservation lifetime reaches the same figure the
+     * accumulator itself would hold and never the datastore's own overflow.
+     *
      * @param account the projection row this decision read under lock
      * @param amount  the approved amount at scale 2, either sign
      * @throws NullPointerException  when either argument is {@code null}
@@ -178,10 +189,16 @@ public class CycleExposureReservation {
         BigDecimal reservedDebit = account.effectivePendingCycleDebit(now);
 
         if (amount.signum() >= 0) {
-            reservedCredit = CobolDecimal.add(reservedCredit, amount,
+            reservedCredit = CobolDecimal.truncateToPictureField(
+                    CobolDecimal.add(reservedCredit, amount,
+                            PicClause.ACCT_CURR_CYC_CREDIT_SCALE),
+                    PicClause.ACCT_CURR_CYC_CREDIT_PRECISION,
                     PicClause.ACCT_CURR_CYC_CREDIT_SCALE);
         } else {
-            reservedDebit = CobolDecimal.add(reservedDebit, amount,
+            reservedDebit = CobolDecimal.truncateToPictureField(
+                    CobolDecimal.add(reservedDebit, amount,
+                            PicClause.ACCT_CURR_CYC_DEBIT_SCALE),
+                    PicClause.ACCT_CURR_CYC_DEBIT_PRECISION,
                     PicClause.ACCT_CURR_CYC_DEBIT_SCALE);
         }
 

@@ -16,7 +16,7 @@ import com.carddemo.cobol.PicClause;
 import com.carddemo.events.DeclineReason;
 import com.carddemo.events.TransactionAuthorized;
 import com.carddemo.events.TransactionDeclined;
-import io.micrometer.core.instrument.Counter;
+import com.carddemo.events.correlation.CorrelationScope;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import java.math.BigDecimal;
@@ -25,6 +25,9 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.TransactionException;
@@ -46,14 +49,18 @@ import org.springframework.transaction.support.TransactionTemplate;
  * return code 4 once any record was rejected, so a declining rule yields an {@link Outcome} and
  * raises nothing.
  *
- * <p>A call whose card resolves to an account writes exactly one event, and the event row commits
- * with the decision that produced it. A call whose card resolves to no account writes no event: it
- * records an {@code unresolved_card_attempt} row instead, because every event contract keys on an
- * account identifier that outcome does not have. Add a fifth reject reason by adding one
+ * <p>Every decided call writes exactly one event, and the event row commits with the decision that
+ * produced it. A call whose card resolves to an account keys that event on the account identifier. A
+ * call whose card resolves to none keys it on the transaction identifier and publishes
+ * {@code schemas/transaction-declined-v2.json}, which declares no account identifier, and records an
+ * {@code unresolved_card_attempt} row beside it. Add a fifth reject reason by adding one
  * {@link DeclineRule} bean; this class needs no edit for it.
  */
 @Service
 public class AuthorizationService {
+
+    /** Records the one committed decision line per call, naming no card number and no account. */
+    private static final Logger LOG = LoggerFactory.getLogger(AuthorizationService.class);
 
     /**
      * Every meter name, tag key and stage value below is the one
@@ -92,15 +99,6 @@ public class AuthorizationService {
      * is a committed outcome and expected traffic per {@code app/cbl/CBTRN02C.cbl:L229-L230}.
      */
     static final String ENTITLEMENT_STAGE = ObservabilityConfig.ENTITLEMENT_STAGE;
-
-    /** Name of the tag carrying the outcome of one counted call. */
-    private static final String OUTCOME_TAG_NAME = ObservabilityConfig.OUTCOME_TAG;
-
-    /** Name of the tag carrying the type of one written event. */
-    private static final String EVENT_TYPE_TAG_NAME = ObservabilityConfig.EVENT_TYPE_TAG;
-
-    /** Name of the tag carrying the stage that raised one counted fault. */
-    private static final String STAGE_TAG_NAME = ObservabilityConfig.STAGE_TAG;
 
     /** Scale a scale-0 account identifier holds, from {@code XREF-ACCT-ID PIC 9(11)}. */
     private static final int ACCOUNT_IDENTIFIER_SCALE = 0;
@@ -442,10 +440,23 @@ public class AuthorizationService {
      * @param eventType  the type of the event written to the outbox, or {@code null} when the call
      *                   wrote none
      */
-    private record Decision(Outcome outcome, String outcomeTag, String eventType) {
+    private record Decision(Outcome outcome, String outcomeTag, String eventType,
+            String transactionId, UUID eventId) {
 
         /**
-         * Applies the held measurements. Called only after the transaction has committed.
+         * Applies the held measurements and states the committed decision. Called only after the
+         * transaction has committed.
+         *
+         * <p>The line is the join between one request and the event it produced. It carries the
+         * transaction identifier, the event identifier and the event type as structured fields, and
+         * the correlation identifier of the call is already on the thread from
+         * {@code config/CorrelationContextFilter}, so a reader follows one authorization from this
+         * record into the three services that consume its event without matching values by hand.
+         *
+         * <p>It is written after the commit, so it never claims a decision the datastore rolled
+         * back. It names no card number, no account identifier and no amount: the outcome tag is one
+         * literal from a closed set, which for a decline is the four-digit reject code
+         * {@code app/cbl/CBTRN02C.cbl:L385-L420} assigns.
          *
          * @param service the service whose meters these measurements belong to
          */
@@ -453,6 +464,12 @@ public class AuthorizationService {
             service.countOutcome(outcomeTag);
             if (eventType != null) {
                 service.countEvent(eventType);
+            }
+            try (CorrelationScope scope = CorrelationScope.open()
+                    .withEvent(eventId, eventType)
+                    .withTransaction(transactionId)) {
+                LOG.info("An authorization decision committed under outcome {}, and it published {}.",
+                        outcomeTag, eventType == null ? "no event" : "one event");
             }
         }
     }
@@ -471,7 +488,7 @@ public class AuthorizationService {
      * fifth reject reason.
      *
      * <p>One check runs before the chain. The request must have named its subject, by account
-     * identifier or by card number, and {@link #resolveCardNumber(AuthorizationRequest)} settles
+     * identifier or by card number, and {@link #resolveCard(AuthorizationRequest)} settles
      * which card the decision runs against. No clock bound applies to the capture moment: the only
      * test the source applies to it is the date validation of
      * {@code app/cbl/COTRN02C.cbl:L389-L414} and the lexical comparison reject reason {@code 0103}
@@ -485,7 +502,7 @@ public class AuthorizationService {
      *
      * <p>Two refusals precede any of that, and they are the two limbs
      * {@code app/cbl/COTRN02C.cbl:L195-L230} ends on.
-     * {@link #resolveCardNumber(AuthorizationRequest)} raises
+     * {@link #resolveCard(AuthorizationRequest)} raises
      * {@link AccountNotFoundInCrossReferenceException} where an account resolved no card, and this
      * method raises {@value AuthorizationRequest#IDENTIFIER_REQUIRED_MESSAGE} where no usable
      * identifier arrived at all. Neither allocates an identifier, writes an event or records a
@@ -511,15 +528,19 @@ public class AuthorizationService {
     private Decision decide(AuthorizationRequest request, RequestCaller caller) {
         cycleExposure.boundLockWait();
 
-        String cardNumber = resolveCardNumber(request);
-        if (cardNumber == null) {
+        ResolvedCard resolved = resolveCard(request);
+        if (resolved == null) {
             throw new IllegalArgumentException(AuthorizationRequest.IDENTIFIER_REQUIRED_MESSAGE);
         }
+        String cardNumber = resolved.cardNumber();
         BigDecimal amount = Objects.requireNonNull(request.amountValue(),
                 "amount must read as a number under the tolerant currency grammar");
 
         DeclineRule.Context context = new DeclineRule.Context(cardNumber, amount,
                 request.recordOriginTimestamp());
+        if (resolved.crossReference() != null) {
+            context.setCardCrossReference(resolved.crossReference());
+        }
         DeclineReason standing = runChain(context);
         String resolvedAccountId = context.getResolvedAccountId();
 
@@ -685,7 +706,8 @@ public class AuthorizationService {
                 resolvedAccountId, event.maskedCardNumber(), event.cardToken(), amount,
                 clock.instant(), event.eventId(), request.recordProcessingTimestamp()));
         return new Decision(Outcome.approved(accountIdentifierOf(resolvedAccountId), transactionId),
-                APPROVED_OUTCOME_TAG, TransactionAuthorized.EVENT_TYPE);
+                APPROVED_OUTCOME_TAG, TransactionAuthorized.EVENT_TYPE, transactionId,
+                event.eventId());
     }
 
     /**
@@ -733,47 +755,71 @@ public class AuthorizationService {
                 declaredProcessingTimestamp));
         return new Decision(
                 Outcome.declined(standing, accountIdentifierOf(resolvedAccountId), transactionId),
-                standing.code(), TransactionDeclined.EVENT_TYPE);
+                standing.code(), TransactionDeclined.EVENT_TYPE, transactionId, event.eventId());
     }
 
     /**
-     * Records the one decided outcome that names no account, and answers with it.
+     * Records the one decided outcome that names no account, publishes its decline event and answers
+     * with it.
      *
      * <p>The attempt lands in {@code unresolved_card_attempt}, which carries the reject reason
-     * {@code app/cbl/CBTRN02C.cbl:L385-L387} assigns, and the decision lands in
-     * {@code authorization_decision} beside it. Both writes join the transaction
+     * {@code app/cbl/CBTRN02C.cbl:L385-L387} assigns, the decision lands in
+     * {@code authorization_decision} beside it, and the event lands in {@code outbox_event}. All three
+     * writes join the transaction {@link #authorize(AuthorizationRequest, String)} opened, so a
+     * committed attempt always has a committed decision and a committed event.
+     *
+     * <p><strong>This outcome publishes one event, as every decided outcome does.</strong> AAP
+     * transformation rule T4 requires one authorization call to produce one event, written through the
+     * outbox in the transaction that recorded the decision, and it admits no exception. A decided
+     * outcome that published nothing left the three consumers of the authorized stream with no
+     * record that the call happened, so a declined attempt on an unknown card was visible only to
+     * whoever read this service's own tables.
+     *
+     * <p>The event is {@code schemas/transaction-declined-v2.json}, the governed contract for a
+     * decline that resolved no account. Two things distinguish it from the version the other three
+     * reject codes publish. It carries no {@code accountId}, because reject code {@code 0100} is
+     * assigned inside the {@code INVALID KEY} branch of the cross-reference read at
+     * {@code app/cbl/CBTRN02C.cbl:L383-L387} and the short-circuit at
+     * {@code app/cbl/CBTRN02C.cbl:L376-L378} stops the account read from running, so no account
+     * identifier exists that this platform established. And it is keyed on the sixteen-character
+     * transaction identifier rather than on an account, which is the one alternative that names no
+     * cardholder: trusting an identifier the caller sent beside the card number would attribute one
+     * caller's declined attempt to another caller's account, and minting one inside the real account
+     * key space would occupy a live key. {@code EventEnvelope#AGGREGATE_KEY_PATTERN} and the CHECK
+     * constraint {@code ck_outbox_event_aggregate_id} declare both key forms, so the record, the
+     * envelope and the column agree.
+     *
+     * <p>The key is deterministic, which is what makes the choice safe rather than merely available.
+     * {@link #allocateTransactionId()} draws one value per call, so a retried publish of the same
+     * decline lands on the same partition, and a consumer deduplicating on {@code eventId} sees one
+     * event however often the relay retries.
+     *
+     * <p>Two rows and one event row commit together. The attempt lands in
+     * {@code unresolved_card_attempt}, the decision in {@code authorization_decision} naming the event
+     * it published through, and the event in {@code outbox_event}; all three join the transaction
      * {@link #authorize(AuthorizationRequest, String)} opened, so a committed attempt always has a
-     * committed decision.
+     * committed decision and a committed event, and a rollback leaves none of the three.
      *
-     * <p><strong>This outcome publishes no event, and it is the only one that does not.</strong> AAP
-     * 0.1.1 fixes the decline payload at transaction identifier, account identifier and reject reason
-     * code, and AAP 0.3.1 makes the account identifier the message key of every event on this
-     * platform. Reject code {@code 0100} fires precisely where the keyed read of the cross-reference
-     * missed, and the short-circuit at {@code app/cbl/CBTRN02C.cbl:L376-L378} stops the account read
-     * from running, so no account identifier exists at that moment. There are only three ways to
-     * publish anyway, and each is worse than publishing nothing: trust an identifier the caller sent
-     * beside the card number, which attributes one caller's declined attempt to another caller's
-     * account; invent an identifier inside the real account key space; or key the event on something
-     * that is not an account, which breaks the ordering unit every consumer relies on and the
-     * account-identifier floor the contract declares.
-     *
-     * <p>The source takes the same position on its synchronous path. {@code READ-CCXREF-FILE} at
-     * {@code app/cbl/COTRN02C.cbl:L620-L636} answers a card number the cross-reference does not carry
-     * with {@code 'Card Number NOT found...'} and re-sends the screen: no reject record is written and
-     * nothing at all is captured. The account branch at {@code :L586-L596} does the same, and reaches
-     * this service as {@link AccountNotFoundInCrossReferenceException}, which publishes nothing
-     * either. What this method adds to the source is the durable record of the attempt.
+     * <p>The source has no counterpart for the event, and its synchronous path captures nothing at
+     * all: {@code READ-CCXREF-FILE} at {@code app/cbl/COTRN02C.cbl:L620-L636} answers a card number
+     * the cross-reference does not carry with {@code 'Card Number NOT found...'} and re-sends the
+     * screen. The two durable rows and the event are this service's additions, standing where the
+     * batch path writes a reject record at {@code app/cbl/CBTRN02C.cbl:L446-L465}.
      *
      * <p>The outcome is still a decline and not an exception, which is what AAP 0.4.1 requires of a
      * keyed lookup miss: the caller receives reject code {@code 0100} and its verbatim text, and
      * {@code api/AuthorizationController} answers {@code 422}.
      *
-     * <p>{@code schemas/transaction-declined-v2.json} remains the governed contract for a decline
-     * carrying no account identifier, and no producer publishes it. It is retained so a consumer that
-     * reads a record retained from before this change still has a document to validate against, and
-     * {@code libs/event-contracts} states in the schema itself that nothing produces it.
+     * <p>One reject code reaches this method, and the contract states it rather than trusting it.
+     * {@code schemas/transaction-declined-v2.json} pins {@code declineReasonCode} to
+     * {@link TransactionDeclined#UNRESOLVED_ACCOUNT_REASON}, and the chain of
+     * {@link #runChain(DeclineRule.Context)} can reach an unresolved account only through
+     * {@code rules/CardCrossReferenceRule}, which assigns that code. A rule list that declined for
+     * another reason without resolving an account would make the decision row and the event disagree,
+     * so this method refuses that state instead of publishing the disagreement.
      *
-     * @param transactionId the identifier this decision applies to
+     * @param transactionId the identifier this decision applies to, and the message key of the event
+     *                      it publishes
      * @param cardNumber    the card number the lookup missed on
      * @param amount        the amount at two digits after the decimal point
      * @param standing      the reject reason a rule assigned, or {@code null} when no rule ran
@@ -782,18 +828,33 @@ public class AuthorizationService {
      *                                    width, which {@code app/cbl/COTRN02C.cbl:L470} moves into
      *                                    {@code TRAN-PROC-TS}
      * @return the declined decision, naming no account and holding the measurements it earned
+     * @throws IllegalStateException when a rule declined without resolving an account and named a
+     *                               reject code other than
+     *                               {@link TransactionDeclined#UNRESOLVED_ACCOUNT_REASON}
      */
     private Decision recordUnresolvedCard(String transactionId, String cardNumber, BigDecimal amount,
             DeclineReason standing, String actor, String declaredProcessingTimestamp) {
-        DeclineReason reason = standing == null ? DeclineReason.INVALID_CARD_NUMBER : standing;
+        DeclineReason reason =
+                standing == null ? TransactionDeclined.UNRESOLVED_ACCOUNT_REASON : standing;
+        if (reason != TransactionDeclined.UNRESOLVED_ACCOUNT_REASON) {
+            throw new IllegalStateException("a decision that resolved no account publishes"
+                    + " schemas/transaction-declined-v2.json, which carries reject code "
+                    + TransactionDeclined.UNRESOLVED_ACCOUNT_REASON.code() + " alone, and the rule"
+                    + " chain named " + reason.code());
+        }
         String maskedCardNumber = PanMasker.maskCardNumber(cardNumber);
+        TransactionDeclined event = TransactionDeclined.ofUnresolvedAccount(transactionId, amount,
+                maskedCardNumber);
 
         unresolvedCardAttempts.save(new UnresolvedCardAttemptEntity(transactionId,
                 maskedCardNumber, amount, reason.code(), reason.description(), clock.instant()));
+        outboxWriter.writeDeclined(event);
         authorizationDecisions.save(AuthorizationDecisionEntity.declined(transactionId, actor, null,
                 maskedCardNumber, PanMasker.tokenOf(cardNumber), amount, reason.code(),
-                reason.description(), clock.instant(), null, declaredProcessingTimestamp));
-        return new Decision(Outcome.declined(reason, null, transactionId), reason.code(), null);
+                reason.description(), clock.instant(), event.eventId(),
+                declaredProcessingTimestamp));
+        return new Decision(Outcome.declined(reason, null, transactionId), reason.code(),
+                TransactionDeclined.EVENT_TYPE, transactionId, event.eventId());
     }
 
     /**
@@ -835,24 +896,47 @@ public class AuthorizationService {
      * widening it would name a different card and could authorize against another cardholder's
      * account.
      *
+     * <p>The account branch reads a whole row to take one column out of it, so the row travels with
+     * the card number rather than being discarded. {@link CardCrossReferenceRule} reads
+     * {@code card_xref} keyed on the card number, and on this branch that key came out of this very
+     * row: {@code card_number} is the table's primary key, so the read would return the row already
+     * in hand. Carrying it means the account branch reads the table once instead of twice, and it is
+     * the same row either way rather than a cached one — nothing is held between requests.
+     *
      * @param request the validated request body
-     * @return the full sixteen-character Primary Account Number (PAN), or {@code null} when the
-     *         request named no usable identifier
+     * @return the resolved card and, on the account branch, the row that resolved it, or
+     *         {@code null} when the request named no usable identifier
      * @throws AccountNotFoundInCrossReferenceException when the account the request named holds no
      *                                                 cross-reference row
      */
-    private String resolveCardNumber(AuthorizationRequest request) {
+    private ResolvedCard resolveCard(AuthorizationRequest request) {
         String accountId = request.canonicalAccountId();
         if (accountId != null) {
-            return cardCrossReferences.findFirstByAccountIdOrderByCardNumberAsc(accountId)
-                    .map(CardCrossReferenceEntity::getCardNumber)
-                    .orElseThrow(AccountNotFoundInCrossReferenceException::new);
+            CardCrossReferenceEntity row =
+                    cardCrossReferences.findFirstByAccountIdOrderByCardNumberAsc(accountId)
+                            .orElseThrow(AccountNotFoundInCrossReferenceException::new);
+            return new ResolvedCard(row.getCardNumber(), row);
         }
 
-        if (request.isCardNumberSupplied()) {
-            return request.canonicalCardNumber();
+        // The canonical value, not isCardNumberSupplied(). A value that is present but narrower than
+        // the key is supplied and has no canonical form, and it must be refused rather than carried:
+        // returning a ResolvedCard holding a null card number would pass the caller's null check and
+        // fail later, where the refusal no longer names the reason.
+        String cardNumber = request.canonicalCardNumber();
+        if (cardNumber != null) {
+            return new ResolvedCard(cardNumber, null);
         }
         return null;
+    }
+
+    /**
+     * The card one call decides against, and the cross-reference row that named it where one did.
+     *
+     * @param cardNumber     full sixteen-character Primary Account Number (PAN) the rules run on
+     * @param crossReference the row the account branch read, or {@code null} on the card branch,
+     *                       where the caller named the card and no row has been read yet
+     */
+    private record ResolvedCard(String cardNumber, CardCrossReferenceEntity crossReference) {
     }
 
     /**
@@ -938,10 +1022,7 @@ public class AuthorizationService {
      * @param outcome the outcome tag
      */
     private void countOutcome(String outcome) {
-        Counter.builder(DECISION_COUNTER)
-                .tag(OUTCOME_TAG_NAME, outcome)
-                .register(meters)
-                .increment();
+        ObservabilityConfig.decisionCounter(meters, outcome).increment();
     }
 
     /**
@@ -950,10 +1031,7 @@ public class AuthorizationService {
      * @param eventType the event type tag
      */
     private void countEvent(String eventType) {
-        Counter.builder(EVENT_COUNTER)
-                .tag(EVENT_TYPE_TAG_NAME, eventType)
-                .register(meters)
-                .increment();
+        ObservabilityConfig.eventsWrittenCounter(meters, eventType).increment();
     }
 
     /**
@@ -967,10 +1045,7 @@ public class AuthorizationService {
      * @param stage the stage that raised the fault
      */
     private void countFailure(String stage) {
-        Counter.builder(FAILURES_COUNTER)
-                .tag(STAGE_TAG_NAME, stage)
-                .register(meters)
-                .increment();
+        ObservabilityConfig.failureCounter(meters, stage).increment();
     }
 
     /**

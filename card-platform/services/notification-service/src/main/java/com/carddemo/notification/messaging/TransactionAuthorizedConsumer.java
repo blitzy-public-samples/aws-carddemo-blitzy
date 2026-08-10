@@ -38,10 +38,14 @@ import org.springframework.transaction.support.TransactionTemplate;
  * cannot delay the authorization response, because the response was returned before the outbox relay
  * published the event this listener reads.
  *
- * <p>WHY THIS ALERT AND THE POSTED ALERT ARE BOTH SENT. They report different facts. An authorization
- * is a decision about whether a transaction may proceed, and it establishes no balance. A posting is
- * the balance changing. {@code messaging/TransactionPostedConsumer} reports the second, and the two
- * alerts carry different event identifiers, so neither suppresses nor duplicates the other.
+ * <p>WHY THIS ALERT AND THE POSTED ALERT ARE BOTH RENDERED. They report different facts. An
+ * authorization is a decision about whether a transaction may proceed, and it establishes no balance.
+ * A posting is the balance changing. {@code messaging/TransactionPostedConsumer} reports the second,
+ * and the two alerts carry different event identifiers, so neither suppresses nor duplicates the
+ * other. Neither is sent: this service reaches no mail, message, webhook or push gateway, so it
+ * renders each alert and records that it rendered it, and every
+ * {@code notification_log} row carries
+ * {@link com.carddemo.notification.entity.NotificationLogEntity#RENDERED_NOT_SENT}.
  *
  * <p>Idempotency is ADDITIVE, as it is for every listener here. The source has no duplicate detection
  * at all: a replayed feed drives the posting program at {@code app/cbl/CBTRN02C.cbl:L562-L579} into a

@@ -104,7 +104,10 @@ spec:
             # so 9080 is reach for the kubelet and for a monitoring collector only.
             # Both ports are encrypted: 30-configmap.yaml sets SERVER_SSL_ENABLED
             # and MANAGEMENT_SSL_ENABLED.
-            - name: http
+            # Named https, not http: 30-configmap.yaml sets SERVER_SSL_ENABLED, so
+            # what answers on 8080 is Transport Layer Security. A port name is
+            # metadata other tooling reads, and `http` told it the wrong protocol.
+            - name: https
               containerPort: 8080
             - name: management
               containerPort: 9080
@@ -302,7 +305,8 @@ spec:
                       path: ca.crt
 ---
 # Pods reach the service at authorization-service:8080, a short name the
-# Domain Name System (DNS) resolves. /actuator answers on the same port.
+# Domain Name System (DNS) resolves. /actuator does not answer there: it is on
+# 9080, which no Service exposes, as the port list below records.
 #
 # External reach. Host port 8081 matches AUTHORIZATION_PORT in
 # card-platform/.env.example:
@@ -326,10 +330,16 @@ spec:
     # is what every pod in the cluster resolves, and /actuator answers on 9080.
     # A monitoring collector reaches 9080 by pod address, which the NetworkPolicy
     # below admits from monitoring pods only.
-    - name: http
+    - name: https
       port: 8080
-      targetPort: 8080
+      # By name rather than by number, so the Service follows the container port
+      # this Deployment declares instead of repeating its value. 10-kafka.yaml
+      # already targets `internal` the same way.
+      targetPort: https
       protocol: TCP
+      # The protocol the port speaks, declared where protocol-aware tooling reads
+      # it. protocol: TCP is the transport; appProtocol is the application layer.
+      appProtocol: https
 ---
 # Network policy for the authorization pod. Ingress separates the business and
 # management surfaces. Egress admits only Domain Name System (DNS), PostgreSQL,

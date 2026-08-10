@@ -49,9 +49,12 @@ import tools.jackson.databind.node.ObjectNode;
  * accumulates onto a number the account service had already superseded.
  *
  * <p>The fourth is ownership, and it is the property this listener previously broke. All three value
- * columns are produced by the posting arithmetic at {@code app/cbl/CBTRN02C.cbl:L545-L560}, and the
- * account service's copy of them carries no posting at all, because it consumes no
- * {@code TransactionPosted}. So a change that names an ordinary field update must leave a row this
+ * columns are produced by the posting arithmetic at {@code app/cbl/CBTRN02C.cbl:L545-L560}. The account
+ * service applies that same arithmetic to its own record, because its
+ * {@code messaging/TransactionPostedConsumer} consumes {@code TransactionPosted}, so the copy an
+ * account change carries trails this projection by every posting whose event it has not consumed yet
+ * rather than carrying none of them. It is also, in that case, a copy of this service's own output
+ * returning one hop later. So a change that names an ordinary field update must leave a row this
  * projection already holds exactly as it stands, and only a cycle close may write to one — zeroing
  * the two accumulators and nothing else.
  */
@@ -219,6 +222,26 @@ class AccountStateChangedConsumerTest {
      */
     private double counter(String name, String tagKey, String tagValue) {
         return registry.get(name).tag(tagKey, tagValue).counter().count();
+    }
+
+    /**
+     * Reads one untagged counter.
+     *
+     * @param name the meter name
+     * @return its count
+     */
+    private double counterOf(String name) {
+        return registry.get(name).counter().count();
+    }
+
+    /**
+     * Reads how many recordings one timer holds.
+     *
+     * @param name the meter name
+     * @return the number of recordings, which is what proves a latency was recorded at all
+     */
+    private long timerCount(String name) {
+        return registry.get(name).timer().count();
     }
 
     @Nested
@@ -426,6 +449,82 @@ class AccountStateChangedConsumerTest {
 
             verify(acknowledgment, never()).acknowledge();
             verifyNoInteractions(accountBalances);
+        }
+
+        /**
+         * A tombstone is counted and timed as well as classified.
+         *
+         * <p>It was classified on the deserialization series and counted on neither of the other
+         * two, so a refused delivery raised a failure reading with no consumed event and no latency
+         * behind it. A record that arrived was consumed whatever became of it.
+         */
+        @Test
+        @DisplayName("a tombstone is counted, timed and classified as a read failure")
+        void aTombstoneIsCountedTimedAndClassified() {
+            assertThrows(IllegalArgumentException.class,
+                    () -> consumer.onAccountStateChanged(null, ACCOUNT_ID, acknowledgment, TOPIC));
+
+            assertEquals(1.0d, counterOf("carddemo.ledger.events.consumed"),
+                    "a record that arrived was consumed whatever became of it");
+            assertEquals(1L, timerCount("carddemo.ledger.processing.latency"),
+                    "the latency of the refusal, recorded in a finally");
+            assertEquals(1.0d, counter("carddemo.ledger.failures", "stage", "deserialize"),
+                    "a payload that cannot be read is a read failure, not a processing failure");
+            assertEquals(0.0d, counter("carddemo.ledger.failures", "stage", "process"),
+                    "nothing was processed, so the processing series stays flat");
+        }
+
+        /**
+         * A tree the record refuses is measured exactly as a tombstone is.
+         *
+         * <p>The record is built before anything is claimed, and its own checks reject a tree that
+         * passed schema validation. That rejection used to run before the consumed count, so it
+         * moved none of the three families and the delivery was invisible on all of them.
+         */
+        @Test
+        @DisplayName("an unreadable payload is counted, timed and classified as a read failure")
+        void anUnreadablePayloadIsCountedTimedAndClassified() {
+            JsonNode unreadable = JsonMapper.builder().build().createObjectNode();
+
+            assertThrows(RuntimeException.class, () -> consumer.onAccountStateChanged(unreadable,
+                    ACCOUNT_ID, acknowledgment, TOPIC));
+
+            assertEquals(1.0d, counterOf("carddemo.ledger.events.consumed"));
+            assertEquals(1L, timerCount("carddemo.ledger.processing.latency"));
+            assertEquals(1.0d, counter("carddemo.ledger.failures", "stage", "deserialize"));
+            assertEquals(0.0d, counter("carddemo.ledger.failures", "stage", "process"));
+            verify(acknowledgment, never()).acknowledge();
+            verifyNoInteractions(accountBalances);
+        }
+
+        /** A key that names another account is measured on the processing series. */
+        @Test
+        @DisplayName("a misrouted key is counted, timed and classified as a processing failure")
+        void aMisroutedKeyIsCountedTimedAndClassified() {
+            assertThrows(IllegalArgumentException.class,
+                    () -> consumer.onAccountStateChanged(aChange(), "00000000099", acknowledgment,
+                            TOPIC));
+
+            assertEquals(1.0d, counterOf("carddemo.ledger.events.consumed"));
+            assertEquals(1L, timerCount("carddemo.ledger.processing.latency"));
+            assertEquals(1.0d, counter("carddemo.ledger.failures", "stage", "process"),
+                    "the payload read cleanly, so the refusal belongs to processing");
+            assertEquals(0.0d, counter("carddemo.ledger.failures", "stage", "deserialize"));
+        }
+
+        /** A successful delivery counts one consumed event, one latency and no failure. */
+        @Test
+        @DisplayName("a successful delivery counts one consumed event, one latency and no failure")
+        void aSuccessfulDeliveryCountsConsumedAndLatencyAndNoFailure() {
+            claimSucceeds();
+            bootstrapInserts();
+
+            consumer.onAccountStateChanged(aChange(), ACCOUNT_ID, acknowledgment, TOPIC);
+
+            assertEquals(1.0d, counterOf("carddemo.ledger.events.consumed"));
+            assertEquals(1L, timerCount("carddemo.ledger.processing.latency"));
+            assertEquals(0.0d, counter("carddemo.ledger.failures", "stage", "process"));
+            assertEquals(0.0d, counter("carddemo.ledger.failures", "stage", "deserialize"));
         }
 
         @Test

@@ -1,6 +1,7 @@
 package com.carddemo.notification.entity;
 
 import com.carddemo.cobol.PanMasker;
+import com.carddemo.events.EventEnvelope;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
@@ -371,15 +372,27 @@ public class NotificationLogEntity {
     }
 
     /**
-     * Renders all seven fields. The card number is already masked, the card token carries no digit
-     * of a card number, and no field names a cardholder, an account or an amount.
+     * Renders all seven fields, with the card token replaced by {@link EventEnvelope#WITHHELD}.
      *
-     * @return the simple class name followed by the seven field values
+     * <p>The token discloses no digit of a card number, and it names one card for as long as its
+     * key stands. A log line carrying it would let any reader of that log follow that card across
+     * every request that touched it, so this rendering reports the token as present and withholds
+     * its value. A prefix would be equally linkable, so no prefix is rendered either. That is the
+     * decision recorded under "Report a card token as present or withheld in a log rendering, never
+     * in full" in {@code card-platform/docs/decision-log.md}, and
+     * {@link EventEnvelope#WITHHELD} is the marker every record and entity of this platform uses
+     * for it.</p>
+     *
+     * <p>Every other field is safe to render. The card number is already masked, and no field names
+     * a cardholder, an account or an amount. An operator locates a row by its transaction
+     * identifier.</p>
+     *
+     * @return the simple class name followed by the seven field values, the card token withheld
      */
     @Override
     public String toString() {
         return "NotificationLogEntity[id=" + id
-                + ", cardToken=" + cardToken
+                + ", cardToken=" + EventEnvelope.WITHHELD
                 + ", maskedCardNumber=" + maskedCardNumber
                 + ", transactionId=" + transactionId
                 + ", channel=" + channel

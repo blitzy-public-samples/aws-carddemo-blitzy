@@ -178,6 +178,26 @@ public record FraudProperties(
                 @NotNull @DurationUnit(ChronoUnit.SECONDS) Duration claimTimeout,
 
                 @Positive @Max(300000) long maxDurationMs) {
+
+            /**
+             * Refuses a claim timeout that is not positive.
+             *
+             * <p>{@code @NotNull} catches an absent value and nothing else, so zero and a negative
+             * duration both bound cleanly. Either one makes every claim stranded the moment it is
+             * taken, and the next sweep then recovers the batch this sweep is still publishing —
+             * which is the double publish the claim exists to prevent. The other four relays refuse
+             * it; this one bound it, so a deployment could switch off the guarantee by setting one
+             * variable to zero and nothing would say so.
+             *
+             * @throws IllegalArgumentException when {@code claimTimeout} is zero or negative
+             */
+            public Relay {
+                if (claimTimeout != null
+                        && (claimTimeout.isZero() || claimTimeout.isNegative())) {
+                    throw new IllegalArgumentException(
+                            "outbox.relay.claimTimeout must be positive, found " + claimTimeout);
+                }
+            }
         }
     }
 

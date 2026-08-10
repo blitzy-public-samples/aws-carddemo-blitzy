@@ -19,6 +19,8 @@ import com.carddemo.account.api.dto.AccountDataRequest;
 import com.carddemo.account.api.dto.AccountUpdateRequest;
 import com.carddemo.account.api.dto.AccountUpdateResponse;
 import com.carddemo.account.api.dto.AccountView;
+import com.carddemo.account.domain.AccountSnapshot;
+import com.carddemo.account.domain.AccountUpdateOutcome;
 import com.carddemo.account.api.dto.CustomerDataRequest;
 import com.carddemo.account.domain.AccountUpdateService;
 import com.carddemo.account.domain.ConcurrentChangeDetector;
@@ -371,7 +373,7 @@ class AccountControllerTest {
         void anAcceptedUpdateAnswersExactlyTwoProperties() throws Exception {
             resolveBoth();
             when(accountUpdates.updateAccount(any(), any(), any(), any()))
-                    .thenReturn(EditResult.ok());
+                    .thenReturn(outcomeCarrying(EditResult.ok()));
 
             JsonNode answer = JSON.readTree(updateAccount(bodyNamingTheCustomer()).getResponse()
                     .getContentAsString());
@@ -395,7 +397,7 @@ class AccountControllerTest {
         void anAcceptedUpdateNestsTheViewUnderAccount() throws Exception {
             resolveBoth();
             when(accountUpdates.updateAccount(any(), any(), any(), any()))
-                    .thenReturn(EditResult.ok());
+                    .thenReturn(outcomeCarrying(EditResult.ok()));
 
             JsonNode answer = JSON.readTree(updateAccount(bodyNamingTheCustomer()).getResponse()
                     .getContentAsString());
@@ -423,7 +425,7 @@ class AccountControllerTest {
                     + AccountDataRequest.IS_NOT_VALID_MESSAGE_SUFFIX;
             resolveBoth();
             when(accountUpdates.updateAccount(any(), any(), any(), any()))
-                    .thenReturn(EditResult.failure(refusal));
+                    .thenReturn(AccountUpdateOutcome.of(EditResult.failure(refusal)));
 
             MvcResult result = updateAccount(bodyNamingTheCustomer());
             JsonNode answer = JSON.readTree(result.getResponse().getContentAsString());
@@ -447,8 +449,8 @@ class AccountControllerTest {
         void aFailingAnswerCarriesNoListAndNoTrace() throws Exception {
             resolveBoth();
             when(accountUpdates.updateAccount(any(), any(), any(), any()))
-                    .thenReturn(EditResult.failure(AccountDataRequest.CURRENT_BALANCE_LABEL
-                            + AccountDataRequest.IS_NOT_VALID_MESSAGE_SUFFIX));
+                    .thenReturn(AccountUpdateOutcome.of(EditResult.failure(AccountDataRequest.CURRENT_BALANCE_LABEL
+                            + AccountDataRequest.IS_NOT_VALID_MESSAGE_SUFFIX)));
 
             MvcResult result = updateAccount(bodyNamingTheCustomer());
             JsonNode answer = JSON.readTree(result.getResponse().getContentAsString());
@@ -472,8 +474,8 @@ class AccountControllerTest {
         @Test
         void aLostRaceAnswersTheConcurrencyTextInThatSameSlot() throws Exception {
             resolveBoth();
-            when(accountUpdates.updateAccount(any(), any(), any(), any())).thenReturn(
-                    EditResult.failure(ConcurrentChangeDetector.RECORD_CHANGED_MESSAGE));
+            when(accountUpdates.updateAccount(any(), any(), any(), any())).thenReturn(AccountUpdateOutcome.of(
+                    EditResult.failure(ConcurrentChangeDetector.RECORD_CHANGED_MESSAGE)));
 
             MvcResult result = updateAccount(bodyNamingTheCustomer());
             JsonNode answer = JSON.readTree(result.getResponse().getContentAsString());
@@ -496,7 +498,7 @@ class AccountControllerTest {
         void aPassingVerdictCarryingATextAnswersThatText() throws Exception {
             resolveBoth();
             when(accountUpdates.updateAccount(any(), any(), any(), any())).thenReturn(
-                    new EditResult(true, AccountUpdateService.NO_CHANGE_DETECTED));
+                    outcomeCarrying(new EditResult(true, AccountUpdateService.NO_CHANGE_DETECTED)));
 
             JsonNode answer = JSON.readTree(updateAccount(bodyNamingTheCustomer()).getResponse()
                     .getContentAsString());
@@ -543,7 +545,7 @@ class AccountControllerTest {
         void anUpdateDelegatesExactlyOnce() throws Exception {
             resolveBoth();
             when(accountUpdates.updateAccount(any(), any(), any(), any()))
-                    .thenReturn(EditResult.ok());
+                    .thenReturn(outcomeCarrying(EditResult.ok()));
 
             updateAccount(bodyNamingTheCustomer());
 
@@ -584,7 +586,7 @@ class AccountControllerTest {
         void anUpdateWritesThroughNoStoreOfItsOwn() throws Exception {
             resolveBoth();
             when(accountUpdates.updateAccount(any(), any(), any(), any()))
-                    .thenReturn(EditResult.ok());
+                    .thenReturn(outcomeCarrying(EditResult.ok()));
 
             updateAccount(bodyNamingTheCustomer());
 
@@ -753,7 +755,7 @@ class AccountControllerTest {
         void thePathIdentifierIsTheOnlyOneTheRouteReads() throws Exception {
             resolveBoth();
             when(accountUpdates.updateAccount(any(), any(), any(), any()))
-                    .thenReturn(EditResult.ok());
+                    .thenReturn(outcomeCarrying(EditResult.ok()));
 
             updateAccount(bodyNamingTheCustomer());
 
@@ -775,20 +777,24 @@ class AccountControllerTest {
          * {@code app/cpy/CVACT01Y.cpy:L5} and {@code CUST-ID PIC 9(09)} at
          * {@code app/cpy/CVCUS01Y.cpy:L5}.
          *
-         * <p>An accepted update reads the account twice. The first read supplies the pair the
+         * <p>An accepted update reads each row exactly once. That one read supplies the pair the
          * caller was shown, which {@code app/cbl/COACTUPC.cbl} holds in
-         * {@code ACUP-OLD-ACCT-DATA}. The second read answers the row as it now stands.
+         * {@code ACUP-OLD-ACCT-DATA}. The row as the write left it comes back inside
+         * {@link com.carddemo.account.domain.AccountUpdateOutcome}, read off the locked row while
+         * the transaction still held it, so no second statement is issued to report it. The count is
+         * asserted rather than the calls, because a re-read would be invisible to every other
+         * assertion here: it answers the same values, and only the number of statements changes.
          */
         @Test
         void bothStoredRowsAreReadByTheirTextIdentifiers() throws Exception {
             resolveBoth();
             when(accountUpdates.updateAccount(any(), any(), any(), any()))
-                    .thenReturn(EditResult.ok());
+                    .thenReturn(outcomeCarrying(EditResult.ok()));
 
             updateAccount(bodyNamingTheCustomer());
 
-            assertAll("the pair is read by two text keys, and the account twice",
-                    () -> verify(accounts, times(2)).findByAccountId(ACCOUNT_ID),
+            assertAll("the pair is read by two text keys, once each",
+                    () -> verify(accounts, times(1)).findByAccountId(ACCOUNT_ID),
                     () -> verify(customers, times(1)).findByCustomerId(CUSTOMER_ID));
         }
 
@@ -823,7 +829,7 @@ class AccountControllerTest {
         void neitherIdentityDocumentReachesAnAnswer() throws Exception {
             resolveBoth();
             when(accountUpdates.updateAccount(any(), any(), any(), any()))
-                    .thenReturn(EditResult.ok());
+                    .thenReturn(outcomeCarrying(EditResult.ok()));
 
             String read = readAccountBody();
             String updated = updateAccount(bodyNamingTheCustomer()).getResponse()
@@ -968,4 +974,18 @@ class AccountControllerTest {
         stored.setFicoCreditScore(new BigDecimal("688"));
         return stored;
     }
+    /**
+     * Wraps one verdict as the outcome the service now answers with, carrying the stored account.
+     *
+     * <p>The controller reads the account out of this outcome rather than reading the row a second
+     * time after the transaction committed, so a stubbed passing verdict has to carry the snapshot
+     * the real service reads off the row it wrote.
+     *
+     * @param verdict the verdict to carry
+     * @return that verdict beside a snapshot of the stored account
+     */
+    private static AccountUpdateOutcome outcomeCarrying(EditResult verdict) {
+        return new AccountUpdateOutcome(verdict, AccountSnapshot.of(storedAccount()));
+    }
+
 }

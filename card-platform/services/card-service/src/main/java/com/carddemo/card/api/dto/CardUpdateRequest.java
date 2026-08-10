@@ -14,12 +14,14 @@ import jakarta.validation.constraints.Pattern;
  * the {@code CCUP-NEW-EXPIRAION-DATE} subgroup opened at L309 holds the three expiry parts. The
  * group holds exactly these five items, at L308, L310, L311, L312 and L313.
  *
- * <p>The card number is not a component of this record. It names the row the update rewrites, and it
- * arrives as the path variable of transaction {@code CCUP} at
- * {@code app/csd/CARDDEMO.CSD:L367-L369}. {@code api/CardController} carries the width and character
- * class the source tests, and {@code domain/CardUpdateService} runs step one of the edit chain over
- * that path value. {@code card-platform/docs/suggested-next-tasks.md} carries the deployment
- * guidance for a path that carries a Primary Account Number (PAN).
+ * <p>The card number is not a component of this record, and it is not the path variable either. In
+ * the source it is: transaction {@code CCUP} at {@code app/csd/CARDDEMO.CSD:L367-L369} names the row
+ * by its card number. Here the path carries the CARD TOKEN, so no Primary Account Number (PAN)
+ * reaches a request line. {@code api/CardController} holds that token to its width and character
+ * class, resolves it to the stored row, and passes that row's card number to
+ * {@code domain/CardUpdateService}, which still runs step one of the source edit chain over the
+ * resolved number. The decision is recorded under "Every route that names one card names it by that
+ * card's token" in {@code card-platform/docs/decision-log.md}.
  *
  * <p>The three expiry parts stay separate. The card update program joins year, month and day with
  * hyphens into one ten-character date at {@code app/cbl/COCRDUPC.cbl:L1467-L1474}, and the caller

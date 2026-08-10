@@ -21,6 +21,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.Optional;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -448,6 +449,28 @@ class OutboxRelayTerminalPathTest {
         @Override
         public boolean existsByRelayState(RelayState relayState) {
             return row.getRelayState() == relayState;
+        }
+
+        @Override
+        public long countDueBefore(Instant now) {
+            return dueAt(now).isPresent() ? 1L : 0L;
+        }
+
+        @Override
+        public Optional<Instant> findEarliestDueBefore(Instant now) {
+            return dueAt(now);
+        }
+
+        /**
+         * Answers when the one row held here became due, matching the query the interface declares.
+         *
+         * @param now the instant to read as of
+         * @return the instant the row became due, or empty when it is not pending and due
+         */
+        private Optional<Instant> dueAt(Instant now) {
+            boolean due = row.getRelayState() == RelayState.PENDING
+                    && !row.getNextAttemptAt().isAfter(now);
+            return due ? Optional.of(row.getNextAttemptAt()) : Optional.empty();
         }
 
         @Override

@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import com.carddemo.card.CardServiceDatabase;
 import com.carddemo.card.TestIdentityPasswords;
 import com.carddemo.card.entity.CardCrossReferenceEntity;
 import com.carddemo.card.entity.OutboxEventEntity;
@@ -34,8 +35,6 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.transaction.annotation.Transactional;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 
 /**
@@ -139,18 +138,11 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
                 "MONITORING_PASSWORD_HASH=" + TestIdentityPasswords.MONITORING_PASSWORD_HASH,
                 "carddemo.outbox.relay.fixed-delay-ms=3600000"
         })
-@Testcontainers
 @DisplayName("The cross-reference replica, the outbox and the marker over the migrated schema")
 class CardCrossReferenceRepositoryIT {
 
     /** The image tag {@code card-platform/docker-compose.yml} also names. */
     private static final String POSTGRES_IMAGE = "postgres:18.4";
-
-    /**
-     * The database name, the login name and the password of the container, one value for all
-     * three. {@code card-platform/.env.example} declares the same value.
-     */
-    private static final String POSTGRES_CREDENTIAL = "carddemo";
 
     /**
      * The schema Flyway creates, from {@code spring.flyway.schemas} and
@@ -271,18 +263,12 @@ class CardCrossReferenceRepositoryIT {
             """;
 
     /**
-     * The one container every test in this class shares.
+     * The one container the module fork runs, which this class reads a login from.
      *
-     * <p>The class name comes from {@code org.testcontainers.postgresql}, the package
-     * Testcontainers 2.0.5 ships it in. {@link Container} on a static field gives one container
-     * per class, and {@link Testcontainers} starts it before the Spring context reads a property
-     * below.
+     * <p>{@link CardServiceDatabase} owns it and hands this class a database of its own inside it.
+     * Nothing here starts or stops a container.
      */
-    @Container
-    static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer(POSTGRES_IMAGE)
-            .withDatabaseName(POSTGRES_CREDENTIAL)
-            .withUsername(POSTGRES_CREDENTIAL)
-            .withPassword(POSTGRES_CREDENTIAL);
+    static final PostgreSQLContainer POSTGRES = CardServiceDatabase.container();
 
     /**
      * Points the Spring datasource at the running container.
@@ -304,17 +290,14 @@ class CardCrossReferenceRepositoryIT {
     /**
      * Returns the container uniform resource locator with {@code currentSchema} appended.
      *
-     * <p>Testcontainers already appends one query parameter of its own, so the separator is
-     * {@code &} whenever a {@code ?} is present and {@code ?} otherwise. The search path matters to
-     * a native statement, which {@code hibernate.default_schema} never qualifies.
+     * <p>The facility builds the locator, so no separator is decided here. The search path matters
+     * to a native statement, which {@code hibernate.default_schema} never qualifies.
      *
      * @return the connection uniform resource locator whose search path holds
      *         {@value #MIGRATED_SCHEMA}
      */
     private static String migratedSchemaUrl() {
-        String url = POSTGRES.getJdbcUrl();
-        String separator = url.contains("?") ? "&" : "?";
-        return url + separator + "currentSchema=" + MIGRATED_SCHEMA;
+        return CardServiceDatabase.urlFor(CardCrossReferenceRepositoryIT.class);
     }
 
     /** The cross-reference replica under test. */

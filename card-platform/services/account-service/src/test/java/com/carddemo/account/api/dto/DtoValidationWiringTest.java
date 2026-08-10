@@ -602,12 +602,6 @@ class DtoValidationWiringTest {
     }
 
     /**
-     * Copies the reference customer request with one first name.
-     *
-     * @param firstName the value to substitute
-     * @return the copy
-     */
-    /**
      * Builds a customer section carrying one identifier and every other component valid.
      *
      * @param customerId the identifier to submit
@@ -626,6 +620,12 @@ class DtoValidationWiringTest {
                 VALID_CUSTOMER.primaryCardHolderIndicator(), VALID_CUSTOMER.ficoCreditScore());
     }
 
+    /**
+     * Copies the reference customer request with one first name.
+     *
+     * @param firstName the value to substitute
+     * @return the copy
+     */
     private static CustomerDataRequest withFirstName(String firstName) {
         return new CustomerDataRequest(VALID_CUSTOMER.customerId(), firstName,
                 VALID_CUSTOMER.middleName(), VALID_CUSTOMER.lastName(),

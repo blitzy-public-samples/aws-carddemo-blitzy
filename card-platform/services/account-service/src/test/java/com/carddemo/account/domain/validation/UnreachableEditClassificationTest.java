@@ -26,13 +26,13 @@ import org.junit.jupiter.api.Test;
  * each are its own label, its two {@code GO TO} statements and its exit label. Neither paragraph runs
  * in the source, for any field, ever.
  *
- * <p><b>Why they are not wired to a request field.</b> Because wiring one would add validation the
- * source does not perform. The equivalence requirement of AAP 0.1.1 is that the same inputs produce
+ * <p><b>They are not wired to a request field.</b> Wiring one would add validation the source
+ * does not perform. The equivalence requirement of AAP 0.1.1 is that the same inputs produce
  * the same results, and AAP 0.2.2 lists behavioural additions that are excluded for exactly this
  * reason. A field given the alphanumeric edit would start refusing values the source accepts, which
  * is a change of outcome, not a tightening of a loose translation.
  *
- * <p><b>Why they are not deleted either.</b> Rule 1 of this project requires bidirectional
+ * <p><b>They are not deleted either.</b> Rule 1 of this project requires bidirectional
  * traceability with no gaps, so every paragraph of an in-scope program needs a target. These two are
  * that target, and their own suites hold the character-class sets and the verbatim message text of
  * the two paragraphs. Removing them would leave two paragraphs of a primary migration source with no

@@ -1,9 +1,11 @@
 package com.carddemo.ledger.config;
 
 import io.micrometer.core.instrument.Counter;
+
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import java.time.Duration;
+
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -16,7 +18,7 @@ import org.springframework.context.annotation.Configuration;
 /**
  * Publishes the one bean the ledger posting service records its measurements through.
  *
- * <p>{@link LedgerMeters} registers seventeen meters under five names, covering three families:
+ * <p>{@link LedgerMeters} registers nineteen meters under seven names, covering three families:
  * events consumed, processing latency, and failure count. Spring Boot supplies the {@link MeterRegistry}.
  * Each meter registers at start-up, so every series reads zero before the first message.
  *
@@ -103,6 +105,9 @@ public class ObservabilityConfig {
         public static final List<String> FAILURE_KINDS = List.of(FAILURE_SCHEMA_VALIDATION,
                 FAILURE_DESERIALIZATION, FAILURE_PROCESSING, FAILURE_UNKNOWN);
 
+        /** Category-balance stores that lost the high-order digits of their sum. */
+        private final Counter categoryBalanceWrapped;
+
         /** Events read from the two topics this service subscribes to. */
         private final Counter eventsConsumed;
 
@@ -163,6 +168,12 @@ public class ObservabilityConfig {
                     .tag("outcome", "rejected")
                     .description("Transactions rejected, after WS-REJECT-COUNT at"
                             + " app/cbl/CBTRN02C.cbl:L186")
+                    .register(registry);
+            this.categoryBalanceWrapped =
+                    Counter.builder("carddemo.ledger.category.balance.wrapped")
+                    .description("Category-balance stores whose sum passed nine integer digits and"
+                            + " kept only the low-order nine, reproducing an ADD with no ON SIZE"
+                            + " ERROR phrase")
                     .register(registry);
             this.duplicatesSkipped = Counter.builder("carddemo.ledger.transactions.processed")
                     .tag("outcome", "duplicate")
@@ -245,6 +256,17 @@ public class ObservabilityConfig {
         /** Counts one delivery a marker already covered, so no table changed. */
         public void recordDuplicateSkipped() {
             duplicatesSkipped.increment();
+        }
+
+        /**
+         * Counts one category-balance store that wrapped past the field.
+         *
+         * <p>The wrap is reproduced rather than prevented, because the source stores the same sum
+         * with no {@code ON SIZE ERROR} phrase. Counting it is what stops the reproduction being
+         * invisible: the balance is then wrong by a known amount, and nothing else says so.
+         */
+        public void recordCategoryBalanceWrapped() {
+            categoryBalanceWrapped.increment();
         }
 
         /**
@@ -360,4 +382,5 @@ public class ObservabilityConfig {
         }
         return registry -> registry.config().commonTags(TAG_SERVICE, applicationName);
     }
+
 }

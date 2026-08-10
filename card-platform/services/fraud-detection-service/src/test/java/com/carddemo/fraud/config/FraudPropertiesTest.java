@@ -1,5 +1,6 @@
 package com.carddemo.fraud.config;
 
+import java.time.Duration;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -52,6 +53,12 @@ class FraudPropertiesTest {
             assertThat(properties.outbox().relay().fixedDelayMs()).isEqualTo(500L);
             assertThat(properties.outbox().relay().batchSize()).isEqualTo(100);
             assertThat(properties.outbox().relay().maxDurationMs()).isEqualTo(5000L);
+            assertThat(properties.outbox().relay().claimTimeout())
+                    .as("the claim horizon every relay on this platform ships, and the value "
+                            + "card-platform/.env.example, the Compose file and the Kubernetes "
+                            + "ConfigMap all carry. This service shipped PT30S, so a run that set "
+                            + "no variable recovered a claim four times sooner here")
+                    .isEqualTo(Duration.ofMinutes(2L));
             assertThat(properties.fraud().risk().flagThreshold()).isEqualTo(50);
             assertThat(properties.fraud().risk().velocityWindowMinutes()).isEqualTo(60);
             assertThat(properties.fraud().risk().velocityCountThreshold()).isEqualTo(5);
@@ -254,6 +261,32 @@ class FraudPropertiesTest {
                     assertThat(context.getStartupFailure())
                             .hasStackTraceContaining("markerRetentionHours must be at")
                             .hasStackTraceContaining("least 2 times");
+                });
+    }
+
+    /**
+     * Asserts a claim timeout that cannot protect an active claim stops start-up.
+     *
+     * <p>{@code @NotNull} caught an absent value and nothing else here, so zero and a negative
+     * duration both bound cleanly and every claim was stranded the moment it was taken: the next
+     * sweep recovered the batch this sweep was still publishing, which is the double publish the
+     * claim exists to prevent. The other four relays refused it, so one variable set to zero
+     * switched the guarantee off in this service alone and nothing said so.
+     */
+    @Test
+    @DisplayName("a relay claim timeout of zero stops start-up")
+    void aNonPositiveRelayClaimTimeoutStopsStartUp() {
+        shipped.withPropertyValues("carddemo.outbox.relay.claim-timeout=PT0S")
+                .run(context -> {
+                    assertThat(context).hasFailed();
+                    assertThat(context.getStartupFailure())
+                            .hasStackTraceContaining("claimTimeout");
+                });
+        shipped.withPropertyValues("carddemo.outbox.relay.claim-timeout=PT-1M")
+                .run(context -> {
+                    assertThat(context).hasFailed();
+                    assertThat(context.getStartupFailure())
+                            .hasStackTraceContaining("claimTimeout");
                 });
     }
 

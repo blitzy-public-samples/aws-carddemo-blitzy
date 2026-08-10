@@ -7,12 +7,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.carddemo.authorization.config.AuthorizationProperties;
 import com.carddemo.authorization.entity.AccountCreditSnapshotEntity;
 import com.carddemo.authorization.repository.AccountCreditSnapshotRepository;
+import com.carddemo.cobol.PicClause;
 import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.Instant;
@@ -118,6 +120,34 @@ class CycleExposureReservationTest {
             assertEquals(new BigDecimal("120.00"), reservedCredit(),
                     "two approvals of 60.00 expose 120.00, which is what the source's own "
                             + "accumulator would carry after two postings");
+        }
+
+        @Test
+        @DisplayName("a run of maximum approvals stores at the accumulator width and never overflows")
+        void aRunOfMaximumApprovalsStoresAtTheAccumulatorWidth() {
+            BigDecimal widestAmount = new BigDecimal("999999999.99");
+            BigDecimal reserved = NONE;
+
+            for (int approval = 1; approval <= 12; approval++) {
+                reset(snapshots);
+                when(snapshots.reserveCycleExposure(eq(ACCOUNT_ID), any(), any(), any()))
+                        .thenReturn(1);
+                reservation.reserve(rowCarrying(reserved, NONE), widestAmount);
+                reserved = reservedCredit();
+
+                assertTrue(reserved.precision() - reserved.scale()
+                                <= PicClause.ACCT_CURR_CYC_CREDIT_PRECISION
+                                        - PicClause.ACCT_CURR_CYC_CREDIT_SCALE,
+                        "approval " + approval + " must fit the ten integer digits of"
+                                + " ACCT-CURR-CYC-CREDIT PIC S9(10)V99, which is what column"
+                                + " pending_cycle_credit NUMERIC(12,2) holds");
+            }
+
+            assertEquals(new BigDecimal("1999999999.88"), reserved,
+                    "the eleventh integer digit is discarded where it stands, which is what a COBOL"
+                            + " ADD with no ON SIZE ERROR phrase does: twelve approvals of"
+                            + " 999999999.99 sum to 11999999999.88 and the accumulator keeps the"
+                            + " low-order ten integer digits");
         }
 
         @Test

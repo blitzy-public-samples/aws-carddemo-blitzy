@@ -28,7 +28,7 @@ import java.util.UUID;
  * delivery is acknowledged only once that transaction commits. A redelivery finds the row present
  * and does nothing.</p>
  *
- * <p><b>Why the topic is part of the identity.</b> Two listener groups share this table and read two
+ * <p><b>The topic is part of the identity.</b> Two listener groups share this table and read two
  * topics, and the event identifiers on those topics are assigned independently by two different
  * producing services. Two events on two topics may therefore carry the same identifier without
  * either producer being at fault. Keyed on the identifier alone, the second of the two lost its

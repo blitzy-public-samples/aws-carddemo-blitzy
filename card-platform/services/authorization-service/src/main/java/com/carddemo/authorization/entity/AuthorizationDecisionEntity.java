@@ -46,13 +46,13 @@ import org.springframework.data.domain.Persistable;
  * reads the card record.
  */
 @Entity
+// One index, and one read path. ix_authorization_decision_decided_at serves the bounded retention
+// delete of AuthorizationDecisionRepository. The account and actor composites were withdrawn by
+// V18__authorization_decision_index_pruning.sql: no read reached either, so every authorization
+// maintained two index entries nothing read.
 @Table(name = "authorization_decision",
         indexes = {
-            @Index(name = "ix_authorization_decision_account_decided",
-                    columnList = "account_id, decided_at DESC"),
-            @Index(name = "ix_authorization_decision_decided_at", columnList = "decided_at"),
-            @Index(name = "ix_authorization_decision_actor",
-                    columnList = "actor, decided_at DESC")
+            @Index(name = "ix_authorization_decision_decided_at", columnList = "decided_at")
         })
 public class AuthorizationDecisionEntity implements Persistable<String> {
 
@@ -157,8 +157,10 @@ public class AuthorizationDecisionEntity implements Persistable<String> {
     @Column(name = "decided_at", nullable = false)
     private Instant decidedAt;
 
-    // Nullable since V13__decision_without_event.sql, for the one decided outcome that publishes no
-    // event. ck_authorization_decision_event ties the absence to that outcome alone.
+    // Nullable at the column since V13__decision_without_event.sql, and required of every new row by
+    // ck_authorization_decision_event since V15__unresolved_decline_is_published.sql. The nullability
+    // stays so that rows written while one outcome published nothing remain the record they are; the
+    // constraint is NOT VALID for the same reason.
     @Column(name = "event_id")
     private UUID eventId;
 
@@ -191,9 +193,9 @@ public class AuthorizationDecisionEntity implements Persistable<String> {
      * @param declineReasonCode        four characters on a decline, {@code null} on an approval
      * @param declineReasonDescription the text that reject code carries, {@code null} on an approval
      * @param decidedAt                the moment the decision was taken
-     * @param eventId                  the outbox row this decision published through, {@code null}
-     *                                 exactly when {@code accountId} is, because a decision that
-     *                                 resolved no account publishes no event
+     * @param eventId                  the outbox row this decision published through, required of
+     *                                 every decision because one authorization call publishes one
+     *                                 event
      * @param declaredProcessingTimestamp the processing moment the caller declared, or {@code null}
      */
     private AuthorizationDecisionEntity(String transactionId, String actor, String accountId,
@@ -234,17 +236,15 @@ public class AuthorizationDecisionEntity implements Persistable<String> {
                     "an approval names the account the cross-reference resolved and the supplied"
                             + " value is absent");
         }
-        // ck_authorization_decision_event in V13__decision_without_event.sql, held here as well so a
-        // caller learns of the mismatch at the call rather than at the flush. A decision that
-        // resolved an account published one event; the one outcome that resolved none published
-        // nothing, because every event contract on this platform requires an account identifier and
-        // is keyed on it.
-        if ((accountId == null) != (eventId == null)) {
-            throw new IllegalArgumentException(accountId == null
-                    ? "a decision that resolved no account publishes no event and names no event"
-                            + " identifier"
-                    : "a decision that resolved an account publishes one event and names its"
-                            + " identifier");
+        // ck_authorization_decision_event in V15__unresolved_decline_is_published.sql, held here as well
+        // so a caller learns of the mismatch at the call rather than at the flush. AAP
+        // transformation rule T4 gives one authorization call one event, so every decision names the
+        // outbox row it published through. A decision that resolved an account names an
+        // account-keyed event; a decision that resolved none names a transaction-keyed
+        // schemas/transaction-declined-v2.json event.
+        if (eventId == null) {
+            throw new IllegalArgumentException(
+                    "every decision publishes one event and names its identifier");
         }
 
         this.transactionId = transactionId;
@@ -314,9 +314,10 @@ public class AuthorizationDecisionEntity implements Persistable<String> {
      * @param declineReasonCode        the four-character reject code that stands
      * @param declineReasonDescription the text that reject code carries
      * @param decidedAt                the moment the decision was taken
-     * @param eventId                  the outbox row this decision published through, and
-     *                                 {@code null} for the one outcome that publishes none, which is
-     *                                 the reject code {@code 0100} row above
+     * @param eventId                  the outbox row this decision published through. The reject
+     *                                 code {@code 0100} row above names a transaction-keyed
+     *                                 {@code schemas/transaction-declined-v2.json} event; every
+     *                                 other decline names an account-keyed one
      * @param declaredProcessingTimestamp the processing moment the caller declared, at the record
      *                                    width, or {@code null}
      * @return the declined row

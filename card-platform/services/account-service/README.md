@@ -37,11 +37,11 @@ That listener is what makes the balance this service reports the posted one, and
 billing-cycle accumulators move at all. `ACCTDAT` was one dataset with one writer in the source; here
 the record is split across three services that may not call one another. Before the listener existed
 the accumulators stayed at their seeded values, so reason code 102 tested a single amount against the
-credit limit instead of cumulative cycle exposure, and `GET /accounts/{id}` answered with the balance
+credit limit instead of cumulative cycle exposure. `GET /accounts/{id}` then answered with the balance
 as it stood at deployment while the ledger's `GET /balances/{id}` answered with the posted one. Neither
 raised anything.
 
-Every rule here is reimplemented from documented COBOL behaviour, and nothing in this module reaches a
+Every rule here is reimplemented from documented Common Business Oriented Language (COBOL) behaviour, and nothing in this module reaches a
 mainframe. The constraint is stated in full in the requirements: *"Do not modify or require changes to
 the original COBOL source as a prerequisite — the new services should consume the behavior (documented
 via the tech spec / reverse-engineering output) of the COBOL programs listed above, not call into the
@@ -92,7 +92,7 @@ administrator-only routes derive from the signon role fork the source implements
 Both state-changing routes require `Content-Type: application/json`, and `POST .../cycle-close`
 requires it even though it reads no body. That is the cross-site request forgery control. A browser
 sends GET, HEAD and POST cross-origin with no preflight, carrying whatever credential it holds for the
-target origin, and HTTP Basic is such a credential once a browser has it — Spring Security's own
+target origin. HTTP Basic is such a credential once a browser has it, and Spring Security's own
 reference notes that Basic-authenticated applications remain vulnerable. The three content types
 available to that request are `application/x-www-form-urlencoded`, `multipart/form-data` and
 `text/plain`; `application/json` is not among them, so a forged call must preflight and this service
@@ -122,11 +122,11 @@ the cycle-close operation below would have nothing to reset.
 The hand-written interface description is [openapi.yaml](src/main/resources/openapi.yaml). No
 documentation generator is on the classpath.
 
-A request body is held to that description. `RequestJsonStrictnessConfig` refuses a body carrying a
-property no request schema declares, and refuses a property declared as text that arrives as a JSON
-number or a boolean. Both answer `400`. The second is how the money rule is enforced rather than
-merely documented: every amount travels as a decimal string, and a reader left at its defaults would
-bind a JSON number through a binary floating-point type on the way to that string.
+A request body is held to that description. `RequestJsonStrictnessConfig` refuses a body carrying a property no request schema
+declares, and refuses a property declared as text that arrives as a JavaScript Object Notation (JSON) number or a boolean. Both
+answer `400`. The second is how the money rule is enforced rather than merely documented. Every amount travels as a decimal
+string, and a reader left at its defaults would bind a JSON number through a binary floating-point type on the way to that
+string.
 
 ### Two controls in front of every route
 
@@ -185,9 +185,9 @@ partitions between them, and each would apply roughly half the postings without 
 
 A delivery this service cannot apply is retried under `CONSUMER_MAX_RETRY_ATTEMPTS` and
 `CONSUMER_RETRY_BACKOFF_MS`, then routed to the shared dead-letter topic as a governed
-`DeadLetterEnvelope`. Nothing the refused record carried travels with it — not its key, not its value,
-not one of its headers — because a payload a schema control rejected is the payload most likely to hold
-a card number in the wrong field.
+`DeadLetterEnvelope`. Nothing the refused record carried travels with it: not its key, not its value,
+not one of its headers. A payload a schema control rejected is the payload most likely to hold a card
+number in the wrong field.
 
 <br/>
 
@@ -234,8 +234,8 @@ The middle hop is held here as `account_customer_link`, which carries the `XREF-
 `XREF-CUST-ID` pair of `app/cpy/CVACT03Y.cpy:L6-L7` and **no card number**. That is the whole of what
 this service asks the cross-reference: which customer does this account belong to. An earlier
 migration replicated the source record whole, so it stored all fifty full card numbers as its primary
-key, and a Primary Account Number sitting in a schema whose every query reads an account is a
-disclosure surface with no reader. A security review recorded it and
+key. A Primary Account Number sitting in a schema whose every query reads an account is a disclosure
+surface with no reader. A security review recorded it and
 [`docs/decision-log.md`](../../docs/decision-log.md) carries the decision. The authorization and card
 services still hold card-keyed replicas, because both answer questions asked about a card.
 
@@ -352,8 +352,8 @@ target replaces that pair with one database transaction.
 
 The compare-and-swap above needs the row held while it compares, so each of the two records is read
 under a lock. PostgreSQL waits for a held row indefinitely, which meant a writer holding a row kept
-this route's request open for as long as it held it, and the refusal the source composes could never
-be answered through contention: `app/cbl/COACTUPC.cbl:L3907`–`L3915` sets that condition whenever a
+this route's request open for as long as it held it. The refusal the source composes could never be
+answered through contention. `app/cbl/COACTUPC.cbl:L3907`–`L3915` sets that condition whenever a
 `READ UPDATE` comes back with anything other than `DFHRESP(NORMAL)`, and a wait that never ends comes
 back with nothing at all.
 
@@ -390,12 +390,12 @@ relationship table. A caller wanting both makes two calls.
 
 The cross-reference hop survives the migration, and it survives on the write path. The account record
 still holds no customer identifier, so `PUT /accounts/{accountId}` uses `account_customer_link`
-internally to confirm that the account and customer the body names really are the same pair the source
-screen bound together — `AccountUpdateService` reads the one row that table holds for the account and
-compares its customer identifier against both the proposed and the fetched value. That is the only
-production reader of the relationship table in this schema. `V7__account_customer_link.sql` replaced
-the card-number-keyed `card_xref` replica with that table, so no card number reaches this schema and
-there is no lowest card number left to choose between.
+internally to confirm that the account and customer the body names are the same pair the source screen
+bound together. `AccountUpdateService` reads the one row that table holds for the account and compares
+its customer identifier against both the proposed and the fetched value. That is the only production
+reader of the relationship table in this schema. `V7__account_customer_link.sql` replaced the
+card-number-keyed `card_xref` replica with that table, so no card number reaches this schema and there
+is no lowest card number left to choose between.
 
 **Figure 1 — Account Resolution Before and After: One Chained Three-Hop Screen Read Becomes Two Direct Reads Plus a Cross-Reference Check on the Write Path**
 
@@ -457,18 +457,15 @@ graph TB
 Legend for Figure 1:
 
 - A plain rectangle is a unit of code: a COBOL paragraph on the before side, a handler, repository or
-  response type on the after side.
-- A cylinder is stored data. On the before side each cylinder is a shared VSAM dataset that other
-  programs also open. On the after side each cylinder is one table inside this service's private
-  schema, which no other service reads.
-- A thin solid arrow is control passing from one step to the next.
-- A dotted arrow is a read of stored data.
-- A thick arrow is the short-circuit path taken when a hop finds nothing, labelled with the source line
-  that branches on the before side.
-- The dotted arrow between the two subgraphs marks the correspondence, and the correspondence is
-  partial by design. The same three tables are reached, but the chaining is gone: one screen read
-  became two independent reads plus one write-path check, so a caller pays only for the hop it asked
-  for and a customer read no longer depends on an account row existing.
+response type on the after side. - A cylinder is stored data. On the before side each cylinder is a
+shared VSAM dataset that other programs also open. On the after side each cylinder is one table inside
+this service's private schema, which no other service reads. - A thin solid arrow is control passing
+from one step to the next. - A dotted arrow is a read of stored data. - A thick arrow is the
+short-circuit path taken when a hop finds nothing, labelled with the source line that branches on the
+before side. - The dotted arrow between the two subgraphs marks the correspondence, and the
+correspondence is partial by design. The same three tables are reached, but the chaining is gone. One
+screen read became two independent reads plus one write-path check, so a caller pays only for the hop
+it asked for and a customer read no longer depends on an account row existing.
 
 The platform-wide paired views live in
 [the before-and-after architecture document](../../docs/architecture-before-after.md), and the
@@ -502,7 +499,7 @@ customer and is never written by a request. It replaces the card-number-keyed `c
 
 ### Migrations
 
-Eight migrations run here, and four of them exist in no other module. A ninth file ships and is
+Ten migrations run here, and four of them exist in no other module. An eleventh file ships and is
 not applied by default.
 
 | Migration | Responsibility |
@@ -515,8 +512,10 @@ not applied by default.
 | `V6__processed_event_topic_key.sql` | `processed_event.topic`, so one marker identifies a delivery of one topic rather than an event identifier alone |
 | `V7__account_customer_link.sql` | `account_customer_link`, replacing the `card_xref` replica with the account-to-customer pair and no card number, unique to this module |
 | `V8__subject_request_posture.sql` | One column comment, re-issued. `V1` said an erasure request cleared `customer.social_security_number` with the rest of the row, and no export or erasure workflow exists anywhere on this platform to send one. It declares no table, column, index or row, and it is a migration rather than an edit to `V1` because `V1` has run |
+| `V9__outbox_correlation.sql` | `outbox_event.correlation_id` and `outbox_event.causation_id`, the two identifiers the relay attaches to the record it publishes, so a state change names the request or the posted event behind it |
+| `V10__outbox_aggregate_head_index.sql` | Adds `ix_outbox_event_aggregate_head`, the partial index the relay's aggregate-head claim reads. That claim answers with the due head row of each account, so two events of one account are never in flight at once and every consumer of the account's partition reads them in the order this service wrote them. Without the index the correlated check re-read an account's backlog for every candidate row |
 
-`src/main/resources/db/demo/V900__demo_expiry_extension.sql` is the ninth, and it lives in
+`src/main/resources/db/demo/V900__demo_expiry_extension.sql` is the tenth, and it lives in
 `db/demo` rather than `db/migration` so a plain start never applies it. It lifts every seeded account
 expiry to `2099-12-31`, because the latest expiry in `app/data/ASCII/acctdata.txt` is 2025-12-28 and
 reason 0103 at `app/cbl/CBTRN02C.cbl:L414-L420` would otherwise decline every live call carrying
@@ -692,9 +691,11 @@ Improvements found during the build but left out of scope are listed in
 | :--- | :--- |
 | Java runtime and compiler | Eclipse Temurin OpenJDK 25.0.4+7 |
 | Build tool | Apache Maven 3.9.16 |
-| Containers | Docker Engine 29.7.0 with Docker Compose 5.3.1 |
+| Containers | Docker Engine 29.7.0 or later with Docker Compose 5.3.1 or later |
 | Broker image | `apache/kafka:4.2.1` |
 | Database image | `postgres:18.4` |
+
+The build runtime and the build tool are exact because the enforcer plugin refuses a build outside `[25,26)` and `[3.9.16,3.10.0)`; a newer Maven fails rather than passes. The image tags are exact because each is pinned by digest as well. Docker Engine and Compose are floors: nothing here constrains them, so the versions given are the ones this was exercised on.
 
 ### Runtime facts
 
@@ -706,7 +707,10 @@ Improvements found during the build but left out of scope are listed in
 | Database login | `carddemo_account_svc`, password from `ACCOUNT_DB_PASSWORD` |
 | Kafka bootstrap | `kafka:29092`, running in Kafka Raft (KRaft) mode |
 | Broker login | `carddemo-account`, password from `ACCOUNT_KAFKA_PASSWORD` |
+| Listener concurrency | 3 threads on the posted-transaction topic, one per partition |
 | Outbox relay | 500 millisecond fixed delay, batch size 100 |
+| Scheduler threads | 2, one for the relay and one for the retention drain |
+| Datasource pool | At most 12 connections, 4 kept idle |
 | Health check | `/actuator/health` on the management port |
 | Actuator endpoints | `health`, `metrics`, `prometheus` |
 
@@ -725,45 +729,25 @@ Run these from `card-platform/`. Step 1 gives every credential a value. Nothing 
 nineteen `REPLACE` markers of `.env.example` are all set when it finishes.
 
 ```bash
-cp .env.example .env
-
-for variable in POSTGRES_PASSWORD \
-  AUTHORIZATION_DB_PASSWORD LEDGER_DB_PASSWORD FRAUD_DB_PASSWORD \
-  NOTIFICATION_DB_PASSWORD ACCOUNT_DB_PASSWORD CARD_DB_PASSWORD \
-  KAFKA_ADMIN_PASSWORD \
-  AUTHORIZATION_KAFKA_PASSWORD LEDGER_KAFKA_PASSWORD FRAUD_KAFKA_PASSWORD \
-  NOTIFICATION_KAFKA_PASSWORD ACCOUNT_KAFKA_PASSWORD CARD_KAFKA_PASSWORD; do
-  sed -i "s|^${variable}=.*|${variable}=$(openssl rand -base64 24 | tr -d '/+=')|" .env
-done
-
-export ADMIN_PASSWORD="$(openssl rand -base64 18 | tr -d '/+=')"
-export USER_PASSWORD="$(openssl rand -base64 18 | tr -d '/+=')"
-export MONITORING_PASSWORD="$(openssl rand -base64 18 | tr -d '/+=')"
-
+# The hash helper inside the script reads spring-security-crypto out of the local Maven
+# repository, so this has to have run once on this machine.
 mvn -B -ntp -DskipTests package
 
-CRYPTO_CP="$(find ~/.m2/repository/org/springframework/security/spring-security-crypto \
-  -name 'spring-security-crypto-*.jar' | sort | tail -1):\
-$(find ~/.m2/repository/commons-logging/commons-logging \
-  -name 'commons-logging-*.jar' | sort | tail -1):\
-$(find ~/.m2/repository/org/springframework/spring-core \
-  -name 'spring-core-*.jar' | sort | tail -1)"
+# install -m 600, never cp: this file holds fourteen passwords and the card-token key a
+# moment later, and cp creates it under the umask -- world-readable on a default account.
+install -m 600 .env.example .env
 
-hash_password() {
-  DEMO_PASSWORD="$1" jshell --class-path "$CRYPTO_CP" -s - <<'JSHELL' 2>/dev/null | grep -m1 '^{bcrypt}'
-System.out.println(org.springframework.security.crypto.factory.PasswordEncoderFactories.createDelegatingPasswordEncoder().encode(System.getenv("DEMO_PASSWORD")));
-/exit
-JSHELL
-}
+# Fill all nineteen REPLACE markers: fourteen passwords, one card-token key and four
+# {bcrypt} identity hashes. This one command generates every one of them, keeps each
+# plaintext out of the environment, and writes the four demo passwords to
+# .demo-credentials with owner-only permissions. Re-running changes nothing already set.
+scripts/generate-env.sh
 
-sed -i "s|^ADMIN_PASSWORD_HASH=.*|ADMIN_PASSWORD_HASH='$(hash_password "$ADMIN_PASSWORD")'|" .env
-sed -i "s|^USER_PASSWORD_HASH=.*|USER_PASSWORD_HASH='$(hash_password "$USER_PASSWORD")'|" .env
-sed -i "s|^MONITORING_PASSWORD_HASH=.*|MONITORING_PASSWORD_HASH='$(hash_password "$MONITORING_PASSWORD")'|" .env
-
-grep -n '^[A-Z_]*=.*REPLACE' .env || echo "all 17 values are set"
+# Prove none is left. The count is read from the file, so it cannot disagree with it.
+grep -c '^[A-Za-z_][A-Za-z0-9_]*=.*REPLACE' .env
 ```
 
-Keep the single quotes on the three hashes. A bcrypt value is full of `$`, and Compose expands `$` in an unquoted dotenv value. `mvn package` above builds every module, so every image has an archive to copy.
+`scripts/generate-env.sh` is the canonical path and reads the credential names out of `.env.example`, so a credential added there needs no edit here. [Onboarding](../../docs/onboarding.md) sets out the same nineteen values by hand, including the `jshell` invocation that encodes each `{bcrypt}` hash and the single quotes Compose needs around one. `mvn package` below builds every module, so every image has an archive to copy.
 
 Step 2 starts the three containers this service needs and waits for each to report healthy, so the
 health request cannot race start-up:
@@ -775,7 +759,7 @@ curl -fsS http://localhost:9085/actuator/health
 
 Then one call per route. Every business route needs an identity, so `-u` carries one. Give `-u` the
 user name alone and `curl` prompts for the password, which keeps it out of the process environment and
-out of the shell history; `.env` holds only the bcrypt hash, so supply the plaintext you chose when you
+out of the shell history. `.env` holds only the bcrypt hash, so supply the plaintext you chose when you
 generated that hash. The two reads accept the ordinary identity because the shipped scopes name record
 1 of the account fixture. The update and the cycle close need the administrator identity.
 
@@ -864,8 +848,10 @@ sent as null — answers a copy of the stored row, which is how a caller updates
 
 ### Metrics this service registers
 
-Fourteen meters, each registered by `config/ObservabilityConfig` and readable at
-`/actuator/metrics` and `/actuator/prometheus` on the management port.
+Sixteen meters, fourteen registered by `config/ObservabilityConfig` and two by
+`config/OutboxBacklogMetrics`, readable at `/actuator/metrics` and `/actuator/prometheus` on the
+management port. Two more are registered by the request filters and described with them:
+`carddemo.account.requests.cross.site.refused` and `carddemo.account.requests.throttled`.
 
 | Meter | Tags | What it counts or times |
 | :--- | :--- | :--- |
@@ -880,6 +866,8 @@ Fourteen meters, each registered by `config/ObservabilityConfig` and readable at
 | `carddemo.account.outbox.published` | none | Outbox rows published to the broker |
 | `carddemo.account.publish.failed` | none | Outbox publish attempts that failed |
 | `carddemo.account.outbox.abandoned` | none | Outbox rows given up on after exhausting their attempts |
+| `carddemo.account.outbox.due` | Gauge | Outbox rows due for an attempt now, being the backlog not yet published. A gauge rather than a counter, because a backlog is a state and not an event |
+| `carddemo.account.outbox.oldest.due.age` | Gauge | Seconds the longest-waiting due outbox row has waited, zero when none is due. It separates a service working through a burst from a stopped relay |
 | `carddemo.account.dead.letters.published` | none | Terminal diagnostics the broker acknowledged |
 | `carddemo.account.dead.letters.failed` | none | Terminal diagnostic attempts the broker refused |
 | `carddemo.account.transaction.failures` | `operation` | Account transactions that rolled back or failed to commit |
@@ -913,25 +901,22 @@ The platform map and the full quickstart are in [the platform README](../../READ
 Each of these is absent on purpose.
 
 - **No interest computation.** Only the two zeroing statements at `app/cbl/CBACT04C.cbl:L353-L354` are
-  reproduced.
-- **No account-to-customer foreign key.** The account record carries no customer identifier field.
-- **No version column.** Concurrency is field-level compare-and-swap only, reproducing
-  `app/cbl/COACTUPC.cbl:L4109-L4191` including both case folds and the mismatched date-of-birth offsets.
-- **No account-status check on any authorization or posting path.** The field exists at
-  `app/cpy/CVACT01Y.cpy:L6` and no source program tests it before posting. A closed account still posts.
-- **No card number anywhere in this schema.** The card record, its `CARD-CVV-CD` and every
-  card-number checksum question belong to the card service. `V4__card_cross_reference_replica.sql`
-  did hold a `card_xref` replica of 50 rows keyed by the full sixteen-digit card number, and
-  `V7__account_customer_link.sql` drops it: the one reader, `AccountUpdateService`, read that row for
-  its `customer_id` alone, so the pair is what `account_customer_link` keeps and the card number is
-  what it does not. No route accepts a card number, none returns one, and no event this service
-  publishes carries one.
-- **No behavioural change from the spelling correction.** Only target identifier names change.
-- **No code generator or mapping framework.** Java records and explicit mapper classes carry the
-  translation, and `openapi.yaml` is written by hand.
-- **No cache, no key-value store, no user interface, no component library, no content-delivery-network
-  dependency.**
-- **No COBOL compiler, emulator or mainframe connector on the classpath.**
+reproduced. - **No account-to-customer foreign key.** The account record carries no customer identifier
+field. - **No version column.** Concurrency is field-level compare-and-swap only, reproducing
+`app/cbl/COACTUPC.cbl:L4109-L4191` including both case folds and the mismatched date-of-birth offsets. -
+**No account-status check on any authorization or posting path.** The field exists at
+`app/cpy/CVACT01Y.cpy:L6` and no source program tests it before posting. A closed account still posts. -
+**No card number anywhere in this schema.** The card record, its `CARD-CVV-CD` and every card-number
+checksum question belong to the card service. `V4__card_cross_reference_replica.sql` did hold a
+`card_xref` replica of 50 rows keyed by the full sixteen-digit card number, and
+`V7__account_customer_link.sql` drops it. The one reader, `AccountUpdateService`, read that row for its
+`customer_id` alone, so the pair is what `account_customer_link` keeps and the card number is what it
+does not. No route accepts a card number, none returns one, and no event this service publishes carries
+one. - **No behavioural change from the spelling correction.** Only target identifier names change. -
+**No code generator or mapping framework.** Java records and explicit mapper classes carry the
+translation, and `openapi.yaml` is written by hand. - **No cache, no key-value store, no user interface,
+no component library, no content-delivery-network dependency.** - **No COBOL compiler, emulator or
+mainframe connector on the classpath.**
 
 The reasoning behind each one is in [the decision log](../../docs/decision-log.md).
 

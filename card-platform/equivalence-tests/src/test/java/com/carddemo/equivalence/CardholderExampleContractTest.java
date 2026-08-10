@@ -47,6 +47,9 @@ class CardholderExampleContractTest {
     /** Width of the card-number field in both layouts. */
     private static final int CARD_NUMBER_WIDTH = 16;
 
+    /** Characters a masked card number keeps, matching {@code PanMasker.VISIBLE_DIGIT_COUNT}. */
+    private static final int VISIBLE_DIGITS = 4;
+
     /** Records each fixture holds, which is the count both loaders assert. */
     private static final int FIXTURE_RECORD_COUNT = 50;
 
@@ -91,6 +94,28 @@ class CardholderExampleContractTest {
     private static final Set<String> READABLE_SUFFIXES =
             Set.of(".md", ".yaml", ".yml", ".json", ".html", ".sql", ".toml", ".xml", ".java");
 
+    /**
+     * Returns a card number in the form this platform publishes it, keeping its last four digits.
+     *
+     * <p>Every assertion of this class runs over card numbers, and AssertJ writes the values it
+     * compared into the failure message. That message lands in a Surefire report that
+     * {@code .github/workflows/ci.yml} uploads and keeps, so a failure here would publish the
+     * fixture rows this class exists to keep out of the delivered files. Each assertion therefore
+     * reduces its own comparison to a list of offending values and maps that list through here
+     * first: nothing named in a failure carries more than what {@code PanMasker} publishes.</p>
+     *
+     * @param cardNumber the value to describe, of any width
+     * @return the value with everything before its last four characters masked
+     */
+    private static String masked(String cardNumber) {
+        if (cardNumber.length() <= VISIBLE_DIGITS) {
+            return "*".repeat(cardNumber.length()) + " (" + cardNumber.length() + " characters)";
+        }
+        return "*".repeat(cardNumber.length() - VISIBLE_DIGITS)
+                + cardNumber.substring(cardNumber.length() - VISIBLE_DIGITS)
+                + " (" + cardNumber.length() + " characters)";
+    }
+
     /** Returns the card numbers both fixtures hold, read by offset. */
     private static Set<String> seededCardNumbers() {
         Set<String> numbers = new LinkedHashSet<>();
@@ -115,23 +140,42 @@ class CardholderExampleContractTest {
             assertThat(seeded)
                     .as("fifty cards, and the cross-reference names the same fifty")
                     .hasSize(FIXTURE_RECORD_COUNT);
-            assertThat(seeded).allSatisfy(number ->
-                    assertThat(number).matches("[0-9]{16}"));
+
+            List<String> misshapen = seeded.stream()
+                    .filter(number -> !number.matches("[0-9]{16}"))
+                    .map(CardholderExampleContractTest::masked)
+                    .toList();
+            assertThat(misshapen)
+                    .as("every seeded number is sixteen digits. The values below are named in "
+                            + "masked form because this report is published as a build artifact")
+                    .isEmpty();
         }
 
         @Test
         @DisplayName("no synthetic example value resolves to a seeded card")
         void noSyntheticExampleResolvesToASeededCard() {
             Set<String> seeded = seededCardNumbers();
-            assertThat(SYNTHETIC_EXAMPLES)
+
+            List<String> collisions = SYNTHETIC_EXAMPLES.stream()
+                    .filter(seeded::contains)
+                    .map(CardholderExampleContractTest::masked)
+                    .toList();
+            assertThat(collisions)
                     .as("an example that happened to match a fixture row would be the finding "
-                            + "again, with a value that looks safe")
-                    .doesNotContainAnyElementsOf(seeded);
-            assertThat(SYNTHETIC_EXAMPLES).allSatisfy(value ->
-                    assertThat(value)
-                            .as("an example still has to satisfy the sixteen-digit pattern every "
-                                    + "card field declares")
-                            .matches("[0-9]{16}"));
+                            + "again, with a value that looks safe. The comparison is by whole "
+                            + "value and only the masked form of a collision is named: asserting "
+                            + "the two sets apart directly would publish all fifty seeded numbers "
+                            + "on failure")
+                    .isEmpty();
+
+            List<String> misshapen = SYNTHETIC_EXAMPLES.stream()
+                    .filter(value -> !value.matches("[0-9]{16}"))
+                    .map(CardholderExampleContractTest::masked)
+                    .toList();
+            assertThat(misshapen)
+                    .as("an example still has to satisfy the sixteen-digit pattern every card "
+                            + "field declares")
+                    .isEmpty();
         }
     }
 

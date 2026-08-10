@@ -46,7 +46,7 @@ import org.springframework.transaction.support.TransactionTemplate;
  * {@code transaction_id} resolve to a named customer through the account and ledger services, so
  * both horizons are privacy horizons and not only housekeeping ones.
  *
- * <h2>Why each delete is bounded and drained</h2>
+ * <h2>Each delete is bounded and drained</h2>
  *
  * <p>All four tables are on the hot path. The relay sweeps {@code outbox_event} on a fixed delay,
  * the authorization listener writes {@code processed_event} on every event, and
@@ -69,7 +69,7 @@ import org.springframework.transaction.support.TransactionTemplate;
  * the other three, which is why the four are swept in sequence with a deadline each rather than
  * under one shared budget.
  *
- * <h2>Why the velocity horizon is not free</h2>
+ * <h2>What the velocity horizon costs</h2>
  *
  * <p>The other three horizons may be any positive duration. The velocity horizon may not: a window
  * is counted into by every authorization arriving while it is current, so a horizon shorter than

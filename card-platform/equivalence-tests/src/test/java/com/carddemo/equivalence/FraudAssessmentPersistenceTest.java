@@ -24,8 +24,6 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 
 /**
@@ -46,20 +44,24 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
  * nothing here cites a source paragraph. The bounds and the rule identifiers come from {@link
  * FraudFlagged}, which the schema document {@code fraud-flagged-v1.json} enumerates.
  */
-@Testcontainers
 class FraudAssessmentPersistenceTest {
 
-    /** Image tag of the database container, matching the {@code postgres} service in compose. */
-    private static final String POSTGRES_IMAGE = "postgres:18.4";
+    /**
+     * The one container the module fork runs, which this class reads a login from.
+     *
+     * <p>{@link EquivalenceDatabase} owns it and hands this class a database of its own inside it.
+     * Nothing here starts or stops a container.
+     */
+    private static final PostgreSQLContainer POSTGRES = EquivalenceDatabase.container();
 
-    /** One instance for this class. */
-    @Container
-    @SuppressWarnings("resource")
-    private static final PostgreSQLContainer POSTGRES =
-            new PostgreSQLContainer(POSTGRES_IMAGE)
-                    .withDatabaseName("carddemo")
-                    .withUsername("carddemo")
-                    .withPassword("carddemo-fraud-persistence");
+    /**
+     * The database inside that container which belongs to this class alone.
+     *
+     * <p>No schema is selected on the connection: every schema this class needs is built by the
+     * migrations it runs, and every native statement below qualifies its table name or sets
+     * hibernate.default_schema.
+     */
+    private static final String DATABASE_URL = EquivalenceDatabase.urlFor(FraudAssessmentPersistenceTest.class);
 
     /** The physical naming strategy Spring Boot 4.1.0 installs by default. */
     private static final String PHYSICAL_NAMING_STRATEGY =
@@ -96,7 +98,7 @@ class FraudAssessmentPersistenceTest {
     @BeforeAll
     static void migrateAndOpen() {
         Flyway.configure()
-                .dataSource(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword())
+                .dataSource(DATABASE_URL, POSTGRES.getUsername(), POSTGRES.getPassword())
                 .locations("filesystem:" + migrationDirectory("fraud-detection-service"))
                 .schemas(SCHEMA)
                 .defaultSchema(SCHEMA)
@@ -106,7 +108,7 @@ class FraudAssessmentPersistenceTest {
 
         Map<String, Object> settings = new HashMap<>();
         settings.put("hibernate.connection.driver_class", "org.postgresql.Driver");
-        settings.put("hibernate.connection.url", POSTGRES.getJdbcUrl());
+        settings.put("hibernate.connection.url", DATABASE_URL);
         settings.put("hibernate.connection.username", POSTGRES.getUsername());
         settings.put("hibernate.connection.password", POSTGRES.getPassword());
         settings.put("hibernate.default_schema", SCHEMA);

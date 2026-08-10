@@ -210,7 +210,7 @@ class CardUpdatedTest {
     void theEventTypeIsGovernedByTheSharedTable() {
         assertEquals("CardUpdated", CardUpdated.EVENT_TYPE,
                 "the event type changed, so the schema its name selects no longer describes it");
-        assertEquals("schemas/card-updated-v2.json",
+        assertEquals("schemas/card-updated-v1.json",
                 EventSchemas.SCHEMA_RESOURCES.get(CardUpdated.EVENT_TYPE),
                 "the shared table no longer governs this event, so it would leave this service "
                         + "unchecked");

@@ -14,7 +14,6 @@ import java.util.stream.Collectors;
 import com.carddemo.events.EventEnvelope;
 
 import com.networknt.schema.Error;
-import com.networknt.schema.InputFormat;
 import com.networknt.schema.Schema;
 import com.networknt.schema.SchemaRegistry;
 import com.networknt.schema.SpecificationVersion;
@@ -269,9 +268,12 @@ public final class JsonSchemaValidatingDeserializer<T> implements Deserializer<T
         // tree.
         boolean treeResult = expectedType == null && recordType == null;
 
+        // The tree read above is what the document governs. Handing the text to the validator
+        // instead would parse the same bytes a second time, and a record this deserializer already
+        // parsed cannot parse differently the second time.
         List<Error> violations;
         try {
-            violations = schema.validate(json, InputFormat.JSON);
+            violations = schema.validate(tree);
         } catch (JacksonException cause) {
             throw new SerializationException("Checking " + eventType + " against "
                     + EventSchemas.resourceFor(eventType, schemaVersion)
@@ -300,8 +302,13 @@ public final class JsonSchemaValidatingDeserializer<T> implements Deserializer<T
 
         Class<?> boundType = treeForm || treeResult ? JsonNode.class
                 : expectedType != null ? expectedType : recordType;
+        if (JsonNode.class.equals(boundType)) {
+            // The caller asked for the tree, and the checked tree is the tree. Reading the text
+            // again to answer with an equal one would parse the record a third time.
+            return cast(tree);
+        }
         try {
-            return cast(mapper.readValue(json, boundType));
+            return cast(mapper.treeToValue(tree, boundType));
         } catch (JacksonException | IllegalArgumentException cause) {
             throw new SerializationException("The checked JSON of " + eventType
                     + " could not build a " + boundType.getSimpleName() + ".", cause);

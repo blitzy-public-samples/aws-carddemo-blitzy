@@ -12,6 +12,7 @@ import ch.qos.logback.classic.LoggerContext;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import com.carddemo.card.CardApplication;
+import com.carddemo.card.CardServiceDatabase;
 import com.carddemo.card.TestIdentityPasswords;
 import com.carddemo.card.api.CardController;
 import com.carddemo.card.api.dto.CardUpdateRequest;
@@ -148,17 +149,8 @@ class CardEventPublicationTest {
      */
     static final String ADMIN_SECRET = TestIdentityPasswords.ADMIN_PASSWORD;
 
-    /** The image tag {@code card-platform/docker-compose.yml} also names for the database. */
-    private static final String POSTGRES_IMAGE = "postgres:18.4";
-
     /** The image tag {@code card-platform/docker-compose.yml} also names for the broker. */
     private static final String KAFKA_IMAGE = "apache/kafka:4.2.1";
-
-    /**
-     * Database name, login name and password of the container, one value for all three.
-     * {@code card-platform/.env.example} declares the same value.
-     */
-    private static final String POSTGRES_CREDENTIAL = "carddemo";
 
     /**
      * Schema Flyway creates, from {@code spring.flyway.schemas} and
@@ -257,7 +249,7 @@ class CardEventPublicationTest {
      * The nine property names one card event carries at the top level of its object.
      *
      * <p>Five come from {@link EventEnvelope} and four carry the card. The same nine are the
-     * {@code required} array of {@code schemas/card-updated-v2.json}, which
+     * {@code required} array of {@code schemas/card-updated-v1.json}, which
      * {@code com.carddemo:event-contracts} ships.
      */
     private static final Set<String> WIRE_PROPERTIES = Set.of(
@@ -289,16 +281,12 @@ class CardEventPublicationTest {
     private static volatile boolean topicPrepared;
 
     /**
-     * The one database container every test in this class shares.
+     * The one container the module fork runs, which this class reads a login from.
      *
-     * <p>The class name comes from {@code org.testcontainers.postgresql}, the package
-     * Testcontainers 2.0.5 ships it in.
+     * <p>{@link CardServiceDatabase} owns it and hands this class a database of its own inside it.
+     * Nothing here starts or stops a container.
      */
-    @Container
-    static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer(POSTGRES_IMAGE)
-            .withDatabaseName(POSTGRES_CREDENTIAL)
-            .withUsername(POSTGRES_CREDENTIAL)
-            .withPassword(POSTGRES_CREDENTIAL);
+    static final PostgreSQLContainer POSTGRES = CardServiceDatabase.container();
 
     /**
      * The one broker container every test in this class shares.
@@ -329,15 +317,12 @@ class CardEventPublicationTest {
     /**
      * Returns the container connection string with the migrated schema on the search path.
      *
-     * <p>Testcontainers appends one query parameter of its own, so the separator is {@code &}
-     * whenever a {@code ?} is present and {@code ?} otherwise.
+     * <p>The facility builds the locator, so no separator is decided here.
      *
      * @return the uniform resource locator whose search path holds {@value #MIGRATED_SCHEMA}
      */
     private static String migratedSchemaUrl() {
-        String url = POSTGRES.getJdbcUrl();
-        String separator = url.contains("?") ? "&" : "?";
-        return url + separator + "currentSchema=" + MIGRATED_SCHEMA;
+        return CardServiceDatabase.urlFor(CardEventPublicationTest.class);
     }
 
     /** Port the embedded web server took, which the request helpers below build on. */
@@ -434,6 +419,12 @@ class CardEventPublicationTest {
     /** Reads the card topic. Built once per test, positioned at the end of every partition. */
     private KafkaConsumer<String, String> cardEvents;
 
+    /** Records the context so the static teardown above can reach it. */
+    @BeforeEach
+    void captureContext() {
+        startedContext = context;
+    }
+
     /**
      * Restores the seeded card, empties the outbox, and positions a reader at the topic end.
      *
@@ -441,12 +432,6 @@ class CardEventPublicationTest {
      * seeking to the end afterwards drops anything an earlier test left on the topic. A test that
      * then counts records counts only its own.
      */
-    /** Records the context so the static teardown above can reach it. */
-    @BeforeEach
-    void captureContext() {
-        startedContext = context;
-    }
-
     @BeforeEach
     void restoreTheSeededCardAndPositionTheReader() {
         prepareTopics();
@@ -824,7 +809,7 @@ class CardEventPublicationTest {
     /**
      * The wire form one card event takes, read from the broker rather than from a serializer.
      *
-     * <p>{@code schemas/card-updated-v2.json} closes its property set, so a wrapped envelope would
+     * <p>{@code schemas/card-updated-v1.json} closes its property set, so a wrapped envelope would
      * be refused before it reached a topic. The assertions below read the record the broker
      * carried, which is the only form a consumer ever sees.
      */

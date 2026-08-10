@@ -18,8 +18,8 @@ import org.springframework.stereotype.Component;
  *
  * <h2>The problem this solves</h2>
  *
- * <p>One authorization call publishes exactly one event, and which stream that event lands on is
- * decided by {@code ${TOPIC_TRANSACTION_AUTHORIZED:transaction.authorized}}. The image carries a
+ * <p>A decided authorization call publishes at most one event, and which stream that event lands
+ * on is decided by {@code ${TOPIC_TRANSACTION_AUTHORIZED:transaction.authorized}}. The image carries a
  * default and the platform supplies the real value, which is deliberate: a service has to start on a
  * developer machine with nothing set. It also means a dropped, renamed or mistyped key in
  * {@code card-platform/deploy/k8s/30-configmap.yaml} or {@code card-platform/docker-compose.yml}

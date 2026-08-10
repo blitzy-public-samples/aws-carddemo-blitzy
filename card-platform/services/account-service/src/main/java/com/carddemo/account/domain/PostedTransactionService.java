@@ -27,7 +27,7 @@ import org.springframework.transaction.annotation.Transactional;
  * fields are {@code PIC S9(10)V99}, at {@code app/cpy/CVACT01Y.cpy:L7}, {@code :L13} and
  * {@code :L14}.
  *
- * <h2>Why the account service performs this arithmetic at all</h2>
+ * <h2>Where this arithmetic runs</h2>
  *
  * <p>The source had one {@code ACCTDAT} record. The batch posting program added to it at
  * {@code app/cbl/CBTRN02C.cbl:L545-L560}, the account view program read the same record at
@@ -157,8 +157,6 @@ public class PostedTransactionService {
                 posted.getCurrentBalance(), posted.getCreditLimit(), posted.getCurrentCycleCredit(),
                 posted.getCurrentCycleDebit(), posted.getExpirationDate()));
 
-        LOG.info("Transaction {} moved the balance and one billing-cycle accumulator of the account"
-                + " record, and one state change is queued for publication.", transactionId);
         return posted;
     }
 
@@ -168,8 +166,13 @@ public class PostedTransactionService {
      * <p>{@code app/cbl/CBTRN02C.cbl:L547}, {@code :L549} and {@code :L551} each add without an
      * {@code ON SIZE ERROR} phrase, and the phrase appears in none of the twenty-eight programs
      * under {@code app/cbl/}, so a sum wider than the field keeps its low-order ten integer digits
-     * and its sign. A store that dropped a digit is reported once, naming the capacity and
-     * withholding the figure.
+     * and its sign. A truncation is reported once, naming the capacity and withholding the figure.
+     *
+     * <p>The line reports the arithmetic and not a stored row. This method runs under
+     * {@link Propagation#MANDATORY}, inside a transaction the caller may still roll back, so a line
+     * claiming the figure was stored would name a row that never existed. Truncation is a property of
+     * the add itself and is true whatever becomes of the transaction, which is why the detection
+     * stays here and the wording says attempts.
      *
      * @param sum       the value one add produced, at the scale of the field it belongs to
      * @param precision the digits the field holds in total, from {@link PicClause}
@@ -182,8 +185,9 @@ public class PostedTransactionService {
             LOG.warn("A posted figure needed more than the {} integer digits the account record"
                             + " holds at app/cpy/CVACT01Y.cpy:L7, :L13 and :L14, so the high-order"
                             + " digits were dropped where the source ADD statements at"
-                            + " app/cbl/CBTRN02C.cbl:L547-L551 drop them. The stored record and the"
-                            + " state change agree, and both report less than the postings sum to."
+                            + " app/cbl/CBTRN02C.cbl:L547-L551 drop them. The truncated figure is"
+                            + " what this transaction attempts to store and what the state change it"
+                            + " queues carries, and both report less than the postings sum to."
                             + " See docs/business-rule-flags.md.",
                     precision - scale);
         }

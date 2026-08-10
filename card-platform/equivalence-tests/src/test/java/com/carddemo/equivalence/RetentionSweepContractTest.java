@@ -2,6 +2,7 @@ package com.carddemo.equivalence;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.io.IOException;
 import java.lang.reflect.Method;
 import java.lang.reflect.RecordComponent;
 import java.nio.file.Files;
@@ -17,8 +18,17 @@ import java.util.regex.Pattern;
 import org.junit.jupiter.api.Test;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.transaction.support.TransactionTemplate;
+import org.yaml.snakeyaml.Yaml;
 
-/** Holds every producer service to one executable retention contract. */
+/**
+ * Holds every producer service to one executable retention contract, and every service to the
+ * scheduler that contract needs.
+ *
+ * <p>The retention half asserts what a sweep does: one transaction for each delete, the shipped
+ * interval, both horizons bound, and a table swept exactly when its own catalogue comment declares a
+ * window. The scheduler half asserts what a sweep may not cost, which is publication latency for
+ * every account while it drains.
+ */
 class RetentionSweepContractTest {
 
     /**
@@ -47,6 +57,21 @@ class RetentionSweepContractTest {
     /** A dropped table, so a comment left behind in the migration text is not held against it. */
     private static final Pattern TABLE_DROP =
             Pattern.compile("DROP TABLE (?:IF EXISTS )?(\\w+)");
+
+    /** The annotation that puts a method on the scheduler. */
+    private static final String SCHEDULED_ANNOTATION = "@Scheduled(";
+
+    /**
+     * A scheduling pool size: a bare number, or a placeholder carrying one as its default.
+     *
+     * <p>The placeholder default is the shipped value, because the variable it names is an override
+     * a deployment sets and the shipped configuration sets none.
+     */
+    private static final Pattern SCHEDULER_POOL_SIZE = Pattern.compile(
+            "\\$\\{SPRING_TASK_SCHEDULING_POOL_SIZE:(\\d+)}|(\\d+)");
+
+    /** Threads the framework's scheduling pool holds when a service declares no size. */
+    private static final int FRAMEWORK_SCHEDULER_THREADS = 1;
 
     /**
      * Every service that owns a {@code domain/RetentionSweep}, including the one with no outbox.
@@ -206,6 +231,64 @@ class RetentionSweepContractTest {
     }
 
     /**
+     * Orders migration files the way Flyway applies them, by version number.
+     *
+     * <p>A string comparison puts {@code V10} before {@code V2}, which reverses every superseding
+     * comment once a service passes its ninth migration. The version is the digits between the
+     * leading {@code V} and the {@code __} separator.
+     */
+    private static final Comparator<Path> BY_MIGRATION_VERSION =
+            Comparator.comparingInt(RetentionSweepContractTest::versionOf)
+                    .thenComparing(path -> path.getFileName().toString());
+
+    /**
+     * Reads the Flyway version out of one migration filename.
+     *
+     * @param file the migration file
+     * @return its version number, or {@link Integer#MAX_VALUE} when the name carries none
+     */
+    private static int versionOf(Path file) {
+        Matcher version = MIGRATION_VERSION.matcher(file.getFileName().toString());
+        return version.find() ? Integer.parseInt(version.group(1)) : Integer.MAX_VALUE;
+    }
+
+    /**
+     * Requires every service to hold a scheduler thread for each task it schedules.
+     *
+     * <p>The framework's scheduling pool holds one thread. Five of these services schedule two
+     * tasks on it: an outbox relay due every 500 milliseconds, and a retention sweep that may spend
+     * thirty seconds on each table it drains. On one thread the sweep and the relay take turns, so
+     * an hour's accumulation of expired rows delayed publication of every event of every account
+     * for as long as the drain ran — a sweep whose whole purpose is to keep out of the relay's way,
+     * doing the opposite through the scheduler instead of through locks.
+     *
+     * <p>A thread for each task removes the wait, and it removes nothing else. Fixed-delay
+     * scheduling measures the next run of a task from the end of its previous run, so no task
+     * overlaps itself however many threads the pool holds; two threads let two <em>different</em>
+     * tasks run at once and nothing more. The datasource pool of each service is sized for that,
+     * which is the other half of the same change.
+     *
+     * <p>The assertion is a relation rather than a number, so it keeps holding as services change.
+     * A third scheduled method added to a service whose pool holds two threads fails here, and a
+     * service that schedules one task — the notification service, which publishes nothing and holds
+     * no relay — passes on the framework default without declaring anything.
+     */
+    @Test
+    void everyScheduledTaskHasASchedulerThreadOfItsOwn() throws Exception {
+        for (SweepSource service : SWEEP_SOURCES) {
+            Map<String, Integer> scheduled = scheduledTasksOf(service.moduleDirectory());
+            int tasks = scheduled.values().stream().mapToInt(Integer::intValue).sum();
+            int threads = schedulerThreadsOf(service.moduleDirectory());
+
+            assertThat(threads)
+                    .as("%s schedules %d task(s) in %s and gives its scheduler %d thread(s), so "
+                            + "one task waits for another to finish", service.moduleDirectory(),
+                            tasks, scheduled.keySet(), threads)
+                    .isGreaterThanOrEqualTo(tasks);
+        }
+    }
+
+    /**
      * Reads which tables of one service declare a retention horizon, and which declare none.
      *
      * <p>A declared horizon names a purge column and a window. The window may be a span,
@@ -228,28 +311,6 @@ class RetentionSweepContractTest {
      * @param moduleDirectory directory name of the service
      * @return table name to whether it declares a horizon
      */
-    /**
-     * Orders migration files the way Flyway applies them, by version number.
-     *
-     * <p>A string comparison puts {@code V10} before {@code V2}, which reverses every superseding
-     * comment once a service passes its ninth migration. The version is the digits between the
-     * leading {@code V} and the {@code __} separator.
-     */
-    private static final Comparator<Path> BY_MIGRATION_VERSION =
-            Comparator.comparingInt(RetentionSweepContractTest::versionOf)
-                    .thenComparing(path -> path.getFileName().toString());
-
-    /**
-     * Reads the Flyway version out of one migration filename.
-     *
-     * @param file the migration file
-     * @return its version number, or {@link Integer#MAX_VALUE} when the name carries none
-     */
-    private static int versionOf(Path file) {
-        Matcher version = MIGRATION_VERSION.matcher(file.getFileName().toString());
-        return version.find() ? Integer.parseInt(version.group(1)) : Integer.MAX_VALUE;
-    }
-
     private static Map<String, Boolean> horizonsDeclaredBy(String moduleDirectory)
             throws Exception {
         Path migrations = migrationDirectory(moduleDirectory);
@@ -277,6 +338,84 @@ class RetentionSweepContractTest {
             declared.remove(dropped.group(1));
         }
         return declared;
+    }
+
+    /**
+     * Counts the scheduled methods of one service, by the source file that declares them.
+     *
+     * <p>Read from the sources rather than by reflection, because the count wanted here is every
+     * {@code @Scheduled} method of the module and not only the ones a test context happens to have
+     * instantiated.
+     *
+     * @param moduleDirectory directory name of the service
+     * @return source file name to the number of scheduled methods it declares
+     * @throws IOException when the main source tree cannot be walked
+     */
+    private static Map<String, Integer> scheduledTasksOf(String moduleDirectory)
+            throws IOException {
+        Path sources = moduleRoot()
+                .resolve(Path.of("services", moduleDirectory, "src", "main", "java"));
+        Map<String, Integer> declared = new LinkedHashMap<>();
+
+        try (var files = Files.walk(sources)) {
+            for (Path file : files.filter(Files::isRegularFile)
+                    .filter(path -> path.getFileName().toString().endsWith(".java"))
+                    .sorted()
+                    .toList()) {
+                int count = (int) occurrences(Files.readString(file), SCHEDULED_ANNOTATION);
+                if (count > 0) {
+                    declared.put(file.getFileName().toString(), count);
+                }
+            }
+        }
+        return declared;
+    }
+
+    /**
+     * Reads how many threads one service's scheduling pool holds.
+     *
+     * <p>A service that declares nothing gets {@link #FRAMEWORK_SCHEDULER_THREADS}, which is what
+     * the framework's own default supplies. A declared value is a placeholder carrying the shipped
+     * default, so the default is what is read: the environment variable is the override path and is
+     * unset in the shipped configuration.
+     *
+     * @param moduleDirectory directory name of the service
+     * @return the number of threads the shipped configuration gives the scheduler
+     * @throws IOException when the configuration cannot be read
+     */
+    private static int schedulerThreadsOf(String moduleDirectory) throws IOException {
+        Path configuration = moduleRoot().resolve(Path.of("services", moduleDirectory, "src",
+                "main", "resources", "application.yml"));
+        Object size = valueAt(new Yaml().load(Files.readString(configuration)),
+                "spring", "task", "scheduling", "pool", "size");
+        if (size == null) {
+            return FRAMEWORK_SCHEDULER_THREADS;
+        }
+
+        Matcher declared = SCHEDULER_POOL_SIZE.matcher(String.valueOf(size));
+        assertThat(declared.matches())
+                .as("%s declares spring.task.scheduling.pool.size as '%s', which is neither a "
+                        + "number nor a placeholder carrying one", moduleDirectory, size)
+                .isTrue();
+        return Integer.parseInt(declared.group(1) == null ? declared.group(2) : declared.group(1));
+    }
+
+    /**
+     * Walks a parsed document down a key path.
+     *
+     * @param document the parsed configuration
+     * @param path     the keys to follow
+     * @return the value at that path, or {@code null} where the path is absent
+     */
+    private static Object valueAt(Object document, String... path) {
+        Object current = document;
+        for (String key : path) {
+            if (!(current instanceof Map<?, ?> mapping)) {
+                return null;
+            }
+            current = mapping.get(key);
+        }
+        return current;
     }
 
     /** Locates one service's migration directory by walking up from the working directory. */

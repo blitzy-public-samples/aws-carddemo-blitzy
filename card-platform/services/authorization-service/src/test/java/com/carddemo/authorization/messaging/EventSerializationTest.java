@@ -1149,10 +1149,24 @@ class EventSerializationTest {
         @DisplayName("a rejection is ordinary traffic and serializes without failure")
         void aRejectionIsOrdinaryTrafficAndSerializesWithoutFailure() {
             for (DeclineReason reason : DeclineReason.values()) {
-                assertDoesNotThrow(() -> write(DECLINED_TOPIC, declined(reason)),
+                TransactionDeclined event = declined(reason);
+
+                String written = assertDoesNotThrow(() -> write(DECLINED_TOPIC, event),
                         () -> "app/cbl/CBTRN02C.cbl:L229-L230 ends the batch job with return code 4"
                                 + " once a record was rejected, so " + reason + " builds a valid"
                                 + " event and never a dead-letter routing");
+
+                assertAll(
+                        () -> assertNotNull(written, reason + " serialized to nothing"),
+                        () -> assertTrue(written.contains("\"declineReasonCode\":\"" + reason.code()
+                                        + "\""),
+                                () -> "the written event has to carry the source reject code, or a"
+                                        + " consumer cannot tell why the transaction was refused: "
+                                        + written),
+                        () -> assertTrue(written.contains("\"declineReasonDescription\":\""
+                                        + reason.description() + "\""),
+                                () -> "and the verbatim source description that goes with it: "
+                                        + written));
             }
         }
     }

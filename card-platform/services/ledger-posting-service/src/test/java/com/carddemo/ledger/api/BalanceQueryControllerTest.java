@@ -44,7 +44,7 @@ import tools.jackson.databind.ObjectMapper;
  * onto its own response component, the {@code 404}, and the two handler arms no request through this
  * route can reach.
  *
- * <p><b>Why the body is four strings and not four numbers.</b> Every amount here is
+ * <p><b>The body is four strings and not four numbers.</b> Every amount here is
  * {@code PIC S9(10)V99} in the source — {@code ACCT-CURR-BAL} at {@code app/cpy/CVACT01Y.cpy:L7},
  * {@code ACCT-CURR-CYC-CREDIT} at {@code :L13} and {@code ACCT-CURR-CYC-DEBIT} at {@code :L14} —
  * and column {@code NUMERIC(12,2)} keeps that scale. A JSON number deserializes into a binary

@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.carddemo.ledger.LedgerServiceDatabase;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -21,8 +22,6 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
@@ -31,7 +30,7 @@ import tools.jackson.databind.json.JsonMapper;
  * Drives {@code GET /balances/{accountId}} through the real filter chain over a real port, and reads
  * back what an unauthenticated caller, an unentitled caller and the owner each receive.
  *
- * <p><b>Why this class exists beside the two unit tests of the same route.</b>
+ * <p><b>What this class measures that the two unit tests of the same route cannot.</b>
  * {@link BalanceQueryControllerTest} and {@link LedgerApiExceptionHandlerTest} stand the controller
  * up with {@code standaloneSetup}, which registers no filter. Both therefore reach the handler
  * without authenticating, and neither can observe the two answers a caller most often meets: the
@@ -71,18 +70,8 @@ import tools.jackson.databind.json.JsonMapper;
                 "carddemo.outbox.relay.fixed-delay-ms=3600000",
                 "carddemo.retention.sweep-interval-ms=3600000"
         })
-@Testcontainers
 @DisplayName("GET /balances/{accountId} through the real filter chain")
 class BalanceQueryRouteSecurityIT {
-
-    /** The image tag {@code card-platform/docker-compose.yml} also names. */
-    private static final String POSTGRES_IMAGE = "postgres:18.4";
-
-    /** The database name, the login name and the password of the container, one value for all three. */
-    private static final String CONTAINER_CREDENTIAL = "carddemo";
-
-    /** The schema Flyway migrates, from {@code spring.flyway.schemas}. */
-    private static final String SERVICE_SCHEMA = "ledger_service";
 
     /** Host and port the broker client is pointed at, where nothing listens. */
     static final String UNREACHABLE_BROKER = "localhost:1";
@@ -145,12 +134,13 @@ class BalanceQueryRouteSecurityIT {
     /** Reads one response body. */
     private static final JsonMapper JSON = JsonMapper.builder().build();
 
-    /** The container every test in this class shares. */
-    @Container
-    static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer(POSTGRES_IMAGE)
-            .withDatabaseName(CONTAINER_CREDENTIAL)
-            .withUsername(CONTAINER_CREDENTIAL)
-            .withPassword(CONTAINER_CREDENTIAL);
+    /**
+     * The one container the module fork runs, which this class reads a login from.
+     *
+     * <p>{@link LedgerServiceDatabase} owns it and hands this class a database of its own inside it.
+     * Nothing here starts or stops a container.
+     */
+    static final PostgreSQLContainer POSTGRES = LedgerServiceDatabase.container();
 
     /** The port the embedded container bound. */
     @LocalServerPort
@@ -171,8 +161,7 @@ class BalanceQueryRouteSecurityIT {
 
     /** @return the container URL with the service schema selected */
     private static String jdbcUrlOnServiceSchema() {
-        String url = POSTGRES.getJdbcUrl();
-        return url + (url.contains("?") ? "&" : "?") + "currentSchema=" + SERVICE_SCHEMA;
+        return LedgerServiceDatabase.urlFor(BalanceQueryRouteSecurityIT.class);
     }
 
     @Nested

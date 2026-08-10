@@ -58,20 +58,31 @@ final class AuthorizationDecisionEntityTest {
      */
     private static final String DECLARED_PROCESSING_TIMESTAMP = "2022-06-10-19.27.53.410000";
 
+    /**
+     * The mapped table, its columns, and the one index a reader actually uses.
+     *
+     * <p>This assertion counted three indexes until {@code V18__authorization_decision_index_pruning.sql}
+     * withdrew two of them. Both were written for questions no code asked: the repository declared four
+     * decision-read methods and no production caller reached any of them, so every authorization on the
+     * hot write path maintained two index entries nothing ever read. What remains is
+     * {@code ix_authorization_decision_decided_at}, which the bounded retention delete of
+     * {@code AuthorizationDecisionRepository#deleteDecidedBefore} ranges over.
+     *
+     * <p>The count is asserted rather than the presence of one name, so restoring an index without the
+     * query that reads it fails here. {@code card-platform/docs/suggested-next-tasks.md} carries the
+     * bounded operator reads the two withdrawn indexes were built for, and the index belongs in the same
+     * change as the query.
+     */
     @Test
-    @DisplayName("the entity maps the table, columns, and three operational indexes")
+    @DisplayName("the entity maps the table, columns, and the one index a reader uses")
     void mapsTheTableAndItsColumns() {
         Table table = AuthorizationDecisionEntity.class.getAnnotation(Table.class);
 
         assertEquals("authorization_decision", table.name(), "the table V5 creates");
-        assertEquals(3, table.indexes().length,
-                "the account, retention, and authenticated-actor indexes");
-        assertEquals("account_id, decided_at DESC", table.indexes()[0].columnList(),
-                "an operator reads one account's recent decisions, newest first");
-        assertEquals("decided_at", table.indexes()[1].columnList(),
+        assertEquals(1, table.indexes().length,
+                "only the retention index has a reader; V16 dropped the account and actor composites");
+        assertEquals("decided_at", table.indexes()[0].columnList(),
                 "the retention sweep ranges over decision time");
-        assertEquals("actor, decided_at DESC", table.indexes()[2].columnList(),
-                "an operator reads one authenticated actor's recent decisions");
         assertEquals("transaction_id", columnNameOf("transactionId"), "the primary key");
         assertEquals("account_id", columnNameOf("accountId"), "nullable for reject code 0100");
         assertEquals("masked_card_number", columnNameOf("maskedCardNumber"), "never the full one");
@@ -128,39 +139,44 @@ final class AuthorizationDecisionEntityTest {
     }
 
     /**
-     * Reject code {@code 0100} resolves no account, and AAP 0.1.1 puts an account identifier in every
-     * decline event while AAP 0.3.1 keys every event on one. There is therefore no event for this
-     * outcome to name, and {@code ck_authorization_decision_event} in
-     * {@code V13__decision_without_event.sql} ties the two absences together.
+     * Reject code {@code 0100} resolves no account, so the row names none. It still names the event it
+     * published through: AAP transformation rule T4 gives one authorization call one event, and the
+     * outcome publishes {@code schemas/transaction-declined-v2.json} keyed on its transaction
+     * identifier. {@code ck_authorization_decision_event} in
+     * {@code V15__unresolved_decline_is_published.sql} holds every row to that.
      */
     @Test
-    @DisplayName("the decline that resolved no account records neither an account nor an event")
+    @DisplayName("the decline that resolved no account names no account and still names its event")
     void theDeclineThatResolvedNoAccountRecordsNone() {
-        AuthorizationDecisionEntity decision = declineWithoutEvent(null,
-                DeclineReason.INVALID_CARD_NUMBER);
+        UUID published = UUID.randomUUID();
+        AuthorizationDecisionEntity decision = AuthorizationDecisionEntity.declined(TRANSACTION_ID,
+                ACTOR, null, PanMasker.maskCardNumber(CARD_NUMBER), PanMasker.tokenOf(CARD_NUMBER),
+                AMOUNT, DeclineReason.INVALID_CARD_NUMBER.code(),
+                DeclineReason.INVALID_CARD_NUMBER.description(), DECIDED_AT, published,
+                DECLARED_PROCESSING_TIMESTAMP);
 
         assertNull(decision.getAccountId(),
                 "reject code 0100 follows a cross-reference read that resolved no account");
-        assertNull(decision.getEventId(),
-                "and it publishes no event, because every decline contract requires an account");
+        assertEquals(published, decision.getEventId(),
+                "and it names the transaction-keyed decline event it published through");
         assertEquals(PanMasker.FULLY_MASKED_CARD_NUMBER,
                 AuthorizationDecisionEntity.declined(TRANSACTION_ID, ACTOR, null,
                         PanMasker.maskCardNumber(null), PanMasker.tokenOf(null), AMOUNT,
                         DeclineReason.INVALID_CARD_NUMBER.code(),
                         DeclineReason.INVALID_CARD_NUMBER.description(), DECIDED_AT,
-                        null, DECLARED_PROCESSING_TIMESTAMP).getMaskedCardNumber(),
+                        UUID.randomUUID(), DECLARED_PROCESSING_TIMESTAMP).getMaskedCardNumber(),
                 "a request naming no card number stores the fully masked form");
     }
 
     @Test
-    @DisplayName("a decision refuses to name an event it did not publish, in either direction")
+    @DisplayName("a decision that names no event cannot be built, whether or not it resolved an account")
     void aDecisionRefusesToNameAnEventItDidNotPublish() {
         assertThrows(IllegalArgumentException.class,
-                () -> decline(null, DeclineReason.INVALID_CARD_NUMBER),
-                "a decision that resolved no account has no event to name");
+                () -> declineWithoutEvent(null, DeclineReason.INVALID_CARD_NUMBER),
+                "the outcome that resolved no account still publishes one event and must name it");
         assertThrows(IllegalArgumentException.class,
                 () -> declineWithoutEvent(ACCOUNT_ID, DeclineReason.OVER_CREDIT_LIMIT),
-                "a decision that resolved an account published one and must name it");
+                "including the three declines that resolved an account");
     }
 
     @Test
@@ -243,8 +259,8 @@ final class AuthorizationDecisionEntityTest {
     }
 
     /**
-     * Builds one declined row that names no event, which is the one decided outcome that publishes
-     * none.
+     * Builds one declined row naming no event, which {@code ck_authorization_decision_event} refuses
+     * for every outcome.
      *
      * @param accountId the account the cross-reference named, or {@code null}
      * @param reason    the reject reason that stands

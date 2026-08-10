@@ -29,6 +29,13 @@ import java.math.BigDecimal;
  * and 4, at {@code app/cbl/COACTUPC.cbl:L2442}, {@code app/cbl/COACTUPC.cbl:L2472}, and
  * {@code app/cbl/COACTUPC.cbl:L2484}.</p>
  *
+ * <p>At five of those six sites the field the source moves in is exactly as wide as the edited
+ * length. The postal code is the exception: {@code ACUP-NEW-CUST-ADDR-ZIP PIC X(10)} at
+ * {@code app/cbl/COACTUPC.cbl:L809} holds ten characters and
+ * {@code app/cbl/COACTUPC.cbl:L1607} edits five, so positions six to ten are carried and never
+ * inspected. {@link #validate(String, String, int, int)} takes the two widths separately for that
+ * case, and {@link #validate(String, String, int)} is the same call with both widths equal.</p>
+ *
  * <p>The verdict carries at most one message, matching the single {@code WS-RETURN-MSG} slot at
  * {@code app/cbl/COACTUPC.cbl:L479}. Keeping the first message of a validation pass is the caller's
  * work. This class reads its arguments and changes none of them, so a second call on the same
@@ -117,6 +124,42 @@ public final class NumericRequiredValidator {
      *         carrying one message
      */
     public static EditResult validate(String fieldLabel, String value, int length) {
+        return validate(fieldLabel, value, length, length);
+    }
+
+    /**
+     * Applies the edit to one field whose held width is wider than the width the edit inspects.
+     *
+     * <p>The source moves a whole field into the edit area and then edits a prefix of it:
+     * {@code MOVE ACUP-NEW-CUST-ADDR-ZIP TO WS-EDIT-ALPHANUM-ONLY} at
+     * {@code app/cbl/COACTUPC.cbl:L1606} carries all ten characters of
+     * {@code PIC X(10)}, and {@code MOVE 5 TO WS-EDIT-ALPHANUM-LENGTH} at
+     * {@code app/cbl/COACTUPC.cbl:L1607} then confines every test to
+     * {@code WS-EDIT-ALPHANUM-ONLY(1:5)}. Positions six to ten are held and never inspected, which
+     * is why {@code 19852-6716} passes the source edit.
+     *
+     * <p>{@code heldWidth} therefore bounds what a value may carry and {@code editedLength} bounds
+     * what is read. The width check refuses content past {@code heldWidth} — a Representational
+     * State Transfer caller can send a value no fixed-width screen field could, and that check has
+     * no COBOL ancestor for exactly that reason — while the three source tests read the first
+     * {@code editedLength} characters and nothing else.
+     *
+     * <p>A {@code heldWidth} below {@code editedLength} is raised to it, so a caller cannot
+     * accidentally narrow the field below what the edit reads.
+     *
+     * @param fieldLabel   the field name the message opens with, held in
+     *                     {@code WS-EDIT-VARIABLE-NAME}; may be {@code null}
+     * @param value        the submitted characters, moved to {@code WS-EDIT-ALPHANUM-ONLY}; may be
+     *                     {@code null}
+     * @param editedLength the width the edit inspects, held in {@code WS-EDIT-ALPHANUM-LENGTH}
+     * @param heldWidth    the width the source field itself declares
+     * @return {@link EditResult#ok()} when all three checks clear, otherwise a failure verdict
+     *         carrying one message
+     */
+    public static EditResult validate(String fieldLabel, String value, int editedLength,
+            int heldWidth) {
+        int length = editedLength;
+        int carried = Math.max(heldWidth, editedLength);
 
         // app/cbl/COACTUPC.cbl:L2111 opens the paragraph with the failing verdict.
         // A width of zero or below yields the not-supplied verdict.
@@ -124,10 +167,12 @@ public final class NumericRequiredValidator {
             return EditResult.failure(trimSpaces(fieldLabel) + NOT_SUPPLIED_MESSAGE);
         }
 
-        // No COBOL ancestor. A value wider than the edited field is refused.
-        if (carriesContentPastEditedWidth(value, length)) {
+        // No COBOL ancestor. A value wider than the field the source declares is refused. The
+        // bound is the held width, not the edited one: the source carries every character of the
+        // field and edits a prefix of it.
+        if (carriesContentPastEditedWidth(value, carried)) {
             return EditResult.failure(trimSpaces(fieldLabel) + ADDITIVE_NO_LONGER_THAN
-                    + length + ADDITIVE_CHARACTERS);
+                    + carried + ADDITIVE_CHARACTERS);
         }
 
         String editField = referenceModifiedField(value, length);

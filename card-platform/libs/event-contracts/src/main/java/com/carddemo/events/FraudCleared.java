@@ -1,5 +1,6 @@
 package com.carddemo.events;
 
+import com.carddemo.events.correlation.CorrelatedEvent;
 import java.time.Instant;
 import java.util.Objects;
 import java.util.UUID;
@@ -49,7 +50,8 @@ import java.util.regex.Pattern;
  *                      source field carries it
  */
 public record FraudCleared(UUID eventId, String eventType, int schemaVersion, Instant occurredAt,
-        String aggregateId, String transactionId, String accountId, Instant assessedAt) {
+        String aggregateId, String transactionId, String accountId, Instant assessedAt)
+        implements CorrelatedEvent {
 
     /**
      * The value {@code eventType} carries on every instance, and the routing discriminator on the

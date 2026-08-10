@@ -187,13 +187,19 @@ class EventSerdeSecurityTest {
     @Test
     @DisplayName("a value added inside the bounded extensions object still reaches a v1 consumer")
     void anAddedExtensionValueIsAccepted() {
-        String enriched = withProperty(serialized(authorized()),
+        TransactionAuthorized published = authorized();
+        String enriched = withProperty(serialized(published),
                 "\"extensions\":{\"replayOf\":\"3f1d9c62-8b4e-4a17-9f0c-2d6a5e73b418\"}");
 
-        assertDoesNotThrow(
-                () -> deserializer.deserialize("topic", enriched.getBytes(StandardCharsets.UTF_8)),
-                "a version-one consumer refused an event a later version enriched, which is the "
-                        + "breakage the extensions object exists to prevent");
+        Object read = deserializer.deserialize("topic",
+                enriched.getBytes(StandardCharsets.UTF_8));
+
+        assertEquals(published, read,
+                "a version-one consumer has to read the enriched event as the event it already"
+                        + " understands, with the added property ignored rather than merged into a"
+                        + " field. Surviving the read is only half of it: reading something the"
+                        + " producer did not write is the other half, and both are the breakage the"
+                        + " extensions object exists to prevent");
     }
 
     @Test
@@ -383,13 +389,16 @@ class EventSerdeSecurityTest {
             "basket of 12 at 4.99 each"})
     @DisplayName("digits separated by words are not joined, so ordinary text still passes")
     void digitsSeparatedByWordsStillPass(String ordinary) {
-        String accepted = withProperty(serialized(authorized()),
+        TransactionAuthorized published = authorized();
+        String accepted = withProperty(serialized(published),
                 "\"extensions\":{\"note\":" + quoted(ordinary) + "}");
 
-        assertDoesNotThrow(() -> deserializer.deserialize("topic",
-                        accepted.getBytes(StandardCharsets.UTF_8)),
-                "the screen joined digit groups a letter stands between, which would refuse "
-                        + "ordinary merchant text: " + ordinary);
+        Object read = deserializer.deserialize("topic",
+                accepted.getBytes(StandardCharsets.UTF_8));
+
+        assertEquals(published, read,
+                "the screen either joined digit groups a letter stands between, which would refuse "
+                        + "ordinary merchant text, or it altered the event around them: " + ordinary);
     }
 
     /**
@@ -444,13 +453,17 @@ class EventSerdeSecurityTest {
     void anAmountATimestampAndAShortCodeStillPass() {
         for (String written : List.of("total 1234567890.12", "posted 2026-08-07 19:12:06",
                 "category 0001 type 01", "merchant 800000000", "zip 72112-1234")) {
-            String allowed = withProperty(serialized(authorized()),
+            TransactionAuthorized published = authorized();
+            String allowed = withProperty(serialized(published),
                     "\"extensions\":{\"note\":\"" + written + "\"}");
 
-            assertDoesNotThrow(() -> deserializer.deserialize("topic",
-                            allowed.getBytes(StandardCharsets.UTF_8)),
-                    "reading the grouping instead of erasing it refused legitimate text, which"
-                            + " would refuse valid traffic: " + written);
+            Object read = deserializer.deserialize("topic",
+                    allowed.getBytes(StandardCharsets.UTF_8));
+
+            assertEquals(published, read,
+                    "reading the grouping instead of erasing it either refused legitimate text or"
+                            + " changed the event carrying it, and the first would refuse valid"
+                            + " traffic: " + written);
         }
     }
 
@@ -463,10 +476,17 @@ class EventSerdeSecurityTest {
                 "this test only means something while the identifier is all digits, which is what "
                         + "makes it indistinguishable from a card number by shape");
 
-        assertDoesNotThrow(() -> deserializer.deserialize("topic",
+        Object read = assertDoesNotThrow(() -> deserializer.deserialize("topic",
                         serialized(authorized()).getBytes(StandardCharsets.UTF_8)),
                 "the value screen refused a legitimate all-digit transaction identifier, which "
                         + "would refuse every event the fixtures produce");
+
+        TransactionAuthorized bound = assertInstanceOf(TransactionAuthorized.class, read,
+                "the registered record type no longer binds, so a consumer of this topic would "
+                        + "receive a tree it has to read by field name");
+        assertEquals(TRANSACTION_ID, bound.transactionId(),
+                "the identifier did not survive the value screen intact, so passing the screen "
+                        + "would say nothing about what a consumer receives");
     }
 
     @Test

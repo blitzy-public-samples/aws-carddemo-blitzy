@@ -1,9 +1,11 @@
 package com.carddemo.fraud.config;
 
 import io.micrometer.core.instrument.Counter;
+
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import java.time.Duration;
+
 import java.util.Objects;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.micrometer.metrics.autoconfigure.MeterRegistryCustomizer;
@@ -16,10 +18,15 @@ import org.springframework.context.annotation.Configuration;
  * <p>No COBOL ancestor. Searching {@code app/cbl/} for {@code fraud},
  * {@code velocit}, {@code risk} and {@code scoring} matches zero of its 28 programs.
  *
- * <p>{@link FraudMeters} holds eleven series under seven names, covering the three families a
+ * <p>{@link FraudMeters} holds twelve series under eight names, covering the three families a
  * demonstration shows: events consumed, processing latency, and failure count. Spring Boot supplies
- * the {@link MeterRegistry}, and all ten register at start-up, so a scrape taken before the first
+ * the {@link MeterRegistry}, and all twelve register at start-up, so a scrape taken before the first
  * message lists them at zero.
+ *
+ * <p>The eighth name, {@code carddemo.fraud.duplicates.skipped}, counts a delivery the idempotency
+ * guard refused. It shares no denominator with the failure names: a replay is an expected outcome
+ * that writes nothing, is acknowledged, and raises no failure, so without its own count it is
+ * invisible.
  *
  * <p>Three of those names measure failure, and they count different things on purpose.
  * {@code carddemo.fraud.failures} counts one delivery or publish ATTEMPT, tagged by the stage that
@@ -59,7 +66,7 @@ public class ObservabilityConfig {
     public static final String SERVICE_TAG = "service";
 
     /**
-     * Registers the nine fraud meters and publishes them as one injectable bean.
+     * Registers the eight fraud meters and publishes them as one injectable bean.
      *
      * @param registry the meter registry Spring Boot auto-configuration supplies
      * @return the facade every measured path in this service records through
@@ -117,6 +124,7 @@ public class ObservabilityConfig {
         private final Counter deadLettersPublished;
         private final Counter deadLettersFailed;
         private final Counter outboxAbandoned;
+        private final Counter duplicatesSkipped;
 
         /** Tag value of a diagnostic the broker acknowledged on the dead-letter topic. */
         public static final String DEAD_LETTER_PUBLISHED = "published";
@@ -124,7 +132,7 @@ public class ObservabilityConfig {
         /** Tag value of a diagnostic the broker refused. */
         public static final String DEAD_LETTER_FAILED = "failed";
 
-        /** Registers all eleven series against {@code registry}. */
+        /** Registers all twelve series against {@code registry}. */
         FraudMeters(MeterRegistry registry) {
             Objects.requireNonNull(registry, "registry");
             this.eventsConsumed = Counter.builder("carddemo.fraud.events.consumed")
@@ -171,11 +179,31 @@ public class ObservabilityConfig {
                     .description("Outbox rows this service gave up on after"
                             + " MAX_DELIVERY_ATTEMPTS attempts")
                     .register(registry);
+            this.duplicatesSkipped = Counter.builder("carddemo.fraud.duplicates.skipped")
+                    .description("Deliveries whose event already carried a marker, so the"
+                            + " assessment was not run again")
+                    .register(registry);
         }
 
         /** Counts one event read from topic {@code transaction.authorized}. */
         public void recordEventConsumed() {
             eventsConsumed.increment();
+        }
+
+        /**
+         * Counts one delivery the idempotency guard refused as already processed.
+         *
+         * <p>It is counted rather than only written to a debug line, because a replay is the one
+         * outcome that is both expected and invisible: the delivery is acknowledged, no row moves,
+         * and no failure is raised. Read beside
+         * {@link #recordEventConsumed()} it separates a quiet service from a service consuming a
+         * redelivered backlog, which a demonstration cannot otherwise tell apart.
+         *
+         * <p>The caller increments this outside the transaction that read the marker, so the count
+         * follows a claim that committed rather than one a rollback undid.
+         */
+        public void recordDuplicateSkipped() {
+            duplicatesSkipped.increment();
         }
 
         /** Counts one assessment that flagged a transaction. A flag is not a fault. */
@@ -298,4 +326,5 @@ public class ObservabilityConfig {
             outboxAbandoned.increment();
         }
     }
+
 }

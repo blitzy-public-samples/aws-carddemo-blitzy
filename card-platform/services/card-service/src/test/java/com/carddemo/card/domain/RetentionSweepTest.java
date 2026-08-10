@@ -98,7 +98,8 @@ class RetentionSweepTest {
                 new CardProperties.Kafka(new CardProperties.Kafka.Topics(
                         "card.updated", "carddemo.dead-letter")),
                 new CardProperties.Outbox(new CardProperties.Outbox.Relay(
-                        500L, 100, "retention-test", Duration.ofMinutes(2L), 5_000L),
+                        500L, 100, "retention-test", Duration.ofMinutes(2L), 5_000L,
+                        Duration.ofSeconds(10L)),
                         PUBLISHED_RETENTION_HOURS),
                 new CardProperties.ProcessedEvent(MARKER_RETENTION_HOURS, BROKER_RETENTION_HOURS),
                 new CardProperties.Retention(3_600_000L),

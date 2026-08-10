@@ -52,15 +52,21 @@ final class SafeProducerListener<K, V> implements ProducerListener<K, V> {
      * which is the ordinary case for an unreachable broker, so the partition is read from the record
      * and reported as unsupplied when the record names none either.
      *
+     * <p>Reported at warning rather than error, and it is the one line a failed attempt writes. An
+     * attempt is not a loss: the event stays on its outbox row and the relay attempts it again, so a
+     * level that says otherwise trains an operator to ignore the level. A send this service gives up
+     * on is reported once at error by whichever component gave up, which is the relay for an outbox
+     * row and the recoverer for a consumed record.
+     *
      * @param record   the record that could not be sent, read for its topic and partition alone
      * @param metadata the broker metadata, or null when the send never reached the broker
      * @param failure  the failure the producer raised
      */
     @Override
     public void onError(ProducerRecord<K, V> record, RecordMetadata metadata, Exception failure) {
-        LOG.error("A send to topic {} partition {} failed. The failure was {}. Neither the key nor"
-                        + " the value is recorded, because the key is an account identifier and the"
-                        + " value is an event.",
+        LOG.warn("A send to topic {} partition {} failed and will be attempted again. The failure"
+                        + " was {}. Neither the key nor the value is recorded, because the key is an"
+                        + " account identifier and the value is an event.",
                 topicOf(record, metadata), partitionOf(record, metadata), failureType(failure));
     }
 

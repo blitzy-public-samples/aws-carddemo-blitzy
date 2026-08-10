@@ -17,6 +17,7 @@ import com.networknt.schema.InputFormat;
 import com.networknt.schema.Schema;
 import com.networknt.schema.SchemaRegistry;
 import com.networknt.schema.SpecificationVersion;
+import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
@@ -43,6 +44,12 @@ import tools.jackson.databind.json.JsonMapper;
  * failure. Each entry holds a JSON pointer and the broken keyword and nothing else. No entry carries
  * a value from the payload, so a full Primary Account Number (PAN), a card verification value or an
  * account identifier cannot reach a log through a validation failure.
+ *
+ * <p>{@link #violationsOf(String, JsonNode)} takes the payload already parsed and checks the same
+ * documents against it. A caller that has read the envelope, or screened the payload for a property
+ * no event may carry, holds that tree already, and the two serde classes of this module both do.
+ * Both forms select the document by event type and declared version and report failures the same
+ * way; they differ only in who parsed the payload.
  *
  * <p>Every document is read from the classpath of this class. Nothing is read from a network
  * location or from an absolute path on disk, and no {@code $id} is dereferenced. A document compiles
@@ -83,7 +90,6 @@ public final class EventContracts {
     /** The event type the card service publishes when a card update commits. */
     public static final String CARD_UPDATED = "CardUpdated";
 
-    /** The classpath directory this module ships its schema documents in. */
     /**
      * The routing discriminator of the one shape every dead-letter topic carries.
      *
@@ -121,6 +127,15 @@ public final class EventContracts {
 
     /** One compiled schema per event type. A document is read from the classpath once. */
     private static final Map<String, Schema> COMPILED = new ConcurrentHashMap<>();
+
+    /**
+     * The one reader this class parses text with.
+     *
+     * <p>A mapper is expensive to build and safe to share: it holds a configuration and a cache of
+     * the types it has bound, and no per-call state. One built for every call to read one property
+     * discarded that cache each time, which is what the reader of a hot publish path pays for.
+     */
+    private static final JsonMapper MAPPER = JsonMapper.builder().build();
 
     /** No instance is needed: every member is static. */
     private EventContracts() {
@@ -213,6 +228,10 @@ public final class EventContracts {
     /**
      * Validates one serialized payload against the schema document of its event type.
      *
+     * <p>The text is parsed once here and the tree is what the document is checked against, so a
+     * caller that holds no tree pays one parse and never two. A caller that already parsed the
+     * payload passes the tree to {@link #violationsOf(String, JsonNode)} and pays none.
+     *
      * @param eventType the routing discriminator naming the document
      * @param json      the serialized payload, validated exactly as supplied
      * @return one entry per failure, empty when the payload validates. Each entry holds a JSON
@@ -224,30 +243,67 @@ public final class EventContracts {
         Objects.requireNonNull(json, "json must be present");
         requireRegistered(eventType);
 
-        Schema schema = COMPILED.computeIfAbsent(schemaResourceFor(eventType, versionOf(json)),
+        JsonNode document;
+        try {
+            document = MAPPER.readTree(json);
+        } catch (RuntimeException unreadable) {
+            // Text that is not JSON at all cannot be checked against a document that describes
+            // JSON. The validator answers the same way for the same input, so the report a caller
+            // receives is the validator's and not this method's reading of the failure.
+            List<String> pointers = new ArrayList<>();
+            Schema schema = COMPILED.computeIfAbsent(
+                    schemaResourceFor(eventType, EventEnvelope.SCHEMA_VERSION),
+                    EventContracts::compile);
+            for (Error violation : schema.validate(json, InputFormat.JSON)) {
+                pointers.add(describe(violation));
+            }
+            return List.copyOf(pointers);
+        }
+        return violationsOf(eventType, document);
+    }
+
+    /**
+     * Validates one parsed payload against the schema document of its event type.
+     *
+     * <p>This is the form the two serde classes call. Each of them has already parsed the payload
+     * to read its envelope and to screen it for a forbidden or sensitive property, and the checked
+     * tree is the same tree the document governs, so parsing it again to validate it would read the
+     * same bytes a third time and could not read them differently.
+     *
+     * @param eventType the routing discriminator naming the document
+     * @param document  the parsed payload, validated exactly as supplied
+     * @return one entry per failure, empty when the payload validates. Each entry holds a JSON
+     *         pointer and the broken keyword and carries no value from the payload
+     * @throws IllegalArgumentException when {@code eventType} is not registered
+     * @throws IllegalStateException    when the classpath holds no such document
+     */
+    public static List<String> violationsOf(String eventType, JsonNode document) {
+        Objects.requireNonNull(document, "document must be present");
+        requireRegistered(eventType);
+
+        Schema schema = COMPILED.computeIfAbsent(schemaResourceFor(eventType, versionOf(document)),
                 EventContracts::compile);
         List<String> pointers = new ArrayList<>();
-        for (Error violation : schema.validate(json, InputFormat.JSON)) {
+        for (Error violation : schema.validate(document)) {
             pointers.add(describe(violation));
         }
         return List.copyOf(pointers);
     }
 
     /**
-     * The contract version one serialized payload carries.
+     * The contract version one parsed payload carries.
      *
      * <p>{@code TransactionDeclined} ships two documents, so the version is part of what selects
      * one. A payload that carries no readable version reads as
      * {@link EventEnvelope#SCHEMA_VERSION}, which is the version every other event type ships, and
      * the schema then reports the missing property itself rather than this method guessing at it.
      *
-     * @param json the serialized payload
+     * @param document the parsed payload
      * @return the version the payload declares, or {@link EventEnvelope#SCHEMA_VERSION}
      */
-    private static int versionOf(String json) {
+    private static int versionOf(JsonNode document) {
         try {
-            return JsonMapper.builder().build().readTree(json)
-                    .path(EventSchemas.SCHEMA_VERSION_PROPERTY)
+            return document.path(EventSchemas.SCHEMA_VERSION_PROPERTY)
                     .asInt(EventEnvelope.SCHEMA_VERSION);
         } catch (RuntimeException unreadable) {
             return EventEnvelope.SCHEMA_VERSION;

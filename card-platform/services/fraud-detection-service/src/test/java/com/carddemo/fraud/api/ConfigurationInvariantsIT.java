@@ -12,6 +12,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 
 import com.carddemo.events.serde.JsonSchemaValidatingDeserializer;
 import com.carddemo.events.serde.JsonSchemaValidatingSerializer;
+import com.carddemo.fraud.FraudServiceDatabase;
 import com.carddemo.fraud.TestIdentityPasswords;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.Meter;
@@ -96,12 +97,6 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 @DisplayName("Effective configuration of the fraud detection service with no broker reachable")
 class ConfigurationInvariantsIT {
 
-    /** Image tag of the database container. */
-    private static final String POSTGRES_IMAGE = "postgres:18.4";
-
-    /** Database name, login name and password of the container, one value for all three. */
-    private static final String CONTAINER_CREDENTIAL = "carddemo";
-
     /** Host and port the broker client is pointed at, where nothing listens. */
     private static final String UNREACHABLE_BROKER = "localhost:1";
 
@@ -168,6 +163,14 @@ class ConfigurationInvariantsIT {
     private static final String METER_EVENTS_PUBLISHED = "carddemo.fraud.events.published";
 
     /**
+     * Deliveries the idempotency guard refused as already processed.
+     *
+     * <p>A replay is acknowledged, writes no row and raises no failure, so it moves no other
+     * series here and would be invisible without this one.
+     */
+    private static final String METER_DUPLICATES_SKIPPED = "carddemo.fraud.duplicates.skipped";
+
+    /**
      * The two meters the request-surface filters register.
      *
      * <p>{@code config/RequestRateCeilingFilter} registers the throttle counter under five
@@ -179,11 +182,19 @@ class ConfigurationInvariantsIT {
     private static final String METER_CROSS_SITE_REFUSED =
             "carddemo.fraud.requests.cross.site.refused";
 
-    /** The nine meter names this service registers. */
+    /** Rows due for a publish attempt now, being the backlog this service has not yet published. */
+    private static final String METER_OUTBOX_DUE = "carddemo.fraud.outbox.due";
+
+    /** Seconds the longest-waiting due outbox row has waited, zero when none is due. */
+    private static final String METER_OUTBOX_OLDEST_DUE_AGE =
+            "carddemo.fraud.outbox.oldest.due.age";
+
+    /** The twelve meter names this service registers. */
     private static final List<String> FRAUD_METER_NAMES = List.of(METER_EVENTS_CONSUMED,
             METER_ASSESSMENTS_PRODUCED, METER_PROCESSING_LATENCY, METER_FAILURES,
-            METER_DEAD_LETTERS, METER_EVENTS_PUBLISHED, METER_OUTBOX_ABANDONED, METER_THROTTLED,
-            METER_CROSS_SITE_REFUSED);
+            METER_DEAD_LETTERS, METER_EVENTS_PUBLISHED, METER_OUTBOX_ABANDONED,
+            METER_DUPLICATES_SKIPPED, METER_THROTTLED, METER_CROSS_SITE_REFUSED,
+            METER_OUTBOX_DUE, METER_OUTBOX_OLDEST_DUE_AGE);
 
     /** The complete set of tag keys a meter of this service may carry. */
     private static final Set<String> ALLOWED_TAG_KEYS = Set.of("service", "outcome", "stage");
@@ -232,16 +243,13 @@ class ConfigurationInvariantsIT {
     private static final Pattern UUID_SHAPE = Pattern.compile(
             "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}");
 
-    /** The one container every test method in the class shares. */
-    private static final PostgreSQLContainer POSTGRES;
-
-    static {
-        POSTGRES = new PostgreSQLContainer(POSTGRES_IMAGE)
-                .withDatabaseName(CONTAINER_CREDENTIAL)
-                .withUsername(CONTAINER_CREDENTIAL)
-                .withPassword(CONTAINER_CREDENTIAL);
-        POSTGRES.start();
-    }
+    /**
+     * The one container the module fork runs, which this class reads a login from.
+     *
+     * <p>{@link FraudServiceDatabase} owns it and hands this class a database of its own inside
+     * it. Nothing here starts or stops a container.
+     */
+    private static final PostgreSQLContainer POSTGRES = FraudServiceDatabase.container();
 
     @Autowired
     private ApplicationContext context;
@@ -268,10 +276,9 @@ class ConfigurationInvariantsIT {
         registrar.add(BOOTSTRAP_SERVERS_PROPERTY, () -> UNREACHABLE_BROKER);
     }
 
-    /** Returns the container URL with the service schema on the connection search path. */
+    /** Returns the URL of this class's own database, with the service schema on the search path. */
     private static String jdbcUrlOnServiceSchema() {
-        String url = POSTGRES.getJdbcUrl();
-        return url + (url.contains("?") ? "&" : "?") + "currentSchema=" + SERVICE_SCHEMA;
+        return FraudServiceDatabase.urlFor(ConfigurationInvariantsIT.class);
     }
 
     @Test
@@ -569,17 +576,18 @@ class ConfigurationInvariantsIT {
     }
 
     /**
-     * Asserts the nine fraud meter names register before the first message arrives, and that each
+     * Asserts the ten fraud meter names register before the first message arrives, and that each
      * one reports zero.
      *
      * <p>{@code carddemo.fraud.events.published} counts the assessment events the broker
-     * acknowledged, and the two request-surface counters count refusals. All nine are registered as
+     * acknowledged, {@code carddemo.fraud.duplicates.skipped} counts a delivery the idempotency
+     * guard refused, and the two request-surface counters count refusals. All ten are registered as
      * the context starts, so a dashboard reads zero from a service that has published nothing and
      * refused nothing rather than finding no series at all.
      */
     @Test
-    @DisplayName("the nine fraud meter names register before the first message and report zero")
-    void theNineFraudMeterNamesRegisterBeforeTheFirstMessageAndReportZero() {
+    @DisplayName("the ten fraud meter names register before the first message and report zero")
+    void theTenFraudMeterNamesRegisterBeforeTheFirstMessageAndReportZero() {
         Collection<Counter> counters = new ArrayList<>();
         counters.addAll(registry.find(METER_EVENTS_CONSUMED).counters());
         counters.addAll(registry.find(METER_ASSESSMENTS_PRODUCED).counters());
@@ -587,6 +595,7 @@ class ConfigurationInvariantsIT {
         counters.addAll(registry.find(METER_DEAD_LETTERS).counters());
         counters.addAll(registry.find(METER_OUTBOX_ABANDONED).counters());
         counters.addAll(registry.find(METER_EVENTS_PUBLISHED).counters());
+        counters.addAll(registry.find(METER_DUPLICATES_SKIPPED).counters());
         counters.addAll(registry.find(METER_THROTTLED).counters());
         counters.addAll(registry.find(METER_CROSS_SITE_REFUSED).counters());
         Collection<Timer> timers = registry.find(METER_PROCESSING_LATENCY).timers();
@@ -596,7 +605,7 @@ class ConfigurationInvariantsIT {
                         () -> "registered fraud meter names: " + fraudMeterNames()),
                 () -> assertEquals(new LinkedHashSet<>(FRAUD_METER_NAMES), fraudMeterNames(),
                         () -> "registered fraud meter names: " + fraudMeterNames()),
-                () -> assertFalse(counters.isEmpty(), "the eight counter names are registered"),
+                () -> assertFalse(counters.isEmpty(), "the nine counter names are registered"),
                 () -> assertFalse(timers.isEmpty(), "the timer name is registered"),
                 () -> assertAll(counters.stream().map(counter -> (Executable) () ->
                         assertEquals(0.0d, counter.count(),

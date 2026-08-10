@@ -87,6 +87,13 @@ class FraudFlaggedConsumerTest {
      * {@code TRAN-ID PIC X(16)} at {@code app/cpy/CVTRA05Y.cpy:L5}.
      */
     private static final String ACCOUNT_ID = "00000000007";
+
+    /**
+     * An account no payload here names, used to misroute one delivery.
+     *
+     * <p>Eleven digits with leading zeros kept, because the key is compared as text.
+     */
+    private static final String OTHER_ACCOUNT_ID = "00000000008";
     private static final String TRANSACTION_ID = "0000000000683580";
 
     /** A score inside the bounds the flagged event declares. */
@@ -402,6 +409,102 @@ class FraudFlaggedConsumerTest {
         assertThat(this.processedEvents.claimCalls()).isZero();
         assertThat(this.metrics.failures(NotificationMetrics.FAILURE_SCHEMA_VALIDATION).count())
                 .isEqualTo(1);
+    }
+
+    /**
+     * A refused payload is still measured, on the {@code unknown} series of both families.
+     *
+     * <p>The consumed count and the latency used to be recorded inside the two apply methods, which a
+     * refused payload never reaches, so a rejected delivery moved neither and was indistinguishable
+     * from one that never arrived. {@code unknown} is already a declared value of the
+     * {@code eventType} tag, so measuring it introduces no new tag value and the meter count stays
+     * fixed.
+     */
+    @Test
+    @DisplayName("A refused payload is counted and timed on the unknown series")
+    void aRefusedPayloadIsCountedAndTimedOnTheUnknownSeries() {
+        assertThatThrownBy(() -> deliver(new UnknownAssessment("no assessment")))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        assertThat(this.metrics.eventsConsumed(NotificationMetrics.UNKNOWN).count())
+                .as("a record that arrived was consumed whatever became of it")
+                .isEqualTo(1);
+        assertThat(this.metrics.processingLatency(NotificationMetrics.UNKNOWN).count())
+                .as("the latency of the refusal, recorded in a finally")
+                .isEqualTo(1);
+        assertThat(this.metrics.eventsConsumed(NotificationMetrics.EVENT_FRAUD_FLAGGED).count())
+                .as("a refused payload is no flagged assessment")
+                .isZero();
+        assertThat(this.metrics.eventsConsumed(NotificationMetrics.EVENT_FRAUD_CLEARED).count())
+                .isZero();
+    }
+
+    /**
+     * A key that names another account is counted, timed and classified.
+     *
+     * <p>This refusal counted nothing at all. It is classified on {@code schema_validation} beside
+     * the refused payload, because both reject a record for disagreeing with the document behind the
+     * event rather than for a fault in this service, and the document states the key rule as plainly
+     * as it states a field type.
+     */
+    @Test
+    @DisplayName("A key naming another account is counted, timed and classified")
+    void aKeyNamingAnotherAccountIsCountedTimedAndClassified() {
+        FraudFlagged event = flaggedEvent(UUID.randomUUID(), RISK_SCORE, RULES);
+
+        assertThatThrownBy(() -> this.consumer.onFraudAssessed(event, OTHER_ACCOUNT_ID,
+                this.acknowledgment, TOPIC))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        assertThat(this.metrics.eventsConsumed(NotificationMetrics.EVENT_FRAUD_FLAGGED).count())
+                .isEqualTo(1);
+        assertThat(this.metrics.processingLatency(NotificationMetrics.EVENT_FRAUD_FLAGGED).count())
+                .isEqualTo(1);
+        assertThat(this.metrics.failures(NotificationMetrics.FAILURE_SCHEMA_VALIDATION).count())
+                .as("a misrouted record is a contract failure, and it used to count nothing")
+                .isEqualTo(1);
+        assertThat(this.processedEvents.claimCalls())
+                .as("nothing is claimed under a key the payload does not name")
+                .isZero();
+        assertThat(this.sequence).isEmpty();
+    }
+
+    /** A record carrying no key at all is refused on the same series. */
+    @Test
+    @DisplayName("A record carrying no key is counted, timed and classified")
+    void aRecordCarryingNoKeyIsCountedTimedAndClassified() {
+        FraudCleared event = clearedEvent(UUID.randomUUID());
+
+        assertThatThrownBy(() -> this.consumer.onFraudAssessed(event, null, this.acknowledgment,
+                TOPIC))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        assertThat(this.metrics.eventsConsumed(NotificationMetrics.EVENT_FRAUD_CLEARED).count())
+                .isEqualTo(1);
+        assertThat(this.metrics.processingLatency(NotificationMetrics.EVENT_FRAUD_CLEARED).count())
+                .isEqualTo(1);
+        assertThat(this.metrics.failures(NotificationMetrics.FAILURE_SCHEMA_VALIDATION).count())
+                .isEqualTo(1);
+    }
+
+    /**
+     * A refusal on the key reports the four abend fields and names no identifier.
+     *
+     * <p>The account identifier is eleven digits and the transaction identifier is sixteen, so a
+     * refusal that quoted either would put a run of digits into a diagnostic. The metadata names the
+     * contract field by its JSON pointer instead.
+     */
+    @Test
+    @DisplayName("A key refusal names no account identifier and no transaction identifier")
+    void aKeyRefusalNamesNoIdentifier() {
+        FraudFlagged event = flaggedEvent(UUID.randomUUID(), RISK_SCORE, RULES);
+
+        assertThatThrownBy(() -> this.consumer.onFraudAssessed(event, OTHER_ACCOUNT_ID,
+                this.acknowledgment, TOPIC))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageNotContaining(ACCOUNT_ID)
+                .hasMessageNotContaining(OTHER_ACCOUNT_ID)
+                .hasMessageNotContaining(TRANSACTION_ID);
     }
 
     /**

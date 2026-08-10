@@ -24,7 +24,7 @@ import java.util.Set;
  * and the source locator it was derived from, so a reader can check the expectation against
  * {@code app/cbl/} without running anything.</p>
  *
- * <h2>Why consumption is tracked</h2>
+ * <h2>What tracking consumption buys</h2>
  *
  * <p>An expected-output file that no test reads is worse than no file at all: it looks like
  * evidence, and it can drift away from both the source and the code without anything failing. This

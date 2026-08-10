@@ -1,6 +1,7 @@
 package com.carddemo.equivalence;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
@@ -58,14 +59,24 @@ class MetricDocumentationContractTest {
             "account-service", "account",
             "card-service", "card");
 
-    /** The count each guide is expected to carry, measured from the shipped instrumentation. */
-    private static final Map<String, Integer> MINIMUM_METERS = Map.of(
-            "authorization-service", 7,
-            "ledger-posting-service", 5,
-            "fraud-detection-service", 6,
-            "notification-service", 6,
-            "account-service", 14,
-            "card-service", 8);
+    /**
+     * The exact meter count each guide carries, measured from the shipped instrumentation.
+     *
+     * <p>The comparison is equality rather than a floor. A floor passed while a service registered
+     * more meters than its guide named, which is the drift this file exists to catch, and it passed
+     * quietly. A meter added or removed now fails here until the number and the guide row move
+     * together.
+     *
+     * <p>These counts include meters registered outside the observability configuration, such as the
+     * two a request filter builds on construction, because a reader of the guide is owed those too.
+     */
+    private static final Map<String, Integer> DECLARED_METERS = Map.of(
+            "authorization-service", 14,
+            "ledger-posting-service", 11,
+            "fraud-detection-service", 12,
+            "notification-service", 9,
+            "account-service", 18,
+            "card-service", 15);
 
     @Test
     @DisplayName("no service registers a meter its guide leaves out")
@@ -73,11 +84,12 @@ class MetricDocumentationContractTest {
         List<String> undocumented = new ArrayList<>();
         for (Map.Entry<String, String> service : SERVICE_SEGMENTS.entrySet()) {
             Set<String> registered = registeredMeters(service.getKey(), service.getValue());
-            int expected = MINIMUM_METERS.get(service.getKey());
-            assertTrue(registered.size() >= expected,
+            int expected = DECLARED_METERS.get(service.getKey());
+            assertEquals(expected, registered.size(),
                     service.getKey() + " registers " + registered.size() + " meters where "
-                            + expected + " were measured, so either instrumentation was removed or"
-                            + " this test's search has drifted");
+                            + expected + " were measured. A meter added or removed moves this"
+                            + " number, so restate it here and add or remove its guide row"
+                            + " rather than relaxing the comparison");
 
             String guide = read(serviceReadme(service.getKey()));
             for (String meter : registered) {

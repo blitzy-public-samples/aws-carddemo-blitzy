@@ -145,7 +145,8 @@ class OutboxRelayDeadlineTest {
                 new CardProperties.Kafka(
                         new CardProperties.Kafka.Topics(TOPIC, DEAD_LETTER_TOPIC)),
                 new CardProperties.Outbox(new CardProperties.Outbox.Relay(
-                        500L, 1, "deadline-test", Duration.ofMinutes(2L), SWEEP_DEADLINE_MS),
+                        500L, 1, "deadline-test", Duration.ofMinutes(2L), SWEEP_DEADLINE_MS,
+                        Duration.ofSeconds(10L)),
                         168L),
                 new CardProperties.ProcessedEvent(720L, 168L),
                 new CardProperties.Retention(3_600_000L),

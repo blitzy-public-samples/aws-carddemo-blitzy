@@ -27,28 +27,85 @@ import org.junit.jupiter.api.Test;
 @DisplayName("Configuration inventory across .env, Compose, Kubernetes, and application YAML")
 class ConfigurationInventoryContractTest {
 
-    private static final Map<String, String> EXPECTED_DEFAULTS = Map.of(
-            "OUTBOX_PUBLISHED_RETENTION_HOURS", "168",
+    private static final Map<String, String> EXPECTED_DEFAULTS = Map.ofEntries(
+            Map.entry("OUTBOX_PUBLISHED_RETENTION_HOURS", "168"),
             // 720 rather than 168 since a security review found the marker horizon equal to broker
             // log retention. A record still readable after its marker was swept is applied twice, so
             // every service now refuses a horizon under twice KAFKA_LOG_RETENTION_HOURS at start-up.
-            "PROCESSED_EVENT_RETENTION_HOURS", "720",
-            "STATEMENT_RETENTION_DAYS", "400",
-            "NOTIFICATION_LOG_RETENTION_DAYS", "90",
-            "MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED", "true");
+            Map.entry("PROCESSED_EVENT_RETENTION_HOURS", "720"),
+            Map.entry("STATEMENT_RETENTION_DAYS", "400"),
+            Map.entry("NOTIFICATION_LOG_RETENTION_DAYS", "90"),
+            // The four below were bindable in application.yml and named by no deployment artifact,
+            // so the shipped default was the only value any of them could ever hold. Each is now
+            // declared in .env.example, passed by Compose to exactly the containers that read it,
+            // and carried once by the Kubernetes ConfigMap.
+            Map.entry("API_MAX_REQUEST_BODY_BYTES", "65536"),
+            Map.entry("OUTBOX_RELAY_PUBLISH_TIMEOUT", "PT10S"),
+            Map.entry("DECISION_RETENTION_DAYS", "365"),
+            Map.entry("WRITE_LOCK_WAIT_MS", "3000"),
+            // PT2M in all five relays. The fraud service shipped PT30S, so the documented default
+            // described four of them, and only a run that set no variable ever saw the difference.
+            Map.entry("OUTBOX_RELAY_CLAIM_TIMEOUT", "PT2M"),
+            Map.entry("MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED", "true"));
 
-    private static final Map<String, Integer> APPLICATION_REFERENCE_COUNTS = Map.of(
-            "OUTBOX_PUBLISHED_RETENTION_HOURS", 5,
-            "PROCESSED_EVENT_RETENTION_HOURS", 6,
-            "STATEMENT_RETENTION_DAYS", 1,
-            "NOTIFICATION_LOG_RETENTION_DAYS", 1);
+    private static final Map<String, Integer> APPLICATION_REFERENCE_COUNTS = Map.ofEntries(
+            Map.entry("OUTBOX_PUBLISHED_RETENTION_HOURS", 5),
+            Map.entry("PROCESSED_EVENT_RETENTION_HOURS", 6),
+            Map.entry("STATEMENT_RETENTION_DAYS", 1),
+            Map.entry("NOTIFICATION_LOG_RETENTION_DAYS", 1),
+            Map.entry("API_MAX_REQUEST_BODY_BYTES", 3),
+            Map.entry("OUTBOX_RELAY_PUBLISH_TIMEOUT", 3),
+            Map.entry("DECISION_RETENTION_DAYS", 1),
+            Map.entry("WRITE_LOCK_WAIT_MS", 2),
+            Map.entry("OUTBOX_RELAY_CLAIM_TIMEOUT", 5));
 
-    private static final Map<String, Integer> COMPOSE_ENVIRONMENT_COUNTS = Map.of(
-            "OUTBOX_PUBLISHED_RETENTION_HOURS", 5,
-            "PROCESSED_EVENT_RETENTION_HOURS", 6,
-            "STATEMENT_RETENTION_DAYS", 1,
-            "NOTIFICATION_LOG_RETENTION_DAYS", 1,
-            "MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED", 1);
+    private static final Map<String, Integer> COMPOSE_ENVIRONMENT_COUNTS = Map.ofEntries(
+            Map.entry("OUTBOX_PUBLISHED_RETENTION_HOURS", 5),
+            Map.entry("PROCESSED_EVENT_RETENTION_HOURS", 6),
+            Map.entry("STATEMENT_RETENTION_DAYS", 1),
+            Map.entry("NOTIFICATION_LOG_RETENTION_DAYS", 1),
+            Map.entry("API_MAX_REQUEST_BODY_BYTES", 3),
+            Map.entry("OUTBOX_RELAY_PUBLISH_TIMEOUT", 3),
+            Map.entry("DECISION_RETENTION_DAYS", 1),
+            Map.entry("WRITE_LOCK_WAIT_MS", 2),
+            Map.entry("OUTBOX_RELAY_CLAIM_TIMEOUT", 5),
+            Map.entry("MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED", 1));
+
+    /**
+     * The overrides a service reads from {@code application.yml} rather than from the framework, and
+     * which therefore have to reach exactly the containers that bind them.
+     *
+     * <p>Used by {@link #composeCarriesEachCustomOverrideToExactlyTheServicesThatBindIt()}, which
+     * derives the expected service set from the shipped {@code application.yml} files instead of
+     * restating it, so a service that starts or stops binding one of these moves the expectation with
+     * it. {@code MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED} is excluded because Spring Boot binds it
+     * directly from the environment and no {@code application.yml} names it.
+     */
+    private static final List<String> CUSTOM_OVERRIDES = List.of(
+            "OUTBOX_PUBLISHED_RETENTION_HOURS",
+            "PROCESSED_EVENT_RETENTION_HOURS",
+            "STATEMENT_RETENTION_DAYS",
+            "NOTIFICATION_LOG_RETENTION_DAYS",
+            "API_MAX_REQUEST_BODY_BYTES",
+            "OUTBOX_RELAY_PUBLISH_TIMEOUT",
+            "DECISION_RETENTION_DAYS",
+            "WRITE_LOCK_WAIT_MS",
+            "OUTBOX_RELAY_CLAIM_TIMEOUT");
+
+    /**
+     * Keys this platform retired, which no deployment artifact may declare again.
+     *
+     * <p>{@code GROUP_AUTHORIZATION} named the authorization service's framework-level default
+     * consumer group. No listener joined it, the broker's access-control matrix granted it nothing,
+     * and the container was never given it, so a reader who scoped the group names per stack set one
+     * value that did nothing. {@code OUTBOX_RELAY_INSTANCE_ID} is the opposite failure: it is a real
+     * override, and it has to stay unset in a container so each relay falls back to its own hostname.
+     * Declaring it in the example invited an operator to give every replica one identity, which is
+     * what turns stranded-claim recovery into a second publish.
+     */
+    private static final List<String> RETIRED_KEYS = List.of(
+            "GROUP_AUTHORIZATION",
+            "OUTBOX_RELAY_INSTANCE_ID");
 
     private static final Set<String> OUTBOX_RETENTION_SERVICES = Set.of(
             "authorization-service",
@@ -199,7 +256,7 @@ class ConfigurationInventoryContractTest {
     }
 
     @Test
-    void theKubernetesConfigMapCarriesTheSameSevenStringDefaults() {
+    void theKubernetesConfigMapCarriesEveryDocumentedDefaultAsAQuotedString() {
         String configMap =
                 read(platformDirectory().resolve("deploy/k8s/30-configmap.yaml"));
 
@@ -209,7 +266,191 @@ class ConfigurationInventoryContractTest {
                     + Pattern.quote(expected.getValue()) + "\"$");
             assertTrue(quotedEntry.matcher(configMap).find(),
                     expected.getKey() + " must be a quoted ConfigMap string");
+            assertEquals(1, count(configMap, "\n  " + expected.getKey() + ": "),
+                    expected.getKey() + " must be declared once in the ConfigMap; a second entry "
+                            + "would make editing the first change nothing");
         }
+    }
+
+    /**
+     * Asserts each custom override reaches exactly the containers that bind it, and no others.
+     *
+     * <p><b>The defect this stands over.</b> {@code API_MAX_REQUEST_BODY_BYTES},
+     * {@code OUTBOX_RELAY_PUBLISH_TIMEOUT} and {@code DECISION_RETENTION_DAYS} were bindable in
+     * {@code application.yml} and named by no deployment artifact at all. The shipped default was
+     * therefore the only value any of them could hold: {@code .env.example} documented no name to set,
+     * Compose passed none, and the Kubernetes ConfigMap declared none. A reader who found the
+     * placeholder in {@code application.yml} and set the variable in {@code .env} changed nothing,
+     * because Compose hands each container an explicit key list rather than the whole file.
+     *
+     * <p><b>The expectation is derived rather than listed.</b> The service set comes from the
+     * shipped {@code application.yml} files, so a service that starts binding one of these keys, or
+     * stops, moves the expectation with it. A hand-kept list is the thing that went stale here in the
+     * first place.
+     *
+     * <p>Both directions matter. A key missing from a container that reads it is an override that
+     * silently does nothing. A key handed to a container that reads it is documentation of a setting
+     * that container does not have, and it reads as though the service honours it.
+     */
+    @Test
+    @DisplayName("every custom override reaches exactly the containers whose application.yml binds it")
+    void composeCarriesEachCustomOverrideToExactlyTheServicesThatBindIt() {
+        String compose = read(platformDirectory().resolve("docker-compose.yml"));
+        List<String> divergences = new ArrayList<>();
+
+        for (String key : CUSTOM_OVERRIDES) {
+            for (String service : APPLICATION_SERVICES) {
+                boolean bound = read(platformDirectory().resolve("services").resolve(service)
+                        .resolve("src/main/resources/application.yml"))
+                        .contains("${" + key + ":");
+                boolean passed = serviceBlock(compose, service).contains(key + ":");
+
+                if (bound && !passed) {
+                    divergences.add(service + " binds " + key + " and the Compose block passes it "
+                            + "nothing, so setting the name in .env changes nothing");
+                }
+                if (passed && !bound) {
+                    divergences.add(service + " receives " + key + " and reads it nowhere, which "
+                            + "documents a setting that container does not have");
+                }
+            }
+        }
+
+        assertEquals(List.of(), divergences,
+                "an override reaches the containers that bind it and no others: " + divergences);
+    }
+
+    /**
+     * Asserts no deployment artifact declares a key this platform retired.
+     *
+     * <p>Two names are covered, and they failed in opposite directions. {@code GROUP_AUTHORIZATION}
+     * reached nothing: no listener joined the group, no broker entry granted it, and the container was
+     * never given it, so it was one value out of eleven that a reader scoping group names per stack
+     * set for no effect. {@code OUTBOX_RELAY_INSTANCE_ID} is a live override that has to stay unset in
+     * a container, because a relay falls back to its hostname and a hostname is already distinct per
+     * replica; a declared value — even an empty one — is a defined variable that wins over the
+     * hostname and leaves every replica claiming rows under one identity.
+     *
+     * <p>The relay identifier therefore remains an {@code application.yml} placeholder, which
+     * {@link #everyRelayInstanceIdentifierFallsBackToTheHostname()} asserts, and is absent from every
+     * artifact a deployment hands to a container.
+     */
+    @Test
+    @DisplayName("no retired key returns to .env.example, Compose or the ConfigMap")
+    void noRetiredKeyReturnsToADeploymentArtifact() {
+        Path platform = platformDirectory();
+        Map<String, String> dotenv = dotenvValues(platform.resolve(".env.example"));
+        String compose = read(platform.resolve("docker-compose.yml"));
+        String configMap = read(platform.resolve("deploy/k8s/30-configmap.yaml"));
+        List<String> divergences = new ArrayList<>();
+
+        for (String key : RETIRED_KEYS) {
+            if (dotenv.containsKey(key)) {
+                divergences.add(".env.example declares " + key + " as a settable assignment");
+            }
+            // The boundary matters: GROUP_AUTHORIZATION is a prefix of the two active group names.
+            Pattern setting = Pattern.compile("(?m)^\\s*" + Pattern.quote(key)
+                    + "(?![A-Z0-9_])\\s*:");
+            if (setting.matcher(compose).find()) {
+                divergences.add("docker-compose.yml sets " + key + " on a container");
+            }
+            if (setting.matcher(configMap).find()) {
+                divergences.add("30-configmap.yaml declares " + key);
+            }
+        }
+
+        String applications = applicationConfiguration();
+        assertFalse(Pattern.compile("\\$\\{GROUP_AUTHORIZATION(?![A-Z0-9_])")
+                        .matcher(applications).find(),
+                "no application.yml may read GROUP_AUTHORIZATION; the authorization service's "
+                        + "framework-level group falls back to a literal and is overridden by "
+                        + "SPRING_KAFKA_CONSUMER_GROUP_ID, as the other five are");
+        assertTrue(applications.contains("${OUTBOX_RELAY_INSTANCE_ID:"),
+                "the relay identifier stays an application override, settable for a relay run as a "
+                        + "direct process outside a container");
+
+        assertEquals(List.of(), divergences,
+                "a retired key a deployment declares is either dead configuration or a value that "
+                        + "defeats the fallback it replaced: " + divergences);
+    }
+
+    /**
+     * Asserts the inventory counts the deployment files state match the inventory they carry.
+     *
+     * <p>Each number was measured wrong. The ConfigMap said seven topics where fourteen exist, named
+     * four dead-letter topics where six do, and counted ten consumer groups where eleven listeners
+     * run. The Secret template said seventeen Secrets where eighteen are declared, and four hashes in
+     * the shared identity Secret where three sit there and the fourth sits in a Secret only the
+     * authorization service pulls. A count stated in a comment is what a reader trusts instead of
+     * counting, so a wrong one is worse than none.
+     *
+     * <p>Each assertion reads the file it describes, so the number and the thing it counts cannot
+     * drift apart again.
+     */
+    @Test
+    @DisplayName("stated inventory counts match the inventory the deployment files declare")
+    void statedInventoryCountsMatchTheDeclaredInventory() {
+        Path k8s = platformDirectory().resolve("deploy/k8s");
+        String configMap = read(k8s.resolve("30-configmap.yaml"));
+        String secrets = read(k8s.resolve("31-secret.example.yaml"));
+
+        assertEquals(7, count(configMap, "\n  TOPIC_") - count(configMap, "\n  TOPIC_DEAD_LETTER"),
+                "the ConfigMap names the seven event topics; the six source dead-letter topics and "
+                        + "the shared fallback complete the fourteen 10-kafka.yaml creates");
+        assertTrue(configMap.contains("fourteen topics"),
+                "the ConfigMap has to state the whole inventory rather than the seven names it "
+                        + "carries, because a reader counts the comment and not the topics");
+        for (String deadLetter : List.of("transaction.authorized.DLT", "transaction.declined.DLT",
+                "transaction.posted.DLT", "fraud.assessed.DLT", "account.state-changed.DLT",
+                "customer.context-changed.DLT")) {
+            assertTrue(configMap.contains(deadLetter),
+                    "the ConfigMap must name " + deadLetter + "; naming four of the six left two "
+                            + "streams a reader would not look for");
+        }
+        assertEquals(11, count(configMap, "\n  GROUP_"),
+                "eleven listeners run, one consumer group each");
+        assertTrue(configMap.contains("Eleven groups, one per active listener"),
+                "the stated group count has to be the eleven the file declares");
+
+        assertEquals(18, count(secrets, "\nkind: Secret"),
+                "eighteen Secrets are declared");
+        assertTrue(secrets.contains("EIGHTEEN Secrets"),
+                "the Secret template header has to state the number of Secrets it declares");
+        assertTrue(secrets.contains("The THREE request-identity password hashes"),
+                "three hashes sit in the shared identity Secret; the acquirer hash sits in a Secret "
+                        + "only 40-authorization-service.yaml pulls");
+        assertEquals(3, count(secrets, "_PASSWORD_HASH: \"{bcrypt}")
+                        - count(secrets, "ACQUIRER_PASSWORD_HASH: \"{bcrypt}"),
+                "the shared identity Secret carries the administrator, cardholder and monitoring "
+                        + "hashes and no fourth");
+        assertEquals(1, count(secrets, "ACQUIRER_PASSWORD_HASH: \"{bcrypt}"),
+                "the acquirer hash is declared once, in carddemo-authorization-identity-secret");
+    }
+
+    /**
+     * Asserts the assignment count the documentation states is the count {@code .env.example} carries.
+     *
+     * <p>{@code scripts/generate-env.sh} ends a run by reporting how many assignments the file
+     * declares, and two documents quote that number to tell a reader what a complete file looks like.
+     * The number is what a reader compares their own output against, so a stale one reads as a failed
+     * reconciliation on a file that is in fact complete. Both quoted the count from before three keys
+     * were added and two retired.
+     */
+    @Test
+    @DisplayName("the documented assignment count is the count .env.example declares")
+    void theDocumentedAssignmentCountMatchesTheExampleFile() {
+        Path platform = platformDirectory();
+        int declared = dotenvValues(platform.resolve(".env.example")).size();
+
+        assertEquals(134, declared,
+                "the example file's assignment count changed; raise it here and in both documents "
+                        + "that quote it, or the reader compares their run against a stale number");
+        assertTrue(read(platform.resolve("docs/onboarding.md"))
+                        .contains("declares all " + declared + " assignments"),
+                "docs/onboarding.md quotes the count a completed run reports");
+        assertTrue(read(platform.resolve("docs/decision-log.md"))
+                        .contains("a file of " + declared + " assignments"),
+                "docs/decision-log.md quotes the same count in the reconciliation decision");
     }
 
     @Test
@@ -295,7 +536,7 @@ class ConfigurationInventoryContractTest {
      * number that nothing ever incremented, which invites a reader to assume the platform allocates
      * them.
      *
-     * <p><b>Why the fallback is the hostname.</b> A container's {@code HOSTNAME} is its Pod name under
+     * <p><b>The fallback is the hostname.</b> A container's {@code HOSTNAME} is its Pod name under
      * Kubernetes and its container id under Compose, both already distinct per replica, so the value
      * costs no configuration and cannot collide. {@code deploy/k8s/30-configmap.yaml} deliberately
      * declares no key for it, because even an empty key would be a defined variable and would win over
@@ -335,6 +576,110 @@ class ConfigurationInventoryContractTest {
     }
 
     /**
+     * Asserts every relay timing a service binds is refused when it is zero or negative.
+     *
+     * <p><b>What {@code @NotNull} does not cover.</b> A {@code Duration} component annotated
+     * {@code @NotNull} rejects an absent value and nothing else, so {@code PT0S} and a negative
+     * duration both bind cleanly. Neither is a configuration a service can work under.
+     * {@code claimTimeout} at zero strands every claim the moment it is taken, so one sweep recovers
+     * the batch the previous sweep is still publishing — the double publish the claim exists to
+     * prevent. {@code publishTimeout} at zero fails every send the instant it is issued, so each row
+     * stays unpublished and each sweep claims it again.
+     *
+     * <p><b>The two defects this stands over.</b> The fraud service bound {@code claimTimeout} with no
+     * check at all, while the other four refused it, so one variable set to zero switched the
+     * guarantee off in that service alone. The authorization and card services bound
+     * {@code publishTimeout} twice: once as this record component and once as a constructor
+     * {@code @Value} in the publisher, and the {@code @Value} is the one the publisher read. A second
+     * binding meets no constraint the record declares, which is why the publisher is built from the
+     * record now and reads no placeholder of its own.
+     *
+     * <p>The assertion is written over the sources of every service rather than over the two that were
+     * wrong, so the guard is what a new relay inherits.
+     */
+    @Test
+    @DisplayName("every relay refuses a zero or negative claim and publish timeout")
+    void everyRelayRefusesANonPositiveTiming() {
+        List<String> divergences = new ArrayList<>();
+
+        for (String service : OUTBOX_RETENTION_SERVICES) {
+            String properties = read(propertiesSource(service));
+
+            for (String timing : List.of("claimTimeout", "publishTimeout")) {
+                boolean bound = properties.contains("Duration " + timing);
+                boolean refused = properties.contains(timing + " != null")
+                        && properties.contains(timing + ".isZero()")
+                        && properties.contains(timing + ".isNegative()");
+
+                if (bound && !refused) {
+                    divergences.add(service + " binds " + timing + " and refuses neither zero nor a"
+                            + " negative duration, so the value starts the service and fails at"
+                            + " runtime instead");
+                }
+            }
+            if (!properties.contains("Duration claimTimeout")) {
+                divergences.add(service + " runs a relay and binds no claim timeout at all");
+            }
+        }
+
+        // A publisher that reads the property itself bypasses the record that validates it.
+        for (String service : List.of("authorization-service", "account-service", "card-service")) {
+            for (Path source : javaSources(platformDirectory().resolve("services").resolve(service)
+                    .resolve("src/main/java"))) {
+                String text = read(source);
+                if (text.contains("@Value(\"${carddemo.outbox.relay.publish-timeout")) {
+                    divergences.add(service + "/" + source.getFileName()
+                            + " reads carddemo.outbox.relay.publish-timeout through @Value, which is"
+                            + " a second binding of a validated property and meets none of its"
+                            + " constraints");
+                }
+            }
+        }
+
+        assertEquals(List.of(), divergences,
+                "a relay timing that binds without being refused is a guarantee one variable can"
+                        + " switch off: " + divergences);
+    }
+
+    /**
+     * Asserts every relay-owning service ships the same claim horizon.
+     *
+     * <p>The fraud service shipped {@code PT30S} while the other four shipped {@code PT2M}, and
+     * {@code .env.example}, {@code docker-compose.yml} and {@code deploy/k8s/30-configmap.yaml} all
+     * carry two minutes. The divergence was invisible in every deployed path, because all three of
+     * those set the variable, and it appeared only where nothing set it — a test, or the service
+     * started directly. A default that describes only four of five services is worse than no default:
+     * a reader who measures recovery on one relay carries the wrong number to the next.
+     */
+    @Test
+    @DisplayName("every relay ships the same claim horizon, and the deployment files carry it")
+    void everyRelayShipsTheSameClaimHorizon() {
+        Path platform = platformDirectory();
+        String expected = EXPECTED_DEFAULTS.get("OUTBOX_RELAY_CLAIM_TIMEOUT");
+        List<String> divergences = new ArrayList<>();
+
+        for (String service : OUTBOX_RETENTION_SERVICES) {
+            String configuration = read(platform.resolve("services").resolve(service)
+                    .resolve("src/main/resources/application.yml"));
+            Matcher declared = Pattern
+                    .compile("claim-timeout:\\s*\"?\\$\\{OUTBOX_RELAY_CLAIM_TIMEOUT:([^}\"]*)")
+                    .matcher(configuration);
+
+            if (!declared.find()) {
+                divergences.add(service + " declares no claim-timeout placeholder");
+            } else if (!expected.equals(declared.group(1))) {
+                divergences.add(service + " ships " + declared.group(1) + " rather than " + expected);
+            }
+        }
+
+        assertEquals(List.of(), divergences,
+                "one claim horizon across five relays: " + divergences);
+        assertEquals(expected,
+                dotenvValues(platform.resolve(".env.example")).get("OUTBOX_RELAY_CLAIM_TIMEOUT"),
+                ".env.example documents the horizon every relay ships");
+    }
+
+    /**
      * Asserts no deployment artifact widens a producer send past the relay sweep budget.
      *
      * <p><b>The defect this stands over.</b> Every producing service pins
@@ -347,7 +692,7 @@ class ConfigurationInventoryContractTest {
      * under a 5-second deadline: the relay stopped waiting while the producer kept trying, so a row
      * could be published by a send the relay had abandoned and republished by the next sweep.
      *
-     * <p><b>Why this is asserted over the deployment files rather than over the properties.</b> The
+     * <p><b>The assertion reads the deployment files rather than the properties.</b> The
      * per-service property tests already hold the relationship inside {@code application.yml}, and
      * that is exactly what the defect went around. What was missing was any assertion over the
      * <em>effective</em> value, so a Compose or Kubernetes override could restate one of the three at
@@ -407,6 +752,53 @@ class ConfigurationInventoryContractTest {
         Matcher setting = Pattern.compile(Pattern.quote(key)
                 + "\\s*:\\s*\"?(?:\\$\\{[A-Z0-9_]+:-?)?(\\d+)").matcher(text);
         return setting.find() ? Integer.valueOf(setting.group(1)) : null;
+    }
+
+    /**
+     * Locates the one {@code @ConfigurationProperties} record of a service.
+     *
+     * @param service the service directory name
+     * @return the path of its {@code *Properties.java}
+     */
+    private static Path propertiesSource(String service) {
+        Path config = platformDirectory().resolve("services").resolve(service)
+                .resolve("src/main/java/com/carddemo")
+                .resolve(SERVICE_PACKAGES.get(service))
+                .resolve("config");
+        List<Path> candidates = javaSources(config).stream()
+                .filter(path -> path.getFileName().toString().endsWith("Properties.java"))
+                .toList();
+        assertEquals(1, candidates.size(),
+                service + " must own exactly one bound properties record, found " + candidates);
+        return candidates.get(0);
+    }
+
+    /** The package segment each service occupies under {@code com.carddemo}. */
+    private static final Map<String, String> SERVICE_PACKAGES = Map.of(
+            "authorization-service", "authorization",
+            "ledger-posting-service", "ledger",
+            "fraud-detection-service", "fraud",
+            "notification-service", "notification",
+            "account-service", "account",
+            "card-service", "card");
+
+    /**
+     * Lists every Java source under a directory, in a stable order.
+     *
+     * @param root the directory to walk
+     * @return the sources found, empty when the directory is absent
+     */
+    private static List<Path> javaSources(Path root) {
+        if (!Files.isDirectory(root)) {
+            return List.of();
+        }
+        try (var walk = Files.walk(root)) {
+            return walk.filter(path -> path.getFileName().toString().endsWith(".java"))
+                    .sorted()
+                    .toList();
+        } catch (IOException unreadable) {
+            throw new UncheckedIOException("cannot walk " + root, unreadable);
+        }
     }
 
     private static Map<String, String> dotenvValues(Path file) {

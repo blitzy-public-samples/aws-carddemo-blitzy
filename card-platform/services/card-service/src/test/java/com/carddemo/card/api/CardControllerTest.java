@@ -1,9 +1,12 @@
 package com.carddemo.card.api;
 
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -13,6 +16,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -922,12 +926,14 @@ class CardControllerTest {
                     () -> assertInstanceOf(ApiErrorResponse.class, refusedWrite.getBody(),
                             "the retryable write carries the failure shape"),
                     () -> assertEquals(MediaType.APPLICATION_JSON,
-                            new CardApiExceptionHandler()
+                            new CardApiExceptionHandler(Counter.builder("carddemo.card.failures")
+                                    .register(new SimpleMeterRegistry()))
                                     .onDatastoreUnreachable(new QueryTimeoutException("x"), null)
                                     .getHeaders().getContentType(),
                             "the unreachable store carries the same media type"),
                     () -> assertInstanceOf(ApiErrorResponse.class,
-                            new CardApiExceptionHandler()
+                            new CardApiExceptionHandler(Counter.builder("carddemo.card.failures")
+                                    .register(new SimpleMeterRegistry()))
                                     .onDatastoreUnreachable(new QueryTimeoutException("x"), null)
                                     .getBody(),
                             "the unreachable store carries the same shape"));
@@ -1037,7 +1043,7 @@ class CardControllerTest {
         void theOutcomeReachesTheCallerUnchanged() {
             CardUpdateRequest submitted = submittedUpdate();
             when(cardQueries.findByCardToken(CARD_TOKEN)).thenReturn(Optional.of(storedCard()));
-            when(cardUpdates.updateCard(CARD_NUMBER, submitted))
+            when(cardUpdates.updateCard(eq(CARD_NUMBER), eq(submitted), any()))
                     .thenReturn(CardUpdateResponse.updated());
 
             ResponseEntity<?> response = controller.updateCard(CARD_TOKEN, submitted);
@@ -1049,7 +1055,37 @@ class CardControllerTest {
                             "an applied update answers 200"),
                     () -> assertEquals(UpdateOutcome.UPDATED, body.outcome(),
                             "the outcome is the one the update side produced"));
-            verify(cardUpdates).updateCard(CARD_NUMBER, submitted);
+            verify(cardUpdates).updateCard(eq(CARD_NUMBER), eq(submitted), any());
+        }
+
+        /**
+         * Asserts the row this handler resolved is the row it hands on, so nothing reads it twice.
+         *
+         * <p>Resolving a token to a card is the only way this route can name a card at all, so the
+         * row is in hand before the update side is called. It used to be called without it and read
+         * the same key again: two statements answering the same question with the same row.
+         *
+         * <p>The identity of the instance is asserted, not its values. A row read a second time
+         * carries the same values, so comparing values would pass either way and prove nothing.
+         */
+        @Test
+        void theResolvedRowIsHandedToTheUpdateSideRatherThanReadAgain() {
+            CardUpdateRequest submitted = submittedUpdate();
+            CardEntity resolved = storedCard();
+            when(cardQueries.findByCardToken(CARD_TOKEN)).thenReturn(Optional.of(resolved));
+            when(cardUpdates.updateCard(any(), any(), any()))
+                    .thenReturn(CardUpdateResponse.updated());
+            ArgumentCaptor<CardEntity> handedOn = ArgumentCaptor.forClass(CardEntity.class);
+
+            controller.updateCard(CARD_TOKEN, submitted);
+
+            verify(cardUpdates).updateCard(eq(CARD_NUMBER), eq(submitted), handedOn.capture());
+            assertAll(
+                    () -> assertSame(resolved, handedOn.getValue(),
+                            "the update side received a row other than the one resolved here, so it"
+                                    + " has to read the key again"),
+                    () -> verify(cardQueries, times(1)).findByCardToken(CARD_TOKEN),
+                    () -> verify(cardQueries, never()).findByCardNumber(any()));
         }
 
         /**
@@ -1064,12 +1100,13 @@ class CardControllerTest {
             CardUpdateRequest submitted = submittedUpdate();
             when(cardQueries.findByCardToken(SECOND_CARD_TOKEN))
                     .thenReturn(Optional.of(storedCard(SECOND_CARD_NUMBER)));
-            when(cardUpdates.updateCard(any(), any())).thenReturn(CardUpdateResponse.updated());
+            when(cardUpdates.updateCard(any(), any(), any()))
+                    .thenReturn(CardUpdateResponse.updated());
             ArgumentCaptor<String> named = ArgumentCaptor.forClass(String.class);
 
             controller.updateCard(SECOND_CARD_TOKEN, submitted);
 
-            verify(cardUpdates).updateCard(named.capture(), eq(submitted));
+            verify(cardUpdates).updateCard(named.capture(), eq(submitted), any());
             assertAll(
                     () -> assertEquals(SECOND_CARD_NUMBER, named.getValue(),
                             "the update side received the number of the card the path's token named,"
@@ -1141,7 +1178,7 @@ class CardControllerTest {
         /** Sends one submitted update whose outcome the update side reports. */
         private ResponseEntity<?> answerFor(CardUpdateResponse outcome) {
             when(cardQueries.findByCardToken(CARD_TOKEN)).thenReturn(Optional.of(storedCard()));
-            when(cardUpdates.updateCard(any(), any())).thenReturn(outcome);
+            when(cardUpdates.updateCard(any(), any(), any())).thenReturn(outcome);
             return controller.updateCard(CARD_TOKEN, submittedUpdate());
         }
     }
@@ -1271,7 +1308,7 @@ class CardControllerTest {
         void theCardVerificationValueReachesNoBody() {
             when(cardQueries.listForward(any(), any(), any(), any())).thenReturn(oneRowPage());
             when(cardQueries.findByCardToken(CARD_TOKEN)).thenReturn(Optional.of(storedCard()));
-            when(cardUpdates.updateCard(any(), any())).thenReturn(lostRace());
+            when(cardUpdates.updateCard(any(), any(), any())).thenReturn(lostRace());
 
             String listBody = rendered(controller.listCards(ACCOUNT_ID, null,
                     CardController.FORWARD_DIRECTION, null));

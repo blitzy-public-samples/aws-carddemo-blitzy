@@ -2,15 +2,16 @@
 #
 # One command from a clean clone to a running demo stack.
 #
-# A clean clone cannot start with `docker compose up` alone, and the three reasons are
-# structural rather than incidental. Every services/*/Dockerfile copies a packaged archive
-# out of its own module's target/ directory, and a fresh checkout carries none.
-# docker-compose.yml reads nineteen credentials that nothing in this repository supplies,
-# because a credential published here would be a credential everyone holds. And the file
-# they come from, .env, does not exist until it is copied. This script performs those three
-# steps in order and then starts the stack:
+# A clean clone cannot start with `docker compose up` alone, and the reasons are structural
+# rather than incidental. docker-compose.yml reads nineteen credentials that nothing in this
+# repository supplies, because a credential published here would be a credential everyone
+# holds. The file they come from, .env, does not exist until it is copied. And the hash of
+# each identity password is produced by jshell reading spring-security-crypto out of the
+# local Maven repository, which the packaging step below is what populates. The images need
+# no help: each Dockerfile compiles its own module in a Java Development Kit 25 builder
+# stage. This script performs those steps in order and then starts the stack:
 #
-#   1. mvn -B -ntp -DskipTests package      writes the six archives the images copy
+#   1. mvn -B -ntp -DskipTests package      fills the local repository the hashing step reads
 #   2. scripts/generate-env.sh              creates .env and fills all nineteen credentials
 #   3. docker compose up -d --build --wait  builds the six images and starts eight containers
 #   4. reads /actuator/health on each of the six management ports
@@ -67,7 +68,7 @@ docker compose version >/dev/null 2>&1 \
 docker info >/dev/null 2>&1 \
     || fail "the Docker daemon is not reachable. Start Docker and run this again."
 
-step "packaging the reactor, so every image has an archive to copy"
+step "packaging the reactor, which fills the local repository the credential hashes are read from"
 mvn -B -ntp -DskipTests package
 
 step "preparing .env and its nineteen credentials"

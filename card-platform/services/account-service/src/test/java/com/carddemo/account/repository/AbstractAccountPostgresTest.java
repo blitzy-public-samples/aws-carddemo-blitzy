@@ -1,5 +1,6 @@
 package com.carddemo.account.repository;
 
+import com.carddemo.account.AccountServiceDatabase;
 import com.carddemo.account.TestIdentityPasswords;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.DynamicPropertyRegistry;
@@ -58,7 +59,7 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
  * annotations: the {@code SpringBootTest} annotation over the {@code DataJpaTest} slice, and the
  * {@code DynamicPropertySource} method over the {@code ServiceConnection} annotation.
  *
- * <p><b>Why the listener is held shut, and why the broker address is still set.</b>
+ * <p><b>The listener is held shut and the broker address is still set.</b>
  * This service acquired a listener when {@code messaging/TransactionPostedConsumer} arrived, and a
  * booted context starts every listener container it finds. {@code auto-startup=false} above leaves
  * the container registered and unstarted, which is what the ledger, notification, fraud and
@@ -97,53 +98,40 @@ public abstract class AbstractAccountPostgresTest {
      */
     static final String UNREACHABLE_BROKER = "localhost:1";
 
-    /** The image tag {@code card-platform/docker-compose.yml:L128} also names. */
-    private static final String POSTGRES_IMAGE = "postgres:18.4";
-
     /**
-     * The database name, the login name and the password of the container, one value for all
-     * three. {@code card-platform/docker-compose.yml:L131-L132} names the same value for the
-     * database and the login.
-     */
-    private static final String POSTGRES_CREDENTIAL = "carddemo";
-
-    /** The private schema the account service owns. */
-    private static final String ACCOUNT_SCHEMA = "account_service";
-
-    /**
-     * The schema {@code src/main/resources/application.yml} names for Flyway and for the
-     * persistence layer, and the schema this class puts on the connection search path.
-     */
-    private static final String MIGRATED_SCHEMA = "account_service";
-
-    /**
-     * The one container every test class in the module shares.
+     * The one container the module fork runs, which this class reads a login from.
      *
-     * <p>The class name comes from {@code org.testcontainers.postgresql}, the package
-     * Testcontainers 2.0.5 ships it in.
-     * {@code org.testcontainers.containers.PostgreSQLContainer} carries a deprecation on the same
-     * artifact.</p>
-     *
-     * <p>No annotation manages the lifecycle of the field, and no code here stops the container.
-     * Testcontainers removes it when the Java Virtual Machine (JVM) exits.</p>
+     * <p>{@link AccountServiceDatabase} owns it and hands this class a database of its own inside it.
+     * Nothing here starts or stops a container.
      */
-    private static final PostgreSQLContainer POSTGRES;
-
-    static {
-        POSTGRES = new PostgreSQLContainer(POSTGRES_IMAGE)
-                .withDatabaseName(POSTGRES_CREDENTIAL)
-                .withUsername(POSTGRES_CREDENTIAL)
-                .withPassword(POSTGRES_CREDENTIAL);
-        POSTGRES.start();
-    }
+    private static final PostgreSQLContainer POSTGRES = AccountServiceDatabase.container();
 
     /**
-     * Returns the running container, whose JDBC coordinates a subclass reads for raw SQL.
+     * Returns the running container, whose login a subclass reads for raw SQL.
+     *
+     * <p>Read the user and the password from this. Do <b>not</b> read the locator: the container
+     * holds one database per test class and {@link PostgreSQLContainer#getJdbcUrl()} names the one
+     * it was created with, which no migration of this module has ever touched. {@link #jdbcUrl()}
+     * names the database the Spring context above migrated, which is the one a raw statement has to
+     * reach.
      *
      * @return the one container every test class in the module shares
      */
     protected static PostgreSQLContainer postgres() {
         return POSTGRES;
+    }
+
+    /**
+     * Returns the locator of the database this class and its subclasses share.
+     *
+     * <p>The same value the Spring datasource above is given, so a statement issued through a raw
+     * {@link java.sql.Connection} reads the schema Flyway migrated for this context rather than an
+     * empty one.
+     *
+     * @return the account-service database URL, with the service schema on the search path
+     */
+    protected static String jdbcUrl() {
+        return jdbcUrlOnAccountSchema();
     }
 
     /**
@@ -174,7 +162,6 @@ public abstract class AbstractAccountPostgresTest {
      * @return the account-service database URL
      */
     private static String jdbcUrlOnAccountSchema() {
-        String url = POSTGRES.getJdbcUrl();
-        return url + (url.contains("?") ? "&" : "?") + "currentSchema=" + ACCOUNT_SCHEMA;
+        return AccountServiceDatabase.urlFor(AbstractAccountPostgresTest.class);
     }
 }

@@ -1,5 +1,7 @@
 package com.carddemo.authorization.config;
 
+import com.carddemo.authorization.messaging.EventPublisherPort;
+import com.carddemo.authorization.messaging.KafkaEventPublisher;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -101,5 +103,35 @@ public class KafkaProducerConfig {
         // key and the first hundred characters of the payload into the log line.
         template.setProducerListener(new SafeProducerListener<>());
         return template;
+    }
+
+    /**
+     * Builds the one publisher of this service from values the bound properties have already checked.
+     *
+     * <p>The publisher used to be a scanned component whose constructor read four property
+     * placeholders of its own. Three named a topic and were harmless. The fourth,
+     * {@code carddemo.outbox.relay.publish-timeout}, was a second binding of a value
+     * {@link AuthorizationProperties.Outbox.Relay} also binds, and a second binding meets none of the
+     * constraints the record declares: zero and a negative duration both started the service and then
+     * failed every send the moment it was issued. Building the publisher here means the timeout it
+     * holds is the one the validated record produced, so a refused value stops start-up instead.
+     *
+     * <p>The dead-letter topic belongs in the map for the same reason the other two do: the relay
+     * names an abandoned row on it, and the publisher refuses any event type whose destination the map
+     * does not confirm.
+     *
+     * @param kafkaTemplate the pinned template every event travels through
+     * @param properties    the bound and validated {@code carddemo} block
+     * @return the publisher {@code outbox/OutboxRelay} calls
+     */
+    @Bean
+    public EventPublisherPort authorizationEventPublisher(
+            KafkaTemplate<String, String> kafkaTemplate, AuthorizationProperties properties) {
+        AuthorizationProperties.Kafka.Topics topics = properties.kafka().topics();
+        return new KafkaEventPublisher(kafkaTemplate,
+                topics.transactionAuthorized(),
+                topics.transactionDeclined(),
+                topics.deadLetter(),
+                properties.outbox().relay().publishTimeout());
     }
 }

@@ -4,19 +4,22 @@ import com.carddemo.events.EventEnvelope;
 import com.carddemo.events.FraudFlagged;
 import com.carddemo.fraud.entity.FraudAssessmentEntity;
 import com.carddemo.fraud.repository.FraudAssessmentRepository;
+import com.fasterxml.jackson.annotation.JsonInclude;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 import java.time.Instant;
+import java.time.format.DateTimeParseException;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
-import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Limit;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
@@ -46,20 +49,39 @@ import org.springframework.web.bind.annotation.RestController;
  * {@code 400} through the framework's default problem document, and so does a page number, a page
  * size or a sort order the collection route does not accept.
  *
+ * <h2>Pages are reached by position, not by counting</h2>
+ *
+ * <p>{@link #assessmentsOfAccount(String, String, String, String, String)} carries a page forward in
+ * the {@code X-Fraud-Cursor} header, which names the assessment time and transaction identifier of
+ * the last row the previous page served. The next page is the rows after that position, which is a
+ * range read of {@code ix_fraud_assessment_account_cursor}: the tenth page and the ten-thousandth
+ * cost the same.
+ *
+ * <p>A page number cannot do that. An offset is reached by reading every row before it and throwing
+ * them away, so the work grows with the page reached rather than with the page returned. The
+ * {@code page} parameter is therefore refused with {@code 400} rather than served, for the reason
+ * {@code sort} is: a route that quietly answered page one to a request for page five thousand would
+ * report success for something it did not do.
+ *
+ * <p>A cursor is also exact where an offset is not. Assessment time is not unique — one consumer
+ * batch assesses several transactions and the rows can share a microsecond — so a page boundary
+ * counted by row number can land inside a group of equal times, repeat one row on the next page and
+ * skip another. The cursor names both columns, and the primary key makes the order total.
+ *
+ * <p>The cursor names a position and not an entitlement. Every read is bound to the {@code accountId}
+ * the request asked for, so a cursor issued for one account reads no other account's rows.
+ *
  * <h2>The paging contract refuses rather than adjusts</h2>
  *
- * <p>{@link #assessmentsOfAccount(String, String, String, String)} declares {@code page},
- * {@code size} and {@code sort} as request parameters of its own, each with a stated bound, so a value
- * outside those bounds answers {@code 400}. Each arrives as text, which separates an omitted parameter
- * from one that arrived carrying no characters: a parameter declared as a number with a default reads
- * {@code ?page=} as an omitted {@code page} and answers {@code 200}. A caller therefore learns which
- * page it received.
+ * <p>{@code size} arrives as text with a stated bound, so a value outside that bound answers
+ * {@code 400}. Text separates an omitted parameter from one that arrived carrying no characters: a
+ * parameter declared as a number with a default reads {@code ?size=} as an omitted {@code size} and
+ * answers {@code 200}. A caller therefore learns which page it received.
  *
  * <p>A framework {@code Pageable} argument would decide silently instead. It coerces an unparsable
- * size to the default, clamps a size above the configured maximum down to that maximum, and reads a
- * negative page number as page zero, all with a {@code 200} and no statement of what it did. A caller
- * asking for 5,000 rows would receive the first 2,000 and be told nothing, which is the wrong answer
- * to give about somebody's fraud history.
+ * size to the default and clamps a size above the configured maximum down to that maximum, both with
+ * a {@code 200} and no statement of what it did. A caller asking for 5,000 rows would receive the
+ * first 2,000 and be told nothing, which is the wrong answer to give about somebody's fraud history.
  *
  * <p>{@code sort} is refused outright rather than accepted and dropped. The repository finder orders
  * by assessment time descending in its own name, so any order a caller asked for would be ignored
@@ -85,22 +107,52 @@ public class FraudAssessmentController {
      */
     private static final String ACCOUNT_ID_PATTERN = "^[0-9]{11}$";
 
-    /** Name of the page-number parameter, used in its declaration and in a refusal message. */
+    /**
+     * Name of the page-number parameter this route refuses.
+     *
+     * <p>Reaching a page by number means reading and discarding every row before it, so the work
+     * grows with the page asked for. This route carries a position instead, in
+     * {@value #CURSOR_HEADER}.</p>
+     */
     static final String PAGE_PARAMETER = "page";
 
     /** Name of the page-size parameter, used in its declaration and in a refusal message. */
     static final String SIZE_PARAMETER = "size";
 
     /**
-     * Name of the parameter this route refuses.
+     * Name of the order parameter this route refuses.
      *
-     * <p>{@code FraudAssessmentRepository.findByAccountIdOrderByAssessedAtDesc} fixes the order, so
-     * an order a caller supplied could only be ignored.</p>
+     * <p>{@code FraudAssessmentRepository.findByAccountIdOrderByAssessedAtDescTransactionIdDesc}
+     * fixes the order, so an order a caller supplied could only be ignored.</p>
      */
     static final String SORT_PARAMETER = "sort";
 
-    /** Page a caller reaches by naming no page. The first page. */
-    static final int FIRST_PAGE = 0;
+    /**
+     * Header carrying the position the next page starts after.
+     *
+     * <p>A header rather than a query parameter, matching {@code X-Card-Cursor} of the card service
+     * and {@code X-Notification-Cursor} of the notification service. The value is this route's own
+     * bookkeeping, not a choice a caller composes, and keeping it out of the query string keeps it
+     * out of the access logs that record one.</p>
+     */
+    static final String CURSOR_HEADER = "X-Fraud-Cursor";
+
+    /**
+     * Character joining the two values a cursor names.
+     *
+     * <p>It appears in neither part. An instant renders as digits with {@code -}, {@code :},
+     * {@code .}, {@code T} and {@code Z}, so the first occurrence separates the two parts whatever
+     * the identifier holds.</p>
+     */
+    static final char CURSOR_SEPARATOR = '|';
+
+    /**
+     * Row read past the page to learn whether another page follows.
+     *
+     * <p>One extra row answers the question. Counting the account's remaining rows would read them
+     * all, which is the cost this route exists to avoid.</p>
+     */
+    static final int LOOKAHEAD_ROW_COUNT = 1;
 
     /** Rows a caller receives by naming no size. */
     static final int DEFAULT_PAGE_SIZE = 20;
@@ -114,15 +166,6 @@ public class FraudAssessmentController {
      * <p>A larger request answers {@code 400} rather than receiving this many rows silently.</p>
      */
     static final int MAXIMUM_PAGE_SIZE = 200;
-
-    /**
-     * Highest page number this route reads.
-     *
-     * <p>{@code PageRequest.of} multiplies the page number by the size to reach an offset, so a page
-     * number near the widest signed integer overflows that product. This ceiling holds the offset
-     * inside the range a query can express, and a higher page number answers {@code 400}.
-     */
-    static final int MAXIMUM_PAGE_NUMBER = 1_000_000;
 
     /** Reads the assessments this service records. */
     private final FraudAssessmentRepository assessments;
@@ -157,52 +200,155 @@ public class FraudAssessmentController {
     }
 
     /**
-     * Returns one account's assessments, newest first.
+     * Returns one page of one account's assessments, newest first.
      *
-     * <p>{@code page} counts from {@value #FIRST_PAGE} and {@code size} runs from
-     * {@value #MINIMUM_PAGE_SIZE} through {@value #MAXIMUM_PAGE_SIZE}. Omitting both returns page
-     * {@value #FIRST_PAGE} at {@value #DEFAULT_PAGE_SIZE} rows. A value outside those bounds answers
-     * {@code 400}, and so does a parameter that arrived carrying no characters, so the page a caller
-     * receives is always the page it asked for.
+     * <p>{@code size} runs from {@value #MINIMUM_PAGE_SIZE} through {@value #MAXIMUM_PAGE_SIZE} and
+     * defaults to {@value #DEFAULT_PAGE_SIZE}. A value outside those bounds answers {@code 400}, and
+     * so does a parameter that arrived carrying no characters, so the page a caller receives is
+     * always the page it asked for.
      *
-     * <p>The order is fixed: assessment time descending, which
-     * {@code FraudAssessmentRepository.findByAccountIdOrderByAssessedAtDesc} states in its name. A
+     * <p>Omitting {@value #CURSOR_HEADER} returns the newest page. Sending back the
+     * {@code nextCursor} the previous answer carried returns the page after it. The answer names a
+     * cursor exactly when a further page exists, so a caller walks the history by repeating this
+     * call until {@code nextPageExists} is false, and each call costs one page.
+     *
+     * <p>Every read is bound to {@code accountId}, so a cursor issued for one account cannot read
+     * another's rows.
+     *
+     * <p>The order is fixed: assessment time descending, then transaction identifier descending,
+     * which {@code findByAccountIdOrderByAssessedAtDescTransactionIdDesc} states in its name. A
      * {@code sort} parameter is refused here with {@code 400} rather than accepted and dropped, and
-     * this method is the only handler the collection route has.
+     * so is a {@code page} parameter, which names a position this route does not reach by counting.
+     * This method is the only handler the collection route has.
      *
      * @param accountId the eleven-digit account identifier
-     * @param page      the page to return, counting from {@value #FIRST_PAGE}, or {@code null}
+     * @param cursor    the position to continue after, as the previous answer named it, or
+     *                  {@code null} to start at the newest row
      * @param size      the rows one page carries, from {@value #MINIMUM_PAGE_SIZE} through
      *                  {@value #MAXIMUM_PAGE_SIZE}, or {@code null}
      * @param sort      an order to apply, which this route does not accept, or {@code null}
-     * @return {@code 200} carrying the assessments, empty when the account holds none or when the
-     *         page lies past the rows the account has
+     * @param page      a page number, which this route does not accept, or {@code null}
+     * @return {@code 200} carrying one page, its rows empty when the account holds none or when the
+     *         cursor names the account's oldest row
      */
     @GetMapping(produces = MediaType.APPLICATION_JSON_VALUE)
-    public List<FraudAssessment> assessmentsOfAccount(
+    public AssessmentPage assessmentsOfAccount(
             @RequestParam
             @NotBlank
             @Pattern(regexp = ACCOUNT_ID_PATTERN)
             String accountId,
-            @RequestParam(name = PAGE_PARAMETER, required = false)
-            String page,
+            @RequestHeader(name = CURSOR_HEADER, required = false)
+            String cursor,
             @RequestParam(name = SIZE_PARAMETER, required = false)
             String size,
             @RequestParam(name = SORT_PARAMETER, required = false)
-            String sort) {
+            String sort,
+            @RequestParam(name = PAGE_PARAMETER, required = false)
+            String page) {
 
         if (sort != null) {
-            throw new UnsupportedSortException("The " + SORT_PARAMETER + " parameter is not supported."
-                    + " Assessments answer in assessment-time descending order only.");
+            throw new UnsupportedParameterException("The " + SORT_PARAMETER + " parameter is not"
+                    + " supported. Assessments answer in assessment-time descending order only.");
+        }
+        if (page != null) {
+            throw new UnsupportedParameterException("The " + PAGE_PARAMETER + " parameter is not"
+                    + " supported. Continue a page by returning the cursor the previous answer named,"
+                    + " in the " + CURSOR_HEADER + " header.");
         }
 
-        PageRequest requested = PageRequest.of(
-                boundedNumberOf(page, PAGE_PARAMETER, FIRST_PAGE, FIRST_PAGE, MAXIMUM_PAGE_NUMBER),
-                boundedNumberOf(size, SIZE_PARAMETER, DEFAULT_PAGE_SIZE, MINIMUM_PAGE_SIZE,
-                        MAXIMUM_PAGE_SIZE));
-        return assessments.findByAccountIdOrderByAssessedAtDesc(accountId, requested).stream()
-                .map(FraudAssessmentController::assessmentFrom)
-                .toList();
+        int rows = boundedNumberOf(size, SIZE_PARAMETER, DEFAULT_PAGE_SIZE, MINIMUM_PAGE_SIZE,
+                MAXIMUM_PAGE_SIZE);
+        Limit limit = Limit.of(rows + LOOKAHEAD_ROW_COUNT);
+
+        List<FraudAssessmentEntity> found;
+        if (cursor == null) {
+            found = assessments.findByAccountIdOrderByAssessedAtDescTransactionIdDesc(accountId,
+                    limit);
+        } else {
+            Position position = positionOf(cursor);
+            found = assessments.findPageAfter(accountId, position.assessedAt(),
+                    position.transactionId(), limit);
+        }
+
+        boolean nextPageExists = found.size() > rows;
+        List<FraudAssessmentEntity> served =
+                found.subList(0, Math.min(rows, found.size()));
+        String nextCursor = nextPageExists ? cursorOf(served.get(served.size() - 1)) : null;
+
+        return new AssessmentPage(
+                served.stream().map(FraudAssessmentController::assessmentFrom).toList(),
+                nextPageExists,
+                nextCursor);
+    }
+
+    /**
+     * Renders the position of one row as the cursor a caller returns to continue after it.
+     *
+     * <p>Both ordering columns travel, because the order needs both. The instant renders in the
+     * calendar form {@link Instant#toString()} produces, which
+     * {@link Instant#parse(CharSequence)} reads back unchanged: the column holds microseconds, so no
+     * digit of a stored value is lost on the way out or back in.
+     *
+     * @param row the last row the page served
+     * @return the two ordering values of that row, joined by {@value #CURSOR_SEPARATOR}
+     */
+    private static String cursorOf(FraudAssessmentEntity row) {
+        return row.getAssessedAt() + String.valueOf(CURSOR_SEPARATOR) + row.getTransactionId();
+    }
+
+    /**
+     * Reads a cursor into the position it names.
+     *
+     * <p>Every unreadable value is refused rather than repaired. A cursor this route did not issue
+     * describes no row, and continuing from a guess would silently return the wrong page.
+     *
+     * <p>The refusal names the shape and never the value. A cursor holds a transaction identifier,
+     * so echoing it would copy that identifier into the response body and into any log built from
+     * it.
+     *
+     * @param cursor the header value as it arrived
+     * @return the assessment time and transaction identifier it names
+     * @throws UnreadablePagingValueException when the value is empty, carries no separator, or
+     *                                        holds an instant or an identifier this route cannot read
+     */
+    private static Position positionOf(String cursor) {
+        int separator = cursor.indexOf(CURSOR_SEPARATOR);
+        if (separator < 0 || separator == cursor.length() - 1) {
+            throw new UnreadablePagingValueException(unreadableCursor());
+        }
+
+        String renderedInstant = cursor.substring(0, separator);
+        String transactionId = cursor.substring(separator + 1);
+        if (transactionId.length() != TRANSACTION_ID_WIDTH) {
+            throw new UnreadablePagingValueException(unreadableCursor());
+        }
+
+        try {
+            return new Position(Instant.parse(renderedInstant), transactionId);
+        } catch (DateTimeParseException notAnInstant) {
+            throw new UnreadablePagingValueException(unreadableCursor());
+        }
+    }
+
+    /**
+     * Builds the one refusal a cursor receives, naming the shape and no value.
+     *
+     * @return the text every cursor refusal carries
+     */
+    private static String unreadableCursor() {
+        return "The " + CURSOR_HEADER + " header reads as an assessment time and a transaction"
+                + " identifier of " + TRANSACTION_ID_WIDTH + " characters, joined by "
+                + CURSOR_SEPARATOR + ". Send back the cursor the previous answer named, or omit the"
+                + " header to start at the newest assessment.";
+    }
+
+    /**
+     * The position a cursor names: one row's place in the total order this route reads.
+     *
+     * @param assessedAt    the assessment time of the last row served
+     * @param transactionId the identifier of that row, which breaks a tie on {@code assessedAt}
+     */
+    private record Position(Instant assessedAt, String transactionId) {
     }
 
     /**
@@ -213,9 +359,9 @@ public class FraudAssessmentController {
      * absent. Any other value has to parse as a number inside the bounds.
      *
      * <p>Refusing a present-empty value is the point of reading these as text. A parameter declared as
-     * a number with a default takes the default for {@code ?page=} as well as for an omitted
-     * {@code page}, so a caller sending an empty value receives page {@value #FIRST_PAGE} and a
-     * {@code 200} that states nothing about what it did.
+     * a number with a default takes the default for {@code ?size=} as well as for an omitted
+     * {@code size}, so a caller sending an empty value receives {@value #DEFAULT_PAGE_SIZE} rows and
+     * a {@code 200} that states nothing about what it did.
      *
      * @param value      the parameter as it arrived, or {@code null} where it did not arrive
      * @param name       the parameter name, which the refusal reports
@@ -253,13 +399,17 @@ public class FraudAssessmentController {
     }
 
     /**
-     * Raised when the collection route is asked for an order it does not apply.
+     * Raised when the collection route is asked for something it does not do.
+     *
+     * <p>Two parameters raise it. {@code sort} names an order the repository finder fixes, and
+     * {@code page} names a position this route does not reach by counting rows. Either would have to
+     * be ignored to answer at all, so it is refused instead.
      *
      * <p>{@link ResponseStatus} maps it to {@code 400}: the request named a parameter this route does
      * not honour, which is the caller's error and not a fault of this service.</p>
      */
     @ResponseStatus(HttpStatus.BAD_REQUEST)
-    public static class UnsupportedSortException extends RuntimeException {
+    public static class UnsupportedParameterException extends RuntimeException {
 
         /** Serialization identity of this exception. */
         private static final long serialVersionUID = 1L;
@@ -267,9 +417,9 @@ public class FraudAssessmentController {
         /**
          * Takes the text the response carries.
          *
-         * @param message the refusal, naming the parameter and the order this route applies
+         * @param message the refusal, naming the parameter and what this route does instead
          */
-        public UnsupportedSortException(String message) {
+        public UnsupportedParameterException(String message) {
             super(message);
         }
     }
@@ -305,6 +455,66 @@ public class FraudAssessmentController {
     private static FraudAssessment assessmentFrom(FraudAssessmentEntity row) {
         return new FraudAssessment(row.getTransactionId(), row.getAccountId(), row.getRiskScore(),
                 row.getTriggeredRules(), row.isFlagged(), row.getAssessedAt());
+    }
+
+    /**
+     * One page of one account's assessments, and how to reach the page after it.
+     *
+     * <p>{@code assessments} holds at most the rows the request asked for, newest first.
+     * {@code nextPageExists} states whether the account holds older rows, and {@code nextCursor}
+     * names the position they start after. The two agree: a cursor is present exactly when a further
+     * page exists, so a caller has one thing to test and never composes a cursor of its own.
+     *
+     * <p>{@link JsonInclude} omits {@code nextCursor} on the last page rather than rendering it as
+     * {@code null}. {@code src/main/resources/openapi.yaml} declares the property a string and lists
+     * it as optional, so a JSON null would describe a shape the document refuses.
+     *
+     * <p>No count of the whole history appears here. Counting an account's rows reads them all, which
+     * is the work this page exists to avoid, and a caller learns the history is exhausted from
+     * {@code nextPageExists} instead.
+     *
+     * @param assessments    the rows of this page, newest first, empty when there are none
+     * @param nextPageExists whether the account holds rows older than this page
+     * @param nextCursor     the position the next page starts after, or {@code null} on the last page
+     */
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public record AssessmentPage(List<FraudAssessment> assessments, boolean nextPageExists,
+            String nextCursor) {
+
+        /**
+         * Checks and copies the page.
+         *
+         * @throws NullPointerException     if {@code assessments} is {@code null}
+         * @throws IllegalArgumentException if a cursor is present without a further page, or a
+         *                                  further page is claimed without a cursor
+         */
+        public AssessmentPage {
+            Objects.requireNonNull(assessments, "assessments");
+            assessments = List.copyOf(assessments);
+            if (nextPageExists && nextCursor == null) {
+                throw new IllegalArgumentException(
+                        "/nextCursor names the next page whenever /nextPageExists is true");
+            }
+            if (!nextPageExists && nextCursor != null) {
+                throw new IllegalArgumentException(
+                        "/nextCursor is absent whenever /nextPageExists is false");
+            }
+        }
+
+        /**
+         * Renders the row count and the paging flag, and withholds the cursor.
+         *
+         * <p>The cursor holds a transaction identifier, and a diagnostic line describing one page
+         * needs the shape of the answer rather than the identifier inside it.
+         *
+         * @return the class name with the row count, the flag, and
+         *         {@link EventEnvelope#WITHHELD} in place of the cursor
+         */
+        @Override
+        public String toString() {
+            return "AssessmentPage[assessments=" + assessments.size() + " rows, nextPageExists="
+                    + nextPageExists + ", nextCursor=" + EventEnvelope.WITHHELD + "]";
+        }
     }
 
     /**

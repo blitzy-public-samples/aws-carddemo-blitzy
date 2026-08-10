@@ -98,6 +98,23 @@ public class FraudFlaggedConsumer {
     private static final String UNREADABLE_PAYLOAD =
             "/eventType names a payload outside the two assessment outcomes";
 
+    /**
+     * Reason the dead-letter metadata carries for a record refused on its key.
+     *
+     * <p>Fifty characters is the width {@link DeadLetterMetadata#REASON_MAX_LENGTH} declares, and
+     * this text is shorter. It names which three values disagreed and none of their values.
+     */
+    private static final String KEY_DISAGREEMENT = "KeyAggregateAccountDisagreement";
+
+    /**
+     * Detail the dead-letter metadata carries for a record refused on its key.
+     *
+     * <p>The text names the two envelope fields and the key by their contract names, and it holds no
+     * field value, so no account identifier reaches the diagnostic through it.
+     */
+    private static final String KEY_MISMATCH_DETAIL =
+            "the key, /aggregateId and /accountId must carry one value";
+
     /** Reads the account-keyed cardholder fields one alert reports. */
     private final CardholderContextReader cardholderContextReader;
 
@@ -169,17 +186,46 @@ public class FraudFlaggedConsumer {
         Objects.requireNonNull(event, "event is required");
         Objects.requireNonNull(acknowledgment, "acknowledgment is required");
 
-        if (event instanceof FraudFlagged flagged) {
-            requireKeyNamesAggregate(messageKey, flagged.aggregateId(), flagged.accountId());
-            applyFlagged(flagged, consumedTopic);
-        } else if (event instanceof FraudCleared cleared) {
-            requireKeyNamesAggregate(messageKey, cleared.aggregateId(), cleared.accountId());
-            applyCleared(cleared, consumedTopic);
-        } else {
-            throw refusePayload(event);
+        String eventType = recordedEventType(event);
+        metrics.eventsConsumed(eventType).increment();
+        long startedAt = System.nanoTime();
+        try {
+            if (event instanceof FraudFlagged flagged) {
+                requireKeyNamesAggregate(messageKey, flagged.aggregateId(), flagged.accountId());
+                applyFlagged(flagged, consumedTopic);
+            } else if (event instanceof FraudCleared cleared) {
+                requireKeyNamesAggregate(messageKey, cleared.aggregateId(), cleared.accountId());
+                applyCleared(cleared, consumedTopic);
+            } else {
+                throw refusePayload(event);
+            }
+        } finally {
+            metrics.processingLatency(eventType)
+                    .record(Duration.ofNanos(System.nanoTime() - startedAt));
         }
 
         acknowledgment.acknowledge();
+    }
+
+    /**
+     * Names the series a delivery is measured on.
+     *
+     * <p>A payload outside the two assessment outcomes resolves to
+     * {@link NotificationMetrics#UNKNOWN}, which is already a declared value of the
+     * {@code eventType} tag, so a refused payload is measured rather than unmeasured and no new tag
+     * value is introduced.
+     *
+     * @param event the payload this delivery carried
+     * @return the {@code eventType} tag value
+     */
+    private static String recordedEventType(Record event) {
+        if (event instanceof FraudFlagged) {
+            return NotificationMetrics.EVENT_FRAUD_FLAGGED;
+        }
+        if (event instanceof FraudCleared) {
+            return NotificationMetrics.EVENT_FRAUD_CLEARED;
+        }
+        return NotificationMetrics.UNKNOWN;
     }
 
     /**
@@ -189,8 +235,6 @@ public class FraudFlaggedConsumer {
      * @param consumedTopic the topic the delivery arrived on
      */
     private void applyFlagged(FraudFlagged event, String consumedTopic) {
-        metrics.eventsConsumed(NotificationMetrics.EVENT_FRAUD_FLAGGED).increment();
-        long startedAt = System.nanoTime();
         try {
             transactionTemplate.executeWithoutResult(status -> {
                 if (claimed(event.eventId(), consumedTopic)) {
@@ -202,9 +246,6 @@ public class FraudFlaggedConsumer {
         } catch (RuntimeException failure) {
             reportFailure(event.eventId(), failure);
             throw failure;
-        } finally {
-            metrics.processingLatency(NotificationMetrics.EVENT_FRAUD_FLAGGED)
-                    .record(Duration.ofNanos(System.nanoTime() - startedAt));
         }
     }
 
@@ -218,17 +259,12 @@ public class FraudFlaggedConsumer {
      * @param consumedTopic the topic the delivery arrived on
      */
     private void applyCleared(FraudCleared event, String consumedTopic) {
-        metrics.eventsConsumed(NotificationMetrics.EVENT_FRAUD_CLEARED).increment();
-        long startedAt = System.nanoTime();
         try {
             transactionTemplate
                     .executeWithoutResult(status -> claimed(event.eventId(), consumedTopic));
         } catch (RuntimeException failure) {
             reportFailure(event.eventId(), failure);
             throw failure;
-        } finally {
-            metrics.processingLatency(NotificationMetrics.EVENT_FRAUD_CLEARED)
-                    .record(Duration.ofNanos(System.nanoTime() - startedAt));
         }
     }
 
@@ -246,7 +282,9 @@ public class FraudFlaggedConsumer {
      * <p>The two transaction listeners of this service already make this check. It belongs on this
      * stream for a reason of its own: the account this payload names is the account whose
      * cardholder details the alert is addressed with, so an assessment applied under the wrong key
-     * would send one cardholder a fraud alert about another cardholder's transaction. Both outcomes
+     * would render one cardholder a fraud alert about another cardholder's transaction, and record
+     * having done so. Nothing sends that alert, so the disclosure would be to whatever reads the
+     * rendered text rather than to the cardholder; the check refuses it either way. Both outcomes
      * on this topic are checked, because both carry an account and only one of them renders
      * anything.
      *
@@ -257,24 +295,61 @@ public class FraudFlaggedConsumer {
      * <p>The refusal is an {@link IllegalArgumentException} raised before anything is claimed or
      * written, so nothing is applied, the delivery is retried, and a spent record reaches the
      * sanitized dead-letter route of {@code config/KafkaConsumerConfig}. Neither message names the
-     * key, the aggregate or the account, so no identifier reaches a log line through them.
+     * key, the aggregate or the account, so no identifier reaches a log line through them. The
+     * refusal is counted by {@link #refuseKey(String)}, so a rejected delivery is visible as a
+     * reading rather than only as a log line.
      *
      * @param messageKey  the key the record arrived under, possibly {@code null}
      * @param aggregateId the aggregate the envelope names
      * @param accountId   the account the payload names
      * @throws IllegalArgumentException when the key is absent or the three do not agree
      */
-    private static void requireKeyNamesAggregate(String messageKey, String aggregateId,
-            String accountId) {
+    private void requireKeyNamesAggregate(String messageKey, String aggregateId, String accountId) {
         if (messageKey == null || messageKey.isBlank()) {
-            throw new IllegalArgumentException("this record carries no message key, so the"
+            throw refuseKey("this record carries no message key, so the"
                     + " partition it arrived on is not the one that orders its account");
         }
         if (!messageKey.equals(aggregateId) || !messageKey.equals(accountId)) {
-            throw new IllegalArgumentException("the message key, the aggregate and the"
+            throw refuseKey("the message key, the aggregate and the"
                     + " account this payload names do not agree, so the partition this"
                     + " record arrived on is not the one that orders that account");
         }
+    }
+
+    /**
+     * Counts one key refusal, reports its four metadata fields, and builds the refusal to throw.
+     *
+     * <p>ADDITIVE, on the same layout {@link #refusePayload(Record)} carries, and counted on the
+     * same {@code schema_validation} value of the {@code failure.kind} tag. Both refusals reject a
+     * record for disagreeing with the document behind the event rather than for a fault in this
+     * service, and the document states the key rule as plainly as it states a field type. A refusal
+     * that counted nothing left a rejected delivery indistinguishable from one that never arrived,
+     * which is the state an observability review found.
+     *
+     * <p>The level is {@code WARN} because this line reports one attempt. The refusal repeats until
+     * the attempts are spent, and the terminal outcome is reported once at {@code ERROR} by the
+     * recoverer in {@code config/KafkaConsumerConfig}.
+     *
+     * <p>Neither the message nor the metadata names the key, the aggregate or the account, so no
+     * identifier reaches a log line through them.
+     *
+     * @param explanation what disagreed, naming no value
+     * @return the refusal the caller throws, which leaves the offset uncommitted
+     */
+    private IllegalArgumentException refuseKey(String explanation) {
+        DeadLetterMetadata metadata = DeadLetterMetadata.of(CONTRACT_CODE, CULPRIT,
+                KEY_DISAGREEMENT, KEY_MISMATCH_DETAIL);
+        metrics.failures(NotificationMetrics.FAILURE_SCHEMA_VALIDATION).increment();
+
+        LOG.atWarn()
+                .addKeyValue("abendCode", metadata.abendCode())
+                .addKeyValue("abendCulprit", metadata.culprit())
+                .addKeyValue("abendReason", metadata.reason())
+                .addKeyValue("abendMessage", metadata.message())
+                .log("A record on the assessment topic was refused on its key, and this delivery"
+                        + " stays unacknowledged.");
+
+        return new IllegalArgumentException(explanation);
     }
 
     /**

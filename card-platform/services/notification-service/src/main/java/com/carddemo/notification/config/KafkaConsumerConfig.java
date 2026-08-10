@@ -1,5 +1,6 @@
 package com.carddemo.notification.config;
 
+import com.carddemo.events.correlation.EventCorrelation;
 import com.carddemo.notification.messaging.DeadLetterMetadata;
 
 import java.nio.charset.StandardCharsets;
@@ -345,6 +346,9 @@ public class KafkaConsumerConfig {
 
         configurer.configure(factory, consumerFactory);
         factory.setCommonErrorHandler(notificationConsumerErrorHandler);
+        // The correlation fields of one delivery reach the structured log context here, in one
+        // place rather than in each listener, and leave it again when the delivery ends.
+        factory.setRecordInterceptor(new CorrelationRecordInterceptor<>());
         factory.getContainerProperties().setDeliveryAttemptHeader(true);
         requireImmediateManualAcknowledgement(factory.getContainerProperties().getAckMode());
 
@@ -425,7 +429,7 @@ public class KafkaConsumerConfig {
      * it is a rendering failure. A chain naming none of them resolves to {@code unknown}, which is
      * itself a registered tag value.
      *
-     * <p><b>Why the rendering branch has to be here.</b> Each listener classifies its own failures
+     * <p><b>Where the rendering branch runs.</b> Each listener classifies its own failures
      * with the same rule -- a persistence fault, or else a rendering failure -- and counts one per
      * attempt on {@link ObservabilityConfig.NotificationMetrics#failures(String)}. This method counts
      * one per record given up on, on
@@ -556,6 +560,16 @@ public class KafkaConsumerConfig {
                         header.value() == null ? null : header.value().clone());
             }
         }
+        // The two correlation identifiers reach the dead-letter record as well, so a spent record
+        // names the call behind it and not only the event that failed. Each is re-rendered from a
+        // strict parse rather than copied, so a producer cannot place arbitrary bytes on the
+        // diagnostic through a header this method admits.
+        EventCorrelation.headersFor(
+                        EventCorrelation.read(headers, EventCorrelation.CORRELATION_ID_HEADER)
+                                .orElse(null),
+                        EventCorrelation.read(headers, EventCorrelation.CAUSATION_ID_HEADER)
+                                .orElse(null))
+                .forEach(permitted::add);
         return permitted;
     }
 

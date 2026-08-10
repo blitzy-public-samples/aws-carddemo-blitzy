@@ -9,6 +9,7 @@ import java.util.Set;
 import java.util.stream.Stream;
 
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
@@ -536,15 +537,19 @@ class NumericRequiredValidatorTest {
     }
 
     @Test
-    @DisplayName("The subject exposes one static three-argument method on a final class")
+    @DisplayName("The subject exposes the two static validate overloads on a final class")
     void theSubjectExposesOneStaticThreeArgumentMethodOnAFinalClass()
             throws NoSuchMethodException {
         // app/cbl/COACTUPC.cbl:L1545-L1548 moves a label, then a value, then a width, and the
         // parameter order follows those three moves. A reordered signature fails an assertion below.
+        // The four-argument overload adds the width the field holds, which the postal code needs
+        // because app/cbl/COACTUPC.cbl:L1606 moves a PIC X(10) field in and :L1607 edits five of it.
         assertThat(Modifier.isFinal(NumericRequiredValidator.class.getModifiers())).isTrue();
         assertThat(NumericRequiredValidator.class.getDeclaredMethods())
                 .filteredOn(method -> Modifier.isPublic(method.getModifiers()))
-                .hasSize(1);
+                .extracting(Method::getName)
+                .as("both public members are the one edit under one name")
+                .containsExactly("validate", "validate");
 
         Method validate = NumericRequiredValidator.class
                 .getMethod("validate", String.class, String.class, int.class);
@@ -555,6 +560,19 @@ class NumericRequiredValidatorTest {
         assertThat(validate.getParameters()[0].getName()).isEqualTo("fieldLabel");
         assertThat(validate.getParameters()[1].getName()).isEqualTo("value");
         assertThat(validate.getParameters()[2].getName()).isEqualTo("length");
+
+        Method held = NumericRequiredValidator.class
+                .getMethod("validate", String.class, String.class, int.class, int.class);
+
+        assertThat(Modifier.isPublic(held.getModifiers())).isTrue();
+        assertThat(Modifier.isStatic(held.getModifiers())).isTrue();
+        assertThat(held.getReturnType()).isEqualTo(EditResult.class);
+        assertThat(held.getParameters()[0].getName()).isEqualTo("fieldLabel");
+        assertThat(held.getParameters()[1].getName()).isEqualTo("value");
+        assertThat(held.getParameters()[2].getName())
+                .as("the edited width comes before the held width, as the two source MOVEs do")
+                .isEqualTo("editedLength");
+        assertThat(held.getParameters()[3].getName()).isEqualTo("heldWidth");
     }
 
     @Test
@@ -601,5 +619,102 @@ class NumericRequiredValidatorTest {
         assertThat(result.hasMessage()).isTrue();
         assertThat(result.message()).isEqualTo(label + NOT_ALL_NUMERIC_LITERAL);
         assertThat(result.message()).containsOnlyOnce(NOT_ALL_NUMERIC_LITERAL);
+    }
+
+    /**
+     * The postal code, whose held width exceeds the width the edit inspects.
+     *
+     * <p>{@code MOVE ACUP-NEW-CUST-ADDR-ZIP TO WS-EDIT-ALPHANUM-ONLY} at
+     * {@code app/cbl/COACTUPC.cbl:L1606} carries all ten characters of {@code PIC X(10)} into the
+     * edit area, and {@code MOVE 5 TO WS-EDIT-ALPHANUM-LENGTH} at
+     * {@code app/cbl/COACTUPC.cbl:L1607} then confines every test to
+     * {@code WS-EDIT-ALPHANUM-ONLY(1:5)}. Positions six to ten are held and never inspected.
+     *
+     * <p>The four-argument call is what expresses that. The three-argument call collapses the two
+     * widths, which is right for the other five call sites and wrong for this one.
+     */
+    @Nested
+    @DisplayName("A field whose held width exceeds its edited width")
+    class HeldWidthWiderThanEditedWidth {
+
+        /** {@code MOVE 5 TO WS-EDIT-ALPHANUM-LENGTH} at app/cbl/COACTUPC.cbl:L1607. */
+        private static final int EDITED = 5;
+
+        /** {@code ACUP-NEW-CUST-ADDR-ZIP PIC X(10)} at app/cbl/COACTUPC.cbl:L809. */
+        private static final int HELD = 10;
+
+        @ParameterizedTest(name = "{0} passes on its first five characters")
+        @ValueSource(strings = {
+            "19852-6716",
+            "39035-0455",
+            "02251-1698",
+            "12546     ",
+            "22770     ",
+            "07094-1234",
+        })
+        @DisplayName("a stored ten-character postal code passes, ZIP+4 and padded alike")
+        void aStoredTenCharacterPostalCodePasses(String stored) {
+            EditResult verdict = NumericRequiredValidator.validate(ZIP_LABEL, stored, EDITED, HELD);
+
+            assertThat(verdict.valid())
+                    .as("%s is a value the seed data holds and GET returns, so PUT has to take it"
+                            + " back", stored)
+                    .isTrue();
+            assertThat(verdict.hasMessage()).isFalse();
+        }
+
+        @Test
+        @DisplayName("the first five characters are what is edited, so a non-numeric prefix fails")
+        void theFirstFiveCharactersAreWhatIsEdited() {
+            assertNotAllNumeric(
+                    NumericRequiredValidator.validate(ZIP_LABEL, "1985X-6716", EDITED, HELD),
+                    ZIP_LABEL);
+            assertNotSupplied(
+                    NumericRequiredValidator.validate(ZIP_LABEL, "     -6716", EDITED, HELD),
+                    ZIP_LABEL);
+        }
+
+        @Test
+        @DisplayName("content past the tenth character is refused, and names the held width")
+        void contentPastTheHeldWidthIsRefused() {
+            EditResult verdict =
+                    NumericRequiredValidator.validate(ZIP_LABEL, "19852-67160", EDITED, HELD);
+
+            assertThat(verdict.valid()).isFalse();
+            assertThat(verdict.message())
+                    .as("the bound a caller is told is the width the field holds, not the width the"
+                            + " edit reads")
+                    .isEqualTo(ZIP_LABEL + NO_LONGER_THAN_LITERAL + HELD + " characters.");
+        }
+
+        @Test
+        @DisplayName("trailing spaces past the tenth character are the padding a field holds")
+        void trailingSpacesPastTheHeldWidthArePadding() {
+            assertThat(NumericRequiredValidator
+                    .validate(ZIP_LABEL, "12546          ", EDITED, HELD).valid()).isTrue();
+        }
+
+        @Test
+        @DisplayName("the three-argument call is the same call with both widths equal")
+        void theThreeArgumentCallEqualsBothWidthsEqual() {
+            for (String value : new String[] {"07094", "0709", "0000", "", "19852-6716"}) {
+                EditResult three = NumericRequiredValidator.validate(ZIP_LABEL, value, EDITED);
+                EditResult four =
+                        NumericRequiredValidator.validate(ZIP_LABEL, value, EDITED, EDITED);
+                assertThat(four.valid()).as(value).isEqualTo(three.valid());
+                assertThat(four.message()).as(value).isEqualTo(three.message());
+            }
+        }
+
+        @Test
+        @DisplayName("a held width below the edited width is raised to it rather than narrowing it")
+        void aHeldWidthBelowTheEditedWidthIsRaised() {
+            EditResult verdict = NumericRequiredValidator.validate(ZIP_LABEL, "07094", EDITED, 2);
+
+            assertThat(verdict.valid())
+                    .as("the edit still reads five characters, so a smaller held width cannot make"
+                            + " a five-digit value too long")
+                    .isTrue();
+        }
     }
 }

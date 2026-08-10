@@ -98,6 +98,27 @@
       <artifactId>spring-kafka</artifactId>
     </dependency>
 
+    <!-- The broker client itself. Every one of this module's messaging and configuration
+         classes imports org.apache.kafka.clients or org.apache.kafka.common directly, so the
+         artifact those packages come from is declared here rather than reached through a
+         starter: libs/event-contracts sets the same precedent, and a module that programs
+         against an API it does not declare compiles only while something else keeps supplying
+         it. The version comes from the Spring Boot bill of materials, which resolves the 4.2.1
+         the broker image in docker-compose.yml runs. -->
+    <dependency>
+      <groupId>org.apache.kafka</groupId>
+      <artifactId>kafka-clients</artifactId>
+    </dependency>
+
+    <!-- JSON binding. This module imports tools.jackson.databind directly, so the artifact is
+         declared here for the same reason kafka-clients is. jackson-core and the Jackson 2
+         annotations arrive with it and are not declared, because neither can be absent while
+         databind is present. -->
+    <dependency>
+      <groupId>tools.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+    </dependency>
+
     <!-- Database driver and schema migration. Flyway ships its PostgreSQL dialect
          as a separate artifact, and Spring Boot 4 ships Flyway auto-configuration
          in its own starter. -->
@@ -146,18 +167,6 @@
       <scope>test</scope>
     </dependency>
 
-    <!-- @ServiceConnection, which hands a running container's host, port, database, login and
-         password to the datasource under test, plus the container bean lifecycle. -->
-    <dependency>
-      <groupId>org.springframework.boot</groupId>
-      <artifactId>spring-boot-testcontainers</artifactId>
-      <scope>test</scope>
-    </dependency>
-    <dependency>
-      <groupId>org.springframework.kafka</groupId>
-      <artifactId>spring-kafka-test</artifactId>
-      <scope>test</scope>
-    </dependency>
     <dependency>
       <groupId>org.testcontainers</groupId>
       <artifactId>testcontainers</artifactId>
@@ -205,5 +214,40 @@
       </plugin>
     </plugins>
   </build>
+
+  <profiles>
+    <!--
+      Lets the equivalence stage build this module without re-running its integration
+      suite, which the service integration stage ran and whose reports it kept.
+
+      The equivalence stage asks Maven for equivalence-tests and everything it needs, and
+      this module is one of those needs. Without this profile that stage runs every
+      Failsafe class here a second time, which is the whole of the service integration
+      stage repeated for no new information. The profile is inert until
+      -DskipServiceIntegrationTests is named, so the default build, `mvn verify` and the
+      service integration stage all behave exactly as before. It sits in this module
+      rather than in the parent because the parent is also the parent of
+      equivalence-tests, whose Failsafe classes are the very ones that stage runs.
+    -->
+    <profile>
+      <id>skip-service-integration-tests</id>
+      <activation>
+        <property>
+          <name>skipServiceIntegrationTests</name>
+        </property>
+      </activation>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-failsafe-plugin</artifactId>
+            <configuration>
+              <skipTests>true</skipTests>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
 
 </project>

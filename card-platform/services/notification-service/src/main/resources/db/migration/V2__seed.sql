@@ -1,33 +1,28 @@
--- Bootstraps cardholder_context, the account-keyed projection every rendered alert reads.
+-- Notification service, migration V2. Bootstraps cardholder_context, the account-keyed projection
+-- every rendered alert reads.
 --
--- WHY THIS FILE EXISTS. The table was created by V1__schema.sql and nothing populated it.
--- messaging/CustomerContextChangedConsumer fills it from CustomerContextChanged, which the
--- account service publishes only when a customer record CHANGES, so an account whose customer
--- record never changed after deployment had no row here at all. Every alert for such an account
--- rendered with blank cardholder fields: no name, no address and no credit score, silently, on
--- the cardholder-facing path. Seeding the projection is what makes a first alert correct rather
--- than blank.
+-- Statements: one INSERT of fifty rows. V1__schema.sql creates the table and nothing else populates
+-- it except messaging/CustomerContextChangedConsumer, which fills it from CustomerContextChanged --
+-- an event the account service publishes only when a customer record changes.
 --
--- PROVENANCE. Every value below is read from app/data/ASCII/custdata.txt, the 50-record customer
--- fixture whose layout is 01 CUSTOMER-RECORD at app/cpy/CVCUS01Y.cpy:L4-L23 (RECLN 500). The ten
--- fields kept here are the ten 5000-CREATE-STATEMENT reads at app/cbl/CBSTM03A.CBL:L462-L485;
--- this service owns no customer record and keeps nothing else.
+-- Provenance. Every value is read from app/data/ASCII/custdata.txt, the fifty-record customer fixture
+-- whose layout is 01 CUSTOMER-RECORD at app/cpy/CVCUS01Y.cpy:L4-L23 (RECLN 500). The ten fields kept
+-- here are the ten 5000-CREATE-STATEMENT reads at app/cbl/CBSTM03A.CBL:L462-L485; this service owns no
+-- customer record and keeps nothing else. Values are stored trimmed, as an event carries them, and a
+-- render pads each field to the width its source field declares.
 --
--- THE ACCOUNT KEY. custdata.txt is keyed by CUST-ID PIC 9(09) and this table is keyed by account,
--- so each customer is resolved to its account through XREF-CUST-ID and XREF-ACCT-ID of
--- 01 CARD-XREF-RECORD at app/cpy/CVACT03Y.cpy:L4-L8, read from app/data/ASCII/cardxref.txt at
--- offsets 16 and 25. In that fixture the mapping is one to one across all fifty rows.
+-- The account key. custdata.txt is keyed by CUST-ID PIC 9(09) and this table by account, so each
+-- customer is resolved through XREF-CUST-ID and XREF-ACCT-ID of 01 CARD-XREF-RECORD at
+-- app/cpy/CVACT03Y.cpy:L4-L8, read from app/data/ASCII/cardxref.txt at offsets 16 and 25. That
+-- mapping is one to one across all fifty rows.
 --
--- WHY THE EPOCH. repository/CardholderContextRepository#applyContextChange only replaces a row
--- when the arriving change occurred strictly after the stored source_occurred_at. These rows carry
--- 1970-01-01T00:00:00Z, which is before any instant a producer can report, so the first real
--- CustomerContextChanged for an account always supersedes its seeded row. observed_at carries the
--- same instant deliberately: it is the column a staleness report orders by, and a bootstrap row
--- that no event has yet refreshed should read as maximally stale. No retention sweep deletes from
--- this table, so the seeded rows cannot be purged out from under the projection.
+-- The epoch stamps. repository/CardholderContextRepository#applyContextChange replaces a row only
+-- when the arriving change occurred strictly after the stored source_occurred_at, so every row here
+-- carries 1970-01-01T00:00:00Z and the first real CustomerContextChanged for an account supersedes it.
+-- observed_at carries the same instant, and it is the column a staleness report orders by. No
+-- retention sweep deletes from this table.
 --
--- Values are stored trimmed, as an event carries them. Every render pads each field to the width
--- its source field declares, so trailing spaces are a rendering concern and not a storage one.
+-- Rationale, alternatives considered and accepted risks: card-platform/docs/decision-log.md.
 
 INSERT INTO cardholder_context (account_id, first_name, middle_name, last_name,
                                 address_line_1, address_line_2, address_line_3,

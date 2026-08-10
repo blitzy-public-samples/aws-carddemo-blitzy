@@ -135,7 +135,6 @@ class RuleThreeDocumentationContractTest {
                 "Seven listeners are present",
                 "Nine listeners are present",
                 "five source-specific dead-letter topics",
-                "Thirteen schema documents",
                 "no runtime consumer",
                 "182 Failsafe equivalence tests",
                 "cross-reference divergence metering",
@@ -144,8 +143,15 @@ class RuleThreeDocumentationContractTest {
             assertFalse(platform.contains(stale), "platform README retains stale text: " + stale);
         }
 
+        assertEquals(13, schemaDocumentCount(),
+                "the platform guide names thirteen schema documents, so thirteen must ship. Adding or"
+                        + " withdrawing one moves the sentence in README.md and the headline metric on"
+                        + " slide 2 with it");
+
         for (String delivered : List.of(
                 "Eleven listeners are present",
+                "Thirteen schema documents cover eight business event types, four additive version"
+                        + " upgrades",
                 "Seven business topics, six source-specific dead-letter topics, and one shared"
                         + " fallback",
                 "8 files, 17 mapsets, 18 programs, and 18 transactions",
@@ -324,7 +330,7 @@ class RuleThreeDocumentationContractTest {
     void onboardingContainsTheCompleteBuildStartHealthAndVerificationSequence() {
         String onboarding = read(platformDirectory().resolve("docs/onboarding.md"));
         for (String command : List.of(
-                "cp .env.example .env",
+                "install -m 600 .env.example .env",
                 "mvn -B -DskipTests package",
                 "jshell --class-path",
                 "mvn -B clean verify",
@@ -483,6 +489,162 @@ class RuleThreeDocumentationContractTest {
                 "the derivation must cover the label PanMasker.cardToken covers");
     }
 
+    /**
+     * A guide is a set of instructions, so a command it prints has to be one that does what the
+     * surrounding sentence says it does. A review found six ways that had stopped being true, and
+     * each had the same shape: the document restated something a committed script or the build
+     * already owned, and the copy drifted. These assertions hold the corrected form.
+     *
+     * <p>The credential half is the sharpest. Every service guide carried a block that set
+     * seventeen of the nineteen values {@code .env.example} declares, omitting the card-token key
+     * and the acquirer hash, and then printed "all 17 values are set" beside a paragraph promising
+     * nineteen. {@code scripts/generate-env.sh} reads the names out of {@code .env.example}, so it
+     * cannot omit one, and a guide that calls it cannot disagree with it.
+     */
+    @Test
+    void everyGuideCommandDoesWhatItsSentenceClaims() {
+        String onboarding = read(platformDirectory().resolve("docs/onboarding.md"));
+
+        // A bcrypt value starts {bcrypt}$2a$10$, and Compose expands $ in an unquoted dotenv value,
+        // which truncates the hash and answers 401 at every sign-on.
+        assertEquals(4, count(onboarding, "_PASSWORD_HASH='$(hash_password"),
+                "onboarding writes four identity hashes and every one has to be single-quoted");
+        for (Path guide : allGuides()) {
+            assertFalse(Pattern.compile("_PASSWORD_HASH=\\$\\(").matcher(read(guide)).find(),
+                    guide.getFileName() + " writes a bcrypt hash unquoted, which Compose corrupts");
+        }
+
+        for (String service : SERVICES) {
+            String guide = read(serviceReadme(service));
+
+            assertTrue(guide.contains("scripts/generate-env.sh"),
+                    service + " must defer to the one script that fills all nineteen credentials");
+            assertFalse(guide.contains("all 17 values are set"),
+                    service + " must not claim seventeen where .env.example declares nineteen");
+            assertFalse(guide.contains("CRYPTO_CP") || guide.contains("hash_password("),
+                    service + " must not restate the hash helper the script already owns");
+
+            // Failsafe's default pattern matches **/*IT.java and Surefire's does not, so `test`
+            // finishes without the integration classes and reports nothing missing.
+            assertFalse(Pattern.compile("mvn [^\\n]*-pl services/" + service + " -am test\\b")
+                            .matcher(guide).find(),
+                    service + " has integration classes Surefire never runs, so a documented "
+                            + "module run has to be `verify` rather than `test`");
+
+            // A health request immediately after `up` races start-up without --wait. Prose that
+            // merely mentions the command is not a command, so only runnable lines are held.
+            for (String line : runnableLines(guide)) {
+                if (!line.strip().startsWith("docker compose up")) {
+                    continue;
+                }
+                assertTrue(line.contains("--wait"),
+                        service + " curls a health endpoint straight after this, so the command has "
+                                + "to hold until the containers report healthy: " + line.strip());
+            }
+        }
+    }
+
+    /**
+     * Every relative path a guide prints inside a runnable block has to resolve. Two conventions are
+     * in use and both are correct — a block stating the repository root writes {@code app/...} and
+     * {@code card-platform/.env}, and a block stating {@code card-platform/} writes {@code ../app/...}
+     * and {@code .env} — so this resolves each token under the base its own prefix implies. A review
+     * found three tokens in the {@code ../../} form, which is correct from a service directory that
+     * no section names, so they resolved from nowhere a reader would be standing.
+     */
+    @Test
+    void everyPathAGuidePrintsResolvesOnDisk() {
+        Pattern token = Pattern.compile(
+                "(?:\\.\\./)*(?:card-platform/)?(?:app/data/[A-Za-z]+/[a-z]+\\.txt|\\.env)\\b");
+        int checked = 0;
+        for (Path guide : allGuides()) {
+            boolean inBlock = false;
+            for (String line : read(guide).lines().toList()) {
+                if (line.startsWith("```bash")) {
+                    inBlock = true;
+                    continue;
+                }
+                if (line.startsWith("```")) {
+                    inBlock = false;
+                    continue;
+                }
+                if (!inBlock) {
+                    continue;
+                }
+                Matcher found = token.matcher(line);
+                while (found.find()) {
+                    String path = found.group();
+                    // A bare .env or a ../ prefix is written from card-platform/; anything naming
+                    // app/ or card-platform/ without a prefix is written from the repository root.
+                    Path base = path.equals(".env") || path.startsWith("../")
+                            ? platformDirectory()
+                            : repositoryRoot();
+                    assertTrue(Files.exists(base.resolve(path).normalize()),
+                            guide.getFileName() + " prints " + path + ", which resolves to "
+                                    + base.resolve(path).normalize() + " and does not exist");
+                    checked++;
+                }
+            }
+        }
+        assertTrue(checked >= 40, "the guides print many such paths; only " + checked + " were found,"
+                + " so this test is no longer reading them");
+    }
+
+    /**
+     * The toolchain table mixes requirements with floors, and a reader acts differently on each. The
+     * language level and Maven are requirements: the enforcer plugin refuses a build outside
+     * {@code [25,26)} and {@code [3.9.16,3.10.0)}, so a newer Maven fails rather than passes.
+     * Nothing here constrains Docker Engine, Compose or OpenSSL, so an exact value published for
+     * them goes stale the week after it is written and tells a reader to downgrade for no reason.
+     */
+    @Test
+    void theToolchainSeparatesPinnedRequirementsFromExercisedFloors() {
+        for (Path guide : List.of(platformDirectory().resolve("docs/onboarding.md"),
+                platformDirectory().resolve("README.md"))) {
+            String text = read(guide);
+            for (String floor : List.of("29.7.0", "5.3.1")) {
+                assertTrue(text.contains(floor + " or later"),
+                        guide.getFileName() + " must publish " + floor + " as a floor, because "
+                                + "nothing in this repository constrains that tool");
+            }
+        }
+        assertTrue(read(platformDirectory().resolve("docs/onboarding.md"))
+                        .contains("3.5.3 or later"),
+                "onboarding must publish the OpenSSL version as a floor too");
+
+        for (Path guide : List.of(platformDirectory().resolve("docs/onboarding.md"),
+                platformDirectory().resolve("README.md"))) {
+            assertTrue(read(guide).contains("[25,26)") && read(guide).contains("[3.9.16,3.10.0)"),
+                    guide.getFileName() + " must name the two ranges the enforcer refuses outside, or "
+                            + "a reader treats every version in the table the same way");
+        }
+
+        for (String service : SERVICES) {
+            String guide = read(serviceReadme(service));
+            assertTrue(guide.contains("29.7.0 or later"),
+                    service + " must state the container-runtime floor rather than an exact value");
+            assertTrue(guide.contains("[25,26)") && guide.contains("[3.9.16,3.10.0)"),
+                    service + " must say why the language level and Maven are exact, or a reader "
+                            + "treats every version in the table the same way");
+        }
+    }
+
+    /** The lines of one guide that sit inside a fenced bash block, so a reader would run them. */
+    private static List<String> runnableLines(String guide) {
+        List<String> runnable = new ArrayList<>();
+        boolean inBlock = false;
+        for (String line : guide.lines().toList()) {
+            if (line.startsWith("```bash")) {
+                inBlock = true;
+            } else if (line.startsWith("```")) {
+                inBlock = false;
+            } else if (inBlock) {
+                runnable.add(line);
+            }
+        }
+        return runnable;
+    }
+
     private static List<Path> allGuides() {
         return List.of(
                 repositoryRoot().resolve("README.md"),
@@ -562,6 +724,26 @@ class RuleThreeDocumentationContractTest {
             return HexFormat.of().formatHex(digest);
         } catch (NoSuchAlgorithmException impossible) {
             throw new IllegalStateException("SHA-256 must be present in the JDK", impossible);
+        }
+    }
+
+    /**
+     * Counts the schema documents the contract library publishes.
+     *
+     * <p>The guide's sentence and the deck's headline metric both name this number, and the
+     * inventory has moved once already: withdrawing the unpublished {@code card-updated} version two
+     * document took it from fourteen to thirteen. Counting the directory is what keeps the three in
+     * step.
+     *
+     * @return how many {@code .json} documents sit in the contract library's schema directory
+     */
+    private static long schemaDocumentCount() {
+        Path schemas = platformDirectory()
+                .resolve("libs/event-contracts/src/main/resources/schemas");
+        try (var documents = Files.list(schemas)) {
+            return documents.filter(path -> path.getFileName().toString().endsWith(".json")).count();
+        } catch (IOException unreadable) {
+            throw new UncheckedIOException("Cannot read " + schemas, unreadable);
         }
     }
 

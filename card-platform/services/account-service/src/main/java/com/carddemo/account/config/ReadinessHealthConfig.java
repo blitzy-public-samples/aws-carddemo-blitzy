@@ -2,6 +2,8 @@ package com.carddemo.account.config;
 
 import com.carddemo.account.entity.OutboxEventEntity;
 import com.carddemo.account.repository.OutboxEventRepository;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -24,6 +26,16 @@ import org.springframework.kafka.listener.MessageListenerContainer;
 /** Supplies the bounded external-dependency checks used by the readiness group. */
 @Configuration
 public class ReadinessHealthConfig {
+
+    /**
+     * How many listener containers this service declares, and therefore how many readiness
+     * requires registered and running.
+     *
+     * <p>Held against the module's own sources by {@code equivalence-tests}
+     * {@code ReadinessListenerExpectationContractTest}, so this number cannot drift from the
+     * listeners the service declares.
+     */
+    static final int DECLARED_LISTENERS = 1;
 
     /**
      * Client identifier of the administrator this class opens, so a broker-side or client-side log
@@ -154,6 +166,44 @@ public class ReadinessHealthConfig {
         return () -> listenersHealth(registries.getIfAvailable());
     }
 
+
+    /** Rows due before the backlog is reported as behind. */
+    static final long BACKLOG_DUE_THRESHOLD = 100L;
+
+    /** Seconds the longest-waiting row may wait before the backlog is reported as behind. */
+    static final long BACKLOG_AGE_THRESHOLD_SECONDS = 300L;
+
+    /** The state of an outbox holding a row the relay gave up on. */
+    static final String ABANDONED_ROW = "abandoned-row";
+
+    /** The state of an outbox that is keeping up. */
+    static final String BACKLOG_CLEAR = "clear";
+
+    /** The state of an outbox that is behind one of the two thresholds. */
+    static final String BACKLOG_BEHIND = "behind";
+
+    /**
+     * Names whether the outbox is keeping up, against a threshold on size and one on age.
+     *
+     * <p>The answer is a name and not a status, so it never removes this pod from service. A backlog
+     * is usually the broker rather than the pod, and evicting the pod would take away the one
+     * component still recording what happened. An abandoned row remains the only condition that
+     * fails readiness.
+     *
+     * <p>Age is read as well as size because the two say different things. A burst raises the size
+     * while the age stays small, and a stopped relay raises the age while the size may not move at
+     * all. Either alone reports a stopped relay as healthy in one of those two cases.
+     *
+     * @param due                 rows due for an attempt now
+     * @param oldestDueAgeSeconds seconds the longest-waiting due row has waited
+     * @return {@link #BACKLOG_BEHIND} past either threshold, and {@link #BACKLOG_CLEAR} otherwise
+     */
+    static String backlogState(long due, long oldestDueAgeSeconds) {
+        boolean behind = due >= BACKLOG_DUE_THRESHOLD
+                || oldestDueAgeSeconds >= BACKLOG_AGE_THRESHOLD_SECONDS;
+        return behind ? BACKLOG_BEHIND : BACKLOG_CLEAR;
+    }
+
     /**
      * Reports whether the outbox holds a row the relay gave up on.
      *
@@ -175,9 +225,24 @@ public class ReadinessHealthConfig {
     public HealthIndicator outboxHealthIndicator(OutboxEventRepository outboxEvents) {
         return () -> {
             try {
-                return outboxEvents.existsByRelayState(OutboxEventEntity.RelayState.ABANDONED)
-                        ? Health.down().withDetail("state", "abandoned-row").build()
-                        : Health.up().build();
+                Instant now = Instant.now();
+                long due = outboxEvents.countDueBefore(now);
+                long oldestDueAgeSeconds = outboxEvents.findEarliestDueBefore(now)
+                        .map(earliest -> Duration.between(earliest, now).toSeconds())
+                        .orElse(0L);
+
+                if (outboxEvents.existsByRelayState(OutboxEventEntity.RelayState.ABANDONED)) {
+                    return Health.down()
+                            .withDetail("state", ABANDONED_ROW)
+                            .withDetail("due", due)
+                            .withDetail("oldestDueAgeSeconds", oldestDueAgeSeconds)
+                            .build();
+                }
+                return Health.up()
+                        .withDetail("state", backlogState(due, oldestDueAgeSeconds))
+                        .withDetail("due", due)
+                        .withDetail("oldestDueAgeSeconds", oldestDueAgeSeconds)
+                        .build();
             } catch (Exception failure) {
                 return Health.down().withDetail("reason",
                         rootCause(failure).getClass().getSimpleName()).build();
@@ -206,12 +271,21 @@ public class ReadinessHealthConfig {
      * refreshing, so a poll that arrives before it exists has learned nothing and must not report
      * ready.
      *
-     * <p>A service that declares no listener registers no container, and an empty set has nothing
-     * that is not running, so it reports up. That is the correct answer for the two services that
-     * only serve requests, and it is now a property of the rule instead of a literal zero.
+     * <p>Readiness requires at least the number of containers this service declares, and every
+     * container that registered to be running. An earlier rule compared the registry against itself,
+     * which an empty registry satisfies: a service whose listeners never registered reported ready,
+     * and a probe routed traffic to an instance that consumed nothing. The declared number is what
+     * separates "nothing is broken" from "nothing is there".
+     *
+     * <p>It is a floor rather than an exact match, deliberately. A count written here can disagree
+     * with the listeners a service declares, and once did, leaving a service permanently unready. A
+     * floor cannot cause that: a listener added here still reports ready once it runs. The exact
+     * agreement is checked where a disagreement is cheap, by {@code equivalence-tests}
+     * {@code ReadinessListenerExpectationContractTest}, which reads this constant and counts the
+     * {@code @KafkaListener} methods of the same module, so drift fails a build and never a probe.
      *
      * @param registry the listener registry, or {@code null} before the context supplies one
-     * @return up when every registered container is running, and down otherwise
+     * @return up when the declared number of containers registered and every one is running
      */
     static Health listenersHealth(KafkaListenerEndpointRegistry registry) {
         if (registry == null) {
@@ -220,11 +294,11 @@ public class ReadinessHealthConfig {
         Collection<MessageListenerContainer> containers = registry.getListenerContainers();
         int registered = containers.size();
         long running = containers.stream().filter(MessageListenerContainer::isRunning).count();
-        return running == registered
-                ? Health.up().withDetails(
-                        Map.of("registered", registered, "running", running)).build()
-                : Health.down().withDetails(
-                        Map.of("registered", registered, "running", running)).build();
+        Map<String, Object> counts = Map.of(
+                "declared", DECLARED_LISTENERS, "registered", registered, "running", running);
+        return registered >= DECLARED_LISTENERS && running == registered
+                ? Health.up().withDetails(counts).build()
+                : Health.down().withDetails(counts).build();
     }
 
     private static Throwable rootCause(Throwable failure) {

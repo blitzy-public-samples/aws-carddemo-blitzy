@@ -6,6 +6,7 @@ import com.carddemo.account.domain.validation.UsPhoneNumberValidator;
 import com.carddemo.account.domain.validation.UsSocialSecurityNumberValidator;
 import com.carddemo.account.domain.validation.UsStateCodeValidator;
 import com.carddemo.account.domain.validation.UsStateZipPrefixValidator;
+import com.carddemo.cobol.PicClause;
 
 import jakarta.validation.constraints.AssertTrue;
 import jakarta.validation.constraints.DecimalMax;
@@ -113,7 +114,11 @@ import jakarta.validation.constraints.Size;
  *                                   {@code app/cbl/COACTUPC.cbl:L809}. Label {@code 'Zip'} at
  *                                   {@code app/cbl/COACTUPC.cbl:L1605} names it, and
  *                                   {@code app/cbl/COACTUPC.cbl:L1607} edits five numeric
- *                                   characters, the width {@link #ADDRESS_ZIP_MAX_LENGTH} holds.
+ *                                   characters, the width
+ *                                   {@link #ADDRESS_ZIP_EDITED_LENGTH} holds. The component itself
+ *                                   carries the ten characters
+ *                                   {@link #ADDRESS_ZIP_MAX_LENGTH} holds, so a stored ZIP+4 value
+ *                                   round-trips and positions six to ten are never edited.
  *                                   The combination test at
  *                                   {@code app/cbl/COACTUPC.cbl:L1665-L1669} pairs the first two
  *                                   digits with the state code and reports
@@ -254,7 +259,7 @@ public record CustomerDataRequest(
 
         @Size(max = ADDRESS_ZIP_MAX_LENGTH)
         @DomainEdit(value = DomainEdit.Edit.NUMERIC_REQUIRED, label = ADDRESS_ZIP_LABEL,
-                width = ADDRESS_ZIP_MAX_LENGTH)
+                width = ADDRESS_ZIP_EDITED_LENGTH, heldWidth = ADDRESS_ZIP_MAX_LENGTH)
         String addressZip,
 
         @Size(max = PHONE_NUMBER_MAX_LENGTH)
@@ -397,13 +402,32 @@ public record CustomerDataRequest(
     public static final int ADDRESS_COUNTRY_CODE_MAX_LENGTH = 3;
 
     /**
-     * Widest {@code addressZip} this record holds. {@code app/cbl/COACTUPC.cbl:L1607} passes 5 to
-     * the numeric edit, while {@code ACUP-NEW-CUST-ADDR-ZIP PIC X(10)} at
-     * {@code app/cbl/COACTUPC.cbl:L809} and {@code CUST-ADDR-ZIP PIC X(10)} at
-     * {@code app/cpy/CVCUS01Y.cpy:L14} both declare ten characters. This constant holds the
-     * edited width of 5.
+     * Widest {@code addressZip} this record holds, which is the width the source field declares:
+     * {@code ACUP-NEW-CUST-ADDR-ZIP PIC X(10)} at {@code app/cbl/COACTUPC.cbl:L809} and
+     * {@code CUST-ADDR-ZIP PIC X(10)} at {@code app/cpy/CVCUS01Y.cpy:L14}. The column
+     * {@code customer.address_zip} is {@code VARCHAR(10)} to match, and
+     * {@code api/AccountRecordMapper} pads a shorter value to that width before storing it.
+     *
+     * <p>The width the edit inspects is narrower and is {@link #ADDRESS_ZIP_EDITED_LENGTH}. The two
+     * are separate constants because the source separates them: it moves the whole ten-character
+     * field into the edit area and then confines every test to the first five positions.
      */
-    public static final int ADDRESS_ZIP_MAX_LENGTH = 5;
+    public static final int ADDRESS_ZIP_MAX_LENGTH = PicClause.CUST_ADDR_ZIP_WIDTH;
+
+    /**
+     * Characters of {@code addressZip} the numeric edit inspects.
+     *
+     * <p>{@code app/cbl/COACTUPC.cbl:L1607} moves 5 into {@code WS-EDIT-ALPHANUM-LENGTH}, and every
+     * test of {@code 1245-EDIT-NUM-REQD} reads
+     * {@code WS-EDIT-ALPHANUM-ONLY(1:WS-EDIT-ALPHANUM-LENGTH)}. Positions six to ten are carried,
+     * stored and returned, and are never inspected, so a stored ZIP+4 such as {@code 19852-6716}
+     * passes the source edit on {@code 19852}.
+     *
+     * <p>Thirty of the fifty seeded customers hold a ZIP+4 value and the other twenty hold a
+     * five-digit value padded to ten characters. Editing the full width refused every one of them,
+     * so a value this service had returned from {@code GET} could not be sent back to {@code PUT}.
+     */
+    public static final int ADDRESS_ZIP_EDITED_LENGTH = 5;
 
     /**
      * Widest telephone number either phone component holds, from
@@ -649,7 +673,8 @@ public record CustomerDataRequest(
                         ADDRESS_STATE_CODE_MAX_LENGTH)
                 && UsStateCodeValidator
                         .validate(ADDRESS_STATE_CODE_LABEL, addressStateCode).valid();
-        boolean zipReady = numericEditPassed(addressZip, ADDRESS_ZIP_LABEL, ADDRESS_ZIP_MAX_LENGTH);
+        boolean zipReady = numericEditPassed(addressZip, ADDRESS_ZIP_LABEL,
+                ADDRESS_ZIP_EDITED_LENGTH, ADDRESS_ZIP_MAX_LENGTH);
         if (!stateReady || !zipReady) {
             return true;
         }
@@ -743,8 +768,21 @@ public record CustomerDataRequest(
      * @return {@code true} when the edit passes
      */
     private static boolean numericEditPassed(String value, String label, int width) {
+        return numericEditPassed(value, label, width, width);
+    }
+
+    /**
+     * Reports whether the numeric edit passes for a field whose held width exceeds its edited width.
+     *
+     * @param value      the submitted value; may be {@code null}
+     * @param label      the field label the message opens with
+     * @param width      the characters the edit inspects
+     * @param heldWidth  the characters the source field declares
+     * @return {@code true} when the edit passes
+     */
+    private static boolean numericEditPassed(String value, String label, int width, int heldWidth) {
         return com.carddemo.account.domain.validation.NumericRequiredValidator
-                .validate(label, value, width).valid();
+                .validate(label, value, width, heldWidth).valid();
     }
 
     /**

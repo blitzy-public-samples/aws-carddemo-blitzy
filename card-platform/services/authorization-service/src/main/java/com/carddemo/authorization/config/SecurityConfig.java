@@ -135,7 +135,7 @@ import org.springframework.security.web.access.intercept.RequestAuthorizationCon
  * Transport Layer Security settings, and a deployment that terminates them elsewhere keeps the hop
  * to this service inside a boundary it trusts.
  *
- * <h2>Why this file is repeated in each service</h2>
+ * <h2>This file is repeated in each service</h2>
  *
  * <p>{@code card-platform/pom.xml} bans a dependency from one service on another, which is the
  * property that keeps the consumers independent, and neither shared library is a place for this
@@ -344,10 +344,10 @@ public class SecurityConfig {
      * {@code monitor0} while the column was eight characters wide. An audit row that cannot name one
      * identity does not audit.
      *
-     * <p>Refusing at start-up is the point. The alternative is a service that starts and then fails, or
-     * silently mis-attributes, at its first decision. A username is not a credential, so the message
-     * reports the configured value: an operator correcting the configuration needs to know which entry
-     * to correct.
+     * <p>The refusal happens at start-up rather than at the first decision. A username is not a
+     * credential, so the message reports the configured value: an operator correcting the configuration
+     * needs to know which entry to correct. Rationale and the alternatives weighed:
+     * {@code card-platform/docs/decision-log.md}.
      *
      * @param username the configured username, already known to be present and non-blank
      * @throws IllegalStateException when the name is wider than the audit column records

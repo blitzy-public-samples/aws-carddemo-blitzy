@@ -49,12 +49,26 @@ public class CardCrossReferenceRule implements DeclineRule {
      *
      * <p>A resolved row reaches {@code context}, for the rules that follow.
      *
+     * <p>A context that already carries the row for this card number is not read again. That happens
+     * on one path only: a request naming an account resolves its card through the alternate index,
+     * which returns the whole row, and {@code card_number} is this table's primary key, so a keyed
+     * read of the card number the row carries answers with that same row. The card branch seeds
+     * nothing, because the caller named the card and no row has been read for it yet, so this rule
+     * performs the keyed read there exactly as {@code app/cbl/CBTRN02C.cbl:L383} does. Reject code
+     * {@code 0100} is unaffected either way: a seeded row means a row was found, and the account
+     * branch answers an account that resolves no row before any rule runs.
+     *
      * @param context values for one authorization call
      * @return {@link DeclineReason#INVALID_CARD_NUMBER} when no row carries the card number, and an
      *         empty result when one does
      */
     @Override
     public Optional<DeclineReason> evaluate(Context context) {
+        CardCrossReferenceEntity carried = context.getCardCrossReference();
+        if (carried != null && context.getCardNumber().equals(carried.getCardNumber())) {
+            return Optional.empty();
+        }
+
         Optional<CardCrossReferenceEntity> resolved =
                 cardCrossReferences.findByCardNumber(context.getCardNumber());
         resolved.ifPresent(context::setCardCrossReference);

@@ -256,16 +256,24 @@ class OutboxRelayTest {
     class SeparateTransaction {
 
         /**
-         * One sweep opens exactly one boundary and publishes inside it.
+         * One sweep opens a claim boundary and one boundary per outcome, and sends inside neither.
          *
          * <p>The writer stores its row in the transaction that changed the card. The send happens
          * here, after that transaction closed, which is the split
          * {@code app/cbl/CORPT00C.cbl:L517-L518} already had between a queue write and the job that
          * read it.
+         *
+         * <p>One boundary around the whole sweep is what this asserted before, and a performance
+         * review rejected it: a batch of rows waiting on a broker inside one transaction holds a
+         * database connection and every row lock it took for the sum of those waits, and every later
+         * event of every account waits behind it. Three boundaries here are the stranded-claim read,
+         * the claim, and the mark of the one row this sweep holds, and the send sits between them
+         * rather than inside any of them. The first two take row locks and so need a transaction at
+         * all; the third writes the publication.
          */
         @Test
-        @DisplayName("one sweep opens one boundary and sends inside it")
-        void oneSweepOpensOneBoundaryAndSendsInsideIt() {
+        @DisplayName("one sweep opens a boundary per step, and sends inside none of them")
+        void oneSweepOpensABoundaryPerStepAndSendsInsideNoneOfThem() {
             OutboxEventEntity waiting = row();
             store.add(waiting);
             assertThat(waiting.isPublished())
@@ -274,9 +282,11 @@ class OutboxRelayTest {
 
             relay.publishPendingEvents();
 
-            assertThat(boundary.openings()).isEqualTo(1);
+            assertThat(boundary.openings()).isEqualTo(3);
             assertThat(publisher.sends()).hasSize(1);
-            assertThat(publisher.sends().getFirst().insideBoundary()).isTrue();
+            assertThat(publisher.sends().getFirst().insideBoundary())
+                    .withFailMessage("no send may wait on a broker inside a transaction")
+                    .isFalse();
             assertThat(waiting.isPublished()).isTrue();
         }
 
@@ -377,14 +387,20 @@ class OutboxRelayTest {
         }
 
         /**
-         * Each row of a batch is unmarked during its own send.
+         * No row of a batch carries a mark while any send of its window is still outstanding.
          *
-         * <p>Two rows make the ordering measurable per row. The second send reports the first row as
-         * published and its own row as not.
+         * <p>Two rows of two accounts make the ordering measurable per row. Both sends are issued
+         * before either is waited for, which is what lets the two accounts travel at once, so neither
+         * send can see any mark. The marks still follow in claim order once the acknowledgements
+         * arrive.
+         *
+         * <p>Before the window existed, this asserted that the second send saw the first row already
+         * marked. That was the sequential shape: one send, one mark, then the next send, which made
+         * one slow account the pace of every account behind it.
          */
         @Test
-        @DisplayName("each row of a batch is unmarked during its own send")
-        void eachRowOfABatchIsUnmarkedDuringItsOwnSend() {
+        @DisplayName("no row of a batch carries a mark during any send of its window")
+        void noRowOfABatchCarriesAMarkDuringAnySendOfItsWindow() {
             Instant start = Instant.now().minusSeconds(60L);
             OutboxEventEntity first = row(ACCOUNT_ID, start);
             OutboxEventEntity second = row(OTHER_ACCOUNT_ID, start.plusSeconds(1L));
@@ -395,7 +411,7 @@ class OutboxRelayTest {
             List<Send> sends = publisher.sends();
             assertThat(sends).hasSize(2);
             assertThat(sends.get(0).publishedAtSend()).isEmpty();
-            assertThat(sends.get(1).publishedAtSend()).containsExactly(first.getEventId());
+            assertThat(sends.get(1).publishedAtSend()).isEmpty();
             assertThat(store.marks()).containsExactly(first.getEventId(), second.getEventId());
         }
 
@@ -469,7 +485,9 @@ class OutboxRelayTest {
 
             assertThat(store.claimedCounts()).containsExactly(1, 0);
             assertThat(publisher.sends()).hasSize(1);
-            assertThat(boundary.openings()).isEqualTo(2);
+            // Five boundaries across the two sweeps: each sweep reads stranded claims and claims due
+            // rows, and only the first sweep finds a row to mark.
+            assertThat(boundary.openings()).isEqualTo(5);
         }
 
         /**
@@ -646,7 +664,8 @@ class OutboxRelayTest {
             CardProperties.Outbox.Relay tuned = new CardProperties.Outbox.Relay(
                     shipped.outbox().relay().fixedDelayMs(), 3,
                     shipped.outbox().relay().instanceId(), shipped.outbox().relay().claimTimeout(),
-                    shipped.outbox().relay().maxDurationMs());
+                    shipped.outbox().relay().maxDurationMs(),
+                    shipped.outbox().relay().publishTimeout());
             return new CardProperties(shipped.api(), shipped.kafka(),
                     new CardProperties.Outbox(tuned, shipped.outbox().publishedRetentionHours()),
                     shipped.processedEvent(), shipped.retention(), shipped.write());
@@ -697,9 +716,14 @@ class OutboxRelayTest {
                 context.register(SchedulingEnabled.class);
                 context.refresh();
 
+                // The wait is on the mark rather than on the entity flag, and the two are not the
+                // same instant. OutboxRelay.publishAndMark calls row.markPublished before it calls
+                // save, and the row under test is the very object the relay mutates, so
+                // isPublished() flips one statement before the save that records the mark. Waiting
+                // on the flag let this test read an empty mark list between those two statements.
                 await().atMost(POLL_CEILING)
                         .pollInterval(POLL_INTERVAL)
-                        .until(waiting::isPublished);
+                        .until(() -> store.marks().contains(waiting.getEventId()));
             }
 
             assertThat(waiting.isPublished()).isTrue();
@@ -763,26 +787,35 @@ class OutboxRelayTest {
         }
 
         /**
-         * A refused send stops the sweep and leaves the rows behind it untouched.
+         * A refused send backs off its own account and leaves the other accounts of the sweep alone.
          *
-         * <p>Stopping keeps one account's events in commit order. A later event cannot overtake an
-         * earlier one that is still waiting.
+         * <p>Commit order per account is kept by the claim rather than by stopping the sweep.
+         * {@link OutboxEventRepository#claimDueRows} answers with the due head row of each aggregate,
+         * so a later event of one account is not claimable while that account's earlier row is
+         * unpublished, and a refused row therefore holds only its own account back.
+         *
+         * <p>This asserted the opposite before: the sweep returned at the first refused row, leaving
+         * every row behind it unattempted, so one unreachable partition stopped publication for every
+         * account. Both rows here name different accounts and both are refused, so each records
+         * exactly one attempt of its own.
          */
         @Test
-        @DisplayName("a refused send stops the sweep")
-        void aRefusedSendStopsTheSweep() {
+        @DisplayName("a refused send backs off its own account and no other")
+        void aRefusedSendBacksOffItsOwnAccountAndNoOther() {
             Instant start = Instant.now().minusSeconds(120L);
             OutboxEventEntity first = row(ACCOUNT_ID, start);
-            OutboxEventEntity second = row(ACCOUNT_ID, start.plusSeconds(1L));
+            OutboxEventEntity second = row(OTHER_ACCOUNT_ID, start.plusSeconds(1L));
             store.add(first, second);
             publisher.failSendsTo(shipped.kafka().topics().cardUpdated(),
                     new IllegalStateException("broker unavailable"), 2);
 
             relay.publishPendingEvents();
 
-            assertThat(publisher.sends()).hasSize(1);
+            assertThat(publisher.sends()).hasSize(2);
             assertThat(first.getAttemptCount()).isEqualTo(1);
-            assertThat(second.getAttemptCount()).isZero();
+            assertThat(first.getRelayState())
+                    .isEqualTo(OutboxEventEntity.RelayState.PENDING);
+            assertThat(second.getAttemptCount()).isEqualTo(1);
             assertThat(second.getRelayState())
                     .isEqualTo(OutboxEventEntity.RelayState.PENDING);
         }
@@ -1201,6 +1234,17 @@ class OutboxRelayTest {
                     marks.add(saved.getEventId());
                 }
                 return saved;
+            });
+
+            // The relay records each outcome in a transaction of its own and re-reads the row inside
+            // it, because the claim has committed by then and saving the copy the claim loaded would
+            // write pre-claim state back over it. This store answers that read with the row it holds,
+            // so each case keeps asserting against the instance it added.
+            when(repository.findById(any(UUID.class))).thenAnswer(call -> {
+                UUID identifier = call.getArgument(0);
+                return rows.stream()
+                        .filter(row -> row.getEventId().equals(identifier))
+                        .findFirst();
             });
 
             return repository;

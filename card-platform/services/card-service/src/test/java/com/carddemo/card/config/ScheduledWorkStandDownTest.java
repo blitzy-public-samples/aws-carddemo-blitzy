@@ -24,10 +24,10 @@ import org.junit.jupiter.api.Test;
  * <p>Two components of this module carry {@code @Scheduled}. {@code outbox/OutboxRelay} sweeps
  * every {@code carddemo.outbox.relay.fixed-delay-ms}, which the shipped file sets to 500
  * milliseconds, and {@code domain/RetentionSweep} runs every {@code
- * carddemo.retention.sweep-interval-ms}, which it sets to an hour. A class that owns its container
- * starts one, runs its tests and stops it, and the Spring context outlives the class because the
- * framework caches it. A sweep that is still repeating when the container stops reaches a closed
- * connection pool and logs a failure that belongs to nothing the suite asserted.
+ * carddemo.retention.sweep-interval-ms}, which it sets to an hour. A class runs its tests against a
+ * database and leaves, and the Spring context outlives the class because the framework caches it
+ * until it is evicted. A sweep that is still repeating then reaches a closed connection pool and
+ * logs a failure that belongs to nothing the suite asserted.
  *
  * <p>That noise is worse than it looks. It is shaped exactly like a real failure, it appears on an
  * otherwise green run, and whether it appears at all depends on where the sweep happens to be when
@@ -69,7 +69,7 @@ class ScheduledWorkStandDownTest {
             "^\\s*ScheduledWorkShutdown\\.stopBefore\\(", Pattern.MULTILINE);
 
     /**
-     * Marks a class that starts a container of its own.
+     * Marks a class whose Spring context reaches a container.
      *
      * <p>Matched at the head of a trimmed line, so an annotation counts and a mention of the same
      * text inside a string literal does not. This file carries such a literal, and without the
@@ -77,6 +77,29 @@ class ScheduledWorkStandDownTest {
      */
     private static final Pattern CONTAINER_MARKER =
             Pattern.compile("^\\s*@Container\\b", Pattern.MULTILINE);
+
+    /**
+     * Marks a class that reaches the module's database through the facility that owns it.
+     *
+     * <p>This is the second half of the same question, and it exists because the answer used to be
+     * one pattern. Every test class here once constructed a database container of its own, so an
+     * {@code @Container} field was a reliable sign that a context of this module was talking to
+     * infrastructure. The container is now started once per module fork and handed out a database at
+     * a time, so nine of the ten classes this rule governs no longer declare a container field at
+     * all - and a rule that looked only for that field would have quietly narrowed to the one class
+     * that still keeps a broker, while the nine it stopped reading are exactly the nine that carry
+     * the property remedy.
+     *
+     * <p>The lifetime the rule protects has not shortened. A context is cached beyond the class that
+     * built it and evicted later, its pool closes when it goes, and the databases these classes
+     * migrate are never dropped, so a sweep still repeating after its context is gone still logs a
+     * failure belonging to nothing the suite asserted.
+     *
+     * <p>The lookahead rejects a comment line, so the prose above does not count as a use.
+     */
+    private static final Pattern FACILITY_MARKER = Pattern.compile(
+            "^(?!\\s*(?:\\*|//|/\\*)).*\\bCardServiceDatabase\\.(?:container|urlFor)\\(",
+            Pattern.MULTILINE);
 
     @Test
     @DisplayName("every container-owning class either stands the relay down or stops it itself")
@@ -169,15 +192,22 @@ class ScheduledWorkStandDownTest {
     }
 
     /**
-     * Lists every test source of this module that starts a container of its own.
+     * Lists every test source of this module whose context reaches a container.
      *
-     * @return the sources declaring a container field
+     * <p>Either sign counts: a container field the class declares itself, or a call into the
+     * facility that owns the module's one database server.
+     *
+     * @return the sources this rule governs
      */
     private static List<Path> containerOwningTests() {
         Path root = testSourceRoot();
         try (Stream<Path> tree = Files.walk(root)) {
             return tree.filter(path -> path.toString().endsWith(".java"))
-                    .filter(path -> CONTAINER_MARKER.matcher(read(path)).find())
+                    .filter(path -> {
+                        String text = read(path);
+                        return CONTAINER_MARKER.matcher(text).find()
+                                || FACILITY_MARKER.matcher(text).find();
+                    })
                     .sorted()
                     .toList();
         } catch (IOException unreadable) {

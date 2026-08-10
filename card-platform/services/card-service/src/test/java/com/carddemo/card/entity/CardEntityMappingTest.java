@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.carddemo.card.CardServiceDatabase;
 import com.carddemo.card.TestIdentityPasswords;
 import com.carddemo.cobol.PanMasker;
 import com.carddemo.cobol.PicClause;
@@ -167,23 +168,25 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
  * value for each of the four variables that {@code application.yml} leaves without a default. The
  * broker password reaches no broker, and the identity hashes in {@code TestIdentityPasswords}
  * encode passwords that authenticate nothing outside this build.
+ *
+ * <p>The two interval properties stand the relay and the retention sweep down to an hour, so
+ * neither repeats inside the lifetime of this class. This is a full application context, so both
+ * scheduled components are live and the relay's shipped delay is 500 milliseconds; a sweep still
+ * repeating after the context is evicted reaches a closed pool and logs a failure shaped exactly
+ * like a real one. {@code config/ScheduledWorkStandDownTest} holds every class here to that rule.
  */
 @SpringBootTest(
         webEnvironment = SpringBootTest.WebEnvironment.NONE,
         properties = {
                 "KAFKA_SASL_PASSWORD=not-a-real-broker-password",
+                "carddemo.outbox.relay.fixed-delay-ms=3600000",
+                "carddemo.retention.sweep-interval-ms=3600000",
                 "ADMIN_PASSWORD_HASH=" + TestIdentityPasswords.ADMIN_PASSWORD_HASH,
                 "USER_PASSWORD_HASH=" + TestIdentityPasswords.USER_PASSWORD_HASH,
                 "MONITORING_PASSWORD_HASH=" + TestIdentityPasswords.MONITORING_PASSWORD_HASH
         })
 @DisplayName("Card entities map onto CVACT02Y.cpy and CVACT03Y.cpy, filler dropped")
 class CardEntityMappingTest {
-
-    /** The image tag {@code card-platform/docker-compose.yml} also names. */
-    private static final String POSTGRES_IMAGE = "postgres:18.4";
-
-    /** The database name, the login name and the password of the container, one value for all. */
-    private static final String POSTGRES_CREDENTIAL = "carddemo";
 
     /** Generated card number used by persistence cases. */
     private static final String SYNTHETIC_CARD_NUMBER = syntheticCardNumber(700_001L);
@@ -228,25 +231,12 @@ class CardEntityMappingTest {
             ProcessedEventEntity.class, "processed_event");
 
     /**
-     * The one container every test in this class shares.
+     * The one container the module fork runs, which this class reads a login from.
      *
-     * <p>The class name comes from {@code org.testcontainers.postgresql}, the package
-     * Testcontainers 2.0.5 ships it in.
-     * {@code org.testcontainers.containers.PostgreSQLContainer} carries a deprecation on the same
-     * artifact.
-     *
-     * <p>No annotation manages the lifecycle of the field, and no code here stops the container.
-     * Testcontainers removes it when the Java Virtual Machine (JVM) exits.
+     * <p>{@link CardServiceDatabase} owns it and hands this class a database of its own inside it.
+     * Nothing here starts or stops a container.
      */
-    private static final PostgreSQLContainer POSTGRES;
-
-    static {
-        POSTGRES = new PostgreSQLContainer(POSTGRES_IMAGE)
-                .withDatabaseName(POSTGRES_CREDENTIAL)
-                .withUsername(POSTGRES_CREDENTIAL)
-                .withPassword(POSTGRES_CREDENTIAL);
-        POSTGRES.start();
-    }
+    private static final PostgreSQLContainer POSTGRES = CardServiceDatabase.container();
 
     /**
      * Points the Spring datasource at the running container.
@@ -259,7 +249,7 @@ class CardEntityMappingTest {
      */
     @DynamicPropertySource
     static void datasourceProperties(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
+        registry.add("spring.datasource.url", () -> CardServiceDatabase.urlFor(CardEntityMappingTest.class));
         registry.add("spring.datasource.username", POSTGRES::getUsername);
         registry.add("spring.datasource.password", POSTGRES::getPassword);
     }
@@ -751,8 +741,9 @@ class CardEntityMappingTest {
         }
 
         @Test
-        @DisplayName("OutboxEventEntity maps six event columns and eight additive relay columns")
-        void outboxEventEntityMapsFourteenColumns() {
+        @DisplayName("OutboxEventEntity maps six event columns, eight relay columns and two "
+                + "correlation columns")
+        void outboxEventEntityMapsSixteenColumns() {
             List<String> columns = columnNames(OutboxEventEntity.class);
             assertAll(
                     () -> assertTrue(columns.containsAll(List.of("event_id", "event_type",
@@ -762,8 +753,12 @@ class CardEntityMappingTest {
                                     "next_attempt_at", "last_attempt_at", "last_error",
                                     "claimed_by", "claimed_at", "published_at")),
                             "the eight additive relay columns, no COBOL ancestor"),
-                    () -> assertEquals(14, columns.size(),
-                            "six event columns plus eight relay columns"));
+                    () -> assertTrue(
+                            columns.containsAll(List.of("correlation_id", "causation_id")),
+                            "the two additive correlation columns V6__outbox_correlation.sql adds,"
+                                    + " no COBOL ancestor"),
+                    () -> assertEquals(16, columns.size(),
+                            "six event columns, eight relay columns and two correlation columns"));
         }
 
         @Test
@@ -1102,7 +1097,7 @@ class CardEntityMappingTest {
         }
 
         @Test
-        @DisplayName("the unpublished outbox index keys on created_at then event_id, in that order")
+        @DisplayName("the outbox indexes key on arrival order, claimability and the account head")
         void theUnpublishedOutboxIndexKeysOnArrivalOrder() throws SQLException {
             try (Connection connection = dataSource.getConnection()) {
                 Map<String, IndexFact> facts = indexFacts(connection, schema, "outbox_event");
@@ -1119,9 +1114,15 @@ class CardEntityMappingTest {
                         () -> assertEquals(new IndexFact(List.of("published_at"), false),
                                 facts.get("ix_outbox_event_published_at"),
                                 "the retention path over published rows"),
+                        () -> assertEquals(
+                                new IndexFact(
+                                        List.of("aggregate_id", "created_at", "event_id"), false),
+                                facts.get("ix_outbox_event_aggregate_head"),
+                                "the claim takes the due head row of each account, so it reads by"
+                                        + " aggregate and then arrival order"),
                         () -> assertEquals(new IndexFact(List.of("event_id"), true),
                                 facts.get("pk_outbox_event"), "the event identifier is the key"),
-                        () -> assertEquals(4, facts.size(), "no fifth index on outbox_event"));
+                        () -> assertEquals(5, facts.size(), "no sixth index on outbox_event"));
             }
         }
 

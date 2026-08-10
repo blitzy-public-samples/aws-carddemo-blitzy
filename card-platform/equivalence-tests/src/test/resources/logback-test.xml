@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Logging for the equivalence module's own tests.
+
+  This module had no logging configuration, so Logback applied its built-in default. The appender,
+  the pattern and the root level below reproduce that default exactly, which is why the console
+  output of this module is unchanged by this file. It exists for the one logger override at the
+  bottom.
+
+  org.hibernate.orm.jdbc.error renders the server's own message for every failed statement, and
+  PostgreSQL puts the whole failing row in the DETAIL of a constraint violation. Several tests here
+  provoke a constraint violation on purpose to prove the migration refuses a bad row, so that DETAIL
+  is written on a passing run — and .github/workflows/ci.yml uploads every Surefire report and keeps
+  it for a fortnight.
+
+  The tables at risk are not hypothetical. This module maps the entities of all six services, so a
+  refused write against the card table would publish a card number, a verification value and a card
+  token on one line. A review found exactly that line in a published report from the card service,
+  which is why all six services/*/src/main/resources/application.yml set the same logger off.
+  This file is the seventh module.
+
+  What is lost is two console lines: the detail, and the "ErrorCode, SQLState" line above it, which
+  the same logger writes. Neither is a diagnostic this module reads. Every test that provokes a
+  refused write asserts on the exception itself — its type, its constraint name and its SQL state —
+  and the exception is unaffected by a logging level. A failure here still names the constraint that
+  refused the row, which is the thing under test; it no longer prints the row.
+
+  card-platform/scripts/redact-report-artifacts.sh is the second control, and
+  CardholderDataInArtifactsContractTest asserts both.
+-->
+<configuration>
+  <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder>
+      <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} -- %msg%n</pattern>
+    </encoder>
+  </appender>
+
+  <!-- Logback's own default root level, so no line that appears today disappears. -->
+  <root level="DEBUG">
+    <appender-ref ref="CONSOLE"/>
+  </root>
+
+  <!-- OFF, not a level: see the header. -->
+  <logger name="org.hibernate.orm.jdbc.error" level="OFF"/>
+</configuration>

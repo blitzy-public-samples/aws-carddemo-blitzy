@@ -54,9 +54,18 @@ import org.springframework.test.util.ReflectionTestUtils;
  *
  * <p>The refusal case asserts the count rather than a propagated failure, and that is deliberate. The
  * wrapper does rethrow, so the container is told the record was not recovered, but
- * {@code FailedRecordTracker} inside {@code DefaultErrorHandler} logs that failure and returns rather
- * than letting it out of {@code handleOne}. The count is therefore the only observable evidence, which
- * is exactly the gap the terminal series was added to close.
+ * {@code FailedRecordTracker} inside {@code DefaultErrorHandler} reports that failure and returns
+ * rather than letting it out of {@code handleOne}. The count is therefore the only observable evidence,
+ * which is exactly the gap the terminal series was added to close.
+ *
+ * <p>What the framework reports carries no exception text. It renders a throwable only as the
+ * {@code stack_trace} member, which the shipped configuration withholds, and it names the record by
+ * its coordinates rather than by its contents. So a rethrow costs nothing in exposure while the
+ * container still learns the record was not recovered and at-least-once delivery survives. That is
+ * configuration rather than test scope, so the two halves are held elsewhere: the declaration by
+ * {@code LogHygieneContractTest.everyServiceWithholdsTheThrowableMember}, and what it does by
+ * {@code FrameworkThrowableRenderingTest}, which drives this exact framework call and reads what was
+ * written.
  */
 @DisplayName("The error handler counts a deserialization failure, every record it gives up on, and "
         + "nothing else")

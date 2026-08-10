@@ -22,7 +22,7 @@ import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Reads the eleven series {@link ObservabilityConfig} registers under seven names, and records
+ * Reads the twelve series {@link ObservabilityConfig} registers under eight names, and records
  * against each one.
  *
  * <p>This class has no COBOL ancestor. Each test builds a context holding one
@@ -41,7 +41,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code messaging/TransactionAuthorizedConsumer.java},
  * {@code domain/RiskScoringService.java} and {@code outbox/OutboxRelay.java}.
  */
-@DisplayName("ObservabilityConfig, the eleven series of the fraud detection service")
+@DisplayName("ObservabilityConfig, the twelve series of the fraud detection service")
 class ObservabilityConfigTest {
 
     /** Events read from the consumed topic. */
@@ -77,10 +77,19 @@ class ObservabilityConfigTest {
      */
     private static final String OUTBOX_ABANDONED = "carddemo.fraud.outbox.abandoned";
 
+    /**
+     * Deliveries the idempotency guard refused as already processed.
+     *
+     * <p>It shares a denominator with nothing else here. A replay is acknowledged, writes no row and
+     * raises no failure, so it moves neither {@link #FAILURES} nor {@link #ASSESSMENTS_PRODUCED} and
+     * would be invisible without its own series.
+     */
+    private static final String DUPLICATES_SKIPPED = "carddemo.fraud.duplicates.skipped";
+
     /** Every meter name this service reports. */
     private static final Set<String> DECLARED_METER_NAMES = Set.of(EVENTS_CONSUMED,
             ASSESSMENTS_PRODUCED, PROCESSING_LATENCY, EVENTS_PUBLISHED, FAILURES, DEAD_LETTERS,
-            OUTBOX_ABANDONED);
+            OUTBOX_ABANDONED, DUPLICATES_SKIPPED);
 
     /** The dimension an assessment counter carries. */
     private static final String OUTCOME_TAG = "outcome";
@@ -103,8 +112,8 @@ class ObservabilityConfigTest {
             .withUserConfiguration(ObservabilityConfig.class);
 
     @Test
-    @DisplayName("the seven declared names are the only meters in the registry")
-    void theSevenDeclaredNamesAreTheOnlyMetersInTheRegistry() {
+    @DisplayName("the eight declared names are the only meters in the registry")
+    void theEightDeclaredNamesAreTheOnlyMetersInTheRegistry() {
         RUNNER.run(context -> {
             assertThat(context).hasNotFailed();
             assertThat(meterNamesOf(context.getBean(MeterRegistry.class)))
@@ -113,14 +122,14 @@ class ObservabilityConfigTest {
     }
 
     @Test
-    @DisplayName("eleven series register eagerly and every one reads zero")
-    void elevenSeriesRegisterEagerlyAndEveryOneReadsZero() {
+    @DisplayName("twelve series register eagerly and every one reads zero")
+    void twelveSeriesRegisterEagerlyAndEveryOneReadsZero() {
         RUNNER.run(context -> {
             MeterRegistry registry = context.getBean(MeterRegistry.class);
 
-            // Seven names, eleven series: consumed, latency, published and abandoned carry one
-            // each, produced carries two outcomes, failures three stages and dead letters two.
-            assertThat(registry.getMeters()).hasSize(11);
+            // Eight names, twelve series: consumed, latency, published, abandoned and duplicates
+            // carry one each, produced carries two outcomes, failures three stages, dead letters two.
+            assertThat(registry.getMeters()).hasSize(12);
             assertThat(counterOf(registry, EVENTS_CONSUMED, null, null).count()).isZero();
             assertThat(counterOf(registry, EVENTS_PUBLISHED, null, null).count()).isZero();
             for (String outcome : OUTCOME_VALUES) {
@@ -135,6 +144,7 @@ class ObservabilityConfigTest {
                         .isZero();
             }
             assertThat(counterOf(registry, OUTBOX_ABANDONED, null, null).count()).isZero();
+            assertThat(counterOf(registry, DUPLICATES_SKIPPED, null, null).count()).isZero();
             assertThat(timerOf(registry).count()).isZero();
         });
     }

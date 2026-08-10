@@ -83,7 +83,9 @@ keys_missing_from() {
 }
 
 if [ ! -f "${environment_file}" ]; then
-    cp "${example_file}" "${environment_file}"
+    # install -m 600 rather than cp, so the file is never readable by anyone else, not even
+    # for the moment between the copy and the chmod below.
+    install -m 600 "${example_file}" "${environment_file}"
     note "created ${environment_file} from ${example_file}"
 else
     note "reusing the existing ${environment_file}"

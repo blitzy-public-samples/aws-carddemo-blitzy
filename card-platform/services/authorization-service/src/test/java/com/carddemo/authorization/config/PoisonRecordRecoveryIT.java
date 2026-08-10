@@ -1,5 +1,6 @@
 package com.carddemo.authorization.config;
 
+import com.carddemo.authorization.AuthorizationServiceDatabase;
 import com.carddemo.authorization.TestIdentityPasswords;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
@@ -100,15 +101,7 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 @DisplayName("One poison record reaches the dead-letter topic once and the offset moves past it")
 class PoisonRecordRecoveryIT {
 
-    /** Image tags fixed for this integration boundary. Apache Kafka runs in Kafka Raft mode. */
-    private static final String POSTGRES_IMAGE = "postgres:18.4";
     private static final String KAFKA_IMAGE = "apache/kafka:4.2.1";
-
-    /** Database name, login name and password of the container, one value for all three. */
-    private static final String CONTAINER_CREDENTIAL = "carddemo";
-
-    /** Schema Flyway migrates, and the one the connection search path names. */
-    private static final String MIGRATED_SCHEMA = "authorization_service";
 
     /** The replica stream the poison record arrives on. */
     private static final String SOURCE_TOPIC = "account.state-changed";
@@ -161,11 +154,13 @@ class PoisonRecordRecoveryIT {
             "occurredAt":"2026-08-06T12:00:00Z","aggregateId":"00000000007"},\
             "accountId":"00000000007","creditLimit":"5000.00"}""";
 
-    @Container
-    private static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer(POSTGRES_IMAGE)
-            .withDatabaseName(CONTAINER_CREDENTIAL)
-            .withUsername(CONTAINER_CREDENTIAL)
-            .withPassword(CONTAINER_CREDENTIAL);
+    /**
+     * The one container the module fork runs, which this class reads a login from.
+     *
+     * <p>{@link AuthorizationServiceDatabase} owns it and hands this class a database of its own inside it.
+     * Nothing here starts or stops a container.
+     */
+    private static final PostgreSQLContainer POSTGRES = AuthorizationServiceDatabase.container();
 
     @Container
     private static final KafkaContainer KAFKA = new KafkaContainer(KAFKA_IMAGE);
@@ -505,8 +500,6 @@ class PoisonRecordRecoveryIT {
      * @return the connection string every statement of this service resolves its tables through
      */
     private static String migratedSchemaUrl() {
-        String url = POSTGRES.getJdbcUrl();
-        String separator = url.contains("?") ? "&" : "?";
-        return url + separator + "currentSchema=" + MIGRATED_SCHEMA;
+        return AuthorizationServiceDatabase.urlFor(PoisonRecordRecoveryIT.class);
     }
 }

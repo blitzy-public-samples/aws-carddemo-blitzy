@@ -1,5 +1,6 @@
 package com.carddemo.authorization.api;
 
+import com.carddemo.authorization.AuthorizationServiceDatabase;
 import com.carddemo.authorization.TestIdentityPasswords;
 import com.carddemo.authorization.config.CrossSiteRequestFilter;
 import com.carddemo.authorization.domain.ReplicaSynchronization;
@@ -29,8 +30,6 @@ import org.springframework.context.annotation.Primary;
 import org.springframework.test.context.ContextConfiguration;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
@@ -40,7 +39,7 @@ import tools.jackson.databind.json.JsonMapper;
  * reads back what an unauthenticated caller, an unentitled caller, the entitled caller and the
  * administrator each receive.
  *
- * <p><b>Why this class exists beside the unit tests of the same routes.</b> The controller tests here
+ * <p><b>What this class measures that the unit tests of the same routes cannot.</b> The controller tests here
  * stand the handler up without a filter, so they reach it without authenticating and can observe
  * neither the {@code 401} of a missing credential nor the {@code 403} of an identity reaching for
  * something it does not hold. The module's {@code SecurityConfigTest} exercises the ownership
@@ -83,19 +82,9 @@ import tools.jackson.databind.json.JsonMapper;
                 "carddemo.outbox.relay.fixed-delay-ms=3600000",
                 "carddemo.retention.sweep-interval-ms=3600000"
         })
-@Testcontainers
 @ContextConfiguration(classes = AuthorizationRouteSecurityIT.SynchronizedReplicaConfiguration.class)
 @DisplayName("Every authorization business route through the real filter chain")
 class AuthorizationRouteSecurityIT {
-
-    /** The image tag {@code card-platform/docker-compose.yml} also names. */
-    private static final String POSTGRES_IMAGE = "postgres:18.4";
-
-    /** Database name, login name and password of the container, one value for all three. */
-    private static final String CONTAINER_CREDENTIAL = "carddemo";
-
-    /** Schema Flyway migrates, and the one the connection search path names. */
-    private static final String SERVICE_SCHEMA = "authorization_service";
 
     /** Host and port the broker client is pointed at, where nothing listens. */
     static final String UNREACHABLE_BROKER = "localhost:1";
@@ -162,12 +151,13 @@ class AuthorizationRouteSecurityIT {
     /** Reads one response body. */
     private static final JsonMapper JSON = JsonMapper.builder().build();
 
-    /** The container every test in this class shares. */
-    @Container
-    static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer(POSTGRES_IMAGE)
-            .withDatabaseName(CONTAINER_CREDENTIAL)
-            .withUsername(CONTAINER_CREDENTIAL)
-            .withPassword(CONTAINER_CREDENTIAL);
+    /**
+     * The one container the module fork runs, which this class reads a login from.
+     *
+     * <p>{@link AuthorizationServiceDatabase} owns it and hands this class a database of its own inside it.
+     * Nothing here starts or stops a container.
+     */
+    static final PostgreSQLContainer POSTGRES = AuthorizationServiceDatabase.container();
 
     /** The port the embedded container bound. */
     @LocalServerPort
@@ -196,8 +186,7 @@ class AuthorizationRouteSecurityIT {
      * @return the connection string
      */
     private static String jdbcUrlOnServiceSchema() {
-        String url = POSTGRES.getJdbcUrl();
-        return url + (url.contains("?") ? "&" : "?") + "currentSchema=" + SERVICE_SCHEMA;
+        return AuthorizationServiceDatabase.urlFor(AuthorizationRouteSecurityIT.class);
     }
 
     @Nested
@@ -484,21 +473,6 @@ class AuthorizationRouteSecurityIT {
     }
 
     /**
-     * Declares the replica streams caught up, which this context cannot measure.
-     *
-     * <p>{@code messaging/KafkaReplicaSynchronization} reads the two replica listener containers, and
-     * this context starts neither: {@code spring.kafka.listener.auto-startup=false} is set above
-     * because {@link #UNREACHABLE_BROKER} is where the client points. A stopped container is a
-     * refusal in production and correctly so, since nothing applies what the owners publish while it
-     * is stopped, and every authorized call below would then read {@code 503} where it asserts
-     * {@code 200}.
-     *
-     * <p>The substitution keeps this class measuring one thing. What the chain answers an identity is
-     * decided by {@code config/SecurityConfig} ahead of the handler, and a replica verdict is decided
-     * inside the handler, so declaring the verdict here leaves every assertion below about the chain.
-     * {@code messaging/KafkaReplicaSynchronizationTest} measures the verdict itself.
-     */
-    /**
      * Named by {@code @ContextConfiguration} on this class rather than left to be detected.
      *
      * <p>Every test here lives in a {@code @Nested} class, and a nested class treats a configuration
@@ -511,6 +485,20 @@ class AuthorizationRouteSecurityIT {
     static class SynchronizedReplicaConfiguration {
 
         /**
+         * Declares the replica streams caught up, which this context cannot measure.
+         *
+         * <p>{@code messaging/KafkaReplicaSynchronization} reads the two replica listener containers,
+         * and this context starts neither: {@code spring.kafka.listener.auto-startup=false} is set
+         * above because {@link #UNREACHABLE_BROKER} is where the client points. A stopped container
+         * is a refusal in production and correctly so, since nothing applies what the owners publish
+         * while it is stopped, and every authorized call in this class would then read {@code 503}
+         * where it asserts {@code 200}.
+         *
+         * <p>The substitution keeps this class measuring one thing. What the chain answers an
+         * identity is decided by {@code config/SecurityConfig} ahead of the handler, and a replica
+         * verdict is decided inside the handler.
+         * {@code messaging/KafkaReplicaSynchronizationTest} measures the verdict itself.
+         *
          * @return a verdict reporting a stream with nothing waiting on it
          */
         @Bean

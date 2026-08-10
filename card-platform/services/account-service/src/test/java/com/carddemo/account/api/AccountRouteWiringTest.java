@@ -11,6 +11,8 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 
+import com.carddemo.account.domain.AccountSnapshot;
+import com.carddemo.account.domain.AccountUpdateOutcome;
 import com.carddemo.account.domain.AccountUpdateService;
 import com.carddemo.account.domain.BillingCycleService;
 import com.carddemo.account.domain.validation.EditResult;
@@ -114,7 +116,7 @@ class AccountRouteWiringTest {
 
         when(accounts.findByAccountId(any())).thenReturn(Optional.of(storedAccount()));
         when(customers.findByCustomerId(any())).thenReturn(Optional.of(storedCustomer()));
-        when(accountUpdates.updateAccount(any(), any(), any(), any())).thenReturn(EditResult.ok());
+        when(accountUpdates.updateAccount(any(), any(), any(), any())).thenReturn(outcomeCarrying(EditResult.ok()));
         when(billingCycles.closeBillingCycle(any())).thenReturn(Optional.of(storedAccount()));
 
         mockMvc = MockMvcBuilders
@@ -555,4 +557,18 @@ class AccountRouteWiringTest {
         stored.setFicoCreditScore(new BigDecimal("688"));
         return stored;
     }
+    /**
+     * Wraps one verdict as the outcome the service now answers with, carrying the stored account.
+     *
+     * <p>The controller reads the account out of this outcome rather than reading the row a second
+     * time after the transaction committed, so a stubbed passing verdict has to carry the snapshot
+     * the real service reads off the row it wrote.
+     *
+     * @param verdict the verdict to carry
+     * @return that verdict beside a snapshot of the stored account
+     */
+    private static AccountUpdateOutcome outcomeCarrying(EditResult verdict) {
+        return new AccountUpdateOutcome(verdict, AccountSnapshot.of(storedAccount()));
+    }
+
 }

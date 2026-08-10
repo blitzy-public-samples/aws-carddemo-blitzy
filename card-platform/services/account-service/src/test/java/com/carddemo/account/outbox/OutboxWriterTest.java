@@ -41,7 +41,7 @@ import tools.jackson.databind.ObjectMapper;
  * commits both rewrites and the event row together, so a refused event has to take the rewrites with
  * it.
  *
- * <p><b>Why an event a record accepted can still break its document.</b> Each event record checks
+ * <p><b>An event a record accepted can still break its document.</b> Each event record checks
  * its own components, and each governed document checks more than the record does. Two live examples
  * drive the refusal tests below rather than a contrived payload or a stubbed mapper.
  * {@link AccountStateChanged} accepts an {@code expirationDate} of at most ten characters, and

@@ -3,7 +3,6 @@ package com.carddemo.ledger.repository;
 import com.carddemo.ledger.entity.TransactionCategoryBalanceEntity;
 import java.math.BigDecimal;
 import java.util.Optional;
-import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.Repository;
 import org.springframework.data.repository.query.Param;
@@ -95,10 +94,17 @@ public interface TransactionCategoryBalanceRepository
      * @param accountId    eleven digits, from {@code TRANCAT-ACCT-ID PIC 9(11)}
      * @param typeCode     two characters, from {@code TRANCAT-TYPE-CD PIC X(02)}
      * @param categoryCode four digits, from {@code TRANCAT-CD PIC 9(04)}
+     * <p>The statement reports whether that store lost the high-order digits, so an overflow is not
+     * silent at runtime. {@code RETURNING} compares the row as it stood against the row as it now
+     * stands: on the conflict arm a sum inside the field satisfies
+     * {@code old + amount = new}, and a sum past it does not. The comparison is evaluated inside this
+     * one statement, under the row lock the conflict arm already holds, so it needs no second read
+     * and cannot disagree with the value it describes. On the insert arm {@code old} is absent and
+     * the answer is 0, which is correct: the schema bounds the amount to the field.
+     *
      * @param amount       the signed amount to add, at two fractional digits
-     * @return 1, the one row the statement writes on either arm
+     * @return 1 when the store wrapped past nine integer digits, and 0 when it did not
      */
-    @Modifying(flushAutomatically = true)
     @Query(value = """
             INSERT INTO transaction_category_balance
                    (account_id, type_code, category_code, category_balance)
@@ -107,6 +113,11 @@ public interface TransactionCategoryBalanceRepository
                SET category_balance = MOD(
                    transaction_category_balance.category_balance + EXCLUDED.category_balance,
                    1000000000)
+            RETURNING CASE
+                        WHEN old.category_balance IS NOT NULL
+                         AND old.category_balance + :amount <> new.category_balance THEN 1
+                        ELSE 0
+                      END
             """, nativeQuery = true)
     int addToCategoryBalance(@Param("accountId") String accountId,
             @Param("typeCode") String typeCode,

@@ -18,6 +18,8 @@ import com.carddemo.account.api.dto.AccountDataRequest;
 import com.carddemo.account.api.dto.AccountUpdateRequest;
 import com.carddemo.account.api.dto.AccountUpdateResponse;
 import com.carddemo.account.api.dto.AccountView;
+import com.carddemo.account.domain.AccountSnapshot;
+import com.carddemo.account.domain.AccountUpdateOutcome;
 import com.carddemo.account.api.dto.CustomerDataRequest;
 import com.carddemo.account.domain.AccountUpdateService;
 import com.carddemo.account.domain.ConcurrentChangeDetector;
@@ -181,7 +183,7 @@ class AccountControllerOutcomeAndMergeTest {
         void aWrittenPairAnswersTheAppliedText() {
             resolveBoth();
             when(accountUpdates.updateAccount(any(), any(), any(), any()))
-                    .thenReturn(EditResult.ok());
+                    .thenReturn(outcomeCarrying(EditResult.ok()));
 
             ResponseEntity<?> response = controller.updateAccount(ACCOUNT_ID, requestRaising());
 
@@ -204,7 +206,7 @@ class AccountControllerOutcomeAndMergeTest {
             resolveBoth();
             String noChange = "No change detected with respect to values fetched.";
             when(accountUpdates.updateAccount(any(), any(), any(), any()))
-                    .thenReturn(new EditResult(true, noChange));
+                    .thenReturn(outcomeCarrying(new EditResult(true, noChange)));
 
             ResponseEntity<?> response = controller.updateAccount(ACCOUNT_ID, requestRaising());
 
@@ -225,8 +227,8 @@ class AccountControllerOutcomeAndMergeTest {
         @Test
         void aChangedRecordAnswersConflict() {
             resolveBoth();
-            when(accountUpdates.updateAccount(any(), any(), any(), any())).thenReturn(
-                    EditResult.failure(ConcurrentChangeDetector.RECORD_CHANGED_MESSAGE));
+            when(accountUpdates.updateAccount(any(), any(), any(), any())).thenReturn(AccountUpdateOutcome.of(
+                    EditResult.failure(ConcurrentChangeDetector.RECORD_CHANGED_MESSAGE)));
 
             ResponseEntity<?> response = controller.updateAccount(ACCOUNT_ID, requestRaising());
 
@@ -245,7 +247,7 @@ class AccountControllerOutcomeAndMergeTest {
                 buildController();
                 resolveBoth();
                 when(accountUpdates.updateAccount(any(), any(), any(), any()))
-                        .thenReturn(EditResult.failure(lockFailure));
+                        .thenReturn(AccountUpdateOutcome.of(EditResult.failure(lockFailure)));
 
                 ResponseEntity<?> response = controller.updateAccount(ACCOUNT_ID, requestRaising());
 
@@ -260,7 +262,7 @@ class AccountControllerOutcomeAndMergeTest {
             resolveBoth();
             String ficoMessage = "FICO Score: should be between 300 and 850";
             when(accountUpdates.updateAccount(any(), any(), any(), any()))
-                    .thenReturn(EditResult.failure(ficoMessage));
+                    .thenReturn(AccountUpdateOutcome.of(EditResult.failure(ficoMessage)));
 
             ResponseEntity<?> response = controller.updateAccount(ACCOUNT_ID, requestRaising());
 
@@ -359,7 +361,7 @@ class AccountControllerOutcomeAndMergeTest {
         void theNineDigitsTheSourceKeysOnStillPass() {
             resolveBoth();
             when(accountUpdates.updateAccount(any(), any(), any(), any()))
-                    .thenReturn(EditResult.ok());
+                    .thenReturn(outcomeCarrying(EditResult.ok()));
 
             ResponseEntity<?> response = controller.updateAccount(ACCOUNT_ID, requestRaising());
 
@@ -379,7 +381,7 @@ class AccountControllerOutcomeAndMergeTest {
         void aSubmittedComponentReplacesTheStoredValue() {
             resolveBoth();
             when(accountUpdates.updateAccount(any(), any(), any(), any()))
-                    .thenReturn(EditResult.ok());
+                    .thenReturn(outcomeCarrying(EditResult.ok()));
 
             controller.updateAccount(ACCOUNT_ID, requestRaising());
 
@@ -400,7 +402,7 @@ class AccountControllerOutcomeAndMergeTest {
         void anOmittedOptionalComponentKeepsTheStoredValue() {
             resolveBoth();
             when(accountUpdates.updateAccount(any(), any(), any(), any()))
-                    .thenReturn(EditResult.ok());
+                    .thenReturn(outcomeCarrying(EditResult.ok()));
 
             controller.updateAccount(ACCOUNT_ID, requestRaising());
 
@@ -437,7 +439,7 @@ class AccountControllerOutcomeAndMergeTest {
         void anOmittedMandatoryComponentReachesTheServiceAbsent() {
             resolveBoth();
             when(accountUpdates.updateAccount(any(), any(), any(), any()))
-                    .thenReturn(EditResult.ok());
+                    .thenReturn(outcomeCarrying(EditResult.ok()));
 
             controller.updateAccount(ACCOUNT_ID, requestRaising());
 
@@ -477,7 +479,7 @@ class AccountControllerOutcomeAndMergeTest {
         void anAbsentAccountBlockKeepsEveryAccountColumn() {
             resolveBoth();
             when(accountUpdates.updateAccount(any(), any(), any(), any()))
-                    .thenReturn(EditResult.ok());
+                    .thenReturn(outcomeCarrying(EditResult.ok()));
 
             controller.updateAccount(ACCOUNT_ID, new AccountUpdateRequest(null, customerData()));
 
@@ -510,7 +512,7 @@ class AccountControllerOutcomeAndMergeTest {
         void aSubmittedAmountIsReadUnderTheTolerantGrammar() {
             resolveBoth();
             when(accountUpdates.updateAccount(any(), any(), any(), any()))
-                    .thenReturn(EditResult.ok());
+                    .thenReturn(outcomeCarrying(EditResult.ok()));
 
             controller.updateAccount(ACCOUNT_ID, new AccountUpdateRequest(
                     new AccountDataRequest(null, null, "$12,000.00", null, null, null, null, null,
@@ -523,7 +525,7 @@ class AccountControllerOutcomeAndMergeTest {
             buildController();
             resolveBoth();
             when(accountUpdates.updateAccount(any(), any(), any(), any()))
-                    .thenReturn(EditResult.ok());
+                    .thenReturn(outcomeCarrying(EditResult.ok()));
 
             controller.updateAccount(ACCOUNT_ID, new AccountUpdateRequest(
                     new AccountDataRequest(null, null, "$1,234.56", null, null, null, null, null,
@@ -546,7 +548,7 @@ class AccountControllerOutcomeAndMergeTest {
         void aSubmittedDateOfEightCharactersReachesTheColumnAsTen() {
             resolveBoth();
             when(accountUpdates.updateAccount(any(), any(), any(), any()))
-                    .thenReturn(EditResult.ok());
+                    .thenReturn(outcomeCarrying(EditResult.ok()));
 
             controller.updateAccount(ACCOUNT_ID, new AccountUpdateRequest(
                     new AccountDataRequest(null, null, null, null, "20150302", null, null, null,
@@ -559,7 +561,7 @@ class AccountControllerOutcomeAndMergeTest {
             buildController();
             resolveBoth();
             when(accountUpdates.updateAccount(any(), any(), any(), any()))
-                    .thenReturn(EditResult.ok());
+                    .thenReturn(outcomeCarrying(EditResult.ok()));
 
             controller.updateAccount(ACCOUNT_ID, new AccountUpdateRequest(
                     new AccountDataRequest(null, null, null, null, "2015-03-02", null, null, null,
@@ -580,7 +582,7 @@ class AccountControllerOutcomeAndMergeTest {
         void thePathIdentifierWinsOverTheBody() {
             resolveBoth();
             when(accountUpdates.updateAccount(any(), any(), any(), any()))
-                    .thenReturn(EditResult.ok());
+                    .thenReturn(outcomeCarrying(EditResult.ok()));
 
             controller.updateAccount(ACCOUNT_ID,
                     new AccountUpdateRequest(accountDataRaising(), customerData()));
@@ -608,7 +610,7 @@ class AccountControllerOutcomeAndMergeTest {
             when(accounts.findByAccountId(ACCOUNT_ID)).thenReturn(Optional.of(stored));
             when(customers.findByCustomerId(CUSTOMER_ID)).thenReturn(Optional.of(storedCustomer));
             when(accountUpdates.updateAccount(any(), any(), any(), any()))
-                    .thenReturn(EditResult.ok());
+                    .thenReturn(outcomeCarrying(EditResult.ok()));
 
             controller.updateAccount(ACCOUNT_ID, requestRaising());
 
@@ -633,7 +635,7 @@ class AccountControllerOutcomeAndMergeTest {
         void theSocialSecurityPartsAreRecombinedOnlyTogether() {
             resolveBoth();
             when(accountUpdates.updateAccount(any(), any(), any(), any()))
-                    .thenReturn(EditResult.ok());
+                    .thenReturn(outcomeCarrying(EditResult.ok()));
 
             controller.updateAccount(ACCOUNT_ID, new AccountUpdateRequest(null,
                     customerDataWithSocialSecurity("429", null, null)));
@@ -643,7 +645,7 @@ class AccountControllerOutcomeAndMergeTest {
             buildController();
             resolveBoth();
             when(accountUpdates.updateAccount(any(), any(), any(), any()))
-                    .thenReturn(EditResult.ok());
+                    .thenReturn(outcomeCarrying(EditResult.ok()));
 
             controller.updateAccount(ACCOUNT_ID, new AccountUpdateRequest(null,
                     customerDataWithSocialSecurity("111", "22", "3333")));
@@ -662,7 +664,7 @@ class AccountControllerOutcomeAndMergeTest {
         void anAbsentSocialSecurityNumberNeverBorrowsTheStoredOne() {
             resolveBoth();
             when(accountUpdates.updateAccount(any(), any(), any(), any()))
-                    .thenReturn(EditResult.ok());
+                    .thenReturn(outcomeCarrying(EditResult.ok()));
 
             controller.updateAccount(ACCOUNT_ID, requestRaising());
 
@@ -691,7 +693,7 @@ class AccountControllerOutcomeAndMergeTest {
         void neitherIdentityDocumentReachesAnAnswer() throws Exception {
             resolveBoth();
             when(accountUpdates.updateAccount(any(), any(), any(), any()))
-                    .thenReturn(EditResult.ok());
+                    .thenReturn(outcomeCarrying(EditResult.ok()));
 
             String read = renderedValuesOf(controller.readAccount(ACCOUNT_ID).getBody());
             String updated = renderedValuesOf(
@@ -713,7 +715,7 @@ class AccountControllerOutcomeAndMergeTest {
         void anUpdateWritesThroughNoStoreOfItsOwn() {
             resolveBoth();
             when(accountUpdates.updateAccount(any(), any(), any(), any()))
-                    .thenReturn(EditResult.ok());
+                    .thenReturn(outcomeCarrying(EditResult.ok()));
 
             controller.updateAccount(ACCOUNT_ID, requestRaising());
 
@@ -837,4 +839,18 @@ class AccountControllerOutcomeAndMergeTest {
         stored.setFicoCreditScore(new BigDecimal("688"));
         return stored;
     }
+    /**
+     * Wraps one verdict as the outcome the service now answers with, carrying the stored account.
+     *
+     * <p>The controller reads the account out of this outcome rather than reading the row a second
+     * time after the transaction committed, so a stubbed passing verdict has to carry the snapshot
+     * the real service reads off the row it wrote.
+     *
+     * @param verdict the verdict to carry
+     * @return that verdict beside a snapshot of the stored account
+     */
+    private static AccountUpdateOutcome outcomeCarrying(EditResult verdict) {
+        return new AccountUpdateOutcome(verdict, AccountSnapshot.of(storedAccount()));
+    }
+
 }

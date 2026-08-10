@@ -30,6 +30,8 @@ import java.util.regex.Pattern;
                         columnList = "created_at, event_id"),
                 @Index(name = "ix_outbox_event_claimable",
                         columnList = "relay_state, next_attempt_at"),
+                @Index(name = "ix_outbox_event_aggregate_head",
+                        columnList = "aggregate_id, created_at, event_id"),
                 @Index(name = "ix_outbox_event_published_at", columnList = "published_at")})
 public class OutboxEventEntity {
 
@@ -71,6 +73,27 @@ public class OutboxEventEntity {
     /** When the relay published this row, or null until it has. */
     @Column(name = "published_at")
     private Instant publishedAt;
+
+    /**
+     * Root correlation identifier of the unit of work that wrote this row.
+     *
+     * <p>ADDITIVE, from {@code src/main/resources/db/migration/V8__outbox_correlation.sql}. Published as the
+     * {@code carddemo-correlation-id} record header, so a reader joins every record of one
+     * authorization on one field. It repeats across a fan-out by design and is never the
+     * duplicate-delivery key: {@link #getEventId()} keeps that role.
+     */
+    @Column(name = "correlation_id")
+    private UUID correlationId;
+
+    /**
+     * The {@code eventId} of the event whose handling wrote this row.
+     *
+     * <p>ADDITIVE, from {@code src/main/resources/db/migration/V8__outbox_correlation.sql}. Published as the
+     * {@code carddemo-causation-id} record header. Null where a caller rather than an event asked
+     * for the change.
+     */
+    @Column(name = "causation_id")
+    private UUID causationId;
 
     /** Required by the persistence provider. */
     protected OutboxEventEntity() {
@@ -182,6 +205,41 @@ public class OutboxEventEntity {
      */
     public Instant getPublishedAt() {
         return publishedAt;
+    }
+
+    /**
+     * Returns the root correlation identifier this row travels under.
+     *
+     * @return the value of {@code correlation_id}, or {@code null} for a row written outside a
+     *         request and outside a delivery
+     */
+    public UUID getCorrelationId() {
+        return correlationId;
+    }
+
+    /**
+     * Returns the identifier of the event whose handling wrote this row.
+     *
+     * @return the value of {@code causation_id}, or {@code null} where a caller rather than an event
+     *         asked for the change
+     */
+    public UUID getCausationId() {
+        return causationId;
+    }
+
+    /**
+     * Records the two correlation identifiers of the unit of work that wrote this row.
+     *
+     * <p>Called by {@code outbox/OutboxWriter} straight after construction, which is the one place
+     * that knows them. Either may be {@code null}, and an absent identifier contributes no record
+     * header.
+     *
+     * @param correlationId the root correlation identifier, or {@code null}
+     * @param causationId   the identifier of the causing event, or {@code null}
+     */
+    public void recordCorrelation(UUID correlationId, UUID causationId) {
+        this.correlationId = correlationId;
+        this.causationId = causationId;
     }
 
     /**

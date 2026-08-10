@@ -2,6 +2,7 @@ package com.carddemo.account.config;
 
 import com.carddemo.account.messaging.DeadLetterMetadata;
 import com.carddemo.events.DeadLetterEnvelope;
+import com.carddemo.events.correlation.EventCorrelation;
 import com.carddemo.events.serde.EventContracts;
 
 import java.nio.ByteBuffer;
@@ -281,6 +282,9 @@ public class KafkaConsumerConfig {
 
         configurer.configure(factory, consumerFactory);
         factory.setCommonErrorHandler(postedTransactionErrorHandler);
+        // The correlation fields of one delivery reach the structured log context here, in one
+        // place rather than in each listener, and leave it again when the delivery ends.
+        factory.setRecordInterceptor(new CorrelationRecordInterceptor<>());
         factory.getContainerProperties().setDeliveryAttemptHeader(true);
         requireImmediateManualAcknowledgement(factory.getContainerProperties().getAckMode());
 
@@ -436,6 +440,18 @@ public class KafkaConsumerConfig {
                     allowed.add(name, header.value());
                 }
             }
+            // The two correlation identifiers reach the dead-letter record as well, so a spent
+            // record names the call behind it and not only the event that failed. Each is
+            // re-rendered from a strict parse rather than copied, so a producer cannot place
+            // arbitrary bytes on the diagnostic through a header this method admits.
+            EventCorrelation.headersFor(
+                            EventCorrelation
+                                    .read(headers, EventCorrelation.CORRELATION_ID_HEADER)
+                                    .orElse(null),
+                            EventCorrelation
+                                    .read(headers, EventCorrelation.CAUSATION_ID_HEADER)
+                                    .orElse(null))
+                    .forEach(allowed::add);
             return allowed;
         }
 

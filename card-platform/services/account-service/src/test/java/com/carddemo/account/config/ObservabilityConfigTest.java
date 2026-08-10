@@ -157,7 +157,7 @@ class ObservabilityConfigTest {
     }
 
     @Test
-    @DisplayName("eleven meters are counters, two are timers, and all thirteen read zero")
+    @DisplayName("the eleven untagged counters and the two timers all read zero at start-up")
     void elevenMetersAreCountersAndTwoAreTimers() {
         RUNNER.run(context -> {
             MeterRegistry registry = context.getBean(MeterRegistry.class);

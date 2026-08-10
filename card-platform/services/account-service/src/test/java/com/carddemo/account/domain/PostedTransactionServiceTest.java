@@ -10,16 +10,19 @@ import com.carddemo.account.repository.OutboxEventRepository;
 import com.carddemo.cobol.CobolDecimal;
 import com.carddemo.cobol.PicClause;
 import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.function.Supplier;
+import java.util.regex.Pattern;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -144,14 +147,88 @@ class PostedTransactionServiceTest extends AbstractAccountPostgresTest {
     /** Account the ceiling test seeds at the widest figure its three fields hold. */
     private static final String CEILING_ACCOUNT_ID = "00000000928";
 
-    /** The largest figure {@code PIC S9(10)V99} holds, read from the Picture clause. */
-    private static final BigDecimal FIELD_MAXIMUM = BigDecimal.TEN
-            .pow(PicClause.ACCT_CURR_BAL_PRECISION - PicClause.ACCT_CURR_BAL_SCALE)
-            .subtract(BigDecimal.ONE.movePointLeft(PicClause.ACCT_CURR_BAL_SCALE))
-            .setScale(PicClause.ACCT_CURR_BAL_SCALE, RoundingMode.DOWN);
+    /** Account the negative ceiling test seeds at the widest negative figure. */
+    private static final String NEGATIVE_CEILING_ACCOUNT_ID = "00000000929";
+
+    /**
+     * The largest figure {@code PIC S9(10)V99} holds, written out.
+     *
+     * <p>{@code ACCT-CURR-BAL PIC S9(10)V99} at {@code app/cpy/CVACT01Y.cpy:L7} holds ten integer
+     * digits and two fractional ones, so the widest figure is ten nines, a point and two more. Every
+     * ceiling expectation below is written out in the same way. Deriving them from
+     * {@link PicClause} and {@link CobolDecimal} — which is how this test read them before — meant
+     * the expectation and the production value came from the same two helpers, and a defect in
+     * either would have moved both together.</p>
+     */
+    private static final BigDecimal FIELD_MAXIMUM = new BigDecimal("9999999999.99");
 
     /** The amount that carries the widest figure one integer digit past the field. */
     private static final BigDecimal ONE_CENT = new BigDecimal("0.01");
+
+    /** {@link #FIELD_MAXIMUM} plus one cent: eleven integer digits, one more than the field holds. */
+    private static final BigDecimal SUM_PAST_THE_FIELD = new BigDecimal("10000000000.00");
+
+    /** The ten low-order integer digits of that sum, which is what the field holds: zero. */
+    private static final BigDecimal STORED_PAST_THE_FIELD = new BigDecimal("0.00");
+
+    /** The widest negative figure {@code PIC S9(10)V99} holds. */
+    private static final BigDecimal NEGATIVE_FIELD_MINIMUM = new BigDecimal("-9999999999.99");
+
+    /** A refund posted against the widest negative figure. */
+    private static final BigDecimal REFUND_PAST_THE_FIELD = new BigDecimal("-1.23");
+
+    /** {@link #NEGATIVE_FIELD_MINIMUM} plus that refund: eleven integer digits, and negative. */
+    private static final BigDecimal SUM_PAST_THE_NEGATIVE_FIELD = new BigDecimal("-10000000001.22");
+
+    /** The ten low-order integer digits of that sum, with the sign the source keeps. */
+    private static final BigDecimal STORED_PAST_THE_NEGATIVE_FIELD = new BigDecimal("-1.22");
+
+    /** {@link #THIRD_DIGIT_AMOUNT} truncated toward zero at the two digits the column holds. */
+    private static final BigDecimal THIRD_DIGIT_STORED = new BigDecimal("1.23");
+
+    /** The seeded balance plus that stored value: 284.00 plus 1.23. */
+    private static final BigDecimal BALANCE_AFTER_THIRD_DIGIT = new BigDecimal("285.23");
+
+    /**
+     * {@link #THIRD_DIGIT_AMOUNT} under half-up rounding at the same scale.
+     *
+     * <p>The phrase {@code ROUNDED} appears in none of the twenty-eight programs under
+     * {@code app/cbl/}, so this is the value the source never produces. It is written out for the
+     * same reason as the others: computing it here from the same helper the production path uses
+     * would prove only that the helper agrees with itself.</p>
+     */
+    private static final BigDecimal THIRD_DIGIT_ROUNDED_HALF_UP = new BigDecimal("1.24");
+
+    /** Fractional digits every figure above carries, from the {@code V99} of the picture. */
+    private static final int LITERAL_SCALE = 2;
+
+    /**
+     * Digits in the shortest value this service must never log: the eleven-digit account identifier.
+     *
+     * <p>A card number is sixteen and a transaction identifier is sixteen, so a bound of eleven
+     * refuses all three. The warning names a capacity and two source locators, and neither carries a
+     * run this long.</p>
+     */
+    private static final int LONG_DIGIT_RUN_LENGTH = 11;
+
+    /** A run of digits at least {@link #LONG_DIGIT_RUN_LENGTH} long. */
+    private static final Pattern LONG_DIGIT_RUN =
+            Pattern.compile("[0-9]{" + LONG_DIGIT_RUN_LENGTH + ",}");
+
+    /** The shape of a card token, which is sixty-four hexadecimal characters. */
+    private static final Pattern HEX_TOKEN = Pattern.compile("\\b[0-9a-fA-F]{64}\\b");
+
+    /** The position expression of {@code :L403-L405} on a pristine row: 0.00 − 0.00 + 100.00. */
+    private static final BigDecimal POSITION_WHILE_PRISTINE = new BigDecimal("100.00");
+
+    /** The same expression after one posting: 100.00 − 0.00 + 100.00. */
+    private static final BigDecimal POSITION_AFTER_ONE_POSTING = new BigDecimal("200.00");
+
+    /** The same expression after two postings: 200.00 − 0.00 + 100.00. */
+    private static final BigDecimal POSITION_AFTER_TWO_POSTINGS = new BigDecimal("300.00");
+
+    /** The same expression after one refund: 0.00 − (−50.00) + 0.00, which is register item 6. */
+    private static final BigDecimal POSITION_AFTER_ONE_REFUND = new BigDecimal("50.00");
 
     /** The service under test. */
     @Autowired
@@ -263,15 +340,20 @@ class PostedTransactionServiceTest extends AbstractAccountPostgresTest {
                 .isEqualTo(POSTED_AMOUNT.add(POSTED_AMOUNT));
 
         assertThat(positionWhilePristine)
-                .as("position on a pristine row against the limit %s, which is the first "
-                        + "authorization and is correctly approved", SEEDED_CREDIT_LIMIT)
+                .as("position on a pristine row: 0.00 minus 0.00 plus 100.00. It sits under the "
+                        + "limit %s, which is why the first authorization is correctly approved",
+                        SEEDED_CREDIT_LIMIT)
+                .isEqualByComparingTo(POSITION_WHILE_PRISTINE)
                 .isLessThanOrEqualTo(SEEDED_CREDIT_LIMIT);
         assertThat(positionAfterFirst)
-                .as("position after one posting, which reason code 102 declines at "
-                        + "app/cbl/CBTRN02C.cbl:L407 and which the QA run approved")
+                .as("position after one posting: 100.00 minus 0.00 plus 100.00. Reason code 102 "
+                        + "declines it at app/cbl/CBTRN02C.cbl:L407, and the QA run approved it")
+                .isEqualByComparingTo(POSITION_AFTER_ONE_POSTING)
                 .isGreaterThan(SEEDED_CREDIT_LIMIT);
         assertThat(positionAfterSecond)
-                .as("position after two postings, which must exceed the position after one")
+                .as("position after two postings: 200.00 minus 0.00 plus 100.00, which has to "
+                        + "exceed the position after one")
+                .isEqualByComparingTo(POSITION_AFTER_TWO_POSTINGS)
                 .isGreaterThan(positionAfterFirst);
     }
 
@@ -295,8 +377,9 @@ class PostedTransactionServiceTest extends AbstractAccountPostgresTest {
                 .as("stored cycle credit, which a negative amount leaves alone")
                 .isEqualTo(ZERO);
         assertThat(position(stored, ZERO))
-                .as("position after a refund, which register item 6 records as raised rather than "
-                        + "lowered")
+                .as("position after a refund: 0.00 minus −50.00 plus 0.00 is 50.00, which register "
+                        + "item 6 records as raised rather than lowered")
+                .isEqualByComparingTo(POSITION_AFTER_ONE_REFUND)
                 .isGreaterThan(ZERO);
     }
 
@@ -305,22 +388,21 @@ class PostedTransactionServiceTest extends AbstractAccountPostgresTest {
             + "scale returns a different value")
     void aThirdFractionalDigitTruncatesTowardZero() {
         seedAccount(TRUNCATION_ACCOUNT_ID);
-        BigDecimal truncated = CobolDecimal.add(ZERO, THIRD_DIGIT_AMOUNT, MONEY_SCALE);
-        BigDecimal roundedHalfUp = THIRD_DIGIT_AMOUNT.setScale(MONEY_SCALE, RoundingMode.HALF_UP);
 
         inOwnTransaction(() -> service.applyPostedAmount(TRUNCATION_ACCOUNT_ID, THIRD_DIGIT_AMOUNT,
                 TRANSACTION_ID));
 
         AccountEntity stored = storedAccount(TRUNCATION_ACCOUNT_ID);
-        assertThat(stored.getCurrentCycleCredit())
-                .as("stored cycle credit against the amount truncated toward zero")
-                .isEqualTo(truncated);
-        assertThat(stored.getCurrentBalance())
-                .as("stored balance against the seeded value plus the truncated amount")
-                .isEqualTo(SEEDED_BALANCE.add(truncated));
-        assertThat(roundedHalfUp)
-                .as("the same amount under half-up rounding at scale %d", MONEY_SCALE)
-                .isNotEqualTo(truncated);
+        assertFigure("stored cycle credit, which 1.239 truncated toward zero makes 1.23",
+                THIRD_DIGIT_STORED, stored.getCurrentCycleCredit());
+        assertFigure("stored balance, which is the seeded 284.00 plus that 1.23",
+                BALANCE_AFTER_THIRD_DIGIT, stored.getCurrentBalance());
+        assertFigure("stored cycle debit, which a non-negative amount leaves at zero",
+                ZERO, stored.getCurrentCycleDebit());
+        assertThat(THIRD_DIGIT_ROUNDED_HALF_UP)
+                .as("1.24, the value half-up rounding at scale %d would have stored. A run that "
+                        + "produced it would be rounding where the source truncates", MONEY_SCALE)
+                .isNotEqualTo(THIRD_DIGIT_STORED);
     }
 
     /**
@@ -417,44 +499,175 @@ class PostedTransactionServiceTest extends AbstractAccountPostgresTest {
     }
 
     @Test
+    @ExtendWith(OutputCaptureExtension.class)
     @DisplayName("A sum past the ten integer digits of ACCT-CURR-BAL is stored at the field width "
             + "rather than refused, app/cbl/CBTRN02C.cbl:L547-L549")
-    void aSumPastTheFieldWidthIsStoredRatherThanRefused() {
-        seedAccountAtTheFieldMaximum(CEILING_ACCOUNT_ID);
-        BigDecimal sum = CobolDecimal.add(FIELD_MAXIMUM, ONE_CENT, MONEY_SCALE);
-        BigDecimal expected = CobolDecimal.truncateToPictureField(sum,
-                PicClause.ACCT_CURR_BAL_PRECISION, PicClause.ACCT_CURR_BAL_SCALE);
+    void aSumPastTheFieldWidthIsStoredRatherThanRefused(CapturedOutput output) {
+        seedAccountAtTheFieldMaximum(CEILING_ACCOUNT_ID, FIELD_MAXIMUM);
 
         inOwnTransaction(() -> service.applyPostedAmount(CEILING_ACCOUNT_ID, ONE_CENT,
                 TRANSACTION_ID));
 
         AccountEntity stored = storedAccount(CEILING_ACCOUNT_ID);
-        assertThat(stored.getCurrentBalance())
-                .as("stored balance, held at the ten integer digits app/cpy/CVACT01Y.cpy:L7 "
-                        + "declares, where NUMERIC(12,2) would have refused the wider sum")
-                .isEqualTo(expected);
-        assertThat(stored.getCurrentCycleCredit())
-                .as("stored cycle credit, held at the same width by app/cbl/CBTRN02C.cbl:L549")
-                .isEqualTo(expected);
-        assertThat(sum)
+        assertFigure("stored balance: 9999999999.99 plus 0.01 is 10000000000.00, and the ten "
+                        + "integer digits app/cpy/CVACT01Y.cpy:L7 declares hold the low-order ten "
+                        + "of them, which are all zero. NUMERIC(12,2) would have refused the sum",
+                STORED_PAST_THE_FIELD, stored.getCurrentBalance());
+        assertFigure("stored cycle credit, held at the same width by app/cbl/CBTRN02C.cbl:L549",
+                STORED_PAST_THE_FIELD, stored.getCurrentCycleCredit());
+        assertThat(SUM_PAST_THE_FIELD)
                 .as("the unstored sum, which carries the high-order digit the store drops")
-                .isNotEqualTo(expected);
+                .isNotEqualTo(STORED_PAST_THE_FIELD);
+        assertThat(publishedBalanceOf(CEILING_ACCOUNT_ID))
+                .as("the balance the queued state change carries, which has to be the figure the "
+                        + "row holds. A payload built from the untruncated sum would tell every "
+                        + "consumer a balance this service does not hold")
+                .isEqualByComparingTo(STORED_PAST_THE_FIELD);
+        assertOneNarrowingWarningCarryingNoValue(output);
+    }
+
+    @Test
+    @ExtendWith(OutputCaptureExtension.class)
+    @DisplayName("A negative sum past the same ten digits keeps its sign and its low-order digits, "
+            + "app/cbl/CBTRN02C.cbl:L547-L551")
+    void aNegativeSumPastTheFieldWidthKeepsItsSign(CapturedOutput output) {
+        seedAccountAtTheFieldMaximum(NEGATIVE_CEILING_ACCOUNT_ID, NEGATIVE_FIELD_MINIMUM);
+
+        inOwnTransaction(() -> service.applyPostedAmount(NEGATIVE_CEILING_ACCOUNT_ID,
+                REFUND_PAST_THE_FIELD, TRANSACTION_ID));
+
+        AccountEntity stored = storedAccount(NEGATIVE_CEILING_ACCOUNT_ID);
+        assertFigure("stored balance: −9999999999.99 plus −1.23 is −10000000001.22, whose ten "
+                        + "low-order integer digits are 1.22, and the source keeps the sign",
+                STORED_PAST_THE_NEGATIVE_FIELD, stored.getCurrentBalance());
+        assertFigure("stored cycle debit, which app/cbl/CBTRN02C.cbl:L551 routes a negative amount "
+                        + "to and which narrows the same way",
+                STORED_PAST_THE_NEGATIVE_FIELD, stored.getCurrentCycleDebit());
+        assertThat(stored.getCurrentBalance().signum())
+                .as("the sign of the stored balance. A remainder taken without it would answer "
+                        + "1.22 and turn a debt into a credit")
+                .isEqualTo(-1);
+        assertThat(SUM_PAST_THE_NEGATIVE_FIELD)
+                .as("the unstored sum, which carries the high-order digit the store drops")
+                .isNotEqualTo(STORED_PAST_THE_NEGATIVE_FIELD);
+        assertThat(publishedBalanceOf(NEGATIVE_CEILING_ACCOUNT_ID))
+                .as("the balance the queued state change carries after a negative narrowing")
+                .isEqualByComparingTo(STORED_PAST_THE_NEGATIVE_FIELD);
+        assertOneNarrowingWarningCarryingNoValue(output);
+    }
+
+    /**
+     * Asserts the narrowing is reported once, and that the report carries no value of its own.
+     *
+     * <p>A diagnostic is the one place a monetary figure, an account identifier or a card number
+     * reaches a log aggregator, a build artefact and anyone who can read either. The warning is
+     * therefore held to naming the capacity and the source locators and nothing else. The figures
+     * checked for are the ones this test put into the call: the account identifier, the seeded
+     * figure, the posted amount, the stored result and the transaction identifier.</p>
+     *
+     * @param output everything the run wrote to the console
+     */
+    private void assertOneNarrowingWarningCarryingNoValue(CapturedOutput output) {
+        List<String> warnings = output.getAll().lines()
+                .filter(line -> line.contains("needed more than the"))
+                .toList();
+
+        assertThat(warnings)
+                .as("the narrowing is reported once per store that dropped a digit, and this call "
+                        + "narrowed the balance and one accumulator")
+                .hasSize(2);
+        assertThat(warnings)
+                .as("the warning names the ten integer digits the account record holds")
+                .allSatisfy(line -> assertThat(line).contains("10 integer digits"));
+        for (String line : warnings) {
+            for (String withheld : List.of(CEILING_ACCOUNT_ID, NEGATIVE_CEILING_ACCOUNT_ID,
+                    TRANSACTION_ID, FIELD_MAXIMUM.toPlainString(),
+                    NEGATIVE_FIELD_MINIMUM.toPlainString(), SUM_PAST_THE_FIELD.toPlainString(),
+                    SUM_PAST_THE_NEGATIVE_FIELD.toPlainString(),
+                    STORED_PAST_THE_NEGATIVE_FIELD.toPlainString(),
+                    REFUND_PAST_THE_FIELD.toPlainString())) {
+                assertThat(line)
+                        .as("the narrowing warning must not carry %s", withheld)
+                        .doesNotContain(withheld);
+            }
+            assertThat(LONG_DIGIT_RUN.matcher(messageOf(line)).find())
+                    .as("no run of %d or more digits reaches the warning, which is what keeps a "
+                            + "card number, a token and an account identifier out of it. The line "
+                            + "read: %s", LONG_DIGIT_RUN_LENGTH, line)
+                    .isFalse();
+            assertThat(HEX_TOKEN.matcher(messageOf(line)).find())
+                    .as("no card token reaches the warning either. The line read: %s", line)
+                    .isFalse();
+        }
+    }
+
+    /**
+     * Returns the message of one structured log line, without the timestamp the encoder adds.
+     *
+     * <p>The console encoder writes JSON, and its {@code @timestamp} property carries digit runs of
+     * its own. Those belong to the encoder rather than to the message, so the digit-run check reads
+     * the message property alone.</p>
+     *
+     * @param line one line of captured output
+     * @return the message the line carries, or the whole line when it carries no message property
+     */
+    private String messageOf(String line) {
+        JsonNode parsed = objectMapper.readTree(line);
+        return parsed.path("message").isString() ? parsed.path("message").stringValue() : line;
+    }
+
+    /**
+     * Reads the balance the one queued state change carries for an account.
+     *
+     * @param accountId the account the row is keyed on
+     * @return the balance the stored payload names
+     */
+    private BigDecimal publishedBalanceOf(String accountId) {
+        List<OutboxEventEntity> rows = outboxRowsFor(accountId);
+        assertThat(rows).as("one state change is queued per posting").hasSize(1);
+        JsonNode payload = objectMapper.readTree(rows.getFirst().getPayload());
+        return new BigDecimal(payload.path("currentBalance").stringValue());
+    }
+
+    /**
+     * Asserts one stored figure by value, scale and sign against a written-out expectation.
+     *
+     * @param description what the figure is, and why it holds that value
+     * @param expected    the figure written out in this class
+     * @param stored      the figure the row holds
+     */
+    private void assertFigure(String description, BigDecimal expected, BigDecimal stored) {
+        assertThat(stored).as(description).isEqualTo(expected);
+        assertThat(stored.scale())
+                .as("fractional digits of the %s, which V99 fixes at %d", description,
+                        LITERAL_SCALE)
+                .isEqualTo(LITERAL_SCALE);
+        assertThat(stored.signum())
+                .as("sign of the %s", description)
+                .isEqualTo(expected.signum());
     }
 
     /**
      * Seeds one account row whose balance and credit accumulator sit at the field maximum.
      *
      * <p>No record of {@code app/data/ASCII/acctdata.txt} reaches this width, so the row is
-     * constructed. One more cent takes both figures past the ten integer digits their fields hold.
+     * constructed. The figure reaches the balance and the accumulator its sign routes it to, which
+     * is the accumulator the posting that follows adds to. One more posting takes both figures past
+     * the ten integer digits their fields hold.
      *
      * @param accountId the identifier to seed
+     * @param figure    the figure to seed the balance and one accumulator at
      */
-    private void seedAccountAtTheFieldMaximum(String accountId) {
+    private void seedAccountAtTheFieldMaximum(String accountId, BigDecimal figure) {
         seedAccount(accountId);
         inOwnTransaction(() -> {
             AccountEntity seeded = accounts.findByAccountId(accountId).orElseThrow();
-            seeded.setCurrentBalance(FIELD_MAXIMUM);
-            seeded.setCurrentCycleCredit(FIELD_MAXIMUM);
+            seeded.setCurrentBalance(figure);
+            if (figure.signum() < 0) {
+                seeded.setCurrentCycleDebit(figure);
+            } else {
+                seeded.setCurrentCycleCredit(figure);
+            }
             return accounts.save(seeded);
         });
     }

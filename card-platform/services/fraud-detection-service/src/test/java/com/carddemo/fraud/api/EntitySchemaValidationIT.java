@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.carddemo.fraud.FraudServiceDatabase;
 import com.carddemo.fraud.TestIdentityPasswords;
 import com.carddemo.fraud.entity.FraudAssessmentEntity;
 import com.carddemo.fraud.entity.OutboxEventEntity;
@@ -48,6 +49,7 @@ import org.springframework.context.ApplicationContext;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.core.env.Environment;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.data.domain.Limit;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -80,12 +82,6 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 @DisplayName("Entity mappings and physical columns of the migrated fraud schema")
 class EntitySchemaValidationIT {
 
-    /** Image tag of the database container. */
-    private static final String POSTGRES_IMAGE = "postgres:18.4";
-
-    /** Database name, login name and password of the container, one value for all three. */
-    private static final String CONTAINER_CREDENTIAL = "carddemo";
-
     /** Host and port the broker client is pointed at, where nothing listens. */
     private static final String UNREACHABLE_BROKER = "localhost:1";
 
@@ -109,12 +105,19 @@ class EntitySchemaValidationIT {
     private static final String PK_FRAUD_ASSESSMENT = "pk_fraud_assessment";
     private static final String PK_VELOCITY_WINDOW = "pk_velocity_window";
     private static final String PK_PROCESSED_EVENT = "pk_processed_event";
-    private static final String IX_FRAUD_ASSESSMENT_ACCOUNT = "ix_fraud_assessment_account";
     private static final String IX_FRAUD_ASSESSMENT_ASSESSED_AT = "ix_fraud_assessment_assessed_at";
 
-    /** The composite index the collection route of the controller reads its page from. */
-    private static final String IX_FRAUD_ASSESSMENT_ACCOUNT_ASSESSED_AT =
-            "ix_fraud_assessment_account_assessed_at";
+    /**
+     * The index the collection route walks its page from, over the account, the assessment time
+     * descending and the primary key descending.
+     *
+     * <p>{@code V9__fraud_assessment_account_cursor_index.sql} added it and dropped the two indexes
+     * that carried only a leading part of it. Both were prefixes of this one, so it answers every
+     * query either answered, and each cost a write on every insert into a table that takes one per
+     * authorized transaction.
+     */
+    private static final String IX_FRAUD_ASSESSMENT_ACCOUNT_CURSOR =
+            "ix_fraud_assessment_account_cursor";
     private static final String IX_VELOCITY_WINDOW_START = "ix_velocity_window_start";
     private static final String IX_PROCESSED_EVENT_PROCESSED_AT = "ix_processed_event_processed_at";
 
@@ -212,6 +215,26 @@ class EntitySchemaValidationIT {
     /** Schema Flyway migrates into, which every unqualified statement resolves against. */
     private static final String MIGRATED_SCHEMA = "fraud_service";
 
+    /**
+     * The account the paging test writes its tied pair under, eleven digits.
+     *
+     * <p>No other test in this class writes an assessment for it, and the {@code @AfterEach} of this
+     * class empties the table either way.
+     */
+    private static final String TIED_ACCOUNT_ID = "00000000042";
+
+    /**
+     * The one instant both rows of the paging test record.
+     *
+     * <p>Column {@code assessed_at} is {@code TIMESTAMP(6)}, so two values are tied only when they
+     * agree to the microsecond. A literal shared by both rows is that tie, held deliberately rather
+     * than waited for.
+     */
+    private static final Instant TIED_ASSESSED_AT = Instant.parse("2026-04-01T09:15:30.123456Z");
+
+    /** Score the paging rows carry. Any value inside the permitted range would do. */
+    private static final int TIED_RISK_SCORE = 10;
+
     /** Topic the claimed markers of this class record. */
     private static final String CONSUMED_TOPIC = "transaction.authorized";
 
@@ -267,16 +290,13 @@ class EntitySchemaValidationIT {
     /** Score an assessment carries alongside a cleared verdict. */
     private static final int CLEARED_RISK_SCORE = 12;
 
-    /** The one container every test method in the class shares. */
-    private static final PostgreSQLContainer POSTGRES;
-
-    static {
-        POSTGRES = new PostgreSQLContainer(POSTGRES_IMAGE)
-                .withDatabaseName(CONTAINER_CREDENTIAL)
-                .withUsername(CONTAINER_CREDENTIAL)
-                .withPassword(CONTAINER_CREDENTIAL);
-        POSTGRES.start();
-    }
+    /**
+     * The one container the module fork runs, which this class reads a login from.
+     *
+     * <p>{@link FraudServiceDatabase} owns it and hands this class a database of its own inside
+     * it. Nothing here starts or stops a container.
+     */
+    private static final PostgreSQLContainer POSTGRES = FraudServiceDatabase.container();
 
     @Autowired
     private ApplicationContext context;
@@ -317,8 +337,7 @@ class EntitySchemaValidationIT {
 
     /** Returns the container URL with the service schema on the connection search path. */
     private static String jdbcUrlOnServiceSchema() {
-        String url = POSTGRES.getJdbcUrl();
-        return url + (url.contains("?") ? "&" : "?") + "currentSchema=fraud_service";
+        return FraudServiceDatabase.urlFor(EntitySchemaValidationIT.class);
     }
 
     /** Empties the three tables a test writes to, so no row reaches the next test. */
@@ -348,9 +367,9 @@ class EntitySchemaValidationIT {
     }
 
     @Test
-    @DisplayName("Flyway created the one schema both properties name, and applied versions 1, 3 "
-            + "and 4")
-    void flywayCreatedTheSchemaAndAppliedItsFourMigrations() {
+    @DisplayName("Flyway created the one schema both properties name, and applied versions 1, 3, "
+            + "4, 5, 6, 7, 8 and 9")
+    void flywayCreatedTheSchemaAndAppliedItsEightMigrations() {
         String schema = schema();
         Integer schemaRows = jdbc.queryForObject(
                 "SELECT count(*) FROM pg_namespace WHERE nspname = ?", Integer.class, schema);
@@ -369,6 +388,18 @@ class EntitySchemaValidationIT {
         Boolean versionFiveApplied = jdbc.queryForObject(
                 "SELECT success FROM " + qualified(FLYWAY_HISTORY) + " WHERE version = '5'",
                 Boolean.class);
+        Boolean versionSixApplied = jdbc.queryForObject(
+                "SELECT success FROM " + qualified(FLYWAY_HISTORY) + " WHERE version = '6'",
+                Boolean.class);
+        Boolean versionSevenApplied = jdbc.queryForObject(
+                "SELECT success FROM " + qualified(FLYWAY_HISTORY) + " WHERE version = '7'",
+                Boolean.class);
+        Boolean versionEightApplied = jdbc.queryForObject(
+                "SELECT success FROM " + qualified(FLYWAY_HISTORY) + " WHERE version = '8'",
+                Boolean.class);
+        Boolean versionNineApplied = jdbc.queryForObject(
+                "SELECT success FROM " + qualified(FLYWAY_HISTORY) + " WHERE version = '9'",
+                Boolean.class);
         Integer versionRows = jdbc.queryForObject(
                 "SELECT count(*) FROM " + qualified(FLYWAY_HISTORY) + " WHERE version IS NOT NULL",
                 Integer.class);
@@ -386,8 +417,18 @@ class EntitySchemaValidationIT {
                         + "V4__processed_event_topic_key.sql"),
                 () -> assertEquals(Boolean.TRUE, versionFiveApplied, "migration version 5, "
                         + "V5__outbox_dead_letter_state.sql"),
-                () -> assertEquals(Integer.valueOf(4), versionRows,
-                        "the four versioned migrations this service ships"));
+                () -> assertEquals(Boolean.TRUE, versionSixApplied, "migration version 6, "
+                        + "V6__assessment_paging_tiebreaker.sql"),
+                () -> assertEquals(Boolean.TRUE, versionSevenApplied, "migration version 7, "
+                        + "V7__outbox_correlation.sql"),
+                () -> assertEquals(Boolean.TRUE, versionEightApplied, "migration version 8, "
+                        + "V8__outbox_aggregate_head_index.sql, which indexes the account head the "
+                        + "relay claims"),
+                () -> assertEquals(Boolean.TRUE, versionNineApplied, "migration version 9, "
+                        + "V9__fraud_assessment_account_cursor_index.sql, which indexes the page the "
+                        + "collection route walks and drops the two prefixes of that index"),
+                () -> assertEquals(Integer.valueOf(8), versionRows,
+                        "the eight versioned migrations this service ships"));
     }
 
     @Test
@@ -781,24 +822,121 @@ class EntitySchemaValidationIT {
     }
 
     @Test
-    @DisplayName("fraud_assessment carries its primary-key index, the account index, the composite "
-            + "index the collection route reads and the range index its purge reads, and no other")
-    void fraudAssessmentCarriesItsFourIndexesAndNoOther() {
+    @DisplayName("fraud_assessment carries its primary-key index, the cursor index the collection "
+            + "route walks and the range index its purge reads, and no other")
+    void fraudAssessmentCarriesItsThreeIndexesAndNoOther() {
         assertAll(
-                () -> assertEquals(List.of(IX_FRAUD_ASSESSMENT_ACCOUNT,
-                                IX_FRAUD_ASSESSMENT_ACCOUNT_ASSESSED_AT,
+                () -> assertEquals(List.of(IX_FRAUD_ASSESSMENT_ACCOUNT_CURSOR,
                                 IX_FRAUD_ASSESSMENT_ASSESSED_AT, PK_FRAUD_ASSESSMENT),
                         indexNames(FRAUD_ASSESSMENT), FRAUD_ASSESSMENT + " indexes"),
-                () -> assertTrue(indexDefinition(IX_FRAUD_ASSESSMENT_ACCOUNT)
-                                .contains("(" + COLUMN_ACCOUNT_ID + ")"),
-                        () -> IX_FRAUD_ASSESSMENT_ACCOUNT + " covers another column: "
-                                + indexDefinition(IX_FRAUD_ASSESSMENT_ACCOUNT)),
-                () -> assertTrue(indexDefinition(IX_FRAUD_ASSESSMENT_ACCOUNT_ASSESSED_AT)
+                // The three columns and both descending orders are asserted against the definition
+                // PostgreSQL reports, not against the migration text. A page walks this order from a
+                // named position, so an index missing the trailing key would leave ties unordered and
+                // a boundary inside a group of equal assessment times would repeat one row and skip
+                // another.
+                () -> assertTrue(indexDefinition(IX_FRAUD_ASSESSMENT_ACCOUNT_CURSOR)
                                 .contains("(" + COLUMN_ACCOUNT_ID + ", " + COLUMN_ASSESSED_AT
-                                        + " DESC)"),
-                        () -> IX_FRAUD_ASSESSMENT_ACCOUNT_ASSESSED_AT
+                                        + " DESC, " + COLUMN_TRANSACTION_ID + " DESC)"),
+                        () -> IX_FRAUD_ASSESSMENT_ACCOUNT_CURSOR
                                 + " covers other columns or another order: "
-                                + indexDefinition(IX_FRAUD_ASSESSMENT_ACCOUNT_ASSESSED_AT)));
+                                + indexDefinition(IX_FRAUD_ASSESSMENT_ACCOUNT_CURSOR)),
+                // A withdrawn index must be gone from the live schema, not merely absent from the
+                // entity: an index the entity stopped declaring would otherwise go on costing writes.
+                () -> assertEquals(List.of(), indexNames(FRAUD_ASSESSMENT).stream()
+                                .filter(name -> "ix_fraud_assessment_account".equals(name)
+                                        || "ix_fraud_assessment_account_assessed_at".equals(name))
+                                .toList(),
+                        "an index V9 dropped is still present in the migrated schema"));
+    }
+
+    /**
+     * Two assessments of one account sharing one assessment instant fall on one page each, in a
+     * deterministic order.
+     *
+     * <p>The order the collection route applies is {@code assessed_at} descending. That column is a
+     * timestamp this service stamps, and two authorizations of one account arriving inside the same
+     * microsecond share it — one burst on one account produces exactly that. A sort with ties is not
+     * a total order, so the database is free to return a tied pair either way round, and a caller
+     * paging by offset then reads one row twice and never sees the other: page one takes the first row
+     * of one ordering and page two takes the second row of another.
+     *
+     * <p>The primary key breaks the tie. This test pages one row at a time over a tied pair, which is
+     * the smallest page that can expose the defect, and asserts three things: the higher transaction
+     * identifier comes first, the two pages hold different rows, and the two rows together are the two
+     * that were written. A finder ordering on the instant alone fails the second assertion as soon as
+     * the planner returns the pair in the order it inserted them.
+     */
+    @Test
+    @DisplayName("two assessments sharing one instant page one each, ordered by the key that breaks "
+            + "the tie")
+    void tiedAssessmentInstantsPageDeterministically() {
+        String earlierKey = "TIEDCASE00000001";
+        String laterKey = "TIEDCASE00000002";
+        storeAssessment(earlierKey, TIED_ACCOUNT_ID, TIED_ASSESSED_AT);
+        storeAssessment(laterKey, TIED_ACCOUNT_ID, TIED_ASSESSED_AT);
+
+        List<String> firstPage = newestAssessmentKeys(TIED_ACCOUNT_ID, 1);
+        List<String> secondPage =
+                assessmentKeysAfter(TIED_ACCOUNT_ID, TIED_ASSESSED_AT, firstPage.getFirst(), 1);
+
+        assertAll("a tied pair has one total order",
+                () -> assertEquals(List.of(laterKey), firstPage,
+                        "the higher transaction identifier is the head of a tied pair"),
+                () -> assertEquals(List.of(earlierKey), secondPage,
+                        "the second page continues where the first stopped, so no row is repeated "
+                                + "and none is skipped"),
+                () -> assertEquals(List.of(laterKey, earlierKey),
+                        newestAssessmentKeys(TIED_ACCOUNT_ID, 2),
+                        "one page holding both rows carries the same order the two pages did"));
+    }
+
+    /**
+     * Writes one cleared assessment through the repository under test.
+     *
+     * @param transactionId the sixteen-character primary key
+     * @param accountId     the eleven-digit account the assessment belongs to
+     * @param assessedAt    the instant the assessment records
+     */
+    private void storeAssessment(String transactionId, String accountId, Instant assessedAt) {
+        transactionTemplate.executeWithoutResult(status -> assessments.save(
+                new FraudAssessmentEntity(transactionId, accountId, TIED_RISK_SCORE, false,
+                        List.of(), assessedAt)));
+    }
+
+    /**
+     * Reads the newest page of assessment keys for an account, through the finder the route calls.
+     *
+     * @param accountId the account to read
+     * @param size      the rows one page carries
+     * @return the transaction identifiers the page holds, in the order returned
+     */
+    private List<String> newestAssessmentKeys(String accountId, int size) {
+        return transactionTemplate.execute(status -> assessments
+                .findByAccountIdOrderByAssessedAtDescTransactionIdDesc(accountId, Limit.of(size))
+                .stream()
+                .map(FraudAssessmentEntity::getTransactionId)
+                .toList());
+    }
+
+    /**
+     * Reads the page following one named row, through the cursor finder the route calls.
+     *
+     * <p>The position is a pair rather than a row number, so the boundary is exact where a page
+     * falls inside a group of equal assessment times.
+     *
+     * @param accountId     the account to read
+     * @param assessedAt    the assessment time the previous page ended on
+     * @param transactionId the identifier the previous page ended on
+     * @param size          the rows one page carries
+     * @return the transaction identifiers the page holds, in the order returned
+     */
+    private List<String> assessmentKeysAfter(String accountId, Instant assessedAt,
+            String transactionId, int size) {
+        return transactionTemplate.execute(status -> assessments
+                .findPageAfter(accountId, assessedAt, transactionId, Limit.of(size))
+                .stream()
+                .map(FraudAssessmentEntity::getTransactionId)
+                .toList());
     }
 
     @Test

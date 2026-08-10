@@ -16,6 +16,7 @@ import com.carddemo.events.FraudCleared;
 import com.carddemo.events.FraudFlagged;
 import com.carddemo.events.TransactionPosted;
 import com.carddemo.events.serde.JsonSchemaValidatingSerializer;
+import com.carddemo.notification.NotificationServiceDatabase;
 import com.carddemo.notification.TestIdentityPasswords;
 import com.carddemo.notification.config.ObservabilityConfig.NotificationMetrics;
 import com.carddemo.notification.entity.ProcessedEventEntity;
@@ -114,18 +115,8 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 @DisplayName("A repeat delivery of one event identifier writes nothing a first delivery did not")
 class DuplicateDeliveryIT {
 
-    /**
-     * The two image tags, both pinned by Agent Action Plan section 0.5.1. The broker tag matches
-     * the client library version this module resolves, so no client meets a broker of another line.
-     */
-    private static final String POSTGRES_IMAGE = "postgres:18.4";
     private static final String KAFKA_IMAGE = "apache/kafka:4.2.1";
 
-    /**
-     * The database name, login and password of the disposable container, one value for all three;
-     * the protocol its broker listener accepts; and the schema the shipped configuration migrates.
-     */
-    private static final String CONTAINER_CREDENTIAL = "carddemo";
     private static final String BROKER_SECURITY_PROTOCOL = "PLAINTEXT";
     private static final String SERVICE_SCHEMA = "notification_service";
 
@@ -368,11 +359,13 @@ class DuplicateDeliveryIT {
      */
     private static final String UNMASKED_CARD_NUMBER = "9999000011112222";
 
-    @Container
-    private static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer(POSTGRES_IMAGE)
-            .withDatabaseName(CONTAINER_CREDENTIAL)
-            .withUsername(CONTAINER_CREDENTIAL)
-            .withPassword(CONTAINER_CREDENTIAL);
+    /**
+     * The one container the module fork runs, which this class reads a login from.
+     *
+     * <p>{@link NotificationServiceDatabase} owns it and hands this class a database of its own inside it.
+     * Nothing here starts or stops a container.
+     */
+    private static final PostgreSQLContainer POSTGRES = NotificationServiceDatabase.container();
 
     @Container
     private static final KafkaContainer KAFKA = new KafkaContainer(KAFKA_IMAGE);
@@ -419,8 +412,7 @@ class DuplicateDeliveryIT {
     }
 
     private static String jdbcUrlOnServiceSchema() {
-        String url = POSTGRES.getJdbcUrl();
-        return url + (url.contains("?") ? "&" : "?") + "currentSchema=" + SERVICE_SCHEMA;
+        return NotificationServiceDatabase.urlFor(DuplicateDeliveryIT.class);
     }
 
     /** Opens the template every valid publish travels through. */

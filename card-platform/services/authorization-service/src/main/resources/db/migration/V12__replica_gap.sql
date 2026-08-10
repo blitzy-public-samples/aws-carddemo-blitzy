@@ -1,39 +1,22 @@
--- Authorization service, migration V12.
--- Records the accounts whose replica copy is missing a change, and retires the age-based
--- freshness bound that stood in for this table.
+-- Authorization service, migration V12. Declares replica_gap: one row per account per stream whose
+-- replica copy is missing a delivered change.
 --
--- WHY THIS FILE EXISTS. This service authorizes against two replicas: card_xref, kept current by
--- CardUpdated, and account_credit_snapshot, kept current by AccountStateChanged. Both producers
--- publish on a state change and on nothing else. The service asked "how old is this row's last
--- observation" and refused a call past carddemo.replica.max-staleness, which read a correct copy of
--- an unedited card as a stale one: every card the platform holds and nobody edits crossed the bound
--- in a day, and every call for it then answered 503 while readiness still reported UP. The question
--- was wrong rather than the bound. What matters is whether a published change is missing, not how
--- long ago the last one arrived.
+-- Statements: one CREATE TABLE, one COMMENT ON TABLE and three COMMENT ON COLUMN.
 --
--- WHAT REPLACES IT. Two measurements, neither of which reads a row's age.
+-- The mechanics. This service authorizes against two replicas: card_xref, written by CardUpdated, and
+-- account_credit_snapshot, written by AccountStateChanged. A record that was delivered and could not be
+-- applied has its offset advanced once its diagnostic is away, so consumer lag returns to zero while
+-- one account's copy is behind. The consumer that failed writes the account here, in a transaction of
+-- its own so the row survives the rollback of the attempt, and deletes it when a later record for that
+-- account applies. A decision that reads either replica row consults this table and refuses the call
+-- while a row stands. Consumer lag itself is measured separately, by
+-- messaging/KafkaReplicaSynchronization against carddemo.replica.lag-ceiling.
 --
---   1. Stream synchronization. messaging/KafkaReplicaSynchronization reads, for each replica topic,
---      whether a listener exists, is running, holds partitions, and reports lag within
---      carddemo.replica.lag-ceiling. A caught-up consumer of a quiet topic reports zero lag, so an
---      unedited card stays authorizable for as long as it stays unedited.
+-- The key is (aggregate_id, stream). One account can be behind on both streams independently, and the
+-- pair is what a delete names so clearing one stream does not clear the other.
 --
---   2. This table. A record that was delivered and could not be applied has its offset advanced once
---      its diagnostic is away, so lag returns to zero while one account's copy is behind. The
---      consumer that failed writes the account here, in its own transaction so the row survives the
---      rollback of the attempt, and deletes it when a later record for that account applies. A
---      decision that reads either replica row consults this table and refuses the call while a row
---      stands, which is the case the old bound was reaching for and never actually detected: a
---      failed application left observed_at exactly as recent as a successful one.
---
--- WHY A TABLE AND NOT A COUNTER. The obligation has to outlive the process. A counter in memory
--- forgets on restart, and the account it forgot then authorizes against a credit limit or an expiry
--- this service knows it failed to apply. A row also names the account, so an operator can see which
--- accounts are affected instead of only that something failed.
---
--- KEY. One row per account per stream. The same account can be behind on both streams
--- independently, and the pair is what a delete has to name so clearing one stream does not clear the
--- other.
+-- This migration also retires carddemo.replica.max-staleness, the age bound that stood in for the
+-- table. Rationale, alternatives considered and accepted risks: card-platform/docs/decision-log.md.
 
 CREATE TABLE replica_gap
 (

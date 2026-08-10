@@ -1,31 +1,19 @@
--- Authorization service, migration V10.
--- Makes the catalogue say what the retention sweep does, for the two tables where it did not.
+-- Authorization service, migration V10. Declares the retention window of two tables the sweep purges.
 --
--- WHY THIS FILE EXISTS. A security review found three tables on this platform whose
--- COMMENT ON TABLE declared a retention window that nothing applied. Fixing those exposed the same
--- defect in the opposite direction here: two tables of this service are deleted on a timer while
--- the catalogue says, or implies, that they are not.
+-- Statements: two COMMENT ON TABLE. No column, index, constraint or row is declared, altered or
+-- removed. V1 and V3 are left as they ran.
 --
--- authorization_decision said 'retention=relationship'. That reads as a row living as long as the
--- cardholder relationship, and domain/RetentionSweep deletes it after
--- carddemo.retention.decision-retention-days, which the shipped configuration sets to 365. An
--- operator reading the catalogue would plan a five-year audit trail and find a one-year one.
+-- Both comments now name carddemo.retention.decision-retention-days, the one setting
+-- domain/RetentionSweep reads for both deletes, rather than a number of their own.
+-- authorization_decision is purged by AuthorizationDecisionRepository.deleteDecidedBefore on
+-- decided_at and previously read 'retention=relationship'; unresolved_card_attempt is purged by
+-- UnresolvedCardAttemptRepository.deleteAttemptedBefore on attempted_at and previously carried no
+-- table comment at all. equivalence-tests/RetentionSweepContractTest compares both declarations
+-- against the sweep.
 --
--- unresolved_card_attempt carried no COMMENT ON TABLE at all, and the same sweep purges it on the
--- same horizon. A table with no comment states nothing, which is a smaller failure than stating the
--- wrong thing, and it is still the one table of this service a reader could not classify.
---
--- WHAT THE WINDOW ACTUALLY IS. One setting drives both deletes, so both comments name it rather
--- than repeating a number that would drift from the one the sweep reads. That is the convention
--- processed_event already follows in V1__schema.sql: 'retention=' names the property, not a value.
---
--- WHY 365 DAYS IS NOT 'relationship'. Both rows are attribution records for a financial decision,
--- so they outlive the outbox row that published it. They do not outlive the customer. Whether a
--- year is the right window for a declined-authorization audit trail is a business decision rather
--- than an engineering one, and card-platform/docs/suggested-next-tasks.md carries it.
---
--- Nothing else changes. No column, no index, no constraint and no row. V1 and V3 are left as they
--- ran, because an applied migration is not edited.
+-- Whether a year is the right window for a declined-authorization audit trail is a business question,
+-- and card-platform/docs/suggested-next-tasks.md carries it. Rationale, alternatives considered and
+-- accepted risks: card-platform/docs/decision-log.md.
 
 COMMENT ON TABLE authorization_decision IS
     'retention=carddemo.retention.decision-retention-days; purge_key=decided_at;

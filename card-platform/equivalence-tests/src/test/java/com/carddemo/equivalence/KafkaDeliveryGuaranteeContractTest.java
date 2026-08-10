@@ -12,13 +12,14 @@ import java.util.List;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 /**
- * Holds every consumer of the platform to the three delivery guarantees a security review found
- * unevenly applied.
+ * Holds every consumer and every relay of the platform to the delivery guarantees a review found
+ * unevenly applied: three from a security review, and two more from a performance review.
  *
  * <p>Each of the three was a property some services had and others did not, which is the shape of
  * finding that a review catches once and a test has to catch from then on. A dead-lettered record
@@ -30,6 +31,13 @@ import org.junit.jupiter.api.Test;
  * refused such a record and five did not. And a duplicate-suppression marker swept while the record
  * it suppresses is still readable suppresses nothing, which the shipped configuration allowed by
  * setting the marker horizon equal to broker log retention.
+ *
+ * <p>The two the performance review added are the other half of the same subject: what the platform
+ * gives up to hold per-account order. A relay that publishes one row at a time holds every account
+ * behind whichever account it is publishing, and a listener container running one thread reads every
+ * partition of its topic in sequence. Neither is required by the ordering guarantee, because the
+ * account identifier is the message key and Kafka assigns one partition to one consumer, so both
+ * were serialization the guarantee did not ask for.
  *
  * <p>Every assertion reads a shipped source or a shipped configuration file. No application
  * context,
@@ -88,6 +96,21 @@ class KafkaDeliveryGuaranteeContractTest {
                     "CustomerContextChangedConsumer.java"),
             "account-service", List.of(
                     "TransactionPostedConsumer.java"));
+
+    /**
+     * The five modules that own an {@code outbox_event} table and relay it.
+     *
+     * <p>The notification service publishes nothing, so it holds no outbox and no relay.
+     */
+    private static final List<String> OUTBOX_SERVICES = List.of(
+            "authorization-service",
+            "ledger-posting-service",
+            "fraud-detection-service",
+            "account-service",
+            "card-service");
+
+    /** The partial index every outbox-owning module ships for the account-head claim. */
+    private static final String AGGREGATE_HEAD_INDEX = "ix_outbox_event_aggregate_head";
 
     /** Marker horizon every shipped file carries, in hours. */
     private static final long MARKER_RETENTION_HOURS = 720L;
@@ -395,6 +418,224 @@ class KafkaDeliveryGuaranteeContractTest {
                     .as("one value reaches all six services, so no two can disagree")
                     .contains("KAFKA_LOG_RETENTION_HOURS: ${KAFKA_LOG_RETENTION_HOURS:-"
                             + BROKER_RETENTION_HOURS + "}");
+        }
+    }
+
+    /**
+     * Per-account ordering survives a relay that publishes several accounts at once.
+     *
+     * <p>Each relay used to hold one transaction around a whole sweep and to return at the first
+     * refused row. The transaction held a database connection and every claimed row lock for the sum
+     * of that sweep's broker waits, and the return meant one unreachable partition stopped
+     * publication for every account, not just the account it belonged to. Both are gone, and both
+     * were removed on the strength of one property: the claim answers with the due head row of each
+     * aggregate, so a sweep's rows name distinct accounts and a later event of one account is not
+     * claimable while that account's earlier row is unpublished.
+     *
+     * <p>That property is what the ordering guarantee now rests on, so it is asserted for every
+     * relay rather than for the one whose test happened to cover it. The account identifier is the
+     * message key, so an account whose second event overtook its first would be applied out of order
+     * by every consumer of the partition it keys.
+     */
+    @Nested
+    @DisplayName("Per-account ordering through the outbox")
+    class PerAccountOrdering {
+
+        /** Sends one relay keeps in flight, which is also its producer's in-flight window. */
+        private static final int SENDS_IN_FLIGHT = 5;
+
+        @Test
+        @DisplayName("every relay claims the head row of each account and never two of one account")
+        void everyRelayClaimsTheHeadRowOfEachAccount() {
+            for (String module : OUTBOX_SERVICES) {
+                assertThat(outboxRepositorySourceOf(module))
+                        .as("the claim query of %s", module)
+                        .contains("AND NOT EXISTS (")
+                        .contains("WHERE preceding.aggregateId = row.aggregateId")
+                        .contains("preceding.createdAt < row.createdAt")
+                        .contains("AND preceding.eventId < row.eventId");
+            }
+        }
+
+        @Test
+        @DisplayName("every relay ships the partial index that claim reads")
+        void everyRelayShipsThePartialIndexThatClaimReads() {
+            for (String module : OUTBOX_SERVICES) {
+                String migration = migrationDeclaring(module, AGGREGATE_HEAD_INDEX);
+
+                assertThat(migration)
+                        .as("the aggregate-head index of %s", module)
+                        .contains("ON outbox_event (aggregate_id, created_at, event_id)")
+                        .contains("WHERE relay_state IN ('PENDING', 'CLAIMED')");
+            }
+        }
+
+        @Test
+        @DisplayName("no relay waits for a broker inside a transaction")
+        void noRelayWaitsForABrokerInsideATransaction() {
+            for (String module : OUTBOX_SERVICES) {
+                String relay = relaySourceOf(module);
+
+                assertThat(relay)
+                        .as("the sweep of %s claims in one transaction and settles in another",
+                                module)
+                        .contains("claimBatch(")
+                        .contains("dispatch(")
+                        .contains("settle(");
+                assertThat(relay)
+                        .as("the sweep of %s wraps no whole pass in one transaction", module)
+                        .doesNotContain("transactionTemplate.execute(status -> sweepOnce")
+                        .doesNotContain("transactionTemplate.execute(status -> runOnePass");
+            }
+        }
+
+        @Test
+        @DisplayName("every relay bounds its in-flight sends to the producer's own window")
+        void everyRelayBoundsItsInFlightSendsToTheProducerWindow() {
+            for (String module : OUTBOX_SERVICES) {
+                assertThat(relaySourceOf(module))
+                        .as("the in-flight bound of %s", module)
+                        .contains("MAX_SENDS_IN_FLIGHT = " + SENDS_IN_FLIGHT)
+                        .contains("Math.min(this.batchSize, MAX_SENDS_IN_FLIGHT)");
+                assertThat(applicationConfigurationOf(module))
+                        .as("the producer window of %s, which the bound above matches", module)
+                        .contains("max.in.flight.requests.per.connection: " + SENDS_IN_FLIGHT);
+            }
+        }
+    }
+
+    /**
+     * A consumer reads a partition at a time, and unrelated partitions are read beside each other.
+     *
+     * <p>Ordering and throughput pull in opposite directions here, and the partition is what settles
+     * them. Kafka assigns one partition to exactly one consumer of a group, so a listener container
+     * running one thread per partition never splits a partition and never reorders one account: the
+     * account identifier is the message key on every event this platform publishes. What it does
+     * remove is the serialization of accounts that have nothing to do with each other. Every one of
+     * these five services read its topics on a single thread before this contract existed — four by
+     * leaving the framework default in place and the fraud service by declaring it — so three
+     * partitions of authorized transactions were scored, posted and rendered one record at a time.
+     */
+    @Nested
+    @DisplayName("Consumer throughput is bounded by partitions, not by one thread")
+    class ConsumerThroughput {
+
+        /** The declaration each shipped file carries, unquoted and quoted. */
+        private static final String CONCURRENCY_KEY = "concurrency: ";
+
+        /** The override name the shipped placeholder reads, which Spring also binds by itself. */
+        private static final String CONCURRENCY_OVERRIDE = "SPRING_KAFKA_LISTENER_CONCURRENCY";
+
+        /** The variable both deployment artifacts carry the partition count under. */
+        private static final String PARTITION_COUNT_VARIABLE = "KAFKA_TOPIC_PARTITIONS";
+
+        /**
+         * Asserts the shipped concurrency of all six services equals the documented partition count.
+         *
+         * <p>Equality is the assertion in both directions. Below the count, partitions share a
+         * thread and the service reads its topics more slowly than the broker offers them. Above it,
+         * the group assignor has nothing to give the surplus threads, so the extra consumers sit in
+         * the group, take part in every rebalance and read nothing. The card service is included
+         * even though it registers no listener, because its shipped file already declares the
+         * acknowledgement mode for a listener added later and the same reasoning applies to this.
+         */
+        @Test
+        @DisplayName("every service reads one thread per partition, from the documented count")
+        void everyServiceReadsOneThreadPerPartition() {
+            String declaration = CONCURRENCY_KEY + "${" + CONCURRENCY_OVERRIDE + ":"
+                    + documentedPartitionCount() + "}";
+
+            for (String module : SERVICES) {
+                // Two of the six quote every scalar and four quote none, and a quoted placeholder
+                // binds to the same value, so the quotes are taken out before matching.
+                assertThat(applicationConfigurationOf(module).replace("\"", ""))
+                        .as("the shipped listener concurrency of %s", module)
+                        .contains(declaration);
+            }
+        }
+
+        /**
+         * Asserts the partition count is the same number in the dotenv example and in the ConfigMap.
+         *
+         * <p>The concurrency above is read against this number, so the number has to mean one thing.
+         * The composition passes it to the topic-creating container from the dotenv file, and the
+         * cluster path passes it from the ConfigMap, and a service reads its concurrency from
+         * neither: it ships the value. Two artifacts disagreeing would leave one path with idle
+         * consumers and the other with shared partitions, and nothing would report it.
+         */
+        @Test
+        @DisplayName("the dotenv example and the ConfigMap declare the same partition count")
+        void theDotenvExampleAndTheConfigMapDeclareTheSamePartitionCount() {
+            String configMap = read(platformDirectory().resolve("deploy/k8s/30-configmap.yaml"));
+
+            assertThat(configMap)
+                    .as("the ConfigMap partition count")
+                    .contains(PARTITION_COUNT_VARIABLE + ": \"" + documentedPartitionCount() + "\"");
+        }
+
+        /**
+         * Reads the partition count out of {@code .env.example}.
+         *
+         * @return the documented partition count of every topic
+         */
+        private int documentedPartitionCount() {
+            Matcher declared = Pattern
+                    .compile("(?m)^" + PARTITION_COUNT_VARIABLE + "=(\\d+)$")
+                    .matcher(read(platformDirectory().resolve(".env.example")));
+
+            assertThat(declared.find())
+                    .as("%s must be documented in .env.example", PARTITION_COUNT_VARIABLE)
+                    .isTrue();
+            return Integer.parseInt(declared.group(1));
+        }
+    }
+
+    /**
+     * Reads the outbox repository of one module.
+     *
+     * @param module the service module directory name
+     * @return the source text
+     */
+    private static String outboxRepositorySourceOf(String module) {
+        return read(platformDirectory().resolve("services").resolve(module)
+                .resolve("src/main/java/com/carddemo").resolve(PACKAGES.get(module))
+                .resolve("repository/OutboxEventRepository.java"));
+    }
+
+    /**
+     * Reads the outbox relay of one module.
+     *
+     * @param module the service module directory name
+     * @return the source text
+     */
+    private static String relaySourceOf(String module) {
+        return read(platformDirectory().resolve("services").resolve(module)
+                .resolve("src/main/java/com/carddemo").resolve(PACKAGES.get(module))
+                .resolve("outbox/OutboxRelay.java"));
+    }
+
+    /**
+     * Reads the one shipped migration of a module that creates the named index.
+     *
+     * @param module the service module directory name
+     * @param index  the index name the migration creates
+     * @return the text of that migration
+     */
+    private static String migrationDeclaring(String module, String index) {
+        Path migrations = platformDirectory().resolve("services").resolve(module)
+                .resolve("src/main/resources/db/migration");
+        try (Stream<Path> files = Files.list(migrations)) {
+            List<Path> declaring = files
+                    .filter(file -> file.getFileName().toString().endsWith(".sql"))
+                    .filter(file -> read(file).contains("CREATE INDEX " + index))
+                    .toList();
+
+            assertThat(declaring)
+                    .as("migrations of %s creating %s", module, index)
+                    .hasSize(1);
+            return read(declaring.getFirst());
+        } catch (IOException unreadable) {
+            throw new UncheckedIOException("cannot list " + migrations, unreadable);
         }
     }
 

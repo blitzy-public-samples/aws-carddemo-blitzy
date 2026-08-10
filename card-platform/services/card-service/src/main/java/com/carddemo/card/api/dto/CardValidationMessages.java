@@ -358,9 +358,9 @@ public final class CardValidationMessages {
      * no row, which only a read can discover. A cursor this service never issued, or one naming a
      * card since removed, reaches this text.
      *
-     * <p>The alternative would be to start the browse over, and that is why this text exists: a
-     * caller asking to continue from page nine would read page one and believe it had reached rows it
-     * already held.
+     * <p>The read answers this text rather than starting the browse over, so a caller asking to
+     * continue from page nine is told its position is gone instead of reading page one and believing it
+     * had reached rows it already held.
      *
      * <p>No source message corresponds. The source kept its browse key in working storage between
      * screen turns, at {@code app/cbl/COCRDLIC.cbl:L1010} and its neighbours, so its position could

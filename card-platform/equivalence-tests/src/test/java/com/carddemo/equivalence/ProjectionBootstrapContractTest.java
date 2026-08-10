@@ -1474,8 +1474,8 @@ class ProjectionBootstrapContractTest {
         /**
          * Every listener this platform declares, keyed as {@code <module> <file name>}.
          *
-         * <p>One authorization call publishes one event, and the fan-out of that event is the
-         * property this migration exists to demonstrate. An inventory assertion is what makes a
+         * <p>A decided authorization call publishes at most one event, and the fan-out of that
+         * event is the property this migration exists to demonstrate. An inventory assertion is what makes a
          * listener silently lost or silently added a build failure: a count, or an emptiness check,
          * passes with one listener and hides the other eight.
          *

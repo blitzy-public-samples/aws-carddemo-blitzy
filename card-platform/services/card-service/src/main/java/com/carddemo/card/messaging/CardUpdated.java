@@ -19,7 +19,7 @@ import com.carddemo.events.serde.JsonSchemaValidatingSerializer;
  *
  * <p>Plan alignment. The plan names this contract {@code CardUpdated}. This record carries four
  * payload components under that name, and it validates every payload against the shared versioned document
- * {@code schemas/card-updated-v2.json} before publishing rather than writing it unchecked. It
+ * {@code schemas/card-updated-v1.json} before publishing rather than writing it unchecked. It
  * declares no mutation-kind component: the card service publishes on an update and on nothing
  * else, so a consumer needs no discriminator to tell one kind from another. The decision log this
  * platform records in {@code card-platform/docs/decision-log.md}.
@@ -33,7 +33,7 @@ import com.carddemo.events.serde.JsonSchemaValidatingSerializer;
  * JavaScript Object Notation (JSON) object and no nesting key reaches a topic.
  *
  * <p>Those nine properties are the nine {@code required} properties of
- * {@code schemas/card-updated-v2.json}, the document {@link #toValidatedJson()} checks every
+ * {@code schemas/card-updated-v1.json}, the document {@link #toValidatedJson()} checks every
  * payload against before it reaches a topic. That document closes its property set and declares
  * one bounded {@code extensions} object no record writes, so a field this record does not carry
  * cannot travel under this event type.
@@ -41,15 +41,17 @@ import com.carddemo.events.serde.JsonSchemaValidatingSerializer;
  * <p>Three fields of the card record have no component here. The card verification value at
  * {@code app/cpy/CVACT02Y.cpy:L7} reaches no event, no log line and no response body. The trailing
  * filler at {@code app/cpy/CVACT02Y.cpy:L11} holds no data. The embossed cardholder name is used
- * by the synchronous card update and detail surfaces but no event consumer needs it, so it is not
- * persisted in the outbox payload or published.
+ * by the synchronous card update and detail surfaces and reaches no consumer, so it is neither
+ * persisted in the outbox payload nor published. Rationale:
+ * {@code card-platform/docs/decision-log.md}.
  *
  * <p>{@link #ofUnmaskedCardNumber} masks the card number, and the canonical constructor rejects an
  * unmasked value. A card lookup keys on all sixteen characters, so a caller resolves the card first
  * and builds the event second.
  *
- * <p>The card service outbox writer turns this record into text and stores that text in an {@code
- * outbox_event} row, inside the one transaction that writes the card row.
+ * <p>The card service outbox writer turns this record into text through {@link #toValidatedJson()}
+ * and stores that text in an {@code outbox_event} row, inside the one transaction that writes the
+ * card row.
  *
  * @param eventId          the identifier every consumer records to detect a duplicate delivery
  * @param eventType        the routing discriminator, always {@link #EVENT_TYPE}
@@ -98,10 +100,12 @@ public record CardUpdated(
     public static final String EVENT_TYPE = CardUpdated.class.getSimpleName();
 
     /**
-     * Current contract version. Version 1 remains governed for old records and version 2 removes
-     * the embossed cardholder name from the event.
+     * The one governed contract version. {@code schemas/card-updated-v1.json} is the only
+     * {@code CardUpdated} document, so no earlier version exists for this payload to be measured
+     * against, and a later version may only add fields to the nine declared there.
+     * {@code SchemaBackwardCompatibilityTest} holds that rule for every event type on this platform.
      */
-    public static final int SCHEMA_VERSION = 2;
+    public static final int SCHEMA_VERSION = 1;
 
     /**
      * The form {@link #maskedCardNumber()} takes: twelve mask characters then four decimal digits.
@@ -309,16 +313,16 @@ public record CardUpdated(
      * Serializes this event through the one publish-side gate every event of this platform passes.
      *
      * <p>{@link JsonSchemaValidatingSerializer} does the work: it writes the flat wire form, checks
-     * the result against {@code schemas/card-updated-v2.json} in
+     * the result against {@code schemas/card-updated-v1.json} in
      * {@code com.carddemo:event-contracts}, and refuses a document wider than the platform ceiling.
      * The returned text is what a caller stores in the {@code payload} column of
      * {@code outbox_event} and what the relay later hands to the broker unchanged.
      *
-     * <p>This method exists so that no publisher of this event can reach a topic without passing
-     * that gate. Before it existed, this service serialized its own event with its own conventions,
-     * and the shared serializer governed only the five core events. A mutation event's payload was
-     * therefore never checked against the contract describing it. The closed property set that
-     * keeps an undeclared field out of a known event type never applied to it either.
+     * <p>{@code outbox/OutboxWriter.writeCardUpdated} is the one production caller, so every card
+     * event stored in {@code outbox_event} passed this gate before its row was written, and the relay
+     * publishes that same text. The gate also screens for a property no event may carry and for a
+     * card number or government identifier in a free-text property, which a schema check alone does
+     * not do.
      *
      * @return this event as validated JavaScript Object Notation text, in UTF-8
      * @throws org.apache.kafka.common.errors.SerializationException when this event breaks its

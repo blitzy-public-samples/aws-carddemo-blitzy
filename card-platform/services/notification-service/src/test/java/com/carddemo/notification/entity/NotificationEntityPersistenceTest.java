@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.carddemo.cobol.PanMasker;
+import com.carddemo.notification.NotificationServiceDatabase;
 import com.carddemo.notification.TestIdentityPasswords;
 import com.carddemo.notification.entity.ProcessedEventEntity.ProcessedEventId;
 import com.carddemo.notification.entity.StatementTransactionEntity.StatementTransactionId;
@@ -45,8 +46,6 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 
 /**
@@ -84,7 +83,6 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
  * {@code card-platform/docs/business-rule-flags.md}. The masked and the raw card-number
  * form both fitting {@code CHAR(16)}: {@code card-platform/docs/suggested-next-tasks.md}.
  */
-@Testcontainers
 @SpringBootTest(properties = {
     // The three listeners this module runs would retry an absent broker for the life of the run.
     "spring.kafka.listener.auto-startup=false",
@@ -105,31 +103,13 @@ class NotificationEntityPersistenceTest {
     // Container. Agent Action Plan section 0.5.1 pins the image tag and Testcontainers 2.0.5.
     // ---------------------------------------------------------------------------------------
 
-    /** Database image this class starts, pinned by Agent Action Plan section 0.5.1. */
-    private static final String POSTGRES_IMAGE = "postgres:18.4";
-
     /**
-     * Schema every connection of this context searches, and the default
-     * {@code src/main/resources/application.yml} names under
-     * {@code spring.jpa.properties.hibernate.default_schema}.
-     */
-    private static final String MIGRATED_SCHEMA = "notification_service";
-
-    /** Database, login and password of the disposable container. */
-    private static final String DATABASE_CREDENTIAL = "carddemo";
-
-    /**
-     * One database for every test method in this class.
+     * The one container the module fork runs, which this class reads a login from.
      *
-     * <p>Testcontainers starts the image and Flyway migrates it, so {@code mvn test} needs a
-     * running Docker daemon and no hand-made database, schema or environment variable. The field is
-     * {@code static}, so one container and one cached Spring context serve every method below.</p>
+     * <p>{@link NotificationServiceDatabase} owns it and hands this class a database of its own inside it.
+     * Nothing here starts or stops a container.
      */
-    @Container
-    private static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer(POSTGRES_IMAGE)
-            .withDatabaseName(DATABASE_CREDENTIAL)
-            .withUsername(DATABASE_CREDENTIAL)
-            .withPassword(DATABASE_CREDENTIAL);
+    private static final PostgreSQLContainer POSTGRES = NotificationServiceDatabase.container();
 
     /**
      * Points the datasource at the container.
@@ -153,17 +133,15 @@ class NotificationEntityPersistenceTest {
     }
 
     /**
-     * Returns the container locator with {@code currentSchema} appended.
+     * Returns the locator of this class's database, with the service schema on the search path.
      *
-     * <p>{@code PostgreSQLContainer.getJdbcUrl()} already carries a query string, so the separator
-     * is chosen from what the locator holds.</p>
+     * <p>{@link NotificationServiceDatabase} owns the module's one container, hands this class a
+     * database of its own inside it and builds the locator, so nothing here decides a separator.</p>
      *
      * @return the locator every connection of this context opens
      */
     private static String migratedSchemaUrl() {
-        String url = POSTGRES.getJdbcUrl();
-        String separator = url.contains("?") ? "&" : "?";
-        return url + separator + "currentSchema=" + MIGRATED_SCHEMA;
+        return NotificationServiceDatabase.urlFor(NotificationEntityPersistenceTest.class);
     }
 
     // ---------------------------------------------------------------------------------------

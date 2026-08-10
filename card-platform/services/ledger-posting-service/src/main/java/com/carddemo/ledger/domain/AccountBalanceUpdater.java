@@ -106,8 +106,13 @@ public class AccountBalanceUpdater {
      *
      * <p>{@code app/cbl/CBTRN02C.cbl:L547}, {@code :L549} and {@code :L551} each add without an
      * {@code ON SIZE ERROR} phrase, so a sum wider than the field keeps its low-order ten integer
-     * digits and its sign. A store that dropped a digit is reported once, naming the capacity and
-     * withholding the figure.
+     * digits and its sign. A truncation is reported once, naming the capacity and withholding the
+     * figure.
+     *
+     * <p>The line reports the arithmetic and not a stored row. This method runs inside the caller's
+     * transaction, which may still roll back, so a line claiming the figure was stored would name a
+     * row that never existed. Truncation is a property of the add itself and is true whatever becomes
+     * of the transaction, which is why the detection stays here and the wording says attempts.
      *
      * @param sum       the value one add produced, at the scale of the field it belongs to
      * @param precision the digits the field holds in total, from {@code PicClause}
@@ -120,8 +125,9 @@ public class AccountBalanceUpdater {
             LOG.warn("A posted figure needed more than the {} integer digits the account balance"
                             + " fields hold at app/cpy/CVACT01Y.cpy:L7, :L13 and :L14, so the"
                             + " high-order digits were dropped where the source ADD statements at"
-                            + " app/cbl/CBTRN02C.cbl:L547-L551 drop them. The stored figure and the"
-                            + " posted event agree, and both report less than the postings sum to."
+                            + " app/cbl/CBTRN02C.cbl:L547-L551 drop them. The truncated figure is"
+                            + " what this transaction attempts to store and what the posted event"
+                            + " carries, and both report less than the postings sum to."
                             + " See docs/business-rule-flags.md.",
                     precision - scale);
         }

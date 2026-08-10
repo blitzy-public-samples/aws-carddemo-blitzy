@@ -31,10 +31,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  * shape, and every card number the migration stores is masked and keys nothing.
  *
  * <p>The remaining assertions cover the response shape. The envelope names the card once, by its
- * masked form, and neither the count nor the array carries a ceiling: the response covers the whole
- * history of one card, matching {@code app/cbl/CBSTM03A.CBL:L429}, which totals every row of one
- * card between two key breaks. {@link NotificationRenderer#MAXIMUM_STATEMENT_ROWS} bounds one
- * rendered alert and not this body.
+ * masked form. The count carries no ceiling and the array does: the count and the total describe the
+ * whole history of one card, matching {@code app/cbl/CBSTM03A.CBL:L429}, which totals every row of one
+ * card between two key breaks, while the array carries one bounded page of it.
+ * {@link NotificationRenderer#MAXIMUM_STATEMENT_ROWS} bounds one rendered alert and is also the
+ * largest page this route serves.
  *
  * <p>Reading the files rather than a running application keeps these assertions in the unit test
  * phase, which is where every other test of this module runs.
@@ -112,9 +113,9 @@ class HistoryContractTest {
     @DisplayName("The request carries the card token and neither a card number nor a masked value")
     void theRequestCarriesTheCardTokenAlone() {
         assertThat(parameterNames())
-                .as("the route names the card by the value the read model is keyed on, and reads "
-                        + "nothing else")
-                .containsExactly(CARD_TOKEN);
+                .as("the route names the card by the value the read model is keyed on, and the only "
+                        + "other values it reads shape the page rather than name a card")
+                .containsExactly(CARD_TOKEN, "X-Notification-Cursor", "pageSize");
         assertThat(schemaOf(parameter(CARD_TOKEN)).get("pattern"))
                 .as("a card number in a path reaches logs this service cannot redact, and a masked "
                         + "value identifies no single card, so the route reads neither")
@@ -184,10 +185,13 @@ class HistoryContractTest {
 
         assertThat(asStrings(history.get("required")))
                 .as("the masked form is read from an entry, and this body is built only where one "
-                        + "was read, so every response carries it")
-                .containsExactly(CARD_NUMBER, "transactionCount", "totalAmount", "transactions");
+                        + "was read, so every response carries it. nextCursor is the one optional "
+                        + "property: a last page has nowhere to continue to")
+                .containsExactly(CARD_NUMBER, "transactionCount", "totalAmount", "transactions",
+                        "nextPageExists");
         assertThat(properties.keySet())
-                .containsExactly(CARD_NUMBER, "transactionCount", "totalAmount", "transactions");
+                .containsExactly(CARD_NUMBER, "transactionCount", "totalAmount", "transactions",
+                        "nextPageExists", "nextCursor");
         assertThat(nested(properties, CARD_NUMBER).get("pattern")).isEqualTo(MASKED_PATTERN);
         assertThat(nested(properties, CARD_NUMBER).get("maxLength")).isEqualTo(MASKED_LENGTH);
         assertThat(nested(historySchema(), "properties").keySet())
@@ -195,31 +199,45 @@ class HistoryContractTest {
                 .doesNotContain(CARD_TOKEN);
     }
 
+    /**
+     * The array is bounded and the count is not, which is the split the fix rests on.
+     *
+     * <p>{@code app/cbl/CBSTM03A.CBL:L429} totals every row of one card between two key breaks, so the
+     * count has to describe the whole card and can carry no ceiling. The array is one page of it and
+     * carries the ceiling the route enforces. Publishing a bound on the array while leaving the count
+     * unbounded is what lets a reader tell the two apart.</p>
+     */
     @Test
-    @DisplayName("Neither the array nor the count carries a ceiling")
-    void responseBoundsNeitherItsArrayNorItsCount() {
+    @DisplayName("The array carries a ceiling and the count does not")
+    void theArrayIsBoundedAndTheCountIsNot() {
         Map<String, Object> properties = nested(historySchema(), "properties");
 
         assertThat(nested(properties, "transactions").get("maxItems"))
-                .as("the array covers the whole history of one card")
-                .isNull();
+                .as("the array carries one page, so it publishes the ceiling the route enforces")
+                .isEqualTo(NotificationHistoryController.MAX_PAGE_SIZE);
         assertThat(nested(properties, "transactionCount").get("maximum"))
-                .as("the count covers the whole history of one card")
+                .as("the count covers the whole history of one card, which has no ceiling")
                 .isNull();
         assertThat(nested(properties, "transactionCount").get("minimum")).isEqualTo(0);
     }
 
+    /**
+     * The endpoint pages with a keyset cursor and declares no offset paging.
+     *
+     * <p>An offset page reads and discards every entry before it, so the last page of a long history
+     * is the most expensive one to serve. The cursor is exclusive and walks the primary key, so the
+     * cost of a page does not depend on where in a history it sits.</p>
+     */
     @Test
-    @DisplayName("The endpoint declares no paging parameter of any kind")
-    void endpointDeclaresNoPagingParameter() {
+    @DisplayName("The endpoint pages by cursor and declares no offset paging")
+    void endpointPagesByCursorAndNotByOffset() {
         assertThat(parameterNames())
-                .as("a bounded page would report a total over rows the source totalled in full")
-                .doesNotContain("offset", "page", "pageNumber", "pageSize", "size", "limit",
-                        "cursor", "sort")
-                .containsExactly(CARD_TOKEN);
-        assertThat(rawOpenapi)
-                .as("no query parameter survives in the description either")
-                .doesNotContain("in: query");
+                .as("no offset, page number or sort: a keyset walk has none of them")
+                .doesNotContain("offset", "page", "pageNumber", "pageIndex", "start", "sort")
+                .contains("X-Notification-Cursor", "pageSize");
+        assertThat(nested(historySchema(), "properties").keySet())
+                .as("the continuation of the walk travels in the body")
+                .contains("nextPageExists", "nextCursor");
     }
 
     @Test

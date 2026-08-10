@@ -13,9 +13,14 @@ import java.util.regex.Pattern;
  * {@code app/cbl/COCRDSLC.cbl} displays the same five values, and the card update
  * program {@code app/cbl/COCRDUPC.cbl} writes them.
  *
- * <p>The card service reads a card by its full sixteen-character Primary Account Number (PAN),
- * which arrives as the path variable of the read route, and masks with
- * {@code com.carddemo.cobol.PanMasker.maskCardNumber} when it builds this response.
+ * <p>The path variable of the read route is the CARD TOKEN, not a card number.
+ * {@code api/CardController} declares it as {@code CARD_TOKEN_VARIABLE} on
+ * {@code GET /cards/{cardToken}}, so no card number of either form appears in a request
+ * line. The service resolves that token to the row it keys, reads the full
+ * {@code CARD-NUM PIC X(16)} the column holds, and masks it with
+ * {@code com.carddemo.cobol.PanMasker.maskCardNumber} when it builds this response. The decision is
+ * recorded under "Every route that names one card names it by that card's token" in
+ * {@code card-platform/docs/decision-log.md}.
  *
  * @param maskedCardNumber the card number in its masked form, sixteen characters holding twelve
  *        mask characters then the last four digits.
@@ -54,9 +59,14 @@ public record CardDetailResponse(
      * {@code com.carddemo.card.messaging.CardUpdated.MASKED_CARD_NUMBER_PATTERN}, so a response and
      * an event report one card the same way.
      *
-     * @throws NullPointerException     when {@code maskedCardNumber} is null
-     * @throws IllegalArgumentException when it holds any other form, a full Primary Account Number
-     *                                  included
+     * <p>The active status is checked against the two values the column may hold, through
+     * {@link CardSummary#requireActiveStatusFlag(String)}, so a read cannot answer outside the domain
+     * this contract names.
+     *
+     * @throws NullPointerException     when {@code maskedCardNumber} or {@code activeStatus} is null
+     * @throws IllegalArgumentException when the card number holds any other form, a full Primary
+     *                                  Account Number included, or when the active status is neither
+     *                                  {@code Y} nor {@code N}
      */
     public CardDetailResponse {
         if (maskedCardNumber == null) {
@@ -67,6 +77,10 @@ public record CardDetailResponse(
                     + maskedCardNumber.length() + " characters and a masked card number holds "
                     + PanMasker.CARD_NUMBER_LENGTH + " matching " + MASKED_CARD_NUMBER_PATTERN);
         }
+        // One domain governs the column, and CardSummary declares it. See its
+        // requireActiveStatusFlag for the source condition name and the three places that hold a
+        // card row to it.
+        CardSummary.requireActiveStatusFlag(activeStatus);
     }
 
     /**

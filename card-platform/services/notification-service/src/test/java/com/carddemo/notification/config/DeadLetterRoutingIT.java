@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import com.carddemo.notification.NotificationServiceDatabase;
 import com.carddemo.notification.TestIdentityPasswords;
 import com.carddemo.notification.messaging.DeadLetterMetadata;
 import java.nio.charset.StandardCharsets;
@@ -109,12 +110,8 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 @DisplayName("Dead-letter routing preserves fixed diagnostics and the configured attempt budget")
 class DeadLetterRoutingIT {
 
-    /** Image tags fixed for this integration boundary. Apache Kafka runs in Kafka Raft mode. */
-    private static final String POSTGRES_IMAGE = "postgres:18.4";
     private static final String KAFKA_IMAGE = "apache/kafka:4.2.1";
 
-    /** Disposable database settings and the migrated service schema. */
-    private static final String CONTAINER_CREDENTIAL = "carddemo";
     private static final String SERVICE_SCHEMA = "notification_service";
     private static final String BROKER_SECURITY_PROTOCOL = "PLAINTEXT";
 
@@ -171,11 +168,13 @@ class DeadLetterRoutingIT {
             "newBalance":"697.77","postedAt":"2022-07-19-23.16.01.470000",\
             "amount":"504.77","maskedCardNumber":"************7065"}""";
 
-    @Container
-    private static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer(POSTGRES_IMAGE)
-            .withDatabaseName(CONTAINER_CREDENTIAL)
-            .withUsername(CONTAINER_CREDENTIAL)
-            .withPassword(CONTAINER_CREDENTIAL);
+    /**
+     * The one container the module fork runs, which this class reads a login from.
+     *
+     * <p>{@link NotificationServiceDatabase} owns it and hands this class a database of its own inside it.
+     * Nothing here starts or stops a container.
+     */
+    private static final PostgreSQLContainer POSTGRES = NotificationServiceDatabase.container();
 
     @Container
     private static final KafkaContainer KAFKA = new KafkaContainer(KAFKA_IMAGE);
@@ -367,8 +366,7 @@ class DeadLetterRoutingIT {
 
     /** Returns the database address with the service schema on its search path. */
     private static String jdbcUrlOnServiceSchema() {
-        String url = POSTGRES.getJdbcUrl();
-        return url + (url.contains("?") ? "&" : "?") + "currentSchema=" + SERVICE_SCHEMA;
+        return NotificationServiceDatabase.urlFor(DeadLetterRoutingIT.class);
     }
 
     /** Creates one single-partition topic and accepts an existing topic as complete. */

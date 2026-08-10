@@ -1,5 +1,6 @@
 package com.carddemo.card.messaging;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -19,10 +20,13 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
+import com.carddemo.card.config.KafkaProducerConfig;
 import com.carddemo.events.DeadLetterEnvelope;
 import com.carddemo.events.serde.EventContracts;
 import tools.jackson.databind.json.JsonMapper;
 
+import java.lang.annotation.Annotation;
+import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -33,12 +37,16 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.TimeoutException;
+import java.util.stream.Stream;
 
 import org.apache.kafka.clients.producer.ProducerConfig;
+import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.KafkaException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.context.annotation.Bean;
+import org.mockito.ArgumentMatchers;
 import org.springframework.kafka.core.ProducerFactory;
 import org.springframework.kafka.support.SendResult;
 import org.springframework.stereotype.Component;
@@ -340,10 +348,18 @@ class KafkaEventPublisherTest {
     void publishReturnsWhenTheBrokerAcknowledgesAndSendsExactlyOnce() {
         template.acknowledge();
 
-        assertDoesNotThrow(() -> publisher.publish(TOPIC, ACCOUNT_KEY, PAYLOAD),
+        CompletionStage<Void> published = assertDoesNotThrow(
+                () -> publisher.publish(TOPIC, ACCOUNT_KEY, PAYLOAD),
                 "an acknowledged send returns normally");
 
         template.verifySentExactlyOnce();
+        CompletableFuture<Void> settled = published.toCompletableFuture();
+        assertAll(
+                () -> assertTrue(settled.isDone(),
+                        "the stage a caller awaits has to complete once the broker acknowledged,"
+                                + " or the caller waits for an acknowledgement it already has"),
+                () -> assertFalse(settled.isCompletedExceptionally(),
+                        "and complete normally rather than carrying a failure"));
     }
 
     // Failure propagation. The failure must escape, not be swallowed.
@@ -447,9 +463,26 @@ class KafkaEventPublisherTest {
     void thePortNamesNoKafkaTypeSoTheSeamStaysSwappable() {
         assertTrue(EventPublisherPort.class.isAssignableFrom(KafkaEventPublisher.class),
                 "KafkaEventPublisher implements EventPublisherPort");
-        assertTrue(KafkaEventPublisher.class.isAnnotationPresent(Component.class),
-                "KafkaEventPublisher is a Spring component, so the relay receives it by "
-                        + "injection");
+        // The relay still receives this by injection, and the bean is declared rather than
+        // scanned. config/KafkaProducerConfig builds it from the bound CardProperties, so the
+        // publish timeout it holds is the value that record's constraints accepted. A constructor
+        // @Value was a second binding of the same property and met none of them.
+        assertFalse(KafkaEventPublisher.class.isAnnotationPresent(Component.class),
+                "KafkaEventPublisher carries no stereotype: a scanned component would have to read "
+                        + "its own property placeholders, which is the unvalidated second binding "
+                        + "this wiring removed");
+        assertTrue(Stream.of(KafkaProducerConfig.class.getDeclaredMethods())
+                        .filter(method -> method.isAnnotationPresent(Bean.class))
+                        .anyMatch(method -> method.getReturnType()
+                                .isAssignableFrom(KafkaEventPublisher.class)),
+                "config/KafkaProducerConfig declares the bean the relay receives, so the publisher "
+                        + "is built from values the bound record already checked");
+        for (Constructor<?> declared : KafkaEventPublisher.class.getDeclaredConstructors()) {
+            for (Annotation[] parameter : declared.getParameterAnnotations()) {
+                assertEquals(0, parameter.length,
+                        "no constructor parameter of the publisher binds a property of its own");
+            }
+        }
         assertTrue(EventPublisherPort.class.isInterface(),
                 "EventPublisherPort is an interface, so a second implementation needs no "
                         + "subclassing");
@@ -488,9 +521,17 @@ class KafkaEventPublisherTest {
     private static final class KafkaTemplateStub {
 
         private final org.springframework.kafka.core.KafkaTemplate<String, String> template;
-        private final ArgumentCaptor<String> topicCaptor = ArgumentCaptor.forClass(String.class);
-        private final ArgumentCaptor<String> keyCaptor = ArgumentCaptor.forClass(String.class);
-        private final ArgumentCaptor<String> payloadCaptor = ArgumentCaptor.forClass(String.class);
+
+        /**
+         * Reads back the records the publisher sent.
+         *
+         * <p>The publisher reaches the broker through the single-argument {@code send} overload so
+         * each record can carry the correlation headers a consumer reads, which is why one captor
+         * over the record replaces the three that read separate arguments.
+         */
+        @SuppressWarnings("unchecked")
+        private final ArgumentCaptor<ProducerRecord<String, String>> recordCaptor =
+                ArgumentCaptor.forClass(ProducerRecord.class);
 
         @SuppressWarnings("unchecked")
         private KafkaTemplateStub() {
@@ -506,7 +547,7 @@ class KafkaEventPublisherTest {
         }
 
         private void acknowledge() {
-            when(template.send(anyString(), anyString(), anyString()))
+            when(template.send(anyRecord()))
                     .thenAnswer(invocation -> CompletableFuture.completedFuture(
                             (SendResult<String, String>) null));
         }
@@ -517,18 +558,17 @@ class KafkaEventPublisherTest {
 
         /** Answers every send with a future that never completes. */
         private void neverAcknowledge() {
-            when(template.send(anyString(), anyString(), anyString()))
+            when(template.send(anyRecord()))
                     .thenAnswer(invocation -> new CompletableFuture<SendResult<String, String>>());
         }
 
         private void fail(Throwable cause) {
-            when(template.send(anyString(), anyString(), anyString()))
+            when(template.send(anyRecord()))
                     .thenAnswer(invocation -> CompletableFuture.failedFuture(cause));
         }
 
         private void captureOneSend() {
-            verify(template, times(1)).send(topicCaptor.capture(), keyCaptor.capture(),
-                    payloadCaptor.capture());
+            verify(template, times(1)).send(recordCaptor.capture());
         }
 
         /**
@@ -537,57 +577,56 @@ class KafkaEventPublisherTest {
          * @param expectedSends how many sends the publisher was asked to make
          */
         private void captureSends(int expectedSends) {
-            verify(template, times(expectedSends)).send(topicCaptor.capture(),
-                    keyCaptor.capture(), payloadCaptor.capture());
+            verify(template, times(expectedSends)).send(recordCaptor.capture());
         }
 
         private List<String> capturedTopics() {
-            return new ArrayList<>(topicCaptor.getAllValues());
+            return new ArrayList<>(recordCaptor.getAllValues().stream()
+                    .map(ProducerRecord::topic).toList());
         }
 
         private List<String> capturedKeys() {
-            return new ArrayList<>(keyCaptor.getAllValues());
+            return new ArrayList<>(recordCaptor.getAllValues().stream()
+                    .map(ProducerRecord::key).toList());
         }
 
         /** Asserts one send happened, one topic reached the broker, and nothing else was called. */
         private void verifyNothingSent() {
+            verify(template, never()).send(anyRecord());
             verify(template, never()).send(anyString(), anyString(), anyString());
             verify(template, never()).send(anyString(), anyString());
         }
 
         private void verifySentExactlyOnce() {
-            verify(template, times(1)).send(topicCaptor.capture(), keyCaptor.capture(),
-                    payloadCaptor.capture());
+            verify(template, times(1)).send(recordCaptor.capture());
+            verify(template, never()).send(anyString(), anyString(), anyString());
             verify(template, never()).send(anyString(), anyString());
             verify(template, atLeastOnce()).getProducerFactory();
             verifyNoMoreInteractions(template);
         }
 
         private String capturedTopic() {
-            return topicCaptor.getValue();
+            return recordCaptor.getValue().topic();
         }
 
         private String capturedKey() {
-            return keyCaptor.getValue();
+            return recordCaptor.getValue().key();
         }
 
         private String capturedPayload() {
-            return payloadCaptor.getValue();
+            return recordCaptor.getValue().value();
+        }
+
+        /**
+         * Matches any record the publisher sends.
+         *
+         * @return the matcher
+         */
+        private static ProducerRecord<String, String> anyRecord() {
+            return ArgumentMatchers.any();
         }
     }
 
-    /**
-     * Builds one serialized {@code CardUpdated} version 2 event.
-     *
-     * <p>The envelope names the document {@code schemas/card-updated-v2.json}, and both
-     * account identifiers hold {@code accountKey}, so the publisher's key check and its schema
-     * check both pass. The card number is a masked form, so no test of this class holds a Primary
-     * Account Number (PAN).</p>
-     *
-     * @param accountKey the eleven-digit account identifier the envelope and the payload carry
-     * @param eventId    the identifier of this event
-     * @return one JSON object, on one line
-     */
     /**
      * Serializes one terminal diagnostic the way {@code outbox/OutboxRelay} does.
      *
@@ -604,9 +643,21 @@ class KafkaEventPublisherTest {
                 EventContracts.CARD_UPDATED, 5));
     }
 
+    /**
+     * Builds one serialized {@code CardUpdated} event, at the one version the platform governs.
+     *
+     * <p>The envelope declares {@code schemaVersion} 1 and the document is
+     * {@code schemas/card-updated-v1.json}. Both account identifiers hold {@code accountKey}, so the
+     * publisher's key check and its schema check both pass. The card number is a masked form, so no
+     * test of this class holds a Primary Account Number (PAN).</p>
+     *
+     * @param accountKey the eleven-digit account identifier the envelope and the payload carry
+     * @param eventId    the identifier of this event, as text
+     * @return one JSON object, on one line
+     */
     private static String cardUpdated(String accountKey, String eventId) {
         return "{\"eventId\":\"" + eventId + "\",\"eventType\":\"CardUpdated\","
-                + "\"schemaVersion\":2,\"occurredAt\":\"2022-06-10T19:27:53.412Z\","
+                + "\"schemaVersion\":1,\"occurredAt\":\"2022-06-10T19:27:53.412Z\","
                 + "\"aggregateId\":\"" + accountKey + "\","
                 + "\"maskedCardNumber\":\"************7065\",\"accountId\":\"" + accountKey
                 + "\",\"expirationDate\":\"2024-12-31\","

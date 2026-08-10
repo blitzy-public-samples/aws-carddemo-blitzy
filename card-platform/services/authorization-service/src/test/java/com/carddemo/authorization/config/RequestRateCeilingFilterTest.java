@@ -419,6 +419,41 @@ class RequestRateCeilingFilterTest {
                     "an expired window must be purged: " + wide.trackedKeyCount());
         }
 
+        @Test
+        @DisplayName("a burst of new keys at capacity walks the map once, not once per key")
+        void aBurstOfNewKeysAtCapacityWalksTheMapOnce() throws Exception {
+            TestableFilter wide = filter(1_000_000L, 1_000_000L, 1_000_000L, 4096,
+                    new SimpleMeterRegistry());
+            CountingChain chain = new CountingChain();
+
+            for (int source = 0; source < RequestRateCeilingFilter.MAX_TRACKED_KEYS; source++) {
+                wide.doFilter(read("10." + (source / 65536) + "." + (source / 256 % 256) + "."
+                        + (source % 256)), new MockHttpServletResponse(), chain);
+            }
+            assertEquals(Long.MIN_VALUE, wide.lastExpirySweepAt(),
+                    "a map below its bound is never swept");
+
+            wide.doFilter(read("172.16.0.1"), new MockHttpServletResponse(), chain);
+            long firstSweep = wide.lastExpirySweepAt();
+            assertEquals(wide.nowMillis(), firstSweep, "the first key at capacity sweeps");
+
+            for (int source = 2; source < 500; source++) {
+                wide.advance(1L);
+                wide.doFilter(read("172.16.0." + source), new MockHttpServletResponse(), chain);
+            }
+
+            assertEquals(firstSweep, wide.lastExpirySweepAt(),
+                    "498 further keys inside the sweep interval must not walk the map again");
+            assertTrue(wide.trackedKeyCount() <= RequestRateCeilingFilter.MAX_TRACKED_KEYS + 1,
+                    "the overflow window still bounds the map: " + wide.trackedKeyCount());
+
+            wide.advance(WINDOW_MILLIS);
+            wide.doFilter(read("172.16.1.1"), new MockHttpServletResponse(), chain);
+
+            assertTrue(wide.lastExpirySweepAt() > firstSweep,
+                    "a key arriving past the sweep interval reclaims the rolled windows");
+        }
+
         @ParameterizedTest
         @CsvSource({
                 "0,1,1,1,1,carddemo.api.rate-limit.window-seconds",

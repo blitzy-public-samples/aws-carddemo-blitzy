@@ -162,9 +162,16 @@ class NotificationOpenApiContractTest {
     private static final List<String> WRITE_METHODS =
             List.of("post", "put", "patch", "delete", "head", "options", "trace");
 
-    /** Parameter names the endpoint declares none of. */
+    /**
+     * Parameter names the endpoint declares none of.
+     *
+     * <p>Offset paging, specifically. The route pages with a keyset cursor, so it declares no page
+     * number, no offset and no sort: reading the last page of a long history through an offset means
+     * reading and discarding every entry before it, which is the cost this route was changed to stop
+     * paying. The names it does declare are the cursor header and the page size.</p>
+     */
     private static final List<String> OFFSET_PAGING_PARAMETERS =
-            List.of("page", "size", "limit", "offset", "cursor", "sort");
+            List.of("page", "pageNumber", "pageIndex", "offset", "start", "sort");
 
     /**
      * Response keys the document declares none of.
@@ -442,15 +449,49 @@ class NotificationOpenApiContractTest {
                     "the shape the document declares against the shape the controller enforces");
         }
 
-        /** Asserts the operation declares the path parameter alone, and no query parameter. */
+        /**
+         * Asserts the operation declares the card token, the paging cursor and the page size, each
+         * where this route carries it.
+         *
+         * <p>The token names the resource, so it is in the path. The cursor is a continuation of a
+         * walk rather than part of the resource name, so it is a header, matching the card service.
+         * The page size shapes the representation, so it is a query parameter. The route once declared
+         * the path variable alone and read every retained row of a card into one response.</p>
+         */
         @Test
-        void theOperationDeclaresThePathParameterAlone() {
-            assertEquals(List.of("cardToken"), namesOf(parameters()),
-                    "the parameters the operation declares");
+        void theOperationDeclaresTheTokenTheCursorAndThePageSize() {
+            assertEquals(
+                    List.of("cardToken", NotificationHistoryController.CURSOR_HEADER,
+                            NotificationHistoryController.PAGE_SIZE_PARAMETER),
+                    namesOf(parameters()), "the parameters the operation declares");
+
+            Map<String, String> expectedLocation = Map.of(
+                    "cardToken", "path",
+                    NotificationHistoryController.CURSOR_HEADER, "header",
+                    NotificationHistoryController.PAGE_SIZE_PARAMETER, "query");
             for (Map<String, Object> parameter : parameters()) {
-                assertEquals("path", parameter.get("in"),
-                        parameter.get("name") + " is carried outside the path");
+                assertEquals(expectedLocation.get(parameter.get("name")), parameter.get("in"),
+                        parameter.get("name") + " is carried somewhere else");
             }
+        }
+
+        /** Asserts the page size declares both of its bounds, so the ceiling is published. */
+        @Test
+        void thePageSizeDeclaresItsBounds() {
+            Map<String, Object> pageSize = parameters().stream()
+                    .filter(parameter -> NotificationHistoryController.PAGE_SIZE_PARAMETER
+                            .equals(parameter.get("name")))
+                    .findFirst()
+                    .orElseThrow(() -> new AssertionError("the operation declares no page size"));
+
+            @SuppressWarnings("unchecked")
+            Map<String, Object> schema = (Map<String, Object>) pageSize.get("schema");
+            assertEquals(NotificationHistoryController.MIN_PAGE_SIZE, schema.get("minimum"),
+                    "the floor the controller enforces");
+            assertEquals(NotificationHistoryController.MAX_PAGE_SIZE, schema.get("maximum"),
+                    "the ceiling the controller enforces");
+            assertEquals(NotificationHistoryController.DEFAULT_PAGE_SIZE, schema.get("default"),
+                    "the default the controller applies");
         }
 
         /** Asserts no parameter names an offset paging value. */
@@ -652,8 +693,9 @@ class NotificationOpenApiContractTest {
             assertEquals(Set.copyOf(components),
                     propertiesOf(envelopeSchema(), "the envelope").keySet(),
                     "the properties the envelope declares against the record components");
-            assertEquals(List.of("cardNumber", "transactionCount", "totalAmount",
-                    "transactions"), components, "the components of the response record");
+            assertEquals(List.of("cardNumber", "transactionCount", "totalAmount", "transactions",
+                    "nextPageExists", "nextCursor"), components,
+                    "the components of the response record");
         }
 
         /** Asserts the envelope declares its properties in the order the record declares them. */
@@ -680,8 +722,10 @@ class NotificationOpenApiContractTest {
                     "the card-bearing properties of the envelope");
             assertFalse(everyPropertyName().contains("cardToken"),
                     "a schema of the document declares cardToken");
-            assertEquals(List.of("cardToken"), namesOf(parameters()),
-                    "the token names the resource, and it does so in the path alone");
+            assertEquals(List.of("cardToken"), namesOf(parameters()).stream()
+                            .filter(name -> name.toLowerCase(Locale.ROOT).contains("card"))
+                            .toList(),
+                    "the token names the resource, and no other parameter names a card");
         }
 
         /**

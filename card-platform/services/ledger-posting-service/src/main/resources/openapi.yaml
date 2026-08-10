@@ -149,7 +149,7 @@ paths:
             The caller authenticated but does not hold this account. An identity
             carrying the USER role reaches only the accounts its
             SCOPE_ACCOUNT_ authorities name, and the detail names neither the
-            operation nor the identifier: a 404 would reveal that the row
+            operation nor the identifier. A 404 would reveal that the row
             exists, and a detailed 403 would copy the identifier back into the
             caller's own log.
             A method this route does not serve is refused here too, since config/SecurityConfig
@@ -213,7 +213,7 @@ paths:
             defect, so the detail invites a retry rather than reporting a fault.
             api/LedgerApiExceptionHandler answers this for a connection that
             cannot be opened, a transaction that cannot be begun and a statement
-            that ran out of time, and for nothing else: a broken query is a fault
+            that ran out of time, and for nothing else. A broken query is a fault
             of this service and answers 500, where a retry would only repeat it.
           content:
             application/problem+json:
@@ -302,8 +302,7 @@ components:
 
         No member echoes a request value. Nothing carries the rejected value, the
         resolved path, the query string or a header, which is the difference
-        between this body and the framework default one this service answered
-        before: that body carries the resolved path, so a caller naming an account
+        between this body and the framework default one this service answered before. That body carries the resolved path, so a caller naming an account
         identifier read it back and copied it into its own access log.
       additionalProperties: false
       required:
@@ -322,14 +321,25 @@ components:
         title:
           type: string
           description: >-
-            A short, fixed phrase naming the class of failure. Every value comes
-            from a constant of api/ApiProblem and never from caller-supplied text.
-          enum: ['Bad Request', 'Unauthorized', 'Forbidden', 'Service Unavailable',
-                 'Internal Server Error']
+            A short, fixed phrase naming the class of failure. Never
+            caller-supplied text. Four sources produce the seven values below,
+            one value per status carrying a body. api/ApiProblem holds the
+            constants for 400, 500 and 503. config/SecurityConfig writes
+            'Unauthorized' for 401, and config/CrossSiteRequestFilter writes
+            'Forbidden' for 403. config/RequestRateCeilingFilter writes
+            'Too many requests' for 429 in a fixed body. api/LedgerApiExceptionHandler
+            writes the reason phrase of the status the framework named for a
+            protocol refusal, which is 'Method Not Allowed' for the 405 this
+            document publishes.
+          enum: ['Bad Request', 'Unauthorized', 'Forbidden', 'Method Not Allowed',
+                 'Too many requests', 'Service Unavailable', 'Internal Server Error']
         status:
           type: integer
-          description: The status code of the response, repeated in the body.
-          enum: [400, 401, 403, 500, 503]
+          description: >-
+            The status code of the response, repeated in the body. The seven
+            values are the statuses this route answers with a body: 404 and 406
+            carry none, and 200 carries the balance instead.
+          enum: [400, 401, 403, 405, 429, 500, 503]
         detail:
           type: string
           description: >-

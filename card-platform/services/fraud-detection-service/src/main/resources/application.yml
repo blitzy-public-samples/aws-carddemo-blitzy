@@ -54,6 +54,18 @@ spring:
     hikari:
       connection-timeout: "${SPRING_DATASOURCE_HIKARI_CONNECTION_TIMEOUT:3000}"
       validation-timeout: "${SPRING_DATASOURCE_HIKARI_VALIDATION_TIMEOUT:2000}"
+      # Sized for the work that holds a connection at once, rather than left at the pool
+      # default of ten: three listener threads, from one listener at the concurrency below;
+      # the relay pass; the retention sweep; and five for the read-only assessment routes. A
+      # request that finds no free connection waits out connection-timeout above and is then
+      # refused, so the pool is deliberately smaller than
+      # carddemo.api.rate-limit.concurrent-requests and requests queue on it under a burst.
+      maximum-pool-size: "${SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE:10}"
+      # The pool keeps as many idle connections as its maximum unless told otherwise, so the
+      # six services would hold their whole maxima open against a server admitting one
+      # hundred while nothing was happening. Connections above this floor are opened when
+      # they are asked for and closed again when they fall idle.
+      minimum-idle: "${SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE:4}"
 
   # Flyway creates the schema named below, then applies the Data Definition
   # Language (DDL) migrations under db/migration.
@@ -169,7 +181,28 @@ spring:
     # commits the offset at that acknowledgement.
     listener:
       ack-mode: manual_immediate
-      concurrency: 1
+      # One consumer thread per partition of the topic this service reads. Every topic of this
+      # platform ships three partitions, from KAFKA_TOPIC_PARTITIONS in
+      # card-platform/.env.example, and the group assignor gives one partition to exactly one
+      # thread. Velocity counting depends on the events of one account arriving in order, and
+      # that still holds: the account identifier is the message key, so one account's events
+      # occupy one partition and one thread. This value was one, which scored every partition
+      # of the topic in sequence. config/KafkaConsumerConfig applies it to the factory it
+      # builds. A value above the partition count only leaves the surplus threads with
+      # nothing assigned.
+      concurrency: "${SPRING_KAFKA_LISTENER_CONCURRENCY:3}"
+
+  # The scheduler behind both @Scheduled methods of this service, outbox/OutboxRelay and
+  # domain/RetentionSweep. The framework's pool holds one thread, so the hourly sweep — three
+  # tables, each bounded at thirty seconds — delayed every relay pass that fell inside it,
+  # and a relay pass is due every 500 ms. A thread for each task removes that wait.
+  # Fixed-delay scheduling measures the next run from the end of the previous one, so no task
+  # overlaps itself however many threads the pool holds.
+  task:
+    scheduling:
+      pool:
+        size: "${SPRING_TASK_SCHEDULING_POOL_SIZE:2}"
+      thread-name-prefix: carddemo-scheduling-
 
 carddemo:
   # Request surface bounds. This service answers reads alone, so it declares no body
@@ -234,8 +267,13 @@ carddemo:
       # recover a row another running instance was still publishing, and publish it twice.
       # The literal also read as an instance number that nothing ever incremented.
       instance-id: "${OUTBOX_RELAY_INSTANCE_ID:${HOSTNAME:fraud-relay}}"
-      # How long a claim may stand before another tick recovers the row.
-      claim-timeout: "${OUTBOX_RELAY_CLAIM_TIMEOUT:PT30S}"
+      # How long a claim may stand before another tick recovers the row. Two minutes, which is
+      # what the other four relays ship and what card-platform/.env.example, the Compose file
+      # and deploy/k8s/30-configmap.yaml all carry. This service shipped thirty seconds, so a
+      # run that set no variable — a test, or the service started directly — recovered a claim
+      # four times sooner here than anywhere else, and the value a reader had measured on one
+      # relay did not describe this one.
+      claim-timeout: "${OUTBOX_RELAY_CLAIM_TIMEOUT:PT2M}"
       max-duration-ms: "${OUTBOX_RELAY_MAX_DURATION_MS:5000}"
     # Retention. A published row has done its work and stays only for diagnosis, and a
     # processed-event marker matters only while a redelivery of its event is still
@@ -365,6 +403,24 @@ logging:
   structured:
     format:
       console: logstash
+    # Members every record carries beside the framework's own. `service` names which of the six
+    # services wrote a record, which no logstash member does; the Mapped Diagnostic Context supplies
+    # correlationId, causationId, eventId, eventType and transactionId per request and per delivery,
+    # and the framework renders every context entry as a top-level member of its own.
+    json:
+      add:
+        service: ${spring.application.name:fraud-detection-service}
+      # Withheld from every record this service writes. `stack_trace` is the one logstash
+      # member that renders a throwable, and it renders the exception message ahead of the
+      # frames. Spring Kafka reports a delivery it has given up on through
+      # LogAccessor.error(Throwable, Supplier) from SeekUtils, a call no log level reaches, so
+      # a message quoting a rejected payload, a constraint or a statement would reach the log
+      # past every rule this platform applies to its own logging. Withholding the member drops
+      # the rendering and nothing else: the exception still propagates, so the container still
+      # retries and still routes the record. Each service reports a failure itself, as a type
+      # chain with the record coordinates, which is the record an operator should read.
+      exclude:
+        - stack_trace
   level:
     root: "${LOGGING_LEVEL_ROOT:${LOG_LEVEL:INFO}}"
     # INFO rather than DEBUG. A DEBUG default writes identifiers into every
@@ -372,3 +428,17 @@ logging:
     # who starts this service directly rather than through compose or Kubernetes.
     # Raise it for one run when tracing a message, and lower it again afterwards.
     com.carddemo: "${LOGGING_LEVEL_COM_CARDDEMO:${LOG_LEVEL_CARDDEMO:INFO}}"
+    # OFF, not a level. This logger renders the server's own message for every failed
+    # statement, and PostgreSQL puts the whole failing row in the DETAIL of a constraint
+    # violation. On a table holding a card number, a verification value or a social security
+    # number that one line publishes all of them, which is the CWE-532 the platform closes
+    # everywhere else: LogHygieneContractTest holds every shipped source to rendering a
+    # failure as its type. The framework's own logger was the last site outside that rule.
+    # Nothing diagnostic is lost. The exception still reaches this service's own handler,
+    # which answers a problem document and logs the failure type and the SQL state.
+    #
+    # The name is the Hibernate 7 one. Under Hibernate 5 and 6 this logger was
+    # org.hibernate.engine.jdbc.spi.SqlExceptionHelper, and naming that instead silently
+    # suppresses nothing: it was tried here first, and a card number reached a published
+    # report anyway. CardholderDataInArtifactsContractTest asserts this exact name.
+    org.hibernate.orm.jdbc.error: "OFF"

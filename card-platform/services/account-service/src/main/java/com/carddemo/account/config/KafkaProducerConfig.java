@@ -1,6 +1,7 @@
 package com.carddemo.account.config;
 
 import com.carddemo.account.messaging.EventPublisherPort;
+import com.carddemo.events.correlation.EventCorrelation;
 import com.carddemo.events.serde.EventContracts;
 import com.carddemo.events.serde.EventJsonValidator;
 import com.carddemo.events.serde.EventWireBounds;
@@ -12,6 +13,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 import org.apache.kafka.clients.CommonClientConfigs;
 import org.apache.kafka.clients.producer.ProducerConfig;
+import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -257,9 +259,31 @@ public class KafkaProducerConfig {
 
             log.debug("Publishing account event {} to topic {}, payload length {}", eventType,
                     topic, payload.length());
-            return kafkaTemplate.send(topic, aggregateId, payload)
+            return kafkaTemplate.send(correlatedRecord(topic, aggregateId, payload))
                     .thenApply(result -> (Void) null)
                     .orTimeout(publishTimeout.toMillis(), TimeUnit.MILLISECONDS);
+        }
+
+        /**
+         * Builds the record one send carries, attaching the two correlation identifiers of the row.
+         *
+         * <p>ADDITIVE. The identifiers travel as record headers rather than as payload properties,
+         * because AAP 0.3.1 fixes the event envelope at five properties and every schema document closes
+         * its top-level property set. The values come from the ambient scope the relay opened for the
+         * row, so a header is present exactly when the row recorded one.
+         *
+         * @param topic       the destination topic
+         * @param aggregateId the message key
+         * @param payload     the value to send
+         * @param <V>         the value type of the template this record is sent through
+         * @return the record to send, carrying no header for an identifier the row did not record
+         */
+        private static <V> ProducerRecord<String, V> correlatedRecord(String topic,
+                String aggregateId, V payload) {
+            return new ProducerRecord<>(topic, null, aggregateId, payload,
+                    EventCorrelation.headersFor(
+                            EventCorrelation.currentCorrelationId().orElse(null),
+                            EventCorrelation.currentCausationId().orElse(null)));
         }
 
         /**

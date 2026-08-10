@@ -81,9 +81,15 @@ class ReadinessHealthConfigTest {
      *
      * <p>The four listeners are {@code TransactionAuthorizedConsumer},
      * {@code TransactionPostedConsumer}, {@code FraudFlaggedConsumer} and
-     * {@code CustomerContextChangedConsumer}. Readiness now counts what registered, so the number
-     * here follows the service rather than leading it: the fourth listener was added for the
-     * authorization fan-out without this class needing an edit.
+     * {@code CustomerContextChangedConsumer}. Readiness reads a declared count again, because counting
+     * only what registered reported ready for an empty registry. The count is a floor this time, so the
+     * failure recorded above cannot repeat: a fifth listener registering and running still reports up.
+     *
+     * <p>What made the old literal dangerous was that nothing compared it with the service. That
+     * comparison now runs at build time in {@code equivalence-tests}
+     * {@code ReadinessListenerExpectationContractTest}, which reads the count and counts the
+     * {@code @KafkaListener} methods of this module, so a disagreement costs a build and not a
+     * deployment.
      */
     @Test
     @DisplayName("reports ready once all four declared listeners are running")

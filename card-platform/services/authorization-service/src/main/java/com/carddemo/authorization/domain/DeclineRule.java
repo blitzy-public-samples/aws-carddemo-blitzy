@@ -102,7 +102,7 @@ public interface DeclineRule {
         private final String originTimestamp;
 
         /**
-         * Cross-reference row {@link #getCardNumber()} resolved to, or {@code null} until a rule
+         * Cross-reference row {@link #getCardNumber()} resolved to, or {@code null} until something
          * sets it.
          *
          * <p>Source analogue {@code CARD-XREF-RECORD} at {@code app/cpy/CVACT03Y.cpy:L4}, filled
@@ -110,6 +110,11 @@ public interface DeclineRule {
          * {@link DeclineReason#INVALID_CARD_NUMBER} sets this row, and the rule assigning
          * {@link DeclineReason#ACCOUNT_NOT_FOUND} reads
          * {@link CardCrossReferenceEntity#getAccountId()} from it.
+         *
+         * <p>One caller sets it before any rule runs. A request naming an account resolves its card
+         * through the alternate index, which answers with the whole row, and that row is the one a
+         * keyed read of its own card number would return, since {@code card_number} is the table's
+         * primary key. Seeding it there is what keeps the account branch to one read of the table.
          */
         private CardCrossReferenceEntity cardCrossReference;
 
@@ -196,11 +201,12 @@ public interface DeclineRule {
          * <p>A {@code null} result is meaningful rather than an error. Reject reason
          * {@link DeclineReason#INVALID_CARD_NUMBER} is assigned at
          * {@code app/cbl/CBTRN02C.cbl:L385-L387} when that keyed read misses, so at that point no
-         * account identifier exists. That decline reaches no topic:
-         * {@code domain/AuthorizationService} records the attempt in
-         * {@code unresolved_card_attempt} and publishes nothing, and the canonical constructor
-         * of {@code TransactionDeclined} refuses the reason. Every other reason runs after the
-         * cross-reference resolved, so this accessor answers with a value for each of them.
+         * account identifier exists. That decline still reaches a topic, under a contract shaped for
+         * it: {@code domain/AuthorizationService} records the attempt in
+         * {@code unresolved_card_attempt} and publishes
+         * {@code schemas/transaction-declined-v2.json}, which carries no {@code accountId} and is
+         * keyed on the transaction identifier. Every other reason runs after the cross-reference
+         * resolved, so this accessor answers with a value for each of them.
          *
          * @return the eleven-digit account identifier the cross-reference row held, or {@code null}
          *         when the cross-reference has not resolved

@@ -65,7 +65,7 @@ class AccountUpdateRelationshipTest {
                 .thenReturn(Optional.of(storedRelationship));
 
         EditResult result = service.updateAccount(
-                account, suppliedCustomer, account, suppliedCustomer);
+                account, suppliedCustomer, account, suppliedCustomer).verdict();
 
         assertThat(result.valid()).isFalse();
         assertThat(result.message())
@@ -83,7 +83,7 @@ class AccountUpdateRelationshipTest {
         when(customerLinks.findByAccountId(ACCOUNT_ID))
                 .thenReturn(Optional.of(storedRelationship));
 
-        EditResult result = service.updateAccount(account, customer, account, customer);
+        EditResult result = service.updateAccount(account, customer, account, customer).verdict();
 
         assertThat(result.valid()).isTrue();
         assertThat(result.message()).isEqualTo(AccountUpdateService.NO_CHANGE_DETECTED);
@@ -100,7 +100,7 @@ class AccountUpdateRelationshipTest {
         when(customerLinks.findByAccountId(ACCOUNT_ID))
                 .thenReturn(Optional.empty());
 
-        EditResult result = service.updateAccount(account, customer, account, customer);
+        EditResult result = service.updateAccount(account, customer, account, customer).verdict();
 
         assertThat(result.valid()).isFalse();
         assertThat(result.message())

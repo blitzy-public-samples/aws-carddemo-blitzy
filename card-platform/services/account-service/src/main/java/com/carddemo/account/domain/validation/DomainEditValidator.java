@@ -39,7 +39,16 @@ public final class DomainEditValidator implements ConstraintValidator<DomainEdit
     private int width;
 
     /**
-     * Reads the three members of the annotation.
+     * The width the field itself holds, which equals {@link #width} for every edited field but the
+     * postal code. See {@link DomainEdit#heldWidth()}.
+     */
+    private int heldWidth;
+
+    /**
+     * Reads the four members of the annotation.
+     *
+     * <p>{@link DomainEdit#heldWidth()} defaults to zero, meaning "the same as the edited width",
+     * so it is resolved here rather than at every declaration.
      *
      * @param annotation the declaration on the component
      */
@@ -48,6 +57,7 @@ public final class DomainEditValidator implements ConstraintValidator<DomainEdit
         this.edit = annotation.value();
         this.label = annotation.label();
         this.width = annotation.width();
+        this.heldWidth = annotation.heldWidth() == 0 ? annotation.width() : annotation.heldWidth();
     }
 
     /**
@@ -79,7 +89,8 @@ public final class DomainEditValidator implements ConstraintValidator<DomainEdit
      */
     private EditResult run(String value) {
         return switch (edit) {
-            case NUMERIC_REQUIRED -> NumericRequiredValidator.validate(label, value, width);
+            case NUMERIC_REQUIRED ->
+                    NumericRequiredValidator.validate(label, value, width, heldWidth);
             case ALPHABETIC_REQUIRED -> AlphabeticRequiredValidator.validate(label, value, width);
             case ALPHABETIC_OPTIONAL -> AlphabeticOptionalValidator.validate(label, value, width);
             case ALPHANUMERIC_REQUIRED ->

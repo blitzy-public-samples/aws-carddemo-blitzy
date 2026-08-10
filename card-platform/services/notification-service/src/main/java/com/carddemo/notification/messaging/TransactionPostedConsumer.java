@@ -265,26 +265,39 @@ public class TransactionPostedConsumer {
      * {@code app/jcl/CREASTMT.JCL:L53} produced, which the primary key of
      * {@code statement_transaction} keeps.
      *
-     * <p>The entity carries no setter, so the twelve non-key values arrive on a fresh instance and
-     * {@code save} carries them onto the stored row under the same key.
+     * <p>One statement does it. This method used to read the key to choose between two diagnostic
+     * lines and then call {@code save}, which for an entity carrying an assigned key is a merge and
+     * issues a select of its own. That was three round trips for one event, two of which asked whether
+     * the key was held, and the answer changed nothing but a debug message.
+     * {@link StatementTransactionRepository#upsertRow} settles it in one, and the message below names
+     * the transaction stored without claiming which of the two paths the database took.
      *
-     * <p>The two diagnostic lines below name the transaction and not the card. The card token is
-     * derived from the card number under a deployment key, so it is stable for one card across every
-     * request: a token in a log line is a durable identifier for a cardholder even though it reveals
-     * no digit of the number it stands for. The transaction identifier names one event instead.
+     * <p>The diagnostic names the transaction and not the card. The card token is derived from the
+     * card number under a deployment key, so it is stable for one card across every request: a token
+     * in a log line is a durable identifier for a cardholder even though it reveals no digit of the
+     * number it stands for. The transaction identifier names one event instead.
      *
      * @param row the row to store, carrying all fourteen column values
      */
     private void upsertReadModelRow(StatementTransactionEntity row) {
-        String transactionId = row.getId().getTransactionId();
+        statementTransactions.upsertRow(
+                row.getId().getCardToken(),
+                row.getId().getTransactionId(),
+                row.getMaskedCardNumber(),
+                row.getTypeCode(),
+                row.getCategoryCode(),
+                row.getSource(),
+                row.getDescription(),
+                row.getAmount(),
+                row.getMerchantId(),
+                row.getMerchantName(),
+                row.getMerchantCity(),
+                row.getMerchantZip(),
+                row.getOriginTimestamp(),
+                row.getProcessingTimestamp());
 
-        if (statementTransactions.findById(row.getId()).isPresent()) {
-            LOG.debug("Transaction {} holds a read-model row already, and this delivery replaces its"
-                    + " twelve non-key values.", transactionId);
-        } else {
-            LOG.debug("Transaction {} enters the read model.", transactionId);
-        }
-        statementTransactions.save(row);
+        LOG.debug("Transaction {} is stored in the read model under its card and identifier.",
+                row.getId().getTransactionId());
     }
 
     /**

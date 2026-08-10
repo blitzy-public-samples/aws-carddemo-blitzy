@@ -24,7 +24,10 @@ import io.micrometer.core.instrument.Timer;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -89,6 +92,12 @@ class OutboxRelayDeadLetterTest {
     private List<Publication> publications;
     private OutboxRelay relay;
 
+    /** Rows the stubbed store holds, so a re-read inside a later transaction finds them. */
+    private final Map<UUID, OutboxEventEntity> stored = new HashMap<>();
+
+    /** Set when one row's transaction was marked for rollback rather than left by a failure. */
+    private AtomicBoolean markedForRollback;
+
     @BeforeEach
     void setUp() {
         outboxEvents = mock(OutboxEventRepository.class);
@@ -100,12 +109,24 @@ class OutboxRelayDeadLetterTest {
         transactionTemplate = mock(TransactionTemplate.class);
         insideTransaction = new AtomicBoolean();
         boundaryFailed = new AtomicBoolean();
+        markedForRollback = new AtomicBoolean();
         publications = new ArrayList<>();
 
         CardLatencyTimers timers = mock(CardLatencyTimers.class);
         when(timers.eventPublish()).thenReturn(mock(Timer.class));
+        stored.clear();
         when(outboxEvents.save(any(OutboxEventEntity.class)))
-                .thenAnswer(call -> call.getArgument(0));
+                .thenAnswer(call -> {
+                    OutboxEventEntity saved = call.getArgument(0);
+                    stored.put(saved.getEventId(), saved);
+                    return saved;
+                });
+        // The relay records each outcome in a transaction of its own and re-reads the row inside it,
+        // because the claim has committed by then and saving the copy the claim loaded would write
+        // pre-claim state back over it. A store keyed by identifier answers that read with the row
+        // the claim saved, so these cases keep asserting against the instance they created.
+        when(outboxEvents.findById(any(UUID.class)))
+                .thenAnswer(call -> Optional.ofNullable(stored.get(call.getArgument(0))));
         when(outboxEvents.findByRelayStateAndClaimedAtBeforeOrderByClaimedAtAsc(
                 any(), any(), any())).thenReturn(List.of());
         when(outboxEvents.claimDueRows(any(), any())).thenReturn(List.of());
@@ -120,9 +141,17 @@ class OutboxRelayDeadLetterTest {
 
         when(transactionTemplate.execute(any())).thenAnswer(call -> {
             TransactionCallback<?> callback = call.getArgument(0);
+            TransactionStatus status = mock(TransactionStatus.class);
+            // A refused diagnostic no longer leaves its transaction; it marks that transaction for
+            // rollback so only that row goes back and the sweep carries on. Recording the mark is
+            // how the rollback stays observable.
+            doAnswer(marked -> {
+                markedForRollback.set(true);
+                return null;
+            }).when(status).setRollbackOnly();
             insideTransaction.set(true);
             try {
-                return callback.doInTransaction(mock(TransactionStatus.class));
+                return callback.doInTransaction(status);
             } catch (RuntimeException failure) {
                 boundaryFailed.set(true);
                 throw failure;
@@ -214,9 +243,19 @@ class OutboxRelayDeadLetterTest {
         return scanned.toString();
     }
 
+    /**
+     * Asserts a refused diagnostic rolls its own row back and leaves the sweep running.
+     *
+     * <p>This asserted that the refusal left the sweep entirely, which rolled the abandonment back by
+     * taking the one transaction the whole sweep ran in with it. A performance review rejected that
+     * transaction: it held a database connection and every claimed row lock for the sum of the sweep's
+     * broker waits. The rollback it bought is kept by marking this row's own short transaction
+     * instead, so the abandonment still goes back and every other account of the sweep is still
+     * attempted.
+     */
     @Test
-    @DisplayName("a refused dead letter ends the sweep, so the abandonment rolls back with it")
-    void aRefusedDeadLetterEndsTheSweepSoTheAbandonmentRollsBackWithIt() {
+    @DisplayName("a refused dead letter rolls its own row back and leaves the sweep running")
+    void aRefusedDeadLetterRollsItsOwnRowBackAndLeavesTheSweepRunning() {
         OutboxEventEntity row = rowAtLastAttempt(CardUpdated.EVENT_TYPE);
         when(outboxEvents.claimDueRows(any(), any())).thenReturn(List.of(row));
         doThrow(new IllegalStateException("broker unavailable")).when(publisher)
@@ -228,9 +267,13 @@ class OutboxRelayDeadLetterTest {
 
         relay.publishPendingEvents();
 
-        assertThat(boundaryFailed)
-                .as("the refusal leaves the sweep, which is what rolls the abandonment back")
+        assertThat(markedForRollback)
+                .as("the refusal marks this row's transaction for rollback, which is what undoes the "
+                        + "abandonment")
                 .isTrue();
+        assertThat(boundaryFailed)
+                .as("no failure leaves a transaction, so no other account's row is lost with it")
+                .isFalse();
         verify(deadLettersFailed).increment();
         verify(abandoned, never()).increment();
         verify(failures, never()).increment();
@@ -341,20 +384,24 @@ class OutboxRelayDeadLetterTest {
     }
 
     /** A row of {@code eventType} that has taken no attempt yet. */
-    private static OutboxEventEntity row(String eventType) {
-        return new OutboxEventEntity(
+    private OutboxEventEntity row(String eventType) {
+        OutboxEventEntity built = new OutboxEventEntity(
                 UUID.randomUUID(),
                 eventType,
                 ACCOUNT_ID,
                 "{\"cardNumber\":\"" + SENTINEL_PAN + "\",\"cvv\":\"" + SENTINEL_CVV + "\"}",
                 Instant.now());
+        // Registered here rather than only on save, because a row recovered from a stranded claim
+        // reaches the relay through the stranded finder and is re-read before anything saves it.
+        stored.put(built.getEventId(), built);
+        return built;
     }
 
     /**
      * A row of {@code eventType} one failed attempt short of the ceiling, so the relay's own failure
      * is the attempt that abandons it.
      */
-    private static OutboxEventEntity rowAtLastAttempt(String eventType) {
+    private OutboxEventEntity rowAtLastAttempt(String eventType) {
         OutboxEventEntity row = row(eventType);
         Instant earlier = Instant.now().minus(Duration.ofMinutes(10L));
         for (int attempt = 1; attempt < OutboxEventEntity.MAX_DELIVERY_ATTEMPTS; attempt++) {
@@ -368,7 +415,8 @@ class OutboxRelayDeadLetterTest {
                 new CardProperties.Api(65536L),
                 new CardProperties.Kafka(new CardProperties.Kafka.Topics(TOPIC, deadLetterTopic)),
                 new CardProperties.Outbox(new CardProperties.Outbox.Relay(
-                        500L, 100, "card-relay", Duration.ofMinutes(2L), 5_000L), 168L),
+                        500L, 100, "card-relay", Duration.ofMinutes(2L), 5_000L,
+                        Duration.ofSeconds(10L)), 168L),
                 new CardProperties.ProcessedEvent(720L, 168L),
                 new CardProperties.Retention(3_600_000L),
                 new CardProperties.Write(3_000L));

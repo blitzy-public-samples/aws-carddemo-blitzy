@@ -6,10 +6,14 @@
   <title>AWS CardDemo Modernization — Executive Summary</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&amp;family=Inter:wght@400;500;600;700&amp;family=Space+Grotesk:wght@500;600;700&amp;display=swap">
   <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&amp;family=Inter:wght@400;500;600;700&amp;family=Space+Grotesk:wght@500;600;700&amp;display=swap" rel="stylesheet">
-  <link rel="preload" as="style" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.css">
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.css">
+  <!-- Subresource integrity covers the three classic assets: this stylesheet and the two
+       scripts below. The Mermaid ES module is loaded by an import expression, which carries no
+       integrity attribute, and the Google Fonts stylesheet above is generated per user agent, so
+       both are pinned by version and origin alone. -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.css"
+        integrity="sha384-YgvgKeZJykuztG+iQPoZHNZENTFZvOcOJ/uRzmJTje6GHYN9zAw+y5rx/L8MQKA/"
+        crossorigin="anonymous">
   <style>
     /* Blitzy brand tokens. */
     :root {
@@ -36,17 +40,84 @@
       --gradient-accent-bar: linear-gradient(90deg, #5B39F3 0%, #94FAD5 100%);
     }
 
-    /* Deck-local layout values, kept out of the brand token block above. */
+    /* Deck-local scale, kept out of the brand token block above. Type sizes are relative to
+       --type-base, which is the reveal stage size. Spacing steps run --space-1 to --space-10.
+       Structural zero, percentage and fraction values stay inline. */
     :root {
-      --stage-pad-block: 70px;
-      --stage-pad-inline: 92px;
-      --card-radius: 22px;
+      --type-base: 32px;
+      --type-h1: 2.6em;
+      --type-h2: 1.62em;
+      --type-h2-divider: 2.15em;
+      --type-kpi-value: 2.15em;
+      --type-brand: 0.92em;
+      --type-code: 0.83em;
+      --type-icon-caption: 0.8em;
+      --type-closing-links: 0.78em;
+      --type-kpi-label: 0.72em;
+      --type-table: 0.64em;
+      --type-eyebrow: 0.56em;
+      --type-legend: 0.48em;
+      --type-slide-number: 0.43em;
+
+      --tracking-heading: -0.035em;
+      --tracking-kpi: -0.055em;
+      --tracking-brand: -0.025em;
+      --tracking-eyebrow: 0.16em;
+
+      --space-1: 8px;
+      --space-2: 12px;
+      --space-3: 18px;
+      --space-4: 22px;
+      --space-5: 28px;
+      --space-6: 34px;
+      --space-7: 54px;
+      --space-8: 62px;
+      --space-9: 70px;
+      --space-10: 92px;
+
+      --radius-code: 8px;
+      --radius-table: 16px;
+      --radius-panel: 20px;
+      --radius-card: 22px;
+      --radius-pill: 999px;
+
+      --icon-kpi: 36px;
+      --icon-row: 54px;
+      --icon-closing: 84px;
+      --icon-divider: 112px;
+      --icon-hero: 280px;
+      --stroke-hero: 1.25;
+      --stroke-divider: 1.4;
+      --stroke-closing: 1.5;
+
+      --stage-pad-block: var(--space-9);
+      --stage-pad-inline: var(--space-10);
+      --hero-column: 370px;
+      --correctness-column: 330px;
+      --closing-links-max: 1120px;
+      --kpi-card-min-height: 220px;
+      --kpi-card-min-height-wide: 300px;
+      --icon-tile-min-height: 190px;
+      --accent-bar-width: 230px;
+      --accent-bar-height: var(--space-1);
+      --slide-number-inset-inline: var(--space-7);
+      --slide-number-inset-block: 42px;
+      --table-pad-block: var(--space-3);
+      --table-pad-inline: var(--space-4);
+      --table-head-rule: 4px;
+      --hairline: 1px;
+      --focus-ring: 3px;
+      --focus-halo: 6px;
+
+      --diagram-frame-max-width: 1680px;
+      --diagram-frame-max-height: 690px;
+      --diagram-frame-min-height: 500px;
+      --diagram-max-width: 1600px;
+      --diagram-max-height: 650px;
+      --diagram-svg-max-height: 640px;
+
       --shadow-card: 0 16px 42px rgba(26, 16, 95, 0.09);
-      --ink-invert-strong: rgba(255, 255, 255, 0.92);
-      --ink-invert-soft: rgba(255, 255, 255, 0.72);
-      --ink-muted: #6B6B6B;
-      --diagram-frame-width: 1680px;
-      --diagram-height: 580px;
+      --opacity-hero-icon: 0.92;
     }
 
     * {
@@ -63,7 +134,7 @@
     .reveal {
       color: var(--blitzy-text);
       font-family: var(--ff-body);
-      font-size: 32px;
+      font-size: var(--type-base);
     }
 
     .reveal .slides {
@@ -81,20 +152,20 @@
     .reveal h3 {
       color: var(--blitzy-primary-navy);
       font-family: var(--ff-display);
-      letter-spacing: -0.035em;
+      letter-spacing: var(--tracking-heading);
       margin: 0;
       text-transform: none;
     }
 
     .reveal h1 {
-      font-size: 2.6em;
+      font-size: var(--type-h1);
       line-height: 1.02;
     }
 
     .reveal h2 {
-      font-size: 1.62em;
+      font-size: var(--type-h2);
       line-height: 1.08;
-      margin-bottom: 28px;
+      margin-bottom: var(--space-5);
     }
 
     .reveal p,
@@ -116,19 +187,20 @@
     /* Inline monospace for short expressions and document names. */
     .reveal code {
       background: var(--blitzy-surface-2);
-      border-radius: 8px;
+      border-radius: var(--radius-code);
       color: var(--blitzy-primary-deep);
       font-family: var(--ff-mono);
-      font-size: 0.83em;
+      font-size: var(--type-code);
       padding-block: 0.08em;
       padding-inline: 0.34em;
     }
 
     .slide-title {
+      background: var(--gradient-hero);
       color: var(--blitzy-text-invert);
       display: grid !important;
-      grid-template-columns: minmax(0, 1fr) 370px;
-      gap: 72px;
+      grid-template-columns: minmax(0, 1fr) var(--hero-column);
+      gap: var(--space-9);
       place-items: center;
     }
 
@@ -138,16 +210,15 @@
       color: var(--blitzy-text-invert);
     }
 
-    /* The teal accent reads at about 3.2:1 over the hero gradient and no stop of that gradient
-       improves it, so the eyebrow takes the inverted ink here. The teal accent keeps its other
-       homes, where it clears its threshold comfortably: the closing eyebrow on navy at 13:1, the
-       divider icons, and the accent bar. The step up in size is part of the same fix. Against the
-       lightest stop of this gradient nothing in the palette reaches the ratio small text needs, so
-       the eyebrow is set at the size that qualifies as large text, where the inverted ink clears
-       the threshold with room to spare across the whole gradient. */
+    /* Title eyebrow: the accent teal sits on a navy surface, which reads at 13.2:1. On the
+       closing slide the navy is already the slide background. */
     .slide-title .eyebrow {
-      color: var(--blitzy-text-invert);
-      font-size: 0.8em;
+      background: var(--blitzy-primary-navy);
+      border-radius: var(--radius-pill);
+      color: var(--blitzy-accent-teal);
+      display: inline-block;
+      padding-block: 0.35em;
+      padding-inline: 0.9em;
     }
 
     .slide-closing .eyebrow {
@@ -156,21 +227,17 @@
 
     .slide-divider {
       align-content: center;
+      background: var(--gradient-divider);
       color: var(--blitzy-text-invert);
       display: grid !important;
       justify-items: center;
       text-align: center;
     }
 
-    /* Divider headings carry the lightest of the three display weights. At this size the lighter
-       stroke still reads as display type, and it separates a divider from the heading of a content
-       slide. It is also one of the three weights the font request asks for, so every weight the
-       deck loads is a weight the deck paints. */
     .slide-divider h2 {
       color: var(--blitzy-text-invert);
-      font-size: 2.15em;
-      font-weight: 500;
-      margin-top: 34px;
+      font-size: var(--type-h2-divider);
+      margin-top: var(--space-6);
     }
 
     .slide-closing {
@@ -178,44 +245,12 @@
       background: var(--blitzy-primary-navy);
       color: var(--blitzy-text-invert);
       display: grid !important;
-      gap: 28px;
-    }
-
-    /* Reveal copies each section's class list onto the full-viewport background element it
-       generates, so a gradient declared on the section as well would be painted twice over two
-       differently sized boxes. The percentage stops then resolve differently and leave a visible
-       rectangular seam wherever the boxes disagree. Painting each gradient only here keeps one
-       smooth field. The flat colour underneath is what reveal reads to decide that these slides
-       are dark, which is how the navigation controls get a contrasting colour. */
-    .reveal .slide-background.slide-title {
-      background-color: var(--blitzy-primary-deep);
-      background-image: var(--gradient-hero);
-    }
-
-    .reveal .slide-background.slide-divider {
-      background-color: var(--blitzy-primary-dark);
-      background-image: var(--gradient-divider);
+      gap: var(--space-5);
     }
 
     /* Paints the full-viewport background element reveal generates for the closing slide. */
     .reveal .slide-background.slide-closing {
       background-color: var(--blitzy-primary-navy);
-    }
-
-    /* Reveal adds its ready class once those background elements exist. Until then, and for good
-       if the slide framework never arrives, the two gradient slides hold inverted ink over nothing
-       and their text disappears. Painting the gradient on the section itself covers that state, and
-       the selector stops matching the instant reveal takes over, so the double paint above never
-       happens. Reveal hides every section until it is ready, so no gradient flashes on the way in.
-       The closing slide needs no counterpart: its flat colour sits on the section already. */
-    .reveal:not(.ready) section.slide-title {
-      background-color: var(--blitzy-primary-deep);
-      background-image: var(--gradient-hero);
-    }
-
-    .reveal:not(.ready) section.slide-divider {
-      background-color: var(--blitzy-primary-dark);
-      background-image: var(--gradient-divider);
     }
 
     .slide-closing h2,
@@ -226,271 +261,260 @@
 
     .kpi-grid {
       display: grid;
-      gap: 22px;
+      gap: var(--space-4);
       grid-template-columns: repeat(5, minmax(0, 1fr));
-      margin-top: 62px;
+      margin-top: var(--space-8);
       width: 100%;
     }
 
     .kpi-card {
       background: var(--blitzy-surface-0);
-      border: 1px solid var(--blitzy-border-soft);
-      border-radius: var(--card-radius);
+      border: var(--hairline) solid var(--blitzy-border-soft);
+      border-radius: var(--radius-card);
       box-shadow: var(--shadow-card);
-      min-height: 220px;
-      padding: 28px;
+      min-height: var(--kpi-card-min-height);
+      padding: var(--space-5);
     }
 
     .kpi-value {
       color: var(--blitzy-primary);
       font-family: var(--ff-display);
-      font-size: 2.15em;
+      font-size: var(--type-kpi-value);
       font-weight: 700;
-      letter-spacing: -0.055em;
+      letter-spacing: var(--tracking-kpi);
       line-height: 1;
-      margin: 24px 0 14px;
+      margin: var(--space-4) 0 var(--space-2);
     }
 
-    /* Secondary text uses --ink-muted in place of the brand --blitzy-text-muted. The brand value
-       reads at about 2.85:1 on a white surface, and this text is a shade under the size that would
-       let it use the lower threshold, so it needs the darker grey. The value clears the threshold
-       against both surfaces this text ever sits on, the white card and the tinted page, so it does
-       not depend on which of the two is behind it. The same applies to .diagram-legend and to
-       .reveal .slide-number on the light slides. */
+    /* Metric labels, diagram legends and slide numbers all carry --blitzy-text, which reads at
+       11:1 or better on every light surface this deck paints. */
     .kpi-label {
-      color: var(--ink-muted);
-      font-size: 0.72em;
+      color: var(--blitzy-text);
+      font-size: var(--type-kpi-label);
       font-weight: 600;
       line-height: 1.25;
     }
 
     .kpi-icon {
       color: var(--blitzy-primary);
-      height: 36px;
-      width: 36px;
+      height: var(--icon-kpi);
+      width: var(--icon-kpi);
     }
 
     .eyebrow {
       color: var(--blitzy-primary);
       font-family: var(--ff-mono);
-      font-size: 0.56em;
+      font-size: var(--type-eyebrow);
       font-weight: 500;
-      letter-spacing: 0.16em;
-      margin-bottom: 22px;
+      letter-spacing: var(--tracking-eyebrow);
+      margin-bottom: var(--space-4);
       text-transform: uppercase;
     }
 
     .accent-bar {
       background: var(--gradient-accent-bar);
-      border-radius: 999px;
-      height: 8px;
-      width: 230px;
+      border-radius: var(--radius-pill);
+      height: var(--accent-bar-height);
+      width: var(--accent-bar-width);
     }
 
     .brand-lockup {
       color: var(--blitzy-text-invert);
       font-family: var(--ff-display);
-      font-size: 0.92em;
+      font-size: var(--type-brand);
       font-weight: 700;
-      letter-spacing: -0.025em;
-      margin-top: 10px;
+      letter-spacing: var(--tracking-brand);
+      margin-top: var(--space-1);
     }
 
     .hero-icon {
-      color: var(--ink-invert-strong);
-      height: 280px;
-      stroke-width: 1.25;
-      width: 280px;
+      color: var(--blitzy-text-invert);
+      height: var(--icon-hero);
+      opacity: var(--opacity-hero-icon);
+      stroke-width: var(--stroke-hero);
+      width: var(--icon-hero);
     }
 
     .icon-row {
       display: grid;
-      gap: 28px;
+      gap: var(--space-5);
       grid-template-columns: repeat(4, minmax(0, 1fr));
-      margin-top: 54px;
+      margin-top: var(--space-7);
       width: 100%;
     }
 
     .icon-row > div {
       background: var(--blitzy-surface-0);
-      border: 1px solid var(--blitzy-border-soft);
-      border-radius: var(--card-radius);
-      min-height: 190px;
-      padding: 30px;
+      border: var(--hairline) solid var(--blitzy-border-soft);
+      border-radius: var(--radius-panel);
+      min-height: var(--icon-tile-min-height);
+      padding: var(--space-5);
       text-align: center;
     }
 
     .icon-row svg {
       color: var(--blitzy-primary);
-      height: 54px;
-      margin-bottom: 20px;
-      width: 54px;
+      height: var(--icon-row);
+      margin-bottom: var(--space-3);
+      width: var(--icon-row);
     }
 
-    /* The middle display weight, so a short card title reads as a title without competing with the
-       slide heading above it. */
     .icon-row strong {
       display: block;
       font-family: var(--ff-display);
-      font-size: 0.8em;
-      font-weight: 600;
+      font-size: var(--type-icon-caption);
       line-height: 1.2;
     }
 
     .divider-icon {
       color: var(--blitzy-accent-teal);
-      height: 112px;
-      stroke-width: 1.4;
-      width: 112px;
+      height: var(--icon-divider);
+      stroke-width: var(--stroke-divider);
+      width: var(--icon-divider);
     }
 
     .closing-icon {
       color: var(--blitzy-accent-teal);
-      height: 84px;
-      stroke-width: 1.5;
-      width: 84px;
+      height: var(--icon-closing);
+      stroke-width: var(--stroke-closing);
+      width: var(--icon-closing);
     }
 
     .mermaid-frame {
       align-items: center;
       background: var(--blitzy-surface-0);
-      border: 1px solid var(--blitzy-border-soft);
-      border-radius: var(--card-radius);
+      border: var(--hairline) solid var(--blitzy-border-soft);
+      border-radius: var(--radius-panel);
       display: flex;
       justify-content: center;
-      margin: 20px auto 12px;
-      max-height: calc(var(--diagram-height) + 40px);
-      max-width: var(--diagram-frame-width);
-      min-height: 500px;
+      margin: var(--space-3) auto var(--space-2);
+      max-height: var(--diagram-frame-max-height);
+      max-width: var(--diagram-frame-max-width);
+      min-height: var(--diagram-frame-min-height);
       overflow: hidden;
-      padding: 18px 28px;
+      padding: var(--space-3) var(--space-5);
       width: 100%;
     }
 
-    /* The frame is the width budget, so the diagram gets all of it. A narrower cap here shrank
-       the widest diagram a second time, well below the size the slide can carry. */
     .mermaid {
       align-items: center;
       display: flex;
       justify-content: center;
       margin: 0;
-      max-height: calc(var(--diagram-height) + 4px);
-      max-width: var(--diagram-frame-width);
+      max-height: var(--diagram-max-height);
+      max-width: var(--diagram-max-width);
       width: 100%;
     }
 
     .mermaid svg {
       height: auto;
-      max-height: var(--diagram-height);
+      max-height: var(--diagram-svg-max-height);
       max-width: 100%;
       width: auto;
     }
 
-    /* Mermaid scopes its own generated styles by the identifier of each diagram it draws, which
-       outranks any class selector here. These declarations therefore have to be marked important
-       to hold every label inside the three declared typefaces and on the body ink; without them
-       the labels fall back to a fourth family and subgraph titles are painted black. */
-    .mermaid text {
-      fill: var(--blitzy-text) !important;
-      font-family: var(--ff-body) !important;
-    }
-
-    .mermaid .cluster-label text {
-      fill: var(--blitzy-text) !important;
-    }
-
-    .mermaid .nodeLabel {
+    .reveal .mermaid .nodeLabel {
       white-space: normal !important;
     }
 
-    /* Off-screen host the diagrams are rendered inside before their result is moved
-       into the live frame. It sits outside the scaled slide area. */
-    .mermaid-render-stage {
-      left: -20000px;
-      position: fixed;
-      top: 0;
-      width: 1680px;
-    }
-
-    /* Shown in place of a diagram whose rendering library did not load. */
-    .mermaid-notice {
+    /* Diagram frame contents when the library or a diagram fails: wrapped body copy instead of
+       a single unwrapped monospace line. */
+    .reveal pre.mermaid.diagram-fallback {
       color: var(--blitzy-text);
+      display: block;
       font-family: var(--ff-body);
-      font-size: 0.6em;
-      line-height: 1.45;
-      max-width: 1080px;
+      font-size: var(--type-kpi-label);
+      line-height: 1.35;
+      max-width: var(--closing-links-max);
       text-align: center;
       white-space: normal;
+      overflow-wrap: anywhere;
     }
 
-    .mermaid-frame-empty {
-      background: var(--blitzy-surface-3);
+    /* Static reading order, applied only when the reveal script never initializes. Every slide
+       is laid out in document order instead of being positioned on a hidden stage. */
+    body.deck-static .reveal,
+    body.deck-static .reveal .slides {
+      height: auto;
+      overflow: visible;
+      position: static;
+    }
+
+    body.deck-static .reveal .slides section {
+      display: block !important;
+      margin-bottom: var(--space-6);
+      pointer-events: auto;
+      position: static;
     }
 
     .diagram-legend {
-      color: var(--ink-muted);
+      color: var(--blitzy-text);
       font-family: var(--ff-mono);
-      font-size: 0.48em;
+      font-size: var(--type-legend);
       line-height: 1.45;
-      margin-top: 8px;
+      margin-top: var(--space-1);
       text-align: center;
     }
 
     .reveal table {
       border-collapse: separate;
       border-spacing: 0;
-      font-size: 0.64em;
-      margin: 34px auto 0;
+      font-size: var(--type-table);
+      margin: var(--space-6) auto 0;
       width: 100%;
     }
 
-    .reveal table thead th {
+    /* Table names are exposed to assistive technology and not painted on the slide. */
+    .reveal table caption {
+      clip-path: inset(50%);
+      height: 1px;
+      overflow: hidden;
+      position: absolute;
+      white-space: nowrap;
+      width: 1px;
+    }
+
+    .reveal table th {
       background: var(--blitzy-surface-2);
-      border-bottom: 4px solid var(--blitzy-primary);
+      border-bottom: var(--table-head-rule) solid var(--blitzy-primary);
       color: var(--blitzy-primary-navy);
       font-weight: 700;
-      padding: 18px 22px;
+      padding: var(--table-pad-block) var(--table-pad-inline);
       text-align: left;
     }
 
-    /* Each body row is named by its first cell, so that cell is a row header. It is styled as a
-       body cell so the semantics carry no visual weight of their own. */
-    .reveal table td,
-    .reveal table tbody th {
-      border-bottom: 1px solid var(--blitzy-border);
+    .reveal table td {
+      border-bottom: var(--hairline) solid var(--blitzy-border);
       color: var(--blitzy-text);
-      font-weight: 400;
-      padding: 17px 22px;
-      text-align: left;
+      padding: var(--table-pad-block) var(--table-pad-inline);
       vertical-align: top;
     }
 
-    .reveal table tbody tr:nth-child(odd) td,
-    .reveal table tbody tr:nth-child(odd) th {
+    .reveal table tbody tr:nth-child(odd) td {
       background: var(--blitzy-surface-0);
     }
 
-    .reveal table tbody tr:nth-child(even) td,
-    .reveal table tbody tr:nth-child(even) th {
+    .reveal table tbody tr:nth-child(even) td {
       background: var(--blitzy-surface-3);
     }
 
-    .reveal table thead th:first-child {
-      border-top-left-radius: 16px;
+    .reveal table th:first-child {
+      border-top-left-radius: var(--radius-table);
     }
 
-    .reveal table thead th:last-child {
-      border-top-right-radius: 16px;
+    .reveal table th:last-child {
+      border-top-right-radius: var(--radius-table);
     }
 
-    /* Both columns start at the top and keep their own height. Stretching them to a shared
-       height padded the two-row table with dead space and left its rows unequal. */
     .split-correctness {
-      align-items: start;
       display: grid;
-      gap: 34px;
-      grid-template-columns: 330px minmax(0, 1fr);
-      margin-top: 34px;
+      gap: var(--space-6);
+      grid-template-columns: var(--correctness-column) minmax(0, 1fr);
+      margin-top: var(--space-6);
+    }
+
+    .split-correctness .kpi-card {
+      min-height: var(--kpi-card-min-height-wide);
     }
 
     .split-correctness table {
@@ -498,37 +522,40 @@
     }
 
     .closing-links {
-      font-size: 0.78em;
-      max-width: 1120px;
+      font-size: var(--type-closing-links);
+      max-width: var(--closing-links-max);
     }
 
-    /* The medium body weight, which lifts the three closing pointers a step above running copy. */
     .closing-links li {
-      font-weight: 500;
       margin: 0.5em 0;
     }
 
     .reveal .slide-number {
       background: none;
       bottom: auto;
-      color: var(--ink-muted);
+      color: var(--blitzy-text);
       font-family: var(--ff-mono);
-      font-size: 0.43em;
+      font-size: var(--type-slide-number);
       padding: 0;
       position: absolute;
-      right: 54px;
-      top: 42px;
+      right: var(--slide-number-inset-inline);
+      top: var(--slide-number-inset-block);
     }
 
     .reveal .progress {
       display: none !important;
     }
 
-    /* Reveal draws its navigation chevrons in the control colour and leaves that colour black
-       when no theme is loaded, which is too close to a violet or navy slide to make out. The
-       chevrons are navigation controls, so each one has to stay clearly separated from whatever
-       sits behind it. Reveal marks the deck dark once the background element carries a colour,
-       which the gradient rules above now give it, so the inverted ink can follow that mark. */
+    .slide-title .slide-number,
+    .slide-divider .slide-number,
+    .slide-closing .slide-number {
+      color: var(--blitzy-text-invert);
+    }
+
+    /* Keyboard focus treatment for reveal's controls, links and slide-jump input. The pinned
+       reveal stylesheet sets outline zero on those elements. */
+    /* Reveal draws its navigation chevrons in the control colour, which is black by default and
+       disappears against the dark title, divider and closing slides. */
     .reveal .controls {
       color: var(--blitzy-primary-navy);
     }
@@ -541,39 +568,24 @@
       color: var(--blitzy-text-invert);
     }
 
-    /* Reveal removes the outline from its own buttons and adds nothing in its place, so a keyboard
-       user cannot see where the focus is. Two rings are drawn, not one: the white ring is
-       what shows on the gradient and navy slides, the navy ring is what shows on the light ones,
-       so one of the pair always separates from the background. */
-    .reveal .controls button:focus-visible {
-      border-radius: 8px;
-      box-shadow:
-        0 0 0 3px var(--blitzy-text-invert),
-        0 0 0 6px var(--blitzy-primary-navy);
-      outline: none;
+    .reveal .controls button:focus-visible,
+    .reveal .jump-to-slide-input:focus-visible,
+    .reveal a:focus-visible {
+      border-radius: var(--radius-code);
+      box-shadow: 0 0 0 var(--focus-halo) var(--blitzy-primary-deep);
+      outline: var(--focus-ring) solid var(--blitzy-accent-teal);
+      outline-offset: var(--focus-ring);
     }
 
-    /* A reader who has asked the system to reduce motion gets the slide, the background and the
-       controls without the eight-tenths-of-a-second travel reveal applies by default. */
+    /* Motion preference. Slide and background transitions are removed while the reveal
+       configuration stays as enumerated. */
     @media (prefers-reduced-motion: reduce) {
       .reveal .slides section,
-      .reveal .slides,
-      .reveal .slide-background,
-      .reveal .controls button {
+      .reveal .slides section > *,
+      .reveal .backgrounds .slide-background,
+      .reveal .fragment {
         transition: none !important;
       }
-    }
-
-    /* The print layout drops the stage padding, so it is restated for the exported pages. */
-    html.reveal-print .reveal .slides section {
-      padding-block: var(--stage-pad-block) !important;
-      padding-inline: var(--stage-pad-inline) !important;
-    }
-
-    .slide-title .slide-number,
-    .slide-divider .slide-number,
-    .slide-closing .slide-number {
-      color: var(--ink-invert-soft);
     }
   </style>
 </head>
@@ -581,7 +593,7 @@
   <div class="reveal">
     <div class="slides">
       <section class="slide-title" aria-label="Slide 1 of 16, one authorization and independent reactions">
-        <span class="slide-number">01</span>
+        <span class="slide-number" aria-hidden="true">01</span>
         <div>
           <div class="eyebrow">AWS CardDemo modernization</div>
           <h1>One authorization.<br>Independent reactions.</h1>
@@ -592,14 +604,14 @@
       </section>
 
       <section aria-label="Slide 2 of 16, measured from source to demo">
-        <span class="slide-number">02</span>
+        <span class="slide-number" aria-hidden="true">02</span>
         <div class="eyebrow">Delivered scope</div>
         <h2>Measured from source to demo</h2>
-        <div class="kpi-grid" role="group" aria-label="Headline modernization metrics">
+        <div class="kpi-grid" aria-label="Headline modernization metrics">
           <div class="kpi-card">
             <i class="kpi-icon" data-lucide="file-text" aria-hidden="true"></i>
             <div class="kpi-value">28</div>
-            <div class="kpi-label">COBOL programs analysed</div>
+            <div class="kpi-label">Common Business Oriented Language (COBOL) programs analysed</div>
           </div>
           <div class="kpi-card">
             <i class="kpi-icon" data-lucide="database" aria-hidden="true"></i>
@@ -608,8 +620,8 @@
           </div>
           <div class="kpi-card">
             <i class="kpi-icon" data-lucide="package" aria-hidden="true"></i>
-            <div class="kpi-value">5</div>
-            <div class="kpi-label">Core event contracts</div>
+            <div class="kpi-value">8</div>
+            <div class="kpi-label">Event types, 13 schemas</div>
           </div>
           <div class="kpi-card">
             <i class="kpi-icon" data-lucide="shield-alert" aria-hidden="true"></i>
@@ -619,87 +631,104 @@
           <div class="kpi-card">
             <i class="kpi-icon" data-lucide="list-checks" aria-hidden="true"></i>
             <div class="kpi-value">300</div>
-            <div class="kpi-label">Primary posting sample records</div>
+            <div class="kpi-label">Posting sample records</div>
           </div>
         </div>
       </section>
 
       <section aria-label="Slide 3 of 16, Figure 1, from shared files to owned schemas">
-        <span class="slide-number">03</span>
+        <span class="slide-number" aria-hidden="true">03</span>
         <div class="eyebrow">Architecture</div>
         <h2>Figure 1 — From shared files to owned schemas</h2>
-        <p>Figure 1 pairs the source state with the delivered event-driven state. Every one of the eight legacy datasets ran with recovery and journalling switched off. The full view is in <code>docs/architecture-before-after.md</code>.</p>
+        <p>Figure 1 pairs the source state with the delivered one. Detail: <code>docs/architecture-before-after.md</code>.</p>
         <div class="mermaid-frame">
-          <pre class="mermaid" data-diagram="figure-1" data-diagram-label="Figure 1. Before: a terminal and a nightly batch chain both reach eight shared datasets. After: a client calls the authorization service, which publishes one account-keyed event, and the ledger, fraud and notification services each consume it into their own schema.">
+          <pre class="mermaid">
 graph LR
-  subgraph B["Before"]
+  accTitle: Figure 1, from shared files to owned schemas
+  accDescr: Before, a 3270 terminal drives a CICS region and a nightly JCL batch chain, and both reach into eight shared VSAM datasets. After, a REST client calls authorization-service, which publishes transaction.authorized to ledger-posting-service, fraud-detection-service and notification-service. A management client calls account-service and card-service, whose account.state-changed and card.updated events refresh authorization. Each of the six services reaches one private schema of its own and no other, and no consumer connects to another consumer.
+  subgraph B["Before: 8 shared datasets"]
     direction TB
     T["3270 terminal"] --> C["CICS region"]
     J["Nightly JCL batch chain"]
     C -.-> V[("8 shared VSAM datasets")]
     J -.-> V
   end
-  subgraph A["After"]
+  subgraph A["After: 6 services, 6 private schemas"]
     direction TB
     R["REST client"] --> U["authorization-service"]
     U ==> K{{"transaction.authorized keyed by account"}}
     K ==> L["ledger-posting-service"]
     K ==> F["fraud-detection-service"]
     K ==> N["notification-service"]
-    U -.-> DU[("own schema")]
-    L -.-> DL[("own schema")]
-    F -.-> DF[("own schema")]
-    N -.-> DN[("own schema")]
+    M["Management client"] --> AC["account-service"]
+    M --> CS["card-service"]
+    AC ==> AS{{"account.state-changed"}}
+    CS ==> CU{{"card.updated"}}
+    AS ==> U
+    CU ==> U
+    U -.-> DU[("authorization schema")]
+    L -.-> DL[("ledger schema")]
+    F -.-> DF[("fraud schema")]
+    N -.-> DN[("notification schema")]
+    AC -.-> DA[("account schema")]
+    CS -.-> DC[("card schema")]
   end
-  B ~~~ A
+  V ~~~ R
           </pre>
         </div>
-        <div class="diagram-legend">Legend: solid arrow = synchronous call · double arrow = asynchronous event · dotted arrow = datastore access · cylinder = datastore</div>
+        <div class="diagram-legend">Legend: solid = synchronous · double = event · dotted = datastore · cylinder = datastore</div>
       </section>
 
       <section class="slide-divider" aria-label="Slide 4 of 16, how the event flow works">
-        <span class="slide-number">04</span>
+        <span class="slide-number" aria-hidden="true">04</span>
         <i class="divider-icon" data-lucide="share-2" aria-hidden="true"></i>
         <h2>How the event flow works</h2>
       </section>
 
       <section aria-label="Slide 5 of 16, Figure 2, one outcome event starts the work">
-        <span class="slide-number">05</span>
+        <span class="slide-number" aria-hidden="true">05</span>
         <div class="eyebrow">Independent reactions</div>
         <h2>Figure 2 — One outcome event starts the work</h2>
-        <p>Figure 2 shows one outcome event starting three independent reactions. No arrow joins the three consumers, so none of them waits on another. Detail is in <code>docs/event-flow.md</code>.</p>
+        <p>Figure 2 shows one event starting three independent reactions. No arrow joins the three consumers. Detail in <code>docs/event-flow.md</code>.</p>
         <div class="mermaid-frame">
-          <pre class="mermaid" data-diagram="figure-2" data-diagram-label="Figure 2. The client calls the authorization service, which publishes an authorized event and a declined event. The ledger, fraud and notification services consume the authorized event independently. The ledger publishes a posted event, fraud publishes an assessed event, and notification consumes both. Undeliverable messages route to the dead-letter topic.">
+          <pre class="mermaid">
 graph LR
+  accTitle: Figure 2, one outcome event starts the work
+  accDescr: A REST client calls authorization-service, which publishes transaction.authorized and transaction.declined. Three consumers read transaction.authorized independently: ledger-posting-service, fraud-detection-service and notification-service. The ledger also reads transaction.declined and records one reject row. The decline whose card resolves no account travels on that topic too, keyed on the transaction identifier. The ledger publishes transaction.posted, which notification-service and account-service both read, and fraud-detection-service publishes fraud.assessed, which notification-service reads. A record the ledger, fraud or notification listener cannot complete travels to its own source topic plus the .DLT suffix, and account-service routes one to the shared carddemo.dead-letter fallback. No consumer calls another consumer.
   C["REST client"] --> A["authorization-service"]
-  A ==> TA{{"transaction.authorized account key"}}
-  A ==> TD{{"transaction.declined"}}
+  A ==>|approved| TA{{"transaction.authorized account key"}}
+  A ==>|"declined with an account"| TD{{"transaction.declined"}}
+  A --- U["reason 0100: no account key, transaction key instead"]
   TA ==> L["ledger-posting-service"]
   TA ==> F["fraud-detection-service"]
   TA ==> N["notification-service"]
+  TD ==> L
   L ==> TP{{"transaction.posted"}}
   F ==> FA{{"fraud.assessed"}}
   TP ==> N
+  TP ==> AC["account-service"]
   FA ==> N
-  TA -.-> DL{{"carddemo.dead-letter"}}
-  TP -.-> DL
-  FA -.-> DL
+  L -.-> DLT{{"source topic plus .DLT"}}
+  F -.-> DLT
+  N -.-> DLT
+  AC -.-> SH{{"carddemo.dead-letter fallback"}}
           </pre>
         </div>
-        <div class="diagram-legend">Legend: solid arrow = synchronous request · double arrow = event publish or consume · dotted arrow = failed-message route · hexagon = topic</div>
+        <div class="diagram-legend">Legend: labelled arrow = publishing outcome · dotted = dead-letter route · hexagon = topic</div>
       </section>
 
       <section class="slide-divider" aria-label="Slide 6 of 16, business value">
-        <span class="slide-number">06</span>
+        <span class="slide-number" aria-hidden="true">06</span>
         <i class="divider-icon" data-lucide="trending-up" aria-hidden="true"></i>
         <h2>Business value</h2>
       </section>
 
       <section aria-label="Slide 7 of 16, the architecture creates room to change safely">
-        <span class="slide-number">07</span>
+        <span class="slide-number" aria-hidden="true">07</span>
         <div class="eyebrow">What changed</div>
-        <h2 id="business-value-heading">The architecture creates room to change safely</h2>
-        <table aria-labelledby="business-value-heading">
+        <h2>The architecture creates room to change safely</h2>
+        <table>
+          <caption>Business value of the modernization</caption>
           <thead>
             <tr>
               <th scope="col">What changed</th>
@@ -720,7 +749,7 @@ graph LR
               <td>Deployments and schema changes stay inside an explicit boundary.</td>
             </tr>
             <tr>
-              <th scope="row">Sixty-six flagged source rules carry file and line citations.</th>
+              <th scope="row">All 66 flagged source rules carry file and line citations.</th>
               <td>Owners can approve behavior changes without guessing at source intent.</td>
             </tr>
           </tbody>
@@ -728,23 +757,24 @@ graph LR
       </section>
 
       <section class="slide-divider" aria-label="Slide 8 of 16, correctness and parity">
-        <span class="slide-number">08</span>
+        <span class="slide-number" aria-hidden="true">08</span>
         <i class="divider-icon" data-lucide="calculator" aria-hidden="true"></i>
         <h2>Correctness and parity</h2>
       </section>
 
       <section aria-label="Slide 9 of 16, money truncates and never rounds">
-        <span class="slide-number">09</span>
+        <span class="slide-number" aria-hidden="true">09</span>
         <div class="eyebrow">Highest-risk finding</div>
-        <h2 id="truncation-heading">Money truncates; it never rounds</h2>
-        <p><code>ROUNDED</code> appears zero times across all 28 programs. The services pin <code>RoundingMode.DOWN</code>, and a test proves <code>HALF_UP</code> changes the cent.</p>
+        <h2>Money truncates; it never rounds</h2>
+        <p><code>ROUNDED</code> appears zero times across all 28 source programs. Every service pins <code>RoundingMode.DOWN</code>.</p>
         <div class="split-correctness">
           <div class="kpi-card">
             <i class="kpi-icon" data-lucide="scale" aria-hidden="true"></i>
             <div class="kpi-value">0</div>
             <div class="kpi-label">Occurrences across 28 source programs</div>
           </div>
-          <table aria-labelledby="truncation-heading">
+          <table>
+            <caption>Truncation compared with half-up rounding</caption>
             <thead>
               <tr>
                 <th scope="col">Mode</th>
@@ -766,11 +796,12 @@ graph LR
       </section>
 
       <section aria-label="Slide 10 of 16, every source class has a disposition">
-        <span class="slide-number">10</span>
+        <span class="slide-number" aria-hidden="true">10</span>
         <div class="eyebrow">Coverage</div>
-        <h2 id="coverage-heading">Every source class has a disposition</h2>
+        <h2>Every source class has a disposition</h2>
         <p>The complete bidirectional inventory is in <code>docs/traceability-matrix.md</code>.</p>
-        <table aria-labelledby="coverage-heading">
+        <table>
+          <caption>Source coverage and mapping summary</caption>
           <thead>
             <tr>
               <th scope="col">Source inventory</th>
@@ -780,11 +811,11 @@ graph LR
           <tbody>
             <tr>
               <th scope="row">28 COBOL programs</th>
-              <td>12 primary migration sources, 8 reference inputs, 2 partial sources, 6 exclusions</td>
+              <td>12 primary migration sources, 8 reference-only, 2 partial, 6 excluded</td>
             </tr>
             <tr>
               <th scope="row">28 copybooks</th>
-              <td>12 record layouts, 8 semantics inputs, 1 divergent fork, 6 exclusions, 1 dead copy</td>
+              <td>12 record layouts, 9 reference or semantics inputs, 1 divergent fork, 5 excluded, 1 dead</td>
             </tr>
             <tr>
               <th scope="row">29 job members</th>
@@ -803,16 +834,17 @@ graph LR
       </section>
 
       <section class="slide-divider" aria-label="Slide 11 of 16, risk and mitigation">
-        <span class="slide-number">11</span>
+        <span class="slide-number" aria-hidden="true">11</span>
         <i class="divider-icon" data-lucide="shield-alert" aria-hidden="true"></i>
         <h2>Risk and mitigation</h2>
       </section>
 
       <section aria-label="Slide 12 of 16, risk is visible and testable">
-        <span class="slide-number">12</span>
+        <span class="slide-number" aria-hidden="true">12</span>
         <div class="eyebrow">Known risk</div>
-        <h2 id="risk-heading">Risk is visible and testable</h2>
-        <table aria-labelledby="risk-heading">
+        <h2>Risk is visible and testable</h2>
+        <table>
+          <caption>Modernization risks and mitigations</caption>
           <thead>
             <tr>
               <th scope="col">Risk</th>
@@ -825,8 +857,8 @@ graph LR
               <td>The equivalence suite is a required build stage, and its results are published.</td>
             </tr>
             <tr>
-              <th scope="row">Two known source defects remain for parity.</th>
-              <td>Each defect is reproduced, cited, and held for an owner decision.</td>
+              <th scope="row">Source defects are reproduced for parity, never corrected quietly.</th>
+              <td>Each one is cited in the flag register and held for an owner decision.</td>
             </tr>
             <tr>
               <th scope="row">The sample data cannot reach the narrowed-precision boundary.</th>
@@ -841,19 +873,21 @@ graph LR
       </section>
 
       <section class="slide-divider" aria-label="Slide 13 of 16, delivery and continued development">
-        <span class="slide-number">13</span>
+        <span class="slide-number" aria-hidden="true">13</span>
         <i class="divider-icon" data-lucide="git-branch" aria-hidden="true"></i>
         <h2>Delivery and continued development</h2>
       </section>
 
       <section aria-label="Slide 14 of 16, Figure 3, each capability starts from a proven contract">
-        <span class="slide-number">14</span>
+        <span class="slide-number" aria-hidden="true">14</span>
         <div class="eyebrow">Dependency order</div>
         <h2>Figure 3 — Each capability starts from a proven contract</h2>
-        <p>Figure 3 orders delivery by dependency. Equivalence checks run alongside every stage, not after the last one.</p>
+        <p>Figure 3 orders delivery by dependency. Equivalence checks run alongside every stage.</p>
         <div class="mermaid-frame">
-          <pre class="mermaid" data-diagram="figure-3" data-diagram-label="Figure 3. The event contract library and the continuous equivalence suite come first. The authorization service and event bus follow, then ledger posting and fraud detection, and notification last.">
+          <pre class="mermaid">
 graph LR
+  accTitle: Figure 3, each capability starts from a proven contract
+  accDescr: The event-contracts library compiles first, and the continuous equivalence suite with its sample data and compatibility library stands beside it. Both feed the first stage, the authorization service and event bus. That stage feeds the second, ledger posting, and the third, fraud detection. Both of those feed the fourth, notification. The equivalence suite also feeds every later stage, so verification runs alongside delivery instead of after it.
   E["event-contracts library compiles"] --> A["First authorization service and event bus"]
   C["Continuous equivalence suite with sample data and compatibility library"] --> A
   A --> L["Second ledger posting"]
@@ -865,40 +899,40 @@ graph LR
   C --> N
           </pre>
         </div>
-        <div class="diagram-legend">Legend: an arrow means the destination cannot start until the source contract or verification foundation exists</div>
+        <div class="diagram-legend">Legend: an arrow means the destination cannot start until the source exists</div>
       </section>
 
       <section aria-label="Slide 15 of 16, developers get a tested path into the system">
-        <span class="slide-number">15</span>
+        <span class="slide-number" aria-hidden="true">15</span>
         <div class="eyebrow">Ready to extend</div>
-        <h2>Developers get a tested path into the system</h2>
-        <p><code>docs/onboarding.md</code> takes a clean machine to a running stack; <code>docs/suggested-next-tasks.md</code> lists the follow-on work.</p>
-        <div class="icon-row" role="group" aria-label="Onboarding and extension paths">
+        <h2>A tested path into the system</h2>
+        <p><code>docs/onboarding.md</code> goes from clean machine to running stack. <code>docs/suggested-next-tasks.md</code> lists what follows.</p>
+        <div class="icon-row" aria-label="Onboarding and extension paths">
           <div>
             <i data-lucide="zap" aria-hidden="true"></i>
-            <strong>One command starts the demo</strong>
+            <strong>One command starts it</strong>
           </div>
           <div>
             <i data-lucide="gauge" aria-hidden="true"></i>
-            <strong>Tool and image versions are pinned</strong>
+            <strong>Versions are pinned</strong>
           </div>
           <div>
             <i data-lucide="network" aria-hidden="true"></i>
-            <strong>A consumer needs no producer change</strong>
+            <strong>New consumer, no producer change</strong>
           </div>
           <div>
             <i data-lucide="layers" aria-hidden="true"></i>
-            <strong>A decline rule is one new class</strong>
+            <strong>One class adds a rule</strong>
           </div>
         </div>
       </section>
 
       <section class="slide-closing" aria-label="Slide 16 of 16, one event and three independent consumers">
-        <span class="slide-number">16</span>
+        <span class="slide-number" aria-hidden="true">16</span>
         <i class="closing-icon" data-lucide="circle-check" aria-hidden="true"></i>
         <div class="eyebrow">Executive takeaway</div>
         <h2>One event, three independent consumers</h2>
-        <ul class="closing-links" aria-label="Where to continue">
+        <ul class="closing-links">
           <li>Run the platform from <code>docs/onboarding.md</code>.</li>
           <li>Review owner decisions in <code>docs/suggested-next-tasks.md</code>.</li>
           <li>Audit every non-trivial choice in <code>docs/decision-log.md</code>.</li>
@@ -909,197 +943,152 @@ graph LR
     </div>
   </div>
 
-  <script defer src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.js"></script>
-  <script defer src="https://cdn.jsdelivr.net/npm/lucide@0.460.0/dist/umd/lucide.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.js"
+          integrity="sha384-M/JtqCVlLcK9lwVnBnMXP0V577CBULkjodKsR/PITOe4MSKNbbwqCemEyluOw0+5"
+          crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/lucide@0.460.0/dist/umd/lucide.min.js"
+          integrity="sha384-ieG+IKD0d/ZPXyCBTMVAbqsQdns8QGJR/e26WMw7M4fkaI/rHcS/YIoi+ah9WGge"
+          crossorigin="anonymous"></script>
   <script type="module">
-    const MERMAID_MODULE_URL = "https://cdn.jsdelivr.net/npm/mermaid@11.4.0/dist/mermaid.esm.min.mjs";
-    const DIAGRAM_NOTICE = "This diagram needs a rendering library the browser session could not reach. The same view is in docs/architecture-before-after.md and docs/event-flow.md.";
-
-    /* Each definition is stored under the string in its own data-diagram attribute, so the
-       lookup still resolves after reveal replaces a slide node with a clone. */
-    const diagramSources = new Map();
-
-    function diagramBlocks() {
-      return Array.from(document.querySelectorAll("pre.mermaid"));
-    }
-
-    diagramBlocks().forEach((node) => {
-      diagramSources.set(node.dataset.diagram, node.textContent.trim());
+    /* Original definition of every diagram block, captured before the first render. */
+    const mermaidSources = new WeakMap();
+    document.querySelectorAll("pre.mermaid").forEach((node) => {
+      mermaidSources.set(node, node.textContent.trim());
     });
 
-    const renderedDiagrams = new Set();
-    const renderingDiagrams = new Set();
+    /* Diagram slides waiting for a render, and the chain that serializes those renders. */
+    const pendingDiagramSlides = new Set();
+    // The source each block was last drawn from. A block whose entry equals its source is already
+    // showing that drawing, so returning to its slide restores nothing and redraws nothing. An
+    // entry is written only after a successful run. A diagram that failed is therefore attempted
+    // again on the next visit, and does not stay blank for the rest of the talk.
+    const mermaidRendered = new WeakMap();
 
-    let diagramQueue = Promise.resolve();
-    let mermaidLoad = null;
-    let renderStage = null;
+    let mermaidRenderQueue = Promise.resolve();
 
-    function showDiagramNotice(node) {
-      node.textContent = DIAGRAM_NOTICE;
-      node.classList.add("mermaid-notice");
-      const frame = node.closest(".mermaid-frame");
-      if (frame) {
-        frame.classList.add("mermaid-frame-empty");
-      }
+    /* Replaces a diagram frame with a readable line when the library or a diagram fails. */
+    function reportDiagramFailure(nodes, error) {
+      console.error("Mermaid rendering failed", error);
+      nodes.forEach((node) => {
+        node.classList.add("diagram-fallback");
+        node.textContent = "This diagram needs the Mermaid library, which did not load. "
+          + "The same view is in docs/architecture-before-after.md and docs/event-flow.md.";
+      });
     }
 
-    function clearDiagramNotice(node) {
-      node.classList.remove("mermaid-notice");
-      const frame = node.closest(".mermaid-frame");
-      if (frame) {
-        frame.classList.remove("mermaid-frame-empty");
-      }
-    }
-
-    function offScreenStage() {
-      if (!renderStage || !renderStage.isConnected) {
-        renderStage = document.createElement("div");
-        renderStage.className = "mermaid-render-stage";
-        renderStage.setAttribute("aria-hidden", "true");
-        document.body.appendChild(renderStage);
-      }
-      return renderStage;
-    }
-
-    function loadMermaid() {
-      if (!mermaidLoad) {
-        mermaidLoad = import(MERMAID_MODULE_URL).then((module) => {
-          const mermaid = module.default;
-          window.mermaid = mermaid;
-          mermaid.initialize({
-            startOnLoad: false,
-            theme: "base",
+    /* Loads Mermaid on its own, so a failed import leaves reveal, the icons and every other
+       slide untouched. Resolves to the library, or to null once the failure is reported. */
+    const mermaidReady = import("https://cdn.jsdelivr.net/npm/mermaid@11.4.0/dist/mermaid.esm.min.mjs")
+      .then((module) => {
+        const mermaid = module.default;
+        window.mermaid = mermaid;
+        mermaid.initialize({
+          startOnLoad: false,
+          theme: "base",
+          htmlLabels: false,
+          flowchart: {
             htmlLabels: false,
-            flowchart: {
-              htmlLabels: false,
-              wrappingWidth: 420
-            },
-            themeVariables: {
-              fontFamily: "Inter, system-ui, sans-serif",
-              fontSize: "24px",
-              primaryColor: "#F2F0FE",
-              primaryTextColor: "#333333",
-              primaryBorderColor: "#5B39F3",
-              lineColor: "#999999",
-              secondaryColor: "#F4EFF6",
-              titleColor: "#333333"
-            }
-          });
-          return mermaid;
+            wrappingWidth: 420
+          },
+          themeVariables: {
+            primaryColor: "#F2F0FE",
+            primaryTextColor: "#333333",
+            primaryBorderColor: "#5B39F3",
+            lineColor: "#999999",
+            secondaryColor: "#F4EFF6"
+          }
         });
-      }
-      return mermaidLoad;
-    }
+        return mermaid;
+      })
+      .catch((error) => {
+        reportDiagramFailure(Array.from(document.querySelectorAll("pre.mermaid")), error);
+        return null;
+      });
 
-    function nameDiagram(svg, label) {
-      if (!label) {
-        return;
-      }
-      const title = document.createElementNS(svg.namespaceURI, "title");
-      title.textContent = label;
-      svg.insertBefore(title, svg.firstChild);
-      svg.setAttribute("aria-label", label);
-    }
-
-    async function renderDiagram(node) {
-      const key = node.dataset.diagram;
-      const source = key ? diagramSources.get(key) : "";
-      if (!source) {
-        showDiagramNotice(node);
-        return;
-      }
-      if (renderingDiagrams.has(key)) {
-        return;
-      }
-      if (renderedDiagrams.has(key) && node.querySelector("svg")) {
-        return;
-      }
-      renderingDiagrams.add(key);
-      const holder = document.createElement("pre");
-      holder.className = "mermaid";
-      holder.textContent = source;
-      offScreenStage().appendChild(holder);
-      try {
-        const mermaid = await loadMermaid();
-        const nodes = [holder];
-        await mermaid.run({ nodes });
-        const svg = holder.querySelector("svg");
-        if (!svg || svg.getAttribute("aria-roledescription") === "error") {
-          throw new Error("Mermaid returned no diagram for " + key);
-        }
-        nameDiagram(svg, node.dataset.diagramLabel);
-        clearDiagramNotice(node);
-        node.replaceChildren(svg);
-        renderedDiagrams.add(key);
-      } catch (error) {
-        renderedDiagrams.delete(key);
-        showDiagramNotice(node);
-        console.error("Mermaid rendering failed", error);
-      } finally {
-        holder.remove();
-        renderingDiagrams.delete(key);
-      }
-    }
-
-    function queueDiagram(node) {
-      diagramQueue = diagramQueue.then(() => renderDiagram(node));
-    }
-
-    function renderAllDiagrams() {
-      diagramBlocks().forEach(queueDiagram);
-    }
-
-    function renderDiagramsIn(slide) {
+    /* Renders the diagrams of one slide. The source restore and the data-processed reset run
+       inside the queued task, so a second navigation cannot mutate a block mid-render, and a
+       slide already queued is not queued twice. */
+    function renderMermaidFor(slide) {
       if (!slide) {
         return;
       }
-      Array.from(slide.querySelectorAll("pre.mermaid")).forEach(queueDiagram);
+      const nodes = Array.from(slide.querySelectorAll("pre.mermaid")).filter(
+        (node) => mermaidRendered.get(node) !== mermaidSources.get(node)
+      );
+      if (nodes.length === 0 || pendingDiagramSlides.has(slide)) {
+        return;
+      }
+      pendingDiagramSlides.add(slide);
+      mermaidRenderQueue = mermaidRenderQueue.then(async () => {
+        pendingDiagramSlides.delete(slide);
+        const mermaid = await mermaidReady;
+        if (!mermaid) {
+          return;
+        }
+        nodes.forEach((node) => {
+          node.textContent = mermaidSources.get(node);
+          node.removeAttribute("data-processed");
+        });
+        try {
+          await mermaid.run({ nodes });
+          nodes.forEach((node) => mermaidRendered.set(node, mermaidSources.get(node)));
+          if (window.Reveal && typeof window.Reveal.layout === "function") {
+            window.Reveal.layout();
+          }
+        } catch (error) {
+          reportDiagramFailure(nodes, error);
+        }
+      });
     }
 
+    // Replaces the icon placeholders, and only while the slide on screen still holds one.
+    //
+    // The library offers no way to be given a container: createIcons reads
+    // document.querySelectorAll itself and replaces every placeholder in the page. So the scoping
+    // is the question asked before calling it, and the library does the work. Because the first
+    // call draws the whole deck, every slide change after it asks one question about one slide and
+    // stops, where this used to rebuild all seventeen icons in the document on every navigation.
+    //
+    // The selector is what makes that true, and the obvious form of it does not work. The drawing
+    // the library emits carries the name attribute forward onto itself, so an element matching
+    // "[data-lucide]" is just as likely to be a finished icon as a waiting placeholder, and a
+    // guard written that way never fires on a slide that has icons at all. The drawing also always
+    // carries the class "lucide", which is what separates the two: a placeholder is an element
+    // naming an icon that has not been given that class yet.
     function renderLucideIcons() {
-      if (window.lucide) {
-        window.lucide.createIcons();
+      if (!window.lucide) {
+        return;
       }
+      const slide = Reveal.getCurrentSlide();
+      if (slide && !slide.querySelector("[data-lucide]:not(.lucide)")) {
+        return;
+      }
+      window.lucide.createIcons();
     }
 
-    /* Reveal builds its own control strip and leaves it an unnamed complementary region, even
-       though everything inside it moves between slides. A name is what makes it reachable by
-       landmark, and the name is all this sets. The strip is an aside, and an aside carries the
-       complementary role on its own and accepts a name against it; a navigation role is not one
-       an aside is permitted to take, so setting that role would trade a nameless landmark for an
-       invalid one. */
-    function nameNavigationControls() {
-      const controls = document.querySelector(".reveal aside.controls");
-      if (controls) {
-        controls.setAttribute("aria-label", "Slide navigation");
-      }
-    }
-
-    if (typeof Reveal === "undefined") {
-      diagramBlocks().forEach(showDiagramNotice);
-    } else {
-      Reveal.on("ready", () => {
-        renderAllDiagrams();
+    if (window.Reveal) {
+      Reveal.on("ready", (event) => {
+        renderMermaidFor(event.currentSlide);
         renderLucideIcons();
-        nameNavigationControls();
       });
 
       Reveal.on("slidechanged", (event) => {
-        renderDiagramsIn(event.currentSlide);
+        renderMermaidFor(event.currentSlide);
         renderLucideIcons();
       });
 
       Reveal.initialize({
         hash: true,
-        history: true,
         transition: "slide",
         controlsTutorial: false,
-        controlsBackArrows: "visible",
-        scrollActivationWidth: 0,
-        margin: 0,
         width: 1920,
         height: 1080
       });
+    } else {
+      console.error("Reveal did not load, so slide navigation is unavailable");
+      document.body.classList.add("deck-static");
+      document.querySelectorAll(".reveal .slides section").forEach(renderMermaidFor);
+      renderLucideIcons();
     }
   </script>
 </body>

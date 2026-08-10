@@ -422,7 +422,7 @@ class ConcurrentChangeDetectorTest {
             proposedCustomer.setCustomerId(OTHER_CUSTOMER_ID);
 
             var result = updateService.updateAccount(
-                    proposedAccount, proposedCustomer, fetchedAccount, fetchedCustomer);
+                    proposedAccount, proposedCustomer, fetchedAccount, fetchedCustomer).verdict();
 
             assertThat(result.valid()).isFalse();
             assertThat(result.message())
@@ -444,7 +444,7 @@ class ConcurrentChangeDetectorTest {
             proposedAccount.setAccountId(OTHER_ACCOUNT_ID);
 
             var result = updateService.updateAccount(
-                    proposedAccount, proposedCustomer, fetchedAccount, fetchedCustomer);
+                    proposedAccount, proposedCustomer, fetchedAccount, fetchedCustomer).verdict();
 
             assertThat(result.valid()).isFalse();
             assertThat(result.message())

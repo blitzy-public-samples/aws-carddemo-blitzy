@@ -249,6 +249,17 @@ final class ShippedConfigurationContractTest {
     private static final String DEFAULT_RETRY_BACKOFF_MILLIS =
             String.valueOf(Duration.ofSeconds(1L).toMillis());
 
+    /**
+     * Partitions every topic of this platform is created with, from {@code KAFKA_TOPIC_PARTITIONS}.
+     *
+     * <p>It is the ceiling on {@code spring.kafka.listener.concurrency} as well as its shipped
+     * value: a partition is assigned to exactly one consumer thread, so a thread beyond this count
+     * would be assigned nothing. This module asserts the value; the platform suite reads the same
+     * number out of {@code card-platform/.env.example} and the ConfigMap and holds all six services
+     * to it, in {@code KafkaDeliveryGuaranteeContractTest.ConsumerThroughput}.
+     */
+    private static final int SHIPPED_TOPIC_PARTITIONS = 3;
+
     /** Matches a block comment in Structured Query Language (SQL) text. */
     private static final Pattern SQL_BLOCK_COMMENT = Pattern.compile("/\\*.*?\\*/", Pattern.DOTALL);
 
@@ -647,6 +658,13 @@ final class ShippedConfigurationContractTest {
      * The shipped acknowledgement mode string and the listener concurrency.
      * {@link #springBootBindsTheShippedKafkaConfiguration()} asserts the effective values the
      * listener container and both clients receive.
+     *
+     * <p>The concurrency is the partition count every topic of this platform ships,
+     * {@link #SHIPPED_TOPIC_PARTITIONS}. One thread was shipped before, and it scored every
+     * partition of the topic in sequence however many partitions the broker held. It may not exceed
+     * the partition count either: the group assignor would leave the surplus threads with nothing
+     * assigned. Account ordering is unaffected in both directions, because a partition is assigned
+     * to exactly one thread and the account identifier is the message key.
      */
     @Test
     @DisplayName("spring.kafka.listener.ack-mode ships as manual_immediate")
@@ -655,7 +673,8 @@ final class ShippedConfigurationContractTest {
                 () -> assertEquals("manual_immediate",
                         textAt("spring", "kafka", "listener", "ack-mode"),
                         "spring.kafka.listener.ack-mode"),
-                () -> assertEquals("1", textAt("spring", "kafka", "listener", "concurrency"),
+                () -> assertEquals(String.valueOf(SHIPPED_TOPIC_PARTITIONS),
+                        resolvedAt("spring", "kafka", "listener", "concurrency"),
                         "spring.kafka.listener.concurrency"));
     }
 
@@ -681,7 +700,8 @@ final class ShippedConfigurationContractTest {
             assertAll("effective Kafka configuration",
                     () -> assertEquals(ContainerProperties.AckMode.MANUAL_IMMEDIATE,
                             bound.getListener().getAckMode(), "effective listener ack mode"),
-                    () -> assertEquals(1, bound.getListener().getConcurrency(),
+                    () -> assertEquals(SHIPPED_TOPIC_PARTITIONS,
+                            bound.getListener().getConcurrency(),
                             "effective listener concurrency"),
                     () -> assertEquals(Boolean.FALSE, bound.getConsumer().getEnableAutoCommit(),
                             "effective consumer automatic commit"),

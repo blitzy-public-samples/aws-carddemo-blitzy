@@ -2,6 +2,7 @@ package com.carddemo.account.api;
 
 import com.carddemo.account.api.dto.AccountDataRequest;
 import com.carddemo.account.api.dto.AccountView;
+import com.carddemo.account.domain.AccountSnapshot;
 import com.carddemo.account.api.dto.CustomerDataRequest;
 import com.carddemo.account.api.dto.CustomerView;
 import com.carddemo.account.domain.validation.EditResult;
@@ -13,6 +14,8 @@ import com.carddemo.cobol.CobolDecimal;
 import com.carddemo.cobol.NumvalParser;
 import com.carddemo.cobol.PicClause;
 import java.math.BigDecimal;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Converts the request records of this package into persistent entities, and entities into the view
@@ -36,6 +39,12 @@ import java.math.BigDecimal;
  * {@code card-platform/docs/traceability-matrix.md}.
  */
 final class AccountRecordMapper {
+
+    /**
+     * Records a store that dropped a high-order digit. It names the field's integer capacity and
+     * withholds the figure, matching {@code domain/PostedTransactionService}.
+     */
+    private static final Logger LOG = LoggerFactory.getLogger(AccountRecordMapper.class);
 
     /**
      * Characters a request date holds, from {@code ACUP-NEW-OPEN-DATE PIC X(08)} at
@@ -147,11 +156,14 @@ final class AccountRecordMapper {
 
         account.setActiveStatus(textAtDeclaredWidth(request.activeStatus(),
                 PicClause.ACCT_ACTIVE_STATUS_WIDTH));
-        account.setCurrentBalance(amountOf(request.currentBalance(), PicClause.ACCT_CURR_BAL_SCALE));
+        account.setCurrentBalance(amountOf(request.currentBalance(),
+                PicClause.ACCT_CURR_BAL_PRECISION, PicClause.ACCT_CURR_BAL_SCALE));
         account.setCreditLimit(
-                amountOf(request.creditLimit(), PicClause.ACCT_CREDIT_LIMIT_SCALE));
+                amountOf(request.creditLimit(), PicClause.ACCT_CREDIT_LIMIT_PRECISION,
+                        PicClause.ACCT_CREDIT_LIMIT_SCALE));
         account.setCashCreditLimit(
-                amountOf(request.cashCreditLimit(), PicClause.ACCT_CASH_CREDIT_LIMIT_SCALE));
+                amountOf(request.cashCreditLimit(), PicClause.ACCT_CASH_CREDIT_LIMIT_PRECISION,
+                        PicClause.ACCT_CASH_CREDIT_LIMIT_SCALE));
         if (isSupplied(request.openDate())) {
             account.setOpenDate(storedDateOf(request.openDate()));
         }
@@ -162,9 +174,11 @@ final class AccountRecordMapper {
             account.setReissueDate(storedDateOf(request.reissueDate()));
         }
         account.setCurrentCycleCredit(
-                amountOf(request.currentCycleCredit(), PicClause.ACCT_CURR_CYC_CREDIT_SCALE));
+                amountOf(request.currentCycleCredit(), PicClause.ACCT_CURR_CYC_CREDIT_PRECISION,
+                        PicClause.ACCT_CURR_CYC_CREDIT_SCALE));
         account.setCurrentCycleDebit(
-                amountOf(request.currentCycleDebit(), PicClause.ACCT_CURR_CYC_DEBIT_SCALE));
+                amountOf(request.currentCycleDebit(), PicClause.ACCT_CURR_CYC_DEBIT_PRECISION,
+                        PicClause.ACCT_CURR_CYC_DEBIT_SCALE));
         account.setGroupId(textAtDeclaredWidth(request.groupId(), PicClause.ACCT_GROUP_ID_WIDTH));
         return account;
     }
@@ -244,11 +258,25 @@ final class AccountRecordMapper {
      * @return the eleven values a read returns
      */
     static AccountView viewOf(AccountEntity account) {
-        return new AccountView(account.getAccountId(), account.getActiveStatus(),
-                account.getCurrentBalance(), account.getCreditLimit(),
-                account.getCashCreditLimit(), account.getCurrentCycleCredit(),
-                account.getCurrentCycleDebit(), account.getOpenDate(),
-                account.getExpirationDate(), account.getReissueDate(), account.getGroupId());
+        return viewOf(AccountSnapshot.of(account));
+    }
+
+    /**
+     * Builds the same eleven values from a snapshot an update already read off its row.
+     *
+     * <p>This is the one place the eleven values become a response, and {@link #viewOf(AccountEntity)}
+     * reaches it through {@link AccountSnapshot#of}. A read and an update therefore describe an
+     * account through the same code, and a field added to one is added to both.
+     *
+     * @param account the eleven values a transaction read off the row it wrote
+     * @return the eleven values a read returns
+     */
+    static AccountView viewOf(AccountSnapshot account) {
+        return new AccountView(account.accountId(), account.activeStatus(),
+                account.currentBalance(), account.creditLimit(),
+                account.cashCreditLimit(), account.currentCycleCredit(),
+                account.currentCycleDebit(), account.openDate(),
+                account.expirationDate(), account.reissueDate(), account.groupId());
     }
 
     /**
@@ -325,16 +353,42 @@ final class AccountRecordMapper {
     /**
      * Converts one monetary text into the value its column holds.
      *
-     * @param text  the value a caller supplied
-     * @param scale fractional digits the Picture clause declares
-     * @return the value truncated toward zero at {@code scale}, and {@code null} when the text is
-     *         absent or does not convert
+     * <p>Two narrowings apply, and both are the store semantics of a COBOL {@code MOVE} into the
+     * field. The scale drops the digits past the two {@code PIC S9(10)V99} keeps after the point.
+     * The precision drops the high-order digits that do not fit its ten integer digits, which is
+     * what {@link CobolDecimal#truncateToPictureField(java.math.BigDecimal, int, int)} reproduces
+     * and what {@code app/cbl/COBIL00C.cbl:L224} does carrying {@code ACCT-CURR-BAL} into the
+     * narrower {@code TRAN-AMT}.</p>
+     *
+     * <p>The precision narrowing is what this method exists for.
+     * {@code AccountDataRequest.MONEY_MAX_LENGTH} admits fifteen characters, the width
+     * {@code WS-EDIT-SIGNED-NUMBER-9V2-X PIC X(15)} at {@code app/cbl/COACTUPC.cbl:L55} receives,
+     * and the currency-tolerant grammar accepts eleven integer digits inside that width. Every
+     * money column is {@code NUMERIC(12,2)}, so without this narrowing such a value reached the
+     * database, raised SQLSTATE 22003 and answered 500. A database overflow is not validation:
+     * the source has no {@code ON SIZE ERROR} phrase in any of the twenty-eight programs under
+     * {@code app/cbl/}, so it stores the digits that fit and keeps the sign.</p>
+     *
+     * @param text      the value a caller supplied
+     * @param precision total digits the Picture clause declares
+     * @param scale     fractional digits the Picture clause declares
+     * @return the value as the column holds it, and {@code null} when the text is absent or does
+     *         not convert
      */
-    private static BigDecimal amountOf(String text, int scale) {
+    private static BigDecimal amountOf(String text, int precision, int scale) {
         if (!isSupplied(text) || !NumvalParser.isValidNumvalCurrency(text)) {
             return null;
         }
-        return CobolDecimal.truncateToScale(NumvalParser.numvalCurrency(text), scale);
+        BigDecimal converted = NumvalParser.numvalCurrency(text);
+        BigDecimal stored = CobolDecimal.truncateToPictureField(converted, precision, scale);
+        if (stored.compareTo(converted) != 0) {
+            LOG.warn("A submitted account figure needed more than the {} integer digits the account"
+                            + " record holds at app/cpy/CVACT01Y.cpy:L7-L9 and :L13-L14, so the"
+                            + " high-order digits were dropped as a COBOL MOVE into the field drops"
+                            + " them. The figure is withheld. See docs/business-rule-flags.md.",
+                    precision - scale);
+        }
+        return stored;
     }
 
     /**

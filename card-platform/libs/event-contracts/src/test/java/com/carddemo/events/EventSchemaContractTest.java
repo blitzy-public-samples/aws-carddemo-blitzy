@@ -922,17 +922,6 @@ class EventSchemaContractTest {
     }
 
     /**
-     * Checks that the envelope account identifier and the payload account identifier hold one
-     * value.
-     *
-     * <p>This is the executable half of the account identity rule. Draft 2020-12 declares no
-     * keyword comparing one property to another, so the check cannot live in the document.</p>
-     *
-     * @param documentName the document the instance claims to follow
-     * @param event        the instance document
-     * @return one message per failure, empty when the instance carries one account identity
-     */
-    /**
      * Reports whether a document declares a payload account identifier beside the envelope one.
      *
      * <p>Only a document that declares both can express a disagreeing pair at all. Now that every
@@ -947,6 +936,17 @@ class EventSchemaContractTest {
         return readDocument(resource).get("properties").get(PAYLOAD_ACCOUNT_PROPERTY) != null;
     }
 
+    /**
+     * Checks that the envelope account identifier and the payload account identifier hold one
+     * value.
+     *
+     * <p>This is the executable half of the account identity rule. Draft 2020-12 declares no
+     * keyword comparing one property to another, so the check cannot live in the document.</p>
+     *
+     * @param documentName the document the instance claims to follow
+     * @param event        the instance document
+     * @return one message per failure, empty when the instance carries one account identity
+     */
     private static List<String> accountIdentityErrors(String documentName, JsonNode event) {
         List<String> errors = new ArrayList<>();
         JsonNode envelopeAccount = event.get(ENVELOPE_ACCOUNT_PROPERTY);

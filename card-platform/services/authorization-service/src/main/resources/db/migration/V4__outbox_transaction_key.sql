@@ -20,11 +20,11 @@
 -- TRAN-ID PIC X(16). Nothing else reaches the column, so a malformed key is refused by the
 -- database rather than published to a partition no consumer expects.
 --
--- Why VARCHAR and not CHAR. CHAR(11) padded every key to eleven characters, which is what kept the
--- account form intact. A column holding two widths cannot pad, because padding a sixteen-character
--- transaction identifier to a fixed width would change the message key. The account form is
--- therefore stored at its own eleven characters with no padding, and the eleven-digit CHECK is what
--- keeps a leading zero from being dropped: '00000000050' passes and '50' does not.
+-- The column is VARCHAR rather than CHAR. A column holding two widths cannot pad, because padding a
+-- sixteen-character transaction identifier to a fixed width would change the message key, so the
+-- account form is stored at its own eleven characters and the eleven-digit CHECK is what keeps a
+-- leading zero from being dropped: '00000000050' passes and '50' does not.
+-- card-platform/docs/decision-log.md carries the alternatives.
 --
 -- Ordering and partitioning are unaffected for the account form. Every event of one account still
 -- carries that account's key, so the events of one account stay on one partition and in publish

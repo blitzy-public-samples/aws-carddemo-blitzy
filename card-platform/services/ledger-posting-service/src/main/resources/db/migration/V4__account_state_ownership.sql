@@ -8,11 +8,9 @@
 -- movement the posting path had derived since the account service last read the record, silently: no
 -- log line, no metric, no dead letter. messaging/AccountStateChangedConsumer no longer does it.
 --
--- Why the comment is corrected here and not there. V3 has already run everywhere this service is
--- deployed, and Flyway checksums an applied migration precisely so that its text cannot be rewritten
--- afterwards. Editing V3 does not correct history, it invalidates it: the next start fails validation
--- with a checksum mismatch and the service does not come up. So V3 keeps the wording that was true on
--- the day it ran, and this migration carries the wording that is true now.
+-- V3 keeps the wording that was true on the day it ran and this migration carries the wording that is
+-- true now, because Flyway compares the checksum of an applied file at every start.
+-- card-platform/docs/decision-log.md carries that decision.
 --
 -- What owns what. Two readings of one account exist and they are not interchangeable.
 --

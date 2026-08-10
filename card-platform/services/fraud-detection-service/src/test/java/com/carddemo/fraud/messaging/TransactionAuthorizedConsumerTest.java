@@ -42,6 +42,7 @@ import jakarta.persistence.Convert;
 import jakarta.persistence.EmbeddedId;
 import jakarta.persistence.Converter;
 import jakarta.persistence.GeneratedValue;
+import jakarta.persistence.Index;
 import jakarta.persistence.Table;
 import java.lang.annotation.Annotation;
 import java.lang.reflect.Constructor;
@@ -102,6 +103,14 @@ class TransactionAuthorizedConsumerTest {
     private static final String TRANSACTION_ID = "0000000000683580";
     /** Account identifier of feed record 1, eleven digits, and the message key. */
     private static final String ACCOUNT_ID = "00000000007";
+
+    /**
+     * An account the payload never names, used to misroute one delivery.
+     *
+     * <p>Eleven digits with the leading zeros kept, because the key is compared as text and a
+     * numeric round trip would drop them.
+     */
+    private static final String OTHER_ACCOUNT_ID = "00000000008";
     /** Authorization timestamp of every feed record, twenty-six characters. */
     private static final String AUTHORIZED_AT = "2022-06-10 19:27:53.000000";
     /** The same moment as {@link #AUTHORIZED_AT}, which fixes the velocity window. */
@@ -211,6 +220,130 @@ class TransactionAuthorizedConsumerTest {
         outboxWriter = mock(OutboxWriter.class);
         meters = mock(FraudMeters.class);
         acknowledgment = mock(Acknowledgment.class);
+    }
+
+    /**
+     * What every exit of the listener records.
+     *
+     * <p>A record that arrived was consumed whatever became of it, so a refused delivery has to move
+     * the same three families a successful one does. Two refusals used to move none of them: the
+     * tombstone check and the key check ran before the consumed count and the latency clock, so a
+     * rejected delivery was indistinguishable from one that never arrived. These tests hold every
+     * exit to the count, the latency and the classification it now records.
+     */
+    @Nested
+    @DisplayName("Every listener exit is counted, timed and classified")
+    class EveryExitIsMeasured {
+
+        @Test
+        @DisplayName("a successful delivery counts one consumed event, one latency and no failure")
+        void aSuccessfulDeliveryCountsConsumedAndLatencyAndNoFailure() {
+            TransactionAuthorized event = authorized(EVENT_ID, POSITIVE_AMOUNT);
+            TransactionAuthorizedConsumer consumer = consumerScoringWith(
+                    realScoring(triggeredRule(FraudFlagged.VELOCITY_RULE, FLAGGING_POINTS)));
+
+            consumer.onTransactionAuthorized(delivery(event), acknowledgment);
+
+            verify(meters, times(1)).recordEventConsumed();
+            verify(meters, times(1)).recordProcessingLatency(any(Duration.class));
+            verify(meters, never()).recordProcessFailure();
+            verify(meters, never()).recordDuplicateSkipped();
+        }
+
+        @Test
+        @DisplayName("a tombstone counts one consumed event, one latency and one process failure")
+        void aTombstoneIsCountedTimedAndClassified() {
+            TransactionAuthorizedConsumer consumer = consumerScoringWith(realScoring());
+            ConsumerRecord<String, TransactionAuthorized> tombstone =
+                    new ConsumerRecord<>(SOURCE_TOPIC, PARTITION, OFFSET, ACCOUNT_ID, null);
+
+            assertThrows(IllegalArgumentException.class,
+                    () -> consumer.onTransactionAuthorized(tombstone, acknowledgment));
+
+            verify(meters, times(1)).recordEventConsumed();
+            verify(meters, times(1)).recordProcessingLatency(any(Duration.class));
+            verify(meters, times(1)).recordProcessFailure();
+            verify(acknowledgment, never()).acknowledge();
+        }
+
+        @Test
+        @DisplayName("a key that names another account is counted, timed and classified")
+        void aKeyNamingAnotherAccountIsCountedTimedAndClassified() {
+            TransactionAuthorized event = authorized(EVENT_ID, POSITIVE_AMOUNT);
+            TransactionAuthorizedConsumer consumer = consumerScoringWith(realScoring());
+            ConsumerRecord<String, TransactionAuthorized> misrouted =
+                    new ConsumerRecord<>(SOURCE_TOPIC, PARTITION, OFFSET, OTHER_ACCOUNT_ID, event);
+
+            assertThrows(IllegalArgumentException.class,
+                    () -> consumer.onTransactionAuthorized(misrouted, acknowledgment));
+
+            verify(meters, times(1)).recordEventConsumed();
+            verify(meters, times(1)).recordProcessingLatency(any(Duration.class));
+            verify(meters, times(1)).recordProcessFailure();
+            verify(markers, never()).claimEvent(any(), any(), any());
+            verify(acknowledgment, never()).acknowledge();
+        }
+
+        @Test
+        @DisplayName("a record carrying no key at all is counted, timed and classified")
+        void aRecordCarryingNoKeyIsCountedTimedAndClassified() {
+            TransactionAuthorized event = authorized(EVENT_ID, POSITIVE_AMOUNT);
+            TransactionAuthorizedConsumer consumer = consumerScoringWith(realScoring());
+            ConsumerRecord<String, TransactionAuthorized> unkeyed =
+                    new ConsumerRecord<>(SOURCE_TOPIC, PARTITION, OFFSET, null, event);
+
+            assertThrows(IllegalArgumentException.class,
+                    () -> consumer.onTransactionAuthorized(unkeyed, acknowledgment));
+
+            verify(meters, times(1)).recordEventConsumed();
+            verify(meters, times(1)).recordProcessingLatency(any(Duration.class));
+            verify(meters, times(1)).recordProcessFailure();
+        }
+
+        @Test
+        @DisplayName("a scoring failure counts one consumed event, one latency and one failure")
+        void aScoringFailureIsCountedTimedAndClassified() {
+            TransactionAuthorized event = authorized(EVENT_ID, POSITIVE_AMOUNT);
+            RiskScoringService refusing = mock(RiskScoringService.class);
+            when(refusing.assess(any())).thenThrow(new IllegalStateException("scoring refused"));
+            TransactionAuthorizedConsumer consumer = consumerScoringWith(refusing);
+
+            assertThrows(IllegalStateException.class,
+                    () -> consumer.onTransactionAuthorized(delivery(event), acknowledgment));
+
+            verify(meters, times(1)).recordEventConsumed();
+            verify(meters, times(1)).recordProcessingLatency(any(Duration.class));
+            verify(meters, times(1)).recordProcessFailure();
+        }
+
+        @Test
+        @DisplayName("a replayed delivery counts one duplicate and no failure")
+        void aReplayedDeliveryCountsOneDuplicateAndNoFailure() {
+            TransactionAuthorized event = authorized(EVENT_ID, POSITIVE_AMOUNT);
+            TransactionAuthorizedConsumer consumer = consumerScoringWith(
+                    realScoring(triggeredRule(FraudFlagged.VELOCITY_RULE, FLAGGING_POINTS)));
+
+            consumer.onTransactionAuthorized(delivery(event), acknowledgment);
+            consumer.onTransactionAuthorized(delivery(event), acknowledgment);
+
+            verify(meters, times(2)).recordEventConsumed();
+            verify(meters, times(2)).recordProcessingLatency(any(Duration.class));
+            verify(meters, times(1)).recordDuplicateSkipped();
+            verify(meters, never()).recordProcessFailure();
+            verify(meters, times(1)).recordAssessmentFlagged();
+        }
+
+        @Test
+        @DisplayName("a first delivery counts no duplicate")
+        void aFirstDeliveryCountsNoDuplicate() {
+            TransactionAuthorized event = authorized(EVENT_ID, POSITIVE_AMOUNT);
+            TransactionAuthorizedConsumer consumer = consumerScoringWith(realScoring());
+
+            consumer.onTransactionAuthorized(delivery(event), acknowledgment);
+
+            verify(meters, never()).recordDuplicateSkipped();
+            verify(meters, times(1)).recordAssessmentCleared();
+        }
     }
 
     /** Two deliveries of one event identifier, and the effects each of them leaves. */
@@ -613,10 +746,24 @@ class TransactionAuthorizedConsumerTest {
             Table table = FraudAssessmentEntity.class.getAnnotation(Table.class);
             assertNotNull(table, "table mapping on FraudAssessmentEntity");
             assertEquals("fraud_assessment", table.name(), "table name");
+            // The account read is a cursor walk, so its index carries the account, the assessment
+            // time and the primary key, in that order. The two indexes that carried only a prefix of
+            // it were withdrawn by V7: this one answers everything either of them answered, and each
+            // of them cost a write on every insert. Both directions are declared because the read
+            // walks descending on both ordering columns.
             assertTrue(Arrays.stream(table.indexes())
-                            .anyMatch(index -> "ix_fraud_assessment_account".equals(index.name())
-                                    && "account_id".equals(index.columnList())),
-                    "account index");
+                            .anyMatch(index ->
+                                    "ix_fraud_assessment_account_cursor".equals(index.name())
+                                    && "account_id, assessed_at DESC, transaction_id DESC"
+                                            .equals(index.columnList())),
+                    "account cursor index");
+            assertEquals(List.of(), Arrays.stream(table.indexes())
+                            .map(Index::name)
+                            .filter(name -> "ix_fraud_assessment_account".equals(name)
+                                    || "ix_fraud_assessment_account_assessed_at".equals(name))
+                            .toList(),
+                    "an index V7 dropped is still declared on the entity, so start-up would look for "
+                            + "an index the schema no longer holds");
         }
 
         @Test
@@ -643,6 +790,38 @@ class TransactionAuthorizedConsumerTest {
                 assertFalse(name.contains("RiskScore"), "score finder " + name);
                 assertFalse(name.contains("Flagged"), "verdict finder " + name);
                 assertFalse(name.contains("TriggeredRules"), "rule finder " + name);
+            }
+        }
+
+        /**
+         * Every paged finder of the assessment store names a total order.
+         *
+         * <p>{@code assessed_at} is a timestamp this service stamps, and two assessments of one
+         * account hold the same value whenever two authorizations arrive inside the same microsecond.
+         * A finder ordering on that column alone therefore describes an order with ties, and SQL
+         * leaves the order of a tied pair unspecified: the rows may come back either way round, and a
+         * caller paging by offset then reads one of them twice and never sees the other. Which way a
+         * tie falls also depends on the plan the database chooses, so the defect appears and
+         * disappears with the size of the table rather than failing consistently.
+         *
+         * <p>This assertion is what makes the guarantee independent of that. It reads the declared
+         * method names and requires any finder ordering on the assessment instant to continue into the
+         * primary key, which is unique and never updated. Removing the tiebreaker fails here at once,
+         * whatever a planner would have done with it.
+         */
+        @Test
+        @DisplayName("every paged assessment finder continues its order into the primary key")
+        void everyPagedAssessmentFinderNamesATotalOrder() {
+            for (Method method : FraudAssessmentRepository.class.getDeclaredMethods()) {
+                String name = method.getName();
+                if (!name.contains("OrderByAssessedAt")) {
+                    continue;
+                }
+                assertTrue(name.endsWith("TransactionIdDesc") || name.endsWith("TransactionIdAsc"),
+                        () -> "finder " + name + " orders on the assessment instant without"
+                                + " continuing into transaction_id, so a tied pair has no defined"
+                                + " order and offset paging over it can repeat one row and skip"
+                                + " another");
             }
         }
 

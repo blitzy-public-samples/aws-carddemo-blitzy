@@ -7,7 +7,6 @@ import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Positive;
-import java.time.Duration;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.convert.DurationUnit;
@@ -56,21 +55,6 @@ public record CardProperties(
         @NotNull @Valid Write write) {
 
     /**
-     * Bounds how long one locked read waits for a row another writer holds.
-     *
-     * <p>PostgreSQL waits forever by default, so a contended update held the request open for as long
-     * as the other writer held the row, and the documented lock-failure answer was unreachable through
-     * contention: the wait either ended in a lock or never ended at all.
-     *
-     * <p>The bound is applied as a transaction-local {@code lock_timeout}, so it governs the locked
-     * reads of one update and nothing else. A datasource-wide setting would also bound a schema
-     * migration and the relay sweep, and a migration that gives up on a lock leaves a half-applied
-     * schema.
-     *
-     * @param lockWaitMs longest one locked read waits, in milliseconds, before the datastore refuses
-     *                   the lock and the documented lock-failure answer is returned
-     */
-    /**
      * Ceiling on {@link Outbox.Relay#maxDurationMs()}, five minutes in milliseconds.
      *
      * <p>The bound exists so a misconfiguration cannot turn the pass deadline off. A sweep that
@@ -79,6 +63,16 @@ public record CardProperties(
      */
     static final long MAX_PASS_DURATION_MS = 300_000L;
 
+    /**
+     * Bounds how long one locked read waits for a row another writer holds.
+     *
+     * <p>The bound is applied as a transaction-local {@code lock_timeout}, so it governs the locked
+     * reads of one update and nothing else. Rationale, including why it is not a datasource-wide
+     * setting, sits in {@code card-platform/docs/decision-log.md}.
+     *
+     * @param lockWaitMs longest one locked read waits, in milliseconds, before the datastore refuses
+     *                   the lock and the documented lock-failure answer is returned
+     */
     public record Write(@Positive long lockWaitMs) {
     }
 
@@ -148,6 +142,9 @@ public record CardProperties(
          * @param maxDurationMs  wall time one sweep may spend waiting for broker acknowledgements,
          *                       measured from {@link System#nanoTime()} and capped at
          *                       {@link CardProperties#MAX_PASS_DURATION_MS}
+         * @param publishTimeout longest one send waits for the broker before
+         *                       {@code messaging/KafkaEventPublisher} reports the attempt failed.
+         *                       The row then stays unpublished and a later sweep claims it again
          */
         public record Relay(
 
@@ -159,22 +156,36 @@ public record CardProperties(
 
                 @NotNull @DurationUnit(ChronoUnit.SECONDS) Duration claimTimeout,
 
-                @Positive @Max(MAX_PASS_DURATION_MS) long maxDurationMs) {
+                @Positive @Max(MAX_PASS_DURATION_MS) long maxDurationMs,
+
+                @NotNull @DurationUnit(ChronoUnit.SECONDS) Duration publishTimeout) {
 
             /**
-             * Refuses a claim timeout that is not positive.
+             * Refuses a claim timeout that is not positive, and a publish timeout that gives a send
+             * no time at all.
              *
-             * <p>Zero or less would make every claim stranded the moment it was taken, so one sweep
-             * would recover the batch the previous sweep is still publishing — which is the double
-             * publish the claim exists to prevent.
+             * <p>A claim timeout of zero or less would make every claim stranded the moment it was
+             * taken, so one sweep would recover the batch the previous sweep is still publishing —
+             * which is the double publish the claim exists to prevent.
              *
-             * @throws IllegalArgumentException when {@code claimTimeout} is zero or negative
+             * <p>{@code publishTimeout} reached the publisher through a second binding of the same
+             * property, a constructor {@code @Value}, which meets no constraint declared here. Only
+             * {@code null} was refused, so zero or a negative duration started the service and then
+             * failed every send the instant it was issued. The value is a component of this record
+             * now, so the binding that validates it is the binding the publisher reads.
+             *
+             * @throws IllegalArgumentException when either duration is zero or negative
              */
             public Relay {
                 if (claimTimeout != null
                         && (claimTimeout.isZero() || claimTimeout.isNegative())) {
                     throw new IllegalArgumentException(
                             "outbox.relay.claimTimeout must be positive, found " + claimTimeout);
+                }
+                if (publishTimeout != null
+                        && (publishTimeout.isZero() || publishTimeout.isNegative())) {
+                    throw new IllegalArgumentException(
+                            "outbox.relay.publishTimeout must be positive, found " + publishTimeout);
                 }
             }
         }

@@ -36,10 +36,11 @@ import org.springframework.web.servlet.resource.NoResourceFoundException;
  * {@link ApiProblem#INVALID_REQUEST_CONTENT}. One text for all four is deliberate: a text naming the
  * value would echo an account identifier or a transaction identifier back to the caller.
  *
- * <p>The one {@code 400} that carries its own text is a {@code sort} parameter, because the answer
- * has something to say — the order is a property of the repository finder and not a choice a caller
- * makes. {@link FraudAssessmentController.UnsupportedSortException} holds that text, and it names the
- * parameter and the order this route applies, never a value.
+ * <p>The {@code 400}s that carry their own text are the ones where the answer has something to say:
+ * a {@code sort} parameter, whose order is a property of the repository finder and not a choice a
+ * caller makes, and a {@code page} parameter, which names a position this route reaches by cursor
+ * rather than by counting. {@link FraudAssessmentController.UnsupportedParameterException} holds that
+ * text, and it names the parameter and what this route does instead, never a value.
  *
  * <p>A call the protocol refused keeps the status the framework named — {@code 404}, {@code 405},
  * {@code 406} or {@code 415} — together with the headers that status requires, and carries
@@ -98,16 +99,16 @@ public class FraudApiExceptionHandler {
     }
 
     /**
-     * Answers a {@code sort} parameter the collection route does not honour.
+     * Answers a {@code sort} or {@code page} parameter the collection route does not honour.
      *
-     * @param failure the refusal, whose text names the parameter and the order this route applies
+     * @param failure the refusal, whose text names the parameter and what this route does instead
      * @return {@code 400} carrying that text
      */
-    @ExceptionHandler(FraudAssessmentController.UnsupportedSortException.class)
-    public ResponseEntity<ApiProblem> onUnsupportedSort(
-            FraudAssessmentController.UnsupportedSortException failure) {
+    @ExceptionHandler(FraudAssessmentController.UnsupportedParameterException.class)
+    public ResponseEntity<ApiProblem> onUnsupportedParameter(
+            FraudAssessmentController.UnsupportedParameterException failure) {
 
-        log.info("Refusing a fraud-assessment request naming an order this route does not apply");
+        log.info("Refusing a fraud-assessment request naming a parameter this route does not honour");
         return problem(HttpStatus.BAD_REQUEST, ApiProblem.BAD_REQUEST, failure.getMessage());
     }
 

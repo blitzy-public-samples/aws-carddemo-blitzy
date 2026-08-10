@@ -1,5 +1,7 @@
 package com.carddemo.card.api;
 
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -109,11 +111,13 @@ class CardRouteWiringTest {
         when(cardQueries.listForward(any(), any(), any(), any())).thenReturn(page());
         when(cardQueries.listBackward(any(), any(), any(), any())).thenReturn(page());
         when(cardQueries.findByCardToken(any())).thenReturn(Optional.of(storedCard()));
-        when(cardUpdates.updateCard(any(), any())).thenReturn(CardUpdateResponse.updated());
+        when(cardUpdates.updateCard(any(), any(), any()))
+                .thenReturn(CardUpdateResponse.updated());
 
         mockMvc = MockMvcBuilders
                 .standaloneSetup(validating(new CardController(cardQueries, cardUpdates)))
-                .setControllerAdvice(new CardApiExceptionHandler())
+                .setControllerAdvice(new CardApiExceptionHandler(Counter.builder("carddemo.card.failures")
+                        .register(new SimpleMeterRegistry())))
                 .build();
     }
 
@@ -206,7 +210,7 @@ class CardRouteWiringTest {
             assertEquals(200, result.getResponse().getStatus(), "the route exists");
             assertTrue(result.getResponse().getContentAsString().contains("UPDATED"),
                     "the handler ran and the outcome reached the response");
-            verify(cardUpdates).updateCard(eq(CARD_NUMBER), any());
+            verify(cardUpdates).updateCard(eq(CARD_NUMBER), any(), any());
         }
 
         /**

@@ -6,11 +6,14 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
 import com.carddemo.card.CardApplication;
+import com.carddemo.card.CardServiceDatabase;
 import com.carddemo.card.TestIdentityPasswords;
 import com.carddemo.card.api.dto.CardUpdateRequest;
 import com.carddemo.card.api.dto.CardUpdateResponse.UpdateOutcome;
@@ -19,7 +22,10 @@ import com.carddemo.card.api.dto.CardValidationMessages;
 import com.carddemo.card.entity.CardEntity;
 import com.carddemo.card.messaging.CardUpdated;
 import com.carddemo.card.outbox.OutboxWriter;
+import com.carddemo.card.repository.CardRepository;
 import com.carddemo.cobol.PanMasker;
+import io.micrometer.core.instrument.MeterRegistry;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Locale;
@@ -33,8 +39,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
+import org.springframework.transaction.IllegalTransactionStateException;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 import tools.jackson.databind.ObjectMapper;
 
@@ -104,15 +109,8 @@ import tools.jackson.databind.ObjectMapper;
                 "carddemo.outbox.relay.fixed-delay-ms=3600000",
                 "carddemo.retention.sweep-interval-ms=3600000"
         })
-@Testcontainers
 @DisplayName("CardUpdateService over the fifty seeded cards: the edits, the expiry and the write")
 class CardUpdateServiceTest {
-
-    /** The image tag {@code card-platform/docker-compose.yml} also names. */
-    private static final String POSTGRES_IMAGE = "postgres:18.4";
-
-    /** The database name, the login name and the password of the container, one value for all. */
-    private static final String POSTGRES_CREDENTIAL = "carddemo";
 
     /**
      * The schema Flyway creates, from {@code spring.flyway.schemas} and
@@ -122,17 +120,12 @@ class CardUpdateServiceTest {
     private static final String MIGRATED_SCHEMA = "card_service";
 
     /**
-     * The one container every test in this class shares.
+     * The one container the module fork runs, which this class reads a login from.
      *
-     * <p>The class name comes from {@code org.testcontainers.postgresql}, the package
-     * Testcontainers 2.0.5 ships it in. {@link Container} on a static field gives one container per
-     * class, and {@link Testcontainers} starts it before the Spring context reads a property below.
+     * <p>{@link CardServiceDatabase} owns it and hands this class a database of its own inside it.
+     * Nothing here starts or stops a container.
      */
-    @Container
-    static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer(POSTGRES_IMAGE)
-            .withDatabaseName(POSTGRES_CREDENTIAL)
-            .withUsername(POSTGRES_CREDENTIAL)
-            .withPassword(POSTGRES_CREDENTIAL);
+    static final PostgreSQLContainer POSTGRES = CardServiceDatabase.container();
 
     /**
      * Points the Spring datasource at the running container.
@@ -154,16 +147,13 @@ class CardUpdateServiceTest {
     /**
      * Returns the container uniform resource locator with {@code currentSchema} appended.
      *
-     * <p>Testcontainers appends one query parameter of its own, so the separator is {@code &}
-     * whenever a {@code ?} is present and {@code ?} otherwise.
+     * <p>The facility builds the locator, so no separator is decided here.
      *
      * @return the connection uniform resource locator whose search path holds
      *         {@value #MIGRATED_SCHEMA}
      */
     private static String migratedSchemaUrl() {
-        String url = POSTGRES.getJdbcUrl();
-        String separator = url.contains("?") ? "&" : "?";
-        return url + separator + "currentSchema=" + MIGRATED_SCHEMA;
+        return CardServiceDatabase.urlFor(CardUpdateServiceTest.class);
     }
 
     // Seeded rows. Each value below was measured in app/data/ASCII/carddata.txt at the offsets
@@ -254,6 +244,58 @@ class CardUpdateServiceTest {
     private static final String NEGATIVE_STATUS_CARD_NAME = "Sigrid Mann";
 
     /**
+     * Card number of seeded record 21, written by the corrected-replica test. Its replica row and
+     * its card row both name account {@code 00000000041} before that test moves the replica off it.
+     * Name {@code Lucinda Dach}, expiry 2023-04-24, status {@code Y}. No other test reads this row.
+     */
+    private static final String REPLICA_DIVERGED_CARD = "3766281984155154";
+
+    /** Account identifier {@link #REPLICA_DIVERGED_CARD} belongs to, on both tables. */
+    private static final String REPLICA_DIVERGED_ACCOUNT = "00000000041";
+
+    /** Embossed name {@link #REPLICA_DIVERGED_CARD} carries in the fixture. */
+    private static final String REPLICA_DIVERGED_NAME = "Lucinda Dach";
+
+    /**
+     * An account identifier the replica row of {@link #REPLICA_DIVERGED_CARD} is moved onto, so the
+     * two copies of one mapping disagree. Eleven digits, and no fixture account carries it: the
+     * fixture holds {@code 00000000001} through {@code 00000000050}.
+     */
+    private static final String REPLICA_WRONG_ACCOUNT = "00000000099";
+
+    /**
+     * Card number of seeded record 22, written by the confirmed-replica test. Name
+     * {@code Larry Homenick}, account {@code 00000000003}, expiry 2024-01-10, status {@code Y}. No
+     * other test reads this row.
+     */
+    private static final String REPLICA_IN_STEP_CARD = "3999169246375885";
+
+    /** Account identifier {@link #REPLICA_IN_STEP_CARD} belongs to, on both tables. */
+    private static final String REPLICA_IN_STEP_ACCOUNT = "00000000003";
+
+    /** Embossed name {@link #REPLICA_IN_STEP_CARD} carries in the fixture. */
+    private static final String REPLICA_IN_STEP_NAME = "Larry Homenick";
+
+    /**
+     * Card number of seeded record 23, written by the missing-replica test, which deletes that
+     * card's replica row and restores it. Name {@code Mariane Fadel}, account {@code 00000000013},
+     * expiry 2024-08-04, status {@code Y}. No other test reads this row.
+     */
+    private static final String REPLICA_ABSENT_CARD = "4011500891777367";
+
+    /** Customer identifier the replica row of {@link #REPLICA_ABSENT_CARD} carries, nine digits. */
+    private static final String REPLICA_ABSENT_CUSTOMER = "000000013";
+
+    /** Account identifier {@link #REPLICA_ABSENT_CARD} belongs to, on both tables. */
+    private static final String REPLICA_ABSENT_ACCOUNT = "00000000013";
+
+    /** Embossed name {@link #REPLICA_ABSENT_CARD} carries in the fixture. */
+    private static final String REPLICA_ABSENT_NAME = "Mariane Fadel";
+
+    /** Row count {@code V2__seed.sql} loads into {@code card_xref}. */
+    private static final int SEEDED_REPLICA_ROW_COUNT = 50;
+
+    /**
      * A sixteen-digit card number no seeded record holds, and one that fails a card-number
      * checksum.
      *
@@ -286,6 +328,23 @@ class CardUpdateServiceTest {
     /** Reads committed rows straight from the migrated schema, outside any test transaction. */
     @Autowired
     private JdbcTemplate jdbcTemplate;
+
+    /** The replica reconciler, as a container-managed proxy, so its propagation is the real one. */
+    @Autowired
+    private CardCrossReferenceReconciler crossReferenceReconciler;
+
+    /** Reads one card row, so a test can hand the reconciler the row the update path hands it. */
+    @Autowired
+    private CardRepository cards;
+
+    /**
+     * Reads the three cross-reference counters {@code config/ObservabilityConfig} registers.
+     *
+     * <p>One registry serves the whole context, so a test measures its own movement as a difference
+     * rather than as an absolute value.
+     */
+    @Autowired
+    private MeterRegistry meterRegistry;
 
     /**
      * The outbox writer the update path hands the card to, wrapped so a test can read that card.
@@ -392,6 +451,53 @@ class CardUpdateServiceTest {
                         row.getString(5).strip(), row.getString(6).strip(),
                         row.getString(7).strip()),
                 cardNumber);
+    }
+
+    /**
+     * Reads {@code account_id} of one {@code card_xref} row.
+     *
+     * @param cardNumber the sixteen-character key of the replica row
+     * @return the stored account identifier, trimmed, or {@code null} when no row holds that card
+     */
+    private String replicaAccount(String cardNumber) {
+        List<String> found = jdbcTemplate.queryForList(
+                "SELECT account_id FROM card_xref WHERE card_number = ?", String.class, cardNumber);
+        return found.isEmpty() || found.get(0) == null ? null : found.get(0).strip();
+    }
+
+    /**
+     * Reads {@code observed_at} of one {@code card_xref} row.
+     *
+     * @param cardNumber the sixteen-character key of the replica row
+     * @return the stored observation time, or {@code null} when no row holds that card
+     */
+    private Instant replicaObservedAt(String cardNumber) {
+        List<Instant> found = jdbcTemplate.query(
+                "SELECT observed_at FROM card_xref WHERE card_number = ?",
+                (row, number) -> row.getObject(1, java.time.OffsetDateTime.class).toInstant(),
+                cardNumber);
+        return found.isEmpty() ? null : found.get(0);
+    }
+
+    /**
+     * Reads how many {@code card_xref} rows the table holds.
+     *
+     * @return the row count
+     */
+    private long replicaRowCount() {
+        Long count = jdbcTemplate.queryForObject("SELECT count(*) FROM card_xref", Long.class);
+        return count == null ? 0L : count;
+    }
+
+    /**
+     * Reads one counter by name, answering zero before it has moved.
+     *
+     * @param name the meter name {@code config/ObservabilityConfig} registers
+     * @return the count so far
+     */
+    private double counter(String name) {
+        io.micrometer.core.instrument.Counter found = meterRegistry.find(name).counter();
+        return found == null ? 0.0d : found.count();
     }
 
     /**
@@ -988,6 +1094,103 @@ class CardUpdateServiceTest {
                     () -> assertEquals(0, rows, "no row carries that card number"),
                     () -> verify(outboxWriter, never()).writeCardUpdated(any()));
         }
+
+        /**
+         * Asserts a supplied row reaches the same applied outcome as reading the row here does.
+         *
+         * <p>{@code api/CardController} resolves a token to a card before it can name the card at
+         * all, so the row is in hand and is handed on. This overload replaces the unlocked read with
+         * that row and changes nothing else: every edit still runs in source order, and the locked
+         * read of {@code app/cbl/COCRDUPC.cbl:L1429} still happens, because a row read before the
+         * transaction opened cannot stand in for a row held under a lock.
+         *
+         * <p>{@code api/CardControllerIT} drives the same overload over Hypertext Transfer Protocol
+         * against a real database for the applied path and each refusal. This asserts it directly.
+         */
+        @Test
+        @DisplayName("a supplied row reaches the same applied outcome as reading it here")
+        void aSuppliedRowReachesTheSameOutcome() {
+            List<String> before = storedRow(SUCCESS_PATH_CARD);
+            String newName = renameOf(before.get(3));
+
+            CardUpdateResponse answer = cardUpdateService.updateCard(SUCCESS_PATH_CARD,
+                    requestRenaming(before, newName), rowFor(SUCCESS_PATH_CARD));
+
+            List<String> after = storedRow(SUCCESS_PATH_CARD);
+            assertAll(
+                    () -> assertEquals(UpdateOutcome.UPDATED, answer.outcome(),
+                            "the rewrite succeeded through the supplied row"),
+                    () -> assertEquals(newName, after.get(3), "the embossed name moved"),
+                    () -> assertEquals(before.get(4), after.get(4),
+                            "the expiry was not submitted as a change and stands"),
+                    () -> assertEquals(before.get(5), after.get(5),
+                            "the active status was not submitted as a change and stands"));
+        }
+
+        /**
+         * Asserts a supplied row naming another card is ignored, and the named card decides.
+         *
+         * <p>This is the safety property of the overload. The number it was given is the number that
+         * decides, so a row for some other card cannot be acted on: it falls back to the read. Were
+         * it trusted instead, a caller that resolved one card and named another would have this
+         * service edit and rewrite the wrong row.
+         */
+        @Test
+        @DisplayName("a supplied row for another card is ignored and the named card is read")
+        void aSuppliedRowForAnotherCardIsIgnored() {
+            List<String> named = storedRow(REASSEMBLY_CARD);
+            List<String> otherBefore = storedRow(STATUS_YES_CARD);
+            String newName = renameOf(named.get(3));
+
+            CardUpdateResponse answer = cardUpdateService.updateCard(REASSEMBLY_CARD,
+                    requestRenaming(named, newName), rowFor(STATUS_YES_CARD));
+
+            assertAll(
+                    () -> assertEquals(UpdateOutcome.UPDATED, answer.outcome(),
+                            "the card the call named was updated"),
+                    () -> assertEquals(newName, storedRow(REASSEMBLY_CARD).get(3),
+                            "the named card carries the new name"),
+                    () -> assertEquals(otherBefore, storedRow(STATUS_YES_CARD),
+                            "the row that was handed in was rewritten, though the call named"
+                                    + " another card"));
+        }
+    }
+
+    /**
+     * Builds an unmanaged row carrying the stored values of one card.
+     *
+     * <p>This is what {@code api/CardController} hands the update side: a row it read for itself.
+     * Reading it back out of the database keeps the five values the change comparison reads exactly
+     * the values the row holds, so a test of the supplied-row path is not also a test of a row that
+     * disagrees with its own table.
+     *
+     * @param cardNumber the card to read
+     * @return an unmanaged entity carrying that row's values
+     */
+    private CardUpdateRequest requestRenaming(List<String> storedRow, String newName) {
+        String[] expiry = storedRow.get(4).split("-");
+        return request(newName, expiry[0], expiry[1], expiry[2], storedRow.get(5));
+    }
+
+    /**
+     * Names an embossed name that differs from the one supplied.
+     *
+     * <p>The tests of this class share one database, and a sibling test writes the same card. A
+     * request built from a fixed name would therefore reach the no-change answer or the applied one
+     * depending on what ran first. Deriving the new name from the stored one removes the ordering
+     * from the assertion.
+     *
+     * @param storedName the name the row holds
+     * @return a name the edits admit and which the row does not already carry
+     */
+    private static String renameOf(String storedName) {
+        return RENAMED_CARDHOLDER.equals(storedName) ? "Marisol Reyes" : RENAMED_CARDHOLDER;
+    }
+
+    private CardEntity rowFor(String cardNumber) {
+        List<String> row = storedRow(cardNumber);
+        return new CardEntity(row.get(0), row.get(1), row.get(2), row.get(3),
+                LocalDate.parse(row.get(4)), row.get(5));
     }
 
     /** The handoff to the outbox, and where the card number is masked. */
@@ -1165,4 +1368,166 @@ class CardUpdateServiceTest {
                 () -> assertEquals("Card number not provided",
                         CardValidationMessages.PROMPT_FOR_CARD, "L180"));
     }
+
+    /**
+     * The {@code card_xref} replica this service holds, on the one path that reaches it.
+     *
+     * <p>{@code domain/CardCrossReferenceReconciler} runs inside the transaction
+     * {@link CardUpdateService#updateCard(String, CardUpdateRequest)} uses to save the card row and
+     * write the outbox row. Three outcomes are reachable and each one is asserted below: a row that
+     * already agreed, a row that had diverged, and a card number holding no row at all.
+     *
+     * <p>The mapping the reconciler treats as authoritative is
+     * {@code CARD-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT02Y.cpy:L6}, the field of the record
+     * this service owns. The replica copies the same mapping from
+     * {@code XREF-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT03Y.cpy:L7}. No source program keeps the
+     * two in step: {@code app/cbl/COCRDUPC.cbl:L356} reads {@code *COPY CVACT03Y.} commented out.
+     *
+     * <p>Each test below writes its own card and reads its own replica row, and no other test in
+     * this class touches either.
+     */
+    @Nested
+    @DisplayName("the cross-reference replica")
+    class TheCrossReferenceReplica {
+
+        /**
+         * Asserts an update reads the replica row of its card and corrects a diverged mapping.
+         *
+         * <p>The replica row is moved onto an account no fixture record carries, so the two copies
+         * of one mapping disagree before the update runs. After the update the replica names the
+         * account the card row names, and {@code carddemo.card.xref.corrected} has moved by one.
+         * This is the assertion that proves the table is written on the production path rather than
+         * only by the seed.
+         */
+        @Test
+        @DisplayName("a diverged replica row is corrected inside the update transaction")
+        void aDivergedReplicaRowIsCorrectedByAnUpdate() {
+            jdbcTemplate.update("UPDATE card_xref SET account_id = ? WHERE card_number = ?",
+                    REPLICA_WRONG_ACCOUNT, REPLICA_DIVERGED_CARD);
+            assertEquals(REPLICA_WRONG_ACCOUNT, replicaAccount(REPLICA_DIVERGED_CARD),
+                    "the replica has to disagree with the card row before the update runs");
+            double correctedBefore = counter("carddemo.card.xref.corrected");
+
+            CardUpdateResponse answer = cardUpdateService.updateCard(REPLICA_DIVERGED_CARD,
+                    request(REPLICA_DIVERGED_NAME + " II", "2030", "06", "13", STATUS_YES));
+
+            assertAll(
+                    () -> assertEquals(UpdateOutcome.UPDATED, answer.outcome(),
+                            "the update itself has to succeed for the replica to have been reached"),
+                    () -> assertEquals(REPLICA_DIVERGED_ACCOUNT,
+                            replicaAccount(REPLICA_DIVERGED_CARD),
+                            "the replica now names the account CARD-ACCT-ID names"),
+                    () -> assertEquals(REPLICA_DIVERGED_ACCOUNT,
+                            storedRow(REPLICA_DIVERGED_CARD).get(1),
+                            "the card row is unchanged: the correction moves the replica only"),
+                    () -> assertEquals(correctedBefore + 1.0d,
+                            counter("carddemo.card.xref.corrected"),
+                            "carddemo.card.xref.corrected reports the divergence that was closed"),
+                    () -> assertEquals(SEEDED_REPLICA_ROW_COUNT, replicaRowCount(),
+                            "a correction writes no new row"));
+        }
+
+        /**
+         * Asserts an update confirms a replica row that already agreed, and moves its observation
+         * time.
+         *
+         * <p>Nothing about the mapping changes here, which is the point: the row was read, compared
+         * and found in step, so {@code observed_at} carries the moment of that confirmation and
+         * {@code carddemo.card.xref.agreed} moves. Without the observation column a reader could not
+         * tell a confirmed row from one nothing has looked at since the seed.
+         */
+        @Test
+        @DisplayName("a replica row already in step is confirmed and its observation time moves")
+        void aReplicaRowInStepIsConfirmedByAnUpdate() {
+            Instant observedBefore = replicaObservedAt(REPLICA_IN_STEP_CARD);
+            assertNotNull(observedBefore, "the seed sets observed_at on every row it loads");
+            double agreedBefore = counter("carddemo.card.xref.agreed");
+
+            CardUpdateResponse answer = cardUpdateService.updateCard(REPLICA_IN_STEP_CARD,
+                    request(REPLICA_IN_STEP_NAME + " II", "2031", "07", "14", STATUS_YES));
+
+            Instant observedAfter = replicaObservedAt(REPLICA_IN_STEP_CARD);
+            assertAll(
+                    () -> assertEquals(UpdateOutcome.UPDATED, answer.outcome(),
+                            "the update itself has to succeed for the replica to have been reached"),
+                    () -> assertEquals(REPLICA_IN_STEP_ACCOUNT,
+                            replicaAccount(REPLICA_IN_STEP_CARD),
+                            "an agreeing mapping is left as it stands"),
+                    () -> assertTrue(observedAfter.isAfter(observedBefore),
+                            "observed_at reports the confirmation, so it moved from "
+                                    + observedBefore + " to " + observedAfter),
+                    () -> assertEquals(agreedBefore + 1.0d,
+                            counter("carddemo.card.xref.agreed"),
+                            "carddemo.card.xref.agreed reports the row that needed nothing"));
+        }
+
+        /**
+         * Asserts a card number holding no replica row leaves the update intact and invents no row.
+         *
+         * <p>{@code customer_id} is {@code NOT NULL}, from {@code XREF-CUST-ID PIC 9(09)} at
+         * {@code app/cpy/CVACT03Y.cpy:L6}, and {@code app/cpy/CVACT02Y.cpy} carries no customer
+         * identifier, so this service holds no value to put there. The gap is counted on
+         * {@code carddemo.card.xref.missing} and the update still commits, because a replica this
+         * service cannot complete is not a reason to refuse a caller's card change.
+         *
+         * <p>The deleted row is restored at the end, so the table returns to its fifty seeded rows
+         * for whatever runs next.
+         */
+        @Test
+        @DisplayName("a card holding no replica row is counted, and no row is invented")
+        void aCardWithNoReplicaRowIsCountedAndNoRowIsInvented() {
+            jdbcTemplate.update("DELETE FROM card_xref WHERE card_number = ?",
+                    REPLICA_ABSENT_CARD);
+            assertNull(replicaAccount(REPLICA_ABSENT_CARD),
+                    "the replica row has to be absent before the update runs");
+            double missingBefore = counter("carddemo.card.xref.missing");
+
+            CardUpdateResponse answer = cardUpdateService.updateCard(REPLICA_ABSENT_CARD,
+                    request(REPLICA_ABSENT_NAME + " II", "2032", "08", "15", STATUS_YES));
+
+            try {
+                assertAll(
+                        () -> assertEquals(UpdateOutcome.UPDATED, answer.outcome(),
+                                "an incomplete replica does not refuse the card change"),
+                        () -> assertEquals(REPLICA_ABSENT_NAME + " II",
+                                storedRow(REPLICA_ABSENT_CARD).get(3),
+                                "the card row was written, so the reconciler ran after it"),
+                        () -> assertNull(replicaAccount(REPLICA_ABSENT_CARD),
+                                "no replica row is invented, because customer_id cannot be known"),
+                        () -> assertEquals(missingBefore + 1.0d,
+                                counter("carddemo.card.xref.missing"),
+                                "carddemo.card.xref.missing reports the gap"),
+                        () -> assertEquals(SEEDED_REPLICA_ROW_COUNT - 1, replicaRowCount(),
+                                "the table holds one row fewer while this test runs"));
+            } finally {
+                jdbcTemplate.update("""
+                        INSERT INTO card_xref (card_number, customer_id, account_id)
+                        VALUES (?, ?, ?)
+                        """, REPLICA_ABSENT_CARD, REPLICA_ABSENT_CUSTOMER, REPLICA_ABSENT_ACCOUNT);
+            }
+        }
+
+        /**
+         * Asserts a reconciliation with no transaction in progress is refused rather than committing
+         * on its own.
+         *
+         * <p>{@code MANDATORY} propagation is what ties the replica correction to the card row and
+         * the outbox row. Under the default {@code REQUIRED} this call would open a transaction of
+         * its own and commit a replica change beside a card change that had not happened, which is
+         * the same defect {@code OutboxWriterTest} holds the event row against.
+         */
+        @Test
+        @DisplayName("a reconciliation with no transaction in progress is refused")
+        void aReconciliationWithNoTransactionIsRefused() {
+            CardEntity card = cards.findById(REPLICA_IN_STEP_CARD).orElseThrow();
+            String accountBefore = replicaAccount(REPLICA_IN_STEP_CARD);
+
+            assertThrows(IllegalTransactionStateException.class,
+                    () -> crossReferenceReconciler.reconcile(card),
+                    "the reconciler joins a transaction and opens none, so it has none to use here");
+            assertEquals(accountBefore, replicaAccount(REPLICA_IN_STEP_CARD),
+                    "a refused reconciliation writes nothing");
+        }
+    }
+
 }

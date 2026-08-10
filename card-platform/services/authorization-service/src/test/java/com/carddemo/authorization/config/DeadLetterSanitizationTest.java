@@ -447,7 +447,6 @@ class DeadLetterSanitizationTest {
                 .replaceAll("\"occurredAt\"\\s*:\\s*\"[^\"]*\"", "\"occurredAt\":\"\"");
     }
 
-    /** @return the published value rendered as text */
     /**
      * Renders the published envelope without the two members a run generates.
      *
@@ -466,6 +465,7 @@ class DeadLetterSanitizationTest {
         return scanned.toString();
     }
 
+    /** @return the published value rendered as text */
     private String valueText() {
         assertNotNull(published, "nothing was published");
         Object value = published.value();

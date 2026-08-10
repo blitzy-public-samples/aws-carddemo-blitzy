@@ -14,6 +14,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
@@ -400,6 +401,56 @@ final class CardCrossReferenceRuleTest {
             verify(cardCrossReferences, never())
                     .findFirstByAccountIdOrderByCardNumberAsc(anyString());
             verifyNoMoreInteractions(cardCrossReferences);
+        }
+
+        /**
+         * A context that already carries this card's row is not read again.
+         *
+         * <p>{@code AuthorizationService} seeds the row on one path. A request naming an account
+         * resolves its card through the alternate index, which answers with the whole row, and
+         * {@code card_number} is the primary key of {@code card_xref}, so a keyed read of the card
+         * number that row carries answers with the same row. Reading it a second time cost every
+         * account-identifier authorization one extra query for a row already in hand.
+         */
+        @Test
+        @DisplayName("performs no read when the context already carries this card's row")
+        void performsNoReadWhenTheRowIsAlreadyCarried() {
+            DeclineRule.Context context = contextFor(FIXTURE_CARD_NUMBER);
+            context.setCardCrossReference(resolvedRow(FIXTURE_CARD_NUMBER));
+
+            Optional<DeclineReason> verdict = rule.evaluate(context);
+
+            assertTrue(verdict.isEmpty(), "a carried row is a resolved card, so nothing declines");
+            assertEquals(FIXTURE_ACCOUNT_ID, context.getResolvedAccountId(),
+                    "the carried row still names the account the rules that follow read");
+            verifyNoInteractions(cardCrossReferences);
+        }
+
+        /**
+         * A carried row naming another card is not trusted for this one.
+         *
+         * <p>The seeding path cannot produce this, because the card number it seeds is the one the
+         * row carries. Asserting it anyway keeps the rule self-contained: the row it hands on is
+         * always the row for the card the context names, whatever put a row there.
+         */
+        @Test
+        @DisplayName("reads the table when the carried row names a different card")
+        void readsTheTableWhenTheCarriedRowNamesADifferentCard() {
+            DeclineRule.Context context = contextFor(FIXTURE_CARD_NUMBER);
+            context.setCardCrossReference(resolvedRow(LEADING_ZERO_CARD_NUMBER));
+            // Built before the stubbing rather than inside thenReturn. resolvedRow stubs the row it
+            // returns, and a stubbing begun inside another stubbing's argument leaves the outer one
+            // unfinished, which Mockito refuses.
+            CardCrossReferenceEntity readRow = resolvedRow(FIXTURE_CARD_NUMBER);
+            when(cardCrossReferences.findByCardNumber(FIXTURE_CARD_NUMBER))
+                    .thenReturn(Optional.of(readRow));
+
+            Optional<DeclineReason> verdict = rule.evaluate(context);
+
+            assertTrue(verdict.isEmpty(), "the keyed read resolved the card the context names");
+            assertEquals(FIXTURE_CARD_NUMBER, context.getCardCrossReference().getCardNumber(),
+                    "the row the rule hands on is the row for this card");
+            verify(cardCrossReferences, times(1)).findByCardNumber(FIXTURE_CARD_NUMBER);
         }
     }
 

@@ -18,7 +18,8 @@ inputs:
   maven-version:
     description: >
       The Apache Maven release to install. card-platform/pom.xml requires
-      [3.9.16,4.0.0), so Maven 4 fails the build and this value is not free.
+      [3.9.16,3.10.0), which is the patch line this build is exercised on, so neither
+      Maven 4 nor a later 3.x minor passes the enforcer and this value is not free.
     required: true
 
 runs:

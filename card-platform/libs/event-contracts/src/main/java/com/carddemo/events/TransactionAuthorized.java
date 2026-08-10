@@ -1,5 +1,6 @@
 package com.carddemo.events;
 
+import com.carddemo.events.correlation.CorrelatedEvent;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Instant;
@@ -151,7 +152,7 @@ public record TransactionAuthorized(
         @JsonInclude(JsonInclude.Include.NON_NULL) String cardToken,
         String authorizedAt,
         String accountId,
-        String currency) {
+        String currency) implements CorrelatedEvent {
 
     /**
      * The routing discriminator every instance carries, and the simple name of this record.

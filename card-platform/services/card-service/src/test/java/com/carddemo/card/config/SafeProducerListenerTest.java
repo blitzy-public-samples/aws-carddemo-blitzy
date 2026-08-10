@@ -91,8 +91,11 @@ class SafeProducerListenerTest {
         String line = event.getFormattedMessage();
 
         assertAll(
-                () -> assertEquals(Level.ERROR, event.getLevel(),
-                        "a send that failed is an error rather than a warning"),
+                () -> assertEquals(Level.WARN, event.getLevel(),
+                        "a failed send is one attempt and not a lost event: the row stays in the"
+                                + " outbox and is attempted again, so reporting it at error left an"
+                                + " unreachable broker writing one error per attempt per row and"
+                                + " nothing to tell a retry storm from a permanent loss"),
                 () -> assertTrue(line.contains(TOPIC), "the line names the destination topic"),
                 () -> assertTrue(line.contains(String.valueOf(PARTITION)),
                         "the line names the partition"),

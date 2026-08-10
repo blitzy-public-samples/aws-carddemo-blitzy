@@ -9,8 +9,10 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.carddemo.events.correlation.EventCorrelation;
 import com.carddemo.fraud.config.KafkaProducerConfig;
 import com.carddemo.fraud.outbox.OutboxRelay;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -39,6 +41,7 @@ import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.errors.TopicExistsException;
+import org.apache.kafka.common.header.Header;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.awaitility.Awaitility;
@@ -90,14 +93,8 @@ import tools.jackson.databind.json.JsonMapper;
 @DisplayName("One consumed authorization event publishes one assessment event")
 public class ConsumeToPublishIT {
 
-    /** Image tag of the database container. */
-    private static final String POSTGRES_IMAGE = "postgres:18.4";
-
     /** Image tag of the broker container, matching the pinned client library. */
     private static final String KAFKA_IMAGE = "apache/kafka:4.2.1";
-
-    /** Database name, login name and password of the database container, one value for all three. */
-    private static final String CONTAINER_CREDENTIAL = "carddemo";
 
     /** Schema the shipped configuration migrates and the persistence layer qualifies entities with. */
     private static final String SERVICE_SCHEMA = "fraud_service";
@@ -296,11 +293,26 @@ public class ConsumeToPublishIT {
             "00000005" + "02617711", "955.11", "Purchase at Klocko LLC", "Klocko LLC",
             "Winonaland", "07626");
 
-    @Container
-    private static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer(POSTGRES_IMAGE)
-            .withDatabaseName(CONTAINER_CREDENTIAL)
-            .withUsername(CONTAINER_CREDENTIAL)
-            .withPassword(CONTAINER_CREDENTIAL);
+    /**
+     * A third daily transaction, so the correlation test consumes an event no other test consumed.
+     *
+     * <p>Every value is read from record 11 of {@code app/data/ASCII/dailytran.txt}. The amount is
+     * the overpunched field {@code 0000009433} with its trailing sign character resolved, which is
+     * what {@code CobolDecimal} reads it as. A transaction this class has already assessed would be
+     * suppressed as a duplicate and publish nothing, so a distinct one is required rather than
+     * preferred.
+     */
+    private static final FixtureTransaction THIRD_TRANSACTION = new FixtureTransaction(
+            "00000000" + "25430891", "94.33", "Purchase at Beatty-Hessel", "Beatty-Hessel",
+            "Simonisport", "52595");
+
+    /**
+     * The one container the module fork runs, which this class reads a login from.
+     *
+     * <p>{@link FraudServiceDatabase} owns it and hands this class a database of its own inside
+     * it. Nothing here starts or stops a container.
+     */
+    private static final PostgreSQLContainer POSTGRES = FraudServiceDatabase.container();
 
     @Container
     private static final KafkaContainer KAFKA = new KafkaContainer(KAFKA_IMAGE);
@@ -329,10 +341,12 @@ public class ConsumeToPublishIT {
     private static ApplicationContext startedContext;
 
     /**
-     * Stops the relay tick and the listeners while both containers are still up.
+     * Stops the relay tick and the listeners while the context and both containers are still up.
      *
-     * <p>An {@code @AfterAll} method runs before the extension callback that stops {@link #POSTGRES}
-     * and {@link #KAFKA}, which is the only window in which this can be done. Without it the relay
+     * <p>An {@code @AfterAll} method runs before the extension callback that stops {@link #KAFKA}
+     * and before the Spring test framework closes the context, which is the only window in which
+     * this can be done. {@link #POSTGRES} is not stopped at all here: it belongs to
+     * {@link FraudServiceDatabase} and to the fork. Without this method the relay
      * keeps ticking every half second into a database that has gone, and the build log carries a
      * closed-connection stack trace under {@code Unexpected error occurred in scheduled task} on a
      * run where every assertion passed.
@@ -361,8 +375,7 @@ public class ConsumeToPublishIT {
 
     /** Returns the container connection string with the service schema on its search path. */
     private static String jdbcUrlOnServiceSchema() {
-        String url = POSTGRES.getJdbcUrl();
-        return url + (url.contains("?") ? "&" : "?") + "currentSchema=" + SERVICE_SCHEMA;
+        return FraudServiceDatabase.urlFor(ConsumeToPublishIT.class);
     }
 
     /**
@@ -427,6 +440,63 @@ public class ConsumeToPublishIT {
             assertNoFurtherRecord(assessed, wanted, arrivals,
                     "a second assessment event of " + transactionId);
         }
+    }
+
+    /**
+     * Asserts the correlation identifier of an inbound record reaches the event this service emits.
+     *
+     * <p>This is the one assertion that crosses a real broker in both directions. Every other test
+     * of the correlation headers drives a mocked template, so it proves the code attaches a header
+     * and not that a header survives serialization, the broker, the consumer, the outbox row and the
+     * relay. The path under test is the whole chain: the record interceptor reads the inbound header
+     * into the logging context, the outbox writer copies that context onto the row it stores, and the
+     * relay reads the row back on its own thread minutes later and attaches the headers again.
+     *
+     * <p>The causation identifier is asserted separately from the correlation identifier, because
+     * they answer different questions and are carried by different mechanisms. The correlation
+     * identifier is the caller's and passes straight through. The causation identifier of the
+     * outbound event is the identifier of the inbound event that caused it, not the inbound
+     * causation, so a chain that simply copied both headers forward would pass a weaker assertion
+     * and lose the parent link.
+     */
+    @Test
+    @DisplayName("the correlation identifier of a consumed record reaches the event it causes")
+    void correlationIdentifierOfAConsumedRecordReachesTheEventItCauses() {
+        UUID correlationId = UUID.randomUUID();
+        UUID inboundEventId = UUID.randomUUID();
+        String transactionId = THIRD_TRANSACTION.transactionId();
+
+        try (KafkaConsumer<String, String> assessed = assignedToEndOf(ASSESSED_TOPIC);
+                KafkaProducer<String, String> producer = newProducer()) {
+            publish(producer, authorizedEvent(inboundEventId, THIRD_TRANSACTION), correlationId,
+                    UUID.randomUUID());
+
+            Predicate<ConsumerRecord<String, String>> wanted = carryingTransactionId(transactionId);
+            ConsumerRecord<String, String> arrival = awaitRecords(assessed, wanted,
+                    "the assessment event of " + transactionId).getFirst();
+
+            assertAll("the correlation headers of the event this service published",
+                    () -> assertEquals(correlationId.toString(),
+                            headerText(arrival, EventCorrelation.CORRELATION_ID_HEADER),
+                            "the correlation identifier the caller supplied crossed the broker, the"
+                                    + " outbox row and the relay unchanged"),
+                    () -> assertEquals(inboundEventId.toString(),
+                            headerText(arrival, EventCorrelation.CAUSATION_ID_HEADER),
+                            "the causation identifier names the consumed event, so the published"
+                                    + " event records what caused it"));
+        }
+    }
+
+    /**
+     * Reads one header off one consumed record as text.
+     *
+     * @param record the record to read
+     * @param name the header to read
+     * @return the rendered value, or {@code null} when the record carries no such header
+     */
+    private static String headerText(ConsumerRecord<String, String> record, String name) {
+        Header header = record.headers().lastHeader(name);
+        return header == null ? null : new String(header.value(), StandardCharsets.UTF_8);
     }
 
     /**
@@ -817,9 +887,39 @@ public class ConsumeToPublishIT {
      * @param document the document to publish
      */
     private static void publish(KafkaProducer<String, String> producer, String document) {
+        publish(producer, document, null, null);
+    }
+
+    /**
+     * Publishes one document to the authorized topic under the two correlation headers.
+     *
+     * <p>The headers are what a producing service attaches, so supplying them here reproduces what
+     * this service receives in production rather than what a mock hands it.
+     *
+     * @param producer the client to publish through
+     * @param document the document to publish
+     * @param correlationId the unit of work to name, or {@code null} to attach no such header
+     * @param causationId the causing event to name, or {@code null} to attach no such header
+     */
+    private static void publish(KafkaProducer<String, String> producer, String document,
+            UUID correlationId, UUID causationId) {
+        ProducerRecord<String, String> record =
+                new ProducerRecord<>(AUTHORIZED_TOPIC, ACCOUNT_ID, document);
+        EventCorrelation.headersFor(correlationId, causationId)
+                .forEach(header -> record.headers().add(header));
+        publish(producer, record);
+    }
+
+    /**
+     * Publishes one prepared record and waits for the broker to accept it.
+     *
+     * @param producer the client to publish through
+     * @param prepared the record to publish
+     */
+    private static void publish(KafkaProducer<String, String> producer,
+            ProducerRecord<String, String> prepared) {
         try {
-            Future<RecordMetadata> pending =
-                    producer.send(new ProducerRecord<>(AUTHORIZED_TOPIC, ACCOUNT_ID, document));
+            Future<RecordMetadata> pending = producer.send(prepared);
             producer.flush();
             RecordMetadata metadata = pending.get(ARRIVAL_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
             assertNotNull(metadata, "the broker returned no coordinates for the record");

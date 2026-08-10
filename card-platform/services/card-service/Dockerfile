@@ -1,36 +1,59 @@
 # Container image for the CardDemo card service. It publishes on a mutation and consumes nothing.
 #
-# The build context is this module directory, and the archive under target/ arrives from
-# `mvn -f card-platform/pom.xml package`, which runs ahead of this image build.
+# The build context is card-platform, the directory this module's build has to see: the
+# aggregator descriptor, both shared libraries and this module. Anything outside it is
+# excluded by services/card-service/Dockerfile.dockerignore, which BuildKit reads
+# in place of the root ignore file because it sits beside this Dockerfile.
+#
+# Two stages. The first is a Java Development Kit 25 with Apache Maven 3.9.16 and it
+# builds the archive from source. The second is a Java Runtime Environment and it
+# receives that one archive. Nothing else crosses between them, which is what makes an
+# in-image build and a small runtime image the same decision rather than opposing ones.
 #
 # Paged browse: app/cbl/COCRDLIC.cbl. Detail: app/cbl/COCRDSLC.cbl. Update
 # validation: app/cbl/COCRDUPC.cbl.
 
-# The one runtime image every service of this mono-repo shares. The digest pins the
-# layer, and the image installs no package.
+# The build stage image. Apache Maven 3.9.16 on an Eclipse Temurin Java Development Kit
+# 25, which is the toolchain card-platform/pom.xml requires and the enforcer plugin
+# checks: requireMavenVersion [3.9.16,3.10.0) and requireJavaVersion [25,26). The digest
+# pins the layer, so the compiler that produces this archive cannot change under it.
+ARG BUILDER_IMAGE=maven:3.9.16-eclipse-temurin-25@sha256:1b1fc6d0168ea616afd1c861d6f32ec37c9ec2ffe88a0351b3771dd4ad86b0d8
+
+# The one runtime image every service of this mono-repo shares. The digest pins the layer,
+# and the image installs no package, so no package pin can go stale.
 ARG RUNTIME_IMAGE=bellsoft/liberica-openjre-debian:25.0.4-9@sha256:1671b2ce27ad4ab213800a07c4631aa35528418636be5bce32d027f1926b8b0d
 
-# Stage 1. Receives the archive the host build left under target/ and fixes its name.
-FROM ${RUNTIME_IMAGE} AS archive
+# Stage 1. Compiles this module and the two libraries it depends on, then leaves one
+# archive under its target/ directory. This is where a compiler and a build tool live,
+# and they stay here: the runtime stage below copies a single file out of it.
+FROM ${BUILDER_IMAGE} AS builder
 
-WORKDIR /staging
+WORKDIR /build
 
-# The pattern is copied into a directory rather than onto a name, because a name would
-# take whichever match sorted last and ship a stale archive in silence. The Spring Boot
-# plugin's .jar.original does not match it.
-COPY target/*.jar ./
+# The whole context, which the ignore file beside this Dockerfile has already reduced to
+# the aggregator descriptor, every module descriptor, the two libraries and this module.
+# Another service's sources are not in it, so this image cannot be built from them.
+COPY . .
 
-# Exactly one archive, or no image. This is what stands between an un-cleaned target/
-# and an image running the wrong code.
+# -pl this module -am builds the aggregator, libs/event-contracts, libs/cobol-compat and
+# this module, and nothing else. maven.test.skip leaves the test sources uncompiled: the
+# suite is the pipeline's job and running it here would put a database and a broker inside
+# an image build. The cache mount holds the local repository between builds, so the five
+# other service images resolve what this one downloaded instead of downloading it again.
+RUN --mount=type=cache,target=/root/.m2/repository,sharing=locked \
+    mvn -B -ntp -pl services/card-service -am -Dmaven.test.skip=true package
+
+# Exactly one archive, or no image. The Spring Boot plugin leaves a second file ending in
+# .jar.original beside the executable one, and this pattern does not match it. Without the
+# check a directory holding two archives would ship whichever the shell sorted last, in
+# silence.
 RUN set -eu; \
-    set -- /staging/*.jar; \
+    set -- /build/services/card-service/target/*.jar; \
     if [ "$#" -ne 1 ]; then \
-      echo "Expected one archive under target/, found $#: $*" >&2; \
-      echo "Run mvn -f card-platform/pom.xml clean package and build again." >&2; \
+      echo "Expected one archive under services/card-service/target/, found $#: $*" >&2; \
       exit 1; \
     fi; \
-    mv "$1" /staging/app.jar
-
+    mv "$1" /build/services/card-service/target/app.jar
 # Stage 2. The shipped image: the archive and a Java Runtime Environment, nothing else.
 FROM ${RUNTIME_IMAGE} AS runtime
 
@@ -50,8 +73,11 @@ RUN groupadd --gid 10001 carddemo \
 
 WORKDIR /app
 
-# The one archive this image runs, owned by the account that runs it.
-COPY --from=archive --chown=10001:10001 /staging/app.jar /app/app.jar
+# The one archive this image runs, taken from the builder stage above and owned by
+# the account that runs it. No compiler, no build tool, no dependency cache and no
+# source file crosses this line: a multi-stage build carries only what is copied.
+COPY --from=builder --chown=10001:10001 /build/services/card-service/target/app.jar \
+     /app/app.jar
 
 USER 10001:10001
 

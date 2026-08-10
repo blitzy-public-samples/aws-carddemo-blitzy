@@ -30,13 +30,13 @@ The Maven aggregator contains nine child modules and builds ten reactor projects
 
 | Capability | Delivered implementation |
 | :--- | :--- |
-| Authorization | Four source-derived decline rules, one response, and one outcome event for each authenticated, parseable request that reaches an authorization decision |
+| Authorization | Four source-derived decline rules, one response, one persisted decision, and exactly one outcome event for each authenticated, parseable request that reaches an authorization decision. Reject reason 0100 is the one decided outcome whose event is keyed on the transaction identifier |
 | Posting | Transaction, category-balance, account-balance, account-state replica, feed-reject, outbox, and duplicate-delivery handling |
 | Fraud | Three net-new risk rules, persisted assessments, and flagged or cleared events |
 | Notification | Authorized-transaction, posted-transaction, fraud, and customer-context consumers, private read models, two renderers, alert-attempt metadata, and history API |
 | Account | Account and customer reads, coordinated update, source-compatible conflict check, cycle close, and state-change publication |
 | Card | Seven-row cursor browse, card detail, ordered update, and state-change publication |
-| Contracts | Thirteen JSON Schema Draft 2020-12 documents, validating serialization, validating deserialization, and compatibility tests |
+| Contracts | Fourteen JavaScript Object Notation (JSON) Schema Draft 2020-12 documents, validating serialization, validating deserialization, and compatibility tests |
 | Persistence | Flyway-owned schemas, fixture-backed seeds, Jakarta Persistence validation, outboxes, and processed-event guards |
 | Operations | Structured JSON logs, health and metrics endpoints, terminal dead-letter routes for spent records and abandoned outbox rows, Docker Compose, and Kubernetes manifests |
 | Equivalence | Posting, authorization, bill payment, interest rules, validation, identifier, fixture, card-seed, and decimal comparisons |
@@ -71,10 +71,12 @@ Use the tested versions below:
 | :--- | :--- |
 | Eclipse Temurin OpenJDK | 25.0.4+7 |
 | Apache Maven | 3.9.16 |
-| Docker Engine | 29.7.0 |
-| Docker Compose | 5.3.1 |
+| Docker Engine | 29.7.0 or later |
+| Docker Compose | 5.3.1 or later |
 | Kafka image | `apache/kafka:4.2.1` |
 | PostgreSQL image | `postgres:18.4` |
+
+The first two rows are refusals: the enforcer plugin rejects a build outside `[25,26)` and `[3.9.16,3.10.0)`, so a newer Maven fails rather than passes. The two image tags are exact because each is pinned by digest as well. Docker Engine and Compose are floors, because nothing here constrains them: the versions given are the ones this stack was exercised on.
 
 One command takes a clean clone to a running stack:
 
@@ -85,15 +87,20 @@ scripts/start-demo.sh
 
 [`scripts/start-demo.sh`](scripts/start-demo.sh) packages the reactor, creates `.env` from `.env.example`, fills all 19 credentials, builds the six images, starts eight containers, and reads every health endpoint. It asks nothing and is safe to re-run: a credential already set is left alone. The four demo passwords it generates are written to `card-platform/.demo-credentials`, which git ignores, because `.env` keeps only their `{bcrypt}` hashes.
 
-To prepare the environment file without starting anything, run [`scripts/generate-env.sh`](scripts/generate-env.sh). It reads the credential names out of `.env.example`, so it needs no second list of them. Run it again after a pull: an existing `.env` is reconciled against the example rather than replaced, keeping every value already chosen, and the run fails if any declared assignment is still absent. Two exceptions earn their keep after an upgrade. A key this repository publishes is regenerated, because every service that reads one refuses to start on it, and a setting whose value differs from the example's is reported with both values so a tightened default is visible before it stops a container.
+To prepare the environment file without starting anything, run [`scripts/generate-env.sh`](scripts/generate-env.sh). It reads the credential names out of `.env.example`, so it needs no second list of them. Run it again after a pull: an existing `.env` is reconciled against the example rather than replaced, keeping every value already chosen, and the run fails if any declared assignment is still absent. Two exceptions earn their keep after an upgrade. A key this repository publishes is regenerated, because every service that reads one refuses to start on it. A setting whose value differs from the example's is reported with both values, so a tightened default is visible before it stops a container.
 
-The same work by hand is four steps, and none is optional:
+The same work by hand is four steps, and none is optional. The copied file carries **19** `REPLACE` markers: fourteen local passwords, one card-token key and four `{bcrypt}` identity hashes. Every one has to be generated before the stack starts, so the steps below generate all nineteen and then prove none is left.
 
 ```bash
 cd card-platform
-cp .env.example .env
 
-# The fourteen service passwords, generated locally and written in place.
+# install rather than cp: the copy holds every credential a moment later, and cp leaves it
+# readable by every local account.
+install -m 600 .env.example .env
+
+# Step 1. The fourteen service passwords and the card-token key, generated locally and
+# written in place. The key is longer because two services refuse anything under 32
+# characters.
 for variable in POSTGRES_PASSWORD \
   AUTHORIZATION_DB_PASSWORD LEDGER_DB_PASSWORD FRAUD_DB_PASSWORD \
   NOTIFICATION_DB_PASSWORD ACCOUNT_DB_PASSWORD CARD_DB_PASSWORD \
@@ -102,22 +109,27 @@ for variable in POSTGRES_PASSWORD \
   NOTIFICATION_KAFKA_PASSWORD ACCOUNT_KAFKA_PASSWORD CARD_KAFKA_PASSWORD; do
   sed -i "s|^${variable}=.*|${variable}=$(openssl rand -base64 24 | tr -d '/+=')|" .env
 done
+sed -i "s|^CARD_TOKEN_SECRET=.*|CARD_TOKEN_SECRET='$(openssl rand -base64 48 | tr -d '/+=')'|" .env
 
-# The three request identities. The plaintext stays in this shell; only the hash reaches .env.
-export ADMIN_PASSWORD="$(openssl rand -base64 18 | tr -d '/+=')"
-export USER_PASSWORD="$(openssl rand -base64 18 | tr -d '/+=')"
-export MONITORING_PASSWORD="$(openssl rand -base64 18 | tr -d '/+=')"
+# Step 2. The four request identities. Each password stays a shell variable of this shell
+# only: unexported, so no command this shell runs inherits it, and unset at the end. Only
+# the hash reaches .env. Write these four down now, because .env keeps no plaintext.
+admin_password="$(openssl rand -base64 18 | tr -d '/+=')"
+acquirer_password="$(openssl rand -base64 18 | tr -d '/+=')"
+user_password="$(openssl rand -base64 18 | tr -d '/+=')"
+monitoring_password="$(openssl rand -base64 18 | tr -d '/+=')"
 ```
 
-The copied file contains 19 `REPLACE` markers: fourteen local passwords, one card-token key and four `{bcrypt}` identity hashes. Generate every one before starting the stack.
-
 ```bash
+# Step 3. Package the reactor. Each image copies an archive out of its own target
+# directory, and jshell reads the encoder out of the local Maven repository.
 mvn -B -ntp -DskipTests package
 ```
 
 Then encode each password and write it back single-quoted. Compose expands `$` in an unquoted dotenv value, and a bcrypt hash is full of `$`:
 
 ```bash
+# Step 4. Hash the four, prove all nineteen markers are gone, and drop the plaintext.
 CRYPTO_CP="$(find ~/.m2/repository/org/springframework/security/spring-security-crypto \
   -name 'spring-security-crypto-*.jar' | sort | tail -1):\
 $(find ~/.m2/repository/commons-logging/commons-logging \
@@ -132,21 +144,26 @@ System.out.println(org.springframework.security.crypto.factory.PasswordEncoderFa
 JSHELL
 }
 
-sed -i "s|^ADMIN_PASSWORD_HASH=.*|ADMIN_PASSWORD_HASH='$(hash_password "$ADMIN_PASSWORD")'|" .env
-sed -i "s|^USER_PASSWORD_HASH=.*|USER_PASSWORD_HASH='$(hash_password "$USER_PASSWORD")'|" .env
-sed -i "s|^MONITORING_PASSWORD_HASH=.*|MONITORING_PASSWORD_HASH='$(hash_password "$MONITORING_PASSWORD")'|" .env
+sed -i "s|^ADMIN_PASSWORD_HASH=.*|ADMIN_PASSWORD_HASH='$(hash_password "$admin_password")'|" .env
+sed -i "s|^ACQUIRER_PASSWORD_HASH=.*|ACQUIRER_PASSWORD_HASH='$(hash_password "$acquirer_password")'|" .env
+sed -i "s|^USER_PASSWORD_HASH=.*|USER_PASSWORD_HASH='$(hash_password "$user_password")'|" .env
+sed -i "s|^MONITORING_PASSWORD_HASH=.*|MONITORING_PASSWORD_HASH='$(hash_password "$monitoring_password")'|" .env
 
-# Prove nothing is left unset before starting anything.
-if grep -q '^[A-Z_]*=.*REPLACE' .env; then
-  echo "still unset:"; grep -n '^[A-Z_]*=.*REPLACE' .env
+# Prove nothing is left unset before starting anything. The count is read from the file, so
+# it cannot disagree with the file.
+remaining="$(grep -c '^[A-Za-z_][A-Za-z0-9_]*=.*REPLACE' .env || true)"
+if [ "${remaining}" -gt 0 ]; then
+  echo "still unset: ${remaining}"; grep -n '^[A-Za-z_][A-Za-z0-9_]*=.*REPLACE' .env
 else
-  echo "all 17 values are set"
+  echo "every credential .env.example declares is set"
 fi
+
+unset admin_password acquirer_password user_password monitoring_password
 ```
 
 `.env` is ignored by git and must stay that way. Verify with `git check-ignore -v .env`.
 
-`CARD_TOKEN_SECRET` is a `REPLACE` marker like every password: `.env.example` ships no working key, and the two services that derive a card token refuse to start without one. `CARD_TOKEN_VERSION` is not a marker and stays as shipped, because three checked-in values name the version their tokens were derived under. [Onboarding](docs/onboarding.md) gives the rotation procedure, and [Security and transport](#security-and-transport) explains what the key does.
+`CARD_TOKEN_SECRET` is a `REPLACE` marker like every password: `.env.example` ships no deployable key, and the two services that derive a card token refuse to start without one. Two keys this repository does publish are refused by name: the build-scope key `pom.xml` supplies to the test suites, and the bootstrap key the Kubernetes Secret template carries. `CARD_TOKEN_VERSION` is not a marker and stays as shipped, because three checked-in values name the version their tokens were derived under. [Onboarding](docs/onboarding.md) gives the rotation procedure, and [Security and transport](#security-and-transport) explains what the key does.
 
 ### 2. Build, start, and check
 
@@ -157,7 +174,7 @@ docker compose up -d --build
 docker compose ps
 ```
 
-Every Dockerfile copies its packaged archive from `target/`, so the Maven command must finish before the image build.
+The image build reads nothing from `target/`: each Dockerfile compiles its own module in a Java Development Kit 25 builder stage from this directory. The Maven command above is what proves the suite and fills the local repository the credential script reads, not what feeds the images.
 
 Check all health endpoints:
 
@@ -254,11 +271,11 @@ Anonymous access is limited to `/actuator/health` on each management port. Busin
 
 Passwords are encoded before they enter configuration. Each service accepts `{bcrypt}` at a cost of at least ten or `{pbkdf2@SpringSecurity_v5_8}`, and refuses every other encoding at start-up, `{noop}` included.
 
-Two filters run in front of every route in all six services. `CrossSiteRequestFilter` requires a `POST`, `PUT`, `PATCH` or `DELETE` to carry `X-CardDemo-Request`, to declare a first-party `Sec-Fetch-Site`, and to name no foreign `Origin`, answering 403 otherwise. HTTP Basic is a credential a browser attaches without being asked, and an HTML form cannot set a header, so one header separates a first-party client from a page replaying a cached credential. Reads are untouched, which is why the health probe carries nothing. `RequestRateCeilingFilter` bounds volume ahead of the security chain: 20 failed authentications and 600 requests a minute per source address, 600 a minute per identity, 120 state-changing requests, and 64 requests in flight, answering 429 with `Retry-After` past any of them and counting `carddemo.<service>.requests.throttled` by the ceiling that refused. `API_CROSS_SITE_HEADER` and `API_RATE_*` configure both. Each counts inside one process, so a multi-replica deployment bounds each replica; [suggested next tasks](docs/suggested-next-tasks.md) records the shared-store ceiling and the forwarded-header setting a proxied deployment needs.
+Two filters run in front of every route in all six services. `CrossSiteRequestFilter` refuses a `POST`, `PUT`, `PATCH` or `DELETE` with 403 on any one of three conditions, and the three are not symmetrical. `X-CardDemo-Request` is **mandatory**: a request that omits it or sends it blank is refused. `Sec-Fetch-Site` and `Origin` are checked **only when the request carries them** — a present `Sec-Fetch-Site` has to read `same-origin` or `same-site`, and a present `Origin` has to name this service's own origin, while an absent one refuses nothing. That asymmetry is deliberate: a browser sets both headers and page script cannot forge either, so their absence identifies a non-browser client, which is every legitimate caller here. HTTP Basic is a credential a browser attaches without being asked, and an HTML form cannot set a header, so one header separates a first-party client from a page replaying a cached credential. Reads are untouched, which is why the health probe carries nothing. `RequestRateCeilingFilter` bounds volume ahead of the security chain. The ceilings are 20 failed authentications and 600 requests a minute per source address, 600 a minute per identity, 120 state-changing requests, and 64 requests in flight. Past any of them it answers 429 with `Retry-After`, and counts `carddemo.<service>.requests.throttled` by the ceiling that refused. `API_CROSS_SITE_HEADER` and `API_RATE_*` configure both. Each counts inside one process, so a multi-replica deployment bounds each replica; [suggested next tasks](docs/suggested-next-tasks.md) records the shared-store ceiling and the forwarded-header setting a proxied deployment needs.
 
-Every route that names one card names it by that card's token, never by its number, and the one surface that still takes a number is the authorization request body described below. The token is a keyed hash: `HMAC-SHA-256` over the full number under `CARD_TOKEN_SECRET`, prefixed by `CARD_TOKEN_VERSION`, rendered as 64 lower-case hexadecimal characters. This repository ships no key. Generate one with `openssl rand -base64 48 | tr -d '/+='` before the first run: only the authorization and card services read it, and both refuse to start without it. Two consequences matter operationally. The fifty `card_token` literals that `services/card-service/.../V2__seed.sql` loads are derived under a build-scope key, and `CardTokenReconciler` re-derives them under yours as the card service starts. A `SCOPE_CARD_` authority names a token rather than a number, so it belongs to one key and is derived rather than shipped. [Onboarding](docs/onboarding.md) gives both commands.
+Every route that names one card names it by that card's token, never by its number, and the one surface that still takes a number is the authorization request body described below. The token is a keyed hash: `HMAC-SHA-256` over the full number under `CARD_TOKEN_SECRET`, prefixed by `CARD_TOKEN_VERSION`, rendered as 64 lower-case hexadecimal characters. This repository ships no deployable runtime key. It does publish two keys, the build-scope key `pom.xml` gives the test suites and the bootstrap key `deploy/k8s/31-secret.example.yaml` carries, and both services refuse to start on either. Generate a real one with `openssl rand -base64 48 | tr -d '/+='` before the first run: only the authorization and card services read it, and both refuse to start without it. Two consequences matter operationally. The fifty `card_token` literals that `services/card-service/.../V2__seed.sql` loads are derived under a build-scope key, and `CardTokenReconciler` re-derives them under yours as the card service starts. A `SCOPE_CARD_` authority names a token rather than a number, so it belongs to one key and is derived rather than shipped. [Onboarding](docs/onboarding.md) gives both commands.
 
-One surface is the exception, and it is a request body rather than a request line: `POST /authorizations` accepts a full sixteen-digit `cardNumber` in an authenticated JSON body over the loopback-bound port. That route names no card in its path at all, and the number is the cross-reference key `app/cbl/CBTRN02C.cbl:L383-L387` reads, so no token can stand in for it there. A caller may name an `accountId` instead, in which case no card number is sent. Nothing echoes the number back — every response carries the masked form — and `PanMasker` is applied before any log line or event payload is written. The two card routes and the notification history route each name their card by its token in the path and accept no card number anywhere: the token resolves to the row inside the owning service, and the number never leaves it.
+One surface is the exception, and it is a request body rather than a request line: `POST /authorizations` accepts a full sixteen-digit `cardNumber` in an authenticated JSON body over the loopback-bound port. That route names no card in its path at all, and the number is the cross-reference key `app/cbl/CBTRN02C.cbl:L383-L387` reads, so no token can stand in for it there. A caller may name an `accountId` instead, in which case no card number is sent. Nothing echoes the number back — every response carries the masked form — and `PanMasker` is applied before any log line or event payload is written. The two card routes and the notification history route each name their card by its token in the path, and accept no card number anywhere. The token resolves to the row inside the owning service, and the number never leaves it.
 
 The Compose stack binds every published port to `127.0.0.1`. It uses separate database and Kafka credentials for each service.
 
@@ -380,7 +397,7 @@ Legend for Figure 1:
 
 The source and target are compared in [Architecture, Before and After](docs/architecture-before-after.md). Every event path appears in [Event Flow](docs/event-flow.md).
 
-The measured Customer Information Control System (CICS) definition contains 8 files, 17 mapsets, 18 programs, and 18 transactions. The broader source directory contains 28 COBOL programs.
+The measured CICS definition contains 8 files, 17 mapsets, 18 programs, and 18 transactions. The broader source directory contains 28 COBOL programs.
 
 <br/>
 
@@ -472,9 +489,9 @@ Seven business topics, six source-specific dead-letter topics, and one shared fa
 
 Every governed event carries `eventId`, `eventType`, `schemaVersion`, `occurredAt`, and an aggregate key. Money travels as a decimal string.
 
-The account identifier is the Kafka key and the ordering unit of every event, without exception. An authorization whose card resolves no account publishes nothing rather than keying on something else: reject code 0100 is answered to the caller and recorded in `unresolved_card_attempt` and `authorization_decision`, so one call produces at most one event.
+The account identifier is the Kafka key and the ordering unit of every event that resolves an account. An authorization whose card resolves none publishes its decline keyed on the 16-character transaction identifier instead, under `transaction-declined-v2`, which declares no `accountId`: reject code 0100 is answered to the caller and recorded in `unresolved_card_attempt` and `authorization_decision` beside that event, so **one decided call produces exactly one event**.
 
-Fourteen schema documents cover eight business event types, five additive version upgrades, and the dead-letter envelope. Publish and consume paths validate against the registered document.
+Thirteen schema documents cover eight business event types, four additive version upgrades, and the dead-letter envelope. Publish and consume paths validate against the registered document.
 
 `TransactionPosted` version 2 adds the statement provenance required by notification. Version 1 remains constructible and testable, but notification refuses it as insufficient.
 
@@ -504,7 +521,7 @@ The delivered suite includes:
 - truncation toward zero;
 - fixture census, identifier fidelity, and card seed checks.
 
-The published run reports 228 Failsafe equivalence tests and 391 unit or contract tests, with zero failures. See [Equivalence Results](docs/equivalence-results.md).
+The published run reports 228 Failsafe equivalence tests and 492 unit or contract tests, with zero failures. Both figures are measured rather than asserted: run `scripts/check-published-test-counts.sh` after `mvn verify` and it compares every published count against the reports that run wrote. See [Equivalence Results](docs/equivalence-results.md).
 
 Interest is verified but not migrated. `BillingCycleService` reproduces only the two accumulator resets at `app/cbl/CBACT04C.cbl:L353-L354`.
 
@@ -518,36 +535,14 @@ Interest is verified but not migrated. `BillingCycleService` reproduces only the
 | [Suggested Next Tasks](docs/suggested-next-tasks.md) | Follow-up work with locations and verification criteria |
 | [Decision Log](docs/decision-log.md) | Alternatives, reasons, accepted risks, and declared deviations |
 | [Traceability Matrix](docs/traceability-matrix.md) | Bidirectional source-to-target classification |
-| [Business Rule Flags](docs/business-rule-flags.md) | Sixty-six ambiguous, inconsistent, or undocumented source rules, each with its citation and its handling, plus three declared platform departures. Identifiers 1 to 26 are the set the specification fixes; 27 upward are appended in the order they were found, and no identifier is ever reused or renumbered |
+| [Business Rule Flags](docs/business-rule-flags.md) | Sixty-six ambiguous, inconsistent, or undocumented source rules, each with its citation and its handling, plus four declared platform departures. Identifiers 1 to 26 are the set the specification fixes; 27 upward are appended in the order they were found, and no identifier is ever reused or renumbered |
 | [Architecture, Before and After](docs/architecture-before-after.md) | Paired Mermaid migration views |
 | [Event Flow](docs/event-flow.md) | Topics, groups, outboxes, projections, and idempotency |
 | [Data Model](docs/data-model.md) | Service-owned tables and copybook-to-column provenance |
 | [Equivalence Results](docs/equivalence-results.md) | Fixture-by-fixture parity evidence and declared gaps |
 | [Prose Validation](docs/prose-validation.md) | Rule 5 verdicts and per-document scorecards |
-| [Executive Summary](presentation/executive-summary.html) | Sixteen-slide executive deck. Open the file in a browser; see [Opening the executive deck](#opening-the-executive-deck) for its one requirement |
 
 Each service also has a local guide linked from [Services and APIs](#services-and-apis). The root `README.md` retains the separate mainframe installation path.
-
-### Opening the executive deck
-
-`presentation/executive-summary.html` is one file with no build step, and it opens either from a
-`file://` path or over a local server. Both routes render identically.
-
-**It needs network access on the machine that opens it.** The deck is a single authored file, not a
-self-contained one: its slide framework, its diagram renderer, its icon set and its three typefaces
-all load at version-pinned URLs from three hosts, which is what keeps the file free of any local
-asset beside it. Reaching those three hosts is the deck's only requirement.
-
-| Host | What it serves | If it is unreachable |
-| :--- | :--- | :--- |
-| `cdn.jsdelivr.net` | The slide framework, the diagram renderer and the icon set | The slides stop paging and stack into one long scrolling page, the icons do not appear, and each of the three diagram frames shows a short line of text naming the document that holds the same view. Every word of the authored copy stays readable and correctly styled |
-| `fonts.googleapis.com` | The stylesheet naming the three typefaces | The deck still pages and still renders its diagrams and icons. Type falls back to whatever the machine has, so headings and body copy stop being visibly different faces. Nothing is clipped and no slide overflows |
-| `fonts.gstatic.com` | The three typeface files | The same fallback as above |
-
-Two things are worth knowing before showing it to an audience. Nothing inside the page can detect a
-typeface outage, so a font fallback is silent and looks like a styling choice rather than a failure.
-And the deck is a fixed sixteen-by-nine canvas scaled to whatever window it is given, so text
-shrinks with the window rather than reflowing: give it a desktop window or a projector, not a phone.
 
 Use [Suggested Next Tasks](docs/suggested-next-tasks.md) for unresolved business decisions. Do not silently correct a flagged source behavior in production code.
 

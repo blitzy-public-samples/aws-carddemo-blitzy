@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.carddemo.notification.NotificationServiceDatabase;
 import com.carddemo.notification.TestIdentityPasswords;
 import com.carddemo.events.EventEnvelope;
 import com.carddemo.events.FraudFlagged;
@@ -36,15 +37,13 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.kafka.support.Acknowledgment;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 
 /**
  * Delivers one event to a notification listener twice at the same instant, against a real PostgreSQL
  * server, and reads back what the database holds afterwards.
  *
- * <p><b>Why a concurrent delivery needs its own test.</b> {@link DuplicateDeliveryIT} publishes the
+ * <p><b>A concurrent delivery needs its own test.</b> {@link DuplicateDeliveryIT} publishes the
  * same record twice in sequence and proves the second changes no row. That proves the guard reads a
  * marker an earlier delivery already committed. It cannot reach the case the guard exists for: two
  * deliveries whose guards both run before either commits. Nothing in a sequential test distinguishes
@@ -99,18 +98,8 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
         "carddemo.history.log-retention-days=200000",
         "carddemo.processed-event.marker-retention-hours=4800000"
 })
-@Testcontainers
 @DisplayName("Two deliveries of one event, released together against PostgreSQL")
 class ConcurrentDuplicateDeliveryIT {
-
-    /** The image tag {@code card-platform/docker-compose.yml} also names. */
-    private static final String POSTGRES_IMAGE = "postgres:18.4";
-
-    /** The database name, the login name and the password of the container. */
-    private static final String CONTAINER_CREDENTIAL = "carddemo";
-
-    /** The schema Flyway migrates, from {@code spring.flyway.schemas}. */
-    private static final String SERVICE_SCHEMA = "notification_service";
 
     /** Host and port the broker client is pointed at, where nothing listens. */
     static final String UNREACHABLE_BROKER = "localhost:1";
@@ -181,12 +170,13 @@ class ConcurrentDuplicateDeliveryIT {
     /** Rows two deliveries on two topics leave behind. */
     private static final long TWO_ROWS = 2L;
 
-    /** The container every test in this class shares. */
-    @Container
-    static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer(POSTGRES_IMAGE)
-            .withDatabaseName(CONTAINER_CREDENTIAL)
-            .withUsername(CONTAINER_CREDENTIAL)
-            .withPassword(CONTAINER_CREDENTIAL);
+    /**
+     * The one container the module fork runs, which this class reads a login from.
+     *
+     * <p>{@link NotificationServiceDatabase} owns it and hands this class a database of its own inside it.
+     * Nothing here starts or stops a container.
+     */
+    static final PostgreSQLContainer POSTGRES = NotificationServiceDatabase.container();
 
     /** The posted listener the deliveries call, the one a container would call. */
     private final TransactionPostedConsumer postedConsumer;
@@ -219,8 +209,7 @@ class ConcurrentDuplicateDeliveryIT {
 
     /** @return the container URL with the service schema selected */
     private static String jdbcUrlOnServiceSchema() {
-        String url = POSTGRES.getJdbcUrl();
-        return url + (url.contains("?") ? "&" : "?") + "currentSchema=" + SERVICE_SCHEMA;
+        return NotificationServiceDatabase.urlFor(ConcurrentDuplicateDeliveryIT.class);
     }
 
     /** Empties the three tables a delivery writes and starts the pool the deliveries run on. */

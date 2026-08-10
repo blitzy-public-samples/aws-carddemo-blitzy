@@ -33,8 +33,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>A digit passes the edit here. The same digit fails paragraph {@code 1225-EDIT-ALPHA-REQD},
  * whose message at app/cbl/COACTUPC.cbl:L1941 names alphabets alone.</p>
  *
- * <p><b>Where the classification is enforced.</b> Because the paragraph never runs in the source,
- * wiring this edit to a request field would refuse values the source accepts, which the equivalence
+ * <p><b>Where the classification is enforced.</b> The paragraph never runs in the source, so wiring
+ * this edit to a request field would refuse values the source accepts, which the equivalence
  * requirement of AAP 0.1.1 forbids. That is not left as a note here:
  * {@code UnreachableEditClassificationTest} asserts that no field of any request type carries
  * {@code DomainEdit.Edit.ALPHANUMERIC_REQUIRED}, so a later change that wires it fails the build and

@@ -124,7 +124,7 @@ import org.springframework.security.web.access.intercept.RequestAuthorizationCon
  * Transport Layer Security settings, and a deployment that terminates them elsewhere keeps the hop
  * to this service inside a boundary it trusts.
  *
- * <h2>Why this file is repeated in each service</h2>
+ * <h2>This file is repeated in each service</h2>
  *
  * <p>{@code card-platform/pom.xml} bans a dependency from one service on another, which is the
  * property that keeps the consumers independent, and neither shared library is a place for this

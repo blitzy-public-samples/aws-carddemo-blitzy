@@ -314,6 +314,100 @@ class KubernetesDeploymentContractTest {
                 .contains("kustomize edit set image");
     }
 
+    /**
+     * A port name is metadata, and other tooling acts on it. Service meshes, ingress controllers
+     * and scrapers read the name to decide how to speak to the port, so a port carrying Transport
+     * Layer Security under the name {@code http} tells them the wrong thing and the failure lands
+     * somewhere else entirely. {@code 30-configmap.yaml} sets {@code SERVER_SSL_ENABLED}, so the
+     * business port is encrypted on all six and every one of them must say so.
+     *
+     * <p>The Service targets the port by name rather than by number for a second reason: the
+     * number then lives in the Deployment alone, so the two cannot drift. {@code 10-kafka.yaml}
+     * already targets {@code internal} that way.
+     */
+    @Test
+    @DisplayName("the encrypted business port is named https and the Service targets it by name")
+    void theEncryptedBusinessPortIsNamedHttpsAndTargetedByName() {
+        assertThat(read(kubernetesDirectory().resolve("30-configmap.yaml")))
+                .as("this test only holds while the business port really is encrypted")
+                .contains("SERVER_SSL_ENABLED: \"true\"");
+
+        for (String manifest : SERVICE_MANIFESTS) {
+            String service = manifest.substring(3, manifest.length() - ".yaml".length());
+
+            Map<String, Object> deployment = resource(manifest, "Deployment", service);
+            List<Object> containerPorts = list(at(container(deployment, service), "ports"));
+            Map<String, Object> business = containerPorts.stream()
+                    .map(KubernetesDeploymentContractTest::map)
+                    .filter(port -> Long.valueOf(8080L).equals(
+                            Long.valueOf(((Number) port.get("containerPort")).longValue())))
+                    .findFirst()
+                    .orElseThrow(() ->
+                            new AssertionError(manifest + " declares no container port 8080"));
+            assertThat(business.get("name"))
+                    .as("%s must name container port 8080 for the protocol it speaks", service)
+                    .isEqualTo("https");
+
+            Map<String, Object> declared = resource(manifest, "Service", service);
+            List<Object> servicePorts = list(at(declared, "spec", "ports"));
+            assertThat(servicePorts)
+                    .as("%s exposes the business port alone; /actuator is on 9080, which no "
+                            + "Service publishes", service)
+                    .hasSize(1);
+            Map<String, Object> exposed = map(servicePorts.getFirst());
+            assertThat(exposed.get("name"))
+                    .as("the Service port carries the same name")
+                    .isEqualTo("https");
+            assertThat(exposed.get("targetPort"))
+                    .as("and targets the container port by name, so the number lives in the "
+                            + "Deployment alone")
+                    .isEqualTo("https");
+            assertThat(exposed.get("appProtocol"))
+                    .as("appProtocol is where protocol-aware tooling reads the application "
+                            + "protocol; protocol: TCP only states the transport")
+                    .isEqualTo("https");
+            assertThat(exposed.get("protocol")).isEqualTo("TCP");
+        }
+    }
+
+    /**
+     * {@code latest} on a Pod Security version label means whatever the running control plane
+     * currently defines the profile to be. A cluster upgrade can then tighten the policy under a
+     * manifest nobody edited, and the six Deployments start failing admission for a reason that is
+     * not in this repository. Pinning the version is what makes the applied policy a property of
+     * these files.
+     */
+    @Test
+    @DisplayName("the Pod Security profile is pinned to a version rather than tracking latest")
+    void thePodSecurityProfileIsPinnedToAVersion() {
+        Map<String, Object> namespace = resource("00-namespace.yaml", "Namespace", "carddemo");
+        Map<String, Object> labels = map(at(namespace, "metadata", "labels"));
+
+        Set<String> pinned = new LinkedHashSet<>();
+        for (String mode : List.of("enforce", "audit", "warn")) {
+            assertThat(labels.get("pod-security.kubernetes.io/" + mode))
+                    .as("%s must name the restricted profile", mode)
+                    .isEqualTo("restricted");
+            Object version = labels.get("pod-security.kubernetes.io/" + mode + "-version");
+            assertThat(version)
+                    .as("%s-version must be pinned, not left tracking latest", mode)
+                    .isNotNull()
+                    .isNotEqualTo("latest");
+            assertThat(version.toString())
+                    .as("%s-version must be a Kubernetes minor version", mode)
+                    .matches("v1\\.\\d+");
+            pinned.add(version.toString());
+        }
+        assertThat(pinned)
+                .as("the three modes must judge against the same policy content, or audit and warn "
+                        + "stop predicting what enforce will refuse")
+                .hasSize(1);
+
+        assertThat(read(kubernetesDirectory().resolve("00-namespace.yaml")))
+                .as("and the pin has to say why it is a pin, or the next reader restores latest")
+                .contains(".spec.os.name");
+    }
+
     private static String manifestFor(String service) {
         return SERVICE_MANIFESTS.stream()
                 .filter(name -> name.contains(service))

@@ -25,8 +25,8 @@ import org.springframework.boot.kafka.autoconfigure.KafkaProperties;
  * <p>{@link JsonSchemaValidatingSerializer} refuses an event whose type is not bound to the topic it
  * was handed, and it knows only each type's default name until an override names the deployed one.
  * Three event types travel through this service's one template: the two assessment outcomes from
- * {@code outbox/OutboxRelay#publishAndMark}, and {@link DeadLetterEnvelope} from
- * {@code outbox/OutboxRelay#routeToDeadLetter}.
+ * {@code outbox/OutboxRelay#dispatch}, and {@link DeadLetterEnvelope} from
+ * {@code outbox/OutboxRelay#closeUnpublishableRow}.
  *
  * <p>A missing override fails only where that topic was renamed, which is why it survived review: the
  * shipped defaults match, so nothing breaks until a deployment sets {@code TOPIC_DEAD_LETTER}. Then

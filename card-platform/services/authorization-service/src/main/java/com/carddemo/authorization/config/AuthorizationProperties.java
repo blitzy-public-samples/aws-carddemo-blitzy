@@ -149,6 +149,9 @@ public record AuthorizationProperties(
          *                       the rows it did not reach are claimed by the next pass. The ceiling
          *                       is five minutes, because a pass longer than that is a stalled relay
          *                       rather than a busy one
+         * @param publishTimeout longest one send waits for the broker before
+         *                       {@code messaging/KafkaEventPublisher} reports the attempt failed.
+         *                       The row then stays unpublished and a later sweep claims it again
          */
         public record Relay(
 
@@ -160,18 +163,34 @@ public record AuthorizationProperties(
 
                 @NotNull @DurationUnit(ChronoUnit.SECONDS) Duration claimTimeout,
 
-                @Positive @Max(MAX_PASS_DURATION_MS) long maxDurationMs) {
+                @Positive @Max(MAX_PASS_DURATION_MS) long maxDurationMs,
+
+                @NotNull @DurationUnit(ChronoUnit.SECONDS) Duration publishTimeout) {
 
             /**
-             * Refuses a claim timeout that cannot protect an active claim.
+             * Refuses a claim timeout that cannot protect an active claim, and a publish timeout
+             * that gives a send no time at all.
              *
-             * @throws IllegalArgumentException when {@code claimTimeout} is zero or negative
+             * <p>{@code publishTimeout} reached the publisher through a second binding of the same
+             * property, a constructor {@code @Value}, which meets no constraint declared here.
+             * Only {@code null} was refused, so zero or a negative duration started the service and
+             * then failed every send the instant it was issued: each event stayed unpublished, each
+             * sweep claimed the same rows again, and the only evidence was a timeout per attempt.
+             * The value is a component of this record now, so the binding that validates it is the
+             * binding the publisher reads.
+             *
+             * @throws IllegalArgumentException when either duration is zero or negative
              */
             public Relay {
                 if (claimTimeout != null
                         && (claimTimeout.isZero() || claimTimeout.isNegative())) {
                     throw new IllegalArgumentException(
                             "outbox.relay.claimTimeout must be positive, found " + claimTimeout);
+                }
+                if (publishTimeout != null
+                        && (publishTimeout.isZero() || publishTimeout.isNegative())) {
+                    throw new IllegalArgumentException(
+                            "outbox.relay.publishTimeout must be positive, found " + publishTimeout);
                 }
             }
         }

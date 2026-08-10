@@ -218,11 +218,12 @@ public final class JsonSchemaValidatingSerializer<T> implements Serializer<T> {
         }
 
         String json;
+        JsonNode document;
         String written;
         int schemaVersion;
         try {
             json = mapper.writeValueAsString(data);
-            JsonNode document = mapper.readTree(json);
+            document = mapper.readTree(json);
             written = document.path(EVENT_TYPE_PROPERTY).stringValue("");
             schemaVersion = document.path(EventSchemas.SCHEMA_VERSION_PROPERTY)
                     .asInt(EventEnvelope.SCHEMA_VERSION);
@@ -234,7 +235,10 @@ public final class JsonSchemaValidatingSerializer<T> implements Serializer<T> {
                     + "event type \"" + written + "\", so the record and its envelope disagree.");
         }
 
-        JsonNode screened = mapper.readTree(json);
+        // One tree, three readers. The envelope check above, the two screens below and the schema
+        // check after them all read the same bytes, and parsing them once is the only way a screen
+        // and the document can never disagree about what was published.
+        JsonNode screened = document;
         String forbidden = SensitiveEventProperties.firstForbiddenProperty(screened);
         if (forbidden != null) {
             throw new SerializationException("The JSON written for " + eventType
@@ -252,7 +256,7 @@ public final class JsonSchemaValidatingSerializer<T> implements Serializer<T> {
 
         List<String> violations;
         try {
-            violations = EventContracts.violationsOf(eventType, json);
+            violations = EventContracts.violationsOf(eventType, document);
         } catch (IllegalStateException ungoverned) {
             // The pair of event type and contract version selects the document, and this event
             // names a pair no document describes. Refusing it is the point: checking version 2 of

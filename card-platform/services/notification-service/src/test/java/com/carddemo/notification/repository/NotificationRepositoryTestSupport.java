@@ -1,19 +1,18 @@
 package com.carddemo.notification.repository;
 
+import com.carddemo.notification.NotificationServiceDatabase;
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
 import org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase;
-import org.springframework.boot.test.context.TestConfiguration;
-import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
-import org.springframework.context.annotation.Bean;
-import org.springframework.test.context.ContextConfiguration;
-import org.testcontainers.postgresql.PostgreSQLContainer;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 
 /**
  * Gives every repository test in this package a live PostgreSQL database carrying the migrated
  * schema.
  *
- * <p>The nested configuration below supplies one container as a Spring bean, and Spring Boot reads
- * the datasource host, port, database, login and password from it. Flyway then applies
+ * <p>{@link NotificationServiceDatabase} supplies the container, which the whole module fork
+ * shares, and hands this class a database of its own inside it. The method below points the
+ * datasource at that database. Flyway then applies
  * {@code src/main/resources/db/migration/V1__schema.sql} into the schema
  * {@code src/main/resources/application.yml} names, and Hibernate validates every Jakarta
  * Persistence (JPA) mapping against the migrated catalogue. So {@code mvn test} asks for a running
@@ -28,49 +27,38 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
  * {@code app/cbl/CBSTM03B.CBL}. Its parameter area {@code 01 LK-M03B-AREA.} at line 100 routes
  * every read and write, carrying an operation code at line 102 and a key at line 110.
  *
- * <p>The class annotation names {@link PostgresContainerConfiguration} outright. A subclass
- * declares no configuration of its own, and a test class that names none leaves Spring to detect
- * the configuration nested in its hierarchy. Spring Framework 7.0 detects this one, ignores it, and
- * warns that 7.1 will stop ignoring it; naming it here registers it the same way under both lines.
- * The bean definitions of the module arrive alongside it, from the class annotated
- * {@code SpringBootConfiguration}, because a class annotated {@code TestConfiguration} never
- * replaces them.
+ * <p>No configuration class is nested here and none is named. The bean definitions arrive from the
+ * class annotated {@code SpringBootConfiguration}, which is what a slice finds when nothing else is
+ * declared. An earlier form of this class supplied the container as a Spring bean annotated
+ * {@code ServiceConnection}, and that bean is why a configuration class had to be named: Spring
+ * Framework 7.0 detects a nested one, ignores it, and warns that 7.1 will stop ignoring it. The
+ * bean is gone, so the warning has nothing to fire on. Naming the datasource through
+ * {@code DynamicPropertySource} also keeps the container out of the context lifecycle, and a
+ * container Spring does not own is a container Spring cannot close while another class is still
+ * reading its own database in it.
  *
  * <p>Agent Action Plan section 0.5.1 pins each version named here: {@code postgres:18.4},
  * Testcontainers 2.0.5 and Java 25.
  */
 @DataJpaTest
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
-@ContextConfiguration(
-        classes = NotificationRepositoryTestSupport.PostgresContainerConfiguration.class)
 abstract class NotificationRepositoryTestSupport {
 
-    /** Database image the container runs, pinned by Agent Action Plan section 0.5.1. */
-    private static final String POSTGRES_IMAGE = "postgres:18.4";
-
-    /** Database name, login and password of the disposable container, all one demo value. */
-    private static final String DATABASE_CREDENTIAL = "carddemo";
-
-    /** Supplies the single database container every test in this package shares. */
-    @TestConfiguration(proxyBeanMethods = false)
-    static class PostgresContainerConfiguration {
-
-        /**
-         * Declares the database container as a Spring bean.
-         *
-         * <p>{@code @ServiceConnection} hands the running container's coordinates to the datasource
-         * under test. No test then reaches the compose hostname that
-         * {@code src/main/resources/application.yml} defaults to.
-         *
-         * @return the container Spring starts before the first test and stops with the context
-         */
-        @Bean
-        @ServiceConnection
-        PostgreSQLContainer notificationPostgres() {
-            return new PostgreSQLContainer(POSTGRES_IMAGE)
-                    .withDatabaseName(DATABASE_CREDENTIAL)
-                    .withUsername(DATABASE_CREDENTIAL)
-                    .withPassword(DATABASE_CREDENTIAL);
-        }
+    /**
+     * Points the datasource at the database this class and its subclasses share.
+     *
+     * <p>Three properties leave here and no fourth: every other datasource, Flyway and persistence
+     * setting arrives from {@code src/main/resources/application.yml} on the test classpath. The
+     * database belongs to this class rather than to a subclass, so the three subclasses read the
+     * one database they read when they shared one container.
+     *
+     * @param registry the registry the Spring test context supplies
+     */
+    @DynamicPropertySource
+    static void datasourceProperties(DynamicPropertyRegistry registry) {
+        registry.add("spring.datasource.url",
+                () -> NotificationServiceDatabase.urlFor(NotificationRepositoryTestSupport.class));
+        registry.add("spring.datasource.username", NotificationServiceDatabase.container()::getUsername);
+        registry.add("spring.datasource.password", NotificationServiceDatabase.container()::getPassword);
     }
 }

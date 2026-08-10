@@ -42,6 +42,11 @@ class OutboxRelayDeadlineTest {
         CompletableFuture<Void> neverAcknowledged = new CompletableFuture<>();
 
         when(rows.claimDueRows(any(Instant.class), eq(Limit.of(1)))).thenReturn(List.of(row));
+        // The relay records the outcome of one send in a transaction of its own and re-reads the row
+        // inside it, because the claim has committed by then and saving the copy the claim loaded
+        // would write pre-claim state back over it. This answers that read with the same row.
+        when(row.getEventId()).thenReturn(java.util.UUID.randomUUID());
+        when(rows.findById(any(java.util.UUID.class))).thenReturn(java.util.Optional.of(row));
         when(row.getEventType()).thenReturn("AccountStateChanged");
         when(row.getAggregateId()).thenReturn("00000000001");
         when(row.getPayload()).thenReturn("{}");
@@ -56,7 +61,9 @@ class OutboxRelayDeadlineTest {
         assertTimeout(Duration.ofSeconds(2), relay::publishPendingEvents);
         verify(row).recordFailure(eq("RelayDeadlineExceededException"), any(Instant.class),
                 any(Instant.class));
-        verify(rows).save(row);
+        // Twice: the claim, which commits before the send starts, then the attempt the expired
+        // deadline recorded.
+        verify(rows, org.mockito.Mockito.times(2)).save(row);
     }
 
     private static AccountProperties properties() {

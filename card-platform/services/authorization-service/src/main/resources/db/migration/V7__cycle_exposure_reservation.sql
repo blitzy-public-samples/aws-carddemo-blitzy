@@ -38,22 +38,17 @@
 -- app/cbl/CBTRN02C.cbl:L551 and the narrower WS-TEMP-BAL PIC S9(09)V99 working field at
 -- app/cbl/CBTRN02C.cbl:L187 are untouched by this change and stay reproduced, defects included.
 --
--- Why a reservation and not a query over authorization_decision. Summing approved decisions taken
--- since the row was last refreshed would need no new column, and it would compare two services'
--- clocks to decide which decisions are still outstanding. A decision taken microseconds before the
--- account service's own timestamp would drop out of that window while its posting was still in
--- flight, which is the same over-approval this migration exists to stop. It would also grow an
--- aggregate over a table that only ever grows. Two numeric columns answer in constant time and are
--- exact. card-platform/docs/decision-log.md carries the comparison.
+-- The two columns answer in constant time and are exact.
+-- card-platform/docs/decision-log.md carries the alternatives weighed against them, a query over
+-- authorization_decision among them.
 --
--- Why an expiry. A reservation is released when the posting it anticipates is reported back. An
--- approval whose event is never posted — routed to the dead-letter topic, or consumed by a ledger
--- that cannot apply it — would otherwise hold its exposure for ever, and available credit would
--- shrink monotonically until every call declined. That is precisely the failure mode
--- card-platform/docs/onboarding.md warns about for the cycle accumulators themselves, whose only
--- source-side reset is app/cbl/CBACT04C.cbl:L353-L354. pending_expires_at bounds it: a reservation
--- past its expiry counts as zero, and the next reservation written for that account replaces the
--- expired figures rather than adding to them, so nothing has to sweep the table.
+-- The expiry. A reservation is released when the posting it anticipates is reported back, and
+-- pending_expires_at bounds the case where no posting ever arrives: a reservation past its expiry
+-- counts as zero, and the next reservation written for that account replaces the expired figures
+-- rather than adding to them, so nothing has to sweep the table. Without that bound an approval whose
+-- event is never posted would hold its exposure for ever and available credit would shrink until every
+-- call declined, which is the failure card-platform/docs/onboarding.md warns about for the cycle
+-- accumulators themselves, whose only source-side reset is app/cbl/CBACT04C.cbl:L353-L354.
 --
 -- A NULL expiry means no reservation was ever written for the account, which is every row
 -- V2__seed.sql loaded. A row whose reservation has drained to zero keeps whatever expiry it last

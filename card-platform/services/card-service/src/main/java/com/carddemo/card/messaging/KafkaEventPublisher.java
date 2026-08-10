@@ -1,5 +1,6 @@
 package com.carddemo.card.messaging;
 
+import com.carddemo.events.correlation.EventCorrelation;
 import com.carddemo.events.serde.EventContracts;
 import com.carddemo.events.serde.EventJsonValidator;
 import java.time.Duration;
@@ -10,11 +11,10 @@ import java.util.concurrent.CompletionStage;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 import org.apache.kafka.clients.producer.ProducerConfig;
+import org.apache.kafka.clients.producer.ProducerRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.kafka.core.KafkaTemplate;
-import org.springframework.stereotype.Component;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
@@ -62,9 +62,14 @@ import tools.jackson.databind.ObjectMapper;
  * <p>Another event bus needs one more implementation of {@link EventPublisherPort}, and a new
  * consumer of a card event needs no change in this package.
  *
+ * <p>This class carries no stereotype and reads no property placeholder. {@code
+ * config/KafkaProducerConfig} builds the one instance from the bound {@code CardProperties}, so every
+ * value it holds has already met the constraints that record declares. A constructor {@code @Value}
+ * would be a second binding of the same properties, and a second binding meets no constraint: that is
+ * how a publish timeout of zero used to start the service.
+ *
  * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
-@Component
 public class KafkaEventPublisher implements EventPublisherPort {
 
     private static final Logger log = LoggerFactory.getLogger(KafkaEventPublisher.class);
@@ -155,9 +160,9 @@ public class KafkaEventPublisher implements EventPublisherPort {
      *         {@value #MAX_IN_FLIGHT_LIMIT}, or a bounded delivery, request and block timeout
      */
     public KafkaEventPublisher(KafkaTemplate<String, String> kafkaTemplate,
-            @Value("${carddemo.kafka.topics.card-updated:}") String cardUpdatedTopic,
-            @Value("${carddemo.kafka.topics.dead-letter:}") String deadLetterTopic,
-            @Value("${carddemo.outbox.relay.publish-timeout}") Duration publishTimeout) {
+            String cardUpdatedTopic,
+            String deadLetterTopic,
+            Duration publishTimeout) {
         this.kafkaTemplate = kafkaTemplate;
         this.configuredTopics = Map.of(
                 EventContracts.CARD_UPDATED, cardUpdatedTopic == null ? "" : cardUpdatedTopic,
@@ -233,9 +238,31 @@ public class KafkaEventPublisher implements EventPublisherPort {
      *         does not answer inside {@code carddemo.outbox.relay.publish-timeout}
      */
     private CompletionStage<Void> send(String topic, String aggregateId, String payload) {
-        return kafkaTemplate.send(topic, aggregateId, payload)
+        return kafkaTemplate.send(correlatedRecord(topic, aggregateId, payload))
                 .thenApply(acknowledged -> (Void) null)
                 .orTimeout(publishTimeout.toMillis(), TimeUnit.MILLISECONDS);
+    }
+
+    /**
+     * Builds the record one send carries, attaching the two correlation identifiers of the row.
+     *
+     * <p>ADDITIVE. The identifiers travel as record headers rather than as payload properties,
+     * because AAP 0.3.1 fixes the event envelope at five properties and every schema document closes
+     * its top-level property set. The values come from the ambient scope the relay opened for the
+     * row, so a header is present exactly when the row recorded one.
+     *
+     * @param topic       the destination topic
+     * @param aggregateId the message key
+     * @param payload     the value to send
+     * @param <V>         the value type of the template this record is sent through
+     * @return the record to send, carrying no header for an identifier the row did not record
+     */
+    private static <V> ProducerRecord<String, V> correlatedRecord(String topic,
+            String aggregateId, V payload) {
+        return new ProducerRecord<>(topic, null, aggregateId, payload,
+                EventCorrelation.headersFor(
+                        EventCorrelation.currentCorrelationId().orElse(null),
+                        EventCorrelation.currentCausationId().orElse(null)));
     }
 
     /**

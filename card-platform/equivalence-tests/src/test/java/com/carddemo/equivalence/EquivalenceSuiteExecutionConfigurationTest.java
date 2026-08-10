@@ -20,6 +20,7 @@ import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
 import javax.xml.parsers.ParserConfigurationException;
 
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
@@ -136,6 +137,34 @@ class EquivalenceSuiteExecutionConfigurationTest {
         assertEquals(List.of("integration-test", "verify"), goals,
                 "the inherited execution runs the classes at integration-test and fails the "
                         + "build at verify");
+    }
+
+    /**
+     * The integration-test plugin fails a module where it selected nothing.
+     *
+     * <p>{@code failIfNoTests} defaults to {@code false}, so without this the plugin reports success
+     * on an empty selection. A review measured what that costs: a change to an include pattern, a
+     * class renamed away from {@code *IT} or {@code *EquivalenceTest}, or a moved test directory turns
+     * the integration phase into a no-op and the build stays green. Every module that declares this
+     * plugin holds at least one class its patterns select, so an empty selection is always a defect
+     * rather than a configuration a module might legitimately want.
+     *
+     * <p>The setting is asserted on the parent, because every module inherits its configuration from
+     * there rather than repeating it.
+     */
+    @Test
+    @DisplayName("the inherited integration-test configuration fails a module that selected no test")
+    void theInheritedConfigurationFailsAModuleThatSelectedNoTest() {
+        Element plugin = pluginOf(parentBuildFile(), INTEGRATION_TEST_PLUGIN);
+        assertNotNull(plugin, "the parent declares " + INTEGRATION_TEST_PLUGIN);
+
+        Element configuration = directChild(plugin, "configuration");
+        assertNotNull(configuration,
+                INTEGRATION_TEST_PLUGIN + " carries plugin-level configuration in the parent");
+        assertEquals("true", textOfChild(configuration, "failIfNoTests"),
+                "failIfNoTests defaults to false, so the parent has to set it. Without it a module"
+                        + " whose include pattern selects nothing passes its integration phase and"
+                        + " the run reports success having executed no integration test");
     }
 
     @Test

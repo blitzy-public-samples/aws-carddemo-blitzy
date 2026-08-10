@@ -4,7 +4,7 @@ import com.carddemo.events.EventEnvelope;
 import java.util.Objects;
 
 /**
- * Body returned by {@code PUT /cards}.
+ * Body returned by {@code PUT /cards/{cardToken}}.
  *
  * <p>Three components carry the result: the outcome, at most one message, and a
  * refreshed snapshot of the stored card. The canonical constructor checks the

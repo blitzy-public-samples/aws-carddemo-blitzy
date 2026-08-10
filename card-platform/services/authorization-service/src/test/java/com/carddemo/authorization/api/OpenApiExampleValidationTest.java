@@ -144,9 +144,9 @@ class OpenApiExampleValidationTest {
             }
         }
         // Eleven statuses carry a body, 403 documents one under each of its two media types, and
-        // 422 carries four examples of its own, which is fifteen. 406 carries no body at all, so it
+        // 422 carries five examples of its own, which is sixteen. 406 carries no body at all, so it
         // contributes none.
-        assertEquals(15, validated, "every documented body carries an example that validates");
+        assertEquals(16, validated, "every documented body carries an example that validates");
     }
 
     /**

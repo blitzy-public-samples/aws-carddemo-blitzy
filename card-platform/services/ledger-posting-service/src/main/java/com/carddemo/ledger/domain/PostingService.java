@@ -89,6 +89,8 @@ public class PostingService {
      * @param event the authorized transaction to post
      * @param messageKey the Kafka message key the delivery carried, which must equal the aggregate
      *                   identifier of {@code event}
+     * @return {@code true} when the category-balance store wrapped past nine integer digits, which
+     *         the caller reports once this transaction has committed
      * @throws NullPointerException when {@code event} is {@code null}
      * @throws IllegalArgumentException when {@code messageKey} is absent or names another aggregate
      * @throws AccountBalanceUpdater.AccountBalanceRowMissingException when no balance row carries
@@ -97,7 +99,7 @@ public class PostingService {
      *                                  the contract that holds it
      */
     @Transactional
-    public void postTransaction(TransactionAuthorized event, String messageKey) {
+    public boolean postTransaction(TransactionAuthorized event, String messageKey) {
         Objects.requireNonNull(event, "event is required");
         if (messageKey == null || !messageKey.equals(event.aggregateId())) {
             throw new IllegalArgumentException(
@@ -109,12 +111,13 @@ public class PostingService {
         String processedTimestamp = CobolDecimal.formatProcessingTimestamp(LocalDateTime.now());
         TransactionEntity postedRow = buildTransactionRow(event, processedTimestamp);
 
-        categoryBalanceUpdater.updateCategoryBalance(accountId, event.transactionTypeCode(),
-                event.merchantCategoryCode(), amount);
+        boolean categoryBalanceWrapped = categoryBalanceUpdater.updateCategoryBalance(accountId,
+                event.transactionTypeCode(), event.merchantCategoryCode(), amount);
         BigDecimal newBalance = accountBalanceUpdater.updateBalances(accountId, amount);
         transactionRepository.save(postedRow);
 
         outboxWriter.write(TransactionPosted.forAuthorized(event, newBalance, processedTimestamp));
+        return categoryBalanceWrapped;
     }
 
     /**

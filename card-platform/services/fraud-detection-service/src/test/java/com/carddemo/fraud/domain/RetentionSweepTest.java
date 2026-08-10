@@ -1,5 +1,6 @@
 package com.carddemo.fraud.domain;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTimeout;
@@ -378,8 +379,19 @@ class RetentionSweepTest {
         @Test
         @DisplayName("a horizon longer than the window span is accepted")
         void aHorizonLongerThanTheWindowSpanIsAccepted() {
-            assertDoesNotThrow(() -> properties(1, 60),
+            FraudProperties bound = assertDoesNotThrow(() -> properties(1, 60),
                     "a day outlasts a sixty-minute window and must bind");
+
+            assertAll(
+                    () -> assertEquals(1, bound.retention().velocityRetentionDays(),
+                            "the horizon binds as the day it was given"),
+                    () -> assertEquals(60, bound.fraud().risk().velocityWindowMinutes(),
+                            "and the window as the sixty minutes it was given"),
+                    () -> assertTrue(Duration.ofDays(bound.retention().velocityRetentionDays())
+                                    .compareTo(Duration.ofMinutes(bound.fraud().risk().velocityWindowMinutes()))
+                                    > 0,
+                            "which is the relation this case is about: the horizon outlasts the"
+                                    + " window, so a swept row is one no window still reads"));
         }
     }
 }

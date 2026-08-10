@@ -250,15 +250,15 @@ public record AuthorizationResponse(
      * here substitutes a sentinel, a zero-filled identifier or a value the caller supplied, because
      * each of those would name an account that was never resolved.
      *
-     * <p>This outcome publishes nothing. Every decline event on this platform names an account and is
-     * keyed on one, and this is the outcome that resolved none, so
-     * {@code domain/AuthorizationService} records it durably instead: one row in
-     * {@code unresolved_card_attempt} carrying the masked card number and the reject code, and one in
-     * {@code authorization_decision} carrying no event identifier. The source answers the same
-     * condition on its own synchronous path the same way, returning the screen message at
-     * {@code app/cbl/COTRN02C.cbl:L620-L636} and writing no reject record; the durable rows are what
-     * this service adds, standing where {@code app/cbl/CBTRN02C.cbl:L446-L465} writes a reject row on
-     * the batch path.
+     * <p>This outcome publishes one event, as every decided outcome does. It is the only one whose
+     * event names no account and is keyed on the transaction identifier instead:
+     * {@code domain/AuthorizationService} writes {@code schemas/transaction-declined-v2.json} in the
+     * transaction that recorded the decision, beside one row in {@code unresolved_card_attempt}
+     * carrying the masked card number and the reject code and one in {@code authorization_decision}
+     * naming the event. The source answers the same condition on its own synchronous path by
+     * returning the screen message at {@code app/cbl/COTRN02C.cbl:L620-L636} and writing no reject
+     * record; the two durable rows and the event are what this service adds, standing where
+     * {@code app/cbl/CBTRN02C.cbl:L446-L465} writes a reject row on the batch path.
      *
      * @param transactionId identifier of the transaction this decision applies to, at most
      *                      {@value #TRANSACTION_ID_MAX_LENGTH} characters

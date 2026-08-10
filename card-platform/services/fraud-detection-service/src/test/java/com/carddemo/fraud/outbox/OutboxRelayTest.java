@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.doAnswer;
@@ -25,6 +26,7 @@ import ch.qos.logback.core.read.ListAppender;
 import com.carddemo.events.DeadLetterEnvelope;
 import com.carddemo.events.FraudCleared;
 import com.carddemo.events.FraudFlagged;
+import com.carddemo.events.correlation.EventCorrelation;
 import com.carddemo.fraud.config.FraudProperties;
 import com.carddemo.fraud.config.ObservabilityConfig.FraudMeters;
 import com.carddemo.fraud.entity.OutboxEventEntity;
@@ -42,6 +44,7 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.lang.reflect.RecordComponent;
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -49,9 +52,11 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -64,6 +69,7 @@ import java.util.regex.Pattern;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.errors.SerializationException;
+import org.apache.kafka.common.header.Header;
 import org.apache.kafka.common.errors.TimeoutException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -245,6 +251,10 @@ public class OutboxRelayTest {
     /** Eleven decimal digits, the shape every message key holds. */
     private static final Pattern ELEVEN_DIGITS = Pattern.compile("^[0-9]{11}$");
 
+    /** What a correlation or causation header value renders as, and nothing else. */
+    private static final Pattern UUID_TEXT = Pattern.compile(
+            "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$");
+
     /** Twelve or more consecutive digits, which no diagnostic value may carry. */
     private static final Pattern LONG_DIGIT_RUN = Pattern.compile("[0-9]{12,}");
 
@@ -265,6 +275,9 @@ public class OutboxRelayTest {
 
     /** Reads a stored payload back into a property map, so a count can be taken. */
     private static final ObjectMapper MAPPER = JsonMapper.builder().build();
+
+    /** Rows the stubbed store holds, so a re-read inside a later transaction finds them. */
+    private final Map<UUID, OutboxEventEntity> stored = new HashMap<>();
 
     private OutboxEventRepository outboxEvents;
     private KafkaTemplate<String, Object> kafkaTemplate;
@@ -294,8 +307,19 @@ public class OutboxRelayTest {
         transactionTemplate = mock(TransactionTemplate.class);
         insideTransaction = new AtomicBoolean();
 
+        stored.clear();
         when(outboxEvents.save(any(OutboxEventEntity.class)))
-                .thenAnswer(call -> call.getArgument(0));
+                .thenAnswer(call -> {
+                    OutboxEventEntity saved = call.getArgument(0);
+                    stored.put(saved.getEventId(), saved);
+                    return saved;
+                });
+        // The relay records each outcome in a transaction of its own and re-reads the row inside it,
+        // because the claim has committed by then and saving the copy the claim loaded would write
+        // pre-claim state back over it. A store keyed by identifier answers that read with the row
+        // the claim saved, so these cases keep asserting against the instance they created.
+        when(outboxEvents.findById(any(UUID.class)))
+                .thenAnswer(call -> Optional.ofNullable(stored.get(call.getArgument(0))));
         when(outboxEvents.findByRelayStateAndClaimedAtBeforeOrderByClaimedAtAsc(
                 any(), any(), any())).thenReturn(List.of());
         when(outboxEvents.findByDeadLetterStateOrderByLastAttemptAtAsc(any(), any()))
@@ -346,21 +370,124 @@ public class OutboxRelayTest {
         });
     }
 
+    /**
+     * Matches any record the relay sends.
+     *
+     * <p>The relay reaches the broker through the single-argument {@code send} overload so each
+     * record can carry the correlation headers a consumer reads. Every matcher below therefore
+     * inspects one {@link ProducerRecord} rather than three separate arguments.
+     *
+     * @return the matcher
+     */
+    private static ProducerRecord<String, Object> anyRecord() {
+        return ArgumentMatchers.any();
+    }
+
+    /**
+     * Matches a record sent to one topic, whatever its key.
+     *
+     * @param topic the topic the record has to name
+     * @return the matcher
+     */
+    private static ProducerRecord<String, Object> recordOn(String topic) {
+        return argThat((ProducerRecord<String, Object> record) ->
+                record != null && topic.equals(record.topic()));
+    }
+
+    /**
+     * Matches a record sent to one topic under one key.
+     *
+     * @param topic the topic the record has to name
+     * @param key the key the record has to carry
+     * @return the matcher
+     */
+    private static ProducerRecord<String, Object> recordFor(String topic, String key) {
+        return argThat((ProducerRecord<String, Object> record) ->
+                record != null && topic.equals(record.topic()) && key.equals(record.key()));
+    }
+
+    /**
+     * Matches a record carrying one key, whatever its topic.
+     *
+     * @param key the key the record has to carry
+     * @return the matcher
+     */
+    private static ProducerRecord<String, Object> recordKeyed(String key) {
+        return argThat((ProducerRecord<String, Object> record) ->
+                record != null && key.equals(record.key()));
+    }
+
+    /**
+     * Captures the records this relay sent, in the order it sent them.
+     *
+     * @param expected how many sends the pass is expected to have made
+     * @return those records
+     */
+    @SuppressWarnings("unchecked")
+    private List<ProducerRecord<String, Object>> sentRecords(int expected) {
+        ArgumentCaptor<ProducerRecord<String, Object>> sent =
+                ArgumentCaptor.forClass(ProducerRecord.class);
+        verify(kafkaTemplate, times(expected)).send(sent.capture());
+        return sent.getAllValues();
+    }
+
+    /**
+     * Captures the one record this relay sent to a topic.
+     *
+     * @param topic the topic to select on
+     * @return that record
+     */
+    @SuppressWarnings("unchecked")
+    private ProducerRecord<String, Object> sentRecordOn(String topic) {
+        ArgumentCaptor<ProducerRecord<String, Object>> sent =
+                ArgumentCaptor.forClass(ProducerRecord.class);
+        verify(kafkaTemplate, atLeastOnce()).send(sent.capture());
+        List<ProducerRecord<String, Object>> matching = sent.getAllValues().stream()
+                .filter(record -> topic.equals(record.topic()))
+                .toList();
+        assertThat(matching).as("records sent to " + topic).hasSize(1);
+        return matching.getFirst();
+    }
+
+    /**
+     * Lists the header names one record carries, in the order it carries them.
+     *
+     * @param record the record to read
+     * @return those names
+     */
+    private static List<String> headerNamesOf(ProducerRecord<String, Object> record) {
+        List<String> names = new ArrayList<>();
+        record.headers().forEach(header -> names.add(header.key()));
+        return names;
+    }
+
+    /**
+     * Reads one header off one record as text.
+     *
+     * @param record the record to read
+     * @param name the header to read
+     * @return the rendered value, or {@code null} when the record carries no such header
+     */
+    private static String headerValueOf(ProducerRecord<String, Object> record, String name) {
+        Header header = record.headers().lastHeader(name);
+        return header == null ? null : new String(header.value(), StandardCharsets.UTF_8);
+    }
+
     /** Stubs every send to answer with a resolved result. */
     private void everySendSucceeds() {
-        when(kafkaTemplate.send(anyString(), anyString(), any()))
+        when(kafkaTemplate.send(anyRecord()))
                 .thenReturn(CompletableFuture.completedFuture(null));
     }
 
     /** Stubs sends to {@code topic} to answer with a result already carrying {@code cause}. */
     private void sendFails(String topic, Throwable cause) {
-        when(kafkaTemplate.send(eq(topic), anyString(), any()))
+        when(kafkaTemplate.send(recordOn(topic)))
                 .thenReturn(CompletableFuture.failedFuture(cause));
     }
 
     /** Stubs sends to the dead-letter topic alone to answer with a resolved result. */
     private void deadLetterSendSucceeds() {
-        when(kafkaTemplate.send(eq(DEAD_LETTER_TOPIC), anyString(), any()))
+        when(kafkaTemplate.send(recordOn(DEAD_LETTER_TOPIC)))
                 .thenReturn(CompletableFuture.completedFuture(null));
     }
 
@@ -584,20 +711,37 @@ public class OutboxRelayTest {
             assertThat(present).doesNotContain("EnableScheduling", "EnableKafka");
         }
 
+        /**
+         * Holds the transaction shape of one tick: a claim, then one short transaction per outcome,
+         * and no send inside either.
+         *
+         * <p>One transaction around the whole tick is what this asserted before, and it is the shape
+         * a performance review rejected: a batch of rows waiting on a broker inside one transaction
+         * holds a database connection and every row lock it took for the sum of those waits, and
+         * every later event of every account waits behind it. Two here is the claim and the one
+         * failure record of the single row this tick holds; a wider batch adds one short transaction
+         * per row and none of them spans a send.
+         */
         @Test
-        @DisplayName("one tick opens one transaction and counts after it closes")
-        void oneTickOpensOneTransactionAndCountsAfterItCloses() {
+        @DisplayName("one tick claims in one transaction, records each outcome in another, and "
+                + "counts outside both")
+        void oneTickClaimsInOneTransactionAndRecordsEachOutcomeInAnother() {
             dueRows(clearedRow());
-            sendFails(ASSESSED_TOPIC, new TimeoutException("the broker did not answer"));
             doAnswer(call -> {
                 assertThat(insideTransaction.get())
-                        .as("a count taken while the transaction is open").isFalse();
+                        .as("a count taken while a transaction is open").isFalse();
                 return null;
             }).when(meters).recordPublishFailure();
+            doAnswer(call -> {
+                assertThat(insideTransaction.get())
+                        .as("a send issued while a transaction is open").isFalse();
+                return CompletableFuture.failedFuture(
+                        new TimeoutException("the broker did not answer"));
+            }).when(kafkaTemplate).send(recordOn(ASSESSED_TOPIC));
 
             relay().publishPendingEvents();
 
-            verify(transactionTemplate, times(1)).execute(any());
+            verify(transactionTemplate, times(2)).execute(any());
             verify(meters).recordPublishFailure();
         }
 
@@ -669,8 +813,8 @@ public class OutboxRelayTest {
     class StoreContract {
 
         @Test
-        @DisplayName("the store declares six methods and no name carries a digit")
-        void storeDeclaresSixMethodsAndNoNameCarriesADigit() {
+        @DisplayName("the store declares eight methods and no name carries a digit")
+        void storeDeclaresEightMethodsAndNoNameCarriesADigit() {
             List<String> names = Arrays.stream(OutboxEventRepository.class.getDeclaredMethods())
                     .map(Method::getName)
                     .sorted()
@@ -678,11 +822,13 @@ public class OutboxRelayTest {
 
             assertThat(names).containsExactly(
                     "claimDueRows",
+                    "countDueBefore",
                     "deletePublishedBefore",
                     "existsByRelayState",
                     "findByDeadLetterStateOrderByLastAttemptAtAsc",
                     "findByPublishedFalseOrderByCreatedAtAsc",
-                    "findByRelayStateAndClaimedAtBeforeOrderByClaimedAtAsc");
+                    "findByRelayStateAndClaimedAtBeforeOrderByClaimedAtAsc",
+                    "findEarliestDueBefore");
             assertThat(names).allSatisfy(name -> assertThat(name)
                     .as("a declared name carrying a digit").doesNotMatch(".*[0-9].*"));
         }
@@ -746,9 +892,19 @@ public class OutboxRelayTest {
             assertThat(bounds.getValue().max()).isEqualTo(DEFAULT_BATCH_SIZE);
         }
 
+        /**
+         * Holds the store surface one tick touches: three reads, one re-read per outcome, and two
+         * writes per row.
+         *
+         * <p>Two writes rather than one, and the second read, are both consequences of the claim
+         * committing before any send starts. The claim writes {@code CLAIMED} and commits, so the
+         * recovery it exists for survives a process death; the mark then re-reads the row in a
+         * transaction of its own and writes the publication. Saving the copy the claim loaded instead
+         * would write pre-claim state back over the committed claim.
+         */
         @Test
-        @DisplayName("one tick reads, saves once for each row and touches nothing else")
-        void oneTickReadsSavesOnceForEachRowAndTouchesNothingElse() {
+        @DisplayName("one tick reads, claims and marks each row, and touches nothing else")
+        void oneTickReadsClaimsAndMarksEachRowAndTouchesNothingElse() {
             OutboxEventEntity first = flaggedRow();
             OutboxEventEntity second = clearedRow();
             dueRows(first, second);
@@ -761,8 +917,10 @@ public class OutboxRelayTest {
             verify(outboxEvents).findByRelayStateAndClaimedAtBeforeOrderByClaimedAtAsc(
                     eq(OutboxEventEntity.RelayState.CLAIMED), any(), any());
             verify(outboxEvents).claimDueRows(any(), any());
-            verify(outboxEvents, times(1)).save(first);
-            verify(outboxEvents, times(1)).save(second);
+            verify(outboxEvents, times(1)).findById(first.getEventId());
+            verify(outboxEvents, times(1)).findById(second.getEventId());
+            verify(outboxEvents, times(2)).save(first);
+            verify(outboxEvents, times(2)).save(second);
             verify(outboxEvents, never()).findByPublishedFalseOrderByCreatedAtAsc(any());
             verifyNoMoreInteractions(outboxEvents);
         }
@@ -777,14 +935,12 @@ public class OutboxRelayTest {
         void everyPublishedRecordKeysOnTheElevenDigitAccountIdentifier() {
             dueRows(flaggedRow(), clearedRow());
             everySendSucceeds();
-            ArgumentCaptor<String> keys = ArgumentCaptor.forClass(String.class);
 
             relay().publishPendingEvents();
 
-            verify(kafkaTemplate, times(2)).send(anyString(), keys.capture(), any());
-            assertThat(keys.getAllValues())
-                    .containsExactly(ACCOUNT_IDENTIFIER, ACCOUNT_IDENTIFIER);
-            assertThat(keys.getAllValues()).allSatisfy(key -> {
+            List<String> sentKeys = sentRecords(2).stream().map(ProducerRecord::key).toList();
+            assertThat(sentKeys).containsExactly(ACCOUNT_IDENTIFIER, ACCOUNT_IDENTIFIER);
+            assertThat(sentKeys).allSatisfy(key -> {
                 assertThat(key).isNotNull().hasSize(11).matches(ELEVEN_DIGITS);
                 assertThat(key.charAt(0)).as("the leading character of the key").isEqualTo('0');
                 assertThat(key).as("the key after a numeric round trip")
@@ -797,30 +953,96 @@ public class OutboxRelayTest {
         void deadLetterRecordKeysOnTheSameAccountIdentifier() {
             dueRows(unknownTypeRow());
             deadLetterSendSucceeds();
-            ArgumentCaptor<String> keys = ArgumentCaptor.forClass(String.class);
 
             relay().publishPendingEvents();
 
-            verify(kafkaTemplate).send(eq(DEAD_LETTER_TOPIC), keys.capture(), any());
-            assertThat(keys.getValue()).isEqualTo(ACCOUNT_IDENTIFIER);
+            assertThat(sentRecordOn(DEAD_LETTER_TOPIC).key()).isEqualTo(ACCOUNT_IDENTIFIER);
         }
 
         @Test
-        @DisplayName("the relay sends through the topic, key and value overload alone")
-        void relaySendsThroughTheTopicKeyAndValueOverloadAlone() {
+        @DisplayName("the relay sends through the producer-record overload alone")
+        void relaySendsThroughTheProducerRecordOverloadAlone() {
             dueRows(flaggedRow());
             everySendSucceeds();
 
             relay().publishPendingEvents();
 
-            verify(kafkaTemplate).send(eq(ASSESSED_TOPIC), eq(ACCOUNT_IDENTIFIER), any());
+            verify(kafkaTemplate).send(recordFor(ASSESSED_TOPIC, ACCOUNT_IDENTIFIER));
             // messaging/KafkaEventPublisher reads the producer settings once at construction, so
             // the template answers this before any send is made.
             verify(kafkaTemplate, atLeastOnce()).getProducerFactory();
             verify(kafkaTemplate, never()).send(anyString(), any());
-            verify(kafkaTemplate, never())
-                    .send(ArgumentMatchers.<ProducerRecord<String, Object>>any());
+            verify(kafkaTemplate, never()).send(anyString(), anyString(), any());
             verifyNoMoreInteractions(kafkaTemplate);
+        }
+
+        @Test
+        @DisplayName("a row that started its own trace carries the correlation header alone")
+        void rowThatStartedItsOwnTraceCarriesTheCorrelationHeaderAlone() {
+            OutboxEventEntity row = flaggedRow();
+            dueRows(row);
+            everySendSucceeds();
+
+            relay().publishPendingEvents();
+
+            ProducerRecord<String, Object> sent = sentRecordOn(ASSESSED_TOPIC);
+            assertThat(headerNamesOf(sent))
+                    .containsExactly(EventCorrelation.CORRELATION_ID_HEADER);
+            assertThat(headerValueOf(sent, EventCorrelation.CORRELATION_ID_HEADER))
+                    .as("a root row adopts its own event identifier, so the record is joinable")
+                    .isEqualTo(row.getEventId().toString());
+        }
+
+        @Test
+        @DisplayName("a row recording both identifiers carries both correlation headers")
+        void rowRecordingBothIdentifiersCarriesBothCorrelationHeaders() {
+            UUID correlationId = UUID.randomUUID();
+            UUID causingEventId = UUID.randomUUID();
+            OutboxEventEntity row = flaggedRow();
+            row.recordCorrelation(correlationId, causingEventId);
+            dueRows(row);
+            everySendSucceeds();
+
+            relay().publishPendingEvents();
+
+            ProducerRecord<String, Object> sent = sentRecordOn(ASSESSED_TOPIC);
+            assertThat(headerNamesOf(sent)).containsExactlyInAnyOrder(
+                    EventCorrelation.CORRELATION_ID_HEADER, EventCorrelation.CAUSATION_ID_HEADER);
+            assertThat(headerValueOf(sent, EventCorrelation.CORRELATION_ID_HEADER))
+                    .isEqualTo(correlationId.toString());
+            assertThat(headerValueOf(sent, EventCorrelation.CAUSATION_ID_HEADER))
+                    .as("the causing event is what the row was written under")
+                    .isEqualTo(causingEventId.toString());
+        }
+
+        @Test
+        @DisplayName("every header name is one of the two the contract declares")
+        void everyHeaderNameIsOneOfTheTwoTheContractDeclares() {
+            UUID correlationId = UUID.randomUUID();
+            UUID causationId = UUID.randomUUID();
+            OutboxEventEntity row = flaggedRow();
+            row.recordCorrelation(correlationId, causationId);
+            dueRows(row);
+            everySendSucceeds();
+
+            relay().publishPendingEvents();
+
+            ProducerRecord<String, Object> sent = sentRecordOn(ASSESSED_TOPIC);
+            assertThat(headerNamesOf(sent))
+                    .as("a header the contract does not declare could carry anything")
+                    .isSubsetOf(EventCorrelation.CORRELATION_ID_HEADER,
+                            EventCorrelation.CAUSATION_ID_HEADER);
+            // Compared against the two identifiers the row recorded rather than searched for a
+            // payload substring. A random identifier's hexadecimal digits contain a two-digit risk
+            // score often enough that a substring check fails on the value being correct, so the
+            // exact comparison is both stronger and the only one that is stable.
+            assertThat(headerValueOf(sent, EventCorrelation.CORRELATION_ID_HEADER))
+                    .as("a header carries an identifier alone, never a payload property")
+                    .matches(UUID_TEXT)
+                    .isEqualTo(correlationId.toString());
+            assertThat(headerValueOf(sent, EventCorrelation.CAUSATION_ID_HEADER))
+                    .matches(UUID_TEXT)
+                    .isEqualTo(causationId.toString());
         }
     }
 
@@ -882,8 +1104,8 @@ public class OutboxRelayTest {
 
             relayPublishingTo(SENTINEL_TOPIC).publishPendingEvents();
 
-            verify(kafkaTemplate).send(eq(SENTINEL_TOPIC), eq(ACCOUNT_IDENTIFIER), any());
-            verify(kafkaTemplate, never()).send(eq(ASSESSED_TOPIC), anyString(), any());
+            verify(kafkaTemplate).send(recordFor(SENTINEL_TOPIC, ACCOUNT_IDENTIFIER));
+            verify(kafkaTemplate, never()).send(recordOn(ASSESSED_TOPIC));
         }
 
         @Test
@@ -894,8 +1116,8 @@ public class OutboxRelayTest {
 
             relayPublishingTo(ASSESSED_TOPIC).publishPendingEvents();
 
-            verify(kafkaTemplate).send(eq(ASSESSED_TOPIC), eq(ACCOUNT_IDENTIFIER), any());
-            verify(kafkaTemplate, never()).send(eq(SENTINEL_TOPIC), anyString(), any());
+            verify(kafkaTemplate).send(recordFor(ASSESSED_TOPIC, ACCOUNT_IDENTIFIER));
+            verify(kafkaTemplate, never()).send(recordOn(SENTINEL_TOPIC));
         }
 
         @Test
@@ -903,16 +1125,14 @@ public class OutboxRelayTest {
         void storedEventTypeSelectsTheRecordTypeOnOneSharedTopic() {
             dueRows(flaggedRow(), clearedRow());
             everySendSucceeds();
-            ArgumentCaptor<String> topics = ArgumentCaptor.forClass(String.class);
-            ArgumentCaptor<Object> values = ArgumentCaptor.forClass(Object.class);
 
             relay().publishPendingEvents();
 
-            verify(kafkaTemplate, times(2))
-                    .send(topics.capture(), anyString(), values.capture());
-            assertThat(topics.getAllValues()).containsExactly(ASSESSED_TOPIC, ASSESSED_TOPIC);
-            assertThat(values.getAllValues().get(0)).isInstanceOf(FraudFlagged.class);
-            assertThat(values.getAllValues().get(1)).isInstanceOf(FraudCleared.class);
+            List<ProducerRecord<String, Object>> sent = sentRecords(2);
+            assertThat(sent.stream().map(ProducerRecord::topic).toList())
+                    .containsExactly(ASSESSED_TOPIC, ASSESSED_TOPIC);
+            assertThat(sent.get(0).value()).isInstanceOf(FraudFlagged.class);
+            assertThat(sent.get(1).value()).isInstanceOf(FraudCleared.class);
         }
     }
 
@@ -937,14 +1157,13 @@ public class OutboxRelayTest {
         void oneUnpublishedRowProducesOneRecordReadBackFromItsPayload() {
             dueRows(flaggedRow());
             everySendSucceeds();
-            ArgumentCaptor<Object> values = ArgumentCaptor.forClass(Object.class);
 
             relay().publishPendingEvents();
 
-            verify(kafkaTemplate)
-                    .send(eq(ASSESSED_TOPIC), eq(ACCOUNT_IDENTIFIER), values.capture());
-            assertThat(values.getValue()).isInstanceOf(FraudFlagged.class);
-            FraudFlagged published = (FraudFlagged) values.getValue();
+            ProducerRecord<String, Object> sent = sentRecordOn(ASSESSED_TOPIC);
+            assertThat(sent.key()).isEqualTo(ACCOUNT_IDENTIFIER);
+            assertThat(sent.value()).isInstanceOf(FraudFlagged.class);
+            FraudFlagged published = (FraudFlagged) sent.value();
             assertThat(published.eventId()).isEqualTo(FLAGGED_EVENT_IDENTIFIER);
             assertThat(published.eventType()).isEqualTo(FraudFlagged.EVENT_TYPE);
             assertThat(published.aggregateId()).isEqualTo(ACCOUNT_IDENTIFIER);
@@ -960,7 +1179,7 @@ public class OutboxRelayTest {
         void sendResultResolvesBeforeTheRowIsMarked() {
             OutboxEventEntity row = flaggedRow();
             dueRows(row);
-            when(kafkaTemplate.send(eq(ASSESSED_TOPIC), eq(ACCOUNT_IDENTIFIER), any()))
+            when(kafkaTemplate.send(recordFor(ASSESSED_TOPIC, ACCOUNT_IDENTIFIER)))
                     .thenAnswer(call -> {
                         assertThat(row.isPublished()).as("the row at send time").isFalse();
                         assertThat(row.getRelayState())
@@ -988,8 +1207,10 @@ public class OutboxRelayTest {
 
             relay().publishPendingEvents();
 
-            verify(outboxEvents).save(saved.capture());
-            assertThat(saved.getValue()).isSameAs(row);
+            // Twice: the claim commits before the send starts, and the mark then re-reads the row
+            // and writes the publication. Both writes carry the instance the store answered with.
+            verify(outboxEvents, times(2)).save(saved.capture());
+            assertThat(saved.getAllValues()).allMatch(candidate -> candidate == row);
             assertThat(saved.getValue().getAttemptCount()).isZero();
             assertThat(saved.getValue().getLastError()).isNull();
         }
@@ -1009,8 +1230,8 @@ public class OutboxRelayTest {
         }
 
         @Test
-        @DisplayName("two rows in one tick are marked through one save each")
-        void twoRowsInOneTickAreMarkedThroughOneSaveEach() {
+        @DisplayName("two rows in one tick are claimed and marked through one save each")
+        void twoRowsInOneTickAreClaimedAndMarkedThroughOneSaveEach() {
             OutboxEventEntity first = flaggedRow();
             OutboxEventEntity second = clearedRow();
             dueRows(first, second);
@@ -1022,8 +1243,11 @@ public class OutboxRelayTest {
             assertThat(first.getPublishedAt()).isNotNull();
             assertThat(second.isPublished()).isTrue();
             assertThat(second.getPublishedAt()).isNotNull();
-            verify(outboxEvents, times(1)).save(first);
-            verify(outboxEvents, times(1)).save(second);
+            // Two writes per row, in this order: the claim, which commits before any send starts,
+            // then the mark once the broker acknowledged that row. Neither row is written more than
+            // once by either step, so no row is claimed twice or marked twice.
+            verify(outboxEvents, times(2)).save(first);
+            verify(outboxEvents, times(2)).save(second);
         }
     }
 
@@ -1077,26 +1301,42 @@ public class OutboxRelayTest {
 
             relay().publishPendingEvents();
 
-            verify(kafkaTemplate, never()).send(eq(DEAD_LETTER_TOPIC), anyString(), any());
+            verify(kafkaTemplate, never()).send(recordOn(DEAD_LETTER_TOPIC));
             verify(meters, never()).recordDeadLetterPublished();
             verify(meters, never()).recordDeadLetterFailure();
         }
 
+        /**
+         * Asserts a refused send backs off the row it names and no other row of the tick.
+         *
+         * <p>This asserted the opposite before: the tick returned at the first refused row, leaving
+         * every row behind it unattempted. One unreachable partition therefore stopped publication
+         * for every account, which a performance review raised — and the claim already prevents the
+         * case that behaviour existed for. {@code claimDueRows} answers with the due head row of
+         * each aggregate and never two rows of one account, so a tick's rows name distinct accounts
+         * and a stalled account's later events wait behind its own unpublished head rather than
+         * behind another account's.
+         *
+         * <p>Both rows here are refused, so each records exactly one attempt of its own. A row whose
+         * attempt is recorded twice, or not at all, fails this.
+         */
         @Test
-        @DisplayName("a refused send stops the tick at the failing row")
-        void refusedSendStopsTheTickAtTheFailingRow() {
+        @DisplayName("a refused send backs off its own row and no other row of the tick")
+        void refusedSendBacksOffItsOwnRowAndNoOtherRowOfTheTick() {
             OutboxEventEntity failing = clearedRow();
-            OutboxEventEntity behind = thirdClearedRow();
-            dueRows(failing, behind);
+            OutboxEventEntity alongside = thirdClearedRow();
+            dueRows(failing, alongside);
             sendFails(ASSESSED_TOPIC, new TimeoutException("the broker did not answer"));
 
             relay().publishPendingEvents();
 
-            verify(kafkaTemplate, times(1)).send(eq(ASSESSED_TOPIC), anyString(), any());
+            verify(kafkaTemplate, times(2)).send(recordOn(ASSESSED_TOPIC));
             assertThat(failing.getAttemptCount()).isEqualTo(1);
-            assertThat(behind.getAttemptCount()).isZero();
-            assertThat(behind.isPublished()).isFalse();
-            assertThat(behind.getRelayState()).isEqualTo(OutboxEventEntity.RelayState.PENDING);
+            assertThat(failing.getRelayState()).isEqualTo(OutboxEventEntity.RelayState.PENDING);
+            assertThat(alongside.getAttemptCount()).isEqualTo(1);
+            assertThat(alongside.isPublished()).isFalse();
+            assertThat(alongside.getRelayState()).isEqualTo(OutboxEventEntity.RelayState.PENDING);
+            verify(meters, times(2)).recordPublishFailure();
         }
 
         @Test
@@ -1111,29 +1351,39 @@ public class OutboxRelayTest {
             relay.publishPendingEvents();
 
             verify(kafkaTemplate, times(2))
-                    .send(eq(ASSESSED_TOPIC), eq(ACCOUNT_IDENTIFIER), any());
+                    .send(recordFor(ASSESSED_TOPIC, ACCOUNT_IDENTIFIER));
             assertThat(row.getAttemptCount()).isEqualTo(2);
             assertThat(row.isPublished()).isFalse();
         }
 
+        /**
+         * Asserts the relay counts a refused send and does not name it a second time.
+         *
+         * <p>This test required the relay to write that line, and the same send was already reported
+         * by {@code config/SafeProducerListener}, which every template of this service installs. Two
+         * lines for one attempt made an operator counting reports count each one twice, so the relay's
+         * line was removed and this test now holds the absence.
+         *
+         * <p>What the line carried is not lost. The listener reports the destination and the failure
+         * type, and {@code config/SafeProducerListenerTest} holds it to naming no key and no payload.
+         * The relay still reports what it alone knows, which is that a row was abandoned, and it still
+         * counts this refusal.
+         */
         @Test
-        @DisplayName("a refused send is reported with its failure class and no account identifier")
-        void refusedSendIsReportedWithItsFailureClassAndNoAccountIdentifier() {
+        @DisplayName("a refused send is counted here and named only by the producer listener")
+        void refusedSendIsCountedHereAndNamedOnlyByTheProducerListener() {
             dueRows(clearedRow());
             sendFails(ASSESSED_TOPIC, new TimeoutException("the broker did not answer"));
 
             relay().publishPendingEvents();
 
-            List<String> warnings = appender.list.stream()
-                    .filter(event -> event.getLevel() == Level.WARN)
+            List<String> namingTheSend = appender.list.stream()
                     .map(ILoggingEvent::getFormattedMessage)
+                    .filter(line -> line.contains(TimeoutException.class.getSimpleName()))
                     .toList();
-            assertThat(warnings).hasSize(1);
-            assertThat(warnings.get(0))
-                    .contains(FraudCleared.EVENT_TYPE)
-                    .contains(TimeoutException.class.getSimpleName())
-                    .doesNotContain(ACCOUNT_IDENTIFIER)
-                    .doesNotContain(TRANSACTION_IDENTIFIER);
+            assertThat(namingTheSend)
+                    .as("the relay must not name a send the producer listener already reported")
+                    .isEmpty();
             verify(meters).recordPublishFailure();
         }
     }
@@ -1158,7 +1408,7 @@ public class OutboxRelayTest {
             assertThat(row.isPublished()).isTrue();
             assertThat(row.getAttemptCount()).isEqualTo(1);
             assertThat(row.getClaimedBy()).isNull();
-            verify(kafkaTemplate).send(eq(ASSESSED_TOPIC), eq(ACCOUNT_IDENTIFIER), any());
+            verify(kafkaTemplate).send(recordFor(ASSESSED_TOPIC, ACCOUNT_IDENTIFIER));
             verify(meters).recordPublishFailure();
         }
     }
@@ -1196,7 +1446,7 @@ public class OutboxRelayTest {
 
             relay().publishPendingEvents();
 
-            verify(kafkaTemplate, never()).send(eq(ASSESSED_TOPIC), anyString(), any());
+            verify(kafkaTemplate, never()).send(recordOn(ASSESSED_TOPIC));
             assertDiagnosticHolds(capturedDiagnostic(), CLEARED_PAYLOAD);
             assertRowIsTerminal(row);
         }
@@ -1210,7 +1460,7 @@ public class OutboxRelayTest {
 
             relay().publishPendingEvents();
 
-            verify(kafkaTemplate, never()).send(eq(ASSESSED_TOPIC), anyString(), any());
+            verify(kafkaTemplate, never()).send(recordOn(ASSESSED_TOPIC));
             assertDiagnosticHolds(capturedDiagnostic(), UNREADABLE_PAYLOAD);
             assertRowIsTerminal(row);
         }
@@ -1227,7 +1477,7 @@ public class OutboxRelayTest {
             relay().publishPendingEvents();
 
             verify(kafkaTemplate, times(1))
-                    .send(eq(ASSESSED_TOPIC), eq(ACCOUNT_IDENTIFIER), any());
+                    .send(recordFor(ASSESSED_TOPIC, ACCOUNT_IDENTIFIER));
             assertDiagnosticHolds(capturedDiagnostic(), FLAGGED_PAYLOAD);
             assertRowIsTerminal(row);
         }
@@ -1265,11 +1515,10 @@ public class OutboxRelayTest {
         }
 
         private DeadLetterEnvelope capturedDiagnostic() {
-            ArgumentCaptor<Object> values = ArgumentCaptor.forClass(Object.class);
-            verify(kafkaTemplate)
-                    .send(eq(DEAD_LETTER_TOPIC), eq(ACCOUNT_IDENTIFIER), values.capture());
-            assertThat(values.getValue()).isInstanceOf(DeadLetterEnvelope.class);
-            return (DeadLetterEnvelope) values.getValue();
+            ProducerRecord<String, Object> sent = sentRecordOn(DEAD_LETTER_TOPIC);
+            assertThat(sent.key()).isEqualTo(ACCOUNT_IDENTIFIER);
+            assertThat(sent.value()).isInstanceOf(DeadLetterEnvelope.class);
+            return (DeadLetterEnvelope) sent.value();
         }
 
         private void assertDiagnosticHolds(DeadLetterEnvelope diagnostic, String payload) {
@@ -1339,14 +1588,22 @@ public class OutboxRelayTest {
             OutboxEventEntity last = thirdClearedRow();
             dueRows(first, middle, last);
             everySendSucceeds();
-            ArgumentCaptor<String> topics = ArgumentCaptor.forClass(String.class);
 
             relay().publishPendingEvents();
 
-            verify(kafkaTemplate, times(3))
-                    .send(topics.capture(), eq(ACCOUNT_IDENTIFIER), any());
-            assertThat(topics.getAllValues())
-                    .containsExactly(ASSESSED_TOPIC, DEAD_LETTER_TOPIC, ASSESSED_TOPIC);
+            List<ProducerRecord<String, Object>> sent = sentRecords(3);
+            assertThat(sent.stream().map(ProducerRecord::key).toList())
+                    .containsOnly(ACCOUNT_IDENTIFIER);
+            // The two assessments precede the diagnostic rather than bracketing it, because a tick
+            // issues the sends of one window before it waits for any of them: the middle row issues
+            // no send at all, and its diagnostic is published while its outcome is recorded, after
+            // both assessments are already on the wire. Which topics carry what is the property
+            // under test; the interleaving was an artefact of sending one row at a time.
+            assertThat(sent.stream().map(ProducerRecord::topic).toList())
+                    .containsExactlyInAnyOrder(ASSESSED_TOPIC, ASSESSED_TOPIC, DEAD_LETTER_TOPIC);
+            assertThat(sent.getLast().topic())
+                    .as("the diagnostic follows the sends of its window")
+                    .isEqualTo(DEAD_LETTER_TOPIC);
             assertThat(first.isPublished()).isTrue();
             assertThat(middle.isPublished())
                     .as("the middle row's event reached no consumer, so it is abandoned rather than"
@@ -1357,13 +1614,15 @@ public class OutboxRelayTest {
             assertThat(middle.getDeadLetterState())
                     .isEqualTo(OutboxEventEntity.DeadLetterState.PUBLISHED);
             assertThat(last.isPublished()).isTrue();
-            verify(outboxEvents, times(1)).save(first);
-            // Two writes for the abandoned row, in this order: the abandonment with its
-            // obligation, then the discharge once the broker acknowledged the diagnostic. One
-            // write cannot express both, because a diagnostic the broker refuses has to leave the
+            // Two writes for a published row: the claim, which commits before any send starts, then
+            // the mark once the broker acknowledged it.
+            verify(outboxEvents, times(2)).save(first);
+            // Three for the abandoned row, in this order: the claim, the abandonment with its
+            // obligation, then the discharge once the broker acknowledged the diagnostic. One write
+            // cannot express the last two, because a diagnostic the broker refuses has to leave the
             // obligation standing for a later pass to offer again.
-            verify(outboxEvents, times(2)).save(middle);
-            verify(outboxEvents, times(1)).save(last);
+            verify(outboxEvents, times(3)).save(middle);
+            verify(outboxEvents, times(2)).save(last);
         }
     }
 
@@ -1383,8 +1642,10 @@ public class OutboxRelayTest {
             assertThat(row.isPublished()).isTrue();
             relay.publishPendingEvents();
 
-            verify(kafkaTemplate, times(1)).send(anyString(), anyString(), any());
-            verify(outboxEvents, times(1)).save(row);
+            verify(kafkaTemplate, times(1)).send(anyRecord());
+            // The claim and the mark of the one tick that had work; the second tick claims nothing,
+            // so it writes nothing.
+            verify(outboxEvents, times(2)).save(row);
             verify(outboxEvents, times(2)).claimDueRows(any(), any());
         }
 
@@ -1400,11 +1661,11 @@ public class OutboxRelayTest {
 
             bounded.publishPendingEvents();
 
-            verify(kafkaTemplate, times(1)).send(anyString(), anyString(), any());
+            verify(kafkaTemplate, times(1)).send(anyRecord());
 
             bounded.publishPendingEvents();
 
-            verify(kafkaTemplate, times(2)).send(anyString(), anyString(), any());
+            verify(kafkaTemplate, times(2)).send(anyRecord());
             assertThat(first.isPublished()).isTrue();
             assertThat(second.isPublished()).isTrue();
         }
@@ -1486,7 +1747,7 @@ public class OutboxRelayTest {
             assertThat(row.getDeadLetterState())
                     .isEqualTo(OutboxEventEntity.DeadLetterState.PUBLISHED);
             assertThat(row.getDeadLetterPublishedAt()).isNotNull();
-            verify(kafkaTemplate, times(1)).send(eq(DEAD_LETTER_TOPIC), anyString(), any());
+            verify(kafkaTemplate, times(1)).send(recordOn(DEAD_LETTER_TOPIC));
         }
 
         @Test
@@ -1605,11 +1866,9 @@ public class OutboxRelayTest {
 
             spendEveryAttempt(row);
 
-            ArgumentCaptor<String> keys = ArgumentCaptor.forClass(String.class);
-            ArgumentCaptor<Object> values = ArgumentCaptor.forClass(Object.class);
-            verify(kafkaTemplate).send(eq(DEAD_LETTER_TOPIC), keys.capture(), values.capture());
-            assertThat(keys.getValue()).isEqualTo(ACCOUNT_IDENTIFIER);
-            assertThat(String.valueOf(values.getValue()))
+            ProducerRecord<String, Object> sent = sentRecordOn(DEAD_LETTER_TOPIC);
+            assertThat(sent.key()).isEqualTo(ACCOUNT_IDENTIFIER);
+            assertThat(String.valueOf(sent.value()))
                     .as("a diagnostic must carry no property of the payload it names")
                     .doesNotContain(TRANSACTION_IDENTIFIER);
         }
@@ -1624,7 +1883,7 @@ public class OutboxRelayTest {
 
             verify(outboxEvents, times(1)).findByDeadLetterStateOrderByLastAttemptAtAsc(
                     eq(OutboxEventEntity.DeadLetterState.REQUIRED), any());
-            verify(kafkaTemplate, never()).send(eq(DEAD_LETTER_TOPIC), anyString(), any());
+            verify(kafkaTemplate, never()).send(recordOn(DEAD_LETTER_TOPIC));
             verify(meters, never()).recordOutboxAbandoned();
         }
     }
@@ -1639,8 +1898,8 @@ public class OutboxRelayTest {
     class RowMutatorSurface {
 
         @Test
-        @DisplayName("the row declares no setter and five named mutators")
-        void rowDeclaresNoSetterAndFiveNamedMutators() {
+        @DisplayName("the row declares no setter and six named mutators")
+        void rowDeclaresNoSetterAndSixNamedMutators() {
             List<String> setters = Arrays.stream(OutboxEventEntity.class.getDeclaredMethods())
                     .map(Method::getName)
                     .filter(name -> name.startsWith("set"))
@@ -1659,6 +1918,7 @@ public class OutboxRelayTest {
                     "claim",
                     "markDeadLetterPublished",
                     "markPublished",
+                    "recordCorrelation",
                     "recordFailure");
         }
 
@@ -1846,40 +2106,37 @@ public class OutboxRelayTest {
     class PassBudget {
 
         /**
-         * Asserts every send in one pass is granted the whole pass budget, not the remainder of it.
+         * Asserts one send that outlives the pass budget ends the pass inside its stated bound.
          *
-         * <p>{@code sendWithinDeadline} reads the pass deadline before it issues a send and then waits
-         * {@code maxDurationNanos}, the whole configured budget. Waiting only what remained of the
-         * pass would abandon a record the producer still holds, and a later tick would publish
-         * another copy of the same event, which is how one event reached the topic twice.
+         * <p>{@code carddemo.outbox.relay.max-duration-ms} is a wall-time limit on the whole tick, so
+         * a broker that accepts a send and answers late costs one pass and nothing more. Waiting the
+         * configured value per send instead made the setting a per-send ceiling wearing the name of a
+         * limit on the tick, and a pass could run for close to twice its stated bound.
          *
-         * <p>The granted timeout is read rather than inferred from elapsed time. Each send hands back
-         * an already-completed future that records the timeout it was asked to wait for, so the two
-         * recorded values are the two the relay actually granted and the pass finishes in no
-         * measurable time.
+         * <p>One row, and a send that takes four times the budget. Two rows would prove less than
+         * they appear to now that a window issues its sends together and waits for them in turn: two
+         * sends of 400 milliseconds against a 500 millisecond budget both resolve inside it, so the
+         * budget is never reached and the assertion would pass on either implementation. The
+         * remainder arithmetic per send is read directly, and far more precisely, by
+         * {@link #eachSendIsGrantedTheRemainderOfThePass()} below.
          *
-         * <p>This replaces a first send that slept 400 milliseconds against a 500 millisecond budget,
-         * with the second send's success taken as the evidence. That was flaky in one direction and
-         * weak in the other: a scheduling delay above roughly 100 milliseconds exhausted the budget
-         * before the second send was issued and failed the test on correct code, while a build that
-         * happened to run fast passed whatever timeout the second send was granted.
-         *
-         * <p>Exact equality with the full budget is what discriminates the two implementations. A
-         * remainder is {@code deadline - System.nanoTime()}, which is strictly smaller than the full
-         * budget by however long the claim and the first send took, so it can never equal it.
+         * <p>The cost is the one this platform already carries everywhere. A send abandoned with the
+         * budget spent may still reach the broker, and the next tick offers the row again, so one
+         * event can be published twice — which is what every consumer's processed-event marker exists
+         * to absorb, and what {@code card-platform/docs/event-flow.md} states about publication being
+         * at least once.
          */
         @Test
-        @DisplayName("a send is waited out against what is left of the pass budget")
-        void aSendIsWaitedOutAgainstWhatIsLeftOfThePassBudget() {
+        @DisplayName("a send that outlives the pass budget ends the pass inside its stated bound")
+        void aSendThatOutlivesThePassBudgetEndsThePassInsideItsStatedBound() {
             long passBudgetMs = 500L;
-            long sendMs = 400L;
-            OutboxEventEntity first = clearedRow();
-            OutboxEventEntity second = thirdClearedRow();
+            long sendMs = 2_000L;
+            OutboxEventEntity stalled = clearedRow();
             OutboxRelay relayUnderBudget = new OutboxRelay(outboxEvents, publisher, meters,
                     ASSESSED_TOPIC, DEAD_LETTER_TOPIC, transactionTemplate,
                     propertiesWithPassBudget(passBudgetMs));
-            dueRows(first, second);
-            when(kafkaTemplate.send(eq(ASSESSED_TOPIC), eq(ACCOUNT_IDENTIFIER), any()))
+            dueRows(stalled);
+            when(kafkaTemplate.send(recordFor(ASSESSED_TOPIC, ACCOUNT_IDENTIFIER)))
                     .thenAnswer(call -> CompletableFuture.supplyAsync(
                             () -> acknowledgeAfter(sendMs)));
 
@@ -1887,21 +2144,18 @@ public class OutboxRelayTest {
             relayUnderBudget.publishPendingEvents();
             long elapsedMs = Duration.ofNanos(System.nanoTime() - startedAt).toMillis();
 
-            // The first send consumes 400 of the 500 millisecond budget, so the second is issued with
-            // 100 left and is waited for exactly that. The tick therefore ends inside its stated
-            // bound; the unpublished row becomes due again and a consumer marker absorbs the copy a
-            // late delivery of the abandoned send would add.
+            // The send is waited for what the pass has left and no longer, so the tick ends near its
+            // 500 millisecond bound rather than at the 2000 the broker took. The row becomes due
+            // again, and a consumer marker absorbs the copy a late delivery of this send would add.
             assertAll("the tick honoured its own wall-time bound",
-                    () -> assertTrue(first.isPublished(), "the first row"),
-                    () -> assertFalse(second.isPublished(),
-                            "the second send outlived the budget the tick had left, so its row stays "
+                    () -> assertFalse(stalled.isPublished(),
+                            "the send outlived the budget the tick had, so its row stays "
                                     + "unpublished and the next tick offers it again"),
-                    () -> assertThat(second.getAttemptCount()).isEqualTo(1),
-                    () -> assertTrue(elapsedMs < passBudgetMs + sendMs,
+                    () -> assertThat(stalled.getAttemptCount()).isEqualTo(1),
+                    () -> assertTrue(elapsedMs < sendMs,
                             () -> "the tick ran " + elapsedMs + " ms against a stated bound of "
-                                    + passBudgetMs + " ms, which is the overrun this setting names"));
-            verify(kafkaTemplate, times(2))
-                    .send(eq(ASSESSED_TOPIC), eq(ACCOUNT_IDENTIFIER), any());
+                                    + passBudgetMs + " ms, so it waited out the whole send"));
+            verify(kafkaTemplate).send(recordFor(ASSESSED_TOPIC, ACCOUNT_IDENTIFIER));
             verify(meters).recordPublishFailure();
         }
 
@@ -1958,7 +2212,7 @@ public class OutboxRelayTest {
                     () -> assertTrue(first.isPublished() && second.isPublished(),
                             "both sends resolved inside the pass, so both rows are published"));
             verify(kafkaTemplate, times(2))
-                    .send(eq(ASSESSED_TOPIC), eq(ACCOUNT_IDENTIFIER), any());
+                    .send(recordFor(ASSESSED_TOPIC, ACCOUNT_IDENTIFIER));
         }
     }
 

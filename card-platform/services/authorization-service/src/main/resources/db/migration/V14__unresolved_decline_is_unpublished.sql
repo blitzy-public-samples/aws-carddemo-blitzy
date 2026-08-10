@@ -1,40 +1,23 @@
--- Restate two catalogue comments that describe an unresolved-card decline as a published event.
+-- Authorization service, migration V14. Restates catalogue comments that described an unresolved-card
+-- decline as a published event.
 --
--- What changed above this migration. V4__outbox_transaction_key.sql widened outbox_event.aggregate_id
--- to VARCHAR(16) so that the one decline resolving no account could be published keyed on its
--- sixteen-character transaction identifier, and V3__unresolved_card_attempt.sql describes its table as
--- the audit companion of an event that travels. That is no longer what the service does, and the
--- reason is the promise the key itself carries.
+-- Statements: one COMMENT ON COLUMN over outbox_event.aggregate_id, two COMMENT ON INDEX over the two
+-- observed_at indexes, and one COMMENT ON TABLE over unresolved_card_attempt. No column, index,
+-- constraint or row is declared, altered or removed.
 --
--- Every event on this platform is keyed on the eleven-digit account identifier, so a consumer reads
--- one partition as one account's ordered history and a dead-letter diagnostic names the account it
--- concerns. Reject code 0100 is assigned at app/cbl/CBTRN02C.cbl:L385, inside the INVALID KEY branch
--- of the cross-reference read at app/cbl/CBTRN02C.cbl:L383, and the short-circuit at
--- app/cbl/CBTRN02C.cbl:L376-L378 stops the account read from running. No account identifier exists at
--- that moment, so the three ways to publish anyway are to trust an identifier the caller sent beside
--- the card number, to invent one inside the real key space of XREF-ACCT-ID PIC 9(11), or to put a key
--- that is not an account on a topic partitioned by account. Each breaks something a consumer relies
--- on, and the third breaks it for every consumer of that topic rather than for one record.
+-- The mechanics at the time. Reject code 0100 is assigned at app/cbl/CBTRN02C.cbl:L385, inside the
+-- INVALID KEY branch of the cross-reference read at :L383, and the short-circuit at :L376-L378 stops
+-- the account read, so no account identifier exists at that moment. The two observed_at indexes of
+-- V1__schema.sql were described there as serving a freshness check; V12__replica_gap.sql replaced that
+-- check, and these comments record what the indexes order now.
 --
--- What the service does instead. domain/AuthorizationService records the attempt in
--- unresolved_card_attempt and the outcome in authorization_decision with a null event_id, which
--- V13__decision_without_event.sql permits and ck_authorization_decision_event bounds, and answers the
--- caller a decline carrying reject code 0100. Nothing is published. The source takes the same position
--- on its own synchronous path: app/cbl/COTRN02C.cbl:L620-L636 answers a card number the
--- cross-reference does not carry with a screen message and writes no reject record at all. The two
--- durable rows are this service's addition, standing where the batch path writes a reject record at
--- app/cbl/CBTRN02C.cbl:L446-L465.
+-- SUPERSEDED IN PART. V15__unresolved_decline_is_published.sql records the current position: that
+-- outcome publishes a governed transaction-declined-v2 event keyed on its sixteen-character
+-- transaction identifier, which ck_outbox_event_aggregate_id already admits beside the eleven-digit
+-- account form (V4__outbox_transaction_key.sql). The comment below on unresolved_card_attempt states
+-- that nothing is published for the outcome, and V15 restates it.
 --
--- Why the column stays sixteen characters wide, and why V4 is not edited. A migration that has run is
--- a fact about an existing database, and Flyway compares its checksum on every start, so rewriting the
--- text of V4 would refuse to start against any database that already applied it. The widened column
--- and its CHECK are also still needed: schemas/transaction-declined-v2.json is retained, because a
--- record published under it before this decision stays readable for as long as the topic retains it,
--- and outbox/OutboxWriter still accepts that form so a reinstated producer has somewhere to write.
--- This migration therefore corrects what the catalogue says and leaves the structure alone, exactly as
--- V10__declared_retention_matches_the_sweep.sql and V11__subject_request_posture.sql did before it.
---
--- Idempotent: COMMENT ON replaces whatever the column or table last carried.
+-- Rationale, alternatives considered and accepted risks: card-platform/docs/decision-log.md.
 
 COMMENT ON COLUMN outbox_event.aggregate_id IS
     'The Kafka message key. Eleven decimal digits, the account identifier, from XREF-ACCT-ID

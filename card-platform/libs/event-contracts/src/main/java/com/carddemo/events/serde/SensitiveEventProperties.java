@@ -102,7 +102,7 @@ public final class SensitiveEventProperties {
      * <p>{@code maskedCardNumber} is declared by
      * {@code schemas/transaction-authorized-v1.json}, {@code schemas/transaction-declined-v1.json},
      * {@code schemas/transaction-posted-v1.json}, {@code schemas/card-updated-v1.json} and
-     * {@code schemas/card-updated-v2.json}. Its
+     * {@code schemas/card-updated-v1.json}. Its
      * separator spellings fold to the same entry and are spared with it.
      */
     public static final Set<String> APPROVED_CARD_PROPERTIES = Set.of("maskedcardnumber");

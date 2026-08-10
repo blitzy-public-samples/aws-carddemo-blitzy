@@ -154,9 +154,10 @@ class NotificationOpenApiExampleValidationTest {
     /**
      * Asserts the envelope schema enforces the invariants the document states in prose.
      *
-     * <p>Every member is required, the card is named by its masked form alone, and the schema admits
-     * no property it does not declare. {@code app/cbl/CBSTM03A.CBL:L429} totals every row of one
-     * card, so neither the count nor the array carries a ceiling.
+     * <p>Every member but the cursor is required, the card is named by its masked form alone, and the
+     * schema admits no property it does not declare. {@code app/cbl/CBSTM03A.CBL:L429} totals every row
+     * of one card, so the count carries no ceiling; the array carries one page and publishes the one
+     * the route enforces.
      */
     @Test
     @DisplayName("the envelope schema enforces the shape the service writes")
@@ -239,6 +240,10 @@ class NotificationOpenApiExampleValidationTest {
         body.put("transactionCount", count);
         body.put("totalAmount", total);
         body.put("transactions", new ArrayList<>(items));
+        // A last page, which is what every body of this class is. nextPageExists is required and
+        // nextCursor is present exactly when it is true, so a last page omits the cursor rather than
+        // carrying a null the schema would refuse.
+        body.put("nextPageExists", false);
         return body;
     }
 

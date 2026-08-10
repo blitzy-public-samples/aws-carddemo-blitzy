@@ -130,7 +130,6 @@ public final class EventSchemas {
             Map.entry(new SchemaKey("CustomerContextChanged", 1),
                     "schemas/customer-context-changed-v1.json"),
             Map.entry(new SchemaKey("CardUpdated", 1), "schemas/card-updated-v1.json"),
-            Map.entry(new SchemaKey("CardUpdated", 2), "schemas/card-updated-v2.json"),
             Map.entry(new SchemaKey(DeadLetterEnvelope.EVENT_TYPE, 1),
                     DeadLetterEnvelope.SCHEMA_RESOURCE));
 

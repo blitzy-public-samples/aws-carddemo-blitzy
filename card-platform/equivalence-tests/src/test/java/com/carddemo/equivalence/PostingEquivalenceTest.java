@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -22,7 +23,6 @@ import com.carddemo.ledger.LedgerApplication;
 import com.carddemo.ledger.domain.AccountBalanceUpdater;
 import com.carddemo.ledger.domain.CategoryBalanceUpdater;
 import com.carddemo.ledger.domain.PostingService;
-import com.carddemo.ledger.config.ObservabilityConfig;
 import com.carddemo.ledger.domain.RejectRecorder;
 import com.carddemo.ledger.domain.RejectRecorder.FeedTransaction;
 import com.carddemo.ledger.entity.AccountBalanceProjectionEntity;
@@ -45,7 +45,6 @@ import com.carddemo.ledger.repository.TransactionRepository;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.lang.reflect.Method;
-import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
@@ -67,12 +66,15 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.TreeMap;
+import java.util.TreeSet;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -87,7 +89,6 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.transaction.annotation.Transactional;
-import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -290,10 +291,100 @@ class PostingEquivalenceTest {
     private static final JsonMapper JSON_MAPPER = JsonMapper.builder().build();
 
     /**
+     * Holds the one run every test of this class reads.
+     *
+     * <p>Initialization on demand: the holder is loaded the first time {@link #fixtureRun()} is
+     * called, and the language guarantees that happens once however many callers arrive and in
+     * whatever order. No flag is checked and no lock is taken.
+     *
+     * <p>It is lazy rather than a {@code @BeforeAll} so that a run selecting one test still pays for
+     * one posting rather than for a class-wide setup, and so that the nested classes do not each need
+     * a lifecycle hook of their own.
+     */
+    private static final class OneRun {
+
+        /** The posted feed, built once. */
+        private static final PostingRun VALUE = postWholeFeed();
+
+        private OneRun() {
+        }
+    }
+
+    /**
+     * Returns the terminal state and per-record outcomes of the run.
+     *
+     * <p>One run serves all forty callers. It used to rebuild the whole 300-record feed on every
+     * call: the same fixtures parsed, the same balances seeded and the same 300 records posted, forty
+     * times over, for an answer that cannot differ. Nothing about the feed depends on the caller.
+     *
+     * <p>The run is safe to share because every test reads it and none writes it. That is a property
+     * this class has to keep, not one it can assume: a test that mutated a returned map, list or
+     * entity would change what a later test observes, and the failure would depend on execution
+     * order. {@link #theSharedRunIsNeverMutatedByATest} holds the property by checking the run
+     * against a second, independently built one after the suite has read it.
+     *
      * @return the terminal state and per-record outcomes of the run
      */
     private static PostingRun fixtureRun() {
-        return postWholeFeed();
+        return OneRun.VALUE;
+    }
+
+    /**
+     * Checks the shared run still describes what a freshly posted feed describes.
+     *
+     * <p>This is the guard that makes one shared run safe. Every test here reads the run and none
+     * writes it, so sharing is sound — but "none writes it" is a property of the tests rather than of
+     * the type: the run hands out live maps, lists and entities, and a test that mutated one would
+     * silently change what a later test observes. The failure would then depend on which tests ran
+     * and in what order, which is the hardest kind to diagnose.
+     *
+     * <p>So the run is posted a second time here, after the whole class has read the shared one, and
+     * the two are compared. A digest is compared rather than the records themselves, because the
+     * entities carry no value equality: the write sequence, the terminal balances and the identifiers
+     * of everything produced are what a mutation would move.
+     *
+     * <p>It runs as {@code @AfterAll} rather than as a test so that it is guaranteed to run after
+     * every test of every nested class, which is the only position from which the question can be
+     * answered.
+     */
+    @AfterAll
+    static void theSharedRunIsNeverMutatedByATest() {
+        assertEquals(digestOf(postWholeFeed()), digestOf(fixtureRun()),
+                "the run shared by every test of this class no longer matches a freshly posted feed,"
+                        + " so a test mutated state it only reads. One run is shared to avoid posting"
+                        + " the 300-record feed forty times; that is sound only while every caller"
+                        + " treats it as read-only");
+    }
+
+    /**
+     * Renders one run as the values a mutation would move.
+     *
+     * <p>Ordered by key so the digest is stable, and rendered as text so a comparison reports where
+     * two runs differ rather than only that they do.
+     *
+     * @param run the run to render
+     * @return the write sequence, the terminal balances and every produced identifier
+     */
+    private static String digestOf(PostingRun run) {
+        StringBuilder digest = new StringBuilder();
+        digest.append("outcomes=").append(run.outcomes().size()).append('\n');
+        digest.append("saveLog=").append(run.saveLog()).append('\n');
+        digest.append("posted=").append(new TreeSet<>(run.postedTransactions().keySet()))
+                .append('\n');
+        digest.append("rejected=").append(run.rejectedRows().size()).append('\n');
+        digest.append("declined=").append(run.declinedEvents().size()).append('\n');
+        digest.append("outbox=").append(run.outboxRows().size()).append('\n');
+        digest.append("repeated=").append(run.repeatedTransactionIdentifiers()).append('\n');
+        digest.append("missedKeys=").append(run.categoryKeysMissedOnRead()).append('\n');
+
+        new TreeMap<>(run.accountBalances()).forEach((accountId, row) ->
+                digest.append("balance[").append(accountId).append("]=")
+                        .append(row.getCurrentBalance()).append('\n'));
+        run.categoryBalances().entrySet().stream()
+                .sorted(Comparator.comparing(entry -> String.valueOf(entry.getKey())))
+                .forEach(entry -> digest.append("categoryBalance[").append(entry.getKey())
+                        .append("]=").append(entry.getValue().getCategoryBalance()).append('\n'));
+        return digest.toString();
     }
 
     /**
@@ -652,7 +743,9 @@ class PostingEquivalenceTest {
                     declinedEvents.add(event);
                     path = new DeclinedPath(accountId, event);
                 } else {
-                    path = new UnresolvedCardPath();
+                    path = new UnresolvedCardPath(TransactionDeclined.ofUnresolvedAccount(
+                            record.transactionId(), record.amount(),
+                            PanMasker.maskCardNumber(record.cardNumber())));
                 }
             }
             outcomes.add(new FeedOutcome(ordinal, record, reason, path, decision));
@@ -913,11 +1006,21 @@ class PostingEquivalenceTest {
                             where(outcome.ordinal(), "1500-B-LOOKUP-ACCT",
                                     "app/cbl/CBTRN02C.cbl:L394")
                                     + ": the declined event carries one account value");
-                } else {
+                } else if (outcome.path() instanceof UnresolvedCardPath unresolved) {
                     assertEquals(DeclineReason.INVALID_CARD_NUMBER, outcome.declineReason(),
                             where(outcome.ordinal(), "1500-A-LOOKUP-XREF",
                                     "app/cbl/CBTRN02C.cbl:L385-L387")
-                                    + ": the unresolved path publishes no event");
+                                    + ": the unresolved path carries reason 0100 alone");
+                    assertEquals(unresolved.event().transactionId(),
+                            unresolved.event().aggregateId(),
+                            where(outcome.ordinal(), "1500-A-LOOKUP-XREF",
+                                    "app/cbl/CBTRN02C.cbl:L385-L387")
+                                    + ": the unresolved path resolved no account, so its event is"
+                                    + " keyed on the transaction identifier");
+                    assertNull(unresolved.event().accountId(),
+                            where(outcome.ordinal(), "1500-A-LOOKUP-XREF",
+                                    "app/cbl/CBTRN02C.cbl:L385-L387")
+                                    + ": and it names no account, because none was resolved");
                 }
             }
         }
@@ -1919,8 +2022,13 @@ class PostingEquivalenceTest {
                     run.rejectedCount() - run.unresolvedCardAttemptCount();
 
             assertEquals(publishableDeclines, run.declinedEvents().size(),
-                    "each resolved-account decline publishes one "
+                    "each resolved-account decline publishes one account-keyed "
                             + TransactionDeclined.EVENT_TYPE);
+            assertEquals(run.rejectedCount(),
+                    run.declinedEvents().size() + run.unresolvedCardAttemptCount(),
+                    "and every reject publishes one event: an account-keyed one where an account"
+                            + " resolved, and a transaction-keyed one where none did, which is one"
+                            + " event per decided call");
         }
 
         @Test
@@ -3670,24 +3778,18 @@ class PostingEquivalenceTest {
                     "management.endpoint.health.group.readiness.include="
                             + "readinessState,db,kafka,listeners,outbox"
             })
-    @Testcontainers
     class DeployablePostingPath {
-
-        /** Database login and database name of the isolated PostgreSQL server. */
-        private static final String DATABASE_LOGIN = "carddemo";
 
         /** Private schema the ledger service owns. */
         private static final String SERVICE_SCHEMA = "ledger_service";
 
-        private static final PostgreSQLContainer POSTGRES =
-                new PostgreSQLContainer("postgres:18.4")
-                        .withDatabaseName(DATABASE_LOGIN)
-                        .withUsername(DATABASE_LOGIN)
-                        .withPassword(DATABASE_LOGIN);
-
-        static {
-            POSTGRES.start();
-        }
+        /**
+         * The one container the module fork runs, which this group reads a login from.
+         *
+         * <p>{@link EquivalenceDatabase} owns it and hands this group a database of its own inside
+         * it. Nothing here starts or stops a container.
+         */
+        private static final PostgreSQLContainer POSTGRES = EquivalenceDatabase.container();
 
         /** Replaces the broker-facing relay and its scheduled method. */
         @MockitoBean
@@ -3744,9 +3846,7 @@ class PostingEquivalenceTest {
         }
 
         private static String jdbcUrl() {
-            String url = POSTGRES.getJdbcUrl();
-            return url + (url.contains("?") ? "&" : "?")
-                    + "currentSchema=" + SERVICE_SCHEMA;
+            return EquivalenceDatabase.urlFor(DeployablePostingPath.class, SERVICE_SCHEMA);
         }
 
         private static String ledgerMigrationLocation() {
@@ -4686,8 +4786,20 @@ class PostingEquivalenceTest {
         }
     }
 
-    /** Path for reason 0100, which has no resolved account and publishes no decline event. */
-    private record UnresolvedCardPath() implements AuthorizationPath {
+    /**
+     * Path for reason 0100, which resolved no account and publishes a transaction-keyed decline.
+     *
+     * <p>The event is {@code schemas/transaction-declined-v2.json}. AAP transformation rule T4 gives
+     * one authorization call one event, and this outcome has no account identifier to key on, so it
+     * keys on the transaction identifier and declares no {@code accountId}.
+     *
+     * @param event event the authorization service publishes for this outcome
+     */
+    private record UnresolvedCardPath(TransactionDeclined event) implements AuthorizationPath {
+
+        UnresolvedCardPath {
+            Objects.requireNonNull(event, "event is required");
+        }
     }
 
     /**
@@ -4828,7 +4940,7 @@ class PostingEquivalenceTest {
             return outcomes.size() - postedCount();
         }
 
-        /** Counts reason-0100 outcomes, which publish no decline event. */
+        /** Counts reason-0100 outcomes, whose decline is keyed on the transaction identifier. */
         long unresolvedCardAttemptCount() {
             return outcomes.stream().filter(FeedOutcome::unresolvedCardAttempt).count();
         }
@@ -5325,11 +5437,11 @@ class PostingEquivalenceTest {
                     new AccountBalanceUpdater(accountBalances),
                     transactions,
                     outbox.writer());
-            // Two arguments, not three. The recorder writes the reject row and publishes nothing:
+            // One argument, and no meter. The recorder writes the reject row and publishes nothing:
             // the declined event that names the same refusal is the authorization service's, and
-            // messaging/TransactionDeclinedConsumer is what turns it into a call on this class.
-            this.rejectRecorder = new RejectRecorder(rejects,
-                    new ObservabilityConfig().ledgerMeters(new SimpleMeterRegistry()));
+            // messaging/TransactionDeclinedConsumer is what turns it into a call on this class. That
+            // consumer also raises the reject counter, after the commit, so this class holds none.
+            this.rejectRecorder = new RejectRecorder(rejects);
         }
 
         /**

@@ -84,10 +84,10 @@ class CategoryBalanceUpdaterTest {
     private static final String CREATE_DIAGNOSTIC_WORD = "creating";
 
     /** Rows the upsert writes on either arm. */
-    private static final int ONE_ROW = 1;
+    private static final int STORE_WRAPPED = 1;
 
     /** Rows a statement that wrote nothing reports. */
-    private static final int NO_ROW = 0;
+    private static final int STORE_INSIDE_FIELD = 0;
 
     /**
      * Answers the upsert with {@code rowCount}, the count the statement reports.
@@ -104,8 +104,8 @@ class CategoryBalanceUpdaterTest {
     }
 
     /** A collaborator whose upsert writes the one row either arm writes. */
-    private static TransactionCategoryBalanceRepository writingOneRow() {
-        return repositoryWriting(ONE_ROW);
+    private static TransactionCategoryBalanceRepository storeInsideTheField() {
+        return repositoryWriting(STORE_INSIDE_FIELD);
     }
 
     /**
@@ -138,17 +138,24 @@ class CategoryBalanceUpdaterTest {
         return List.of(accountId.getValue(), typeCode.getValue(), categoryCode.getValue());
     }
 
-    /** Runs the upsert once for {@link #ACCOUNT_ID} and the fixture category code. */
-    private static void upsert(TransactionCategoryBalanceRepository categoryBalances,
+    /**
+     * Runs the upsert once for {@link #ACCOUNT_ID} and the fixture category code.
+     *
+     * @param categoryBalances the collaborator to call
+     * @param typeCode         the two-character type code
+     * @param amount           the signed amount to add
+     * @return whether the store wrapped past the field
+     */
+    private static boolean upsert(TransactionCategoryBalanceRepository categoryBalances,
             String typeCode, BigDecimal amount) {
-        new CategoryBalanceUpdater(categoryBalances)
+        return new CategoryBalanceUpdater(categoryBalances)
                 .updateCategoryBalance(ACCOUNT_ID, typeCode, CATEGORY_CODE, amount);
     }
 
     @Test
-    @DisplayName("one public method, returning nothing, over three key parts and one amount"
-            + " (app/cbl/CBTRN02C.cbl:L467-L501)")
-    void theSubjectExposesOneUpsertReturningNothing() throws NoSuchMethodException {
+    @DisplayName("one public method, answering whether the store wrapped, over three key parts and"
+            + " one amount (app/cbl/CBTRN02C.cbl:L467-L501)")
+    void theSubjectExposesOneUpsertAnsweringTheWrap() throws NoSuchMethodException {
         Method upsert = CategoryBalanceUpdater.class.getMethod("updateCategoryBalance",
                 String.class, String.class, String.class, BigDecimal.class);
         List<Method> publicApi = Arrays.stream(CategoryBalanceUpdater.class.getDeclaredMethods())
@@ -156,7 +163,7 @@ class CategoryBalanceUpdaterTest {
                 .toList();
 
         assertThat(publicApi).containsExactly(upsert);
-        assertThat(upsert.getReturnType()).isEqualTo(void.class);
+        assertThat(upsert.getReturnType()).isEqualTo(boolean.class);
         assertThat(upsert.getParameterTypes())
                 .containsExactly(String.class, String.class, String.class, BigDecimal.class);
         assertThat(CategoryBalanceUpdater.class.getDeclaredClasses()).isEmpty();
@@ -176,7 +183,7 @@ class CategoryBalanceUpdaterTest {
         @DisplayName("the subject reads nothing and saves nothing, running one upsert"
                 + " (:L478, :L481, :L495-L499)")
         void theSubjectRunsOneUpsertAndNothingElse() {
-            TransactionCategoryBalanceRepository categoryBalances = writingOneRow();
+            TransactionCategoryBalanceRepository categoryBalances = storeInsideTheField();
 
             assertThatCode(() -> upsert(categoryBalances, UNSEEDED_TYPE_CODE, FIXTURE_AMOUNT))
                     .doesNotThrowAnyException();
@@ -190,7 +197,7 @@ class CategoryBalanceUpdaterTest {
         @DisplayName("the statement carries all three key parts, seventeen bytes wide"
                 + " (:L469-L471, :L505-L507)")
         void theStatementCarriesAllThreeKeyParts() {
-            TransactionCategoryBalanceRepository categoryBalances = writingOneRow();
+            TransactionCategoryBalanceRepository categoryBalances = storeInsideTheField();
             upsert(categoryBalances, SEEDED_TYPE_CODE, FIXTURE_AMOUNT);
 
             List<String> parts = capturedKeyParts(categoryBalances);
@@ -204,7 +211,7 @@ class CategoryBalanceUpdaterTest {
         @Test
         @DisplayName("the three key parts keep their leading zeros and their widths (:L505-L507)")
         void theThreeKeyPartsKeepTheirLeadingZeros() {
-            TransactionCategoryBalanceRepository categoryBalances = writingOneRow();
+            TransactionCategoryBalanceRepository categoryBalances = storeInsideTheField();
             upsert(categoryBalances, UNSEEDED_TYPE_CODE, FIXTURE_AMOUNT);
 
             List<String> parts = capturedKeyParts(categoryBalances);
@@ -224,7 +231,7 @@ class CategoryBalanceUpdaterTest {
         @Test
         @DisplayName("an unseeded transaction type and category still write a row (:L510)")
         void anUnseededTypeAndCategoryStillWriteARow() {
-            TransactionCategoryBalanceRepository categoryBalances = writingOneRow();
+            TransactionCategoryBalanceRepository categoryBalances = storeInsideTheField();
             new CategoryBalanceUpdater(categoryBalances)
                     .updateCategoryBalance(ACCOUNT_ID, "99", "9999", FIXTURE_AMOUNT);
 
@@ -235,19 +242,32 @@ class CategoryBalanceUpdaterTest {
         }
 
         @Test
-        @DisplayName("a reported row count other than one fails the posting (:L512, :L530)")
-        void aReportedRowCountOtherThanOneFailsThePosting() {
-            TransactionCategoryBalanceRepository categoryBalances = repositoryWriting(NO_ROW);
+        @DisplayName("an answer outside the two the statement can give fails the posting"
+                + " (:L512, :L530)")
+        void anAnswerOutsideTheTwoItCanGiveFailsThePosting() {
+            int impossible = 2;
+            TransactionCategoryBalanceRepository categoryBalances = repositoryWriting(impossible);
 
             assertThatExceptionOfType(IllegalStateException.class)
                     .isThrownBy(() -> upsert(categoryBalances, SEEDED_TYPE_CODE, FIXTURE_AMOUNT))
-                    .withMessageContaining(String.valueOf(NO_ROW));
+                    .withMessageContaining(String.valueOf(impossible));
+        }
+
+        @Test
+        @DisplayName("a store that wrapped is reported to the caller, and one inside the field"
+                + " is not")
+        void aStoreThatWrappedIsReportedToTheCaller() {
+            assertThat(upsert(repositoryWriting(STORE_WRAPPED), SEEDED_TYPE_CODE, FIXTURE_AMOUNT))
+                    .as("the caller needs this to report the wrap after its transaction commits")
+                    .isTrue();
+            assertThat(upsert(storeInsideTheField(), SEEDED_TYPE_CODE, FIXTURE_AMOUNT))
+                    .as("an ordinary store reports nothing").isFalse();
         }
 
         @Test
         @DisplayName("no diagnostic reaches the console, and none carries a value (:L476-L477)")
         void noDiagnosticReachesTheConsole(CapturedOutput consoleOutput) {
-            TransactionCategoryBalanceRepository categoryBalances = writingOneRow();
+            TransactionCategoryBalanceRepository categoryBalances = storeInsideTheField();
             upsert(categoryBalances, UNSEEDED_TYPE_CODE, FIXTURE_AMOUNT);
 
             assertThat(consoleOutput.getAll())
@@ -272,7 +292,7 @@ class CategoryBalanceUpdaterTest {
         @Test
         @DisplayName("the addend is the amount at the column scale (:L508)")
         void theAddendIsTheAmountAtTheColumnScale() {
-            TransactionCategoryBalanceRepository categoryBalances = writingOneRow();
+            TransactionCategoryBalanceRepository categoryBalances = storeInsideTheField();
             upsert(categoryBalances, UNSEEDED_TYPE_CODE, FIXTURE_AMOUNT);
 
             BigDecimal addend = capturedAddend(categoryBalances);
@@ -284,7 +304,7 @@ class CategoryBalanceUpdaterTest {
         @Test
         @DisplayName("a negative amount travels negative, so it lowers the balance (:L527)")
         void aNegativeAmountTravelsNegative() {
-            TransactionCategoryBalanceRepository categoryBalances = writingOneRow();
+            TransactionCategoryBalanceRepository categoryBalances = storeInsideTheField();
             upsert(categoryBalances, SEEDED_TYPE_CODE, new BigDecimal("-250.75"));
 
             assertThat(capturedAddend(categoryBalances))
@@ -294,7 +314,7 @@ class CategoryBalanceUpdaterTest {
         @Test
         @DisplayName("an amount of zero travels as 0.00 (:L508)")
         void anAmountOfZeroTravelsAsZero() {
-            TransactionCategoryBalanceRepository categoryBalances = writingOneRow();
+            TransactionCategoryBalanceRepository categoryBalances = storeInsideTheField();
             upsert(categoryBalances, UNSEEDED_TYPE_CODE, new BigDecimal("0.00"));
 
             BigDecimal addend = capturedAddend(categoryBalances);
@@ -310,7 +330,7 @@ class CategoryBalanceUpdaterTest {
         @DisplayName("a third decimal digit drops toward zero, where half-up rounding differs"
                 + " (:L527)")
         void aThirdDecimalDigitDropsTowardZero() {
-            TransactionCategoryBalanceRepository categoryBalances = writingOneRow();
+            TransactionCategoryBalanceRepository categoryBalances = storeInsideTheField();
             upsert(categoryBalances, SEEDED_TYPE_CODE, new BigDecimal("0.005"));
 
             BigDecimal addend = capturedAddend(categoryBalances);
@@ -328,7 +348,7 @@ class CategoryBalanceUpdaterTest {
         @DisplayName("a negative third decimal digit drops toward zero, above the downward result"
                 + " (:L527)")
         void aNegativeThirdDecimalDigitDropsTowardZero() {
-            TransactionCategoryBalanceRepository categoryBalances = writingOneRow();
+            TransactionCategoryBalanceRepository categoryBalances = storeInsideTheField();
             upsert(categoryBalances, SEEDED_TYPE_CODE, new BigDecimal("-0.005"));
 
             BigDecimal downward = new BigDecimal("-0.005")
@@ -340,7 +360,7 @@ class CategoryBalanceUpdaterTest {
         @Test
         @DisplayName("no console output carries the amount, on either arm (:L476-L477)")
         void noConsoleOutputCarriesTheAmount(CapturedOutput consoleOutput) {
-            TransactionCategoryBalanceRepository categoryBalances = writingOneRow();
+            TransactionCategoryBalanceRepository categoryBalances = storeInsideTheField();
             upsert(categoryBalances, SEEDED_TYPE_CODE, FIXTURE_AMOUNT);
 
             assertThat(consoleOutput.getAll())

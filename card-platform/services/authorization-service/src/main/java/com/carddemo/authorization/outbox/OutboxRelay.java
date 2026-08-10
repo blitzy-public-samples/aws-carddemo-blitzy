@@ -10,11 +10,13 @@ import com.carddemo.authorization.messaging.EventPublisherPort;
 import com.carddemo.authorization.repository.OutboxEventRepository;
 import com.carddemo.events.DeadLetterEnvelope;
 import com.carddemo.events.EventEnvelope;
+import com.carddemo.events.correlation.CorrelationScope;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -47,7 +49,7 @@ import tools.jackson.databind.json.JsonMapper;
  * class sends afterwards, so a broker that is unreachable delays an event and never fails a
  * decision.
  *
- * <h2>Why one pass is several transactions</h2>
+ * <h2>One pass in several transactions</h2>
  *
  * <p>A pass takes three kinds of transaction, and the split is the point rather than a detail.
  *
@@ -75,7 +77,7 @@ import tools.jackson.databind.json.JsonMapper;
  * which is what would otherwise publish one event twice: once late by the producer, once again by the
  * next pass.
  *
- * <h2>Why the batch holds one row per account</h2>
+ * <h2>One row per account in a batch</h2>
  *
  * <p>{@code OutboxEventRepository.claimDueRows} returns the due <em>head</em> row of each aggregate,
  * never two rows of one account. Recording each outcome separately is what makes that necessary: if
@@ -137,6 +139,19 @@ public class OutboxRelay {
 
     /** Reason recorded on a row whose event type has no authorization destination. */
     private static final String UNKNOWN_EVENT_TYPE = "UnknownEventType";
+
+    /**
+     * Sends this relay keeps in flight at once.
+     *
+     * <p>Five, because {@code max.in.flight.requests.per.connection} in
+     * {@code src/main/resources/application.yml} is five: a wider window would not put a sixth request
+     * on the wire, it would only leave a sixth send sitting in the producer's accumulator unawaited.
+     * Narrower than five leaves the pipeline idle while this pass waits.
+     *
+     * <p>Every row of one window names a different account, because {@code claimDueRows} returns one
+     * head row per aggregate, so a window is concurrent across accounts and never within one.
+     */
+    static final int MAX_SENDS_IN_FLIGHT = 5;
 
     /** Partition value of a diagnostic whose subject never arrived on a partition. */
     private static final int NO_SOURCE_PARTITION = 0;
@@ -220,6 +235,9 @@ public class OutboxRelay {
 
     /** Rows swept per tick, from {@code carddemo.outbox.relay.batch-size}. */
     private final int batchSize;
+
+    /** Sends awaited together, {@link #MAX_SENDS_IN_FLIGHT} or the batch when it is smaller. */
+    private final int sendsInFlight;
 
     /** Each registered event type this service publishes, mapped to its configured topic. */
     private final Map<String, String> topics;
@@ -306,6 +324,7 @@ public class OutboxRelay {
         AuthorizationProperties.Outbox.Relay relay = checked.outbox().relay();
         AuthorizationProperties.Kafka.Topics configuredTopics = checked.kafka().topics();
         this.batchSize = relay.batchSize();
+        this.sendsInFlight = Math.min(this.batchSize, MAX_SENDS_IN_FLIGHT);
         this.sweepDelay = Duration.ofMillis(relay.fixedDelayMs());
         this.claimTimeout = relay.claimTimeout();
         this.maxDurationNanos =
@@ -318,21 +337,14 @@ public class OutboxRelay {
                 "deadLetterTopic");
 
         MeterRegistry registry = Objects.requireNonNull(meters, "meters");
-        this.publishFailures = Counter.builder(ObservabilityConfig.FAILURES_COUNTER)
-                .tag(ObservabilityConfig.STAGE_TAG, ObservabilityConfig.PUBLISH_STAGE)
-                .register(registry);
-        this.eventsPublished =
-                Counter.builder(ObservabilityConfig.EVENTS_PUBLISHED_COUNTER).register(registry);
-        this.outboxAbandoned =
-                Counter.builder(ObservabilityConfig.OUTBOX_ABANDONED_COUNTER).register(registry);
-        this.deadLettersPublished = Counter.builder(ObservabilityConfig.DEAD_LETTERS_COUNTER)
-                .tag(ObservabilityConfig.OUTCOME_OF_DIAGNOSTIC_TAG,
-                        ObservabilityConfig.DIAGNOSTIC_PUBLISHED)
-                .register(registry);
-        this.deadLettersFailed = Counter.builder(ObservabilityConfig.DEAD_LETTERS_COUNTER)
-                .tag(ObservabilityConfig.OUTCOME_OF_DIAGNOSTIC_TAG,
-                        ObservabilityConfig.DIAGNOSTIC_FAILED)
-                .register(registry);
+        this.publishFailures =
+                ObservabilityConfig.failureCounter(registry, ObservabilityConfig.PUBLISH_STAGE);
+        this.eventsPublished = ObservabilityConfig.eventsPublishedCounter(registry);
+        this.outboxAbandoned = ObservabilityConfig.outboxAbandonedCounter(registry);
+        this.deadLettersPublished = ObservabilityConfig.deadLetterCounter(registry,
+                ObservabilityConfig.DIAGNOSTIC_PUBLISHED);
+        this.deadLettersFailed = ObservabilityConfig.deadLetterCounter(registry,
+                ObservabilityConfig.DIAGNOSTIC_FAILED);
     }
 
     /**
@@ -360,7 +372,14 @@ public class OutboxRelay {
     }
 
     /**
-     * Offers the diagnostics still owed, claims the due rows, then publishes them in order.
+     * Offers the diagnostics still owed, claims the due account heads, then publishes them.
+     *
+     * <p>Sends are issued {@value #MAX_SENDS_IN_FLIGHT} at a time rather than one at a time, and each
+     * one is awaited against the deadline the whole pass shares. Every row of a window names a
+     * different account, because {@code claimDueRows} returns one head row per aggregate, so a window
+     * is concurrent across accounts and never within one: the account identifier is the message key,
+     * and two events of one account are never in flight together. Issuing them one at a time made the
+     * pass as long as the sum of its waits even though no account was waiting for another.
      *
      * @return what this pass published and what it could not
      */
@@ -370,20 +389,28 @@ public class OutboxRelay {
 
         Terminal terminal = publishOwedDeadLetters(deadline);
         ClaimedBatch batch = claimBatch(now);
+        List<OutboxEventEntity> rows = batch.rows();
 
         int published = 0;
         int failed = 0;
-        for (OutboxEventEntity row : batch.rows()) {
+        for (int from = 0; from < rows.size(); from += sendsInFlight) {
             if (System.nanoTime() - deadline >= 0L) {
                 log.debug("The authorization outbox pass reached its deadline with {} claimed rows "
-                        + "unattempted; the next pass recovers them",
-                        batch.rows().size() - published - failed);
+                        + "unattempted; the next pass recovers them", rows.size() - from);
                 break;
             }
-            Attempt attempt = attemptOneRow(row, deadline);
-            published = published + attempt.published();
-            failed = failed + attempt.failed();
-            terminal = terminal.plus(attempt.terminal());
+            List<OutboxEventEntity> window =
+                    rows.subList(from, Math.min(from + sendsInFlight, rows.size()));
+            List<Dispatch> dispatched = new ArrayList<>(window.size());
+            for (OutboxEventEntity row : window) {
+                dispatched.add(dispatch(row));
+            }
+            for (Dispatch attempt : dispatched) {
+                Attempt outcome = settle(attempt, deadline);
+                published = published + outcome.published();
+                failed = failed + outcome.failed();
+                terminal = terminal.plus(outcome.terminal());
+            }
         }
         return new PassResult(published, failed + batch.recovered(), terminal);
     }
@@ -414,35 +441,82 @@ public class OutboxRelay {
     }
 
     /**
-     * Publishes one claimed row and records the result in a short transaction of its own.
+     * Issues the send for one claimed row, outside every transaction, and waits for nothing.
+     *
+     * @param row the claimed row
+     * @return the send to await, or the reason no send was issued
+     */
+    private Dispatch dispatch(OutboxEventEntity row) {
+        String destination = topics.get(row.getEventType());
+        if (destination == null) {
+            log.error("An authorization outbox row carries the unconfigured event type {}. "
+                    + "Attempt {} of {}.", row.getEventType(), row.getAttemptCount() + 1,
+                    OutboxEventEntity.MAX_DELIVERY_ATTEMPTS);
+            return Dispatch.refused(row, UNRESOLVED_DESTINATION, UNKNOWN_EVENT_TYPE);
+        }
+        try (CorrelationScope scope = scopeOf(row)) {
+            return Dispatch.issued(row, destination,
+                    publisher.publish(destination, row.getAggregateId(), row.getPayload()));
+        } catch (RuntimeException notSent) {
+            String failureClass = rootCause(notSent).getClass().getSimpleName();
+            // The failed send itself is reported once, at warning, by SafeProducerListener,
+            // which every template of this service installs. A second line here named the
+            // same send, so an operator counting reports counted each one twice.
+            return Dispatch.refused(row, destination, failureClass);
+        }
+    }
+
+    /**
+     * Opens the correlation scope of one row, so the send it carries and every line written about it
+     * name the unit of work behind it.
+     *
+     * <p>ADDITIVE. A relay sweeps on its own schedule, long after the thread that wrote the row has
+     * gone, so the two identifiers are read back off the row rather than inherited from a caller.
+     * The scope is what the publish port reads to attach the headers.
+     *
+     * <p>A row recording no correlation identifier starts its own trace under its own event
+     * identifier. That covers a row written before this column existed, so every record this
+     * relay publishes carries a correlation identifier a reader can join on. A row carrying
+     * neither opens a scope naming neither rather than failing the sweep.
+     *
+     * @param row the row this pass is working on
+     * @return the open scope, closed by the try-with-resources that opened it
+     */
+    private static CorrelationScope scopeOf(OutboxEventEntity row) {
+        UUID recorded = row.getCorrelationId();
+        return CorrelationScope.open()
+                .withCorrelation(recorded != null ? recorded : row.getEventId())
+                .withCausation(row.getCausationId())
+                .withEvent(row.getEventId(), row.getEventType());
+    }
+
+    /**
+     * Waits for one acknowledgement, then records the result in a short transaction of its own.
      *
      * <p>The send happens outside every transaction. The mark is written after the broker
      * acknowledges, so no row is marked for a message the broker did not accept, and a send that
      * returns while the mark fails leaves the row claimed until the claim timeout returns it — the
      * next pass then sends it again, and each consumer's processed-event table absorbs the duplicate.
      *
-     * @param row      the claimed row
+     * @param dispatch what {@link #dispatch(OutboxEventEntity)} issued
      * @param deadline monotonic deadline shared by the whole pass
      * @return what this attempt did
      */
-    private Attempt attemptOneRow(OutboxEventEntity row, long deadline) {
-        String destination = topics.get(row.getEventType());
-        if (destination == null) {
-            log.error("An authorization outbox row carries the unconfigured event type {}. "
-                    + "Attempt {} of {}.", row.getEventType(), row.getAttemptCount() + 1,
-                    OutboxEventEntity.MAX_DELIVERY_ATTEMPTS);
-            return new Attempt(0, 1, recordFailure(row.getEventId(), UNKNOWN_EVENT_TYPE,
-                    UNRESOLVED_DESTINATION, deadline));
+    private Attempt settle(Dispatch dispatch, long deadline) {
+        OutboxEventEntity row = dispatch.row();
+        if (dispatch.publication() == null) {
+            return new Attempt(0, 1, recordFailure(row.getEventId(), dispatch.failureClass(),
+                    dispatch.destination(), deadline));
         }
         try {
-            await(publisher.publish(destination, row.getAggregateId(), row.getPayload()), deadline);
+            await(dispatch.publication(), deadline);
         } catch (RuntimeException failure) {
             String failureClass = rootCause(failure).getClass().getSimpleName();
-            log.warn("An authorization outbox row of type {} stays unpublished after {}. "
-                    + "Attempt {} of {}.", row.getEventType(), failureClass,
-                    row.getAttemptCount() + 1, OutboxEventEntity.MAX_DELIVERY_ATTEMPTS);
+            // The failed send itself is reported once, at warning, by SafeProducerListener,
+            // which every template of this service installs. A second line here named the
+            // same send, so an operator counting reports counted each one twice.
             return new Attempt(0, 1,
-                    recordFailure(row.getEventId(), failureClass, destination, deadline));
+                    recordFailure(row.getEventId(), failureClass, dispatch.destination(), deadline));
         }
         markPublished(row.getEventId());
         return new Attempt(1, 0, Terminal.NONE);
@@ -536,13 +610,15 @@ public class OutboxRelay {
             if (System.nanoTime() - deadline >= 0L) {
                 return counts;
             }
-            log.warn("Authorization outbox event {} has owed a dead letter on {} since {}, so this "
-                    + "pass offers it again.", row.getEventId(), deadLetterTopic,
-                    row.getLastAttemptAt());
-            Abandonment owedRow = new Abandonment(true, row.getEventId(), row.getEventType(),
-                    row.getAggregateId(), row.getAttemptCount(), row.getLastError());
-            counts = counts.plus(publishDeadLetter(owedRow,
-                    topics.getOrDefault(row.getEventType(), UNRESOLVED_DESTINATION), deadline));
+            try (CorrelationScope scope = scopeOf(row)) {
+                log.warn("Authorization outbox event {} has owed a dead letter on {} since {}, so "
+                        + "this pass offers it again.", row.getEventId(), deadLetterTopic,
+                        row.getLastAttemptAt());
+                Abandonment owedRow = new Abandonment(true, row.getEventId(), row.getEventType(),
+                        row.getAggregateId(), row.getAttemptCount(), row.getLastError());
+                counts = counts.plus(publishDeadLetter(owedRow,
+                        topics.getOrDefault(row.getEventType(), UNRESOLVED_DESTINATION), deadline));
+            }
         }
         return counts;
     }
@@ -794,6 +870,28 @@ public class OutboxRelay {
      * @param terminal  what the attempt did to the terminal counts
      */
     private record Attempt(int published, int failed, Terminal terminal) {
+    }
+
+    /**
+     * One send this pass issued, or the reason it issued none.
+     *
+     * @param row          the claimed row
+     * @param destination  the topic the send was addressed to
+     * @param publication  the acknowledgement to await, or {@code null} when no send was issued
+     * @param failureClass why no send was issued, or {@code null} when one was
+     */
+    private record Dispatch(OutboxEventEntity row, String destination,
+            CompletionStage<Void> publication, String failureClass) {
+
+        static Dispatch issued(OutboxEventEntity row, String destination,
+                CompletionStage<Void> publication) {
+            return new Dispatch(row, destination, Objects.requireNonNull(publication,
+                    "the publisher returned no completion stage"), null);
+        }
+
+        static Dispatch refused(OutboxEventEntity row, String destination, String failureClass) {
+            return new Dispatch(row, destination, null, failureClass);
+        }
     }
 
     /**

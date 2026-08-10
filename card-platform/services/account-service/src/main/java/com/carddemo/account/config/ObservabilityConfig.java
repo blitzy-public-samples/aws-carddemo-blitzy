@@ -1,10 +1,13 @@
 package com.carddemo.account.config;
 
 import io.micrometer.core.instrument.Counter;
+
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import java.time.Duration;
+
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import org.springframework.beans.factory.annotation.Value;
@@ -386,4 +389,5 @@ public class ObservabilityConfig {
             deadLettersFailed.increment();
         }
     }
+
 }

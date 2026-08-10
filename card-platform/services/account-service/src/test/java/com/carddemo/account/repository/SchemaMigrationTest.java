@@ -18,7 +18,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Checks that the seven Flyway migrations of the account service apply to an empty schema, and that
+ * Checks that the nine Flyway migrations of the account service apply to an empty schema, and that
  * the seed loads the row counts its fixtures carry.
  *
  * <p>Every method here reads, and none writes. Other test classes in this package assert the same
@@ -124,11 +124,12 @@ class SchemaMigrationTest extends AbstractAccountPostgresTest {
     // assertion below reads one.
     // ------------------------------------------------------------------------------------------
 
-    /** Versions Flyway parses from the eight migration file names, in installed order. */
-    private static final String[] MIGRATION_VERSIONS = {"1", "2", "3", "4", "5", "6", "7", "8"};
+    /** Versions Flyway parses from the ten migration file names, in installed order. */
+    private static final String[] MIGRATION_VERSIONS =
+            {"1", "2", "3", "4", "5", "6", "7", "8", "9", "10"};
 
     /**
-     * The eight files under {@code src/main/resources/db/migration}, in installed order.
+     * The ten files under {@code src/main/resources/db/migration}, in installed order.
      *
      * <p>{@code V4} and {@code V7} both appear, and both have to. An applied migration is not
      * edited, so {@code V4} stays in the history that created the {@code card_xref} replica and
@@ -143,6 +144,17 @@ class SchemaMigrationTest extends AbstractAccountPostgresTest {
      * rather than an edit to {@code V1}, because {@code V1} has run. A comment-only migration adds a
      * history row and changes no table, so {@code declaredTablesExistAndNoOthersDo} and the seeded
      * row counts below read exactly as they did at {@code V7}.</p>
+     *
+     * <p>{@code V9} adds {@code correlation_id} and {@code causation_id} to {@code outbox_event}, so
+     * a row records the unit of work that wrote it and the event that caused it. Both are nullable,
+     * because a row written before this migration has neither, and the relay reads them back to
+     * attach the two record headers a consumer joins on. It adds no table, so the table assertion
+     * and the seeded row counts below are unchanged again.</p>
+     * <p>{@code V10} adds one index and no table. The relay claims the due head row of each account
+     * rather than the oldest due rows outright, which is what keeps two events of one account from
+     * being in flight at once, and that claim reads {@code outbox_event} by aggregate and arrival
+     * order. Adding the index a migration later than {@code V1} is the same rule again: {@code V1}
+     * has run.</p>
      */
     private static final String[] MIGRATION_SCRIPTS = {
             "V1__schema.sql",
@@ -152,7 +164,9 @@ class SchemaMigrationTest extends AbstractAccountPostgresTest {
             "V5__outbox_dead_letter_state.sql",
             "V6__processed_event_topic_key.sql",
             "V7__account_customer_link.sql",
-            "V8__subject_request_posture.sql"
+            "V8__subject_request_posture.sql",
+            "V9__outbox_correlation.sql",
+            "V10__outbox_aggregate_head_index.sql"
     };
 
     // ------------------------------------------------------------------------------------------
@@ -183,7 +197,7 @@ class SchemaMigrationTest extends AbstractAccountPostgresTest {
     /** Ordinal of the single column each counting query selects. */
     private static final int FIRST_COLUMN = 1;
 
-    /** The component that applied the seven migrations, and the source of the schema name. */
+    /** The component that applied the nine migrations, and the source of the schema name. */
     @Autowired
     private Flyway flyway;
 
@@ -206,7 +220,7 @@ class SchemaMigrationTest extends AbstractAccountPostgresTest {
     /**
      * Returns the schema the Flyway bean reports, holding it to an unquoted lower-case identifier.
      *
-     * @return the schema the seven migrations landed in
+     * @return the schema the nine migrations landed in
      */
     private String migratedSchema() {
         String reported = flyway.getConfiguration().getDefaultSchema();
@@ -236,15 +250,20 @@ class SchemaMigrationTest extends AbstractAccountPostgresTest {
     }
 
     /**
-     * Opens a connection to the container {@link AbstractAccountPostgresTest} started, reading its
-     * coordinates from the accessor that class exposes.
+     * Opens a connection to the database the Spring context of this class migrated.
+     *
+     * <p>The locator comes from {@code AbstractAccountPostgresTest.jdbcUrl()}, which is the value
+     * that class gives the Spring datasource. The container itself holds one database per test
+     * class and its own default database carries none of these tables, so reading the locator off
+     * the container would query an empty catalogue and every assertion below would report a missing
+     * relation.
      *
      * @return a new connection the caller closes
      * @throws SQLException when the driver refuses the connection
      */
     private static Connection openConnection() throws SQLException {
         return DriverManager.getConnection(
-                postgres().getJdbcUrl(), postgres().getUsername(), postgres().getPassword());
+                jdbcUrl(), postgres().getUsername(), postgres().getPassword());
     }
 
     /**
@@ -345,7 +364,7 @@ class SchemaMigrationTest extends AbstractAccountPostgresTest {
     }
 
     // ------------------------------------------------------------------------------------------
-    // The seven migrations applied, and applied in order
+    // The nine migrations applied, and applied in order
     // ------------------------------------------------------------------------------------------
 
     /**
@@ -355,7 +374,7 @@ class SchemaMigrationTest extends AbstractAccountPostgresTest {
      * @throws SQLException when the history query fails
      */
     @Test
-    @DisplayName("flyway_schema_history holds seven versioned rows, versions 1 through 7 in "
+    @DisplayName("flyway_schema_history holds nine versioned rows, versions 1 through 9 in "
             + "installed-rank order")
     void historyHoldsEveryVersionInInstalledRankOrder() throws SQLException {
         List<AppliedMigration> applied = appliedMigrations();
@@ -382,12 +401,12 @@ class SchemaMigrationTest extends AbstractAccountPostgresTest {
     }
 
     /**
-     * Asserts the seven script names in installed-rank order.
+     * Asserts the nine script names in installed-rank order.
      *
      * @throws SQLException when the history query fails
      */
     @Test
-    @DisplayName("the seven versioned rows name all account migration scripts in order")
+    @DisplayName("the nine versioned rows name all account migration scripts in order")
     void historyNamesEveryMigrationScript() throws SQLException {
         assertThat(appliedMigrations()).extracting(AppliedMigration::script)
                 .as("scripts under src/main/resources/db/migration, read in installed-rank order")
@@ -515,7 +534,7 @@ class SchemaMigrationTest extends AbstractAccountPostgresTest {
      * @throws SQLException when the counting query fails
      */
     @Test
-    @DisplayName("outbox_event holds no row after the seven migrations")
+    @DisplayName("outbox_event holds no row after the nine migrations")
     void outboxEventHoldsNoRowAfterMigration() throws SQLException {
         assertThat(countRows(OUTBOX_EVENT_TABLE))
                 .as("rows in %s, which no migration of this module inserts into",
@@ -530,7 +549,7 @@ class SchemaMigrationTest extends AbstractAccountPostgresTest {
      * @throws SQLException when the counting query fails
      */
     @Test
-    @DisplayName("processed_event holds no row after the seven migrations")
+    @DisplayName("processed_event holds no row after the nine migrations")
     void processedEventHoldsNoRowAfterMigration() throws SQLException {
         assertThat(countRows(PROCESSED_EVENT_TABLE))
                 .as("rows in %s, which no migration of this module inserts into",

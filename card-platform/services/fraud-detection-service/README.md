@@ -1,6 +1,6 @@
 ## Fraud Detection Service
 
-`fraud-detection-service` reads one authorized transaction from Apache Kafka, scores it against every risk rule, and publishes one verdict: `FraudFlagged` or `FraudCleared`. It exposes two read-only query routes over the assessments it stored, and it calls no other service. It sits outside the synchronous authorization response path, so nothing it does can slow an authorization or fail one. It is also the only module on this platform with no COBOL ancestor.
+`fraud-detection-service` reads one authorized transaction from Apache Kafka, scores it against every risk rule, and publishes one verdict: `FraudFlagged` or `FraudCleared`. It exposes two read-only query routes over the assessments it stored, and it calls no other service. It sits outside the synchronous authorization response path, so nothing it does can slow an authorization or fail one. It is also the only module on this platform with no Common Business Oriented Language (COBOL) ancestor.
 
 - [Purpose](#purpose)
 - [Source provenance](#source-provenance)
@@ -27,7 +27,7 @@
 
 ## Source provenance
 
-This service has no COBOL (Common Business Oriented Language) ancestor. It is net new, and the evidence is a count rather than a claim. Searching all 28 programs under `app/cbl/` for fraud, velocity, risk, scoring, and Luhn returns zero files. No rules engine, no pattern analysis, and no velocity checking exists anywhere in the repository.
+This service has no COBOL ancestor. It is net new, and the evidence is a count rather than a claim. Searching all 28 programs under `app/cbl/` for fraud, velocity, risk, scoring, and Luhn returns zero files. No rules engine, no pattern analysis, and no velocity checking exists anywhere in the repository.
 
 The original brief described this service as replacing "the optional fraud module". No such module exists, so there is no lineage to record, and none is invented here.
 
@@ -121,15 +121,17 @@ Two routes answer. Both read, neither writes, and both require the `ADMIN` role 
 | Method and path | Returns |
 | :--- | :--- |
 | `GET /fraud-assessments/{transactionId}` | One stored assessment, or `404` when the table holds none |
-| `GET /fraud-assessments?accountId=...` | That account's assessments, newest first, over bounded `page` and `size` parameters |
+| `GET /fraud-assessments?accountId=...` | One page of that account's assessments, newest first, over a bounded `size` and a cursor the previous page named |
 
-These routes serve a demonstration and support queries. Neither sits on any authorization path or any posting path. A caller that asks for an unsupported `sort` order receives `400` rather than a differently ordered page and no word about it.
+These routes serve a demonstration and support queries. Neither sits on any authorization path or any posting path. A caller that asks for an unsupported `sort` order receives `400` rather than a differently ordered page and no word about it, and so does one that asks for a `page` number.
+
+The collection route pages by position. It answers `nextPageExists` and, while that is true, a `nextCursor`; returning that cursor in the `X-Fraud-Cursor` header asks for the page after it. A page number is refused rather than served because an offset is reached by reading and discarding every row before it, so the work would grow with the page asked for rather than with the page returned: page 1,000,000 at 200 rows would walk 200,000,000 entries to answer with 200. A cursor is a range read of `ix_fraud_assessment_account_cursor`, so the ten-thousandth page costs what the first one does. Every read is bound to the `accountId` of the request, so a cursor issued for one account reads no other account's rows.
 
 The management port answers `/actuator` and exposes `health,metrics,prometheus`. Health is open so a container probe can read it, and the metrics and Prometheus routes require the `MONITORING` role. The full request and response contract is [openapi.yaml](src/main/resources/openapi.yaml), and that file is hand-written: the aggregator build bans every documentation-generation library, so no generated description can drift from the code.
 
 ### Two controls in front of every route
 
-`config/CrossSiteRequestFilter` guards state change: a `POST`, `PUT`, `PATCH` or `DELETE` must carry `X-CardDemo-Request`, must not declare a cross-site `Sec-Fetch-Site`, and must not carry a foreign `Origin`. This service answers reads alone, so no state-changing route exists here to forge today. That is the reason the filter is here rather than a reason it is not: the read-only shape becomes an enforced property instead of a fact a reader has to go and check, and the first write added inherits the control rather than needing someone to remember it. A refusal answers 403 and counts `carddemo.fraud.requests.cross.site.refused`. `GET`, `HEAD`, `OPTIONS` and `TRACE` pass untouched, which is why no path is exempted: the liveness probe and the metrics scrape are reads.
+`config/CrossSiteRequestFilter` guards state change: a `POST`, `PUT`, `PATCH` or `DELETE` must carry `X-CardDemo-Request`, must not declare a cross-site `Sec-Fetch-Site`, and must not carry a foreign `Origin`. This service answers reads alone, so no state-changing route exists here to forge today. That is the reason the filter is here rather than a reason it is not. The read-only shape becomes an enforced property instead of a fact a reader has to go and check, and the first write added inherits the control rather than needing someone to remember it. A refusal answers 403 and counts `carddemo.fraud.requests.cross.site.refused`. `GET`, `HEAD`, `OPTIONS` and `TRACE` pass untouched, which is why no path is exempted: the liveness probe and the metrics scrape are reads.
 
 `config/RequestRateCeilingFilter` bounds volume. It runs one place ahead of the security chain, because a refusal has to cost less than the attempt it refuses and an attempt that reached the chain would already have paid for a bcrypt verification.
 
@@ -169,7 +171,9 @@ A record is attempted three times, one second apart: `carddemo.consumer.retry.ma
 
 ## Observability
 
-Nine meters carry this service. **None of them has a source ancestor.** This service has no COBOL predecessor at all, so there is no counter in `app/cbl/` for any of them to derive from.
+Ten meters carry the work below, and two more are registered by the request filters and
+described with them: `carddemo.fraud.requests.cross.site.refused` and
+`carddemo.fraud.requests.throttled`. **None of them has a source ancestor.** This service has no COBOL predecessor at all, so there is no counter in `app/cbl/` for any of them to derive from.
 
 | Meter | Kind | What moves it |
 | :--- | :--- | :--- |
@@ -179,13 +183,18 @@ Nine meters carry this service. **None of them has a source ancestor.** This ser
 | `carddemo.fraud.failures` | Counter | One failed attempt, tagged by stage |
 | `carddemo.fraud.dead.letters` | Counter | One spent record, tagged `outcome=published` or `outcome=failed` |
 | `carddemo.fraud.outbox.abandoned` | Counter | One outbox row the relay gave up on, either because its attempts ran out or because its failure is permanent |
+| `carddemo.fraud.outbox.due` | Gauge | Outbox rows due for an attempt now, being the backlog not yet published. A gauge rather than a counter, because a backlog is a state and not an event |
+| `carddemo.fraud.outbox.oldest.due.age` | Gauge | Seconds the longest-waiting due outbox row has waited, zero when none is due. It separates a service working through a burst from a stopped relay |
+| `carddemo.fraud.duplicates.skipped` | Counter | One delivery whose event already carried a marker, so no assessment ran |
 | `carddemo.fraud.processing.latency` | Timer | Consumer duration to commit |
+
+`duplicates.skipped` shares a denominator with none of them. A replay is acknowledged, writes nothing and raises no failure, so it is the one outcome that is both expected and otherwise invisible: read beside `events.consumed` it separates a quiet service from one working through a redelivered backlog.
 
 `failures` counts attempts and `dead.letters` counts records, so summing the two is never meaningful. A fourth `stage` value would have overlapped `deserialize`, because a record spent at deserialization is also a terminal record.
 
 `outbox.abandoned` counts rows and answers the one question the other two cannot: whether a row this service gave up on was actually named anywhere. Read beside the `published` series of `dead.letters`, the two agree while every abandonment reaches the topic, and `abandoned` runs ahead while a diagnostic is still owed. A row that owes one is offered again at the head of every later pass, so `abandoned` running ahead means delayed rather than lost.
 
-Two things reach that counter, and both are abandonments. A row whose ten attempts ran out is one. A row whose failure is permanent — a payload the schema document refuses, or one no record type reads — is the other, and it is given up on outright rather than after ten identical refusals. Reading `abandoned` beside `events.published` is what makes the pair meaningful: a permanent failure used to close its row as published, so an assessment that reached nobody was counted and stored as one the broker had accepted, and this counter never moved for it.
+Two things reach that counter, and both are abandonments. A row whose ten attempts ran out is one. A row whose failure is permanent — a payload the schema document refuses, or one no record type reads — is the other, and it is given up on outright rather than after ten identical refusals. Reading `abandoned` beside `events.published` is what makes the pair meaningful. A permanent failure used to close its row as published, so an assessment that reached nobody was counted and stored as one the broker had accepted, and this counter never moved for it.
 
 <br/>
 
@@ -218,10 +227,10 @@ No other service reads this schema, and this service reads no other schema. The 
 
 All three growing tables are swept. `RetentionSweep` runs hourly and issues a bounded, ordered delete of at most five hundred rows per statement against `outbox_event`, `processed_event` and `velocity_window`, repeating each until it comes back short or a thirty-second per-table ceiling stops it. The ceiling is what keeps one large table from starving the other two; the repeat is what keeps a bounded statement from leaving a permanent backlog behind.
 
-`fraud_assessment` and `velocity_window` are the two business tables here, and each declared its horizon in a `COMMENT ON TABLE` before any code applied it. `FRAUD_ASSESSMENT_RETENTION_DAYS` supplies the first and defaults to ninety days, measured from `assessed_at`. `FRAUD_VELOCITY_RETENTION_DAYS` supplies the second and defaults to seven days, measured from `window_start`, and it is the one setting here that is not free to be any value: nothing reads a window once its span elapses, so every authorization otherwise leaves a row behind for ever, and a horizon shorter than `carddemo.fraud.risk.velocity-window-minutes` would delete the bucket a live authorization is counting into. The symptom would be a burst that quietly stopped triggering the velocity rule rather than an error anyone could see, so the service refuses to start when it does not, which is the only moment at which refusing costs nothing. Both rows are pseudonymous rather than anonymous, because their account and transaction identifiers resolve to a named customer through the account and ledger services, so both horizons are privacy horizons and not only housekeeping.
+`fraud_assessment` and `velocity_window` are the two business tables here, and each declared its horizon in a `COMMENT ON TABLE` before any code applied it. `FRAUD_ASSESSMENT_RETENTION_DAYS` supplies the first and defaults to ninety days, measured from `assessed_at`. `FRAUD_VELOCITY_RETENTION_DAYS` supplies the second and defaults to seven days, measured from `window_start`. It is the one setting here that is not free to be any value. Nothing reads a window once its span elapses, so every authorization otherwise leaves a row behind for ever. A horizon shorter than `carddemo.fraud.risk.velocity-window-minutes` would delete the bucket a live authorization is counting into. The symptom would be a burst that quietly stopped triggering the velocity rule rather than an error anyone could see, so the service refuses to start when it does not, which is the only moment at which refusing costs nothing. Both rows are pseudonymous rather than anonymous, because their account and transaction identifiers resolve to a named customer through the account and ledger services, so both horizons are privacy horizons and not only housekeeping.
 
 Flyway owns schema creation. The entity model is validated against the migrated schema and never generates it, so the column types derived from the source copybooks survive. Why the velocity window is a relational table rather than a cache sits in the [Decision Log](../../docs/decision-log.md). That log carries the reasoning behind every choice this document merely states.
-Flyway owns schema creation and runs four migrations on every start, in this order:
+Flyway owns schema creation and runs eight migrations on every start, in this order:
 
 | Migration | What it does |
 | :--- | :--- |
@@ -229,6 +238,10 @@ Flyway owns schema creation and runs four migrations on every start, in this ord
 | `V3__velocity_total_headroom.sql` | Widens the accumulated-amount column of `velocity_window` so a full hour of authorizations cannot overflow it |
 | `V4__processed_event_topic_key.sql` | Makes the consumed topic part of the duplicate-delivery marker's identity |
 | `V5__outbox_dead_letter_state.sql` | Adds the dead-letter obligation an abandoned outbox row carries, its published stamp and the partial index the relay reads the owed rows from |
+| `V6__assessment_paging_tiebreaker.sql` | Rebuilds the composite index the collection route reads with `transaction_id DESC` as its trailing column, matching the total order the paged finder now applies |
+| `V7__outbox_correlation.sql` | Adds `outbox_event.correlation_id` and `outbox_event.causation_id`, so the assessment the relay publishes names the authorization it came from and the event that caused it |
+| `V8__outbox_aggregate_head_index.sql` | Adds `ix_outbox_event_aggregate_head`, the partial index the relay's aggregate-head claim reads. That claim answers with the due head row of each account, so two events of one account are never in flight at once and every consumer of the account's partition reads them in the order this service wrote them. Without the index the correlated check re-read an account's backlog for every candidate row |
+| `V9__fraud_assessment_account_cursor_index.sql` | Adds `ix_fraud_assessment_account_cursor` over the account, the assessment time descending and the transaction identifier descending, and drops the two indexes that carried only a leading part of it. The read of one account's assessments walks that order from a named position rather than counting rows to an offset, so a page costs the same wherever in the history it falls. The primary key is in the index because `assessed_at` is not unique: one consumer batch can record several verdicts on the same microsecond, and a boundary inside such a group would repeat one row and skip another |
 
 There is no `V2`. The number was used by a seed migration that was withdrawn: this schema seeds nothing, because every row it holds is derived from events it consumes rather than from a repository fixture. Flyway does not require contiguous versions, and reusing the number later would make an already-migrated database disagree with a fresh one, so the gap stays.
 
@@ -272,7 +285,7 @@ Adding a risk rule means adding a class. `RiskRule` declares two methods: `evalu
 
 Adding a consumer of `fraud.assessed` needs no change to this service. Subscribe under a new consumer group and read. The platform is built for that extension.
 
-Swapping the event bus means one new implementation of `messaging/EventPublisherPort` and nothing else. That interface is the platform's single event-bus seam, and `messaging/KafkaEventPublisher` is the shipped implementation of it: `outbox/OutboxRelay` holds the port and no broker type at all, so the relay, the outbox contract, the claim protocol and the abandonment route all survive the substitution. The port takes the event record rather than serialized text, because this service's producer is built with `JsonSchemaValidatingSerializer` and that serializer is where the payload is written, validated against the schema document its event type names, and checked against the topic it is bound to.
+Swapping the event bus means one new implementation of `messaging/EventPublisherPort` and nothing else. That interface is the platform's single event-bus seam, and `messaging/KafkaEventPublisher` is the shipped implementation of it. `outbox/OutboxRelay` holds the port and no broker type at all, so the relay, the outbox contract, the claim protocol and the abandonment route all survive the substitution. The port takes the event record rather than serialized text, because this service's producer is built with `JsonSchemaValidatingSerializer`. That serializer is where the payload is written, validated against the schema document its event type names, and checked against the topic it is bound to.
 
 Running a second replica needs no change either. Each relay instance records its own identity in `outbox_event.claimed_by`, and the identity defaults to the container hostname — a Pod name under Kubernetes, a container identifier under Compose — so two replicas never claim rows under one name. `OUTBOX_RELAY_INSTANCE_ID` overrides it, and pinning one value across replicas is the one way to reintroduce the collision.
 
@@ -288,63 +301,51 @@ Follow-up work found while building this service, including the owner decisions 
 | Build tool | Apache Maven 3.9.16 |
 | Container runtime | `bellsoft/liberica-openjre-debian:25.0.4-9` |
 | Infrastructure images | `apache/kafka:4.2.1` in KRaft mode, and `postgres:18.4` |
+| Docker Engine and Compose | 29.7.0 or later with 5.3.1 or later |
 | Host ports | 8083 onto container port 8080, and 9083 onto container port 9080 |
 | Database and schema | `carddemo_fraud`, schema `fraud_service`, login `carddemo_fraud_svc` |
 | Broker address | `kafka:29092` inside the compose network, `localhost:9092` from the host |
 | Consumer group | `fraud-detection` |
+| Listener concurrency | 3 threads, one per partition of the authorized-transaction topic |
+| Scheduler threads | 2, one for the relay and one for the retention sweep |
+| Datasource pool | at most 10 connections, 4 kept idle |
+
+The build runtime and the build tool are exact because the enforcer plugin refuses a build outside `[25,26)` and `[3.9.16,3.10.0)`; a newer Maven fails rather than passes. The four image tags are exact because each is pinned by digest as well. Docker Engine and Compose are floors: nothing here constrains them, so the versions given are the ones this was exercised on.
 
 Generate every credential first, from `card-platform/`. This service reads `FRAUD_DB_PASSWORD` and `FRAUD_KAFKA_PASSWORD`, and neither carries a default. The stack refuses to start on a placeholder or on an unset value, so a published password never reaches a running service. Nothing below prompts.
 
 ```bash
-cp .env.example .env
-
-for variable in POSTGRES_PASSWORD \
-  AUTHORIZATION_DB_PASSWORD LEDGER_DB_PASSWORD FRAUD_DB_PASSWORD \
-  NOTIFICATION_DB_PASSWORD ACCOUNT_DB_PASSWORD CARD_DB_PASSWORD \
-  KAFKA_ADMIN_PASSWORD \
-  AUTHORIZATION_KAFKA_PASSWORD LEDGER_KAFKA_PASSWORD FRAUD_KAFKA_PASSWORD \
-  NOTIFICATION_KAFKA_PASSWORD ACCOUNT_KAFKA_PASSWORD CARD_KAFKA_PASSWORD; do
-  sed -i "s|^${variable}=.*|${variable}=$(openssl rand -base64 24 | tr -d '/+=')|" .env
-done
-
-export ADMIN_PASSWORD="$(openssl rand -base64 18 | tr -d '/+=')"
-export USER_PASSWORD="$(openssl rand -base64 18 | tr -d '/+=')"
-export MONITORING_PASSWORD="$(openssl rand -base64 18 | tr -d '/+=')"
-
+# The hash helper inside the script reads spring-security-crypto out of the local Maven
+# repository, so this has to have run once on this machine.
 mvn -B -ntp -DskipTests package
 
-CRYPTO_CP="$(find ~/.m2/repository/org/springframework/security/spring-security-crypto \
-  -name 'spring-security-crypto-*.jar' | sort | tail -1):\
-$(find ~/.m2/repository/commons-logging/commons-logging \
-  -name 'commons-logging-*.jar' | sort | tail -1):\
-$(find ~/.m2/repository/org/springframework/spring-core \
-  -name 'spring-core-*.jar' | sort | tail -1)"
+# install -m 600, never cp: this file holds fourteen passwords and the card-token key a
+# moment later, and cp creates it under the umask -- world-readable on a default account.
+install -m 600 .env.example .env
 
-hash_password() {
-  DEMO_PASSWORD="$1" jshell --class-path "$CRYPTO_CP" -s - <<'JSHELL' 2>/dev/null | grep -m1 '^{bcrypt}'
-System.out.println(org.springframework.security.crypto.factory.PasswordEncoderFactories.createDelegatingPasswordEncoder().encode(System.getenv("DEMO_PASSWORD")));
-/exit
-JSHELL
-}
+# Fill all nineteen REPLACE markers: fourteen passwords, one card-token key and four
+# {bcrypt} identity hashes. This one command generates every one of them, keeps each
+# plaintext out of the environment, and writes the four demo passwords to
+# .demo-credentials with owner-only permissions. Re-running changes nothing already set.
+scripts/generate-env.sh
 
-sed -i "s|^ADMIN_PASSWORD_HASH=.*|ADMIN_PASSWORD_HASH='$(hash_password "$ADMIN_PASSWORD")'|" .env
-sed -i "s|^USER_PASSWORD_HASH=.*|USER_PASSWORD_HASH='$(hash_password "$USER_PASSWORD")'|" .env
-sed -i "s|^MONITORING_PASSWORD_HASH=.*|MONITORING_PASSWORD_HASH='$(hash_password "$MONITORING_PASSWORD")'|" .env
-
-grep -n '^[A-Z_]*=.*REPLACE' .env || echo "all 17 values are set"
+# Prove none is left. The count is read from the file, so it cannot disagree with it.
+grep -c '^[A-Za-z_][A-Za-z0-9_]*=.*REPLACE' .env
 ```
 
-Keep the single quotes on the three hashes. A bcrypt value is full of `$`, and Compose expands `$` in an unquoted dotenv value. `mvn package` above builds every module, so every image has an archive to copy.
+`scripts/generate-env.sh` is the canonical path and reads the credential names out of `.env.example`, so a credential added there needs no edit here. [Onboarding](../../docs/onboarding.md) sets out the same nineteen values by hand, including the `jshell` invocation that encodes each `{bcrypt}` hash and the single quotes Compose needs around one. `mvn package` below builds every module, so every image has an archive to copy.
 
-Run this module's own tests, then start it. The `-am` flag builds the two libraries it depends on first, and the `mvn package` in the block above already produced every archive the images copy. Starting a container without packaging first leaves the `COPY target/*.jar` step nothing to copy.
+Run this module's own tests, then start it. The `-am` flag builds the two libraries it depends on first. The image build needs nothing from `target/`. The `Dockerfile` compiles this module itself in a builder stage, from the `card-platform` context that carries the aggregator descriptor and both shared libraries.
 
 ```bash
-mvn -B -pl services/fraud-detection-service -am test
+mvn -B -pl services/fraud-detection-service -am verify
 docker compose up -d --build --wait postgres kafka fraud-detection-service
 curl -fsS http://localhost:9083/actuator/health
 ```
 
-Watch the fan-out. An approved authorization publishes one `TransactionAuthorized` — a request refused before the decision, by authentication or by validation, publishes none, and so does a decline whose card resolved no account — and the verdict appears on `fraud.assessed` a moment later without the caller having waited for it:
+`verify` rather than `test`, because Surefire and Failsafe each run a different half. Surefire runs the unit and contract classes. Failsafe runs the six `*IT.java` classes, which its default pattern matches and Surefire's does not: `VelocityWindowConcurrencyIT`, `OutboxAtomicityIT`, `EntitySchemaValidationIT`, `FraudRouteSecurityIT`, `ConfigurationInvariantsIT` and `ConsumeToPublishIT`. They start PostgreSQL and Kafka through Testcontainers, and the Docker they need is the same Docker the next line uses.
+
+Watch the fan-out. An approved authorization publishes one `TransactionAuthorized`. A request refused before the decision, by authentication or by validation, publishes none, and a decline publishes one `TransactionDeclined`, which this service does not consume. The verdict appears on `fraud.assessed` a moment later, without the caller having waited for it:
 
 ```bash
 docker compose exec kafka /opt/kafka/bin/kafka-console-consumer.sh \
@@ -360,7 +361,21 @@ curl -fsS -u "admin001:$ADMIN_PASSWORD" \
   "http://localhost:8083/fraud-assessments?accountId=00000000050"
 ```
 
-One approved authorization of `+00000504.77` against account `00000000050` answers with a risk score of 55, `flagged` true, and the two rules that objected: `AMOUNT_ANOMALY` and `MERCHANT_CATEGORY`.
+One approved authorization of `+00000504.77` against account `00000000050` answers with a risk score of 55, `flagged` true, and the two rules that objected: `AMOUNT_ANOMALY` and `MERCHANT_CATEGORY`. The verdict sits in the `assessments` array, alongside `nextPageExists`.
+
+Walking a longer history takes two commands. The first asks for a small page and reads the cursor out of it, and the second returns that cursor:
+
+```bash
+CURSOR=$(curl -fsS -u "admin001:$ADMIN_PASSWORD" \
+  "http://localhost:8083/fraud-assessments?accountId=00000000050&size=1" \
+  | python3 -c "import json,sys; print(json.load(sys.stdin).get('nextCursor',''))")
+
+curl -fsS -u "admin001:$ADMIN_PASSWORD" \
+  -H "X-Fraud-Cursor: $CURSOR" \
+  "http://localhost:8083/fraud-assessments?accountId=00000000050&size=1"
+```
+
+An empty `CURSOR` means the first command already reached the end of that account's history, which is what `nextPageExists` false says.
 
 The platform-wide setup path, from a clean machine to a running stack, lives in [Onboarding](../../docs/onboarding.md) and the [Platform README](../../README.md). Neither is repeated here.
 

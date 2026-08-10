@@ -1,5 +1,6 @@
 package com.carddemo.ledger.domain;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -19,17 +20,14 @@ import static org.mockito.Mockito.when;
 import com.carddemo.cobol.PicClause;
 import com.carddemo.events.DeclineReason;
 import com.carddemo.events.TransactionDeclined;
+import com.carddemo.ledger.LedgerServiceDatabase;
 import com.carddemo.ledger.TestIdentityPasswords;
-import com.carddemo.ledger.config.ObservabilityConfig.LedgerMeters;
-import com.carddemo.ledger.config.ObservabilityConfig;
 import com.carddemo.ledger.domain.RejectRecorder.FeedTransaction;
 import com.carddemo.ledger.entity.RejectedTransactionEntity;
 import com.carddemo.ledger.outbox.OutboxRelay;
 import com.carddemo.ledger.outbox.OutboxWriter;
 import com.carddemo.ledger.repository.OutboxEventRepository;
 import com.carddemo.ledger.repository.RejectedTransactionRepository;
-import io.micrometer.core.instrument.MeterRegistry;
-import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
@@ -58,8 +56,6 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -153,20 +149,12 @@ class RejectRecorderTest {
     /** The store the {@code WRITE} at {@code :L451} became, the writer beside it, the subject. */
     private RejectedTransactionRepository rejectedTransactions;
 
-    /** Registry the reject counter registers with, read by the counting assertion. */
-    private MeterRegistry registry;
-
-    /** The recording surface the subject raises its counter through. */
-    private LedgerMeters meters;
-
     private RejectRecorder subject;
 
     @BeforeEach
     void buildRecorder() {
         rejectedTransactions = mock(RejectedTransactionRepository.class);
-        registry = new SimpleMeterRegistry();
-        meters = new ObservabilityConfig().ledgerMeters(registry);
-        subject = new RejectRecorder(rejectedTransactions, meters);
+        subject = new RejectRecorder(rejectedTransactions);
     }
 
     /** Builds a refusal from fixture record 1 carrying {@code amount}. */
@@ -308,6 +296,19 @@ class RejectRecorderTest {
             assertDoesNotThrow(
                     () -> subject.recordReject(refusal(AMOUNT), DeclineReason.OVER_CREDIT_LIMIT),
                     "counted at :L214, reported at :L229-L230, never raised");
+
+            ArgumentCaptor<RejectedTransactionEntity> recorded =
+                    ArgumentCaptor.forClass(RejectedTransactionEntity.class);
+            verify(rejectedTransactions).save(recorded.capture());
+            assertAll(
+                    () -> assertEquals(DeclineReason.OVER_CREDIT_LIMIT.code(),
+                            recorded.getValue().getRejectReasonCode(),
+                            "the refusal is recorded rather than merely tolerated: :L446-L465"
+                                    + " writes a reject record on this path, and a recorder that"
+                                    + " swallowed the refusal would also raise nothing"),
+                    () -> assertEquals(DeclineReason.OVER_CREDIT_LIMIT.description(),
+                            recorded.getValue().getRejectReasonDescription(),
+                            "carrying the verbatim source description of the 80-byte trailer"));
         }
 
         @Test
@@ -324,8 +325,8 @@ class RejectRecorderTest {
         }
 
         @Test
-        @DisplayName("takes the store and the meters, and makes the write one required transaction")
-        void takesTheStoreAndTheMeters() throws NoSuchMethodException {
+        @DisplayName("takes the store alone, and makes the write one required transaction")
+        void takesTheStoreAlone() throws NoSuchMethodException {
             Constructor<?>[] constructors = RejectRecorder.class.getDeclaredConstructors();
             Set<String> held = new LinkedHashSet<>();
             for (Field field : RejectRecorder.class.getDeclaredFields()) {
@@ -337,12 +338,14 @@ class RejectRecorderTest {
             }
 
             assertEquals(1, constructors.length, "one way to build it");
-            assertEquals(List.of(RejectedTransactionRepository.class, LedgerMeters.class),
+            assertEquals(List.of(RejectedTransactionRepository.class),
                     List.of(constructors[0].getParameterTypes()),
-                    "the store and the counter one reject raises, and no event writer");
-            assertEquals(Set.of("RejectedTransactionRepository", "LedgerMeters", "Clock"), held,
-                    "ordinary traffic, so no log writer; and no OutboxWriter, because the decline "
-                            + "this row accounts for was published by the authorization service");
+                    "the store alone, and no event writer");
+            assertEquals(Set.of("RejectedTransactionRepository", "Clock"), held,
+                    "no meter, because the reject counter is raised by the consumer after the "
+                            + "commit; ordinary traffic, so no log writer; and no OutboxWriter, "
+                            + "because the decline this row accounts for was published by the "
+                            + "authorization service");
             java.lang.reflect.Method recordReject = RejectRecorder.class.getMethod(
                     "recordReject", FeedTransaction.class, DeclineReason.class);
             assertEquals(void.class, recordReject.getReturnType(), ":L465 EXIT yields no value");
@@ -696,7 +699,7 @@ class RejectRecorderTest {
     class FailurePath {
 
         @Test
-        @DisplayName("hands a store failure to the caller and counts no reject")
+        @DisplayName("hands a store failure to the caller")
         void handsAStoreFailureToTheCaller() {
             when(rejectedTransactions.save(any(RejectedTransactionEntity.class)))
                     .thenThrow(new DataIntegrityViolationException("rejected_transaction refused"));
@@ -704,10 +707,41 @@ class RejectRecorderTest {
             assertThrows(DataIntegrityViolationException.class,
                     () -> subject.recordReject(refusal(AMOUNT), DeclineReason.OVER_CREDIT_LIMIT),
                     ":L452-L464 becomes a failure the caller sees");
-            assertEquals(0.0D,
-                    registry.counter("carddemo.ledger.transactions.processed",
-                            "outcome", "rejected").count(),
-                    "a refused write raised the counter for a row that does not exist");
+        }
+
+        /**
+         * This class raises no counter at all, which is what keeps a rollback from leaving one.
+         *
+         * <p>The reject counter used to be raised here, beside the row and inside the transaction, so
+         * a rollback left a durable increment reporting a reject the store never kept. The reflective
+         * check is what catches a counter reintroduced here: a count added back would pass every
+         * behavioural assertion in this class, because the failure it causes is only observable after
+         * a rollback.
+         */
+        @Test
+        @DisplayName("no field and no method of this class reaches a meter")
+        void noFieldOfThisClassReachesAMeter() {
+            for (Field field : RejectRecorder.class.getDeclaredFields()) {
+                assertNotEquals("LedgerMeters", field.getType().getSimpleName(),
+                        "a meter here would be raised inside the transaction again");
+            }
+            assertFalse(sourceOfRecorder().contains("meters."),
+                    "the source raises no counter, so a rollback leaves none behind");
+        }
+
+        /**
+         * Reads the delivered source of the class under test.
+         *
+         * @return its text
+         */
+        private String sourceOfRecorder() {
+            try {
+                return java.nio.file.Files.readString(java.nio.file.Path.of(
+                        "src/main/java/com/carddemo/ledger/domain/RejectRecorder.java"));
+            } catch (java.io.IOException unreadable) {
+                throw new AssertionError("the delivered source of RejectRecorder is unreadable",
+                        unreadable);
+            }
         }
     }
 
@@ -725,7 +759,6 @@ class RejectRecorderTest {
      * broker is reached: a stand-in replaces the producer template.
      */
     @Nested
-    @Testcontainers
     @SpringBootTest(properties = {
         // The listener of messaging/TransactionAuthorizedConsumer must not retry an absent broker.
         "spring.kafka.listener.auto-startup=false",
@@ -748,16 +781,13 @@ class RejectRecorderTest {
         /** A generated value for this run, matching no provider credential shape. */
         private static final String DATABASE_SECRET = "a-generated-database-value-for-the-boundary";
 
-        /** The image tag the compose stack pins. */
-        @Container
-        static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:18.4")
-                .withDatabaseName("carddemo_ledger")
-                .withUsername(DATABASE_LOGIN)
-                .withPassword(DATABASE_SECRET);
-
-        static {
-            POSTGRES.start();
-        }
+        /**
+         * The one container the module fork runs, which this class reads a login from.
+         *
+         * <p>{@link LedgerServiceDatabase} owns it and hands this class a database of its own inside it.
+         * Nothing here starts or stops a container.
+         */
+        static final PostgreSQLContainer POSTGRES = LedgerServiceDatabase.container();
 
         /** Replaces the producer template, so the context starts with no broker reachable. */
         @MockitoBean
@@ -775,7 +805,7 @@ class RejectRecorderTest {
 
         @DynamicPropertySource
         static void containerDatasource(DynamicPropertyRegistry registry) {
-            registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
+            registry.add("spring.datasource.url", () -> LedgerServiceDatabase.urlFor(RejectRecorderTest.class));
             registry.add("spring.datasource.username", POSTGRES::getUsername);
             registry.add("spring.datasource.password", POSTGRES::getPassword);
         }

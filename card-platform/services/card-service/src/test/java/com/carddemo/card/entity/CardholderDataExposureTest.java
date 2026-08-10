@@ -357,7 +357,7 @@ class CardholderDataExposureTest {
         void theReaderFindsTheMembersTheContractDeclares() {
             List<String> members = new ArrayList<>();
             Matcher member = JSON_MEMBER_NAME.matcher(
-                    readClasspath("schemas/card-updated-v2.json"));
+                    readClasspath("schemas/card-updated-v1.json"));
             while (member.find()) {
                 members.add(member.group(1));
             }

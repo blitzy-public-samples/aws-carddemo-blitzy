@@ -26,12 +26,16 @@ import org.junit.jupiter.api.io.TempDir;
  * Holds the committed bootstrap procedures against the files that advertise them.
  *
  * <p>Three documents told a reader to run {@code cp .env.example .env} and then
- * {@code docker compose up -d --build}, and that pair cannot start a clean clone: every
- * {@code Dockerfile} copies an archive out of its own module's {@code target/} directory, which a
- * fresh checkout has none of, and Compose reads nineteen credentials nothing in this repository
- * supplies. {@code scripts/start-demo.sh} is the one command that performs those steps in the
- * order that works, and {@code deploy/k8s/load-images.sh} is the step a cluster needs before
- * {@code kubectl apply} because the six Deployments may never pull.
+ * {@code docker compose up -d --build}, and that pair cannot start a clean clone: Compose reads
+ * nineteen credentials nothing in this repository supplies. {@code scripts/start-demo.sh} is the one
+ * command that performs those steps in the order that works, and
+ * {@code deploy/k8s/load-images.sh} is the step a cluster needs before {@code kubectl apply}
+ * because the six Deployments may never pull.
+ *
+ * <p>The archive half of that failure is gone. Every {@code Dockerfile} now compiles its own module
+ * in a Java Development Kit 25 builder stage, so an image build needs no host packaging step and
+ * neither script depends on one. What remains is the credentials, which is why
+ * {@code scripts/generate-env.sh} exists.
  *
  * <p>Each assertion reads the shipped file, so a script that stops doing what a document promises
  * fails the unit-test phase rather than a demonstration.
@@ -544,12 +548,26 @@ class DemoBootstrapContractTest {
 
             assertTrue(script.contains("grep -m1 -o '<version>[^<]*</version>' pom.xml"),
                     "the tag is read out of pom.xml, so it cannot drift from the manifests");
+            assertTrue(script.contains("sed -n 's/^ *newTag: *//p' \"${kustomization}\""),
+                    "and it is checked against what the manifests actually request, rather than "
+                            + "assumed to agree with it");
             assertTrue(script.contains("--tag \"carddemo/${service}:${image_tag}\""),
                     "and every build uses it");
             assertTrue(script.contains("--file \"services/${service}/Dockerfile\""),
-                    "each image builds from its own module's Dockerfile and context");
-            assertTrue(script.contains("mvn -B -ntp -DskipTests package"),
-                    "a missing archive is packaged rather than reported as a COPY failure");
+                    "each image builds from its own module's Dockerfile");
+            assertFalse(script.contains("\"services/${service}\"\n"),
+                    "the module directory is no longer the context: the builder stage compiles the "
+                            + "module and needs the aggregator descriptor and both shared libraries, "
+                            + "neither of which is inside it");
+            assertTrue(script.contains("--tag \"carddemo/${service}:${image_tag}\" \\\n        ."),
+                    "the context is the platform directory, given as the last argument");
+            assertTrue(script.contains("DOCKER_BUILDKIT=1 docker build"),
+                    "each builder stage mounts a cache for the local Maven repository, which the "
+                            + "legacy builder does not support");
+            assertFalse(script.contains("mvn "),
+                    "this script requires Docker and nothing else now: every image compiles its "
+                            + "own module inside a builder stage, so no Maven installation and no "
+                            + "host archive has to be present");
             assertTrue(script.contains("crictl images") && script.contains("minikube image ls"),
                     "the node's image list is read back, because a load that silently did nothing"
                             + " looks identical until the first apply");
@@ -577,8 +595,14 @@ class DemoBootstrapContractTest {
                             "### 11. A local Kubernetes cluster cannot pull the six service images"),
                     "the pitfall list has to carry it, because it is where a reader looks after a"
                             + " Pod refuses to start");
-            assertTrue(onboarding.contains("kubectl -n carddemo rollout restart deployment"),
+            assertTrue(onboarding.contains("kubectl -n carddemo rollout restart"),
                     "a rebuilt image changes nothing until the Pods restart");
+            for (String service : SERVICES) {
+                assertTrue(onboarding.contains("deployment/" + service),
+                        "the restart names " + service + " rather than the whole namespace: a bare"
+                                + " `rollout restart deployment` cycles the broker and the database"
+                                + " too, dropping every consumer group for no reason");
+            }
 
             String readme = read(platformDirectory().resolve("README.md"));
             assertTrue(readme.contains("load-images.sh"),
@@ -588,6 +612,60 @@ class DemoBootstrapContractTest {
             assertTrue(script.contains("31-secret.example.yaml"),
                     "the printed apply order has to keep the Secret template excluded, which is the"
                             + " order 00-namespace.yaml documents");
+        }
+
+        /**
+         * Three things a reader can act on have to be true at once here, and a review found all
+         * three wrong. The apply command has to be one that works: a glob over this folder reaches
+         * {@code kustomization.yaml}, which is not an API object, so {@code kubectl apply -f} fails
+         * on it. The image step has to be one that puts images where a node looks: a host
+         * {@code docker build} leaves them in this machine's daemon, which is not kind's or
+         * minikube's store. And a tag override has to either reach the manifests or be refused,
+         * because {@code imagePullPolicy: Never} turns a tag the manifests do not request into the
+         * same {@code ErrImageNeverPull} as no image at all.
+         */
+        @Test
+        @DisplayName("names an apply path that works, an image step that loads, and a tag that reaches the manifests")
+        void namesAnApplyPathThatWorksAndATagThatReachesTheManifests() {
+            String script = read(platformDirectory().resolve(LOAD_IMAGES));
+            String namespace = read(kubernetesDirectory().resolve("00-namespace.yaml"));
+            String clusterReadme = read(kubernetesDirectory().resolve("README.md"));
+            String onboarding = read(platformDirectory().resolve("docs/onboarding.md"));
+
+            for (String document : List.of(script, namespace, clusterReadme, onboarding)) {
+                assertTrue(document.contains("apply -k "),
+                        "every document that states how to apply these manifests must name the"
+                                + " kustomize entry point");
+                assertFalse(document.contains("xargs -n1 kubectl apply -f"),
+                        "and none may name the glob apply, which fails on kustomization.yaml");
+            }
+
+            assertTrue(script.contains("IMAGE_TAG is '${image_tag}' but the manifests request"),
+                    "an IMAGE_TAG the manifests do not request has to be refused by name");
+            assertTrue(script.contains("kustomize edit set image"),
+                    "and the refusal has to print the command that changes what they request");
+            assertTrue(script.contains("ErrImageNeverPull"),
+                    "the refusal has to name the failure it is preventing");
+            assertTrue(script.contains("requests '${manifest_tag}' but pom.xml declares"),
+                    "drift between kustomization.yaml and the project version has to be caught too,"
+                            + " because Compose and the pipeline build the project version");
+
+            String restart = "kubectl -n carddemo rollout restart ${restart_targets}";
+            assertTrue(script.contains(restart),
+                    "the printed restart has to name its targets");
+            for (String service : SERVICES) {
+                assertTrue(script.contains("deployment/${service}"),
+                        "and build them from the six service names");
+            }
+            assertFalse(script.contains("rollout restart deployment\n"),
+                    "a bare namespace-wide restart cycles Kafka and PostgreSQL as well");
+
+            assertTrue(clusterReadme.contains("deploy/k8s/load-images.sh"),
+                    "the cluster README's own step 1 has to be the script, not a build loop that"
+                            + " leaves a kind or minikube node with nothing to run");
+            assertFalse(clusterReadme.contains("docker build -f \"services/${service}/Dockerfile\""),
+                    "and it must not restate the build loop beside the script, which is how the two"
+                            + " came to disagree");
         }
     }
 
@@ -646,8 +724,13 @@ class DemoBootstrapContractTest {
         return pattern.matcher(text).results().map(match -> match.group(1)).toList();
     }
 
+    /** The folder holding the cluster manifests, the kustomization and their README. */
+    private static Path kubernetesDirectory() {
+        return platformDirectory().resolve("deploy/k8s");
+    }
+
     private static Path firstManifestStartingWith(String prefix) {
-        Path directory = platformDirectory().resolve("deploy/k8s");
+        Path directory = kubernetesDirectory();
         try (var entries = Files.list(directory)) {
             return entries
                     .filter(path -> path.getFileName().toString().startsWith(prefix + "-"))

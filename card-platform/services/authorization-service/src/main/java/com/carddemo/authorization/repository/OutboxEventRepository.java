@@ -5,6 +5,7 @@ import jakarta.persistence.LockModeType;
 import jakarta.persistence.QueryHint;
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import org.springframework.data.domain.Limit;
 import org.springframework.data.jpa.repository.Lock;
@@ -181,4 +182,46 @@ public interface OutboxEventRepository extends ListCrudRepository<OutboxEventEnt
      */
     List<OutboxEventEntity> findByDeadLetterStateOrderByLastAttemptAtAsc(
             OutboxEventEntity.DeadLetterState deadLetterState, Limit limit);
+
+    /**
+     * Counts the rows awaiting an attempt whose attempt is already due.
+     *
+     * <p>Readiness reported only whether a row had been abandoned, which happens after every attempt
+     * of that row is spent. A broker unreachable for minutes therefore left a growing backlog and a
+     * readiness document with nothing in it, because no row had run out of attempts yet. This is the
+     * number that moves first.
+     *
+     * <p>The count is restricted to rows that are due, so a row deliberately waiting out its backoff
+     * is not reported as a backlog. Both columns it reads are the two of the
+     * {@code relay_state, next_attempt_at} index, so the count is answered from that index.
+     *
+     * @param now the current time, against which {@code next_attempt_at} is compared
+     * @return how many rows are due for an attempt, and zero when none is
+     */
+    @Query("""
+            SELECT COUNT(row) FROM OutboxEventEntity row
+            WHERE row.relayState =
+                    com.carddemo.authorization.entity.OutboxEventEntity.RelayState.PENDING
+              AND row.nextAttemptAt <= :now
+            """)
+    long countDueBefore(@Param("now") Instant now);
+
+    /**
+     * Returns when the longest-waiting due row became due, or empty when no row is due.
+     *
+     * <p>A count alone cannot separate a service that is busy from one that is stuck. Three rows due
+     * for forty minutes is a stopped relay, and three hundred due for two seconds is a burst being
+     * worked through. The age derived from this value is what tells them apart.
+     *
+     * @param now the current time, against which {@code next_attempt_at} is compared
+     * @return the earliest {@code next_attempt_at} among due rows, or empty when none is due
+     */
+    @Query("""
+            SELECT MIN(row.nextAttemptAt) FROM OutboxEventEntity row
+            WHERE row.relayState =
+                    com.carddemo.authorization.entity.OutboxEventEntity.RelayState.PENDING
+              AND row.nextAttemptAt <= :now
+            """)
+    Optional<Instant> findEarliestDueBefore(@Param("now") Instant now);
+
 }

@@ -1,5 +1,8 @@
 package com.carddemo.card.api;
 
+import com.carddemo.card.config.ObservabilityConfig;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -35,6 +38,7 @@ import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MissingRequestHeaderException;
+import org.springframework.dao.QueryTimeoutException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.servlet.HandlerMapping;
@@ -60,11 +64,20 @@ class CardApiExceptionHandlerTest {
 
     private CardApiExceptionHandler handler;
 
+    /** The registry the handler records infrastructure failures to, fresh for each test. */
+    private SimpleMeterRegistry registry;
+
+    /** The counter the handler holds, read to prove which outcomes move it. */
+    private Counter infrastructureFailures;
+
     /** Builds the handler before each test. */
     @BeforeEach
     void buildHandler() {
         validatorFactory = Validation.buildDefaultValidatorFactory();
-        handler = new CardApiExceptionHandler();
+        registry = new SimpleMeterRegistry();
+        infrastructureFailures = Counter.builder(ObservabilityConfig.METRIC_CARD_FAILURES)
+                .register(registry);
+        handler = new CardApiExceptionHandler(infrastructureFailures);
     }
 
     /** Closes the validator factory the test opened. */
@@ -317,7 +330,6 @@ class CardApiExceptionHandlerTest {
         }
     }
 
-    /** Any other fault. */
     /** A call the protocol refused. */
     @Nested
     @DisplayName("a call the protocol refused")
@@ -378,6 +390,7 @@ class CardApiExceptionHandlerTest {
         }
     }
 
+    /** Any other fault. */
     @Nested
     @DisplayName("any other fault")
     class OtherFaults {
@@ -419,6 +432,64 @@ class CardApiExceptionHandlerTest {
                 assertTrue(route.startsWith(CardController.BASE_PATH),
                         "every route of this service sits under the card collection: " + route);
             }
+        }
+    }
+
+    /**
+     * What moves the infrastructure failure counter, and what deliberately does not.
+     *
+     * <p>Both handlers below reported their failure in a log line and nowhere else, so nothing an
+     * operator watches moved when a read route could not reach the card table. The write path was
+     * already counted by {@code domain/CardUpdateService} and never arrives here, because a write that
+     * failed while holding the row answers through its own outcome chain. So these two increments cover
+     * the reads and cannot double count the writes.
+     */
+    @Nested
+    @DisplayName("the infrastructure failure counter")
+    class InfrastructureFailureCounting {
+
+        /** Asserts an unreachable card table is counted and not only logged. */
+        @Test
+        @DisplayName("rises once when the card table cannot be reached")
+        void risesOnceWhenTheCardTableCannotBeReached() {
+            handler.onDatastoreUnreachable(
+                    new QueryTimeoutException("canceling statement due to statement timeout"),
+                    onTheCollection());
+
+            assertEquals(1.0D, infrastructureFailures.count(),
+                    "a read that could not reach the card table has to move a series, or an operator "
+                            + "watching this service sees a healthy one while every read fails");
+        }
+
+        /** Asserts a fault inside the service is counted once. */
+        @Test
+        @DisplayName("rises once when the service faults")
+        void risesOnceWhenTheServiceFaults() {
+            handler.onFault(new IllegalStateException("broke"), onTheCollection());
+
+            assertEquals(1.0D, infrastructureFailures.count(), "one fault counts once");
+        }
+
+        /**
+         * Asserts a refusal leaves the counter alone.
+         *
+         * <p>Every handler here answers a caller who sent something this service will not serve. A
+         * counter that rose on those would report this service as failing whenever a client probed it,
+         * which is the reading the separate business and protocol answers exist to prevent.
+         */
+        @Test
+        @DisplayName("stays still for every refusal, whoever caused it")
+        void staysStillForEveryRefusal() {
+            handler.onUnreadableBody(new HttpMessageNotReadableException("x",
+                    (org.springframework.http.HttpInputMessage) null), onTheCardRoute());
+            handler.onMissingRequestValue(
+                    new MissingServletRequestParameterException("accountId", "String"),
+                    onTheCollection());
+            handler.onUnusableListRequest(
+                    new CardQueryService.UnusableListRequest("page too low"), onTheCollection());
+
+            assertEquals(0.0D, infrastructureFailures.count(),
+                    "a refusal is the caller's request and not this service's failure");
         }
     }
 
@@ -591,7 +662,7 @@ class CardApiExceptionHandlerTest {
                 new IllegalArgumentException("inner " + sentinel));
 
         java.util.List<ILoggingEvent> lines = recordedLines(() ->
-                new CardApiExceptionHandler().onFault(fault, new MockHttpServletRequest()));
+                handler.onFault(fault, new MockHttpServletRequest()));
 
         assertEquals(1, lines.size(), "one fault writes one line");
         ILoggingEvent line = lines.getFirst();

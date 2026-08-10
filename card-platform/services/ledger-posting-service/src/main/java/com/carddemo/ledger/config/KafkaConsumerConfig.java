@@ -1,6 +1,7 @@
 package com.carddemo.ledger.config;
 
 
+import com.carddemo.events.correlation.EventCorrelation;
 import com.carddemo.events.serde.JsonSchemaValidatingDeserializer;
 import com.carddemo.ledger.messaging.DeadLetterMetadata;
 import java.nio.charset.StandardCharsets;
@@ -237,6 +238,9 @@ public class KafkaConsumerConfig {
                 new ConcurrentKafkaListenerContainerFactory<>();
         factory.setConsumerFactory(ledgerEventConsumerFactory);
         factory.setCommonErrorHandler(ledgerConsumerErrorHandler);
+        // The correlation fields of one delivery reach the structured log context here, in one
+        // place rather than in each listener, and leave it again when the delivery ends.
+        factory.setRecordInterceptor(new CorrelationRecordInterceptor<>());
 
         Integer concurrency = kafkaProperties.getListener().getConcurrency();
         if (concurrency != null) {
@@ -452,6 +456,16 @@ public class KafkaConsumerConfig {
                 allowed.add(name, header.value().clone());
             }
         }
+        // The two correlation identifiers reach the dead-letter record as well, so a spent record
+        // names the call behind it and not only the event that failed. Each is re-rendered from a
+        // strict parse rather than copied, so a producer cannot place arbitrary bytes on the
+        // diagnostic through a header this method admits.
+        EventCorrelation.headersFor(
+                        EventCorrelation.read(headers, EventCorrelation.CORRELATION_ID_HEADER)
+                                .orElse(null),
+                        EventCorrelation.read(headers, EventCorrelation.CAUSATION_ID_HEADER)
+                                .orElse(null))
+                .forEach(allowed::add);
         return allowed;
     }
 

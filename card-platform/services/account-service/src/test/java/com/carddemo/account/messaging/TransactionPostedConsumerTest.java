@@ -20,6 +20,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.InOrder;
 import org.mockito.Mockito;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.kafka.support.Acknowledgment;
 import org.springframework.transaction.support.SimpleTransactionStatus;
@@ -162,6 +163,45 @@ class TransactionPostedConsumerTest {
         assertThat(timerCount("carddemo.account.posting.latency"))
                 .as("deliveries timed")
                 .isEqualTo(1L);
+    }
+
+    /**
+     * A rollback leaves the applied counter unmoved and counts one failure instead.
+     *
+     * <p>Both outcome counters used to be raised inside the transaction, beside the work they
+     * described, so a rollback undid the account row and kept the count: a posting the store never
+     * kept was reported as one it did. They now follow the template call, which is what commits, so
+     * reaching them means the claim, the account row and the outbox row all committed.
+     */
+    @Test
+    @DisplayName("a rolled-back posting counts no applied posting and one failure")
+    void aRolledBackPostingCountsNoAppliedPostingAndOneFailure() {
+        when(processedEvents.claimEvent(any(), any(), anyString())).thenReturn(CLAIMED);
+        Mockito.doThrow(new DataIntegrityViolationException("the account row refused the update"))
+                .when(postedTransactionService)
+                .applyPostedAmount(anyString(), any(), anyString());
+
+        assertThatThrownBy(() -> consumer.onTransactionPosted(postedEvent(), acknowledgment, TOPIC,
+                ACCOUNT_ID))
+                .isInstanceOf(DataIntegrityViolationException.class);
+
+        assertThat(counter("carddemo.account.posting.applied"))
+                .as("a posting the store never kept is not counted")
+                .isZero();
+        assertThat(counter("carddemo.account.posting.duplicates.skipped"))
+                .as("a rollback is no duplicate")
+                .isZero();
+        assertThat(registry.get("carddemo.account.transaction.failures")
+                        .tag("operation", "posting").counter().count())
+                .as("the attempt is counted as a failure instead")
+                .isEqualTo(1.0D);
+        assertThat(counter("carddemo.account.events.consumed"))
+                .as("the delivery still arrived")
+                .isEqualTo(1.0D);
+        assertThat(timerCount("carddemo.account.posting.latency"))
+                .as("the latency of the failed delivery, recorded in a finally")
+                .isEqualTo(1L);
+        verify(acknowledgment, never()).acknowledge();
     }
 
     @Test

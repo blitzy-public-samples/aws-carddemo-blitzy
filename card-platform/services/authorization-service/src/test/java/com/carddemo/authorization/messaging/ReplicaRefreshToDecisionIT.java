@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.carddemo.authorization.AuthorizationServiceDatabase;
 import com.carddemo.authorization.TestIdentityPasswords;
 import com.carddemo.authorization.api.AuthorizationRequest;
 import com.carddemo.authorization.domain.AuthorizationService;
@@ -106,17 +107,8 @@ import tools.jackson.databind.json.JsonMapper;
 @DisplayName("One replicated state change, from the broker to the replica to the next decision")
 class ReplicaRefreshToDecisionIT {
 
-    /** Image tag of the database container, which {@code docker-compose.yml} also names. */
-    private static final String POSTGRES_IMAGE = "postgres:18.4";
-
     /** Image tag of the broker container, matching the pinned client library. */
     private static final String KAFKA_IMAGE = "apache/kafka:4.2.1";
-
-    /** Database name, login name and password of the database container, one value for all three. */
-    private static final String CONTAINER_CREDENTIAL = "carddemo";
-
-    /** Schema Flyway migrates, and the one the connection search path names. */
-    private static final String MIGRATED_SCHEMA = "authorization_service";
 
     /** Transport the container broker offers, in place of the shipped authenticated one. */
     private static final String BROKER_SECURITY_PROTOCOL = "PLAINTEXT";
@@ -220,16 +212,18 @@ class ReplicaRefreshToDecisionIT {
     /** Reads the two fixture documents the direct-invocation test hands the listener. */
     private static final JsonMapper MAPPER = JsonMapper.builder().build();
 
-    private static final PostgreSQLContainer POSTGRES;
+    /**
+     * The one container the module fork runs, which this class reads a login from.
+     *
+     * <p>{@link AuthorizationServiceDatabase} owns it and hands this class a database of its own inside it.
+     * Nothing here starts or stops a container.
+     */
+    private static final PostgreSQLContainer POSTGRES = AuthorizationServiceDatabase.container();
 
+    /** The broker container this class starts, which no other class in the module shares. */
     private static final KafkaContainer KAFKA;
 
     static {
-        POSTGRES = new PostgreSQLContainer(POSTGRES_IMAGE)
-                .withDatabaseName(CONTAINER_CREDENTIAL)
-                .withUsername(CONTAINER_CREDENTIAL)
-                .withPassword(CONTAINER_CREDENTIAL);
-        POSTGRES.start();
         KAFKA = new KafkaContainer(KAFKA_IMAGE);
         KAFKA.start();
     }
@@ -278,8 +272,7 @@ class ReplicaRefreshToDecisionIT {
      * @return the connection string
      */
     private static String migratedSchemaUrl() {
-        String url = POSTGRES.getJdbcUrl();
-        return url + (url.contains("?") ? "&" : "?") + "currentSchema=" + MIGRATED_SCHEMA;
+        return AuthorizationServiceDatabase.urlFor(ReplicaRefreshToDecisionIT.class);
     }
 
     /**
@@ -853,7 +846,6 @@ class ReplicaRefreshToDecisionIT {
                   "aggregateId": "%s",
                   "accountId": "%s",
                   "maskedCardNumber": "%s",
-                  "embossedName": "PAULA A DAVIS",
                   "expirationDate": "2026-12-31",
                   "activeStatus": "Y"
                 }

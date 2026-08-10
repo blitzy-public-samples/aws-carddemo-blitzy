@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.carddemo.events.TransactionAuthorized;
+import com.carddemo.fraud.FraudServiceDatabase;
 import com.carddemo.fraud.TestIdentityPasswords;
 import com.carddemo.fraud.entity.VelocityWindowEntity;
 import com.carddemo.fraud.repository.VelocityWindowRepository;
@@ -42,21 +43,12 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 @DisplayName("Concurrent velocity-window updates")
 class VelocityWindowConcurrencyIT {
 
-    private static final String DATABASE = "carddemo";
     private static final String SERVICE_SCHEMA = "fraud_service";
     private static final String ACCOUNT_ID = "00000000007";
     private static final Instant OCCURRED_AT = Instant.parse("2026-08-04T12:15:00Z");
     private static final BigDecimal AMOUNT = new BigDecimal("10.00");
 
-    private static final PostgreSQLContainer POSTGRES =
-            new PostgreSQLContainer("postgres:18.4")
-                    .withDatabaseName(DATABASE)
-                    .withUsername(DATABASE)
-                    .withPassword(DATABASE);
-
-    static {
-        POSTGRES.start();
-    }
+    private static final PostgreSQLContainer POSTGRES = FraudServiceDatabase.container();
 
     private final RiskScoringService scorer;
     private final VelocityWindowRepository windows;
@@ -78,8 +70,7 @@ class VelocityWindowConcurrencyIT {
     }
 
     private static String jdbcUrlOnServiceSchema() {
-        String url = POSTGRES.getJdbcUrl();
-        return url + (url.contains("?") ? "&" : "?") + "currentSchema=" + SERVICE_SCHEMA;
+        return FraudServiceDatabase.urlFor(VelocityWindowConcurrencyIT.class);
     }
 
     @AfterEach

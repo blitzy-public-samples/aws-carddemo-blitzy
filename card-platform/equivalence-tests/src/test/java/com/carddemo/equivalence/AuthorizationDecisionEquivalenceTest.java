@@ -2962,7 +2962,6 @@ class AuthorizationDecisionEquivalenceTest {
         return dates.iterator().next();
     }
 
-    /** Reports whether one account's accumulators come within one digit of the narrowing. */
     /**
      * Counts the seeded category balances already within one integer digit of their field's ceiling.
      *
@@ -2979,6 +2978,7 @@ class AuthorizationDecisionEquivalenceTest {
                 .count();
     }
 
+    /** Reports whether one account's accumulators come within one digit of the narrowing. */
     private static boolean approachesTheNarrowing(AccountRecord account) {
         BigDecimal threshold = BigDecimal.TEN.pow(
                 PicClause.WS_TEMP_BAL_PRECISION - PicClause.WS_TEMP_BAL_SCALE - 1);

@@ -7,7 +7,6 @@ import java.util.Objects;
 import java.util.stream.Collectors;
 
 import com.networknt.schema.Error;
-import com.networknt.schema.InputFormat;
 import com.networknt.schema.Schema;
 import com.networknt.schema.SchemaRegistry;
 import com.networknt.schema.SpecificationVersion;
@@ -157,7 +156,10 @@ public final class EventJsonValidator {
                     + EventSchemas.governedVersions(eventType) + " of it.");
         }
 
-        List<Error> violations = schema.validate(json, InputFormat.JSON);
+        // The tree read above is what the document governs. Handing the text to the validator
+        // would parse the same characters a second time, and this method has already proved they
+        // parse.
+        List<Error> violations = schema.validate(event);
         if (!violations.isEmpty()) {
             throw new IllegalArgumentException(describe(eventType, schemaVersion, violations));
         }

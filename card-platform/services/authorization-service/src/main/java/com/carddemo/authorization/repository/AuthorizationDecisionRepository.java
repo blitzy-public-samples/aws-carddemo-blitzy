@@ -2,9 +2,6 @@ package com.carddemo.authorization.repository;
 
 import com.carddemo.authorization.entity.AuthorizationDecisionEntity;
 import java.time.Instant;
-import java.util.List;
-import java.util.Optional;
-import org.springframework.data.domain.Limit;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.ListCrudRepository;
@@ -21,63 +18,25 @@ import org.springframework.data.repository.query.Param;
  * <p>The generic parameter area at {@code app/cbl/CBSTM03B.CBL:L100-L112} is the pattern this
  * interface follows, as the other repositories of this service do. Operation code {@code 'W'}, the
  * condition {@code M03B-WRITE} at {@code app/cbl/CBSTM03B.CBL:L107}, maps onto the inherited
- * {@code save}, and code {@code 'R'} at {@code app/cbl/CBSTM03B.CBL:L105} maps onto the two reads
- * below. No operation maps onto {@code REWRITE}: {@link AuthorizationDecisionEntity} reports every
- * instance as new, so a store is always an insert.
+ * {@code save}, and code {@code 'R'} at {@code app/cbl/CBSTM03B.CBL:L105} maps onto the inherited
+ * {@code findById}. No operation maps onto {@code REWRITE}:
+ * {@link AuthorizationDecisionEntity} reports every instance as new, so a store is always an
+ * insert.
  *
- * <p>Both reads below are bounded. The account read filters on {@code account_id} and orders by
- * {@code decided_at} descending, which is the shape of {@code ix_authorization_decision_account_decided}
- * in {@code src/main/resources/db/migration/V5__authorization_decision.sql}.
+ * <p><b>The surface is the write, the retention delete and what the base interface inherits.</b>
+ * Four declared reads have been withdrawn: one keyed on {@code transaction_id}, which is the primary
+ * key and therefore the inherited {@code findById} spelled a second way, and three bounded list
+ * reads over account, actor and age. No caller reached any of the four. Two composite indexes
+ * existed to serve two of them, so every authorization paid for index maintenance no read ever used;
+ * {@code V18__authorization_decision_index_pruning.sql} withdraws those two.
+ * {@code ix_authorization_decision_decided_at} stays, because the delete below reads it.
+ *
+ * <p>An operator query over this table is a real requirement and it is recorded as a follow-up task
+ * rather than left as an unread index. Adding it means adding the endpoint, the bounded read and the
+ * index that serves it together, in one change whose read path is visible.
  */
 public interface AuthorizationDecisionRepository
         extends ListCrudRepository<AuthorizationDecisionEntity, String> {
-
-    /**
-     * Returns the decision taken for one transaction.
-     *
-     * @param transactionId the sixteen-character identifier that is the primary key
-     * @return the decision, or empty when this service decided no such transaction
-     */
-    Optional<AuthorizationDecisionEntity> findByTransactionId(String transactionId);
-
-    /**
-     * Returns the most recent decisions of one account, newest first.
-     *
-     * <p>The database applies {@code limit}, so no unbounded result set is materialized in this
-     * service. Index {@code ix_authorization_decision_account_decided} answers both the filter and
-     * the order.
-     *
-     * @param accountId eleven decimal digits
-     * @param limit     rows to return
-     * @return the newest decisions of that account, or an empty {@link List} when it has none
-     */
-    List<AuthorizationDecisionEntity> findByAccountIdOrderByDecidedAtDesc(String accountId,
-            Limit limit);
-
-    /**
-     * Returns the most recent decisions of one actor, newest first.
-     *
-     * <p>This is the attribution read: it answers what one authenticated identity decided. Index
-     * {@code ix_authorization_decision_actor} serves both the filter and the order, and the database
-     * applies {@code limit}, so no unbounded result set is materialized in this service.
-     *
-     * @param actor the request identity, at most
-     *              {@value AuthorizationDecisionEntity#ACTOR_MAX_LENGTH} characters
-     * @param limit rows to return
-     * @return the newest decisions that actor took, or an empty {@link List} when it took none
-     */
-    List<AuthorizationDecisionEntity> findByActorOrderByDecidedAtDesc(String actor, Limit limit);
-
-    /**
-     * Returns the most recent decisions this service took, newest first.
-     *
-     * <p>Index {@code ix_authorization_decision_decided_at} serves the order, and the database
-     * applies {@code limit}.
-     *
-     * @param limit rows to return
-     * @return the newest decisions, or an empty {@link List} when this service took none
-     */
-    List<AuthorizationDecisionEntity> findByOrderByDecidedAtDesc(Limit limit);
 
     /**
      * Deletes at most {@code limit} decisions taken before the given instant, and returns how many
@@ -88,8 +47,9 @@ public interface AuthorizationDecisionRepository
      * {@code ix_authorization_decision_decided_at} serves both the subquery and the delete.
      *
      * <p>{@code limit} bounds one statement, and {@code domain/RetentionSweep} repeats the call
-     * until it removes fewer rows than it asked for. Every decision this service takes writes one
-     * row here, so the table grows for the life of the service while nothing removes from it.
+     * until it removes fewer rows than it asked for or until that table's own deadline passes. Both
+     * halves matter here: every decision this service takes writes one row, so a bound with no
+     * repetition would leave every row above one batch behind for ever.
      *
      * @param horizon the instant before which a decision is removed
      * @param limit   the most rows one statement removes, at least one

@@ -98,16 +98,6 @@ class ListenerContainerFactoryTest {
     }
 
     /**
-     * Builds the shipped factory with {@code autoStartup} and {@code concurrency} bound on the
-     * listener block.
-     *
-     * @param autoStartup the value bound to {@code spring.kafka.listener.auto-startup}
-     * @param concurrency the value bound to {@code spring.kafka.listener.concurrency}, or
-     *                    {@code null} for an unset key
-     * @return the factory the shipped configuration produces
-     */
-
-    /**
      * Asserts a bound acknowledgement mode naming anything other than the pinned one is refused.
      *
      * <p>This factory pins {@code MANUAL_IMMEDIATE}, because that is the one mode which commits the
@@ -137,6 +127,15 @@ class ListenerContainerFactoryTest {
                 .isEqualTo(ContainerProperties.AckMode.MANUAL_IMMEDIATE);
     }
 
+    /**
+     * Builds the shipped factory with {@code autoStartup} and {@code concurrency} bound on the
+     * listener block.
+     *
+     * @param autoStartup the value bound to {@code spring.kafka.listener.auto-startup}
+     * @param concurrency the value bound to {@code spring.kafka.listener.concurrency}, or
+     *                    {@code null} for an unset key
+     * @return the factory the shipped configuration produces
+     */
     @SuppressWarnings("unchecked")
     private static ConcurrentKafkaListenerContainerFactory<String, TransactionAuthorized> factoryFor(
             boolean autoStartup, Integer concurrency) {

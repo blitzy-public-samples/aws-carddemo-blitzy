@@ -3,7 +3,6 @@ package com.carddemo.ledger.domain;
 import com.carddemo.cobol.PicClause;
 import com.carddemo.events.DeclineReason;
 import com.carddemo.events.TransactionAuthorized;
-import com.carddemo.ledger.config.ObservabilityConfig.LedgerMeters;
 import com.carddemo.ledger.entity.RejectedTransactionEntity;
 import com.carddemo.ledger.repository.RejectedTransactionRepository;
 import java.math.BigDecimal;
@@ -62,15 +61,6 @@ public class RejectRecorder {
     private final RejectedTransactionRepository rejectedTransactions;
 
     /**
-     * Carries the {@code outcome=rejected} counter one reject increments.
-     *
-     * <p>Its ancestor is {@code WS-REJECT-COUNT} at {@code app/cbl/CBTRN02C.cbl:L186}, printed at
-     * {@code :L228} and driving the return code at {@code :L229-L230}. The count belongs here because
-     * this class is what writes a reject.
-     */
-    private final LedgerMeters meters;
-
-    /**
      * Trailing characters that carry a positive sign, listed in digit order zero through nine.
      *
      * <p>The character at index zero stands for a trailing digit zero, the one at index one for a
@@ -92,17 +82,19 @@ public class RejectRecorder {
     private final Clock clock = Clock.systemUTC();
 
     /**
-     * Takes the store this recorder saves through and the meters it counts on.
+     * Takes the store this recorder saves through.
+     *
+     * <p>It takes no meter. The {@code outcome=rejected} counter is raised by
+     * {@code messaging/TransactionDeclinedConsumer} after the transaction this method joins has
+     * committed, so a rollback leaves no count behind. A class that records nothing takes no
+     * recorder.
      *
      * @param rejectedTransactions store over {@code rejected_transaction}
-     * @param meters               registry of the counter one reject increments
-     * @throws NullPointerException when any argument is {@code null}
+     * @throws NullPointerException when {@code rejectedTransactions} is {@code null}
      */
-    public RejectRecorder(RejectedTransactionRepository rejectedTransactions,
-            LedgerMeters meters) {
+    public RejectRecorder(RejectedTransactionRepository rejectedTransactions) {
         this.rejectedTransactions =
                 Objects.requireNonNull(rejectedTransactions, "rejectedTransactions is required");
-        this.meters = Objects.requireNonNull(meters, "meters is required");
     }
 
     /**
@@ -113,6 +105,12 @@ public class RejectRecorder {
      * status ladder at {@code :L452-L464}. The row joins the caller's transaction, which is the one
      * the arriving declined event's {@code processed_event} marker also commits in, so a reject row
      * without its marker cannot exist and neither can the reverse.
+     *
+     * <p>Nothing here is counted. The {@code outcome=rejected} counter, whose ancestor is
+     * {@code WS-REJECT-COUNT} at {@code app/cbl/CBTRN02C.cbl:L186}, is raised by
+     * {@code messaging/TransactionDeclinedConsumer} once the transaction this method joins has
+     * committed. Counting beside the row put a durable increment behind a write a rollback could
+     * still undo, so a reject the store never kept was reported as one it did.
      *
      * <p>{@link DeclineReason#INVALID_CARD_NUMBER} cannot reach this method. That reason is
      * assigned inside the {@code INVALID KEY} limb of the cross-reference read at
@@ -153,8 +151,6 @@ public class RejectRecorder {
                 reason.description(),
                 rejectTranData,
                 clock.instant()));
-
-        meters.recordTransactionRejected();
     }
 
     /**

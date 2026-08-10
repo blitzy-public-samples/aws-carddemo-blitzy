@@ -1,5 +1,6 @@
 package com.carddemo.notification.repository;
 
+import com.carddemo.notification.domain.NotificationRenderer;
 import com.carddemo.notification.entity.StatementTransactionEntity;
 import com.carddemo.notification.entity.StatementTransactionEntity.StatementTransactionId;
 import java.lang.reflect.Field;
@@ -227,6 +228,53 @@ class StatementTransactionRepositoryTest extends NotificationRepositoryTestSuppo
         assertThat(transactionIdsOf(found)).containsExactlyElementsOf(expected);
     }
 
+    /**
+     * The descending finder under a ceiling returns the card's newest rows, not its oldest.
+     *
+     * <p>This is what makes a bounded alert carry the transaction it reports. The card is given one
+     * row more than {@link NotificationRenderer#MAXIMUM_STATEMENT_ROWS}, so the two ends of the
+     * history disagree about which rows a ceiling of that size selects. The descending read returns
+     * the newest identifier first and stops one short of the oldest; the ascending read under the same
+     * ceiling returns the oldest and omits the newest, which is the reading this service used to do
+     * and the defect that omission caused.
+     *
+     * <p>The rows are saved oldest first, so a result that happened to follow insertion order would
+     * be the ascending one and would fail the first assertion.
+     */
+    @Test
+    @DisplayName("Under a ceiling the descending finder takes the newest rows and the ascending "
+            + "finder takes the oldest")
+    void theDescendingFinderUnderACeilingTakesTheNewestRows() {
+        int ceiling = NotificationRenderer.MAXIMUM_STATEMENT_ROWS;
+        int held = ceiling + 1;
+        for (int position = 1; position <= held; position++) {
+            statementTransactions.save(row(FIRST_CARD_TOKEN, String.valueOf(position)));
+        }
+        entityManager.flush();
+        entityManager.clear();
+
+        List<String> newestFirst = transactionIdsOf(statementTransactions
+                .findByIdCardTokenOrderByIdTransactionIdDesc(FIRST_CARD_TOKEN, Limit.of(ceiling)));
+        List<String> oldestFirst = transactionIdsOf(statementTransactions
+                .findByIdCardTokenOrderByIdTransactionIdAsc(FIRST_CARD_TOKEN, Limit.of(ceiling)));
+
+        String newest = transactionId(String.valueOf(held));
+        String oldest = transactionId("1");
+        assertThat(newestFirst)
+                .as("the descending read carries the newest row and drops the oldest")
+                .hasSize(ceiling)
+                .startsWith(newest)
+                .doesNotContain(oldest);
+        assertThat(oldestFirst)
+                .as("the ascending read under the same ceiling drops the newest row, which is the "
+                        + "row a posted alert reports")
+                .hasSize(ceiling)
+                .startsWith(oldest)
+                .doesNotContain(newest);
+        assertThat(newestFirst).as("the two reads select different rows")
+                .isNotEqualTo(oldestFirst);
+    }
+
     /** The finder returns the queried card's rows and leaves every other card's rows behind. */
     @Test
     @DisplayName("A second card's rows stay out of the first card's result")
@@ -297,29 +345,52 @@ class StatementTransactionRepositoryTest extends NotificationRepositoryTestSuppo
     }
 
     /**
-     * The interface declares the ordered finder, the retention delete, and nothing else.
+     * The interface declares three ordered finders, the aggregate, the upsert, the retention delete,
+     * and nothing else.
      *
-     * <p>The finder carries no annotation of any kind, so Spring Data derives it from its name alone.
-     * Its two parameter types are the card token and a row ceiling. The interface declares no nested
-     * type, so it carries no projection.
+     * <p>The three finders carry no annotation of any kind, so Spring Data derives each from its name
+     * alone, and each takes a row ceiling: no read of this interface is unbounded. The history route
+     * once passed {@link Limit#unlimited()} and totalled in memory, so it read every retained row of a
+     * card; the aggregate answers the count and the total over the key instead, the cursor finder
+     * continues the walk from a named position, and the descending finder reads a card's most recent
+     * rows so an alert always reports the transaction that triggered it.
+     *
+     * <p>The one nested type is the aggregate projection. A native statement cannot answer three
+     * numbers and a string through a derived return type, and an interface projection maps the aliased
+     * columns by accessor name without a constructor contract to keep in step.
      */
     @Test
-    @DisplayName("The interface declares the finder, the retention delete, and no other member")
-    void theInterfaceDeclaresTheFinderTheRetentionDeleteAndNothingElse()
+    @DisplayName("The interface declares its three finders, the aggregate, the upsert and the delete")
+    void theInterfaceDeclaresItsBoundedReadsTheUpsertAndTheDelete()
             throws NoSuchMethodException {
         assertThat(StatementTransactionRepository.class.getDeclaredMethods())
                 .extracting(Method::getName)
                 .containsExactlyInAnyOrder("findByIdCardTokenOrderByIdTransactionIdAsc",
-                        "deleteProcessedBefore");
-        assertThat(StatementTransactionRepository.class.getDeclaredClasses()).isEmpty();
+                        "findByIdCardTokenOrderByIdTransactionIdDesc",
+                        "findByIdCardTokenAndIdTransactionIdGreaterThanOrderByIdTransactionIdAsc",
+                        "totalsOfCard", "upsertRow", "deleteProcessedBefore");
+        assertThat(StatementTransactionRepository.class.getDeclaredClasses())
+                .extracting(Class::getSimpleName)
+                .containsExactly("CardHistoryTotals");
 
-        Method finder = StatementTransactionRepository.class.getDeclaredMethod(
-                "findByIdCardTokenOrderByIdTransactionIdAsc", String.class, Limit.class);
-        assertThat(finder.getParameterTypes()).containsExactly(String.class, Limit.class);
-        assertThat(finder.getReturnType()).isEqualTo(List.class);
-        assertThat(finder.getAnnotations()).isEmpty();
-        assertThat(((ParameterizedType) finder.getGenericReturnType()).getActualTypeArguments())
-                .containsExactly(StatementTransactionEntity.class);
+        Method continuation = StatementTransactionRepository.class.getDeclaredMethod(
+                "findByIdCardTokenAndIdTransactionIdGreaterThanOrderByIdTransactionIdAsc",
+                String.class, String.class, Limit.class);
+        assertThat(continuation.getAnnotations()).isEmpty();
+        assertThat(continuation.getParameterTypes())
+                .containsExactly(String.class, String.class, Limit.class);
+
+        for (String name : List.of("findByIdCardTokenOrderByIdTransactionIdAsc",
+                "findByIdCardTokenOrderByIdTransactionIdDesc")) {
+            Method finder = StatementTransactionRepository.class.getDeclaredMethod(
+                    name, String.class, Limit.class);
+            assertThat(finder.getParameterTypes()).as(name).containsExactly(String.class, Limit.class);
+            assertThat(finder.getReturnType()).as(name).isEqualTo(List.class);
+            assertThat(finder.getAnnotations()).as(name).isEmpty();
+            assertThat(((ParameterizedType) finder.getGenericReturnType()).getActualTypeArguments())
+                    .as(name)
+                    .containsExactly(StatementTransactionEntity.class);
+        }
     }
 
     /**

@@ -17,6 +17,7 @@ import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Properties;
 import java.util.UUID;
 import java.util.stream.Stream;
@@ -153,10 +154,17 @@ class DeadLetterMetadataTest {
     /**
      * Every {@code spring.kafka} consumer and listener key this module declares, in name order.
      *
-     * <p>The list was two entries long while this module read no topic. It is seven now, and the two
+     * <p>The list was two entries long while this module read no topic. It is eight now, and the two
      * that were always here still carry the acknowledgement contract: auto-commit off, and an
      * acknowledgement the listener issues itself once its transaction has committed. Without both,
      * an offset commits ahead of the write it stands for and a crash loses the posting.
+     *
+     * <p>The eighth is the listener concurrency, which is a throughput setting rather than an
+     * acknowledgement one and belongs here because this list is the whole declared surface. It ships
+     * as the partition count every topic of this platform carries, so the postings of one account
+     * still arrive in publish order: a partition is assigned to exactly one consumer thread, and the
+     * account identifier is the message key. Omitting it left the framework default of one thread in
+     * place, which applied every partition of the topic in sequence.
      */
     private static final List<String> LISTENER_KEYS = List.of(
             "spring.kafka.consumer.auto-offset-reset",
@@ -165,7 +173,8 @@ class DeadLetterMetadataTest {
             "spring.kafka.consumer.key-deserializer",
             "spring.kafka.consumer.properties.spring.deserializer.value.delegate.class",
             "spring.kafka.consumer.value-deserializer",
-            "spring.kafka.listener.ack-mode");
+            "spring.kafka.listener.ack-mode",
+            "spring.kafka.listener.concurrency");
 
     /** Opening delimiter of a configured placeholder. */
     private static final String PLACEHOLDER_OPEN = "${";
@@ -488,6 +497,10 @@ class DeadLetterMetadataTest {
                 .thenReturn(List.of());
         when(repository.deletePublishedBefore(any(), anyInt())).thenReturn(0);
         when(repository.claimDueRows(any(), eq(Limit.of(1)))).thenReturn(List.of(row));
+        // The relay records each outcome in a transaction of its own and re-reads the row inside it,
+        // because the claim has committed by then and saving the copy the claim loaded would write
+        // pre-claim state back over it. This answers that read with the same row.
+        when(repository.findById(row.getEventId())).thenReturn(Optional.of(row));
 
         AccountProperties properties = propertiesWithOneRowPerClaim();
         ObjectMapper mapper = new KafkaProducerConfig(properties).accountEventObjectMapper();
@@ -502,11 +515,12 @@ class DeadLetterMetadataTest {
 
         assertThat(row.getRelayState()).isEqualTo(OutboxEventEntity.RelayState.ABANDONED);
         assertThat(row.getAttemptCount()).isEqualTo(OutboxEventEntity.MAX_DELIVERY_ATTEMPTS);
-        // Two saves, and the second one is the point: the abandonment is stored with the obligation
-        // to name this row, and the acknowledgement of the diagnostic is stored separately once the
-        // broker has taken it. A single save would mean the relay either forgot the obligation or
-        // cleared it before the broker answered.
-        verify(repository, times(2)).save(row);
+        // Three saves, and the last two are the point: the claim commits before any send starts, the
+        // abandonment is then stored with the obligation to name this row, and the acknowledgement of
+        // the diagnostic is stored separately once the broker has taken it. Folding the last two into
+        // one would mean the relay either forgot the obligation or cleared it before the broker
+        // answered.
+        verify(repository, times(3)).save(row);
         assertThat(row.getDeadLetterState())
                 .as("the acknowledged diagnostic discharges the obligation")
                 .isEqualTo(OutboxEventEntity.DeadLetterState.PUBLISHED);
@@ -637,8 +651,9 @@ class DeadLetterMetadataTest {
                 .sorted()
                 .toList();
         assertThat(acknowledgementKeys)
-                .as("the module declares one listener, and its acknowledgement stays manual so no "
-                        + "offset commits ahead of the write it stands for")
+                .as("the module declares one listener, its acknowledgement stays manual so no "
+                        + "offset commits ahead of the write it stands for, and it reads one thread "
+                        + "per partition rather than one thread for every partition")
                 .isEqualTo(LISTENER_KEYS);
         assertThat(configuration.getProperty("spring.kafka.consumer.enable-auto-commit"))
                 .as("auto-commit, which must stay off for the marker to guard anything")

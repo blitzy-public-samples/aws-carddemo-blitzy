@@ -224,6 +224,36 @@ class RequestSurfaceControlContractTest {
             }
         }
 
+        /**
+         * The sweep that keeps the map bounded must not run for every key that finds it full.
+         *
+         * <p>A performance review found the walk running once per arriving key once the map was at
+         * capacity, which turned a run of unseen sources into one walk of ten thousand entries each.
+         * Two guards answer it, and both are asserted here rather than in six service test classes:
+         * the interval that stops a second walk following the first, and the compare-and-set that
+         * stops two threads walking at once. {@code RequestRateCeilingFilterTest} of the
+         * authorization service proves the behaviour the two guards produce.
+         */
+        @Test
+        @DisplayName("the expiry sweep is throttled and single-flight in every service")
+        void theExpirySweepIsThrottledAndSingleFlight() {
+            for (String module : SERVICES) {
+                String source = filterSourceOf(module, "RequestRateCeilingFilter");
+
+                assertThat(source)
+                        .as("%s rate filter sweep throttle", module)
+                        .contains("expirySweepIntervalMillis")
+                        .contains("lastExpirySweepMillis")
+                        .contains("compareAndSet");
+                assertThat(source)
+                        .as("%s sweeps through the throttled method alone", module)
+                        .contains("removeExpiredWindows(now)");
+                assertThat(occurrences(source, "entrySet().removeIf"))
+                        .as("%s holds one walk of the counter map", module)
+                        .isEqualTo(1);
+            }
+        }
+
         @Test
         @DisplayName("the refusal carries no address, identity or route")
         void theRefusalCarriesNoAddressIdentityOrRoute() {

@@ -149,7 +149,21 @@ public class TransactionPostedConsumer {
         long startedAt = System.nanoTime();
         try {
             requireKeyNamesPayloadAggregate(messageKey, event);
-            transactionTemplate.executeWithoutResult(status -> applyOneEvent(event, consumedTopic));
+            // The two outcome counters are raised out here rather than inside applyOneEvent,
+            // because this template call is what commits. Counting inside the transaction left a
+            // durable increment behind work a rollback could still undo, so a posting the store
+            // never kept was reported as one it did.
+            switch (transactionTemplate.execute(status -> applyOneEvent(event, consumedTopic))) {
+                case APPLIED -> {
+                    meters.recordPostingApplied();
+                    LOG.info("Posted transaction {} moved the balance and one billing-cycle"
+                            + " accumulator of the account record, and one state change is queued"
+                            + " for publication.", event.transactionId());
+                }
+                case DUPLICATE -> meters.recordPostingDuplicateSkipped();
+                case null -> throw new IllegalStateException(
+                        "the transaction answered with no outcome");
+            }
         } catch (RuntimeException failure) {
             meters.recordPostingFailure();
             LOG.warn("Posted transaction {} was not applied. The failure was a {}, the offset stays"
@@ -177,19 +191,35 @@ public class TransactionPostedConsumer {
      * @param event         the validated event this delivery carries
      * @param consumedTopic the topic the delivery arrived on, recorded on the marker
      */
-    private void applyOneEvent(TransactionPosted event, String consumedTopic) {
+    private Outcome applyOneEvent(TransactionPosted event, String consumedTopic) {
         Instant now = clock.instant();
         if (processedEvents.claimEvent(event.eventId(), now,
                 recordedTopic(consumedTopic)) == ALREADY_CLAIMED) {
-            meters.recordPostingDuplicateSkipped();
             LOG.debug("Posted transaction {} carries a marker already, so this delivery writes"
                     + " nothing.", event.transactionId());
-            return;
+            return Outcome.DUPLICATE;
         }
 
         postedTransactionService.applyPostedAmount(event.accountId(), event.amount(),
                 event.transactionId());
-        meters.recordPostingApplied();
+        return Outcome.APPLIED;
+    }
+
+    /**
+     * What one delivery did, reported to the caller once the transaction has closed.
+     *
+     * <p>The outcome travels out rather than being counted where it is decided, so every count and
+     * every line claiming durable state is raised after the commit. A boolean would do here, and an
+     * enumeration is used because it names the two outcomes at both ends and reads the same as the
+     * sibling listener of the ledger service.
+     */
+    private enum Outcome {
+
+        /** The claim, the account row and the outbox row committed. */
+        APPLIED,
+
+        /** A marker already covered this event on the topic it arrived on. */
+        DUPLICATE
     }
 
     /**

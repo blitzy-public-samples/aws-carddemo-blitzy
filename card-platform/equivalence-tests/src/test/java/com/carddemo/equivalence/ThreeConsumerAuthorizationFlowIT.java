@@ -64,12 +64,12 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
  * <em>is</em> in Kafka, and reading each group's own committed rows is what proves it happened rather
  * than a log line saying it did.
  *
- * <p><b>Why the record is published before the services start.</b> Every consumer here is configured
+ * <p><b>The record is published before the services start.</b> Every consumer here is configured
  * to read from the earliest offset, so a record already on the topic is delivered to each group as it
  * subscribes. Publishing first therefore removes a race from the test rather than adding one, and it
  * also removes any possibility that one service's start-up caused another's delivery.
  *
- * <p><b>Why three contexts rather than one.</b> Each group below starts exactly one service, so the
+ * <p><b>Three contexts rather than one.</b> Each group below starts exactly one service, so the
  * only consumer beans in that context are that service's own. A context holding all three could not
  * distinguish three independent consumers from one application with three listeners, and it could not
  * show the absence of a call from one consumer to another. Each group therefore also asserts that its
@@ -92,14 +92,8 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 @DisplayName("One authorization event, three services consuming it independently")
 class ThreeConsumerAuthorizationFlowIT {
 
-    /** Image tag of the database container, which {@code docker-compose.yml} also names. */
-    private static final String POSTGRES_IMAGE = "postgres:18.4";
-
     /** Image tag of the broker container, matching the pinned client library. */
     private static final String KAFKA_IMAGE = "apache/kafka:4.2.1";
-
-    /** Database name, login name and password of the database container, one value for all three. */
-    private static final String CONTAINER_CREDENTIAL = "carddemo";
 
     /** Transport the container broker offers, in place of the shipped authenticated one. */
     private static final String BROKER_SECURITY_PROTOCOL = "PLAINTEXT";
@@ -168,18 +162,18 @@ class ThreeConsumerAuthorizationFlowIT {
     static final String TYPE_CODE = "01";
     static final String CATEGORY_CODE = "0001";
 
-    /** The database container every group in this class shares, one schema per service. */
-    private static final PostgreSQLContainer POSTGRES;
+    /**
+     * The one container the module fork runs, which every group in this class reads a login from.
+     *
+     * <p>{@link EquivalenceDatabase} owns it and hands this class one database, carrying one schema
+     * per service. Nothing here starts or stops it.
+     */
+    private static final PostgreSQLContainer POSTGRES = EquivalenceDatabase.container();
 
     /** The broker container every group in this class shares. */
     private static final KafkaContainer KAFKA;
 
     static {
-        POSTGRES = new PostgreSQLContainer(POSTGRES_IMAGE)
-                .withDatabaseName(CONTAINER_CREDENTIAL)
-                .withUsername(CONTAINER_CREDENTIAL)
-                .withPassword(CONTAINER_CREDENTIAL);
-        POSTGRES.start();
         KAFKA = new KafkaContainer(KAFKA_IMAGE);
         KAFKA.start();
     }
@@ -313,8 +307,7 @@ class ThreeConsumerAuthorizationFlowIT {
      * @return the connection string
      */
     private static String urlOnSchema(String schema) {
-        String url = POSTGRES.getJdbcUrl();
-        return url + (url.contains("?") ? "&" : "?") + "currentSchema=" + schema;
+        return EquivalenceDatabase.urlFor(ThreeConsumerAuthorizationFlowIT.class, schema);
     }
 
     /** The consumer package of each service that reads the one event, keyed by its own name. */
@@ -403,10 +396,8 @@ class ThreeConsumerAuthorizationFlowIT {
     }
 
     /**
-     * The ledger reading the one event: a posted transaction, a moved balance and a marker.
-     */
-    /**
-     * The ledger reads the event, posts it and records the marker that suppresses a redelivery.
+     * The ledger reading the one event: a posted transaction, a moved balance and a marker that
+     * suppresses a redelivery.
      *
      * <p>Neither retention horizon is overridden in any of the three contexts below. Each service
      * refuses a marker horizon under twice its broker log retention, so a shortened horizon stops

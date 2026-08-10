@@ -36,7 +36,7 @@ import java.util.UUID;
  * against a value its owner has already changed. {@code repository/ProcessedEventRepository} owns
  * the existence check, the insert and the retention purge.
  *
- * <p><b>Why the topic is part of the identity.</b> Those two listeners read two topics, and the
+ * <p><b>The topic is part of the identity.</b> Those two listeners read two topics, and the
  * event identifiers on them are assigned independently by two different producing services. Two
  * events on two topics may therefore carry the same identifier without either producer being at
  * fault. Keyed on the identifier alone, the second of the two read a marker its own topic never

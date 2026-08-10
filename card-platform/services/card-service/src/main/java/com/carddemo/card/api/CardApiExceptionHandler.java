@@ -3,12 +3,15 @@ package com.carddemo.card.api;
 import com.carddemo.card.api.dto.ApiErrorResponse;
 import com.carddemo.card.api.dto.CardValidationMessages;
 import com.carddemo.card.domain.CardQueryService;
+import io.micrometer.core.instrument.Counter;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.ConstraintViolationException;
+import java.util.Objects;
 import java.util.TreeSet;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.MessageSourceResolvable;
 import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.dao.QueryTimeoutException;
@@ -36,10 +39,12 @@ import org.springframework.web.servlet.resource.NoResourceFoundException;
  * Turns a failure of a card endpoint into an {@link ApiErrorResponse}.
  *
  * <p>The framework's own problem detail carries the resolved request path in its {@code instance}
- * member. Two of the three routes of this service carry a card number as a path variable and the list
- * route carries its paging cursor in a request header, so a body that echoed the request would put a
- * card number in the response and in any log line built from it. Every response this class returns
- * carries a route template and one fixed or validated text, and no value read from the request.
+ * member. Two of the three routes of this service carry a card token as a path variable and the list
+ * route carries its paging cursor in a request header, so a body that echoed the request would put an
+ * identifier naming one card in the response and in any log line built from it. A token discloses no
+ * digit of a card number, and it still names one card for as long as its key stands. Every response
+ * this class returns carries a route template and one fixed or validated text, and no value read from
+ * the request.
  *
  * <p>Six outcomes, and only the last is a fault of this service.
  *
@@ -144,6 +149,34 @@ public class CardApiExceptionHandler {
      * enforces in its constructor.
      */
     private static final int MAXIMUM_ROUTE_DIGIT_RUN = 4;
+
+    /**
+     * Counts one request this service could not complete on infrastructure.
+     *
+     * <p>The two handlers that answer {@code 503} and {@code 500} reported those failures in a log line
+     * and nowhere else, so nothing an operator watches moved when a read route could not reach the card
+     * table. {@code domain/CardUpdateService} already counts the write path, and the write path never
+     * arrives here: a write that failed while holding the row answers through its own outcome chain.
+     * So this handler counts the failures that chain never sees, which are the reads, and the two
+     * increments cannot overlap.
+     *
+     * <p>A refusal is not counted. Business refusals and protocol refusals answer from the handlers
+     * above and leave this counter alone, because a counter that rises on a caller's bad request tells
+     * an operator nothing about this service.
+     */
+    private final Counter infrastructureFailures;
+
+    /**
+     * Builds the handler with the one counter it records to.
+     *
+     * @param infrastructureFailures the counter named
+     *                               {@code ObservabilityConfig#METRIC_CARD_FAILURES}
+     */
+    public CardApiExceptionHandler(
+            @Qualifier("cardInfrastructureFailureCounter") Counter infrastructureFailures) {
+        this.infrastructureFailures =
+                Objects.requireNonNull(infrastructureFailures, "infrastructureFailures");
+    }
 
     /**
      * Answers a query parameter or a request header that misses its constraint.
@@ -330,6 +363,7 @@ public class CardApiExceptionHandler {
     public ResponseEntity<ApiErrorResponse> onDatastoreUnreachable(Exception failure,
             HttpServletRequest request) {
         log.error("A card request could not reach the card table. The failure was {}. Its message is not recorded, because a datastore message quotes the statement and the value that caused it.", failureType(failure));
+        infrastructureFailures.increment();
         return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
                 .contentType(MediaType.APPLICATION_JSON)
                 .body(new ApiErrorResponse(HttpStatus.SERVICE_UNAVAILABLE.value(),
@@ -346,6 +380,7 @@ public class CardApiExceptionHandler {
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiErrorResponse> onFault(Exception fault, HttpServletRequest request) {
         log.error("A card request failed inside this service. The failure was {}. Its message is not recorded, because a message quotes the value that caused it.", failureType(fault));
+        infrastructureFailures.increment();
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                 .contentType(MediaType.APPLICATION_JSON)
                 .body(new ApiErrorResponse(HttpStatus.INTERNAL_SERVER_ERROR.value(),

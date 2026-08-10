@@ -22,7 +22,7 @@
 # derives a different value. So the token discloses no card number, a reader holding one
 # cannot recompute it over the sixteen-digit card-number space, and it is safe in a path.
 #
-# A path is the one part of a request this application's redaction cannot reach: it is
+# A path is the one part of a request this application's redaction cannot reach. It is
 # written to a container access log, to a reverse proxy log, into a distributed trace as the
 # span name, and into a browser history by the client. That is why a token stands there.
 # No card number reaches this service at all. Every response body carries the masked form,
@@ -78,20 +78,30 @@ paths:
       tags:
         - notification-history
       operationId: getNotificationHistory
-      summary: Return the whole alert history for one card.
+      summary: Return one page of the alert history for one card.
       description: >-
-        Returns one entry per transaction the read model holds for the card, in
-        transaction identifier order. A token with no entry returns 404: the
-        masked card number the body carries is read from a row, so with no row
-        there is no number to mask and nothing truthful to put in the field.
+        Returns one bounded page of entries for the card, in transaction identifier
+        order, together with the count and the total of the card's whole history. A
+        token with no entry returns 404: the masked card number the body carries is
+        read from a row, so with no row there is no number to mask and nothing
+        truthful to put in the field. A cursor that has run past the last entry
+        returns 404 for the same reason.
 
 
-        The response covers the whole history and carries no paging parameter of
-        any kind. app/cbl/CBSTM03A.CBL reads every row of one card between two key
-        breaks and app/cbl/CBSTM03A.CBL:L429 totals all of them, so a count and a
+        The count and the total cover every entry the read model holds for the card,
+        not the page. app/cbl/CBSTM03A.CBL reads every row of one card between two
+        key breaks and app/cbl/CBSTM03A.CBL:L429 totals all of them, so a count or a
         total over part of a history would describe a statement the source never
-        produced. NotificationRenderer.MAXIMUM_STATEMENT_ROWS bounds one rendered
-        alert and not this body.
+        produced. Both are read as one aggregate over the key, which costs the same
+        at any history length.
+
+
+        The entries are paged because a card's history grows by one entry per posted
+        transaction until retention removes entries, so a response carrying all of
+        them made the work and the size of one request a function of how long a
+        cardholder had been transacting. Walk the pages with nextCursor until
+        nextPageExists is false. NotificationRenderer.MAXIMUM_STATEMENT_ROWS bounds
+        one rendered alert and is also the largest page this route serves.
 
 
         The path carries the card token, which is both the key the read model is
@@ -110,7 +120,7 @@ paths:
             from the whole card number under a deployment-supplied key. It is the
             value column card_token CHAR(64) in
             src/main/resources/db/migration/V1__schema.sql holds, and the value a
-            SCOPE_CARD_ authority names, so the service compares two values of the
+            SCOPE_CARD_ authority names. The service compares two values of the
             same kind and no card number reaches a request line, an access log, a
             proxy log, a trace or a browser history. It stands in this platform for
             TRNX-CARD-NUM PIC X(16) at app/cpy/COSTM01.CPY:L22, the first part of
@@ -127,6 +137,45 @@ paths:
                 A placeholder rather than a value. A real token is derived under the
                 deployment key, so this document publishes none that resolves.
               value: '0000000000000000000000000000000000000000000000000000000000000000'
+
+        - name: X-Notification-Cursor
+          in: header
+          required: false
+          description: >-
+            The paging position from a previous response: the value nextCursor
+            carried. It is a transaction identifier of sixteen characters, which
+            every entry of the page it came from already carries, so it discloses
+            nothing the previous response did not. The bound is exclusive, so the
+            entry it names is not returned again. Omit it for the first page. A
+            value of any other length is refused with 400 and reaches no lookup.
+          schema:
+            type: string
+            minLength: 16
+            maxLength: 16
+          examples:
+            cursor:
+              summary: The identifier of the last entry of a previous page.
+              value: 'TRN0000000000001'
+
+        - name: pageSize
+          in: query
+          required: false
+          description: >-
+            Entries this page carries, from one to two hundred. Omit it for
+            twenty-five. The ceiling is
+            NotificationRenderer.MAXIMUM_STATEMENT_ROWS, so one number bounds both
+            a rendered alert and a page of this route. A value outside the range,
+            or one that is not a whole number, is refused with 400 and reaches no
+            lookup.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 25
+          examples:
+            pageSize:
+              summary: A page of fifty entries.
+              value: 50
 
       responses:
 
@@ -334,10 +383,17 @@ paths:
             The service could not complete the request.
             api/NotificationApiExceptionHandler answers every fault that is
             neither a refused request value nor a protocol refusal here, and the
-            body carries one fixed text for all of them: a datastore that cannot
+            body carries one fixed text for all of them. A datastore that cannot
             be reached and a defect of this service read alike to a caller. The
-            handler writes one ERROR line carrying the fault and its stack trace,
-            so the log is where a fault is diagnosed from.
+            handler writes one ERROR line naming the route template, the status,
+            and the class name of the fault with the class names of its causes.
+            It records neither the fault's message nor a stack trace, on purpose:
+            a message quotes the value that caused the failure, so a constraint
+            violation, a query timeout or a broken connection would put a row
+            value, a statement or a data-source URL into an ordinary log. A
+            reader therefore learns which failure class occurred and no more, and
+            diagnosing beyond that class needs the datastore's or the platform's
+            own telemetry rather than this log.
 
 
             The body names no value read from the request, and route holds the
@@ -457,15 +513,17 @@ components:
     NotificationHistory:
       type: object
       description: >-
-        The whole alert history for one card. cardNumber displays the card and the
-        total covers every entry the response carries, which is every entry the
-        read model holds for that card.
+        One page of the alert history for one card. cardNumber displays the card.
+        transactionCount and totalAmount cover every entry the read model holds for
+        that card; transactions carries the page. nextPageExists and nextCursor
+        continue the walk.
       additionalProperties: false
       required:
         - cardNumber
         - transactionCount
         - totalAmount
         - transactions
+        - nextPageExists
       properties:
 
         cardNumber:
@@ -488,9 +546,11 @@ components:
           type: integer
           minimum: 0
           description: >-
-            Entries this response carries, always the number of items in
-            transactions. No maximum: the response covers the whole history of
-            the card.
+            Entries the read model holds for this card in all, which is at least the
+            number of items in transactions and is greater wherever a further page
+            exists. Read as COUNT over the card's key rather than from the items, so
+            it describes the row set app/cbl/CBSTM03A.CBL:L429 would have totalled.
+            No maximum: a card's history has none.
           examples:
             - 3
 
@@ -498,24 +558,50 @@ components:
           type: string
           pattern: '^-?\d{1,9}\.\d{2}$'
           description: >-
-            Sum of the amounts of every entry, as a decimal string at the two
-            fractional digits TRAN-AMT PIC S9(09)V99 declares. A string keeps the
-            scale a JSON number would lose to binary floating point. From
-            WS-TOTAL-AMT PIC S9(9)V99 at app/cbl/CBSTM03A.CBL:L65, accumulated one
-            row at a time at app/cbl/CBSTM03A.CBL:L429.
+            Sum of the amounts of every entry the card holds, not of this page, as a
+            decimal string at the two fractional digits TRAN-AMT PIC S9(09)V99
+            declares. A string keeps the scale a JSON number would lose to binary
+            floating point. From WS-TOTAL-AMT PIC S9(9)V99 at
+            app/cbl/CBSTM03A.CBL:L65, accumulated one row at a time at
+            app/cbl/CBSTM03A.CBL:L429, and this value reproduces that accumulation
+            including the truncation that field applies.
           examples:
             - '1250.75'
 
         transactions:
           type: array
+          maxItems: 200
           description: >-
-            One entry per transaction of the card, in the transaction identifier
+            One entry per transaction on this page, in the transaction identifier
             order SORT FIELDS=(263,16,CH,A,1,16,CH,A) at
-            app/jcl/CREASTMT.JCL:L53 produces. No maxItems: the array covers the
-            whole history, matching app/cbl/CBSTM03A.CBL, which reads every row of
-            one card between two key breaks.
+            app/jcl/CREASTMT.JCL:L53 produces. Bounded by the page size the request
+            asked for, and by NotificationRenderer.MAXIMUM_STATEMENT_ROWS in any
+            case. transactionCount and totalAmount describe the whole history that
+            app/cbl/CBSTM03A.CBL read between two key breaks.
           items:
             $ref: '#/components/schemas/StatementTransaction'
+
+        nextPageExists:
+          type: boolean
+          description: >-
+            Whether the read model holds a further entry of this card beyond the last
+            item here. Derived from one lookahead row rather than from
+            transactionCount, so it stays right where entries arrive between two
+            requests. False on the last page.
+          examples:
+            - true
+
+        nextCursor:
+          type: string
+          minLength: 16
+          maxLength: 16
+          description: >-
+            The value to send as X-Notification-Cursor for the next page. Present
+            exactly when nextPageExists is true, and absent otherwise. It is the
+            transaction identifier of the last item of this page, which the items
+            already carry.
+          examples:
+            - 'TRN0000000000003'
 
     StatementTransaction:
       type: object

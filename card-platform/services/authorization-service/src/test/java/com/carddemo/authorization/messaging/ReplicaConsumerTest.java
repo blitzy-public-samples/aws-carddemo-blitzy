@@ -645,14 +645,12 @@ class ReplicaConsumerTest {
                   "aggregateId": "%s",
                   "accountId": "%s",
                   "maskedCardNumber": "************7065",
-                  "embossedName": "PAULA A DAVIS",
                   "expirationDate": "2026-12-31",
                   "activeStatus": "Y"
                 }
                 """.formatted(EVENT_ID, OCCURRED_AT, ACCOUNT_ID, ACCOUNT_ID);
     }
 
-    /** The account fixture as the checked tree a listener receives. */
     /**
      * Runs one delivery with a recorder attached to the package every service logs under.
      *
@@ -674,6 +672,7 @@ class ReplicaConsumerTest {
         return List.copyOf(recorder.list);
     }
 
+    /** The account fixture as the checked tree a listener receives. */
     private static JsonNode accountMessage() {
         return MAPPER.readTree(accountJson());
     }

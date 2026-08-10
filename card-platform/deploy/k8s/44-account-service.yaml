@@ -93,7 +93,10 @@ spec:
             # 9080. Both ports speak Transport Layer Security (TLS).
             # 30-configmap.yaml sets SERVER_SSL_ENABLED and
             # MANAGEMENT_SSL_ENABLED.
-            - name: http
+            # Named https, not http: 30-configmap.yaml sets SERVER_SSL_ENABLED, so
+            # what answers on 8080 is Transport Layer Security. A port name is
+            # metadata other tooling reads, and `http` told it the wrong protocol.
+            - name: https
               containerPort: 8080
             - name: management
               containerPort: 9080
@@ -301,10 +304,16 @@ spec:
   ports:
     # 8080 alone. A Service address is what every pod in the cluster resolves,
     # and /actuator answers on 9080.
-    - name: http
+    - name: https
       port: 8080
-      targetPort: 8080
+      # By name rather than by number, so the Service follows the container port
+      # this Deployment declares instead of repeating its value. 10-kafka.yaml
+      # already targets `internal` the same way.
+      targetPort: https
       protocol: TCP
+      # The protocol the port speaks, declared where protocol-aware tooling reads
+      # it. protocol: TCP is the transport; appProtocol is the application layer.
+      appProtocol: https
 ---
 # Network policy for the account pod. Ingress admits its business and management
 # surfaces. Egress admits only Domain Name System (DNS), PostgreSQL and Kafka.

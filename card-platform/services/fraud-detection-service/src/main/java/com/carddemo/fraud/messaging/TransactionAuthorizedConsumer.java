@@ -164,8 +164,15 @@ public class TransactionAuthorizedConsumer {
      *
      * <p>A record whose payload no deserializer could read never reaches this method: the container
      * raises the deserialization failure before invoking a listener, and
-     * {@code config/KafkaConsumerConfig} counts it there. The null check below therefore covers only
-     * a genuine tombstone, which this topic does not carry, and it counts nothing.
+     * {@code config/KafkaConsumerConfig} counts it there. The tombstone check below therefore covers
+     * a payload this topic does not carry, and the key check covers a delivery whose key and payload
+     * disagree.
+     *
+     * <p>Every exit is counted, timed and classified, including those two refusals. A record that
+     * arrived was consumed whatever became of it, so the consumed count and the latency clock start
+     * before the first refusal can be raised and the latency is recorded in a {@code finally}. A
+     * refusal that left no count made a rejected delivery indistinguishable from one that never
+     * arrived, which is the state an observability review found.
      *
      * @param consumerRecord the delivery, carrying one validated event and the topic it arrived on
      * @param acknowledgment the offset commit, invoked once the transaction has committed
@@ -183,35 +190,51 @@ public class TransactionAuthorizedConsumer {
         Objects.requireNonNull(consumerRecord, "consumerRecord must be present");
         Objects.requireNonNull(acknowledgment, "acknowledgment must be present");
 
-        TransactionAuthorized event = consumerRecord.value();
-        if (event == null) {
-            throw new IllegalArgumentException("transaction.authorized carries no tombstone, and a"
-                    + " record with no payload names no transaction to assess");
-        }
-        String messageKey = consumerRecord.key();
-        if (messageKey == null || !messageKey.equals(event.aggregateId())) {
-            throw new IllegalArgumentException(
-                    "the delivery key must equal the payload aggregate identifier");
-        }
-
         meters.recordEventConsumed();
         long startedAt = System.nanoTime();
         try {
+            TransactionAuthorized event = consumerRecord.value();
+            if (event == null) {
+                throw new IllegalArgumentException("transaction.authorized carries no tombstone,"
+                        + " and a record with no payload names no transaction to assess");
+            }
+            String messageKey = consumerRecord.key();
+            if (messageKey == null || !messageKey.equals(event.aggregateId())) {
+                throw new IllegalArgumentException(
+                        "the delivery key must equal the payload aggregate identifier");
+            }
+
             self.getObject()
                     .assessOneEvent(event, recordedTopic(consumerRecord.topic()))
-                    .ifPresent(this::countOutcome);
+                    .ifPresentOrElse(this::countOutcome, meters::recordDuplicateSkipped);
         } catch (RuntimeException failure) {
             meters.recordProcessFailure();
-            LOG.warn("Event {} was not assessed. The failure was a {}, the offset stays"
+            LOG.warn("Delivery {} was not assessed. The failure was a {}, the offset stays"
                             + " uncommitted, and the container decides between a retry and the"
                             + " dead-letter topic.",
-                    event.eventId(), failure.getClass().getSimpleName());
+                    deliveryCoordinates(consumerRecord), failure.getClass().getSimpleName());
             throw failure;
         } finally {
             meters.recordProcessingLatency(Duration.ofNanos(System.nanoTime() - startedAt));
         }
 
         acknowledgment.acknowledge();
+    }
+
+    /**
+     * Names one delivery by its broker coordinates.
+     *
+     * <p>The coordinates identify the record on every exit, including a tombstone that carries no
+     * event identifier to name it by. They hold no key and no payload property, so the line stays
+     * free of an account identifier, a transaction identifier and a card number.
+     *
+     * @param consumerRecord the delivery to name
+     * @return the topic, partition and offset, in the form the broker's own tooling prints
+     */
+    private static String deliveryCoordinates(
+            ConsumerRecord<String, TransactionAuthorized> consumerRecord) {
+        return consumerRecord.topic() + '-' + consumerRecord.partition()
+                + '@' + consumerRecord.offset();
     }
 
     /**

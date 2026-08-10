@@ -37,6 +37,8 @@ import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.orm.jpa.JpaSystemException;
 import org.springframework.stereotype.Service;
@@ -67,6 +69,12 @@ import org.springframework.transaction.support.TransactionTemplate;
  */
 @Service
 public class AccountUpdateService {
+
+    /**
+     * Records a store that dropped a high-order digit. It names the field's integer capacity and
+     * withholds the figure, matching {@code domain/PostedTransactionService}.
+     */
+    private static final Logger LOG = LoggerFactory.getLogger(AccountUpdateService.class);
 
     // -----------------------------------------------------------------------------------------
     // Verdict text. Every literal is copied character for character from its condition name.
@@ -227,6 +235,14 @@ public class AccountUpdateService {
      * first five characters alone.
      */
     private static final int ZIP_EDIT_WIDTH = 5;
+
+    /**
+     * Width the postal-code field itself holds, from {@code CUST-ADDR-ZIP PIC X(10)} at
+     * {@code app/cpy/CVCUS01Y.cpy:L14} and {@code ACUP-NEW-CUST-ADDR-ZIP PIC X(10)} at
+     * {@code app/cbl/COACTUPC.cbl:L809}. Every character is carried, stored and returned; only the
+     * first {@link #ZIP_EDIT_WIDTH} are edited, which is what lets a stored ZIP+4 value pass.
+     */
+    private static final int ZIP_HELD_WIDTH = PicClause.CUST_ADDR_ZIP_WIDTH;
 
     /**
      * Scale of a whole-number field. {@code CUST-FICO-CREDIT-SCORE PIC 9(03)} at
@@ -400,13 +416,15 @@ public class AccountUpdateService {
      *                         fetched
      * @param fetchedCustomer  the customer values the caller was shown; {@code null} when none was
      *                         fetched
-     * @return a passing verdict once both rows and the event row are written. It carries
-     *         {@link #NO_CHANGE_DETECTED} when nothing changed. A failing verdict carries the
-     *         first message the pass produced
+     * @return a passing verdict once both rows and the event row are written, carrying the account
+     *         as this transaction left it. The verdict carries {@link #NO_CHANGE_DETECTED} when
+     *         nothing changed, and the snapshot then carries the row the caller was shown. A failing
+     *         verdict carries the first message the pass produced and no snapshot
      * @throws NullPointerException when either proposed object is {@code null}
      */
-    public EditResult updateAccount(AccountEntity proposedAccount, CustomerEntity proposedCustomer,
-            AccountEntity fetchedAccount, CustomerEntity fetchedCustomer) {
+    public AccountUpdateOutcome updateAccount(AccountEntity proposedAccount,
+            CustomerEntity proposedCustomer, AccountEntity fetchedAccount,
+            CustomerEntity fetchedCustomer) {
 
         Objects.requireNonNull(proposedAccount, "proposedAccount must be present");
         Objects.requireNonNull(proposedCustomer, "proposedCustomer must be present");
@@ -417,8 +435,8 @@ public class AccountUpdateService {
                     transactionTemplate.execute(status -> updateWithinTransaction(
                             proposedAccount, proposedCustomer, fetchedAccount, fetchedCustomer)),
                     "the account update transaction must answer with a result");
-            result.recordCommitted(meters, Duration.ofNanos(System.nanoTime() - startedAt));
-            return result.verdict();
+            result.recordOutcome(meters);
+            return result.outcome();
         } catch (LockNotTaken notTaken) {
             // A datastore that refuses a locking statement leaves a PostgreSQL transaction unusable,
             // so the outcome cannot be returned across the boundary and is carried out through it.
@@ -428,11 +446,16 @@ public class AccountUpdateService {
             // the latency and nothing else. The two arms answer the same message for the same reason,
             // so counting one of them as a service failure would make an operator read a contended
             // write as a defect.
-            meters.recordUpdateLatency(Duration.ofNanos(System.nanoTime() - startedAt));
-            return EditResult.failure(notTaken.getMessage());
+            return AccountUpdateOutcome.of(EditResult.failure(notTaken.getMessage()));
         } catch (RuntimeException failure) {
             meters.recordUpdateFailure();
             throw failure;
+        } finally {
+            // Every exit is timed, including the one that leaves through the throw above. Timing only
+            // the arms that returned made the series describe the work that succeeded: a datastore
+            // failing every write slowly showed a falling call count at an unchanged latency, and the
+            // one measurement that would have named the slowness was the one being discarded.
+            meters.recordUpdateLatency(Duration.ofNanos(System.nanoTime() - startedAt));
         }
     }
 
@@ -481,7 +504,7 @@ public class AccountUpdateService {
         // app/cbl/COACTUPC.cbl:L1433 tests ACUP-DETAILS-NOT-FETCHED and L1446 returns.
         if (fetchedAccount == null || fetchedCustomer == null) {
             EditResult result = editSearchKey(proposedAccount);
-            return new TransactionResult(result, false, !result.valid());
+            return new TransactionResult(result, false, !result.valid(), null);
         }
 
         // The path and fetched pair own both identifiers. Refuse a submitted key change before
@@ -489,7 +512,7 @@ public class AccountUpdateService {
         if (!submittedIdentifiersMatchFetched(proposedAccount, proposedCustomer,
                 fetchedAccount, fetchedCustomer)) {
             return new TransactionResult(
-                    EditResult.failure(IDENTIFIER_OWNERSHIP_MISMATCH), false, true);
+                    EditResult.failure(IDENTIFIER_OWNERSHIP_MISMATCH), false, true, null);
         }
 
         // app/cbl/COACTUPC.cbl:L1460-L1461 runs ahead of every field edit.
@@ -498,30 +521,37 @@ public class AccountUpdateService {
             if (authoritativeCustomerId(proposedAccount, proposedCustomer, fetchedAccount,
                     fetchedCustomer).isEmpty()) {
                 return new TransactionResult(
-                        EditResult.failure(ACCOUNT_CUSTOMER_RELATIONSHIP_NOT_FOUND), false, true);
+                        EditResult.failure(ACCOUNT_CUSTOMER_RELATIONSHIP_NOT_FOUND), false, true,
+                        null);
             }
             // app/cbl/COACTUPC.cbl:L1466 clears the non-key flags and L1467 returns.
-            return new TransactionResult(new EditResult(true, NO_CHANGE_DETECTED), false, false);
+            //
+            // Nothing was written, so the account as this transaction leaves it is the account the
+            // caller was shown. That copy was read from the row in this same request, which is
+            // exactly what the second read this replaces reported: a snapshot at one instant, not a
+            // promise about the row now.
+            return new TransactionResult(new EditResult(true, NO_CHANGE_DETECTED), false, false,
+                    AccountSnapshot.of(fetchedAccount));
         }
 
         // app/cbl/COACTUPC.cbl:L1470-L1676.
         EditResult fieldEdits = editMapInputs(proposedAccount, proposedCustomer);
         if (!fieldEdits.valid()) {
-            return new TransactionResult(fieldEdits, false, true);
+            return new TransactionResult(fieldEdits, false, true, null);
         }
 
         Optional<String> authoritativeCustomerId = authoritativeCustomerId(proposedAccount,
                 proposedCustomer, fetchedAccount, fetchedCustomer);
         if (authoritativeCustomerId.isEmpty()) {
             return new TransactionResult(
-                    EditResult.failure(ACCOUNT_CUSTOMER_RELATIONSHIP_NOT_FOUND), false, true);
+                    EditResult.failure(ACCOUNT_CUSTOMER_RELATIONSHIP_NOT_FOUND), false, true, null);
         }
 
         // app/cbl/COACTUPC.cbl:L3888-L4104.
-        EditResult written = writeProcessing(proposedAccount, proposedCustomer, fetchedAccount,
-                fetchedCustomer, authoritativeCustomerId.get());
-        boolean applied = written.valid() && !written.hasMessage();
-        return new TransactionResult(written, applied, false);
+        AccountUpdateOutcome written = writeProcessing(proposedAccount, proposedCustomer,
+                fetchedAccount, fetchedCustomer, authoritativeCustomerId.get());
+        boolean applied = written.verdict().valid() && !written.verdict().hasMessage();
+        return new TransactionResult(written.verdict(), applied, false, written.account());
     }
 
     /** Reports whether the submitted pair keeps the identifiers of the pair the caller fetched. */
@@ -675,7 +705,7 @@ public class AccountUpdateService {
 
         // 18. app/cbl/COACTUPC.cbl:L1605-L1611.
         boolean postalCodeAccepted = pass.record(NumericRequiredValidator.validate(ZIP_LABEL,
-                proposedCustomer.getAddressZip(), ZIP_EDIT_WIDTH));
+                proposedCustomer.getAddressZip(), ZIP_EDIT_WIDTH, ZIP_HELD_WIDTH));
 
         // 19. app/cbl/COACTUPC.cbl:L1615-L1621.
         pass.record(AlphabeticRequiredValidator.validate(CITY_LABEL,
@@ -897,9 +927,10 @@ public class AccountUpdateService {
      * @param authoritativeCustomerId customer identifier derived from
      *                                {@code account_customer_link}
      * @return a passing verdict once both rows and the event row are written, otherwise a failing
-     *         verdict carrying one message
+     *         verdict carrying one message, and on a written pass the account read off the locked
+     *         row after both writes
      */
-    private EditResult writeProcessing(AccountEntity proposedAccount,
+    private AccountUpdateOutcome writeProcessing(AccountEntity proposedAccount,
             CustomerEntity proposedCustomer, AccountEntity fetchedAccount,
             CustomerEntity fetchedCustomer, String authoritativeCustomerId) {
 
@@ -922,7 +953,7 @@ public class AccountUpdateService {
         }
         if (lockedAccount.isEmpty()) {
             // app/cbl/COACTUPC.cbl:L3907-L3915.
-            return EditResult.failure(COULD_NOT_LOCK_ACCOUNT);
+            return AccountUpdateOutcome.of(EditResult.failure(COULD_NOT_LOCK_ACCOUNT));
         }
 
         // app/cbl/COACTUPC.cbl:L3919-L3930. The source takes this identifier from the
@@ -936,7 +967,7 @@ public class AccountUpdateService {
         }
         if (lockedCustomer.isEmpty()) {
             // app/cbl/COACTUPC.cbl:L3934-L3942.
-            return EditResult.failure(COULD_NOT_LOCK_CUSTOMER);
+            return AccountUpdateOutcome.of(EditResult.failure(COULD_NOT_LOCK_CUSTOMER));
         }
 
         AccountEntity storedAccount = lockedAccount.get();
@@ -945,7 +976,8 @@ public class AccountUpdateService {
         // app/cbl/COACTUPC.cbl:L3947-L3948, and its verdict at L3950-L3952.
         if (concurrentChangeDetector.storedRecordChanged(storedAccount, storedCustomer,
                 fetchedAccount, fetchedCustomer)) {
-            return EditResult.failure(ConcurrentChangeDetector.RECORD_CHANGED_MESSAGE);
+            return AccountUpdateOutcome.of(
+                    EditResult.failure(ConcurrentChangeDetector.RECORD_CHANGED_MESSAGE));
         }
 
         applyAccountFields(proposedAccount, storedAccount);
@@ -990,7 +1022,11 @@ public class AccountUpdateService {
                             storedCustomer.getFicoCreditScore()));
         }
 
-        return EditResult.ok();
+        // Read off the locked row, after both writes and while the transaction still holds it. The
+        // values here are the values that commit: applyAccountFields truncates each amount to the
+        // scale of its Picture clause, so the submitted values and the stored values are not always
+        // the same values, and only the row can say which was stored.
+        return new AccountUpdateOutcome(EditResult.ok(), AccountSnapshot.of(storedAccount));
     }
 
     /**
@@ -999,18 +1035,31 @@ public class AccountUpdateService {
      * @param verdict           business result returned to the controller
      * @param applied           whether both rows and the outbox event were written
      * @param validationFailure whether a field edit rejected the request
+     * @param account           the account as the transaction left it, or {@code null} where the
+     *                          call resolved no row
      */
     static record TransactionResult(
             EditResult verdict,
             boolean applied,
-            boolean validationFailure) {
+            boolean validationFailure,
+            AccountSnapshot account) {
 
         TransactionResult {
             Objects.requireNonNull(verdict, "verdict");
         }
 
-        void recordCommitted(AccountMeters meters, Duration elapsed) {
-            meters.recordUpdateLatency(elapsed);
+        /**
+         * Reads the snapshot the caller answers with.
+         *
+         * <p>Taken inside the transaction, so no second read of the row is needed to report it.
+         *
+         * @return the verdict and the snapshot, ready to leave the service
+         */
+        AccountUpdateOutcome outcome() {
+            return new AccountUpdateOutcome(verdict, account);
+        }
+
+        void recordOutcome(AccountMeters meters) {
             if (applied) {
                 meters.recordUpdateApplied();
             }
@@ -1037,18 +1086,23 @@ public class AccountUpdateService {
         stored.setActiveStatus(proposed.getActiveStatus());
         // L3964
         stored.setCurrentBalance(
-                storedAmount(proposed.getCurrentBalance(), PicClause.ACCT_CURR_BAL_SCALE));
+                storedAmount(proposed.getCurrentBalance(), PicClause.ACCT_CURR_BAL_PRECISION,
+                        PicClause.ACCT_CURR_BAL_SCALE));
         // L3966
         stored.setCreditLimit(
-                storedAmount(proposed.getCreditLimit(), PicClause.ACCT_CREDIT_LIMIT_SCALE));
+                storedAmount(proposed.getCreditLimit(), PicClause.ACCT_CREDIT_LIMIT_PRECISION,
+                        PicClause.ACCT_CREDIT_LIMIT_SCALE));
         // L3968-L3969
         stored.setCashCreditLimit(storedAmount(proposed.getCashCreditLimit(),
+                PicClause.ACCT_CASH_CREDIT_LIMIT_PRECISION,
                 PicClause.ACCT_CASH_CREDIT_LIMIT_SCALE));
         // L3971-L3972
         stored.setCurrentCycleCredit(storedAmount(proposed.getCurrentCycleCredit(),
+                PicClause.ACCT_CURR_CYC_CREDIT_PRECISION,
                 PicClause.ACCT_CURR_CYC_CREDIT_SCALE));
         // L3974
         stored.setCurrentCycleDebit(storedAmount(proposed.getCurrentCycleDebit(),
+                PicClause.ACCT_CURR_CYC_DEBIT_PRECISION,
                 PicClause.ACCT_CURR_CYC_DEBIT_SCALE));
         // L3976-L3982 assemble the ten-character form the column holds
         stored.setOpenDate(proposed.getOpenDate());
@@ -1106,7 +1160,8 @@ public class AccountUpdateService {
         // L4056-L4057
         stored.setPrimaryCardHolderIndicator(proposed.getPrimaryCardHolderIndicator());
         // L4058-L4059
-        stored.setFicoCreditScore(storedAmount(proposed.getFicoCreditScore(), INTEGRAL_SCALE));
+        stored.setFicoCreditScore(storedAmount(proposed.getFicoCreditScore(),
+                PicClause.CUST_FICO_CREDIT_SCORE_WIDTH, INTEGRAL_SCALE));
     }
 
     // -----------------------------------------------------------------------------------------
@@ -1299,16 +1354,39 @@ public class AccountUpdateService {
     }
 
     /**
-     * Returns an amount at the declared scale for a column. An absent amount stays absent, and the
-     * column that receives it reports its own state.
+     * Returns an amount as the column holds it. An absent amount stays absent, and the column that
+     * receives it reports its own state.
      *
-     * @param amount the amount to scale; may be {@code null}
-     * @param scale  the scale {@link PicClause} publishes for the field
-     * @return the scaled amount, or {@code null} for an absent amount
+     * <p>Both narrowings of a COBOL {@code MOVE} into the field apply. The scale drops the digits
+     * past the point that the field does not keep. The precision drops the high-order digits that do
+     * not fit, which is what {@code app/cbl/COBIL00C.cbl:L224} does carrying
+     * {@code ACCT-CURR-BAL} into the narrower {@code TRAN-AMT}, and no program under
+     * {@code app/cbl/} carries an {@code ON SIZE ERROR} phrase to do anything else.</p>
+     *
+     * <p>Applying the precision here is what keeps a valid submitted figure from reaching the
+     * database as an overflow. Every money column is {@code NUMERIC(12,2)}, and the
+     * currency-tolerant grammar accepts eleven integer digits inside the fifteen characters
+     * {@code AccountDataRequest.MONEY_MAX_LENGTH} admits, so such a value used to raise
+     * SQLSTATE 22003 and answer 500. A database overflow is not validation.</p>
+     *
+     * @param amount    the amount to store; may be {@code null}
+     * @param precision the precision {@link PicClause} publishes for the field
+     * @param scale     the scale {@link PicClause} publishes for the field
+     * @return the amount as the column holds it, or {@code null} for an absent amount
      */
-    private static BigDecimal storedAmount(BigDecimal amount, int scale) {
-
-        return amount == null ? null : CobolDecimal.truncateToScale(amount, scale);
+    private static BigDecimal storedAmount(BigDecimal amount, int precision, int scale) {
+        if (amount == null) {
+            return null;
+        }
+        BigDecimal stored = CobolDecimal.truncateToPictureField(amount, precision, scale);
+        if (stored.compareTo(amount) != 0) {
+            LOG.warn("An updated figure needed more than the {} integer digits the record holds, so"
+                            + " the high-order digits were dropped as a COBOL MOVE into the field"
+                            + " drops them. The figure is withheld. See"
+                            + " docs/business-rule-flags.md.",
+                    precision - scale);
+        }
+        return stored;
     }
 
     /**

@@ -10,6 +10,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import com.carddemo.events.EventEnvelope;
 import com.carddemo.events.TransactionAuthorized;
 import com.carddemo.ledger.LedgerApplication;
+import com.carddemo.ledger.LedgerServiceDatabase;
 import com.carddemo.ledger.TestIdentityPasswords;
 import com.carddemo.ledger.entity.AccountBalanceProjectionEntity;
 import com.carddemo.ledger.entity.ProcessedEventEntity.ProcessedEventId;
@@ -101,9 +102,7 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 @DisplayName("Ledger authorization listener runtime guarantees")
 public class TransactionAuthorizedConsumerIT {
 
-    private static final String POSTGRES_IMAGE = "postgres:18.4";
     private static final String KAFKA_IMAGE = "apache/kafka:4.2.1";
-    private static final String CONTAINER_CREDENTIAL = "carddemo";
     private static final String SERVICE_SCHEMA = "ledger_service";
     private static final String BROKER_SECURITY_PROTOCOL = "PLAINTEXT";
     private static final String LISTENER_FACTORY_BEAN = "kafkaListenerContainerFactory";
@@ -201,11 +200,13 @@ public class TransactionAuthorizedConsumerIT {
               "currency": "%s"
             }""";
 
-    @Container
-    private static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer(POSTGRES_IMAGE)
-            .withDatabaseName(CONTAINER_CREDENTIAL)
-            .withUsername(CONTAINER_CREDENTIAL)
-            .withPassword(CONTAINER_CREDENTIAL);
+    /**
+     * The one container the module fork runs, which this class reads a login from.
+     *
+     * <p>{@link LedgerServiceDatabase} owns it and hands this class a database of its own inside it.
+     * Nothing here starts or stops a container.
+     */
+    private static final PostgreSQLContainer POSTGRES = LedgerServiceDatabase.container();
 
     @Container
     private static final KafkaContainer KAFKA = new KafkaContainer(KAFKA_IMAGE)
@@ -246,8 +247,7 @@ public class TransactionAuthorizedConsumerIT {
     }
 
     private static String jdbcUrlOnServiceSchema() {
-        String url = POSTGRES.getJdbcUrl();
-        return url + (url.contains("?") ? "&" : "?") + "currentSchema=" + SERVICE_SCHEMA;
+        return LedgerServiceDatabase.urlFor(TransactionAuthorizedConsumerIT.class);
     }
 
     @BeforeEach
@@ -586,12 +586,15 @@ public class TransactionAuthorizedConsumerIT {
 
         private static final String UNREACHABLE_BROKER = "192.0.2.1:9092";
 
-        @Container
+        /**
+         * The one container the module fork runs, which this group reads a login from.
+         *
+         * <p>Only the broker is unreachable in this group. The database is the module's shared
+         * container, and {@link LedgerServiceDatabase} hands this group a database of its own inside
+         * it.
+         */
         private static final PostgreSQLContainer UNREACHABLE_POSTGRES =
-                new PostgreSQLContainer(POSTGRES_IMAGE)
-                        .withDatabaseName(CONTAINER_CREDENTIAL)
-                        .withUsername(CONTAINER_CREDENTIAL)
-                        .withPassword(CONTAINER_CREDENTIAL);
+                LedgerServiceDatabase.container();
 
         @Autowired
         private ConfigurableApplicationContext brokerlessContext;
@@ -612,9 +615,7 @@ public class TransactionAuthorizedConsumerIT {
         }
 
         private static String brokerlessJdbcUrl() {
-            String url = UNREACHABLE_POSTGRES.getJdbcUrl();
-            return url + (url.contains("?") ? "&" : "?")
-                    + "currentSchema=" + SERVICE_SCHEMA;
+            return LedgerServiceDatabase.urlFor(BrokerUnreachableStartup.class);
         }
 
         /** Asserts startup replacing {@code app/cbl/CBTRN02C.cbl:L707-L711}. */

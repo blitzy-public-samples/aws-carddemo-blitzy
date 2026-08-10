@@ -341,7 +341,7 @@ class OutboxAtomicityTest extends AbstractAccountPostgresTest {
 
         EditResult verdict = transactions.execute(status -> {
             EditResult answered = accountUpdateService.updateAccount(submittedAccount(),
-                    submittedCustomer(), copyOf(accountAsFound), copyOf(customerAsFound));
+                    submittedCustomer(), copyOf(accountAsFound), copyOf(customerAsFound)).verdict();
             assertThat(publisher.publicationsKeyedTo(ACCOUNT_ID))
                     .as("publications for account %s while its transaction is still open",
                             ACCOUNT_ID)

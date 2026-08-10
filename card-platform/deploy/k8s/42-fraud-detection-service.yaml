@@ -87,7 +87,10 @@ spec:
             # monitoring collector, not for the cluster. Both ports are
             # encrypted, because 30-configmap.yaml sets SERVER_SSL_ENABLED and
             # MANAGEMENT_SSL_ENABLED.
-            - name: http
+            # Named https, not http: 30-configmap.yaml sets SERVER_SSL_ENABLED, so
+            # what answers on 8080 is Transport Layer Security. A port name is
+            # metadata other tooling reads, and `http` told it the wrong protocol.
+            - name: https
               containerPort: 8080
             - name: management
               containerPort: 9080
@@ -293,10 +296,16 @@ spec:
     app.kubernetes.io/name: fraud-detection-service
     app.kubernetes.io/part-of: card-platform
   ports:
-    - name: http
+    - name: https
       port: 8080
-      targetPort: 8080
+      # By name rather than by number, so the Service follows the container port
+      # this Deployment declares instead of repeating its value. 10-kafka.yaml
+      # already targets `internal` the same way.
+      targetPort: https
       protocol: TCP
+      # The protocol the port speaks, declared where protocol-aware tooling reads
+      # it. protocol: TCP is the transport; appProtocol is the application layer.
+      appProtocol: https
 ---
 # Network policy for the fraud detection pod. Ingress admits its lookup and
 # management surfaces. Egress admits only Domain Name System (DNS), PostgreSQL

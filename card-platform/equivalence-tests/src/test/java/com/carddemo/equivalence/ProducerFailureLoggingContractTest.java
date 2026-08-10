@@ -1,6 +1,7 @@
 package com.carddemo.equivalence;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
@@ -79,9 +80,21 @@ class ProducerFailureLoggingContractTest {
     /** Matches one block comment, which is how every class here carries its javadoc. */
     private static final Pattern BLOCK_COMMENT = Pattern.compile("/\\*.*?\\*/", Pattern.DOTALL);
 
-    /** Matches the log call of a safe listener, so its arguments can be read. */
+    /**
+     * Matches the log call of a safe listener, capturing its level and its arguments.
+     *
+     * <p>The level is captured rather than fixed. It was fixed at {@code error}, which read as a
+     * sensitivity rule and was really two rules wearing one pattern: what the line may carry, and how
+     * loudly it says it. A failed send is retried from the outbox row, so error was the wrong level,
+     * and a pattern naming one level could not be corrected without appearing to relax the rule that
+     * matters. {@link #everyServiceReportsAFailedAttemptAtWarning} reads the level and
+     * {@link #everyServiceShipsAListenerThatLogsNothingSensitive} reads the arguments.
+     */
     private static final Pattern LISTENER_LOG_CALL = Pattern.compile(
-            "LOG\\.error\\((.*?)\\);", Pattern.DOTALL);
+            "LOG\\.(error|warn|info|debug|trace)\\((.*?)\\);", Pattern.DOTALL);
+
+    /** The level a failed attempt is reported at, being an attempt rather than a loss. */
+    private static final String ATTEMPT_LEVEL = "warn";
 
     /**
      * Matches a bare throwable passed as the final argument of the log call.
@@ -166,7 +179,7 @@ class ProducerFailureLoggingContractTest {
             String code = withoutComments(readText(listener));
             Matcher call = LISTENER_LOG_CALL.matcher(code);
             assertTrue(call.find(), module + " listener logs nothing on a failed send");
-            String arguments = collapse(call.group(1));
+            String arguments = collapse(call.group(2));
 
             if (BARE_THROWABLE_ARGUMENT.matcher(arguments).find()) {
                 offending.add(module + " passes the throwable itself to its logger");
@@ -184,6 +197,116 @@ class ProducerFailureLoggingContractTest {
         assertEquals(List.of(), offending,
                 "a listener that passes the key, the value or the throwable itself defeats the "
                         + "purpose of replacing the default: " + offending);
+    }
+
+    /**
+     * Holds every listener to reporting a failed attempt at warning, and to reporting it once.
+     *
+     * <p>A failed send is not a lost event. The event stays on its outbox row, the relay attempts it
+     * again, and only the component that gives up reports a loss. Reporting every attempt at error
+     * made an unreachable broker write one error per attempt per row, so the level stopped
+     * distinguishing a retry storm from a permanent loss and an operator learned to ignore it.
+     *
+     * <p>The listener is the one place every send of every template passes through, whatever its
+     * origin, which is why it owns the attempt. Each relay named the same send a second time, and
+     * those lines were removed rather than this one: a relay reports only what it alone knows, which
+     * is that a row was abandoned.
+     */
+    @Test
+    @DisplayName("every service reports a failed attempt once, at warning")
+    void everyServiceReportsAFailedAttemptAtWarning() {
+        List<String> offending = new ArrayList<>();
+
+        for (String module : MODULES) {
+            String code = withoutComments(readText(listenerOf(module)));
+            List<String> levels = new ArrayList<>();
+            Matcher call = LISTENER_LOG_CALL.matcher(code);
+            while (call.find()) {
+                levels.add(call.group(1));
+            }
+
+            if (levels.size() != 1) {
+                offending.add(module + " listener writes " + levels.size() + " lines " + levels);
+                continue;
+            }
+            if (!ATTEMPT_LEVEL.equals(levels.get(0))) {
+                offending.add(module + " reports an attempt at " + levels.get(0));
+            }
+        }
+
+        assertEquals(List.of(), offending,
+                "a retried attempt reported at error cannot be told from an event this platform "
+                        + "lost, and two lines for one attempt make an operator count every loss "
+                        + "twice: " + offending);
+    }
+
+    /**
+     * Proves the level and the sensitivity rules are separable, and that both still fire.
+     *
+     * <p>The pattern above named one level, so widening it to read the level could have widened it
+     * into matching nothing in particular. Each shape below is checked against the pattern the rules
+     * actually use, so a pattern that had stopped recognising a bare throwable, a key read or a value
+     * read is reported here rather than passing quietly in all six services at once.
+     */
+    @Test
+    @DisplayName("the rules still recognise a bare throwable, a key read and a value read")
+    void theRulesStillRecogniseEverySensitiveShape() {
+        assertTrue(matchedArguments("LOG.warn(\"a send failed\", failure);")
+                        .matches(".*,\\s*failure$"),
+                "a bare throwable has to remain readable as the final argument, whatever the level");
+        assertTrue(BARE_THROWABLE_ARGUMENT.matcher(
+                        matchedArguments("LOG.warn(\"a send failed\", failure);")).find(),
+                "the throwable rule fires on a throwable passed at warning, not only at error");
+        assertFalse(BARE_THROWABLE_ARGUMENT.matcher(
+                        matchedArguments("LOG.warn(\"a send failed {}\", failureType(failure));"))
+                        .find(),
+                "the sanctioned form must not be reported, or every service would fail this suite");
+        assertTrue(matchedArguments("LOG.warn(\"key {}\", record.key());").contains(".key()"),
+                "a key read has to remain visible to the rule");
+        assertTrue(matchedArguments("LOG.warn(\"value {}\", record.value());").contains(".value()"),
+                "a value read has to remain visible to the rule");
+        assertEquals("error", levelOf("LOG.error(\"a send failed {}\", failureType(failure));"),
+                "the pattern still reads error, so a service reverting to it is reported rather "
+                        + "than skipped");
+    }
+
+    /**
+     * Returns the collapsed argument list the pattern reads from one log call.
+     *
+     * @param call one log call, as source text
+     * @return its arguments
+     */
+    private static String matchedArguments(String call) {
+        Matcher matched = LISTENER_LOG_CALL.matcher(call);
+        assertTrue(matched.find(), "the pattern no longer matches a logger call at all: " + call);
+        return collapse(matched.group(2));
+    }
+
+    /**
+     * Returns the level the pattern reads from one log call.
+     *
+     * @param call one log call, as source text
+     * @return its level
+     */
+    private static String levelOf(String call) {
+        Matcher matched = LISTENER_LOG_CALL.matcher(call);
+        assertTrue(matched.find(), "the pattern no longer matches a logger call at all: " + call);
+        return matched.group(1);
+    }
+
+    /**
+     * Returns the safe listener source of one module.
+     *
+     * @param module the service module directory name
+     * @return the path of its {@code SafeProducerListener.java}
+     */
+    private static Path listenerOf(String module) {
+        return sourcesOf(module).stream()
+                .filter(path -> path.getFileName().toString().equals("SafeProducerListener.java"))
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException(
+                        module + " ships no SafeProducerListener, so its templates name a listener "
+                                + "that does not exist"));
     }
 
     /**

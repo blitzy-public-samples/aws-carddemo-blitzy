@@ -24,7 +24,7 @@ import org.junit.jupiter.api.Test;
  * names, with version stamps one second apart. This class exists so the one copy this platform does
  * keep cannot fork the same way.
  *
- * <p><b>Why a copy exists at all.</b> The account service publishes {@code AccountStateChanged}, and
+ * <p><b>What the copy is for.</b> The account service publishes {@code AccountStateChanged}, and
  * the checkpoint inventory requires the contract document for that event to sit inside the module
  * that produces it, at
  * {@code services/account-service/src/main/resources/schemas/account-state-changed-v1.json}. Every
@@ -32,7 +32,7 @@ import org.junit.jupiter.api.Test;
  * {@code EventSchemas} compiles them from. Both statements are satisfied by one document present at
  * both paths and identical at both, rather than by two documents that agree today.
  *
- * <p><b>Why identity is the requirement rather than agreement.</b> Both files land on the classpath
+ * <p><b>Identity is the requirement, not agreement.</b> Both files land on the classpath
  * of the running account service under the same resource name, {@code
  * schemas/account-state-changed-v1.json}: one from the module's own classes, one from the packaged
  * contract library. {@code EventSchemas} reads that name through

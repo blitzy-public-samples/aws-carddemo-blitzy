@@ -350,6 +350,68 @@ final class CardSummaryTest {
     }
 
     /**
+     * Asserts the active-status domain is a rule of this record and not only of the update path.
+     *
+     * <p>The domain is {@code 88 FLG-YES-NO-VALID VALUES 'Y', 'N'.} at
+     * {@code app/cbl/COCRDUPC.cbl:L91}, tested at {@code app/cbl/COCRDUPC.cbl:L1861-L1863}. Before
+     * this check, {@code api/dto/CardUpdateRequest} held an inbound status to the pair and nothing
+     * held an outbound one, so a row loaded by any other writer was answered as it stood inside a
+     * contract that enumerates two values. {@code ck_card_active_status} in
+     * {@code V5__xref_reconciliation_and_status_domain.sql} closes the same gap at the column.
+     */
+    @Test
+    void bothValuesOfTheSourceDomainBuildARow() {
+        String masked = PanMasker.maskCardNumber(syntheticCardNumber(1L));
+
+        assertEquals(CardSummary.ACTIVE_STATUS_YES,
+                new CardSummary(masked, SYNTHETIC_ACCOUNT_ID, CardSummary.ACTIVE_STATUS_YES)
+                        .activeStatus(),
+                "Y is one of the two values 88 FLG-YES-NO-VALID declares");
+        assertEquals(CardSummary.ACTIVE_STATUS_NO,
+                new CardSummary(masked, SYNTHETIC_ACCOUNT_ID, CardSummary.ACTIVE_STATUS_NO)
+                        .activeStatus(),
+                "N is the other, and the fixture carries both");
+    }
+
+    /**
+     * Asserts a status outside the domain is refused, in every form a stored row could carry it.
+     *
+     * <p>Lower case is refused rather than folded: {@code 1240-EDIT-CARDSTATUS} at
+     * {@code app/cbl/COCRDUPC.cbl:L1855-L1866} folds no case, so accepting {@code y} would answer a
+     * value the source never stores.
+     */
+    @Test
+    void aStatusOutsideTheSourceDomainIsRefused() {
+        String masked = PanMasker.maskCardNumber(syntheticCardNumber(2L));
+
+        assertThrows(NullPointerException.class,
+                () -> new CardSummary(masked, SYNTHETIC_ACCOUNT_ID, null),
+                "a row with no status is not a row this contract can answer");
+        for (String outside : List.of("X", "y", "n", " ", "YN", "")) {
+            assertThrows(IllegalArgumentException.class,
+                    () -> new CardSummary(masked, SYNTHETIC_ACCOUNT_ID, outside),
+                    "'" + outside + "' is outside 88 FLG-YES-NO-VALID and must be refused");
+        }
+    }
+
+    /**
+     * Asserts the shared helper is the one place the domain is written down.
+     *
+     * <p>{@code api/dto/CardDetailResponse} calls the same method, so one domain governs both read
+     * contracts. A second copy of the pair would be a second thing to change.
+     */
+    @Test
+    void theSharedHelperCarriesTheDomainForBothReadContracts() {
+        assertEquals("Y", CardSummary.ACTIVE_STATUS_YES, "the affirmative value of L91");
+        assertEquals("N", CardSummary.ACTIVE_STATUS_NO, "the negative value of L91");
+        CardSummary.requireActiveStatusFlag(CardSummary.ACTIVE_STATUS_YES);
+        CardSummary.requireActiveStatusFlag(CardSummary.ACTIVE_STATUS_NO);
+        assertThrows(IllegalArgumentException.class,
+                () -> CardSummary.requireActiveStatusFlag("X"),
+                "the helper refuses what the two records refuse");
+    }
+
+    /**
      * Returns the declared type of one component of {@link CardSummary}.
      *
      * @param componentName the name of the component to look up

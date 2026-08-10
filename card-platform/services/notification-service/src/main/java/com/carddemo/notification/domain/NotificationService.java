@@ -14,6 +14,7 @@ import com.carddemo.notification.repository.StatementTransactionRepository;
 import java.math.BigDecimal;
 import java.time.Clock;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
@@ -233,6 +234,17 @@ public class NotificationService {
      * covers the rows the alert carries. A blank or space-filled row field renders as spaces and
      * raises nothing.</p>
      *
+     * <p>ADDITIVE: the alert carries the card's most recent
+     * {@value NotificationRenderer#MAXIMUM_STATEMENT_ROWS} rows rather than every row of the card,
+     * and its total covers those rows. {@code app/cbl/CBSTM03A.CBL:L417-L432} totalled every row
+     * between two key breaks, because it wrote one record at a time to a sequential file and held no
+     * list. The transaction named by {@code transactionId} is inside that set whatever the card's
+     * history holds: {@code messaging/TransactionPostedConsumer} writes its read-model row before
+     * calling this method, and its identifier is the highest the card holds because
+     * {@code TransactionIdentifierSource} mints identifiers in allocation order and pads them so
+     * their text order matches. {@code GET /notifications/&#123;cardToken&#125;} answers the whole
+     * history, with no ceiling.</p>
+     *
      * <p>ADDITIVE: the rendered-alert row this method writes. It carries the card token, the masked
      * card number, the transaction identifier, the format name and the instant rendering finished,
      * and no rendered document.</p>
@@ -417,6 +429,77 @@ public class NotificationService {
     }
 
     /**
+     * Totals one card's whole history from its aggregate, without reading the rows.
+     *
+     * <p>Answers the same value {@link #totalOf(List)} would over every row of the card, which is
+     * what {@code app/cbl/CBSTM03A.CBL:L429} accumulates between two key breaks. The history route
+     * reads it so that a response can carry a bounded page of rows and still report a total over all
+     * of them.
+     *
+     * <p>A sum is not always that value, and the difference is the reason this method exists. The
+     * source stores each addition into {@code WS-TOTAL-AMT PIC S9(9)V99} at
+     * {@code app/cbl/CBSTM03A.CBL:L65}, so a running total above that field's ceiling loses its
+     * high-order digits <em>at every addition</em>. One sum loses them at most once. Where the amounts
+     * do not all share a sign, truncating once and truncating repeatedly can disagree, so a sum cannot
+     * simply be substituted.
+     *
+     * <p>What makes the substitution safe is a bound rather than an assumption. A running total never
+     * exceeds the sum of the magnitudes of the amounts, so an {@code absoluteTotal} that fits the
+     * field proves that no addition overflowed and that the sum is exactly what the source would have
+     * accumulated. That is the ordinary case and it costs one aggregate.
+     *
+     * <p>Where the magnitudes do not fit, the field's overflow is genuinely reachable and this falls
+     * back to accumulating row by row, in bounded pages, so the reproduced behaviour stays exact.
+     * That path is the one {@code accumulate} already warns from, and
+     * {@code card-platform/docs/business-rule-flags.md} records the source defect it reproduces.
+     * Correctness is preferred to speed in the case that is already wrong in the source.
+     *
+     * @param cardToken the stored card token, the key of the aggregate supplied
+     * @param totals    that card's aggregate, from
+     *                  {@link StatementTransactionRepository#totalsOfCard(String)}
+     * @return the total, at the scale {@link PicClause#TRAN_AMT_SCALE} declares
+     * @throws NullPointerException when an argument is {@code null}
+     */
+    public BigDecimal totalOfCard(String cardToken,
+            StatementTransactionRepository.CardHistoryTotals totals) {
+        Objects.requireNonNull(cardToken, "cardToken must not be null");
+        Objects.requireNonNull(totals, "totals must not be null");
+
+        BigDecimal magnitudes = CobolDecimal.truncateToScale(totals.getAbsoluteTotal(),
+                PicClause.TRAN_AMT_SCALE);
+        BigDecimal held = CobolDecimal.truncateToPictureField(magnitudes,
+                PicClause.TRAN_AMT_PRECISION, PicClause.TRAN_AMT_SCALE);
+
+        if (held.compareTo(magnitudes) == 0) {
+            return CobolDecimal.truncateToScale(totals.getTotalAmount(), PicClause.TRAN_AMT_SCALE);
+        }
+
+        LOGGER.warn("One card's amounts sum in magnitude beyond the {} integer digits WS-TOTAL-AMT"
+                        + " holds at app/cbl/CBSTM03A.CBL:L65, so this total is accumulated row by"
+                        + " row to reproduce the per-addition truncation of the ADD at :L429 rather"
+                        + " than summed once. See docs/business-rule-flags.md.",
+                PicClause.TRAN_AMT_PRECISION - PicClause.TRAN_AMT_SCALE);
+
+        BigDecimal total = NO_TRANSACTIONS;
+        String after = null;
+        while (true) {
+            List<StatementTransactionEntity> page = after == null
+                    ? statementTransactions.findByIdCardTokenOrderByIdTransactionIdAsc(cardToken,
+                            Limit.of(MAXIMUM_STATEMENT_ROWS))
+                    : statementTransactions
+                            .findByIdCardTokenAndIdTransactionIdGreaterThanOrderByIdTransactionIdAsc(
+                                    cardToken, after, Limit.of(MAXIMUM_STATEMENT_ROWS));
+            if (page.isEmpty()) {
+                return total;
+            }
+            for (StatementTransactionEntity row : page) {
+                total = accumulate(total, row.getAmount());
+            }
+            after = page.get(page.size() - 1).getId().getTransactionId();
+        }
+    }
+
+    /**
      * @param format the format the caller asked for
      * @return the renderer that reports {@code format}
      * @throws NullPointerException when {@code format} is {@code null}
@@ -435,21 +518,33 @@ public class NotificationService {
     }
 
     /**
-     * Reads one account's rows, up to the count one alert may carry.
+     * Reads one card's most recent rows, up to the count one alert may carry, and returns them in
+     * the order they render.
+     *
+     * <p>The read runs from the newest end and the list is then reversed, so the rows are the last
+     * {@value NotificationRenderer#MAXIMUM_STATEMENT_ROWS} the card holds while the order presented
+     * is still oldest first, as {@code SORT FIELDS=(263,16,CH,A,1,16,CH,A)} at
+     * {@code app/jcl/CREASTMT.JCL:L53} produced. Reading from the oldest end under the same ceiling
+     * would drop the transaction the alert reports as soon as a card held more rows than the ceiling,
+     * and would total a subset the cardholder had already been shown.</p>
      *
      * <p>The limit reaches the database rather than a list already in memory, so a card holding more
-     * rows than {@value NotificationRenderer#MAXIMUM_STATEMENT_ROWS} costs one read of that many rows
-     * and not a whole history. {@link NotificationRenderer#requireRenderableRowCount(List)} refuses
-     * more than that many rows, and this method cannot return more, so the two agree by construction.
-     * {@code GET /notifications/{cardToken}} reads the same rows without a ceiling, so a history
-     * larger than one alert answers in full there.</p>
+     * rows than the ceiling costs one read of that many rows and not a whole history.
+     * {@link NotificationRenderer#requireRenderableRowCount(List)} refuses more than that many rows,
+     * and this method cannot return more, so the two agree by construction.
+     * {@code GET /notifications/{cardToken}} reads the same rows ascending and without a ceiling, so
+     * a history larger than one alert answers in full there.</p>
      *
      * @param cardToken the card token the key column holds
      * @return the rows to render, in ascending transaction-identifier order
      */
     private List<StatementTransactionEntity> renderableRows(String cardToken) {
-        return this.statementTransactions.findByIdCardTokenOrderByIdTransactionIdAsc(cardToken,
-                Limit.of(MAXIMUM_STATEMENT_ROWS));
+        List<StatementTransactionEntity> newestFirst = this.statementTransactions
+                .findByIdCardTokenOrderByIdTransactionIdDesc(cardToken,
+                        Limit.of(MAXIMUM_STATEMENT_ROWS));
+        List<StatementTransactionEntity> oldestFirst = new ArrayList<>(newestFirst);
+        Collections.reverse(oldestFirst);
+        return oldestFirst;
     }
 
     /**

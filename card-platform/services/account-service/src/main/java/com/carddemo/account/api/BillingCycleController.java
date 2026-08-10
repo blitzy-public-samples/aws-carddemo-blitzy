@@ -95,7 +95,7 @@ public class BillingCycleController {
      * <p>The response carries the account identifier and both accumulators as they stand after the
      * close, each at the two fractional digits {@code PIC S9(10)V99} holds.
      *
-     * <h2>Why a bodyless route still names a media type</h2>
+     * <h2>A bodyless route still names a media type</h2>
      *
      * <p>{@code consumes} is the cross-site request forgery control on this route, not a statement
      * about a body it does not read. A POST is one of the three methods a browser will send

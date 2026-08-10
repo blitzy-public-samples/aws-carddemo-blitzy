@@ -34,7 +34,7 @@ import java.util.UUID;
  * commits. A redelivery finds the row present and does nothing, and the {@code repository} package
  * owns that lookup by primary key.
  *
- * <p><b>Why the topic is part of the identity.</b> Keyed on the identifier alone, this marker
+ * <p><b>The topic is part of the identity.</b> Keyed on the identifier alone, this marker
  * asserts that one identifier is handled once by the whole service, and that assertion is false the
  * moment a service reads two topics: two producing services assign identifiers independently, so two
  * different events may carry one identifier without either producer being at fault. The second of

@@ -20,6 +20,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -142,8 +143,14 @@ class EntitySchemaMappingContractTest {
      * naming the last failure. That table is what lets replica currency be measured as consumer lag
      * without missing the one case lag cannot see, a delivery whose offset advanced after its
      * diagnostic was away.</p>
+     *
+     * <p>The ten most recent are the two correlation columns each of the five outbox tables gained,
+     * {@code correlation_id} and {@code causation_id}. Both are nullable, and a relay reads them
+     * back to attach the two record headers a consumer joins a published record on. They are
+     * additive and have no COBOL ancestor: the source carries no identifier that spans two
+     * programs.</p>
      */
-    private static final int MAPPED_COLUMN_COUNT = 261;
+    private static final int MAPPED_COLUMN_COUNT = 271;
 
     /** Dialect the mapping model renders SQL types for, matching the shipped database. */
     private static final String POSTGRES_DIALECT = "org.hibernate.dialect.PostgreSQLDialect";
@@ -276,6 +283,27 @@ class EntitySchemaMappingContractTest {
     private static final Pattern DROP_TABLE = Pattern.compile(
             "DROP\\s+TABLE\\s+(?:IF\\s+EXISTS\\s+)?(\\w+)",
             Pattern.CASE_INSENSITIVE);
+
+    /**
+     * Matches one {@code DROP INDEX} statement and captures the index it removes.
+     *
+     * <p>The same reasoning as {@link #DROP_TABLE}, for an index whose table stays. An applied
+     * migration is not edited, so an index a later migration drops is still created by the migration
+     * that introduced it, and a comparison reading only the creates would demand an
+     * {@code @Index} declaration for an index the database no longer has.
+     *
+     * <p>The authorization service is the live case. {@code V5} created
+     * {@code ix_authorization_decision_account_decided} and {@code ix_authorization_decision_actor}
+     * for four repository read methods, no production caller ever reached any of them, and
+     * {@code V18} drops both. Without this pattern that withdrawal cannot be expressed: the entity
+     * would have to keep declaring two indexes the schema does not contain.
+     */
+    private static final Pattern DROP_INDEX = Pattern.compile(
+            "DROP\\s+INDEX\\s+(?:CONCURRENTLY\\s+)?(?:IF\\s+EXISTS\\s+)?(\\w+)",
+            Pattern.CASE_INSENSITIVE);
+
+    /** Matches the version a migration file name opens with, {@code V12__thing.sql} giving 12. */
+    private static final Pattern MIGRATION_VERSION = Pattern.compile("^V(\\d+)__");
 
     /** Matches one {@code CREATE INDEX} statement, the name and the {@code ON} clause included. */
     private static final Pattern CREATE_INDEX =
@@ -572,8 +600,15 @@ class EntitySchemaMappingContractTest {
      * against exactly as one the first migration creates. Reading the directory rather than one file
      * is what keeps a table added by a later migration inside this comparison.</p>
      *
+     * <p>The order is the numeric version, not the file name. A plain name sort is the same thing
+     * only while every version has one digit: once a service reaches {@code V10}, {@code V16} sorts
+     * ahead of {@code V5}, and every statement that removes what an earlier migration created is then
+     * read as standing before the create it names. That is silent — the drop is simply not applied —
+     * which is how the two withdrawn indexes of {@code authorization_decision} still looked present
+     * after {@code V16} dropped them.</p>
+     *
      * @param directory migration directory of one module
-     * @return the text of every {@code .sql} below it, in file-name order
+     * @return the text of every {@code .sql} below it, in applied version order
      */
     private static String migrationTextOf(Path directory) {
         if (!Files.isDirectory(directory)) {
@@ -581,12 +616,28 @@ class EntitySchemaMappingContractTest {
         }
         try (Stream<Path> entries = Files.list(directory)) {
             return entries.filter(path -> path.getFileName().toString().endsWith(".sql"))
-                    .sorted()
+                    .sorted(Comparator.comparingInt(EntitySchemaMappingContractTest::versionOf)
+                            .thenComparing(path -> path.getFileName().toString()))
                     .map(EntitySchemaMappingContractTest::readText)
                     .collect(Collectors.joining("\n"));
         } catch (IOException unreadable) {
             throw new UncheckedIOException("cannot list " + directory, unreadable);
         }
+    }
+
+    /**
+     * Reads the version a migration file name opens with, so files join in the order Flyway applies.
+     *
+     * @param migration one migration path
+     * @return the integer following the leading {@code V}
+     * @throws IllegalStateException when the name does not open with a version
+     */
+    private static int versionOf(Path migration) {
+        Matcher version = MIGRATION_VERSION.matcher(migration.getFileName().toString());
+        if (!version.find()) {
+            throw new IllegalStateException("migration name carries no version: " + migration);
+        }
+        return Integer.parseInt(version.group(1));
     }
 
     /** Reads a file as text, turning the checked failure into an unchecked one. */
@@ -613,10 +664,12 @@ class EntitySchemaMappingContractTest {
             tableCreatedAt.put(name, table.start());
         }
         List<DdlIndex> indexes = new ArrayList<>();
+        Map<String, Integer> indexCreatedAt = new LinkedHashMap<>();
         Matcher index = CREATE_INDEX.matcher(statements);
         while (index.find()) {
             indexes.add(new DdlIndex(index.group(2), index.group(3), index.group(1) != null,
                     indexColumns(index.group(4))));
+            indexCreatedAt.put(index.group(2), index.start());
         }
         Matcher renamedColumn = ALTER_RENAME_COLUMN.matcher(statements);
         while (renamedColumn.find()) {
@@ -749,6 +802,24 @@ class EntitySchemaMappingContractTest {
         Matcher sequence = CREATE_SEQUENCE.matcher(statements);
         while (sequence.find()) {
             sequences.add(sequence.group(1));
+        }
+        // A dropped index leaves the schema while its table stays. Applied with the same guard as
+        // the table drop below: only when the drop stands after the create it removes, so a name
+        // created again afterwards stays.
+        Matcher droppedIndex = DROP_INDEX.matcher(statements);
+        while (droppedIndex.find()) {
+            String name = droppedIndex.group(1);
+            Integer createdIndexAt = indexCreatedAt.get(name);
+            if (createdIndexAt == null) {
+                // IF EXISTS is how a migration stays safe on a schema where an earlier hand-run
+                // already removed the index, so a drop of something no migration creates is not an
+                // error here the way a table drop is.
+                continue;
+            }
+            if (createdIndexAt > droppedIndex.start()) {
+                continue;
+            }
+            indexes.removeIf(withdrawn -> withdrawn.name().equals(name));
         }
         // A dropped table leaves the schema, and its indexes leave with it. The drop is applied
         // last and only when it stands after the create it removes, so a name created again
@@ -1722,6 +1793,59 @@ class EntitySchemaMappingContractTest {
             assertEquals(List.of("ix_kept_a"),
                     parsed.indexesOf("kept").stream().map(DdlIndex::name).toList(),
                     "an index on a surviving table is untouched");
+        }
+
+        /**
+         * An index a later migration drops leaves the schema while its table stays.
+         *
+         * <p>Without this, the comparison would read the schema as every index any migration ever
+         * created and demand an {@code @Index} declaration for one the database no longer holds. The
+         * authorization service is the live case: {@code V16} withdraws two composites of
+         * {@code authorization_decision} that no read ever used, and the table remains.</p>
+         */
+        @Test
+        @DisplayName("the parser removes an index a later migration drops, keeping its table")
+        void theParserRemovesADroppedIndex() {
+            MigrationSchema parsed = parseMigration("""
+                    CREATE TABLE probe (
+                        a VARCHAR(3) NOT NULL,
+                        b VARCHAR(4) NOT NULL,
+                        CONSTRAINT pk_probe PRIMARY KEY (a)
+                    );
+                    CREATE INDEX ix_probe_a ON probe (a);
+                    CREATE INDEX ix_probe_b ON probe (b);
+                    DROP INDEX IF EXISTS ix_probe_b;
+                    DROP INDEX IF EXISTS ix_never_created;
+                    """, Path.of("probe.sql"));
+
+            assertEquals(Set.of("probe"), parsed.tables().keySet(),
+                    "dropping an index does not drop its table");
+            assertEquals(List.of("ix_probe_a"),
+                    parsed.indexesOf("probe").stream().map(DdlIndex::name).toList(),
+                    "the dropped index leaves and the other one stays");
+        }
+
+        /**
+         * An index dropped and then created again is present, as the schema Flyway leaves behind has it.
+         *
+         * <p>The guard is the same one the table drop uses: a drop is applied only when it stands
+         * after the create it names.</p>
+         */
+        @Test
+        @DisplayName("the parser keeps an index re-created after its drop")
+        void theParserKeepsAnIndexRecreatedAfterItsDrop() {
+            MigrationSchema parsed = parseMigration("""
+                    CREATE TABLE probe (
+                        a VARCHAR(3) NOT NULL,
+                        CONSTRAINT pk_probe PRIMARY KEY (a)
+                    );
+                    DROP INDEX IF EXISTS ix_probe_a;
+                    CREATE INDEX ix_probe_a ON probe (a);
+                    """, Path.of("probe.sql"));
+
+            assertEquals(List.of("ix_probe_a"),
+                    parsed.indexesOf("probe").stream().map(DdlIndex::name).toList(),
+                    "a name created after the drop that names it survives");
         }
 
         /** Type comparison equates the spellings the two sides use and separates the rest. */

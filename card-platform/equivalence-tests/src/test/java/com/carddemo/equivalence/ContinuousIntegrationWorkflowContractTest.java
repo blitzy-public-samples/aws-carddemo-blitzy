@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
@@ -33,7 +34,8 @@ class ContinuousIntegrationWorkflowContractTest {
                     "equivalence-tests",
                     "schema-compatibility",
                     "supply-chain",
-                    "container-builds");
+                    "container-builds",
+                    "provenance");
 
     /**
      * The three stages a security review found missing, and the tool each one runs.
@@ -65,7 +67,18 @@ class ContinuousIntegrationWorkflowContractTest {
                     "trivy_${version}_Linux-64bit.tar.gz",
                     "2edd39da482bb4e9831962487b68f68e3928ec3137794757f54d00383d79547b");
 
-    /** Every artifact the workflow keeps, one name per upload. */
+    /**
+     * Every artifact the workflow keeps, one name per upload.
+     *
+     * <p>One artifact holding both report kinds cannot answer whether any integration test ran: the
+     * Surefire files satisfy {@code if-no-files-found} on their own, so a run that executed no
+     * integration test would still produce an artifact and the reviewer of that run would see a
+     * green stage with a populated download. Two properties of the integration stage close that:
+     * its artifact path names {@code failsafe-reports} and nothing else, and the stage passes
+     * {@code -DskipUnitTests=true} so no Surefire report exists there to be mistaken for one. The
+     * stage's own case-count gate is the stronger control - it reads the written reports and fails
+     * the run when a module holding an {@code *IT} class executed no case at all.
+     */
     private static final List<String> EXPECTED_ARTIFACTS =
             List.of(
                     "unit-test-reports",
@@ -105,7 +118,8 @@ class ContinuousIntegrationWorkflowContractTest {
                                     "integration-tests",
                                     "equivalence-tests",
                                     "schema-compatibility",
-                                    "supply-chain"));
+                                    "supply-chain"),
+                    "provenance", List.of("container-builds"));
 
     /** The runner image every job names. */
     private static final String RUNNER_IMAGE = "ubuntu-24.04";
@@ -132,7 +146,7 @@ class ContinuousIntegrationWorkflowContractTest {
                             "actions/checkout",
                             "3d3c42e5aac5ba805825da76410c181273ba90b1",
                             "v7.0.1",
-                            9),
+                            10),
                     new PinnedAction(
                             "actions/setup-java",
                             "b6effb05e454b25005698d916606bdc6ffcbf961",
@@ -155,8 +169,8 @@ class ContinuousIntegrationWorkflowContractTest {
                             1),
                     new PinnedAction(
                             "actions/dependency-review-action",
-                            "2031cfc080254a8a887f58cffee85186f0e49e48",
-                            "v4.9.0",
+                            "a1d282b36b6f3519aa1f3fc636f609c47dddb294",
+                            "v5.0.0",
                             1),
                     new PinnedAction(
                             "actions/attest-build-provenance",
@@ -210,10 +224,10 @@ class ContinuousIntegrationWorkflowContractTest {
     /**
      * How many jobs reach the toolchain through {@link #TOOLCHAIN_ACTION}.
      *
-     * <p>Eight of the nine. The secret scan reads the working tree and the history with a
+     * <p>Nine of the ten. The secret scan reads the working tree and the history with a
      * downloaded binary and never invokes Maven, so it installs no toolchain at all.
      */
-    private static final int TOOLCHAIN_ACTION_USES = 8;
+    private static final int TOOLCHAIN_ACTION_USES = 9;
 
     private static Path platformRoot;
     private static String workflow;
@@ -258,8 +272,21 @@ class ContinuousIntegrationWorkflowContractTest {
     @Test
     @DisplayName("every job uses Java 25 and the verified Maven 3.9.16 archive")
     void everyJobUsesThePinnedToolchain() {
-        assertTrue(workflow.contains("JAVA_VERSION: \"25\""));
+        // The exact Temurin build, not the release line. "25" resolved to whichever patch
+        // Adoptium had published that morning, so the toolchain moved under a build that pins
+        // everything else and onboarding named a version this workflow did not install.
+        assertTrue(workflow.contains("JAVA_VERSION: \"25.0.4+7\""),
+                "the workflow has to install the exact Temurin build the platform is exercised"
+                        + " against, which is the one card-platform/docs/onboarding.md names");
+        assertFalse(workflow.contains("JAVA_VERSION: \"25\""),
+                "a release line floats to a later patch on Adoptium's schedule");
         assertTrue(workflow.contains("MAVEN_VERSION: \"3.9.16\""));
+        // Both pins are read back out of the installed toolchain, so an installer that
+        // answered with another build fails the compile stage by name.
+        assertTrue(workflow.contains("java -version 2>&1 | grep -F -- \"${JAVA_VERSION}\""),
+                "the resolved runtime has to be compared against the pin");
+        assertTrue(workflow.contains("mvn -v | grep -F -- \"Apache Maven ${MAVEN_VERSION}\""),
+                "and so does the resolved build tool");
 
         // Every job that invokes Maven reaches the toolchain through the shared action, and
         // passes both versions from the workflow environment so the two pins stay in one place.
@@ -380,9 +407,10 @@ class ContinuousIntegrationWorkflowContractTest {
     /**
      * Holds the six controls the review found missing, each one able to fail the run.
      *
-     * <p>The review's words were that the workflow "has compilation, tests, schema compatibility,
-     * and container builds, but no SAST, secret scanning, dependency/advisory review, container
-     * scanning, SBOM, signing, or provenance/attestation". Each clause is an assertion here.
+     * <p>The review found compilation, tests, schema compatibility and container builds, and none
+     * of six controls: static analysis of the sources, a scan for committed credentials, a review
+     * of dependencies against published advisories, a scan of the images that were built, a bill of
+     * materials, and provenance for the archives. Each of the six is an assertion here.
      */
     @Test
     @DisplayName("every security stage is present, runs a pinned tool and can fail the run")
@@ -405,8 +433,9 @@ class ContinuousIntegrationWorkflowContractTest {
         assertFalse(Files.exists(platformRoot.getParent().resolve(".gitleaks.toml")),
                 "a second copy at the repository root would sit outside the two directories this"
                         + " engagement adds to");
-        assertEquals(2, occurrences(workflow, "--exit-code 1"),
-                "both scans fail the run on a finding");
+        assertEquals(3, occurrences(workflow, "--exit-code 1"),
+                "both scans fail the run on a finding, and the canary reads the same signal to"
+                        + " prove the scanner still produces it");
 
         assertTrue(workflow.contains("build-mode: manual"),
                 "the analysis database is built from a real compile rather than inferred");
@@ -436,6 +465,140 @@ class ContinuousIntegrationWorkflowContractTest {
                 "and names the archives it attests");
         assertFalse(workflow.contains("permissions: write"),
                 "the attestation takes the two scopes it needs and nothing wider");
+    }
+
+    /**
+     * Holds the secret gate to a proof rather than to a passing scan.
+     *
+     * <p><b>The defect this stands over.</b> {@code card-platform/.gitleaks.toml} carried an
+     * allowlist naming {@code deploy/k8s/31-secret.example.yaml} by path and nothing else, so every
+     * finding in the one file this repository fills with credentials was dropped before any detector
+     * ran. A real private key or password committed there was reported as clean, and this stage
+     * stayed green. A second allowlist excused any 64-character lowercase hexadecimal value
+     * anywhere, which is the shape of a card token and equally the shape of an unrelated key.
+     *
+     * <p><b>An assertion on the configuration is not enough.</b> A narrower allowlist can still
+     * be too wide in a way no reading of the file reveals: measured on gitleaks 8.30.1, a
+     * {@code condition = "AND"} beside a {@code paths} key does not narrow that path at all, and a
+     * file that reads as scoped behaves as unscoped. The workflow therefore plants a secret and
+     * requires the scanner to find it, which is the only claim that cannot be wrong on paper.
+     *
+     * <p>Two plants run separately, so a scanner that catches one and misses the other fails: a
+     * private key inside the Secret template, and an unrelated hexadecimal key beside it. Both are
+     * removed and the tree is checked back to what git holds.
+     */
+    @Test
+    @DisplayName("the secret stage plants two secrets and requires the scanner to catch each one")
+    void theSecretStageProvesTheGateStillFires() throws IOException {
+        List<?> steps = (List<?>) ((Map<?, ?>) jobs.get("secret-scan")).get("steps");
+        Map<?, ?> canary = steps.stream()
+                .map(step -> (Map<?, ?>) step)
+                .filter(step -> String.valueOf(step.get("name")).contains("Prove the secret gate"))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("the secret stage carries no canary, so a"
+                        + " clean report is all it establishes"));
+        String script = String.valueOf(canary.get("run"));
+
+        // The armour markers are assembled rather than written out: a literal BEGIN marker in the
+        // workflow is itself a finding, and a canary that fails the stage it protects is no canary.
+        assertTrue(script.contains("-----BEGIN %s PRIVATE KEY-----"),
+                "one plant has to be a credential inside the Secret template, which is the file the"
+                        + " withdrawn path exception used to excuse in full");
+        assertFalse(workflow.contains("-----BEGIN RSA PRIVATE KEY-----"),
+                "the workflow is inside the scan, so a literal armour marker here fails the stage"
+                        + " that carries it");
+        assertTrue(script.contains("openssl rand -hex 32"),
+                "and the other an unrelated hexadecimal key, which is the shape the withdrawn"
+                        + " 64-character exception used to excuse anywhere");
+        assertTrue(script.contains("for planted in"),
+                "the two cases run separately, so catching one and missing the other cannot pass");
+        assertTrue(script.contains("--exit-code 1"),
+                "the canary reads the scanner's own failure signal");
+        assertTrue(script.contains("::error::the secret scan reported clean with a planted"),
+                "a scan that finds neither plant has to name what it missed");
+        assertTrue(script.contains("git checkout -- \"${template}\""),
+                "the plant is removed rather than left for the rest of the run");
+        assertTrue(script.contains("git diff --quiet -- \"${template}\""),
+                "and the removal is proved rather than assumed");
+
+        String allowlist = Files.readString(platformRoot.resolve(".gitleaks.toml"));
+        assertFalse(allowlist.contains("paths = "),
+                "an allowlist naming a path excuses every finding in it before a detector runs;"
+                        + " every entry has to name the shape of the value it excuses");
+        assertTrue(allowlist.contains("NO ENTRY NAMES A PATH"),
+                "the file's own header describes the mechanism a reader trusts instead of reading"
+                        + " every entry, so it has to say that no entry names a path rather than"
+                        + " describing the narrowed path exception this file no longer carries");
+        assertFalse(allowlist.contains("regexes = ['''\\b[0-9a-f]{64}\\b''']"),
+                "a bare 64-character hexadecimal exception hides every secret of that shape, not"
+                        + " only the card tokens it was written for");
+        assertTrue(allowlist.contains("REPLACE-WITH-A-GENERATED-")
+                        && allowlist.contains("REPLACE-THIS-PLACEHOLDER-WITH-"),
+                "the placeholder values this repository publishes are excused by their own"
+                        + " wording, which is what a real credential in the same field does not"
+                        + " carry");
+        assertTrue(allowlist.contains("CARD_TOKEN"),
+                "and a card token is excused only where the value is named as one");
+        assertTrue(allowlist.contains("[[rules.allowlists]]")
+                        && !allowlist.contains("\n[[allowlists]]"),
+                "every exemption sits under the one rule that reports the value: a top-level"
+                        + " entry applies to every rule at once, so a GitHub token or a private key"
+                        + " beside the exempt value would be excused with it");
+    }
+
+    /**
+     * Holds every write permission to the one job that runs on a push alone.
+     *
+     * <p><b>The defect this stands over.</b> The image build took {@code id-token: write} and
+     * {@code attestations: write} so that its last step could attest the six archives. That job runs
+     * on a pull request, and the steps before the attestation execute what the request supplies: the
+     * local composite action, the Maven descriptors, the sources, the Compose file and the six
+     * Dockerfiles. Two write scopes were therefore held while proposed content ran.
+     *
+     * <p>The remedy is the event rather than the ordering of steps. Provenance is a job of its own
+     * that runs on a push, where the content is what was merged, and it is the only job in the
+     * workflow that holds a write scope. Its checkout keeps no credential in the local git
+     * configuration, so no later step can reach the token through it.
+     */
+    @Test
+    @DisplayName("only the push-only provenance job holds a write permission")
+    void onlyThePushOnlyProvenanceJobHoldsAWritePermission() {
+        jobs.forEach((name, body) -> {
+            Object declared = assertInstanceOf(Map.class, body).get("permissions");
+            if (declared == null) {
+                return;
+            }
+            Map<?, ?> permissions = assertInstanceOf(Map.class, declared);
+            permissions.forEach((scope, level) -> assertTrue(
+                    "provenance".equals(name) || !"write".equals(level),
+                    "job " + name + " holds " + scope + ": write, and every job but provenance runs"
+                            + " on a pull request, where the content it executes is proposed from"
+                            + " outside"));
+        });
+
+        Map<?, ?> containerBuilds = assertInstanceOf(Map.class, jobs.get("container-builds"));
+        assertEquals(Map.of("contents", "read"), containerBuilds.get("permissions"),
+                "the image build runs on a pull request, so read is the whole of what it may hold");
+
+        Map<?, ?> provenance = assertInstanceOf(Map.class, jobs.get("provenance"));
+        assertEquals(
+                Map.of("contents", "read", "id-token", "write", "attestations", "write"),
+                provenance.get("permissions"),
+                "the attestation needs a token to identify the run and the scope that records the"
+                        + " statement, and nothing wider");
+        assertEquals("github.event_name == 'push'", provenance.get("if"),
+                "a pull request may not reach the job that holds the two write scopes");
+        assertTrue(workflow.contains("persist-credentials: false"),
+                "the privileged checkout leaves no credential in the local git configuration");
+
+        List<?> steps = (List<?>) provenance.get("steps");
+        Map<?, ?> checkout = (Map<?, ?>) steps.getFirst();
+        assertEquals(Map.of("persist-credentials", false), checkout.get("with"),
+                "and that checkout is the one this job performs");
+        assertTrue(steps.stream()
+                        .map(step -> String.valueOf(((Map<?, ?>) step).get("uses")))
+                        .anyMatch(uses -> uses.startsWith("actions/attest-build-provenance@")),
+                "the attestation runs here and in no other job");
     }
 
     /**
@@ -536,7 +699,10 @@ class ContinuousIntegrationWorkflowContractTest {
     @Test
     @DisplayName("compile and unit stages cover the complete reactor")
     void compileAndUnitStagesCoverTheCompleteReactor() {
-        assertTrue(workflow.contains("mvn -B -ntp -DskipTests compile"));
+        assertEquals(2, occurrences(workflow, "mvn -B -ntp -DskipTests compile"),
+                "the compile stage builds the reactor once, and the analysis stage builds it again"
+                        + " because its scanner is configured to observe a build it drives itself;"
+                        + " a third would be a reactor nothing reads");
         assertTrue(workflow.contains("mvn -B -ntp -pl equivalence-tests -am test"));
         assertEquals(7, occurrences(workflow, "needs: compile"),
                 "the secret scan, the analysis, the unit stage, the integration stage, the"
@@ -545,22 +711,85 @@ class ContinuousIntegrationWorkflowContractTest {
     }
 
     @Test
-    @DisplayName("integration and equivalence stages start and always remove their infrastructure")
+    @DisplayName("one stage owns the Compose stack and always removes it")
     void integrationAndEquivalenceStagesManageTheirInfrastructure() {
-        assertEquals(3, occurrences(workflow, "run: cp .env.example .env"));
-        assertEquals(2, occurrences(workflow, "docker compose up --detach --wait postgres kafka"));
-        assertEquals(3, occurrences(workflow, "docker compose down --volumes"),
-                "the integration, equivalence and container stages each remove their own stack");
-        assertEquals(12, occurrences(workflow, "if: always()"),
-                "the eight report uploads, the container-state report and the three teardowns run"
-                        + " whether the stage passed or failed");
-        assertTrue(workflow.contains("mvn -B -ntp -pl \"${modules}\" -am verify"));
-        assertTrue(workflow.contains("mvn -B -ntp -pl equivalence-tests -am verify"));
+        assertEquals(1, occurrences(workflow, "run: install -m 600 .env.example .env"),
+                "only the container stage reads docker-compose.yml, so only it needs the"
+                        + " environment file Compose takes its variables from, and it is"
+                        + " installed at 600 because the copy is then filled with"
+                        + " credentials");
+        assertFalse(workflow.contains("docker compose up --detach --wait postgres kafka"),
+                "the two test stages used to start a database and a broker from the Compose file"
+                        + " that no test reached: every integration class provisions its own through"
+                        + " Testcontainers, so starting a second pair cost a minute a stage and"
+                        + " proved nothing the container stage does not prove by starting the whole"
+                        + " stack");
+        assertEquals(1, occurrences(workflow, "docker compose down --volumes"),
+                "the container stage is the only stage with a stack to remove");
+        assertEquals(13, occurrences(workflow, "if: always()"),
+                "the eight report uploads, the three cardholder-data redactions ahead of them, the"
+                        + " container-state report and the one teardown run whether the stage passed"
+                        + " or failed");
+        assertTrue(workflow.contains("mvn -B -ntp -pl \"${modules}\" -am -DskipUnitTests=true verify"));
+        assertTrue(
+                workflow.contains(
+                        "mvn -B -ntp -pl equivalence-tests -am -DskipUnitTests=true"
+                                + " -DskipServiceIntegrationTests=true verify"));
         SERVICES.forEach(
                 service ->
                         assertTrue(
                                 workflow.contains("services/" + service),
                                 "Integration stage omits " + service));
+    }
+
+    @Test
+    @DisplayName("every suite runs in exactly one stage, and -DskipTests keeps its meaning")
+    void everySuiteRunsInExactlyOneStage() throws IOException {
+        // Asking Maven for a module asks for the modules it depends on, and building those runs
+        // their tests too. equivalence-tests sits at the foot of the reactor and depends on the
+        // eight modules above it, so `-pl equivalence-tests -am verify` on its own runs every
+        // Surefire test in the platform and every service integration suite -- all of which the
+        // two stages before it have already run and reported. The two flags below are what
+        // leaves each stage with only the work it owns.
+        assertTrue(workflow.contains("-DskipUnitTests=true"),
+                "the integration and equivalence stages have to skip Surefire, which the unit"
+                        + " stage ran across all nine modules");
+        assertEquals(1, occurrences(workflow, "-DskipServiceIntegrationTests=true"),
+                "only the equivalence stage skips the services' Failsafe suites, and only because"
+                        + " the integration stage ran them; the integration stage itself must not"
+                        + " carry the flag, or nothing would run them at all");
+
+        // A profile activated by a property is inert until a command names that property. This
+        // is the whole reason the skip is expressed as two profiles rather than as a plugin
+        // setting: `-DskipTests` is named in the compile stage, in the container stage, in
+        // scripts/start-demo.sh and in every service README, and binding Surefire's own skip
+        // parameter to a new property would have made those commands start running the unit
+        // suite they exist to avoid.
+        Map<String, String> activations =
+                Map.of(
+                        "pom.xml", "skipUnitTests",
+                        "services/authorization-service/pom.xml", "skipServiceIntegrationTests");
+        for (Map.Entry<String, String> activation : activations.entrySet()) {
+            String descriptor = Files.readString(platformRoot.resolve(activation.getKey()));
+            assertTrue(descriptor.contains("<name>" + activation.getValue() + "</name>"),
+                    activation.getKey() + " has to declare the profile the workflow names,"
+                            + " activated by the property " + activation.getValue());
+            assertFalse(descriptor.contains("<name>skipTests</name>"),
+                    "no profile may key on skipTests: that property already means skip every test,"
+                            + " and reusing it would change what it does everywhere it is named");
+        }
+        for (String service : SERVICES) {
+            String descriptor =
+                    Files.readString(platformRoot.resolve("services/" + service + "/pom.xml"));
+            assertTrue(descriptor.contains("<name>skipServiceIntegrationTests</name>"),
+                    service + " has to declare the profile, because the equivalence stage names it"
+                            + " once for every service module it pulls in");
+        }
+        String parent = Files.readString(platformRoot.resolve("pom.xml"));
+        assertFalse(parent.contains("<name>skipServiceIntegrationTests</name>"),
+                "the services' Failsafe skip may not live in the parent: equivalence-tests"
+                        + " inherits from it, and its own Failsafe classes are the equivalence"
+                        + " stage's entire purpose");
     }
 
     @Test
@@ -593,18 +822,64 @@ class ContinuousIntegrationWorkflowContractTest {
         assertTrue(workflow.contains("docker compose config --quiet"));
     }
 
+    /**
+     * Asserts each image is built from the platform context with a builder stage that can compile.
+     *
+     * <p><b>What changed and why.</b> The context was the module directory and both stages of every
+     * Dockerfile were the Java Runtime Environment image, so the image copied an archive the host had
+     * already packaged. The Agent Action Plan requires a Java Development Kit 25 builder stage, and a
+     * module directory cannot host one: {@code mvn -pl services/X -am} needs the aggregator descriptor
+     * and both shared libraries, and neither is inside the module. The context is therefore
+     * {@code card-platform} and the ignore file that reduces it sits beside each Dockerfile as
+     * {@code Dockerfile.dockerignore}, which BuildKit reads in place of the root one.
+     *
+     * <p>The final argument is asserted as a lone {@code .} on its own line, because a build that
+     * still named the module directory would resolve every {@code COPY} against a tree holding no
+     * aggregator and fail on the Maven invocation rather than on the context.
+     */
     @Test
-    @DisplayName("all six delivered Dockerfiles are built from their service contexts")
-    void allSixDeliveredDockerfilesAreBuiltFromTheirServiceContexts() {
+    @DisplayName("all six images are built from the platform context by a builder stage")
+    void allSixImagesAreBuiltFromThePlatformContextByABuilderStage() {
         assertTrue(workflow.contains("for service in \"${services[@]}\""));
         assertTrue(workflow.contains("--file \"services/${service}/Dockerfile\""));
-        assertTrue(workflow.contains("\"services/${service}\""));
+        assertFalse(workflow.contains("\"services/${service}\"\n"),
+                "the module directory is no longer a build context: it holds no aggregator "
+                        + "descriptor and no shared library, so a builder stage cannot compile in it");
+        assertTrue(workflow.contains("--tag \"carddemo/${service}:${IMAGE_TAG}\" \\\n              ."),
+                "the context is card-platform, given as the last argument");
+        assertTrue(workflow.contains("DOCKER_BUILDKIT=1 docker build"),
+                "each builder stage mounts a cache for the local Maven repository, which the "
+                        + "legacy builder does not support");
         SERVICES.forEach(
                 service -> {
-                    assertTrue(
-                            Files.isRegularFile(
-                                    platformRoot.resolve("services/" + service + "/Dockerfile")),
+                    Path dockerfile = platformRoot.resolve("services/" + service + "/Dockerfile");
+                    assertTrue(Files.isRegularFile(dockerfile),
                             "Missing Dockerfile for " + service);
+                    assertTrue(Files.isRegularFile(platformRoot.resolve(
+                                    "services/" + service + "/Dockerfile.dockerignore")),
+                            service + " must carry the ignore file BuildKit reads for this "
+                                    + "Dockerfile; without it the whole platform directory, "
+                                    + "including every host target/, is sent to the daemon");
+                    assertFalse(Files.exists(platformRoot.resolve(
+                                    "services/" + service + "/.dockerignore")),
+                            service + " must not keep a module-context ignore file: the context is "
+                                    + "the platform directory and that file would govern nothing");
+                    String text = readFile(dockerfile);
+                    assertTrue(text.contains("FROM ${BUILDER_IMAGE} AS builder"),
+                            service + " must build its own archive in a builder stage");
+                    assertTrue(text.contains("ARG BUILDER_IMAGE=maven:3.9.16-eclipse-temurin-25@sha256:"),
+                            service + " must build on the pinned Maven 3.9.16 and Java Development "
+                                    + "Kit 25 image, by digest");
+                    assertTrue(text.contains("mvn -B -ntp -pl services/" + service
+                                    + " -am -Dmaven.test.skip=true package"),
+                            service + " must compile itself and only what it depends on");
+                    assertTrue(text.contains("FROM ${RUNTIME_IMAGE} AS runtime"),
+                            service + " must ship on the Java Runtime Environment image");
+                    assertTrue(text.contains("COPY --from=builder --chown=10001:10001 /build/services/"
+                                    + service + "/target/app.jar"),
+                            service + " must carry one archive out of the builder and nothing else");
+                    assertFalse(text.contains("COPY target/*.jar"),
+                            service + " must not consume an archive built on the host");
                     assertTrue(
                             workflow.contains("\n            " + service + "\n"),
                             "Container array omits " + service);
@@ -618,7 +893,8 @@ class ContinuousIntegrationWorkflowContractTest {
 
                 occurrences(workflow, pinnedAction("actions/upload-artifact").reference()),
 
-                "the unit, integration, equivalence and schema stages write test reports and the"
+                "the unit stage, the integration stage, the equivalence stage and the"
+                        + " schema stage write test reports and the"
 
                         + " secret scan, the analysis, the dependency review and the image scan"
 
@@ -817,7 +1093,7 @@ class ContinuousIntegrationWorkflowContractTest {
                 "the superseded count may not survive");
 
         // The stage selects by pattern, so the count is evidence rather than configuration.
-        assertTrue(workflow.contains("-pl \"${modules}\" -am verify"),
+        assertTrue(workflow.contains("-pl \"${modules}\" -am -DskipUnitTests=true verify"),
                 "the integration stage runs the six service modules under Failsafe by pattern");
     }
 
@@ -857,6 +1133,20 @@ class ContinuousIntegrationWorkflowContractTest {
             cursor = cursor.getParent();
         }
         throw new IllegalStateException("Cannot locate card-platform root");
+    }
+
+    /**
+     * Reads a file, turning the checked failure into an unchecked one.
+     *
+     * @param file the file to read
+     * @return its contents
+     */
+    private static String readFile(Path file) {
+        try {
+            return Files.readString(file);
+        } catch (IOException unreadable) {
+            throw new UncheckedIOException("cannot read " + file, unreadable);
+        }
     }
 
     private static int occurrences(String source, String needle) {

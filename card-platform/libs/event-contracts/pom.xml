@@ -62,10 +62,19 @@
       <artifactId>json-schema-validator</artifactId>
     </dependency>
 
-    <!-- kafka-clients supplies the Serializer and Deserializer interfaces. -->
+    <!-- kafka-clients supplies the Serializer and Deserializer interfaces, and the record header
+         types com.carddemo.events.correlation writes the two correlation identifiers into. -->
     <dependency>
       <groupId>org.apache.kafka</groupId>
       <artifactId>kafka-clients</artifactId>
+    </dependency>
+
+    <!-- The Mapped Diagnostic Context com.carddemo.events.correlation.CorrelationScope writes to.
+         Declared rather than inherited through kafka-clients, so the one type this module compiles
+         against is named by the module that compiles against it. -->
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-api</artifactId>
     </dependency>
 
     <!-- Runs the event-contract tests under src/test/java/com/carddemo/events. -->

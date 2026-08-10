@@ -1,42 +1,19 @@
--- Makes the consumed topic part of the marker's identity, so one event can be claimed per topic.
+-- Authorization service, migration V6. Re-keys processed_event on (event_id, consumed_topic).
 --
--- WHY THIS FILE EXISTS. V1__schema.sql keyed processed_event on event_id alone and recorded consumed_topic beside
--- it as description. Two listener groups share this table and read two different topics:
--- messaging/CardUpdatedConsumer reads card.updated, published by the card service, and
--- messaging/AccountStateChangedConsumer reads account.state-changed, published by the account
--- service. Each producer assigns its own event identifiers, and neither knows what the other
--- assigns, so two different events may carry one identifier without either producer being at
--- fault.
+-- Statements, in order: back-fill a NULL consumed_topic with the sentinel '(no topic header)',
+-- which entity/ProcessedEventEntity.NO_CONSUMED_TOPIC also declares and which no Kafka topic name
+-- can match because a topic name holds only [a-zA-Z0-9._-]; set the column NOT NULL; drop the old
+-- primary key; add pk_processed_event over both columns; add ck_processed_event_consumed_topic; and
+-- issue COMMENT ON CONSTRAINT, which is where the identity rule is recorded for a reader of the
+-- catalogue.
 --
--- WHAT WENT WRONG. Both listeners read the marker with existsById(eventId) before acting and write it with save.
--- Keyed on the identifier alone, the second of two same-identifier events on two topics reads a
--- marker its own topic never wrote, concludes it has already handled the event, and applies
--- nothing. That is exactly the outcome an idempotency guard is meant to produce for a REDELIVERY,
--- and exactly the wrong outcome for a DIFFERENT event: the replica row that event carried is
--- dropped in silence. The two replicas this service keeps are what the decline rules read, so a
--- dropped row leaves a rule authorizing against a value the owning service has already changed.
--- Nothing raises and nothing reaches a dead-letter topic, and no replay restores the lost work,
--- because the marker that suppressed it stays.
+-- Two listeners write this table: messaging/CardUpdatedConsumer reading card.updated, and
+-- messaging/AccountStateChangedConsumer reading account.state-changed.
 --
--- WHAT IDENTIFIES A DELIVERY. A delivery is identified by the event AND the stream it arrived on.
--- The composite primary key below says so, and it is the guard as well as the key: an insert that
--- collides is still how a consumer learns the event was already handled on that topic, so the guard
--- cannot be checked and then raced past. Duplicate suppression within one topic is unchanged, which
--- is the property every consumer relies on; only the cross-topic collision stops being one.
---
--- WHY NOT A CONSUMER GROUP OR A CONSUMER NAME. The topic is what a delivery carries in its own
--- RECEIVED_TOPIC header, so a listener records what it observed rather than what it was configured
--- as. A key built from configuration would change identity whenever a group was renamed.
---
--- THE BACKFILL. consumed_topic was nullable and a marker written before this migration may carry
--- NULL. A primary key column cannot be NULL, so those rows take one sentinel value.
--- '(no topic header)' holds spaces and parentheses, and a Kafka topic name holds only
--- [a-zA-Z0-9._-], so the sentinel can never collide with a real topic name.
--- entity/ProcessedEventEntity.NO_CONSUMED_TOPIC declares the same text, and it is the value a
--- delivery reaching a listener with no topic header records.
---
--- services/notification-service/src/main/resources/db/migration/V3__processed_event_topic_key.sql
--- made the same change first, for the service whose four listeners exposed the defect.
+-- Rationale, alternatives considered and accepted risks: card-platform/docs/decision-log.md, under
+-- "What identifies one delivery of one event". Corrections to an applied migration arrive as a new
+-- migration because Flyway compares the checksum of every applied file at start-up.
+
 UPDATE processed_event
 SET consumed_topic = '(no topic header)'
 WHERE consumed_topic IS NULL;

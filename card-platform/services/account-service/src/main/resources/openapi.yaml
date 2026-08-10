@@ -37,7 +37,7 @@ info:
     app/data/ASCII/custdata.txt, or a deliberately marked specimen. None describes a real person.
     They are shaped like real personally identifiable information because the source edits require
     that shape — a Social Security number is refused unless it passes the three-part edit at
-    app/cbl/COACTUPC.cbl:L1265, so a conspicuously impossible value could not be used as an example
+    app/cbl/COACTUPC.cbl:L1265. A conspicuously impossible value could not be used as an example
     of an accepted one. Never send real personal data to this service: the demonstration binds its
     published port to the loopback address and carries none of the controls personal data requires.
   license:
@@ -229,8 +229,8 @@ paths:
             Present on every state-changing request. config/CrossSiteRequestFilter refuses a
             request that carries no value here, and refuses one whose Sec-Fetch-Site or Origin
             names somewhere other than this service. An HTML form can set no header at all, and a
-            cross-origin script call that set one would need a preflight no chain here grants, so
-            this header is what separates a first-party client from a browser replaying a cached
+            cross-origin script call that set one would need a preflight no chain here grants.
+            This header therefore separates a first-party client from a browser replaying a cached
             HTTP Basic credential from a page a cardholder was reading. The value is not a secret
             and is not read: only its presence matters. The header name is configurable through
             carddemo.api.cross-site.required-header, which card-platform/.env.example documents.
@@ -480,8 +480,8 @@ paths:
             Present on every state-changing request. config/CrossSiteRequestFilter refuses a
             request that carries no value here, and refuses one whose Sec-Fetch-Site or Origin
             names somewhere other than this service. An HTML form can set no header at all, and a
-            cross-origin script call that set one would need a preflight no chain here grants, so
-            this header is what separates a first-party client from a browser replaying a cached
+            cross-origin script call that set one would need a preflight no chain here grants.
+            This header therefore separates a first-party client from a browser replaying a cached
             HTTP Basic credential from a page a cardholder was reading. The value is not a secret
             and is not read: only its presence matters. The header name is configurable through
             carddemo.api.cross-site.required-header, which card-platform/.env.example documents.
@@ -704,7 +704,7 @@ components:
       description: >-
         The request body could not be read. Three conditions reach this status: the body is not
         JavaScript Object Notation (JSON) at all, it carries a property one of the three request
-        schemas does not declare, or it sends a property declared as text with a JSON number or a
+        schemas does not declare. The third sends a property declared as text with a JSON number or a
         boolean in its place. config/RequestJsonStrictnessConfig is what makes the second and third
         conditions refusals rather than silent repairs, so additionalProperties: false and
         type: string are enforced and not merely documented. The money rule rests on the third: every
@@ -1082,8 +1082,9 @@ components:
           maxLength: 10
           description: >-
             CUST-ADDR-ZIP PIC X(10) at app/cpy/CVCUS01Y.cpy:L14, and column address_zip is
-            VARCHAR(10). The edit on the update path inspects the first five characters only, so a
-            stored value can be wider than a submitted one.
+            VARCHAR(10). The value is returned as stored, so it carries either a ZIP+4 or five
+            digits padded to ten characters. The edit on the update path inspects the first five
+            characters only, so every value this route returns is accepted back by PUT unchanged.
         addressCountryCode:
           type: string
           maxLength: 3
@@ -1205,7 +1206,7 @@ components:
       additionalProperties: false
       description: >-
         The submitted customer values. The block is required, and the reason is the account record
-        rather than an absent table: app/cpy/CVACT01Y.cpy declares twelve fields and a 178-byte
+        rather than an absent table. app/cpy/CVACT01Y.cpy declares twelve fields and a 178-byte
         filler, none of which is a customer identifier, so no account row can name the customer to
         update. The caller supplies it.
 
@@ -1215,13 +1216,12 @@ components:
         with 50 rows seeded from app/data/ASCII/cardxref.txt, and it drops the card-keyed card_xref
         replica V4 had created — and it is not a substitute for this block. It is used the other way
         round: after the caller names both identifiers, AccountUpdateService reads the one row keyed
-        on that account and checks that its customer_id equals both the proposed and the fetched
-        value, which is how the pair the source screen bound together is confirmed. Resolving the
+        on that account and checks that its customer_id equals both the proposed and the fetched value. That is how the pair the source screen bound together is confirmed. Resolving the
         identifier from it instead would make a seeded replica the authority for a value the caller
         has to state, and nothing on this platform refreshes those rows, so the table can confirm the
         pair but cannot name it. A present block has to be complete: every component the required list names carries a mandatory-field edit that
         refuses an
-        absent value with the same text it refuses a blank one, and no absent component is filled
+        absent value with the same text it refuses a blank one. No absent component is filled
         from
         the stored row.
 
@@ -1241,7 +1241,7 @@ components:
         Five of them carry no mandatory edit: the middle name reaches an optional alphabetic edit,
         both
         telephone numbers reach the edit at app/cbl/COACTUPC.cbl:L2225-L2244 whose own comment reads
-        'Not mandatory to enter a phone number', and the second address line and the
+        'Not mandatory to enter a phone number'. The second address line and the
         government-issued
         identifier reach no edit at all. The date of birth does carry a calendar edit that refuses a
         blank value, and omitting it hands the stored date to that edit rather than a blank.
@@ -1250,7 +1250,7 @@ components:
         customerId carries no edit of the source. app/cbl/COACTUPC.cbl:L1222 calls it 'actually not
         editable'. An absent or blank one is refused with
         'Customer Id must be supplied. An account record carries none', one that is not nine digits is
-        refused with 'Customer Id must be a 9 digit Number, zero padded on the left', and one that
+        refused with 'Customer Id must be a 9 digit Number, zero padded on the left'. One that
         names a customer other than the row this account resolves to is refused as well. All three
         answer 422, and the first two are answered before any row is read, so a malformed identifier
         is never reported as a row this service does not hold. The second text is ADDITIVE, since the
@@ -1309,9 +1309,19 @@ components:
           description: Alphabetic and required by edit.
         addressZip:
           type: string
-          maxLength: 5
+          maxLength: 10
           description: >-
-            Checked with the state code against the 240 combinations app/cpy/CSLKPCDY.cpy lists.
+            CUST-ADDR-ZIP PIC X(10) at app/cpy/CVCUS01Y.cpy:L14 and
+            ACUP-NEW-CUST-ADDR-ZIP PIC X(10) at app/cbl/COACTUPC.cbl:L809, so ten characters are
+            accepted, stored in address_zip VARCHAR(10) and returned. The numeric edit inspects the
+            FIRST FIVE CHARACTERS ONLY: app/cbl/COACTUPC.cbl:L1606 moves the whole field into the
+            edit area and app/cbl/COACTUPC.cbl:L1607 then moves 5 into WS-EDIT-ALPHANUM-LENGTH, so
+            every test reads WS-EDIT-ALPHANUM-ONLY(1:5) and positions six to ten are carried
+            without being inspected. A ZIP+4 such as 19852-6716 therefore passes on 19852, which is
+            what lets a value read from GET be sent back to PUT unchanged. Content past the tenth
+            character is refused, a bound with no COBOL ancestor since no screen field could carry
+            it. Checked with the state code against the 240 combinations app/cpy/CSLKPCDY.cpy lists,
+            an edit that pairs the state with the first two characters.
         phoneNumber1:
           type: string
           maxLength: 15
@@ -1460,7 +1470,7 @@ components:
             The first five are the constants api/ApiProblem declares and the next two are the ones
             config/SecurityConfig writes. Method Not Allowed and Unsupported Media Type are the
             reason phrases of their own status, which api/AccountApiExceptionHandler.onUnsupportedRequest
-            reads from the status the framework named rather than from a constant, so their
+            reads from the status the framework named rather than from a constant. Their
             capitalization follows the reason phrase and not the house style of the first seven. Too
             many requests is the constant config/RequestRateCeilingFilter writes, and that filter runs
             ahead of the security chain, so this one phrase can arrive before any handler is reached.

@@ -7,13 +7,17 @@ import com.carddemo.account.entity.OutboxEventEntity;
 import com.carddemo.account.messaging.DeadLetterMetadata;
 import com.carddemo.account.messaging.EventPublisherPort;
 import com.carddemo.account.repository.OutboxEventRepository;
+import com.carddemo.events.correlation.CorrelationScope;
 import com.carddemo.events.DeadLetterEnvelope;
 import com.carddemo.events.serde.EventContracts;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
+import java.util.UUID;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -110,6 +114,19 @@ public class OutboxRelay {
      */
     private static final String UNRESOLVED_DESTINATION = "no-configured-topic";
 
+    /**
+     * Sends this relay keeps in flight at once.
+     *
+     * <p>Five, because {@code max.in.flight.requests.per.connection} in
+     * {@code src/main/resources/application.yml} is five: a wider window would not put a sixth
+     * request on the wire, it would only leave a sixth send sitting in the producer's accumulator
+     * unawaited. Narrower than five leaves the pipeline idle while this sweep waits.
+     *
+     * <p>Every row of one window names a different account, because {@code claimDueRows} returns one
+     * head row per aggregate, so a window is concurrent across accounts and never within one.
+     */
+    static final int MAX_SENDS_IN_FLIGHT = 5;
+
     /** Access to the {@code outbox_event} rows of this service. */
     private final OutboxEventRepository outboxEventRepository;
 
@@ -130,6 +147,9 @@ public class OutboxRelay {
 
     /** Rows one sweep claims, from {@code carddemo.outbox.relay.batch-size}. */
     private final int batchSize;
+
+    /** Sends awaited together, {@link #MAX_SENDS_IN_FLIGHT} or the batch when it is smaller. */
+    private final int sendsInFlight;
 
     /** Base of the retry backoff, from {@code carddemo.outbox.relay.fixed-delay-ms}. */
     private final Duration sweepDelay;
@@ -223,62 +243,208 @@ public class OutboxRelay {
         this.deadLetterTopic = checked.kafka().topics().deadLetter();
         AccountProperties.Outbox.Relay relay = checked.outbox().relay();
         this.batchSize = relay.batchSize();
+        this.sendsInFlight = Math.min(this.batchSize, MAX_SENDS_IN_FLIGHT);
         this.sweepDelay = Duration.ofMillis(relay.fixedDelayMs());
         this.claimTimeout = relay.claimTimeout();
         this.maxDurationNanos = Duration.ofMillis(relay.maxDurationMs()).toNanos();
     }
 
     /**
-     * Runs one sweep, then records what it published once that sweep has committed.
+     * Runs one sweep, then records what it published once every transaction of that sweep has
+     * committed.
      *
-     * <p>The transaction boundary is explicit rather than an annotation on this method. An annotated
-     * method called from the scheduler would be proxied correctly, but the counters below would then
-     * sit inside the transaction, and a commit that failed afterwards would leave a count of rows
-     * that were never published.
+     * <p>This method holds no transaction, and neither does the sweep as a whole. Each step below
+     * opens the shortest transaction that step needs: one to claim, then one per outcome. A batch of
+     * {@code batch-size} rows waiting on a broker inside one transaction held a database connection
+     * and every row lock it took for the sum of those waits, and every later event of every account
+     * waited behind it.
      *
-     * <p>A sweep that cannot commit throws, the scheduler logs it, and nothing is counted. That is
-     * not a claim that nothing reached the broker: a send the broker acknowledged before the
-     * transaction failed to commit has been published, and its row stays claimable, so the next
-     * sweep publishes it again. Delivery here is at least once, and each consumer's processed-event
-     * marker is what makes the repeat harmless.
+     * <p>Counting sits outside every one of those transactions. A counter takes no part in a database
+     * transaction, so an increment inside one survives the rollback that discarded the work it
+     * counted.
+     *
+     * <p>A sweep that throws is logged and nothing is counted. That is not a claim that nothing
+     * reached the broker: a send the broker acknowledged whose mark then failed has been published,
+     * and its row stays claimable, so a later sweep publishes it again. Delivery here is at least
+     * once, and each consumer's processed-event marker is what makes the repeat harmless.
      */
     @Scheduled(fixedDelayString = "${carddemo.outbox.relay.fixed-delay-ms:500}")
     public void publishPendingEvents() {
-        SweepResult result = transactionTemplate.execute(status -> sweepOnce());
-
-        Objects.requireNonNull(result, "the sweep must answer with a result").record(meters);
+        runOnePass().record(meters);
     }
 
     /**
-     * Recovers stranded claims, claims the due rows and publishes them in order.
+     * Offers the diagnostics still owed, claims the due account heads, and publishes them.
+     *
+     * <p>Sends are issued {@value #MAX_SENDS_IN_FLIGHT} at a time and each one is awaited against
+     * the one deadline this sweep shares. {@code claimDueRows} returns the due head row of each
+     * aggregate and never two rows of one account, so the rows of one window name distinct accounts
+     * and no two events of one account are ever in flight together. The account identifier is the
+     * message key, so that restriction is what keeps every consumer of an account reading its events
+     * in the order this service wrote them.
      *
      * @return what this sweep published and how many rows it failed on
      */
-    private SweepResult sweepOnce() {
+    private SweepResult runOnePass() {
         Instant now = clock.instant();
         long deadline = System.nanoTime() + maxDurationNanos;
-        int failed = recoverStrandedClaims(now);
-        Terminal terminal = publishOwedDeadLetters(now, deadline);
+        Terminal terminal = publishOwedDeadLetters(deadline);
+        ClaimedBatch batch = claimBatch(now);
+        List<OutboxEventEntity> rows = batch.rows();
 
-        List<OutboxEventEntity> due = outboxEventRepository.claimDueRows(now, Limit.of(batchSize));
         int published = 0;
-        for (OutboxEventEntity row : due) {
-            row.claim(instanceId, now);
-            String destination = UNRESOLVED_DESTINATION;
-            try {
-                destination = topicFor(row.getEventType());
-                await(eventPublisherPort.publish(destination, row.getAggregateId(),
-                        row.getPayload()), deadline);
-                row.markPublished(now);
-                outboxEventRepository.save(row);
-                published = published + 1;
-            } catch (RuntimeException failure) {
-                terminal = terminal.plus(recordRefusedRow(row, destination, failure, now,
-                        deadline));
-                failed = failed + 1;
+        int failed = batch.recovered();
+
+        for (int from = 0; from < rows.size(); from += sendsInFlight) {
+            if (System.nanoTime() - deadline >= 0L) {
+                log.debug("The account outbox sweep reached its deadline with {} claimed rows "
+                        + "unattempted; the next sweep recovers them", rows.size() - from);
+                break;
+            }
+            List<OutboxEventEntity> window =
+                    rows.subList(from, Math.min(from + sendsInFlight, rows.size()));
+            List<Dispatch> dispatched = new ArrayList<>(window.size());
+            for (OutboxEventEntity row : window) {
+                dispatched.add(dispatch(row));
+            }
+            for (Dispatch attempt : dispatched) {
+                Attempt outcome = settle(attempt, deadline);
+                published = published + outcome.published();
+                failed = failed + outcome.failed();
+                terminal = terminal.plus(outcome.terminal());
             }
         }
         return new SweepResult(published, failed, terminal);
+    }
+
+    /**
+     * Recovers stranded claims and claims the due account heads, in one transaction that commits
+     * before any send starts.
+     *
+     * <p>Committing the claim is what makes the recovery observable. A claim written and left
+     * uncommitted while the sweep published would be rolled back by the process death it exists to
+     * survive, and the row would meet every later sweep in {@link RelayState#PENDING} with an
+     * unchanged attempt count.
+     *
+     * @param now the moment this sweep records
+     * @return the rows this sweep holds and the number of claims it recovered
+     */
+    private ClaimedBatch claimBatch(Instant now) {
+        ClaimedBatch claimed = transactionTemplate.execute(status -> {
+            int recovered = recoverStrandedClaims(now);
+            List<OutboxEventEntity> due =
+                    outboxEventRepository.claimDueRows(now, Limit.of(batchSize));
+            for (OutboxEventEntity row : due) {
+                row.claim(instanceId, now);
+                outboxEventRepository.save(row);
+            }
+            return new ClaimedBatch(List.copyOf(due), recovered);
+        });
+        return claimed == null ? ClaimedBatch.EMPTY : claimed;
+    }
+
+    /**
+     * Issues the send for one claimed row, outside every transaction, and waits for nothing.
+     *
+     * @param row the claimed row
+     * @return the send to await, or the reason no send was issued
+     */
+    private Dispatch dispatch(OutboxEventEntity row) {
+        String destination;
+        try {
+            destination = topicFor(row.getEventType());
+        } catch (IllegalArgumentException unconfigured) {
+            log.error("Outbox event {} carries the unconfigured event type {}. Attempt {} of {}.",
+                    row.getEventId(), row.getEventType(), row.getAttemptCount() + 1,
+                    OutboxEventEntity.MAX_DELIVERY_ATTEMPTS);
+            return Dispatch.refused(row, UNRESOLVED_DESTINATION,
+                    rootCause(unconfigured).getClass().getSimpleName());
+        }
+        try (CorrelationScope scope = scopeOf(row)) {
+            return Dispatch.issued(row, destination, eventPublisherPort.publish(destination,
+                    row.getAggregateId(), row.getPayload()));
+        } catch (RuntimeException notSent) {
+            String failureClass = rootCause(notSent).getClass().getSimpleName();
+            // The failed send itself is reported once, at warning, by SafeProducerListener,
+            // which every template of this service installs. A second line here named the
+            // same send, so an operator counting reports counted each one twice.
+            return Dispatch.refused(row, destination, failureClass);
+        }
+    }
+
+    /**
+     * Opens the correlation scope of one row, so the send it carries and every line written about it
+     * name the unit of work behind it.
+     *
+     * <p>ADDITIVE. A relay sweeps on its own schedule, long after the thread that wrote the row has
+     * gone, so the two identifiers are read back off the row rather than inherited from a caller.
+     * The scope is what the publish port reads to attach the headers.
+     *
+     * <p>A row recording no correlation identifier starts its own trace under its own event
+     * identifier. That covers a row written before this column existed, so every record this
+     * relay publishes carries a correlation identifier a reader can join on. A row carrying
+     * neither opens a scope naming neither rather than failing the sweep.
+     *
+     * @param row the row this pass is working on
+     * @return the open scope, closed by the try-with-resources that opened it
+     */
+    private static CorrelationScope scopeOf(OutboxEventEntity row) {
+        UUID recorded = row.getCorrelationId();
+        return CorrelationScope.open()
+                .withCorrelation(recorded != null ? recorded : row.getEventId())
+                .withCausation(row.getCausationId())
+                .withEvent(row.getEventId(), row.getEventType());
+    }
+
+    /**
+     * Waits for one acknowledgement, then records that outcome in a transaction of its own.
+     *
+     * <p>The mark is written after the broker acknowledges, so no row is marked for a message the
+     * broker did not accept. A send that returns while the mark fails leaves the row claimed until
+     * the claim timeout returns it, a later sweep sends it again, and each consumer's processed-event
+     * marker absorbs the duplicate.
+     *
+     * @param dispatch what {@link #dispatch(OutboxEventEntity)} issued
+     * @param deadline monotonic deadline shared by the entire sweep
+     * @return what this attempt did
+     */
+    private Attempt settle(Dispatch dispatch, long deadline) {
+        OutboxEventEntity row = dispatch.row();
+        if (dispatch.publication() == null) {
+            return new Attempt(0, 1, recordRefusedRow(row, dispatch.destination(),
+                    dispatch.failureClass(), deadline));
+        }
+        try {
+            await(dispatch.publication(), deadline);
+        } catch (RuntimeException failure) {
+            return new Attempt(0, 1, recordRefusedRow(row, dispatch.destination(),
+                    rootCause(failure).getClass().getSimpleName(), deadline));
+        }
+        markPublished(row.getEventId());
+        return new Attempt(1, 0, Terminal.NONE);
+    }
+
+    /**
+     * Marks one row published, in a transaction of its own.
+     *
+     * <p>The row is re-read inside that transaction rather than saved from the copy the claim
+     * loaded. A detached copy carries the state it had before the claim committed, and saving it
+     * would write that older state back over the claim.
+     *
+     * @param eventId the row the broker accepted
+     */
+    private void markPublished(UUID eventId) {
+        transactionTemplate.execute(status -> {
+            Optional<OutboxEventEntity> found = outboxEventRepository.findById(eventId);
+            if (found.isEmpty()) {
+                log.warn("An account outbox row disappeared between its claim and its mark");
+                return null;
+            }
+            OutboxEventEntity stored = found.get();
+            stored.markPublished(clock.instant());
+            outboxEventRepository.save(stored);
+            return null;
+        });
     }
 
     /**
@@ -300,7 +466,11 @@ public class OutboxRelay {
     }
 
     /**
-     * Schedules another attempt for one refused row, and logs the refusal.
+     * Schedules another attempt for one refused row, in a transaction of its own, and logs the
+     * refusal.
+     *
+     * <p>The row is re-read inside that transaction rather than saved from the copy the claim
+     * loaded, for the same reason {@link #markPublished(UUID)} re-reads it.
      *
      * <p>Neither the stored reason nor the log line carries anything but the failure's class name.
      * A database or broker failure message can quote the row it was raised for, and this row's
@@ -309,38 +479,54 @@ public class OutboxRelay {
      *
      * <p>The row this method abandons owes a terminal diagnostic, and
      * {@link OutboxEventEntity#recordFailure(String, Instant, Instant)} writes that obligation in
-     * the same call that abandons it, so the two facts commit together. This method then tries to
-     * discharge it immediately; a broker that refuses leaves the obligation standing and
-     * {@link #publishOwedDeadLetters(Instant, long)} takes it on the next sweep.
+     * the same call that abandons it, so the two facts commit together. The diagnostic is then
+     * offered outside that transaction; a broker that refuses leaves the obligation standing and
+     * {@link #publishOwedDeadLetters(Instant, long)} takes it on a later sweep.
      *
-     * @param row         the row the broker refused
-     * @param destination the topic selected from the stored event type, or
-     *                    {@link #UNRESOLVED_DESTINATION} when the stored type named none
-     * @param failure     the failure the publish raised
-     * @param now         the moment this sweep started
-     * @param deadline    monotonic deadline shared by the entire sweep
+     * @param claimed      the row the broker refused, as the claim loaded it
+     * @param destination  the topic selected from the stored event type, or
+     *                     {@link #UNRESOLVED_DESTINATION} when the stored type named none
+     * @param failureClass class name of the failure the publish raised
+     * @param deadline     monotonic deadline shared by the entire sweep
      * @return what this refusal did to the terminal counts
      */
-    private Terminal recordRefusedRow(OutboxEventEntity row, String destination,
-            RuntimeException failure, Instant now, long deadline) {
-        String failureClass = rootCause(failure).getClass().getSimpleName();
-        row.recordFailure(failureClass, now, now.plus(backoffAfter(row.getAttemptCount())));
-        outboxEventRepository.save(row);
+    private Terminal recordRefusedRow(OutboxEventEntity claimed, String destination,
+            String failureClass, long deadline) {
+        Abandonment abandonment = transactionTemplate.execute(status -> {
+            Optional<OutboxEventEntity> found =
+                    outboxEventRepository.findById(claimed.getEventId());
+            if (found.isEmpty()) {
+                log.warn("An account outbox row disappeared between its claim and its failure "
+                        + "record");
+                return Abandonment.NONE;
+            }
+            OutboxEventEntity row = found.get();
+            Instant now = clock.instant();
+            row.recordFailure(failureClass, now, now.plus(backoffAfter(row.getAttemptCount())));
+            outboxEventRepository.save(row);
 
-        if (row.getRelayState() != RelayState.ABANDONED) {
-            log.warn("Outbox event {} did not reach topic {} after a {}. Attempt {} of {}; that "
-                            + "account waits behind this row while other account heads may "
-                            + "continue.",
-                    row.getEventId(), destination, failureClass, row.getAttemptCount(),
-                    OutboxEventEntity.MAX_DELIVERY_ATTEMPTS);
+            if (row.getRelayState() != RelayState.ABANDONED) {
+                // The failed send itself is reported once, at warning, by SafeProducerListener,
+                // which every template of this service installs. A second line here named the
+                // same send, so an operator counting reports counted each one twice.
+                return Abandonment.NONE;
+            }
+            return new Abandonment(true, row.getAttemptCount(), row.getLastError());
+        });
+
+        Abandonment given = abandonment == null ? Abandonment.NONE : abandonment;
+        if (!given.abandoned()) {
             return Terminal.NONE;
         }
 
         log.error("Outbox event {} was abandoned after {} attempts on topic {}, the last failing "
                         + "with {}. It owes one dead letter on {} until the broker acknowledges "
                         + "one.",
-                row.getEventId(), row.getAttemptCount(), destination, failureClass, deadLetterTopic);
-        return Terminal.ABANDONED.plus(publishDeadLetter(row, destination, failure, now, deadline));
+                claimed.getEventId(), given.attemptCount(), destination, failureClass,
+                deadLetterTopic);
+        return Terminal.ABANDONED.plus(publishDeadLetter(claimed.getEventId(),
+                claimed.getAggregateId(), claimed.getEventType(), given.attemptCount(), destination,
+                new AbandonedRowException(given.lastError()), deadline));
     }
 
     /**
@@ -355,24 +541,50 @@ public class OutboxRelay {
      * survives to be attempted again, and the attempt is counted so an operator can see a diagnostic
      * that is not landing.
      *
-     * @param now      the moment this sweep started
+     * <p>The read below takes its own short transaction and the sends sit outside it. The finder
+     * takes a pessimistic lock with {@code SKIP LOCKED}, so it needs a transaction at all, and
+     * holding that one across the sends would hold a database connection and every locked row for
+     * the sum of the broker waits — which is the shape this relay was rewritten to remove. The
+     * consequence is stated rather than hidden: two instances reading either side of one clear can
+     * both name the same row, so a diagnostic can appear twice. Clearing the obligation is filtered
+     * on {@code owesDeadLetter}, so the second clear is a no-op, and the two sibling relays that
+     * carry the same durable obligation already read it without a lock.
+     *
      * @param deadline monotonic deadline shared by the entire sweep
      * @return what this step did to the terminal counts
      */
-    private Terminal publishOwedDeadLetters(Instant now, long deadline) {
-        List<OutboxEventEntity> owed = outboxEventRepository
-                .findByDeadLetterStateOrderByLastAttemptAtAsc(
-                        OutboxEventEntity.DeadLetterState.REQUIRED, Limit.of(batchSize));
+    private Terminal publishOwedDeadLetters(long deadline) {
+        List<OutboxEventEntity> owed = readRowsOwingADiagnostic();
 
         Terminal counts = Terminal.NONE;
         for (OutboxEventEntity row : owed) {
+            if (System.nanoTime() - deadline >= 0L) {
+                return counts;
+            }
             log.warn("Outbox event {} has owed a dead letter on {} since {}, so this sweep offers "
                             + "it again.", row.getEventId(), deadLetterTopic,
                     row.getLastAttemptAt());
-            counts = counts.plus(publishDeadLetter(row, topicOrUnresolved(row.getEventType()),
-                    new AbandonedRowException(row.getLastError()), now, deadline));
+            counts = counts.plus(publishDeadLetter(row.getEventId(), row.getAggregateId(),
+                    row.getEventType(), row.getAttemptCount(),
+                    topicOrUnresolved(row.getEventType()),
+                    new AbandonedRowException(row.getLastError()), deadline));
         }
         return counts;
+    }
+
+    /**
+     * Reads the rows still owing a diagnostic, in a transaction of its own.
+     *
+     * <p>The rows are detached by the time this returns, and every field the diagnostic reads is a
+     * column of the row itself, so nothing is loaded after the transaction closes.
+     *
+     * @return the rows owing a diagnostic, oldest attempt first, at most one batch of them
+     */
+    private List<OutboxEventEntity> readRowsOwingADiagnostic() {
+        List<OutboxEventEntity> owed = transactionTemplate.execute(status ->
+                List.copyOf(outboxEventRepository.findByDeadLetterStateOrderByLastAttemptAtAsc(
+                        OutboxEventEntity.DeadLetterState.REQUIRED, Limit.of(batchSize))));
+        return owed == null ? List.of() : owed;
     }
 
     /** Resolves the configured destination of one governed event type. */
@@ -419,6 +631,66 @@ public class OutboxRelay {
             cause = cause.getCause();
         }
         return cause;
+    }
+
+    /**
+     * The rows one sweep holds, and the claims it recovered on the way to them.
+     *
+     * @param rows      the claimed account heads, at most one row per account
+     * @param recovered claims a stopped instance left behind that this sweep returned to pending
+     */
+    private record ClaimedBatch(List<OutboxEventEntity> rows, int recovered) {
+
+        /** What a claim transaction that answered with nothing stands for. */
+        private static final ClaimedBatch EMPTY = new ClaimedBatch(List.of(), 0);
+    }
+
+    /**
+     * One send this sweep issued, or the reason it issued none.
+     *
+     * @param row          the claimed row
+     * @param destination  the topic the send was addressed to
+     * @param publication  the acknowledgement to await, or {@code null} when no send was issued
+     * @param failureClass why no send was issued, or {@code null} when one was
+     */
+    private record Dispatch(OutboxEventEntity row, String destination,
+            CompletionStage<Void> publication, String failureClass) {
+
+        static Dispatch issued(OutboxEventEntity row, String destination,
+                CompletionStage<Void> publication) {
+            return new Dispatch(row, destination, Objects.requireNonNull(publication,
+                    "publisher returned no completion stage"), null);
+        }
+
+        static Dispatch refused(OutboxEventEntity row, String destination, String failureClass) {
+            return new Dispatch(row, destination, null, failureClass);
+        }
+    }
+
+    /**
+     * What one attempt did: the two per-attempt counts and its effect on the terminal path.
+     *
+     * @param published rows the broker acknowledged, one or none
+     * @param failed    attempts that could not be completed, one or none
+     * @param terminal  what the attempt did to the terminal counts
+     */
+    private record Attempt(int published, int failed, Terminal terminal) {
+    }
+
+    /**
+     * Whether one recorded failure abandoned its row, and what the row then held.
+     *
+     * <p>Read out of the transaction that recorded the failure, because the diagnostic that names an
+     * abandoned row is published outside it.
+     *
+     * @param abandoned    whether the attempt reached the ceiling
+     * @param attemptCount attempts the row had taken once the failure was recorded
+     * @param lastError    the redacted reason the row now holds
+     */
+    private record Abandonment(boolean abandoned, int attemptCount, String lastError) {
+
+        /** The row survives for another attempt. */
+        private static final Abandonment NONE = new Abandonment(false, 0, null);
     }
 
     /**
@@ -558,35 +830,45 @@ public class OutboxRelay {
      * path, which has already recorded the business failure that abandoned the row, or the owed-
      * diagnostic sweep, where one unreachable broker must not stop the rows behind it.
      *
-     * @param row         the row this relay gave up on
-     * @param sourceTopic the topic the abandoned event was meant for
-     * @param failure     the failure of its last attempt
-     * @param now         the moment this sweep started
-     * @param deadline    monotonic deadline shared by the entire sweep
+     * @param eventId      the row this relay gave up on
+     * @param aggregateId  the account the abandoned event names, the diagnostic's key
+     * @param eventType    the type the abandoned row carries
+     * @param attemptCount attempts the abandoned row had taken
+     * @param sourceTopic  the topic the abandoned event was meant for
+     * @param failure      the failure of its last attempt
+     * @param deadline     monotonic deadline shared by the entire sweep
      * @return {@link Terminal#DEAD_LETTER_PUBLISHED} on acknowledgement, otherwise
      *         {@link Terminal#DEAD_LETTER_FAILED}
      */
-    private Terminal publishDeadLetter(OutboxEventEntity row, String sourceTopic,
-            RuntimeException failure, Instant now, long deadline) {
+    private Terminal publishDeadLetter(UUID eventId, String aggregateId, String eventType,
+            int attemptCount, String sourceTopic, RuntimeException failure, long deadline) {
         DeadLetterMetadata metadata = DeadLetterMetadata.fromFailure(
                 DEAD_LETTER_CODE, failure, DEAD_LETTER_REASON, DEAD_LETTER_MESSAGE);
         DeadLetterEnvelope envelope = metadata.toEnvelope(
-                row.getAggregateId(), sourceTopic, 0, 0L,
-                row.getEventId().toString(), row.getEventType(), row.getAttemptCount());
+                aggregateId, sourceTopic, 0, 0L,
+                eventId.toString(), eventType, attemptCount);
 
         try {
-            await(eventPublisherPort.publish(deadLetterTopic, row.getAggregateId(),
+            await(eventPublisherPort.publish(deadLetterTopic, aggregateId,
                     objectMapper.writeValueAsString(envelope)), deadline);
         } catch (RuntimeException refused) {
             log.error("The dead letter naming outbox event {} did not reach {} after a {}. The row "
                             + "still owes one, and a later sweep offers it again.",
-                    row.getEventId(), deadLetterTopic,
-                    rootCause(refused).getClass().getSimpleName());
+                    eventId, deadLetterTopic, rootCause(refused).getClass().getSimpleName());
             return Terminal.DEAD_LETTER_FAILED;
         }
 
-        row.markDeadLetterPublished(now);
-        outboxEventRepository.save(row);
+        // The obligation is cleared in a transaction of its own, and only after the broker took the
+        // diagnostic. A row that has gone in the meantime owes nothing.
+        transactionTemplate.execute(status -> {
+            outboxEventRepository.findById(eventId)
+                    .filter(OutboxEventEntity::owesDeadLetter)
+                    .ifPresent(stored -> {
+                        stored.markDeadLetterPublished(clock.instant());
+                        outboxEventRepository.save(stored);
+                    });
+            return null;
+        });
         return Terminal.DEAD_LETTER_PUBLISHED;
     }
 

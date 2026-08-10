@@ -1,38 +1,25 @@
--- Notification service, migration V5.
--- Says what notification_log actually records: an alert this service rendered and did not send.
+-- Notification service, migration V5. Says what notification_log records: an alert this service
+-- rendered and did not send.
 --
--- WHY THIS FILE EXISTS. V1__schema.sql called this table "one row per delivery attempt" and named
--- its timestamp column attempted_at. A security review read that and asked which transport made the
--- attempt. There is none. This service has no electronic mail gateway, no short-message gateway, no
--- webhook client and no push client; its own README lists all four under deliberate non-additions.
--- domain/NotificationService renders a document, writes one row, and returns the document to its
--- caller. Every caller is a Kafka listener, and every listener discards the returned text.
+-- Statements, in order: rename attempted_at to rendered_at; rename the index named for the old column;
+-- add outcome; back-fill it; make it NOT NULL; add ck_notification_log_outcome admitting
+-- RENDERED_NOT_SENT and nothing else; and issue one COMMENT ON TABLE and two COMMENT ON COLUMN. No row
+-- changes its meaning: the value attempted_at held was always Clock.instant() at the moment the
+-- renderer finished, and a column rename leaves an index definition correct because PostgreSQL indexes
+-- columns by number.
 --
--- WHY THE WORDING MATTERED MORE THAN THE COLUMN. An operator reading "delivery attempt" in the
--- catalogue, or a row count in an incident review, would conclude that a cardholder had been told
--- about a transaction or a fraud flag. Nothing left the process. That is a worse failure than a
--- missing feature, because it is one nobody looks for: the table exists, the rows accumulate, and
--- every one of them is evidence of something that did not happen.
+-- What the service does. domain/NotificationService renders a document, writes one row and returns the
+-- document to its caller; every caller is a Kafka listener and every listener discards the text. This
+-- service holds no electronic mail gateway, no short-message gateway, no webhook client and no push
+-- client, and its README lists all four under deliberate non-additions. The claim therefore lives in
+-- the constraint rather than in prose: a change that starts sending has to widen
+-- ck_notification_log_outcome to SENT and FAILED in a commit a reviewer can see.
 --
--- WHAT THIS MIGRATION DOES. Three things, none of which changes what is stored.
+-- A delivery port with an authenticated transport, acknowledgement and retry is a new capability rather
+-- than a correction; AAP 0.1.1 specifies this service as rendering a cardholder alert, and
+-- card-platform/docs/suggested-next-tasks.md carries the task. V1 is left as it ran.
 --
--- 1. attempted_at becomes rendered_at. The value written was always Clock.instant() at the moment
---    the renderer finished, so the new name is the one the value already had.
--- 2. A new outcome column carries RENDERED_NOT_SENT, and a CHECK permits that value and no other.
---    This is the point of the migration. The claim now lives in the data rather than in prose, so a
---    future change that starts sending has to widen a constraint and a test, in a commit a reviewer
---    can see, rather than quietly changing what a row means.
--- 3. The index named for the old column is renamed. A column rename leaves an index definition
---    correct, because PostgreSQL indexes columns by number, so only the name was stale.
---
--- WHAT A DELIVERY PORT WOULD ADD. The review's first-choice resolution is a delivery port with an
--- authenticated transport, acknowledgement, retry and an explicit outcome. That is a new capability
--- rather than a correction: section 0.1.1 of the plan specifies this service as "rendering a
--- cardholder alert", and a transport is outside it. outcome is where such a port would report
--- itself, by widening the CHECK to SENT and FAILED. card-platform/docs/suggested-next-tasks.md
--- carries the task.
---
--- V1 is left as it ran. An applied migration is not edited.
+-- Rationale, alternatives considered and accepted risks: card-platform/docs/decision-log.md.
 
 ALTER TABLE notification_log
     RENAME COLUMN attempted_at TO rendered_at;

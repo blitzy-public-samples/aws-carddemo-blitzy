@@ -2,16 +2,19 @@ package com.carddemo.authorization.config;
 
 import com.carddemo.authorization.messaging.AccountStateChanged;
 import com.carddemo.authorization.messaging.CardUpdated;
+
 import com.carddemo.events.DeclineReason;
 import com.carddemo.events.TransactionAuthorized;
 import com.carddemo.events.TransactionDeclined;
 
 import io.micrometer.core.instrument.Counter;
+
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import io.micrometer.core.instrument.binder.MeterBinder;
 
 import java.time.Duration;
+
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -31,8 +34,9 @@ import org.springframework.context.annotation.Configuration;
  *
  * <p>{@link #EVENTS_WRITTEN_COUNTER} is the produce-side events family. Its ancestor is the
  * transaction count of {@code app/cbl/CBTRN02C.cbl:L206}, printed at
- * {@code app/cbl/CBTRN02C.cbl:L227}. One authorization call writes one event, and the two series
- * separate an approval from a decline.
+ * {@code app/cbl/CBTRN02C.cbl:L227}. A decided authorization call writes at most one event, and the
+ * two series separate an approval from a decline. Reject reason 0100 writes none, so it raises
+ * neither series.
  *
  * <p>{@link #EVENTS_CONSUMED_COUNTER}, {@link #DUPLICATES_SKIPPED_COUNTER} and
  * {@link #REPLICA_PROCESSING_TIMER} are the consume side, one series each per replica stream.
@@ -189,7 +193,7 @@ public class ObservabilityConfig {
             List.of(AccountStateChanged.EVENT_TYPE, CardUpdated.EVENT_TYPE);
 
     /**
-     * Registers every series of the four meters against each registry Spring Boot builds.
+     * Registers all sixteen series of the seven meters against each registry Spring Boot builds.
      *
      * <p>Spring Boot applies a {@link MeterBinder} bean after the common tag of
      * {@link #authorizationCommonTags(String)}, so each series below carries that tag. A
@@ -208,7 +212,6 @@ public class ObservabilityConfig {
             registerTerminalOutboxSeries(registry);
             registerDecisionTimer(registry);
             registerFailureStages(registry);
-            registerTerminalCounters(registry);
         };
     }
 
@@ -274,7 +277,21 @@ public class ObservabilityConfig {
      * @param outcome  the {@link #OUTCOME_TAG} value this series carries
      */
     private static void registerOutcome(MeterRegistry registry, String outcome) {
-        Counter.builder(DECISIONS_COUNTER)
+        decisionCounter(registry, outcome);
+    }
+
+    /**
+     * Answers one outcome series of the decision counter, registering it if it is absent.
+     *
+     * <p>The outcome is not checked against a list. A reject reason this service has not seen before
+     * still needs counting, and refusing it here would lose the outcome rather than report it.
+     *
+     * @param registry the registry holding or receiving the series
+     * @param outcome  the approval marker, or the reject code
+     * @return the counter of calls that reached that outcome
+     */
+    public static Counter decisionCounter(MeterRegistry registry, String outcome) {
+        return Counter.builder(DECISIONS_COUNTER)
                 .tag(OUTCOME_TAG, outcome)
                 .description("Authorization outcomes, one per call, tagged approved or by reject "
                         + "code")
@@ -293,11 +310,22 @@ public class ObservabilityConfig {
         List<String> eventTypes =
                 List.of(TransactionAuthorized.EVENT_TYPE, TransactionDeclined.EVENT_TYPE);
         for (String eventType : eventTypes) {
-            Counter.builder(EVENTS_WRITTEN_COUNTER)
-                    .tag(EVENT_TYPE_TAG, eventType)
-                    .description("Events written to the outbox, one per authorization call")
-                    .register(registry);
+            eventsWrittenCounter(registry, eventType);
         }
+    }
+
+    /**
+     * Answers one written-event series, registering it with its description if it is absent.
+     *
+     * @param registry  the registry holding or receiving the series
+     * @param eventType the event type this series counts
+     * @return the counter of events of that type written to the outbox
+     */
+    public static Counter eventsWrittenCounter(MeterRegistry registry, String eventType) {
+        return Counter.builder(EVENTS_WRITTEN_COUNTER)
+                .tag(EVENT_TYPE_TAG, eventType)
+                .description("Events written to the outbox, one per authorization call")
+                .register(registry);
     }
 
     /**
@@ -307,7 +335,21 @@ public class ObservabilityConfig {
      * @param registry the registry the series registers against
      */
     private static void registerPublishedEvents(MeterRegistry registry) {
-        Counter.builder(EVENTS_PUBLISHED_COUNTER)
+        eventsPublishedCounter(registry);
+    }
+
+    /**
+     * Answers the publish-success series, registering it with its description if it is absent.
+     *
+     * <p>Every reader of this series comes through here, so the name and the description are written
+     * once. A caller that built the series itself would register it without a description whenever it
+     * ran before the binder, and which of the two ran first is not something either one controls.
+     *
+     * @param registry the registry holding or receiving the series
+     * @return the counter of rows the broker acknowledged
+     */
+    public static Counter eventsPublishedCounter(MeterRegistry registry) {
+        return Counter.builder(EVENTS_PUBLISHED_COUNTER)
                 .description("Outbox rows the broker acknowledged, counted after the sweep that sent "
                         + "them committed")
                 .register(registry);
@@ -325,16 +367,41 @@ public class ObservabilityConfig {
      * @param registry the registry each series registers against
      */
     private static void registerTerminalOutboxSeries(MeterRegistry registry) {
-        Counter.builder(OUTBOX_ABANDONED_COUNTER)
+        outboxAbandonedCounter(registry);
+        for (String outcome : List.of(DIAGNOSTIC_PUBLISHED, DIAGNOSTIC_FAILED)) {
+            deadLetterCounter(registry, outcome);
+        }
+    }
+
+    /**
+     * Answers the abandoned-row series, registering it with its description if it is absent.
+     *
+     * @param registry the registry holding or receiving the series
+     * @return the counter of rows this service gave up on
+     */
+    public static Counter outboxAbandonedCounter(MeterRegistry registry) {
+        return Counter.builder(OUTBOX_ABANDONED_COUNTER)
                 .description("Outbox rows given up on after their delivery attempts were spent")
                 .register(registry);
-        for (String outcome : List.of(DIAGNOSTIC_PUBLISHED, DIAGNOSTIC_FAILED)) {
-            Counter.builder(DEAD_LETTERS_COUNTER)
-                    .tag(OUTCOME_OF_DIAGNOSTIC_TAG, outcome)
-                    .description("Terminal diagnostics naming an abandoned outbox row, by what "
-                            + "became of the diagnostic")
-                    .register(registry);
+    }
+
+    /**
+     * Answers one outcome series of the terminal diagnostic, registering it if it is absent.
+     *
+     * @param registry the registry holding or receiving the series
+     * @param outcome  {@link #DIAGNOSTIC_PUBLISHED} or {@link #DIAGNOSTIC_FAILED}
+     * @return the counter of diagnostics that reached that outcome
+     * @throws IllegalArgumentException when the outcome is not one of the two
+     */
+    public static Counter deadLetterCounter(MeterRegistry registry, String outcome) {
+        if (!DIAGNOSTIC_PUBLISHED.equals(outcome) && !DIAGNOSTIC_FAILED.equals(outcome)) {
+            throw new IllegalArgumentException("unknown diagnostic outcome: " + outcome);
         }
+        return Counter.builder(DEAD_LETTERS_COUNTER)
+                .tag(OUTCOME_OF_DIAGNOSTIC_TAG, outcome)
+                .description("Terminal diagnostics naming an abandoned outbox row, by what "
+                        + "became of the diagnostic")
+                .register(registry);
     }
 
     /**
@@ -365,39 +432,22 @@ public class ObservabilityConfig {
     private static void registerFailureStages(MeterRegistry registry) {
         for (String stage :
                 List.of(PERSIST_STAGE, PUBLISH_STAGE, REPLICA_STAGE, ENTITLEMENT_STAGE)) {
-            Counter.builder(FAILURES_COUNTER)
-                    .tag(STAGE_TAG, stage)
-                    .description("Infrastructure faults, tagged by the stage that raised one. A "
-                            + "decline is not a fault")
-                    .register(registry);
+            failureCounter(registry, stage);
         }
     }
 
     /**
-     * Registers the three counters of the terminal path, each at zero from start-up.
+     * Answers one stage series of the failure counter, registering it if it is absent.
      *
-     * <p>Three outcomes are counted separately rather than summed into the publish failure stage,
-     * because an operator reading one number cannot tell a relay retrying normally from one that has
-     * silently stopped recording what it lost. A row given up on, a diagnostic the broker acknowledged
-     * and a diagnostic the broker refused are three different situations, and only the last two say
-     * whether the event that was lost is named anywhere.
-     *
-     * @param registry the registry each counter registers against
+     * @param registry the registry holding or receiving the series
+     * @param stage    the stage that would raise the fault
+     * @return the counter of faults raised by that stage
      */
-    private static void registerTerminalCounters(MeterRegistry registry) {
-        Counter.builder(OUTBOX_ABANDONED_COUNTER)
-                .description("Outbox rows this service gave up on after "
-                        + "MAX_DELIVERY_ATTEMPTS attempts")
-                .register(registry);
-        Counter.builder(DEAD_LETTERS_COUNTER)
-                .tag(OUTCOME_OF_DIAGNOSTIC_TAG, DIAGNOSTIC_PUBLISHED)
-                .description("Terminal diagnostics naming an abandoned row that the broker "
-                        + "acknowledged")
-                .register(registry);
-        Counter.builder(DEAD_LETTERS_COUNTER)
-                .tag(OUTCOME_OF_DIAGNOSTIC_TAG, DIAGNOSTIC_FAILED)
-                .description("Terminal diagnostic attempts the broker refused. The row still owes "
-                        + "one and a later pass offers it again")
+    public static Counter failureCounter(MeterRegistry registry, String stage) {
+        return Counter.builder(FAILURES_COUNTER)
+                .tag(STAGE_TAG, stage)
+                .description("Infrastructure faults, tagged by the stage that raised one. A "
+                        + "decline is not a fault")
                 .register(registry);
     }
 
@@ -513,4 +563,5 @@ public class ObservabilityConfig {
             return meter;
         }
     }
+
 }

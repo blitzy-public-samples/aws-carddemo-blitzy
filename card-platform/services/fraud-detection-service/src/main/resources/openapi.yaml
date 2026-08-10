@@ -47,14 +47,30 @@ paths:
     get:
       tags: [FraudAssessments]
       operationId: assessmentsOfAccount
-      summary: List one account's risk assessments.
+      summary: List one page of one account's risk assessments.
       description: >-
-        Returns the assessments recorded for one account, newest first. The order is fixed to
-        assessment time descending and no parameter changes it.
+        Returns one page of the assessments recorded for one account, newest first. The order is
+        fixed to assessment time descending and then transaction identifier descending, and no
+        parameter changes it. The second column is what makes a page boundary exact: assessment time
+        is not unique, because one consumer batch assesses several transactions and the rows can
+        share a microsecond.
 
 
-        One handler serves this route, and the three query parameters below are the whole of what it
-        reads. A sort parameter answers 400 from that same handler, so no request reaches a mapping
+        A page is reached by position, not by number. Omitting X-Fraud-Cursor returns the newest
+        page, and returning the nextCursor the previous answer named returns the page after it. A
+        caller walks the whole history by repeating the call while nextPageExists is true, and every
+        call costs one page: index ix_fraud_assessment_account_cursor is read as a range, so the
+        ten-thousandth page costs what the first one does. A page parameter answers 400 rather than
+        being served, because reaching a page by number means reading and discarding every row before
+        it.
+
+
+        Every read is bound to the accountId of the request, so a cursor issued for one account reads
+        no other account's rows.
+
+
+        One handler serves this route, and the parameters below are the whole of what it reads. A
+        sort or page parameter answers 400 from that same handler, so no request reaches a mapping
         this document does not describe.
 
 
@@ -73,29 +89,37 @@ paths:
             type: string
             pattern: '^[0-9]{11}$'
             examples: ['00000000007']
-        - name: page
-          in: query
+        - name: X-Fraud-Cursor
+          in: header
           required: false
           description: >-
-            The page to return, counting from zero. Omitting the parameter returns the first page.
-            The value travels as text and is read as a number from 0 through 1000000, so a parameter
-            that arrives carrying no characters answers 400 rather than taking the default: a caller
-            sending page= asked for something, and a 200 would state nothing about what it received.
-            A page past the rows the account holds answers 200 with an empty array.
+            The position the page starts after, as the nextCursor of the previous answer named it. It
+            is an assessment time and a transaction identifier joined by a vertical bar, which
+            appears in neither part. Omitting the header returns the newest page, and a cursor naming
+            the account's oldest row returns 200 with an empty array.
+
+
+            A caller never composes this value: it returns the one it was given. A value this route
+            cannot read answers 400 naming the shape and never the value, because the cursor holds a
+            transaction identifier and a refusal that echoed it would copy that identifier into the
+            body. It travels as a header rather than a query parameter, matching X-Card-Cursor of the
+            card service and X-Notification-Cursor of the notification service, which keeps it out of
+            the access logs that record a query string.
           schema:
             type: string
-            pattern: '^[0-9]{1,7}$'
-            examples: ['0']
+            examples: ['2022-06-10T19:27:53.418Z|0000000380632461']
         - name: size
           in: query
           required: false
           description: >-
             The rows one page carries. Omitting the parameter returns 20 rows. The value travels as
-            text for the reason page does, and it is read as a number from 1 through 200. A value
-            outside those bounds answers 400, so the page a caller receives is the page it asked for.
+            text, so a parameter that arrives carrying no characters answers 400 rather than taking
+            the default: a caller sending size= asked for something, and a 200 would state nothing
+            about what it received. It is read as a number from 1 through 200, and a value outside
+            those bounds answers 400, so the page a caller receives is the page it asked for.
           schema:
             type: string
-            pattern: '^[0-9]{1,3}$'
+            pattern: '^0*(?:[1-9][0-9]?|1[0-9]{2}|200)$'
             examples: ['20']
         - name: sort
           in: query
@@ -103,50 +127,82 @@ paths:
           description: >-
             An order to apply, which this route does not accept. Present at any value, the parameter
             answers 400 naming itself and the order this route does apply. The order is fixed at
-            assessment time descending, which
-            FraudAssessmentRepository.findByAccountIdOrderByAssessedAtDesc states in its own name, so
-            an order a caller supplied could only be ignored while the response claimed success. The
-            one handler of this route reads the parameter and refuses it.
+            assessment time descending and then transaction identifier descending, which
+            FraudAssessmentRepository.findByAccountIdOrderByAssessedAtDescTransactionIdDesc states in
+            its own name, so an order a caller supplied could only be ignored while the response
+            claimed success. The one handler of this route reads the parameter and refuses it.
           schema:
             type: string
             examples: ['assessedAt,asc']
+        - name: page
+          in: query
+          required: false
+          description: >-
+            A page number, which this route does not accept. Present at any value, the parameter
+            answers 400 naming itself and the header that continues a page instead. It carries no
+            numeric shape here because no number is acceptable: reaching a page by number means
+            reading and discarding every row before it, so the work would grow with the page asked
+            for rather than with the page returned. Serving page one to a request for page five
+            thousand would report success for something this route did not do, so it refuses instead.
+          schema:
+            type: string
+            examples: ['5000']
       responses:
         '200':
           description: >-
-            The account's assessments, newest first. An account holding no assessment answers this
-            status with an empty array, and so does a page past the rows the account has. An empty
-            array is a 200 and never a 404.
+            One page of the account's assessments, newest first, with the position of the page after
+            it. An account holding no assessment answers this status with an empty array, and so does
+            a cursor naming the account's oldest row. An empty array is a 200 and never a 404.
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/FraudAssessment'
+                $ref: '#/components/schemas/AssessmentPage'
               examples:
-                onePageOfAssessments:
+                onePageWithMoreToCome:
                   summary: >-
-                    Two assessments of account 00000000007. Both transaction identifiers are records
-                    of app/data/ASCII/dailytran.txt whose card resolves to that account through
-                    app/data/ASCII/cardxref.txt. The first reached the flag threshold and the second
-                    stayed below it while keeping the rule that contributed.
+                    Two assessments of account 00000000007, with older rows still to come. Both
+                    transaction identifiers are records of app/data/ASCII/dailytran.txt whose card
+                    resolves to that account through app/data/ASCII/cardxref.txt. The first reached
+                    the flag threshold and the second stayed below it while keeping the rule that
+                    contributed. nextCursor names the second row, which is the last one served, so
+                    returning it in X-Fraud-Cursor asks for the rows after it.
                   value:
-                    - transactionId: '0000000000683580'
-                      accountId: '00000000007'
-                      riskScore: 60
-                      triggeredRules: [VELOCITY, AMOUNT_ANOMALY]
-                      flagged: true
-                      assessedAt: '2022-06-10T19:27:53.512Z'
-                    - transactionId: '0000000380632461'
-                      accountId: '00000000007'
-                      riskScore: 25
-                      triggeredRules: [MERCHANT_CATEGORY]
-                      flagged: false
-                      assessedAt: '2022-06-10T19:27:53.418Z'
+                    assessments:
+                      - transactionId: '0000000000683580'
+                        accountId: '00000000007'
+                        riskScore: 60
+                        triggeredRules: [VELOCITY, AMOUNT_ANOMALY]
+                        flagged: true
+                        assessedAt: '2022-06-10T19:27:53.512Z'
+                      - transactionId: '0000000380632461'
+                        accountId: '00000000007'
+                        riskScore: 25
+                        triggeredRules: [MERCHANT_CATEGORY]
+                        flagged: false
+                        assessedAt: '2022-06-10T19:27:53.418Z'
+                    nextPageExists: true
+                    nextCursor: '2022-06-10T19:27:53.418Z|0000000380632461'
+                theLastPage:
+                  summary: >-
+                    The oldest assessment of account 00000000007. No row follows it, so
+                    nextPageExists is false and the answer carries no nextCursor at all rather than a
+                    null one. This is where a caller walking the history stops.
+                  value:
+                    assessments:
+                      - transactionId: '0000000725950464'
+                        accountId: '00000000007'
+                        riskScore: 0
+                        triggeredRules: []
+                        flagged: false
+                        assessedAt: '2022-06-10T19:27:52.004Z'
+                    nextPageExists: false
                 accountHoldsNoAssessment:
                   summary: >-
-                    Account 00000000030 has no assessment recorded. The array is empty and the
-                    status stays 200.
-                  value: []
+                    Account 00000000030 has no assessment recorded. The array is empty, no page
+                    follows, and the status stays 200.
+                  value:
+                    assessments: []
+                    nextPageExists: false
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -297,10 +353,9 @@ components:
 
     BadRequest:
       description: >-
-        A path or query value missed the constraint declared for it: an identifier of the wrong width
+        A path or query value missed the constraint declared for it. One of these: an identifier of the wrong width
         or shape, a page outside zero through 1000000, a page size outside one through 200, a page or
-        page size that is not a whole number, a page or page size that arrived carrying no characters,
-        or the required account parameter not arriving at all. A sort parameter on the collection route
+        page size that is not a whole number. Or one of these: a page or page size that arrived carrying no characters, or the required account parameter not arriving at all. A sort parameter on the collection route
         answers this status too, and that route applies assessment-time descending order only.
 
 
@@ -434,6 +489,41 @@ components:
                 detail: The assessment could not be read.
 
   schemas:
+
+    AssessmentPage:
+      type: object
+      description: >-
+        One page of one account's assessments, and how to reach the page after it.
+
+
+        No count of the whole history appears here. Counting an account's rows reads them all, which
+        is the work a page exists to avoid, so a caller learns the history is exhausted from
+        nextPageExists instead of from a total.
+      additionalProperties: false
+      required:
+        - assessments
+        - nextPageExists
+      properties:
+        assessments:
+          type: array
+          description: >-
+            The rows of this page, newest first. Never longer than the size the request asked for, or
+            than the 20 rows a request that named no size receives.
+          maxItems: 200
+          items:
+            $ref: '#/components/schemas/FraudAssessment'
+        nextPageExists:
+          type: boolean
+          description: >-
+            Whether the account holds rows older than this page. Answered from one row read past the
+            page rather than from a count of the remainder.
+        nextCursor:
+          type: string
+          description: >-
+            The position the next page starts after, to be returned in X-Fraud-Cursor. Present
+            exactly when nextPageExists is true, and absent from the body altogether on the last page
+            rather than present and null, so a caller has one thing to test.
+          examples: ['2022-06-10T19:27:53.418Z|0000000380632461']
 
     FraudAssessment:
       type: object

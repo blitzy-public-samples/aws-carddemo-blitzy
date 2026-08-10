@@ -1,5 +1,6 @@
 package com.carddemo.notification.domain;
 
+import com.carddemo.cobol.CobolDecimal;
 import com.carddemo.cobol.PicClause;
 import com.carddemo.notification.config.NotificationProperties;
 import com.carddemo.notification.repository.NotificationLogRepository;
@@ -9,6 +10,8 @@ import com.carddemo.notification.repository.StatementTransactionRepository;
 import java.lang.reflect.Method;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
 
@@ -183,7 +186,9 @@ class RetentionSweepTest {
         void rendersTheReadModelHorizonAtTheDeclaredWidth() {
             ArgumentCaptor<String> horizon = ArgumentCaptor.forClass(String.class);
 
+            Instant before = Instant.now();
             sweep.sweepReadModelRows();
+            Instant after = Instant.now();
 
             verify(statementTransactions).deleteProcessedBefore(horizon.capture(), Mockito.anyInt());
             String stamped = horizon.getValue();
@@ -194,11 +199,34 @@ class RetentionSweepTest {
                     .as("the rendered read-model horizon, as the column shape")
                     .matches("[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{2}\\.[0-9]{2}\\.[0-9]{2}"
                             + "\\.[0-9]{2}0000");
-            assertThat(stamped.substring(0, 4))
-                    .as("the year the horizon falls in, %d days back", STATEMENT_RETENTION_DAYS)
-                    .isEqualTo(String.valueOf(Instant.now()
-                            .minus(Duration.ofDays(STATEMENT_RETENTION_DAYS))
-                            .atZone(java.time.ZoneOffset.UTC).getYear()));
+            // The sweep read its own clock somewhere between the two instants above, so the horizon
+            // it rendered sits between the two horizons those instants imply. The comparison is
+            // lexical, which is exact here rather than approximate: the column is fixed-width text
+            // whose lexical order is its chronological order, which is the property the delete
+            // itself relies on.
+            //
+            // The earlier form of this assertion compared only the four-digit year against a second
+            // Instant.now() read after the sweep. It agreed with itself on every day but one: a
+            // sweep whose horizon fell on the last instant of a year and an assertion evaluated
+            // after midnight read two different years and failed for a reason unrelated to the
+            // rendering under test. Bracketing removes that, and pins all 26 characters instead of
+            // the first four.
+            assertThat(stamped)
+                    .as("the horizon the sweep rendered, %d days back from a clock read between "
+                            + "%s and %s", STATEMENT_RETENTION_DAYS, before, after)
+                    .isBetween(renderedHorizon(before), renderedHorizon(after));
+        }
+
+        /**
+         * Renders the read-model horizon one clock reading implies, the way the sweep renders it.
+         *
+         * @param read the moment the clock returned
+         * @return the 26-character stamp the delete would compare against
+         */
+        private String renderedHorizon(Instant read) {
+            return CobolDecimal.formatProcessingTimestamp(
+                    LocalDateTime.ofInstant(read, ZoneOffset.UTC)
+                            .minusDays(STATEMENT_RETENTION_DAYS));
         }
     }
 

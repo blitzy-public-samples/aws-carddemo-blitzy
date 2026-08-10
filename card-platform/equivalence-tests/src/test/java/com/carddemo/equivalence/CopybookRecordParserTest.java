@@ -163,13 +163,14 @@ class CopybookRecordParserTest {
 
         CopybookRecordParser.CardRecord parsed = CopybookRecordParser.parseCard(record);
 
-        assertEquals(CARD_NUMBER, parsed.cardNumber(),
-                "cardNumber comes from CARD-NUM at offset 0 of width " + CARD_NUM_WIDTH);
+        assertRedactedEquals(CARD_NUMBER, parsed.cardNumber(),
+                "cardNumber, from CARD-NUM at offset 0 of width " + CARD_NUM_WIDTH,
+                CopybookRecordParserTest::redactedCardNumber);
         assertEquals(CARD_ACCOUNT_ID, parsed.accountId(),
                 "accountId comes from CARD-ACCT-ID at offset 16 of width " + CARD_ACCT_ID_WIDTH);
-        assertEquals(CARD_VERIFICATION_VALUE, parsed.cardVerificationValue(),
-                "cardVerificationValue comes from CARD-CVV-CD at offset 27 of width "
-                        + CARD_CVV_WIDTH);
+        assertRedactedEquals(CARD_VERIFICATION_VALUE, parsed.cardVerificationValue(),
+                "cardVerificationValue, from CARD-CVV-CD at offset 27 of width " + CARD_CVV_WIDTH,
+                CopybookRecordParserTest::redactedVerificationValue);
         assertEquals(CARD_EMBOSSED_NAME, parsed.embossedName(),
                 "embossedName comes from CARD-EMBOSSED-NAME at offset 30, with its trailing "
                         + "spaces removed");
@@ -179,6 +180,45 @@ class CopybookRecordParserTest {
         assertEquals(CARD_ACTIVE_STATUS, parsed.activeStatus(),
                 "activeStatus comes from CARD-ACTIVE-STATUS at offset 90 of width "
                         + CARD_ACTIVE_STATUS_WIDTH);
+    }
+
+    /**
+     * Asserts that a failing card-number or verification-value comparison publishes neither value.
+     *
+     * <p>This is the assertion the redaction exists for, so it is tested rather than assumed. The
+     * comparison is driven to fail on purpose, its message is captured, and the message is required
+     * to carry no whole value, no sixteen-digit run and no three-digit verification value — while
+     * still carrying the field name and the widths a reader needs to place the fault.</p>
+     */
+    @Test
+    void aFailedCardComparisonPublishesNeitherValue() {
+        AssertionError cardNumberFailure = assertThrows(AssertionError.class,
+                () -> assertRedactedEquals(CARD_NUMBER, XREF_CARD_NUMBER, "CARD-NUM",
+                        CopybookRecordParserTest::redactedCardNumber));
+        AssertionError verificationFailure = assertThrows(AssertionError.class,
+                () -> assertRedactedEquals(CARD_VERIFICATION_VALUE, "246", "CARD-CVV-CD",
+                        CopybookRecordParserTest::redactedVerificationValue));
+
+        for (AssertionError failure : List.of(cardNumberFailure, verificationFailure)) {
+            String message = failure.getMessage();
+            assertFalse(message.contains(CARD_NUMBER),
+                    "the expected card number reached the message, which is published");
+            assertFalse(message.contains(XREF_CARD_NUMBER),
+                    "the read card number reached the message");
+            assertFalse(message.contains(CARD_VERIFICATION_VALUE),
+                    "the expected verification value reached the message");
+            assertFalse(message.contains("246"), "the read verification value reached the message");
+            assertFalse(message.matches("(?s).*[0-9]{5,}.*"),
+                    "a run of five or more digits reached the message, and the masked form keeps "
+                            + "four");
+        }
+        assertTrue(cardNumberFailure.getMessage().contains("CARD-NUM")
+                        && cardNumberFailure.getMessage().contains(maskOf(XREF_CARD_NUMBER)),
+                "a redacted failure still has to name the field and the last four characters read, "
+                        + "or it diagnoses nothing");
+        assertTrue(verificationFailure.getMessage()
+                        .contains(String.valueOf(MASK_CHARACTER).repeat(CARD_CVV_WIDTH)),
+                "and a verification value is reported fully masked");
     }
 
     /**
@@ -217,8 +257,9 @@ class CopybookRecordParserTest {
                     CopybookRecordParser.parseCardCrossReference(record);
             String form = record.length() == XREF_DELIVERED_WIDTH ? "delivered" : "declared";
 
-            assertEquals(XREF_CARD_NUMBER, parsed.cardNumber(),
-                    "cardNumber comes from XREF-CARD-NUM at offset 0 in the " + form + " form");
+            assertRedactedEquals(XREF_CARD_NUMBER, parsed.cardNumber(),
+                    "cardNumber, from XREF-CARD-NUM at offset 0 in the " + form + " form",
+                    CopybookRecordParserTest::redactedCardNumber);
             assertEquals(XREF_CUSTOMER_ID, parsed.customerId(),
                     "customerId comes from XREF-CUST-ID at offset 16 in the " + form + " form");
             assertEquals(XREF_ACCOUNT_ID, parsed.accountId(),
@@ -836,7 +877,8 @@ class CopybookRecordParserTest {
         assertEquals(TRANSACTION_MERCHANT_NAME, record.merchantName(), "TRAN-MERCHANT-NAME");
         assertEquals(TRANSACTION_MERCHANT_CITY, record.merchantCity(), "TRAN-MERCHANT-CITY");
         assertEquals(TRANSACTION_MERCHANT_ZIP, record.merchantZip(), "TRAN-MERCHANT-ZIP");
-        assertEquals(TRANSACTION_CARD_NUMBER, record.cardNumber(), "TRAN-CARD-NUM");
+        assertRedactedEquals(TRANSACTION_CARD_NUMBER, record.cardNumber(), "TRAN-CARD-NUM",
+                CopybookRecordParserTest::redactedCardNumber);
         assertEquals(TRANSACTION_ORIGIN_TIMESTAMP, record.originTimestamp(), "TRAN-ORIG-TS");
         assertEquals(TRANSACTION_PROCESSING_TIMESTAMP, record.processingTimestamp(),
                 "TRAN-PROC-TS");
@@ -871,7 +913,9 @@ class CopybookRecordParserTest {
         assertEquals(posted.merchantName(), daily.merchantName(), "the merchant name of both");
         assertEquals(posted.merchantCity(), daily.merchantCity(), "the merchant city of both");
         assertEquals(posted.merchantZip(), daily.merchantZip(), "the merchant zip of both");
-        assertEquals(posted.cardNumber(), daily.cardNumber(), "the card number of both");
+        assertRedactedEquals(posted.cardNumber(), daily.cardNumber(),
+                "the card number both layouts read from offset " + TRANSACTION_CARD_NUMBER_OFFSET,
+                CopybookRecordParserTest::redactedCardNumber);
         assertEquals(posted.originTimestamp(), daily.originTimestamp(),
                 "the origin timestamp of both");
         assertEquals(posted.processingTimestamp(), daily.processingTimestamp(),
@@ -1149,6 +1193,79 @@ class CopybookRecordParserTest {
     private static String maskOf(String cardNumber) {
         return String.valueOf(MASK_CHARACTER).repeat(CARD_NUM_WIDTH - VISIBLE_CARD_NUMBER_DIGITS)
                 + cardNumber.substring(cardNumber.length() - VISIBLE_CARD_NUMBER_DIGITS);
+    }
+
+    // Redacted comparison. Every assertion below runs against a card-number-shaped or a
+    // verification-value-shaped value, and a failing assertion writes both sides into the Surefire
+    // report, which .github/workflows/ci.yml uploads and keeps. A review found a seeded card number
+    // in a published report and named the assertion output as the same exposure, so these values are
+    // compared for equality and reported in a masked form. The redaction runs only on the failure
+    // path, so a passing run pays nothing for it.
+
+    /**
+     * Returns a card-number-shaped value in the form this platform publishes it: the last four
+     * characters in the clear and everything before them masked.
+     *
+     * <p>The length is named as well, because a component read at the wrong offset is usually the
+     * wrong length, and that is the diagnostic the masked form loses. A value of four characters or
+     * fewer is masked entirely, since keeping its last four would keep all of it.</p>
+     *
+     * @param value the value to describe, which may be any width or {@code null}
+     * @return a description carrying no more of the value than the last four characters
+     */
+    private static String redactedCardNumber(String value) {
+        if (value == null) {
+            return "no value";
+        }
+        if (value.length() <= VISIBLE_CARD_NUMBER_DIGITS) {
+            return String.valueOf(MASK_CHARACTER).repeat(value.length())
+                    + " (" + value.length() + " characters)";
+        }
+        return String.valueOf(MASK_CHARACTER).repeat(value.length() - VISIBLE_CARD_NUMBER_DIGITS)
+                + value.substring(value.length() - VISIBLE_CARD_NUMBER_DIGITS)
+                + " (" + value.length() + " characters)";
+    }
+
+    /**
+     * Returns a verification value in the form this platform publishes it, which is no part of it.
+     *
+     * <p>{@code com.carddemo.cobol.PanMasker#redactCardVerificationValue} keeps none of this field,
+     * because three digits with no part withheld is the whole secret. The length is named instead.</p>
+     *
+     * @param value the value to describe, which may be any width or {@code null}
+     * @return a description carrying none of the value
+     */
+    private static String redactedVerificationValue(String value) {
+        if (value == null) {
+            return "no value";
+        }
+        return String.valueOf(MASK_CHARACTER).repeat(value.length())
+                + " (" + value.length() + " characters)";
+    }
+
+    /**
+     * Asserts that one parsed component equals the value this class put in its field, and reports a
+     * mismatch without writing either side into the message.
+     *
+     * <p>This is the equality {@code assertEquals} performs. What differs is the failure: JUnit
+     * renders the expected and the actual value, and both are cardholder data here.</p>
+     *
+     * @param expected  the value this class assembled into the field
+     * @param actual    the value the parser read
+     * @param field     the copybook field the value belongs to, named in a failure
+     * @param redaction how to describe a value of this field's kind
+     */
+    private static void assertRedactedEquals(String expected, String actual, String field,
+            Function<String, String> redaction) {
+        if (expected.equals(actual)) {
+            return;
+        }
+        throw new AssertionError(field + " did not read the value this test assembled into it."
+                + " Expected " + redaction.apply(expected)
+                + " and read " + redaction.apply(actual)
+                + ". Both sides are redacted because this report is published: compare the widths"
+                + " and the visible characters against the offsets asserted above to find which"
+                + " neighbouring field was read instead.");
     }
 
     /** Returns one raw {@code CARD-RECORD} built from the six field values this class chose. */

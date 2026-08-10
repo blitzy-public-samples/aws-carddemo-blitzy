@@ -5,13 +5,12 @@ ConfigMap, a Secret template, and six Deployment-and-Service pairs.
 [`kustomization.yaml`](kustomization.yaml) lists ten of them and is the entry point.
 
 ```bash
-# 1. Build and load the six images on every node that will run a Pod.
-mvn -f card-platform/pom.xml -DskipTests package
-for service in authorization-service ledger-posting-service fraud-detection-service \
-               notification-service account-service card-service; do
-  docker build -f "card-platform/services/${service}/Dockerfile" \
-    -t "carddemo/${service}:1.0.0-SNAPSHOT" "card-platform/services/${service}"
-done
+# 1. Build the six images AND put them inside the cluster. This script is the only
+#    supported way to do step 1: a plain `docker build` leaves the images in this
+#    machine's daemon, which is not where a kind or minikube node looks for them.
+cd card-platform
+deploy/k8s/load-images.sh              # runtime read from the current kubectl context
+# deploy/k8s/load-images.sh kind       # or name it: kind, minikube, docker-desktop
 
 # 2. Create the Secrets. 31-secret.example.yaml is a template of refused values and is
 #    deliberately not listed in kustomization.yaml; card-platform/docs/onboarding.md
@@ -20,6 +19,25 @@ done
 # 3. Apply everything else.
 kubectl apply -k card-platform/deploy/k8s
 ```
+
+Step 1 is a script rather than a loop copied into this page because building an image and
+giving it to a cluster are two different operations, and only one of them is a `docker
+build`. `kind` keeps its own containerd image store per node, `minikube` keeps one per
+profile, and neither reads this machine's Docker daemon; Docker Desktop is the single case
+where they are the same store. The script builds all six from source — each `Dockerfile`
+compiles its module in a Java Development Kit 25 builder stage, so nothing has to be
+packaged on the host first — then loads them the way the detected runtime requires, reads
+the node's image list back, and fails if no `carddemo` image arrived. It finishes by
+printing steps 2 and 3, so the apply order comes from the same place as the load.
+
+The script also refuses a tag the manifests do not request. `IMAGE_TAG` is checked against
+the `newTag` values in [`kustomization.yaml`](kustomization.yaml), and the run stops if they
+differ, because `imagePullPolicy: Never` makes the kubelet run the requested tag or refuse
+the Pod: loading some other tag produces the same `ErrImageNeverPull` as loading nothing.
+The same check catches `kustomization.yaml` drifting from the project version in
+`pom.xml`, which is the tag Compose and the pipeline build. Changing the tag therefore means
+changing what the manifests ask for, and the script prints the `kustomize edit set image`
+command that does it.
 
 <br/>
 
@@ -57,9 +75,11 @@ one place, and it is why the next section exists.
 ## Pinning the six by digest
 
 ```bash
-# Publish to a registry the deployment owns, then pin what the push reported.
+# Publish to a registry the deployment owns, then pin what the push reported. DIGEST is the
+# sha256 value the push printed, quoted so the shell reads it as one word.
+DIGEST='sha256:0000000000000000000000000000000000000000000000000000000000000000'
 kustomize edit set image \
-  carddemo/authorization-service=registry.example.internal/carddemo/authorization-service@sha256:<digest>
+  "carddemo/authorization-service=registry.example.internal/carddemo/authorization-service@${DIGEST}"
 ```
 
 `newTag` and `digest` are mutually exclusive in a Kustomize `images` entry, so replacing one

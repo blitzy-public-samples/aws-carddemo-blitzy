@@ -10,9 +10,12 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
+import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
@@ -75,7 +78,11 @@ class DocumentationContractTest {
             Map.entry(11, "eleven"),
             Map.entry(12, "twelve"),
             Map.entry(13, "thirteen"),
-            Map.entry(14, "fourteen"));
+            Map.entry(14, "fourteen"),
+            Map.entry(15, "fifteen"),
+            Map.entry(16, "sixteen"),
+            Map.entry(17, "seventeen"),
+            Map.entry(18, "eighteen"));
 
     /** A listener declaration, anchored so a Javadoc mention of the annotation is not one. */
     private static final Pattern LISTENER_ANNOTATION =
@@ -112,9 +119,100 @@ class DocumentationContractTest {
     /** A test class name as an inventory row writes it. */
     private static final Pattern TEST_CLASS_NAME = Pattern.compile("[A-Za-z0-9_]+Test\\b");
 
+    /** Arguments that make git name the delivered set rather than the tracked subset of it. */
+    private static final List<String> DELIVERED_SET_ARGUMENTS = List.of(
+            "--cached", "--others", "--exclude-standard", "card-platform", ".github");
+
+    /** The command the matrix must name, written the way a reader would run it. */
+    private static final String DELIVERED_SET_COMMAND =
+            "git ls-files --cached --others --exclude-standard card-platform .github";
+
+    /** The provenance cell of a delivered file that cites nothing and says no more than that. */
+    private static final String PLAIN_ABSENCE = "None cited in the file";
+
+    /** Opening fence of a Mermaid block. */
+    private static final String MERMAID_FENCE = "```mermaid";
+
+    /** Closing fence of any block. */
+    private static final String FENCE = "```";
+
+    /** Heading that opens a figure legend. */
+    private static final String LEGEND_HEADING = "**Legend**";
+
+    /** A figure caption, as every Rule 2 document in this platform writes one. */
+    private static final Pattern FIGURE_CAPTION =
+            Pattern.compile("\\*\\*Figure (\\d+) \\u2014 (.+?)\\*\\*");
+
+    /** How far above a block a caption may sit, allowing a paragraph of introduction between. */
+    private static final int CAPTION_SEARCH_LINES = 10;
+
+    /** How far below a block a legend may sit, allowing blank lines only. */
+    private static final int LEGEND_SEARCH_LINES = 3;
+
+    /** Shortest caption title that says something about the figure. */
+    private static final int MINIMUM_TITLE_LENGTH = 25;
+
     /** A backward row: a leading cell holding one repository-relative path in backticks. */
     private static final Pattern BACKWARD_ROW =
             Pattern.compile("(?m)^\\| `([^`]+)` \\|");
+
+    /** One backward row, captured as its target path and its Source provenance cell. */
+    private static final Pattern BACKWARD_PROVENANCE_ROW =
+            Pattern.compile("(?m)^\\| `([^`]+)` \\| (.*?) \\| [^|]+ \\|\\s*$");
+
+    /** A reference to one source member, as a delivered file writes it. */
+    private static final Pattern SOURCE_MEMBER_REFERENCE = Pattern.compile(
+            "app/(?:cbl|cpy|cpy-bms|jcl|csd|bms|data/ASCII|data/EBCDIC|proc|ctl|catlg)"
+                    + "/[A-Za-z0-9_.\\-]+");
+
+    /** Matches one {@code CREATE INDEX} statement of a migration and captures the index name. */
+    private static final Pattern MIGRATED_CREATE_INDEX = Pattern.compile(
+            "CREATE\\s+(?:UNIQUE\\s+)?INDEX\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?(\\w+)",
+            Pattern.CASE_INSENSITIVE);
+
+    /** Matches one {@code DROP INDEX} statement of a migration and captures the index name. */
+    private static final Pattern MIGRATED_DROP_INDEX = Pattern.compile(
+            "DROP\\s+INDEX\\s+(?:CONCURRENTLY\\s+)?(?:IF\\s+EXISTS\\s+)?(\\w+)",
+            Pattern.CASE_INSENSITIVE);
+
+    /**
+     * Matches one {@code CREATE INDEX} statement and captures its name and the table it indexes.
+     *
+     * <p>The table is needed because an index also goes away with the table it sits on, and a
+     * migration that drops a table writes no {@code DROP INDEX} for the indexes it takes with it.
+     */
+    private static final Pattern MIGRATED_CREATE_INDEX_ON = Pattern.compile(
+            "CREATE\\s+(?:UNIQUE\\s+)?INDEX\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?(\\w+)\\s+ON\\s+(\\w+)",
+            Pattern.CASE_INSENSITIVE);
+
+    /** Matches one {@code DROP TABLE} statement of a migration and captures the table name. */
+    private static final Pattern MIGRATED_DROP_TABLE = Pattern.compile(
+            "DROP\\s+TABLE\\s+(?:IF\\s+EXISTS\\s+)?(\\w+)",
+            Pattern.CASE_INSENSITIVE);
+
+    /** Matches the version a migration file name opens with. */
+    private static final Pattern MIGRATION_VERSION = Pattern.compile("^V(\\d+)__");
+
+    /**
+     * Every file this class has read, by path.
+     *
+     * <p>The checks here read the same trees repeatedly: one nested assertion walks the six services
+     * and reads every Java source under each, and several do it in turn, so a source was read once per
+     * check rather than once per run. The content cannot change while the tests run — nothing here
+     * writes a file — so the second read of a path answers what the first did.
+     *
+     * <p>A plain {@link HashMap} rather than a concurrent one, because this class declares no parallel
+     * execution and JUnit runs it on one thread. If that ever changes, this is the field to revisit.
+     */
+    private static final Map<Path, String> FILE_CONTENT = new HashMap<>();
+
+    /**
+     * The Java sources under each service's main tree, by service directory name.
+     *
+     * <p>{@link Files#walk} was called on every question asked about a service's sources. The tree
+     * does not change during a run, so it is walked once per service.
+     */
+    private static final Map<String, List<Path>> MAIN_SOURCES = new HashMap<>();
 
     /** A closure tally: the right-aligned count cell of a group row or of the total row. */
     private static final Pattern CLOSURE_TALLY =
@@ -188,6 +286,23 @@ class DocumentationContractTest {
     /** The platform README sentence stating the same two module figures. */
     private static final Pattern README_PUBLISHED_TESTS = Pattern.compile(
             "reports ([\\d,]+) Failsafe equivalence tests and ([\\d,]+) unit or contract tests");
+
+    /** One row of the per-module count table: a module path and its two figures. */
+    private static final Pattern PUBLISHED_MODULE_COUNT = Pattern.compile(
+            "(?m)^\\| `([A-Za-z0-9_/-]+)` \\| ([\\d,]+) \\| ([\\d,]+) \\|$");
+
+    /**
+     * The post-verify guard that measures what no in-build test can.
+     *
+     * <p>It reads every completed Surefire and Failsafe report, this module's own included, and holds
+     * each published figure against it. A test cannot do that from inside the build it would have to
+     * measure, which is why the script exists and why this class requires it to be present, runnable
+     * and named in both the results document and the workflow.
+     */
+    private static final String COUNT_ORACLE_SCRIPT = "scripts/check-published-test-counts.sh";
+
+    /** The workflow that has to run the guard, relative to the repository root. */
+    private static final String WORKFLOW_PATH = ".github/workflows/ci.yml";
 
     @Test
     void allSixRuleDocumentsExistAndEveryRelativeLinkResolves() {
@@ -367,8 +482,7 @@ class DocumentationContractTest {
         String architecture = read(docsDirectory().resolve("architecture-before-after.md"));
         assertTrue(architecture.contains("## Before:"));
         assertTrue(architecture.contains("## After:"));
-        assertEquals(2, count(architecture, "```mermaid"));
-        assertEquals(2, count(architecture, "**Legend**"));
+        assertFiguresAreTitledLegendedAndReferenced(architecture, "architecture-before-after.md", 2);
         assertTrue(architecture.contains("8 files, 17 mapsets, 18 programs, 18 transactions"));
         assertTrue(architecture.contains("account.state-changed"));
         assertTrue(architecture.contains("card.updated"));
@@ -391,7 +505,7 @@ class DocumentationContractTest {
                 "carddemo.dead-letter")) {
             assertTrue(flow.contains("`" + topic + "`"), topic + " must be documented");
         }
-        assertEquals(3, count(flow, "```mermaid"));
+        assertFiguresAreTitledLegendedAndReferenced(flow, "event-flow.md", 3);
         assertTrue(flow.contains("at least once"));
         assertTrue(flow.contains("Manual acknowledgement"));
         assertTrue(flow.contains("processed_event"));
@@ -521,9 +635,8 @@ class DocumentationContractTest {
     @Test
     void theDataModelContainsOneNamedEntityRelationshipViewPerService() {
         String model = read(docsDirectory().resolve("data-model.md"));
-        assertEquals(6, count(model, "```mermaid"));
+        assertFiguresAreTitledLegendedAndReferenced(model, "data-model.md", 6);
         assertEquals(6, count(model, "erDiagram"));
-        assertEquals(6, count(model, "**Legend**"));
         for (String service : List.of(
                 "Authorization database", "Ledger database", "Fraud database",
                 "Notification database", "Account database", "Card database")) {
@@ -543,7 +656,44 @@ class DocumentationContractTest {
         // The operational appendix carries every index and every named constraint, as tables. The
         // six diagram assertions above are what keeps it from being drawn as a seventh diagram.
         assertTrue(model.contains("## Operational DDL appendix"));
-        assertTrue(model.contains("45 named indexes and 117 named constraints"));
+        // Measured from the migrations rather than written here. This assertion held a literal 45
+        // while the delivered schemas carried more, because indexes were added and one section's rows
+        // were never restated: a literal makes the test agree with the document instead of with the
+        // database, so both were wrong together and nothing failed. The count applies DROP INDEX and
+        // DROP TABLE, so an index a later migration withdraws, and one whose table it drops, is not
+        // counted.
+        int migratedIndexes = migratedIndexCount();
+        assertTrue(model.contains("**" + migratedIndexes + " indexes and 132 named constraints**"),
+                "the appendix must publish the " + migratedIndexes + " indexes the migrations leave"
+                        + " behind, so a schema change restates it");
+        // Each service row is asserted as well as the total, because a total that agrees with itself
+        // while a row is wrong is the drift a review already found. The index column of each row is
+        // measured from that service's own migrations; the constraint column and the generated
+        // primary-key column are read from the catalogue and restated here.
+        int[] namedConstraints = {36, 18, 21, 14, 23, 20};
+        int[] generatedKeys = {3, 0, 0, 0, 5, 0};
+        String[] schemaNames = {"Authorization", "Ledger posting", "Fraud detection", "Notification",
+                "Account", "Card"};
+        int rowIndexTotal = 0;
+        for (int at = 0; at < SERVICES.size(); at++) {
+            int indexes = migratedIndexCount(SERVICES.get(at));
+            rowIndexTotal += indexes;
+            String heading = "### " + schemaNames[at] + " schema \u2014 " + indexes + " indexes, "
+                    + namedConstraints[at] + " named constraints";
+            assertTrue(model.contains(heading), "the appendix must carry " + heading);
+            String row = "| " + schemaNames[at] + " | " + indexes + " | " + namedConstraints[at]
+                    + " | " + generatedKeys[at] + " |";
+            assertTrue(model.contains(row), "the DDL closure table must carry " + row);
+        }
+        assertEquals(migratedIndexes, rowIndexTotal,
+                "the per-service index counts must sum to the total the appendix publishes");
+        assertTrue(model.contains("| **Total** | **" + migratedIndexes + "** | **132** | **8** |"),
+                "the closure total must be the sum of its rows");
+        // V7 drops the account card_xref replica, so no figure and no section may present it as live.
+        assertFalse(model.contains("The ninth table of this schema"));
+        assertFalse(model.contains("The account service holds its own replica"));
+        assertTrue(model.contains("`REPLICA_GAP`, added by `V12__replica_gap.sql`"));
+        assertTrue(model.contains("timestamptz dead_letter_published_at"));
         assertTrue(model.contains("## Reference data"));
     }
 
@@ -709,59 +859,57 @@ class DocumentationContractTest {
     }
 
     /**
-     * The test counts the two documents publish are the counts this build's own reports carry.
+     * Every published test count is measured, and no published figure is checked against another.
      *
-     * <p>A review found four of them stale: the module's unit total, both reactor totals, and the
-     * copy of the module total in the platform README. Nothing had asserted them, so tests added to
-     * other modules moved the real figures and the published ones stayed where they were written.
-     * The per-asset row counts never drifted, because the test above reads those off disk. This test
-     * gives the run totals the same treatment.</p>
+     * <p>A review found the previous form of this test to be algebraically self-referential. It
+     * subtracted the published module total from the published reactor total and compared the
+     * remainder with the other modules' reports, so changing both published figures by the same
+     * amount passed. The module's own integration figure was closed against a sum of another
+     * published table, which is the same defect one level down.</p>
      *
-     * <p><strong>What is measured and what is derived.</strong> Reports are counted by their
-     * {@code testcase} elements, which is the number Maven prints per module. This module is left
-     * out of the measurement because its own reports are still being written while this test runs:
-     * the unit report for this very class does not exist yet, and the integration phase has not
-     * started. So the arithmetic runs the other way — the published reactor figure minus the
-     * published module figure has to equal what the other eight modules really wrote. The module's
-     * own integration figure is closed against the per-class table instead, and the README is
-     * required to state the same two numbers as the results document.</p>
+     * <p><strong>What replaced it.</strong> The results document now carries one row per reactor
+     * module. Every module but this one is compared against <em>its own</em> reports, so a wrong
+     * figure has to be wrong against a measurement rather than against another claim. The reactor
+     * totals are then required to be the sum of those rows, which removes the only place two figures
+     * could move together.</p>
      *
-     * <p><strong>Why an absent report directory is not a failure.</strong> The continuous-integration
-     * workflow runs {@code mvn -pl equivalence-tests -am test} in one stage, which executes every
-     * module's unit tests and no integration test anywhere. A comparison that demanded integration
-     * reports would fail that stage for a reason unrelated to the documents. A report kind is
-     * therefore compared whenever any module wrote one, a kind written by some modules and not
-     * others fails naming the gap, and a kind nobody wrote is left to the closure checks above. No
-     * assumption is used, so the case count of this class does not depend on how it was invoked.</p>
+     * <p><strong>The one figure this test cannot measure, and what does.</strong> This module's own
+     * two counts are unmeasurable from inside it: the unit report for this very class does not exist
+     * while the class is running, and the integration phase of this module has not started. They are
+     * closed here against the per-class table and the platform README, and measured after the build
+     * by {@code scripts/check-published-test-counts.sh}, which reads every completed report
+     * including this module's. This test requires that script to exist, to be executable and to be
+     * named in the results document, because a guard nobody runs is not a guard.</p>
+     *
+     * <p><strong>Why an absent report directory is not a failure here.</strong> The
+     * continuous-integration workflow runs {@code mvn -pl equivalence-tests -am test} in one stage,
+     * which executes every module's unit tests and no integration test anywhere. A comparison that
+     * demanded integration reports would fail that stage for a reason unrelated to the documents. A
+     * report kind is therefore compared whenever any module wrote one, a kind written by some modules
+     * and not others fails naming the gap, and a kind nobody wrote is left to the post-verify script,
+     * which runs only where a full {@code verify} has happened.</p>
      */
     @Test
-    @DisplayName("the published test counts are the ones this build's own reports carry")
+    @DisplayName("every published test count is measured against the reports its own module wrote")
     void thePublishedTestCountsAreTheOnesThisBuildMeasured() {
         String results = read(docsDirectory().resolve("equivalence-results.md"));
         String platformReadme = read(platformDirectory().resolve("README.md"));
 
-        long publishedModuleUnit = publishedFigure(results, PUBLISHED_MODULE_UNIT_TESTS,
-                "| Surefire unit and contract tests in the same module | <count> passed |");
+        List<String> modules = aggregatedModules();
+        Map<String, long[]> publishedPerModule = publishedModuleCounts(results, modules);
+
+        // 1. The per-class Failsafe table closes against the two subtotals the document states.
         long publishedEquivalence = publishedFigure(results, PUBLISHED_EQUIVALENCE_TESTS,
                 "| Failsafe equivalence tests | <count> passed across the nine ... classes |");
         long publishedModuleIntegration = publishedFigure(results,
                 PUBLISHED_MODULE_INTEGRATION_TESTS,
                 "giving <count> for this module's whole Failsafe run");
-        Matcher reactor = PUBLISHED_REACTOR_TESTS.matcher(results);
-        assertTrue(reactor.find(),
-                "equivalence-results.md must state both reactor totals as \"The whole reactor ran"
-                        + " <count> Surefire and <count> Failsafe tests\", because this test reads"
-                        + " them from that sentence");
-        long publishedReactorUnit = number(reactor.group(1));
-        long publishedReactorIntegration = number(reactor.group(2));
-
         Map<String, Long> tallies = publishedClassTallies(results);
         long publishedEquivalenceTally = tallies.entrySet().stream()
                 .filter(entry -> entry.getKey().endsWith(EQUIVALENCE_CLASS_SUFFIX))
                 .mapToLong(Map.Entry::getValue)
                 .sum();
         long publishedWholeTally = tallies.values().stream().mapToLong(Long::longValue).sum();
-
         assertEquals(publishedEquivalence, publishedEquivalenceTally,
                 "the equivalence subtotal has to be the sum of the per-class rows that name an "
                         + EQUIVALENCE_CLASS_SUFFIX + " class. The table sums to "
@@ -770,14 +918,37 @@ class DocumentationContractTest {
                 "this module's whole Failsafe figure has to be the sum of every per-class row. The "
                         + "table sums to " + publishedWholeTally + " and the figure says "
                         + publishedModuleIntegration);
-        assertTrue(publishedReactorUnit > publishedModuleUnit,
-                "the reactor ran more unit tests than this module alone, so the reactor figure "
-                        + publishedReactorUnit + " cannot be at or below the module figure "
-                        + publishedModuleUnit);
-        assertTrue(publishedReactorIntegration >= publishedModuleIntegration,
-                "the reactor Failsafe figure " + publishedReactorIntegration + " cannot be below "
-                        + "this module's own " + publishedModuleIntegration);
 
+        // 2. This module's own row agrees with the two figures the observed-run table publishes.
+        long publishedModuleUnit = publishedFigure(results, PUBLISHED_MODULE_UNIT_TESTS,
+                "| Surefire unit and contract tests in the same module | <count> passed |");
+        long[] thisModuleRow = publishedPerModule.get(THIS_MODULE);
+        assertEquals(publishedModuleUnit, thisModuleRow[0],
+                "the per-module row for " + THIS_MODULE + " has to publish the same Surefire figure"
+                        + " as the observed-run table, which says " + publishedModuleUnit);
+        assertEquals(publishedModuleIntegration, thisModuleRow[1],
+                "and the same Failsafe figure, which the observed-run table gives as "
+                        + publishedModuleIntegration);
+
+        // 3. The reactor totals are the sum of the per-module rows, so neither can drift alone.
+        Matcher reactor = PUBLISHED_REACTOR_TESTS.matcher(results);
+        assertTrue(reactor.find(),
+                "equivalence-results.md must state both reactor totals as \"The whole reactor ran"
+                        + " <count> Surefire and <count> Failsafe tests\", because this test reads"
+                        + " them from that sentence");
+        long publishedReactorUnit = number(reactor.group(1));
+        long publishedReactorIntegration = number(reactor.group(2));
+        long rowUnitSum = publishedPerModule.values().stream().mapToLong(row -> row[0]).sum();
+        long rowIntegrationSum = publishedPerModule.values().stream().mapToLong(row -> row[1]).sum();
+        assertEquals(rowUnitSum, publishedReactorUnit,
+                "the reactor Surefire total has to be the sum of the per-module rows, which come to "
+                        + rowUnitSum + " against a published total of " + publishedReactorUnit);
+        assertEquals(rowIntegrationSum, publishedReactorIntegration,
+                "the reactor Failsafe total has to be the sum of the per-module rows, which come to "
+                        + rowIntegrationSum + " against a published total of "
+                        + publishedReactorIntegration);
+
+        // 4. The platform guide repeats this module's two figures rather than inventing its own.
         Matcher readme = README_PUBLISHED_TESTS.matcher(platformReadme);
         assertTrue(readme.find(),
                 "the platform README must state the same two module figures as \"reports <count> "
@@ -788,56 +959,90 @@ class DocumentationContractTest {
         assertEquals(publishedModuleUnit, number(readme.group(2)),
                 "the README unit figure must be the one equivalence-results.md publishes");
 
-        List<String> others = new ArrayList<>(aggregatedModules());
+        // 5. Every other module: its published row against its own reports.
+        List<String> others = new ArrayList<>(modules);
         others.remove(THIS_MODULE);
         assertFalse(others.isEmpty(), "the aggregator declares modules beside " + THIS_MODULE);
-
-        compareAgainstReports(others, UNIT_TEST_REPORTS, "Surefire",
-                publishedReactorUnit - publishedModuleUnit, publishedReactorUnit,
-                publishedModuleUnit);
+        compareAgainstReports(others, UNIT_TEST_REPORTS, "Surefire", publishedPerModule, 0);
         compareAgainstReports(others.stream().filter(
                         DocumentationContractTest::carriesIntegrationClasses).toList(),
-                INTEGRATION_TEST_REPORTS, "Failsafe",
-                publishedReactorIntegration - publishedModuleIntegration,
-                publishedReactorIntegration, publishedModuleIntegration);
+                INTEGRATION_TEST_REPORTS, "Failsafe", publishedPerModule, 1);
+
+        // 6. The post-verify oracle exists, runs, and is the one the document names.
+        Path oracle = platformDirectory().resolve(COUNT_ORACLE_SCRIPT);
+        assertTrue(Files.isRegularFile(oracle),
+                COUNT_ORACLE_SCRIPT + " must exist: it is the only check that measures this module's"
+                        + " own two figures, which no test inside this module can");
+        assertTrue(Files.isExecutable(oracle),
+                COUNT_ORACLE_SCRIPT + " must be executable, or the workflow step that runs it fails"
+                        + " for the wrong reason");
+        assertTrue(results.contains(COUNT_ORACLE_SCRIPT),
+                "equivalence-results.md must name " + COUNT_ORACLE_SCRIPT + " as the oracle behind"
+                        + " its figures, so a reader has a command rather than a claim");
+        String workflow = read(repositoryRoot().resolve(WORKFLOW_PATH));
+        assertTrue(workflow.contains(COUNT_ORACLE_SCRIPT),
+                WORKFLOW_PATH + " must run " + COUNT_ORACLE_SCRIPT + " after a verify stage, or the"
+                        + " figures are measured on a developer machine and nowhere else");
     }
 
     /**
-     * Holds one published reactor total against the reports the other modules wrote.
+     * Returns the per-module count table of the results document, one entry per reactor module.
+     *
+     * @param document the results document
+     * @param modules  module paths the aggregator declares
+     * @return Surefire count at index 0 and Failsafe count at index 1, keyed by module path
+     */
+    private static Map<String, long[]> publishedModuleCounts(String document, List<String> modules) {
+        Map<String, long[]> counts = new LinkedHashMap<>();
+        Matcher rows = PUBLISHED_MODULE_COUNT.matcher(document);
+        while (rows.find()) {
+            counts.put(rows.group(1), new long[] {number(rows.group(2)), number(rows.group(3))});
+        }
+        assertEquals(new LinkedHashSet<>(modules), counts.keySet(),
+                "equivalence-results.md must carry one per-module row for every module the"
+                        + " aggregator declares, as \"| `<module path>` | <surefire> | <failsafe> |\","
+                        + " because a module with no row is a module whose figures nothing measures");
+        return counts;
+    }
+
+    /**
+     * Holds each module's published row against the reports that module itself wrote.
+     *
+     * <p>No published figure takes part on the measured side, which is the property the previous
+     * form of this helper lacked.</p>
      *
      * @param modules         module paths to measure, this module already excluded
      * @param reportDirectory report directory to read, relative to a module directory
      * @param plugin          plugin name, for the failure message
-     * @param expected        published reactor total minus published module total
-     * @param reactorTotal    the published reactor total, for the failure message
-     * @param moduleTotal     the published module total, for the failure message
+     * @param published       the per-module table of the results document
+     * @param column          0 for the Surefire figure of a row, 1 for the Failsafe figure
      */
     private static void compareAgainstReports(List<String> modules, String reportDirectory,
-            String plugin, long expected, long reactorTotal, long moduleTotal) {
+            String plugin, Map<String, long[]> published, int column) {
         List<String> silent = new ArrayList<>();
-        long measured = 0L;
+        Map<String, Long> measured = new LinkedHashMap<>();
         for (String module : modules) {
             long cases = reportedCases(module, reportDirectory);
             if (cases < 0L) {
                 silent.add(module);
             } else {
-                measured += cases;
+                measured.put(module, cases);
             }
         }
         if (silent.size() == modules.size()) {
-            // No module reached this phase in this invocation. The closure checks above still hold.
+            // No module reached this phase in this invocation. scripts/check-published-test-counts.sh
+            // measures it after a full verify, and the closure checks above still hold here.
             return;
         }
         assertTrue(silent.isEmpty(),
                 plugin + " reports are present for some modules and absent for " + silent
-                        + ". Run the reactor rather than one module, so the published totals are"
+                        + ". Run the reactor rather than one module, so every published row is"
                         + " compared against a complete run");
-        assertEquals(expected, measured,
-                "the other modules wrote " + measured + " " + plugin + " cases in this run, so "
-                        + "equivalence-results.md must publish a reactor total of "
-                        + (measured + moduleTotal) + " beside its module total of " + moduleTotal
-                        + ". It publishes " + reactorTotal + ". Count the testcase elements under "
-                        + reportDirectory + " and restate the figure rather than editing this test");
+        measured.forEach((module, cases) -> assertEquals(cases, published.get(module)[column],
+                "the " + plugin + " row for " + module + " must publish the " + cases + " cases"
+                        + " that module's own reports carry. Count the testcase elements under "
+                        + module + "/" + reportDirectory + " and restate the figure rather than"
+                        + " editing this test"));
     }
 
     /** Returns one figure the results document publishes, or fails naming the sentence it needs. */
@@ -943,11 +1148,18 @@ class DocumentationContractTest {
      * statement of it to agree, which is what a review found stale in the citations two ledger
      * column comments carried.
      *
-     * <p>The disk anchor is deliberately narrow. Enumerating the whole tree would have to reproduce
-     * every ignore rule the working copy applies, so instead every row's path must exist and every
-     * schema migration on disk must own a row. A migration is unambiguous, is never ignored, and is
-     * the artifact a correction lands as when an applied file cannot be edited, so it is the path
-     * most likely to be added without the matrix following.
+     * <p>The disk anchor is the whole delivered tree, compared in both directions. An earlier form of
+     * this test checked only that every row's path existed and that every schema migration owned a
+     * row, on the reasoning that enumerating the tree would mean reproducing the working copy's
+     * ignore rules. It would not: git applies those rules itself, and
+     * {@code git ls-files --cached --others --exclude-standard} names exactly the delivered set. The
+     * narrow form left the count complete by luck — a review found it would pass while a delivered
+     * file carried no row, which is the one thing Rule 1's backward direction exists to prevent.
+     *
+     * <p>The {@code --others --exclude-standard} half matters and is easy to leave off. A plain
+     * {@code git ls-files} lists tracked paths only, so a file added in this session is invisible to
+     * it: at the time of writing the two commands differ by seven paths. A guard built on the plain
+     * form would report closure against a tree missing every file the session added.
      */
     @Test
     @DisplayName("the backward traceability count matches its rows, its groups and the delivered tree")
@@ -982,7 +1194,7 @@ class DocumentationContractTest {
                 "| Delivered target tree | " + counted + " tracked files |",
                 "The delivered tree holds " + counted + " tracked target paths.",
                 "Every one of the " + counted + " then appears once",
-                "reports " + counted + " tracked paths, and the tables below carry " + counted
+                "reports " + counted + " delivered paths, and the tables below carry " + counted
                         + " rows.",
                 "**Backward closure:** " + counted + " rows against " + counted
                         + " tracked paths,")) {
@@ -991,24 +1203,393 @@ class DocumentationContractTest {
                             + ", so this one has to be present: " + statement);
         }
 
-        for (String path : paths) {
-            assertTrue(Files.exists(repositoryRoot().resolve(path)),
-                    "the matrix carries a row for missing " + path);
-        }
+        Set<String> rowed = new LinkedHashSet<>(paths);
+        Set<String> delivered = deliveredPaths();
 
-        for (String service : SERVICES) {
-            Path migrations = platformDirectory().resolve("services").resolve(service)
-                    .resolve("src/main/resources/db/migration");
-            try (Stream<Path> files = Files.list(migrations)) {
-                files.filter(Files::isRegularFile)
-                        .map(file -> "card-platform/services/" + service
-                                + "/src/main/resources/db/migration/" + file.getFileName())
-                        .forEach(expected -> assertTrue(paths.contains(expected),
-                                expected + " is delivered and carries no backward row"));
-            } catch (IOException unreadable) {
-                throw new UncheckedIOException("cannot list " + migrations, unreadable);
+        List<String> unrowed = delivered.stream().filter(path -> !rowed.contains(path)).toList();
+        assertTrue(unrowed.isEmpty(),
+                "these paths are delivered and carry no backward row, so the matrix reads backward"
+                        + " from less than the whole tree and Rule 1's closure is not closed: "
+                        + unrowed);
+
+        List<String> undelivered = paths.stream().filter(path -> !delivered.contains(path)).toList();
+        assertTrue(undelivered.isEmpty(),
+                "these rows name paths the tree does not deliver, so the count is inflated by rows"
+                        + " for files that were renamed or removed: " + undelivered);
+
+        assertEquals(delivered.size(), counted,
+                "the row count and the delivered count are the same number measured two ways");
+
+        assertTrue(matrix.contains(DELIVERED_SET_COMMAND),
+                "the matrix has to name the command its figure comes from, and name the form that"
+                        + " produces it. A plain `git ls-files` omits every file added in the"
+                        + " session that wrote the matrix, so it reports a smaller number than the"
+                        + " rows below it: " + DELIVERED_SET_COMMAND);
+
+        long citing = paths.size() - withoutSourceCitation(backward).size();
+        List<String> uncited = withoutSourceCitation(backward);
+        long plainlyUncited = uncited.stream().filter(PLAIN_ABSENCE::equals).count();
+        for (String statement : List.of(
+                citing + " of the " + counted + " paths name at least one member under `app/`",
+                "the remaining " + uncited.size() + " name none",
+                "Every one of those " + uncited.size() + " cells opens with `None cited`",
+                plainlyUncited + " read `None cited in the file`",
+                "the other " + (uncited.size() - plainlyUncited) + " name the absence itself")) {
+            assertTrue(matrix.contains(statement),
+                    "the citation figures are measured from the provenance column, and this one has"
+                            + " drifted from it. A review found them stale twice, so they are bound"
+                            + " here rather than restated by hand: " + statement);
+        }
+    }
+
+    /**
+     * Returns every path this engagement delivers, as git resolves the working copy's ignore rules.
+     *
+     * @return the delivered paths, repository-root relative
+     */
+    private static Set<String> deliveredPaths() {
+        List<String> command = new ArrayList<>(List.of("git", "ls-files"));
+        command.addAll(DELIVERED_SET_ARGUMENTS);
+        try {
+            Process process = new ProcessBuilder(command)
+                    .directory(repositoryRoot().toFile())
+                    .redirectErrorStream(true)
+                    .start();
+            String output = new String(process.getInputStream().readAllBytes(),
+                    StandardCharsets.UTF_8);
+            assertEquals(0, process.waitFor(), () -> command + " failed: " + output);
+            Set<String> paths = new LinkedHashSet<>();
+            for (String line : output.split("\\R")) {
+                if (!line.isBlank()) {
+                    paths.add(line);
+                }
+            }
+            assertFalse(paths.isEmpty(), "git listed no delivered path, so nothing was compared");
+            return paths;
+        } catch (IOException unreadable) {
+            throw new UncheckedIOException("cannot run " + command, unreadable);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError("interrupted while running " + command, interrupted);
+        }
+    }
+
+    /**
+     * Returns the provenance cells of the backward section that cite no source member.
+     *
+     * @param backward the backward section
+     * @return each cell, trimmed, in row order
+     */
+    private static List<String> withoutSourceCitation(String backward) {
+        List<String> cells = new ArrayList<>();
+        for (String line : backward.split("\\R")) {
+            if (!BACKWARD_ROW.matcher(line).find()) {
+                continue;
+            }
+            String[] columns = line.split("\\|");
+            if (columns.length > 2 && !columns[2].contains("app/")) {
+                cells.add(columns[2].trim());
             }
         }
+        return cells;
+    }
+
+
+    /**
+     * Requires every Mermaid figure of one document to be titled, legended and referenced in prose.
+     *
+     * <p>Rule 2 asks for three things around a diagram, and counting fenced blocks measures none of
+     * them. A review found the event-flow guard asserting only that three blocks existed, which would
+     * pass against three untitled diagrams with no legend and no sentence pointing at them — the
+     * state Rule 2 exists to prevent. This checks each of the three properties against the figure it
+     * belongs to:</p>
+     *
+     * <ul>
+     *   <li>a caption of the form {@code **Figure N — title**} above the block, whose title is long
+     *       enough to describe the figure rather than restate its number;</li>
+     *   <li>a {@code **Legend**} block immediately after it, so a reader decoding a shape does not
+     *       have to scroll to find what the shapes mean;</li>
+     *   <li>at least one sentence outside the caption that names the figure, so no diagram is
+     *       dropped in unannounced.</li>
+     * </ul>
+     *
+     * <p>Figure numbers have to run from one without gaps or repeats, because a prose reference to
+     * "Figure 3" is ambiguous when two figures claim the number and dangling when none does.</p>
+     *
+     * @param document the whole document text
+     * @param name     the file name, for a failure message
+     * @param expected how many figures the document is required to carry
+     */
+    private static void assertFiguresAreTitledLegendedAndReferenced(String document, String name,
+            int expected) {
+        List<String> lines = List.of(document.split("\\R", -1));
+        List<Integer> blockStarts = new ArrayList<>();
+        List<Integer> blockEnds = new ArrayList<>();
+        for (int index = 0; index < lines.size(); index++) {
+            if (!lines.get(index).strip().equals(MERMAID_FENCE)) {
+                continue;
+            }
+            int close = index + 1;
+            while (close < lines.size() && !lines.get(close).strip().equals(FENCE)) {
+                close++;
+            }
+            assertTrue(close < lines.size(), name + " leaves a Mermaid block unclosed at line "
+                    + (index + 1));
+            blockStarts.add(index);
+            blockEnds.add(close);
+            index = close;
+        }
+
+        assertEquals(expected, blockStarts.size(),
+                name + " has to carry " + expected + " Mermaid figures");
+
+        List<Integer> numbers = new ArrayList<>();
+        for (int figure = 0; figure < blockStarts.size(); figure++) {
+            int start = blockStarts.get(figure);
+            int end = blockEnds.get(figure);
+
+            Matcher caption = null;
+            for (int above = start - 1; above >= 0 && above >= start - CAPTION_SEARCH_LINES;
+                    above--) {
+                Matcher candidate = FIGURE_CAPTION.matcher(lines.get(above));
+                if (candidate.matches()) {
+                    caption = candidate;
+                    break;
+                }
+            }
+            assertTrue(caption != null,
+                    name + " has a Mermaid block at line " + (start + 1) + " with no"
+                            + " `**Figure N — title**` caption above it. Rule 2 requires a"
+                            + " descriptive title on every diagram");
+            int number = Integer.parseInt(caption.group(1));
+            String title = caption.group(2).strip();
+            numbers.add(number);
+            assertTrue(title.length() >= MINIMUM_TITLE_LENGTH,
+                    name + " Figure " + number + " is captioned \"" + title + "\", which is too"
+                            + " short to describe the diagram. A title is what a reader who skips"
+                            + " the diagram takes away from it");
+
+            boolean legended = false;
+            for (int below = end + 1; below < lines.size() && below <= end + LEGEND_SEARCH_LINES;
+                    below++) {
+                if (lines.get(below).strip().isEmpty()) {
+                    continue;
+                }
+                legended = lines.get(below).strip().startsWith(LEGEND_HEADING);
+                break;
+            }
+            assertTrue(legended,
+                    name + " Figure " + number + " has no `" + LEGEND_HEADING + "` immediately"
+                            + " after its block. Rule 2 requires a legend adjacent to the figure it"
+                            + " explains, not collected elsewhere in the document");
+
+            boolean referenced = false;
+            for (int index = 0; index < lines.size() && !referenced; index++) {
+                if (insideAnyBlock(index, blockStarts, blockEnds)) {
+                    continue;
+                }
+                String line = lines.get(index);
+                if (FIGURE_CAPTION.matcher(line).matches()) {
+                    continue;
+                }
+                referenced = line.contains("Figure " + number);
+            }
+            assertTrue(referenced,
+                    name + " never refers to Figure " + number + " in prose, so the diagram is"
+                            + " dropped in unannounced. Rule 2 requires each figure to be"
+                            + " referenced by name in the text around it");
+        }
+
+        assertEquals(java.util.stream.IntStream.rangeClosed(1, expected).boxed().toList(), numbers,
+                name + " numbers its figures " + numbers + ". They have to run from one in order, or"
+                        + " a prose reference names two figures or none");
+    }
+
+    /** Reports whether one line sits inside any fenced block. */
+    private static boolean insideAnyBlock(int line, List<Integer> starts, List<Integer> ends) {
+        for (int block = 0; block < starts.size(); block++) {
+            if (line >= starts.get(block) && line <= ends.get(block)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Counts the named indexes the six delivered schemas leave behind.
+     *
+     * @return the number of named indexes across all six service schemas
+     */
+    private static int migratedIndexCount() {
+        int total = 0;
+        for (String service : SERVICES) {
+            total += migratedIndexCount(service);
+        }
+        return total;
+    }
+
+    /**
+     * Counts the named indexes one delivered schema leaves behind.
+     *
+     * <p>Read out of that service's {@code src/main/resources/db/migration} directory in version
+     * order with {@code DROP INDEX} and {@code DROP TABLE} applied, which is what the appendix of
+     * {@code data-model.md} claims to enumerate. Measuring it here is what keeps that claim honest:
+     * the figure was a literal in this test and drifted six behind the schemas without failing
+     * anything. {@code DROP TABLE} matters as much as {@code DROP INDEX}, because a migration that
+     * drops a table takes that table's indexes with it and writes no {@code DROP INDEX} for them.
+     *
+     * @param service the service module directory name
+     * @return the number of named indexes that service's schema holds
+     */
+    private static int migratedIndexCount(String service) {
+        Path migrations = platformDirectory().resolve("services").resolve(service)
+                .resolve("src/main/resources/db/migration");
+        List<Path> ordered;
+        try (Stream<Path> files = Files.list(migrations)) {
+            ordered = files.filter(Files::isRegularFile)
+                    .filter(file -> file.getFileName().toString().endsWith(".sql"))
+                    .sorted(Comparator.comparingInt(DocumentationContractTest::migrationVersion))
+                    .toList();
+        } catch (IOException unreadable) {
+            throw new UncheckedIOException("cannot list " + migrations, unreadable);
+        }
+
+        Map<String, String> present = new LinkedHashMap<>();
+        for (Path migration : ordered) {
+            String sql = read(migration);
+            Matcher createdOn = MIGRATED_CREATE_INDEX_ON.matcher(sql);
+            while (createdOn.find()) {
+                present.put(createdOn.group(1), createdOn.group(2).toLowerCase(Locale.ROOT));
+            }
+            Matcher created = MIGRATED_CREATE_INDEX.matcher(sql);
+            while (created.find()) {
+                present.putIfAbsent(created.group(1), "");
+            }
+            Matcher dropped = MIGRATED_DROP_INDEX.matcher(sql);
+            while (dropped.find()) {
+                present.remove(dropped.group(1));
+            }
+            Matcher droppedTable = MIGRATED_DROP_TABLE.matcher(sql);
+            while (droppedTable.find()) {
+                String table = droppedTable.group(1).toLowerCase(Locale.ROOT);
+                present.values().removeIf(table::equals);
+            }
+        }
+        return present.size();
+    }
+
+    /**
+     * Reads the leading version number of one migration file name, so files sort in applied order.
+     *
+     * @param migration the migration path
+     * @return the integer that follows the leading {@code V}
+     */
+    private static int migrationVersion(Path migration) {
+        Matcher version = MIGRATION_VERSION.matcher(migration.getFileName().toString());
+        assertTrue(version.find(), "a migration file name must open with a version: " + migration);
+        return Integer.parseInt(version.group(1));
+    }
+
+    /**
+     * Holds every backward row's Source provenance cell to the members its own file really names.
+     *
+     * <p>Row presence was already asserted above, and a review found that insufficient: 59 rows
+     * passed it while stating the wrong provenance. Seven said no source was cited by a file that
+     * cites one, eight named a member absent from the file, one carried a path with a trailing full
+     * stop inside the backticks, and the {@code and N more} counts disagreed with the sets they
+     * summarise. Every one of those is a Rule 1 defect rather than a typographical one, because the
+     * column is published as read out of the code.
+     *
+     * <p>The expected cell is therefore recomputed here from the bytes of the file each row names:
+     * every {@code app/<dir>/<member>} reference the file carries, discarded unless it resolves to a
+     * real file, sorted, then rendered as up to four backticked paths followed by
+     * {@code and N more}. A cell may carry one of two classifying prefixes and a row naming nothing
+     * one of four wordings; both are accepted, and the citation list behind them is what this test
+     * compares. Ordering is part of the contract, because two cells that name the same members in
+     * different orders cannot both have been generated from the file.
+     */
+    @Test
+    @DisplayName("every backward provenance cell names exactly the members its own file cites")
+    void everyBackwardProvenanceCellNamesTheMembersItsFileCites() {
+        String matrix = read(docsDirectory().resolve("traceability-matrix.md"));
+        String backward = section(matrix, "## Backward: every target path",
+                "### Backward closure arithmetic");
+
+        List<String> defects = new ArrayList<>();
+        int naming = 0;
+        int silent = 0;
+        Matcher rows = BACKWARD_PROVENANCE_ROW.matcher(backward);
+        while (rows.find()) {
+            String target = rows.group(1);
+            String cell = rows.group(2);
+            List<String> expected = citedSourceMembers(repositoryRoot().resolve(target));
+            if (expected.isEmpty()) {
+                silent++;
+                if (!cell.startsWith("None cited")) {
+                    defects.add(target + " cites no member, so its cell must open None cited: "
+                            + cell);
+                }
+                continue;
+            }
+            naming++;
+            if (cell.startsWith("None cited")) {
+                defects.add(target + " cites " + expected.size()
+                        + " member(s) and its cell claims none: " + expected);
+                continue;
+            }
+            String body = cell.contains(": `app/")
+                    ? cell.substring(cell.indexOf(": `app/") + 2)
+                    : cell;
+            assertEquals(expected, expected.stream().sorted().toList(),
+                    "the expected set is built sorted");
+            List<String> shown = expected.subList(0, Math.min(4, expected.size()));
+            String wanted = shown.stream().map(member -> '`' + member + '`')
+                    .collect(java.util.stream.Collectors.joining(", "));
+            if (expected.size() > 4) {
+                wanted += " and " + (expected.size() - 4) + " more";
+            }
+            if (!body.equals(wanted)) {
+                defects.add(target + "\n      cell: " + body + "\n      file: " + wanted);
+            }
+        }
+
+        assertEquals(deliveredPaths().size(), naming + silent,
+                "every backward row must be read, and there is one row per delivered path. A literal"
+                        + " here went stale twice as the tree grew, so the count is measured");
+        assertTrue(defects.isEmpty(),
+                "a provenance cell that disagrees with its own file is a Rule 1 defect. "
+                        + defects.size() + " row(s): " + String.join("\n   ", defects));
+        assertTrue(matrix.contains("**" + naming + " of the " + (naming + silent)
+                        + " paths name at least one member under `app/`, and the remaining " + silent
+                        + " name none.**"),
+                "the published split must be the measured one: " + naming + " and " + silent);
+    }
+
+    /**
+     * Returns the source members one delivered file names, sorted, with unresolvable paths dropped.
+     *
+     * @param file the delivered file to read
+     * @return the distinct {@code app/} members it names
+     */
+    private static List<String> citedSourceMembers(Path file) {
+        String text = read(file);
+        java.util.SortedSet<String> members = new java.util.TreeSet<>();
+        Matcher references = SOURCE_MEMBER_REFERENCE.matcher(text);
+        while (references.find()) {
+            String reference = references.group();
+            while (!reference.isEmpty()
+                    && ".,;:)]}\"'".indexOf(reference.charAt(reference.length() - 1)) >= 0) {
+                reference = reference.substring(0, reference.length() - 1);
+            }
+            String member = reference.substring(reference.lastIndexOf('/') + 1);
+            if (member.indexOf('.') < 0) {
+                continue;
+            }
+            if (Files.isRegularFile(repositoryRoot().resolve(reference))) {
+                members.add(reference);
+            }
+        }
+        return List.copyOf(members);
     }
 
     private static String section(String text, String start, String end) {
@@ -1078,6 +1659,16 @@ class DocumentationContractTest {
 
     /** Every Java source under one service's main tree. */
     private static List<Path> mainSourcesOf(String service) {
+        return MAIN_SOURCES.computeIfAbsent(service, DocumentationContractTest::walkMainSourcesOf);
+    }
+
+    /**
+     * Walks one service's main tree once, for {@link #mainSourcesOf} to remember.
+     *
+     * @param service the service directory name
+     * @return every Java source under its main tree
+     */
+    private static List<Path> walkMainSourcesOf(String service) {
         Path tree = platformDirectory().resolve("services").resolve(service)
                 .resolve("src/main/java");
         try (Stream<Path> walk = Files.walk(tree)) {
@@ -1198,10 +1789,12 @@ class DocumentationContractTest {
     }
 
     private static String read(Path file) {
-        try {
-            return Files.readString(file, StandardCharsets.UTF_8);
-        } catch (IOException unreadable) {
-            throw new UncheckedIOException("cannot read " + file, unreadable);
-        }
+        return FILE_CONTENT.computeIfAbsent(file, path -> {
+            try {
+                return Files.readString(path, StandardCharsets.UTF_8);
+            } catch (IOException unreadable) {
+                throw new UncheckedIOException("cannot read " + path, unreadable);
+            }
+        });
     }
 }

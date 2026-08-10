@@ -36,8 +36,10 @@ import tools.jackson.databind.ObjectMapper;
  * <ul>
  *   <li>{@code transaction_id CHAR(16) NOT NULL}. The primary key {@code pk_fraud_assessment}.
  *       Shape only from {@code app/cpy/CVTRA05Y.cpy:L5}.</li>
- *   <li>{@code account_id CHAR(11) NOT NULL}. Carries the index
- *       {@code ix_fraud_assessment_account}. Shape only from {@code app/cpy/CVACT03Y.cpy:L7}.</li>
+ *   <li>{@code account_id CHAR(11) NOT NULL}. Leads the index
+ *       {@code ix_fraud_assessment_account_cursor}, which continues with {@code assessed_at DESC}
+ *       and {@code transaction_id DESC} so one account's page is walked from a named position in a
+ *       total order. Shape only from {@code app/cpy/CVACT03Y.cpy:L7}.</li>
  *   <li>{@code risk_score INTEGER NOT NULL}. A whole number from 0 through 100 inclusive, and not
  *       a monetary value.</li>
  *   <li>{@code flagged BOOLEAN NOT NULL}. True when the score reached the configured threshold.</li>
@@ -80,9 +82,8 @@ import tools.jackson.databind.ObjectMapper;
 @Table(
     name = "fraud_assessment",
     indexes = {
-        @Index(name = "ix_fraud_assessment_account", columnList = "account_id"),
-        @Index(name = "ix_fraud_assessment_account_assessed_at",
-                columnList = "account_id, assessed_at DESC"),
+        @Index(name = "ix_fraud_assessment_account_cursor",
+                columnList = "account_id, assessed_at DESC, transaction_id DESC"),
         @Index(name = "ix_fraud_assessment_assessed_at", columnList = "assessed_at")
     }
 )

@@ -5,18 +5,18 @@ import com.carddemo.card.entity.OutboxEventEntity;
 import com.carddemo.card.messaging.CardUpdated;
 import com.carddemo.card.repository.OutboxEventRepository;
 import com.carddemo.cobol.PicClause;
-import com.carddemo.events.serde.EventContracts;
+import com.carddemo.events.correlation.EventCorrelation;
 import java.time.Clock;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
-import java.util.List;
 import java.util.Objects;
 import java.util.regex.Pattern;
+import org.apache.kafka.common.errors.SerializationException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
-import tools.jackson.databind.ObjectMapper;
 
 /**
  * Stores one {@code CardUpdated} event in {@code outbox_event}, and publishes nothing.
@@ -27,9 +27,11 @@ import tools.jackson.databind.ObjectMapper;
  * job that runs later.
  *
  * <p>The card row and this row commit together, or neither commits. {@link
- * #writeCardUpdated(CardEntity)} joins the transaction its caller opened and starts none, so the
- * caller owns that boundary. Neither that atomicity nor the idempotency the primary key of the
- * table carries has a COBOL ancestor.
+ * #writeCardUpdated(CardEntity)} carries {@code @Transactional(propagation = MANDATORY)}, so it
+ * joins the transaction its caller opened and cannot start one: a call arriving with no transaction
+ * in progress is refused rather than committing an outbox row on its own, which would leave an event
+ * behind with no card change under it. The caller owns that boundary. Neither that atomicity nor the
+ * idempotency the primary key of the table carries has a COBOL ancestor.
  *
  * <p>The source offers no atomicity to reproduce. {@code app/cbl/CBTRN02C.cbl:L440-L442} runs three
  * writes under no condition and tests no status between them. All eight file definitions of
@@ -91,15 +93,6 @@ public class OutboxWriter {
     private final OutboxEventRepository outboxEvents;
 
     /**
-     * Writes one event to JavaScript Object Notation (JSON) text. Jackson 3, matching the platform.
-     *
-     * <p>The mapper belongs to this class. A payload is therefore shaped by the contract of its own
-     * event, and by no setting of the web layer. {@code messaging/KafkaEventPublisher} owns its
-     * mapper on the same footing.
-     */
-    private final ObjectMapper objectMapper = new ObjectMapper();
-
-    /**
      * Stamps {@code created_at}, in Coordinated Universal Time.
      *
      * <p>The relay reads unpublished rows oldest first, so one zone governs every row.
@@ -127,9 +120,11 @@ public class OutboxWriter {
      * {@code app/cbl/COCRDUPC.cbl:L1511} sets {@code DATA-WAS-CHANGED-BEFORE-UPDATE} on a
      * conflict.
      *
-     * <p>{@code @Transactional} carries the default propagation, so this method joins the
-     * transaction its caller opened and starts none of its own. A failure anywhere in that unit of
-     * work leaves no row.
+     * <p>{@code @Transactional(propagation = MANDATORY)} makes the caller's transaction a
+     * precondition: this method joins it and starts none of its own, and a call made with no
+     * transaction in progress raises
+     * {@link org.springframework.transaction.IllegalTransactionStateException} before any row is
+     * built. A failure anywhere in that unit of work leaves no row.
      *
      * <p>Four payload values come from the card, and the event stamps its own identifier, type,
      * contract version and moment. The row takes that event identifier as its primary key, so one
@@ -146,8 +141,10 @@ public class OutboxWriter {
      *                                  no expiry date
      * @throws IllegalArgumentException when the card carries no eleven-digit account identifier, or
      *                                  when the written payload breaks its contract document
+     * @throws org.springframework.transaction.IllegalTransactionStateException when no transaction is
+     *                                  in progress
      */
-    @Transactional
+    @Transactional(propagation = Propagation.MANDATORY)
     public OutboxEventEntity writeCardUpdated(CardEntity card) {
         Objects.requireNonNull(card, "card must be present");
 
@@ -156,11 +153,36 @@ public class OutboxWriter {
                 expirationTextOf(card.getExpirationDate()), card.getActiveStatus());
         String payload = writeAndCheck(event);
 
-        OutboxEventEntity row = outboxEvents.save(new OutboxEventEntity(event.eventId(),
-                event.eventType(), event.aggregateId(), payload, clock.instant()));
+        OutboxEventEntity row = outboxEvents.save(correlated(new OutboxEventEntity(
+                event.eventId(), event.eventType(), event.aggregateId(), payload,
+                clock.instant())));
 
         log.info("Stored card event {} of type {}, payload length {}", row.getEventId(),
                 row.getEventType(), payload.length());
+        return row;
+    }
+
+    /**
+     * Stamps one row with the two correlation identifiers the writing thread is working under.
+     *
+     * <p>ADDITIVE. The values come from the ambient scope
+     * {@code config/CorrelationContextFilter} or the listener opened, rather than from a parameter,
+     * so no domain method between that scope and this writer carries an identifier it does not
+     * otherwise use.
+     *
+     * <p>A row written outside any scope starts its own trace: it adopts its own event identifier
+     * as the correlation identifier, so every published record carries one and a reader can always
+     * join a record to what followed it. Causation stays absent on such a row, because nothing
+     * caused it, and an absent causation contributes no record header when
+     * {@code outbox/OutboxRelay} publishes the row.
+     *
+     * @param row the row about to be saved
+     * @return the same row, stamped
+     */
+    private static OutboxEventEntity correlated(OutboxEventEntity row) {
+        row.recordCorrelation(
+                EventCorrelation.currentCorrelationId().orElseGet(row::getEventId),
+                EventCorrelation.currentEventId().orElse(null));
         return row;
     }
 
@@ -211,32 +233,37 @@ public class OutboxWriter {
     }
 
     /**
-     * Writes one event to text and measures that text against its contract document.
+     * Writes one event to text through the one publish-side gate every event of this platform
+     * passes.
      *
-     * <p>{@link EventContracts} holds the one registry pairing an event type with its schema
-     * document. The check runs before the row is saved, so a payload the contract refuses leaves
-     * the caller's transaction able to roll back with nothing stored.
+     * <p>{@link CardUpdated#toValidatedJson()} does the work. It serializes through
+     * {@code com.carddemo.events.serde.JsonSchemaValidatingSerializer}, which screens the document
+     * for a forbidden property and for a card number or government identifier in free text, checks
+     * it against {@code card-updated-v1.json}, and refuses one past the platform byte ceiling. The
+     * check runs before the row is saved, so a payload the contract refuses leaves the caller's
+     * transaction able to roll back with nothing stored.
      *
      * <p>The document is flat. Five envelope properties sit beside four payload properties, and
-     * {@code card-updated-v2.json} names all nine in one {@code required} array. That document
+     * {@code card-updated-v1.json} names all nine in one {@code required} array. That document
      * closes its property set, so an undeclared property fails this check.
      *
-     * <p>A refusal message holds JSON pointers and broken keywords, so no card number and no
-     * account identifier reaches a log through it. {@link OutboxEventEntity} holds the stored text
-     * to the width of its own column and never shortens it.
+     * <p>The gate reports a refusal as a {@code SerializationException}, which names a Kafka
+     * concern this transaction has not reached: nothing is published here, and the caller is a
+     * request handler. This method therefore reports the same refusal as an
+     * {@link IllegalArgumentException}, keeping the cause. Every message the gate writes holds JSON
+     * pointers, broken keywords and property names, so no card number and no account identifier
+     * reaches a log through it. {@link OutboxEventEntity} holds the stored text to the width of its
+     * own column and never shortens it.
      *
      * @param event the event to write
-     * @return the event as JSON text
+     * @return the event as JSON text, validated
      * @throws IllegalArgumentException when the written payload breaks its contract document
      */
     private String writeAndCheck(CardUpdated event) {
-        String payload = objectMapper.writeValueAsString(event);
-
-        List<String> violations = EventContracts.violationsOf(event.eventType(), payload);
-        if (!violations.isEmpty()) {
-            throw new IllegalArgumentException(
-                    EventContracts.describeViolations(event.eventType(), violations));
+        try {
+            return event.toValidatedJson();
+        } catch (SerializationException refused) {
+            throw new IllegalArgumentException(refused.getMessage(), refused);
         }
-        return payload;
     }
 }

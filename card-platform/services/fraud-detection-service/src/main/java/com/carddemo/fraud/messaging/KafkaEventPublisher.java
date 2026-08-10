@@ -1,5 +1,7 @@
 package com.carddemo.fraud.messaging;
 
+import com.carddemo.events.correlation.EventCorrelation;
+import org.apache.kafka.clients.producer.ProducerRecord;
 import static com.carddemo.fraud.messaging.EventPublisherPort.AGGREGATE_ID_PATTERN;
 
 import java.util.LinkedHashMap;
@@ -95,7 +97,30 @@ public class KafkaEventPublisher implements EventPublisherPort {
                             : "holds " + aggregateId.length() + " characters"));
         }
         LOG.debug("Publishing a {} to topic {}", event.getClass().getSimpleName(), topic);
-        return kafkaTemplate.send(topic, aggregateId, event).thenApply(acknowledged -> null);
+        return kafkaTemplate.send(correlatedRecord(topic, aggregateId, event))
+                .thenApply(acknowledged -> null);
+    }
+
+    /**
+     * Builds the record one send carries, attaching the two correlation identifiers of the row.
+     *
+     * <p>ADDITIVE. The identifiers travel as record headers rather than as payload properties,
+     * because AAP 0.3.1 fixes the event envelope at five properties and every schema document closes
+     * its top-level property set. The values come from the ambient scope the relay opened for the
+     * row, so a header is present exactly when the row recorded one.
+     *
+     * @param topic       the destination topic
+     * @param aggregateId the message key
+     * @param payload     the value to send
+     * @param <V>         the value type of the template this record is sent through
+     * @return the record to send, carrying no header for an identifier the row did not record
+     */
+    private static <V> ProducerRecord<String, V> correlatedRecord(String topic,
+            String aggregateId, V payload) {
+        return new ProducerRecord<>(topic, null, aggregateId, payload,
+                EventCorrelation.headersFor(
+                        EventCorrelation.currentCorrelationId().orElse(null),
+                        EventCorrelation.currentCausationId().orElse(null)));
     }
 
     /**

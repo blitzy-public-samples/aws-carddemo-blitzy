@@ -27,7 +27,7 @@ import java.util.UUID;
  * {@code app/cbl/CBTRN02C.cbl:L545-L560}, which the source runs once per record of a nightly file
  * and this service runs once per event.</p>
  *
- * <p><b>Why the topic is part of the identity.</b> This service reads one topic today, so no
+ * <p><b>The topic is part of the identity.</b> This service reads one topic today, so no
  * delivery here can currently collide with another topic's. The key names the topic anyway, because
  * an event identifier is assigned by the service that publishes the event and different producing
  * services assign them independently: the identifier alone stops identifying a delivery the moment a

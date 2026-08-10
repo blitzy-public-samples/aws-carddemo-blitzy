@@ -87,7 +87,10 @@ spec:
             # MANAGEMENT_PORT in 30-configmap.yaml. No Service exposes 9080.
             # 30-configmap.yaml encrypts both ports through SERVER_SSL_ENABLED and
             # MANAGEMENT_SSL_ENABLED.
-            - name: http
+            # Named https, not http: 30-configmap.yaml sets SERVER_SSL_ENABLED, so
+            # what answers on 8080 is Transport Layer Security. A port name is
+            # metadata other tooling reads, and `http` told it the wrong protocol.
+            - name: https
               containerPort: 8080
             - name: management
               containerPort: 9080
@@ -283,10 +286,16 @@ spec:
     app.kubernetes.io/part-of: card-platform
   ports:
     # 8080 alone. A monitoring collector reaches 9080 by Pod address.
-    - name: http
+    - name: https
       port: 8080
-      targetPort: 8080
+      # By name rather than by number, so the Service follows the container port
+      # this Deployment declares instead of repeating its value. 10-kafka.yaml
+      # already targets `internal` the same way.
+      targetPort: https
       protocol: TCP
+      # The protocol the port speaks, declared where protocol-aware tooling reads
+      # it. protocol: TCP is the transport; appProtocol is the application layer.
+      appProtocol: https
 ---
 # Network policy for the ledger posting pod. Ingress admits its query and
 # management surfaces. Egress admits only Domain Name System (DNS), PostgreSQL

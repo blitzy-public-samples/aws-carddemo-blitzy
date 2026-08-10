@@ -10,6 +10,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.carddemo.authorization.AuthorizationApplication;
+import com.carddemo.authorization.AuthorizationServiceDatabase;
 import com.carddemo.authorization.TestIdentityPasswords;
 import com.carddemo.authorization.api.AuthorizationRequest;
 import com.carddemo.authorization.config.AuthorizationProperties;
@@ -21,6 +22,7 @@ import com.carddemo.authorization.entity.OutboxEventEntity;
 import com.carddemo.authorization.messaging.DeadLetterMetadata;
 import com.carddemo.authorization.messaging.EventPublisherPort;
 import com.carddemo.authorization.repository.OutboxEventRepository;
+import com.carddemo.cobol.PanMasker;
 import com.carddemo.cobol.PicClause;
 import com.carddemo.events.DeclineReason;
 import com.carddemo.events.TransactionAuthorized;
@@ -64,9 +66,9 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 import org.springframework.test.context.ContextConfiguration;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.transaction.IllegalTransactionStateException;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
-import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 import tools.jackson.databind.JsonNode;
@@ -117,12 +119,6 @@ import tools.jackson.databind.node.ObjectNode;
 @ContextConfiguration(classes = OutboxRelayTest.RecordingPublisherConfiguration.class)
 @DisplayName("The authorization outbox: one row per call, sent after that row has committed")
 class OutboxRelayTest {
-
-    /** Image tag of the database container, matching the shipped compose stack. */
-    private static final String POSTGRES_IMAGE = "postgres:18.4";
-
-    /** Database name, login name and password of the container, one value for all three. */
-    private static final String CONTAINER_CREDENTIAL = "carddemo";
 
     /** Schema Flyway migrates, and the one the connection search path names. */
     private static final String MIGRATED_SCHEMA = "authorization_service";
@@ -263,15 +259,13 @@ class OutboxRelayTest {
 
     private static final JsonMapper MAPPER = JsonMapper.builder().build();
 
-    private static final PostgreSQLContainer POSTGRES;
-
-    static {
-        POSTGRES = new PostgreSQLContainer(POSTGRES_IMAGE)
-                .withDatabaseName(CONTAINER_CREDENTIAL)
-                .withUsername(CONTAINER_CREDENTIAL)
-                .withPassword(CONTAINER_CREDENTIAL);
-        POSTGRES.start();
-    }
+    /**
+     * The one container the module fork runs, which this class reads a login from.
+     *
+     * <p>{@link AuthorizationServiceDatabase} owns it and hands this class a database of its own inside it.
+     * Nothing here starts or stops a container.
+     */
+    private static final PostgreSQLContainer POSTGRES = AuthorizationServiceDatabase.container();
 
     /**
      * Points the datasource at the container and the broker client at nothing.
@@ -290,9 +284,7 @@ class OutboxRelayTest {
      * @return the connection string each unqualified statement here resolves its tables through
      */
     private static String migratedSchemaUrl() {
-        String url = POSTGRES.getJdbcUrl();
-        String separator = url.contains("?") ? "&" : "?";
-        return url + separator + "currentSchema=" + MIGRATED_SCHEMA;
+        return AuthorizationServiceDatabase.urlFor(OutboxRelayTest.class);
     }
 
     /**
@@ -863,13 +855,13 @@ class OutboxRelayTest {
         }
 
         /**
-         * Each write operation joins the transaction it finds.
+         * Each write operation requires the caller's transaction and starts none.
          *
          * @throws NoSuchMethodException never, since both methods are declared
          */
         @Test
-        @DisplayName("each write operation joins the transaction it finds")
-        void eachWriteOperationJoinsTheTransactionItFinds() throws NoSuchMethodException {
+        @DisplayName("each write operation requires the caller's transaction and starts none")
+        void eachWriteOperationRequiresTheCallersTransaction() throws NoSuchMethodException {
             Transactional approval = OutboxWriter.class
                     .getMethod("writeAuthorized", TransactionAuthorized.class)
                     .getAnnotation(Transactional.class);
@@ -878,10 +870,30 @@ class OutboxRelayTest {
                     .getAnnotation(Transactional.class);
 
             for (Transactional annotation : List.of(approval, decline)) {
-                assertEquals(Propagation.REQUIRED, annotation.propagation(),
+                assertEquals(Propagation.MANDATORY, annotation.propagation(),
                         "the write joins the caller's transaction and opens none of its own");
                 assertFalse(annotation.readOnly(), "the operation writes a row");
             }
+        }
+
+        /**
+         * A write with no transaction in progress is refused rather than committing alone.
+         *
+         * <p>{@code MANDATORY} is what makes the atomicity of the decision and its event a property
+         * the container holds. Under {@code REQUIRED} this call would have committed an outbox row
+         * with no decision behind it.
+         */
+        @Test
+        @DisplayName("a write with no transaction in progress is refused")
+        void aWriteWithNoTransactionInProgressIsRefused() {
+            assertThrows(IllegalTransactionStateException.class,
+                    () -> outboxWriter.writeAuthorized(approval(AMOUNT)),
+                    "an approval row cannot be committed outside the decision transaction");
+            assertThrows(IllegalTransactionStateException.class,
+                    () -> outboxWriter.writeDeclined(TransactionDeclined.ofUnresolvedAccount(
+                            "0000000000000001", AMOUNT,
+                            PanMasker.maskCardNumber(APPROVING_CARD_NUMBER))),
+                    "and neither can a decline row");
         }
 
         /**
@@ -1388,7 +1400,6 @@ class OutboxRelayTest {
     }
 
 
-    /** The document the payload column holds, read back from the row a call committed. */
     /**
      * Holds what happens to a row this relay gives up on.
      *
@@ -1614,10 +1625,10 @@ class OutboxRelayTest {
         @Test
         @DisplayName("money travels as a decimal string truncated toward zero, on both signs")
         void moneyTravelsAsADecimalStringTruncatedTowardZero() {
-            UUID positive = outboxWriter.writeAuthorized(approval(new BigDecimal("504.779")))
-                    .getEventId();
-            UUID negative = outboxWriter.writeAuthorized(approval(new BigDecimal("-504.779")))
-                    .getEventId();
+            UUID positive = transactionTemplate.execute(status ->
+                    outboxWriter.writeAuthorized(approval(new BigDecimal("504.779"))).getEventId());
+            UUID negative = transactionTemplate.execute(status ->
+                    outboxWriter.writeAuthorized(approval(new BigDecimal("-504.779"))).getEventId());
 
             JsonNode up = payloadOf(positive);
             JsonNode down = payloadOf(negative);

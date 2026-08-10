@@ -185,6 +185,9 @@ final class TransactionAuthorizedConsumerTest {
     /** Counter of the events read, after {@code app/cbl/CBTRN02C.cbl:L206}. */
     private static final String CONSUMED_METER = "carddemo.ledger.events.consumed";
 
+    /** Counter of the category-balance stores that lost their high-order digits. */
+    private static final String WRAPPED_METER = "carddemo.ledger.category.balance.wrapped";
+
     /** Timer of one delivery. ADDITIVE, since the source times nothing. */
     private static final String LATENCY_METER = "carddemo.ledger.processing.latency";
 
@@ -295,7 +298,17 @@ final class TransactionAuthorizedConsumerTest {
             journal.add(POST);
             postedEvent = invocation.getArgument(0);
             postedKey = invocation.getArgument(1);
-            return null;
+            return false;
+        }).when(postingService).postTransaction(any(TransactionAuthorized.class), anyString());
+    }
+
+    /** Journals each posting and reports that the category-balance store wrapped. */
+    private void recordPostingsThatWrap() {
+        doAnswer(invocation -> {
+            journal.add(POST);
+            postedEvent = invocation.getArgument(0);
+            postedKey = invocation.getArgument(1);
+            return true;
         }).when(postingService).postTransaction(any(TransactionAuthorized.class), anyString());
     }
 
@@ -1101,6 +1114,78 @@ final class TransactionAuthorizedConsumerTest {
         @Override
         public void rollback(TransactionStatus status) {
             journal.add(ROLLBACK);
+        }
+    }
+
+    /**
+     * What a category-balance store that wrapped past its field reports.
+     *
+     * <p>The store is reproduced rather than prevented: {@code app/cbl/CBTRN02C.cbl:L508} and
+     * {@code :L527} carry an {@code ADD} with no {@code ON SIZE ERROR} phrase, so a sum past nine
+     * integer digits keeps its low-order nine. That reproduction used to be silent at runtime, which
+     * left a balance wrong by a known amount and nothing saying so.
+     *
+     * <p>The count and the line are taken after the transaction commits, so neither claims a stored
+     * balance a rollback would have removed.
+     */
+    @Nested
+    @DisplayName("a category-balance store that wrapped past its field")
+    class WrappedCategoryBalance {
+
+        @Test
+        @DisplayName("is counted once, after the commit")
+        void isCountedOnceAfterTheCommit() {
+            recordPostingsThatWrap();
+
+            consumer.onTransactionAuthorized(anEvent(), ACCOUNT_ID, TOPIC, acknowledgment);
+
+            assertEquals(1.0D, registry.get(WRAPPED_METER).counter().count(),
+                    "the wrap is counted once for the one delivery that performed it");
+            assertEquals(List.of(BEGIN, POST, SAVE, COMMIT, ACK), journal,
+                    "the count is taken after the commit, so it adds nothing to the journal and"
+                            + " nothing before it");
+        }
+
+        @Test
+        @DisplayName("moves no other series, so a posting still reads as one posting")
+        void movesNoOtherSeries() {
+            recordPostingsThatWrap();
+
+            consumer.onTransactionAuthorized(anEvent(), ACCOUNT_ID, TOPIC, acknowledgment);
+
+            assertEquals(1.0D, counter(OUTCOME_METER, "outcome", "posted").count(),
+                    "a wrapped store is still one posting applied");
+            assertEquals(0.0D, counter(OUTCOME_METER, "outcome", "rejected").count(),
+                    "a wrap is not a reject");
+            assertEquals(0.0D, registry.get(FAILURE_METER).tag("stage", "process").counter().count(),
+                    "a wrap is not a fault, because the source stores the same value");
+        }
+
+        @Test
+        @DisplayName("is reported without an account identifier, an amount or a balance")
+        void isReportedWithoutAnIdentifierOrAValue(CapturedOutput consoleOutput) {
+            recordPostingsThatWrap();
+
+            consumer.onTransactionAuthorized(anEvent(), ACCOUNT_ID, TOPIC, acknowledgment);
+
+            String all = consoleOutput.getAll();
+            assertTrue(all.contains("kept the low-order nine"),
+                    "the reader is told the store wrapped");
+            assertFalse(all.contains(ACCOUNT_ID),
+                    "and is told it without the account identifier");
+            assertFalse(all.contains(AMOUNT.toPlainString()),
+                    "and without the amount");
+        }
+
+        @Test
+        @DisplayName("reports nothing when the store stayed inside the field")
+        void reportsNothingWhenTheStoreStayedInsideTheField(CapturedOutput consoleOutput) {
+            consumer.onTransactionAuthorized(anEvent(), ACCOUNT_ID, TOPIC, acknowledgment);
+
+            assertEquals(0.0D, registry.get(WRAPPED_METER).counter().count(),
+                    "an ordinary store moves this series not at all");
+            assertFalse(consoleOutput.getAll().contains("kept the low-order nine"),
+                    "and writes no line");
         }
     }
 }

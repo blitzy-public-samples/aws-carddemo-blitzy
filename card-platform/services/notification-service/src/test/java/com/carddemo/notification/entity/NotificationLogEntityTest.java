@@ -11,6 +11,7 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
+import com.carddemo.events.EventEnvelope;
 import jakarta.persistence.Column;
 import jakarta.persistence.EmbeddedId;
 import jakarta.persistence.Entity;
@@ -1002,6 +1003,89 @@ final class NotificationLogEntityTest {
             assertEquals(declared.size() * FORBIDDEN_FRAGMENTS.size(), checks.size(),
                     "every fragment is checked against every declared name");
             assertAll("forbidden fragments over every declared name", checks);
+        }
+    }
+
+    /**
+     * What {@link NotificationLogEntity#toString()} may render.
+     *
+     * <p>The decision recorded as "Report a card token as present or withheld in a log rendering,
+     * never in full" in {@code card-platform/docs/decision-log.md} binds this rendering, and it
+     * rejected both alternatives by name: rendering the token, and rendering a prefix of it. The
+     * token discloses no card number, and it names one card for as long as its key stands, so a log
+     * line carrying it or any prefix of it lets a reader of that log follow that card across every
+     * request that touched it.
+     *
+     * <p>Nothing in this service logs the entity today, so the disclosure this guards against is
+     * latent rather than live. That is exactly why it is worth a test: the rendering is what a
+     * future debug or structured log line would emit, and it would emit it without anyone deciding
+     * to.
+     */
+    @Nested
+    @DisplayName("The card token in a log rendering")
+    class LogRendering {
+
+        /** A token whose every character differs from the mask and the padding of other fields. */
+        private static final String TOKEN = "9f3c1a".repeat(10) + "abcd";
+
+        /** Shortest prefix worth refusing. A keyed code is linkable from a few characters. */
+        private static final int SHORTEST_PREFIX = 4;
+
+        /** One row carrying {@link #TOKEN}. */
+        private static NotificationLogEntity row() {
+            return new NotificationLogEntity(UUID.randomUUID(), TOKEN, "*".repeat(12) + "1234",
+                    "0".repeat(TRANSACTION_ID_WIDTH), "PLAIN_TEXT", Instant.EPOCH);
+        }
+
+        @Test
+        @DisplayName("the rendering carries neither the token nor any prefix of it")
+        void theRenderingCarriesNeitherTheTokenNorAnyPrefixOfIt() {
+            String rendered = row().toString();
+
+            List<Executable> checks = new ArrayList<>();
+            checks.add(() -> assertFalse(rendered.contains(TOKEN),
+                    "the rendering carries the whole card token: " + rendered));
+            for (int width = TOKEN.length(); width >= SHORTEST_PREFIX; width--) {
+                String prefix = TOKEN.substring(0, width);
+                checks.add(() -> assertFalse(rendered.contains(prefix),
+                        "the rendering carries the first " + prefix.length()
+                                + " characters of the card token. A prefix of a keyed code is as "
+                                + "linkable as the whole of it, and the decision log rejected "
+                                + "rendering one by name"));
+            }
+            assertEquals(TOKEN.length() - SHORTEST_PREFIX + 2, checks.size(),
+                    "the whole token and every prefix down to " + SHORTEST_PREFIX
+                            + " characters are checked");
+            assertAll("the card token in " + rendered, checks);
+        }
+
+        @Test
+        @DisplayName("the token position reports the withheld marker every record of this platform "
+                + "uses")
+        void theTokenPositionReportsTheWithheldMarker() {
+            String rendered = row().toString();
+
+            assertTrue(rendered.contains("cardToken=" + EventEnvelope.WITHHELD),
+                    "the rendering must report the token as present and withhold its value, using "
+                            + "the one marker every record and entity of this platform uses: "
+                            + rendered);
+        }
+
+        @Test
+        @DisplayName("every other field still renders, so a row stays diagnosable")
+        void everyOtherFieldStillRenders() {
+            NotificationLogEntity row = row();
+            String rendered = row.toString();
+
+            assertAll("the fields a rendering may carry",
+                    () -> assertTrue(rendered.contains(row.getId().toString()), "id"),
+                    () -> assertTrue(rendered.contains(row.getMaskedCardNumber()),
+                            "the card number is already masked, so it renders"),
+                    () -> assertTrue(rendered.contains(row.getTransactionId()),
+                            "the transaction identifier is how an operator locates a row"),
+                    () -> assertTrue(rendered.contains(row.getChannel()), "channel"),
+                    () -> assertTrue(rendered.contains(NotificationLogEntity.RENDERED_NOT_SENT),
+                            "outcome"));
         }
     }
 

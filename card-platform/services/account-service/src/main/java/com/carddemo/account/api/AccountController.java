@@ -5,6 +5,7 @@ import com.carddemo.account.api.dto.AccountUpdateRequest;
 import com.carddemo.account.api.dto.AccountUpdateResponse;
 import com.carddemo.account.api.dto.AccountView;
 import com.carddemo.account.api.dto.CustomerDataRequest;
+import com.carddemo.account.domain.AccountUpdateOutcome;
 import com.carddemo.account.domain.AccountUpdateService;
 import com.carddemo.account.domain.ConcurrentChangeDetector;
 import com.carddemo.account.domain.validation.EditResult;
@@ -273,13 +274,13 @@ public class AccountController {
             return problem(HttpStatus.NOT_FOUND, ApiProblem.NOT_FOUND, ApiProblem.NOT_FOUND_DETAIL);
         }
 
-        EditResult verdict = accountUpdates.updateAccount(
+        AccountUpdateOutcome outcome = accountUpdates.updateAccount(
                 accountOverStored(accountId, accountData, storedAccount.get()),
                 customerOverStored(customerData, storedCustomer.get()),
                 fetchedCopy(accountId, storedAccount.get()),
                 fetchedCopy(storedCustomer.get()));
 
-        return answerOf(verdict, accountId);
+        return answerOf(outcome);
     }
 
     /**
@@ -291,19 +292,22 @@ public class AccountController {
      * failing verdict is a lost race or a refused field, and the two answer different statuses: a
      * caller retries the first and corrects the second.
      *
-     * <p>The account this response carries is read again, so a caller reads the row as it now
-     * stands.
+     * <p>The account this response carries is the snapshot the service read off the row inside the
+     * transaction that wrote it. It is not read again here. A second read would issue another
+     * statement to answer a question the transaction had already answered, and it would answer it as
+     * of a later instant, so it was never the more truthful of the two.
      *
-     * @param verdict   what the service answered
-     * @param accountId the account the call named
+     * @param outcome what the service answered: the verdict, and the account as the transaction
+     *                left it
      * @return the response, carrying one message
      */
-    private ResponseEntity<?> answerOf(EditResult verdict, String accountId) {
+    private ResponseEntity<?> answerOf(AccountUpdateOutcome outcome) {
+        EditResult verdict = outcome.verdict();
         if (verdict.valid()) {
             String message = verdict.hasMessage() ? verdict.message() : UPDATE_APPLIED_MESSAGE;
-            AccountView account = accounts.findByAccountId(accountId)
-                    .map(AccountRecordMapper::viewOf)
-                    .orElse(null);
+            AccountView account = outcome.account() == null
+                    ? null
+                    : AccountRecordMapper.viewOf(outcome.account());
             LOG.info("An account update answered its caller");
             return ResponseEntity.ok(new AccountUpdateResponse(message, account));
         }

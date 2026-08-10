@@ -15,12 +15,15 @@
 # app/csd/CARDDEMO.CSD:L367-L369 updates it, so each is still one addressable resource. A
 # path reaches an access log, a reverse proxy log, a distributed trace and a browser
 # history, and none of those is reachable by this application's redaction, so a full
-# Primary Account Number (PAN) does not go there. The token is a keyed one-way code over
+# Primary Account Number (PAN) does not go there. The token is a keyed code derived from
 # the number, held by column card_token under a unique constraint, so it reaches at most
 # one row; api/CardController resolves it to that row and the number never leaves this
 # service. No route carries a card number in a query string either: the list route filters
-# by account alone, and its paging cursor travels in a request header as the irreversible
-# card token of a row.
+# by account alone, and its paging cursor travels in a request header as the keyed card
+# token of a row. That token is a stable pseudonym rather than an irreversible digest: the
+# same card always yields the same token, so two records are linkable, and a holder of
+# CARD_TOKEN_SECRET can recompute it for any candidate number. It is protected like the
+# number it stands for.
 #
 # Every card number that leaves this service is masked. api/dto/CardSummary and
 # api/dto/CardDetailResponse both refuse an unmasked value in their own constructors.
@@ -154,8 +157,9 @@ paths:
           in: header
           required: false
           description: >-
-            The paging position from a previous response: the 64-character,
-            irreversible card token of one row. The read side resolves it to the
+            The paging position from a previous response: the 64-character keyed
+            card token of one row, a stable pseudonym rather than an irreversible
+            digest. The read side resolves it to the
             source browse key without publishing the full card number. Omit it
             to ask for the first page going forward or the last page going back.
           schema:
@@ -196,8 +200,7 @@ paths:
 
 
             A parameter that arrives carrying no characters is a value the caller
-            sent, so it is refused rather than read as absent, and it reads
-            "Page size must be a whole number" as any other value that is no whole
+            sent, so it is refused rather than read as absent. It reads "Page size must be a whole number" as any other value that is no whole
             number does.
           schema:
             type: integer
@@ -252,7 +255,7 @@ paths:
             "Page size falls outside the range this list admits". One that is no
             number at all, such as pageSize=abc, reads
             "Page size must be a whole number": the row count is the one request
-            value of this service that is not text, so it is converted before any
+            value of this service that is not text. It is converted before any
             constraint on it can run and a conversion that fails reaches no
             constraint. Both are additive, because the source screen held its row
             count as the compile-time constant WS-MAX-SCREEN-LINES at
@@ -262,7 +265,7 @@ paths:
             A parameter naming an empty value is refused rather than read as
             absent, for the direction and for the row count alike. An empty
             direction reads the direction text and an empty row count reads
-            "Page size must be a whole number", so a caller learns that the value
+            "Page size must be a whole number". A caller then learns that the value
             it sent was not usable instead of reading a 200 that states nothing
             about what it did.
 
@@ -454,9 +457,7 @@ paths:
 
           No card number appears in this path. A path is written to an access log by
           the container, to a proxy log by whatever sits in front of it, into a
-          distributed trace as the span name, and into a browser history by the
-          client, and none of those is reachable by this application's redaction, so
-          masking a number in a response body while putting it in the request line
+          distributed trace as the span name, and into a browser history by the client. None of those is reachable by this application's redaction. Masking a number in a response body while putting it in the request line
           would minimise nothing. api/CardController resolves the token to the row
           and hands the number it holds to the update service, so the full number
           never leaves this service. card-platform/docs/decision-log.md records the
@@ -482,7 +483,7 @@ paths:
               reader who pastes it is answered 404 rather than reaching a row. Three
               places carry one that does: the nextCursor member of a GET /cards page,
               which is the token of that page's last card; a SCOPE_CARD_ authority the
-              deployment granted the caller; and the derivation
+              deployment granted the caller. The third is the derivation
               card-platform/docs/onboarding.md gives, which takes the code over the
               number under the configured key.
             value: '0000000000000000000000000000000000000000000000000000000000000000'
@@ -502,7 +503,7 @@ paths:
         app/cbl/COCRDSLC.cbl:L740 and reads the card file by it at
         app/cbl/COCRDSLC.cbl:L742-L750. The account move above the key at
         app/cbl/COCRDSLC.cbl:L739 is commented out, so one card value is the whole
-        key and this route reads by one card value too: the token, which carries a
+        key and this route reads by one card value too. That value is the token, which carries a
         unique constraint and selects the same single row. No account accompanies
         the card and no relationship between the two is tested. The masked number in
         the response is derived from the number the row holds, not from the path.
@@ -528,8 +529,9 @@ paths:
           description: >-
             The card. The card number is masked, and the embossed name arrives at
             the fifty-character width CARD-EMBOSSED-NAME PIC X(50) declares at
-            app/cpy/CVACT02Y.cpy:L8, which is the width the published event
-            carries too.
+            app/cpy/CVACT02Y.cpy:L8. The name reaches this response and the update
+            response and no event: card-updated-v1.json declares no property for
+            it.
           content:
             application/json:
               schema:
@@ -743,8 +745,7 @@ paths:
         the source, and CCUP-NEW-CARDDATA at app/cbl/COCRDUPC.cbl:L307-L313 holds
         the five values the body carries. The path value is that card's token, not
         its number: api/CardController reads the row the token names and hands the
-        number the row holds to domain/CardUpdateService in the same call, so the
-        number the source rule works on is a stored value and never a submitted
+        number the row holds to domain/CardUpdateService in the same call. The number the source rule works on is a stored value and never a submitted
         one. A token naming no row answers the same not-found outcome a number
         naming no row answers, so a caller cannot tell which of the two lookups
         missed and the seven outcomes stay seven.
@@ -784,8 +785,8 @@ paths:
             refuses a request that carries no value here, and refuses one whose
             Sec-Fetch-Site or Origin names somewhere other than this service. An
             HTML form can set no header at all, and a cross-origin script call that
-            set one would need a preflight no chain here grants, so this header is
-            what separates a first-party client from a browser replaying a cached
+            set one would need a preflight no chain here grants. This header
+            therefore separates a first-party client from a browser replaying a cached
             HTTP Basic credential from a page a cardholder was reading. The value is
             not a secret and is not read: only its presence matters. The header name
             is configurable through carddemo.api.cross-site.required-header, which
@@ -811,8 +812,11 @@ paths:
             examples:
               moveTheExpiryForward:
                 summary: >-
-                  Move the expiry of the card the path names from 2025-07-13 to
-                  2026-07-13, keeping the name and the status.
+                  Move the expiry of the card the path names to 2031-07-13,
+                  keeping the embossed name and the status. The date it moves
+                  from is whatever that card holds: the token above is a
+                  placeholder, and every seeded expiry falls between 2023-01-06
+                  and 2025-12-28.
 
 
                   A future year is used here only so the example does not read as
@@ -945,8 +949,7 @@ paths:
 
 
             LOCK_NOT_ACQUIRED covers every way the row does not come back held,
-            because app/cbl/COCRDUPC.cbl:L1441 draws no distinction between them
-            either: a row another writer has removed, a lock the wait ran out on, a
+            because app/cbl/COCRDUPC.cbl:L1441 draws no distinction between them either. The ways are a row another writer has removed, a lock the wait ran out on, a
             deadlock the datastore broke, and a locking statement the datastore
             refused outright. None of the four writes anything and none reads a
             refreshed card.
@@ -965,7 +968,7 @@ paths:
                     outcome: 'CHANGED_BEFORE_UPDATE'
                     message: 'Record changed by some one else. Please review'
                     refreshedCard:
-                      embossedName: 'Ward Jones                                        '
+                      embossedName: 'WARD JONES                                        '
                       expiryYear: '2025'
                       expiryMonth: '07'
                       expiryDay: '13'
@@ -996,8 +999,7 @@ paths:
             character for character from the source line
             api/dto/CardValidationMessages cites for it. The five texts are
             "Card name not provided" and
-            "Card name can only contain alphabets and spaces" for the name,
-            "Card Active Status must be Y or N" for the status,
+            "Card name can only contain alphabets and spaces" for the name. The status reads "Card Active Status must be Y or N".
             "Card expiry month must be between 1 and 12" for the month and
             "Invalid card expiry year" for the year.
 
@@ -1019,8 +1021,7 @@ paths:
             Two further texts of this outcome are unreachable through this route, and
             are named here so a caller reading domain/CardUpdateService does not
             expect them: "Card number not provided", the text
-            app/cbl/COCRDUPC.cbl:L180 declares, and
-            "CARD ID FILTER,IF SUPPLIED MUST BE A 16 DIGIT NUMBER", the text
+            app/cbl/COCRDUPC.cbl:L180 declares. The second is "CARD ID FILTER,IF SUPPLIED MUST BE A 16 DIGIT NUMBER", the text
             app/cbl/COCRDUPC.cbl:L789 declares under the test at
             app/cbl/COCRDUPC.cbl:L784. Both edit the card number, which is step one
             of the source edit chain. The number reaching that step is read from the
@@ -1316,10 +1317,14 @@ components:
           type: string
           minLength: 1
           maxLength: 1
+          enum: ['Y', 'N']
           description: >-
-            The one-character active status, carried through with no
-            interpretation. From CARD-ACTIVE-STATUS PIC X(01) at
-            app/cpy/CVACT02Y.cpy:L10.
+            The one-character active status. From CARD-ACTIVE-STATUS PIC X(01) at
+            app/cpy/CVACT02Y.cpy:L10, whose domain is the two values of
+            88 FLG-YES-NO-VALID VALUES 'Y', 'N' at app/cbl/COCRDUPC.cbl:L91.
+            Constraint ck_card_active_status on table card holds the column to
+            them, api/dto/CardSummary.requireActiveStatusFlag holds this member
+            to them, and neither folds case.
           examples:
             - 'Y'
 
@@ -1362,7 +1367,8 @@ components:
           pattern: '^[0-9a-f]{64}$'
           description: >-
             The cursor to send back in the X-Card-Cursor header to continue in the
-            same direction. It is the irreversible card token of one row. A masked
+            same direction. It is the keyed card token of one row, a stable
+            pseudonym rather than an irreversible digest. A masked
             value names no row and a full card number must not be published, so the
             read side resolves this token to its internal browse position.
 
@@ -1417,8 +1423,9 @@ components:
             The embossed cardholder name, at the fifty-character width
             CARD-EMBOSSED-NAME PIC X(50) declares at app/cpy/CVACT02Y.cpy:L8.
             Column embossed_name is fixed-width character storage, so the value
-            arrives padded to that width, and the published CardUpdated event
-            carries the same padded value.
+            arrives padded to that width. The published CardUpdated event carries
+            no name: card-updated-v1.json declares no property for it, so this
+            value reaches a synchronous caller alone.
           examples:
             - 'Aniya Von                                         '
 
@@ -1436,9 +1443,13 @@ components:
           type: string
           minLength: 1
           maxLength: 1
+          enum: ['Y', 'N']
           description: >-
             The one-character active status. From CARD-ACTIVE-STATUS PIC X(01) at
-            app/cpy/CVACT02Y.cpy:L10.
+            app/cpy/CVACT02Y.cpy:L10, whose domain is the two values of
+            88 FLG-YES-NO-VALID VALUES 'Y', 'N' at app/cbl/COCRDUPC.cbl:L91.
+            Constraint ck_card_active_status on table card holds the column to
+            them and api/dto/CardDetailResponse holds this member to them.
           examples:
             - 'Y'
 
@@ -1524,8 +1535,7 @@ components:
             moves the day the screen sent into CCUP-NEW-EXPDAY and
             app/cbl/COCRDUPC.cbl:L1471 writes that same item into the record, so
             the day the source stores is the day it read back. On a 3270 that was
-            always the stored day, and that is a property of the map rather than of
-            the program: app/bms/COCRDUP.bms:L142 declares EXPDAY as DRK, FSET and
+            always the stored day, and that is a property of the map rather than of the program. app/bms/COCRDUP.bms:L142 declares EXPDAY as DRK, FSET and
             PROT where the four other editable fields declare UNPROT, so an
             operator could not type into it. A request body has no protected field,
             so the day this property carries is the day the column takes, and a
@@ -1538,8 +1548,7 @@ components:
             carries a width rule alone. One calendar rule does apply, over the
             three submitted parts together, and it is the one divergence of this
             route. Column expiration_date is a DATE, so a year, month and day
-            naming no day of the calendar are refused here and were stored there as
-            ten characters of text: 2028-02-30 reads
+            naming no day of the calendar are refused here and were stored there as ten characters of text. 2028-02-30 reads
             "Card expiry year, month and day must name a day of the calendar".
           examples:
             - '13'
@@ -1549,19 +1558,24 @@ components:
           minLength: 1
           maxLength: 1
           pattern: '^[YN]$'
+          enum: ['Y', 'N']
           description: >-
             The one-character active status, upper-case Y or upper-case N from
             88 FLG-YES-NO-VALID VALUES 'Y', 'N' at app/cbl/COCRDUPC.cbl:L91.
-            1240-EDIT-CARDSTATUS folds no case.
+            1240-EDIT-CARDSTATUS folds no case. The enumeration and the pattern
+            state one domain twice, and constraint ck_card_active_status on
+            table card holds the stored column to the same two values.
           examples:
             - 'Y'
 
     RefreshedCard:
       type: object
       description: >-
-        The stored card as it stands after another writer changed it, which
-        app/cbl/COCRDUPC.cbl:L1512-L1517 refreshes once the comparison at
-        L1503-L1508 fails. Five values, each carried as text to match the
+        The stored card as the source refreshes it after another writer changed
+        it, which app/cbl/COCRDUPC.cbl:L1512-L1517 does once the comparison at
+        L1503-L1508 fails. The embossed name arrives folded to upper case, because
+        the INSPECT at L1499-L1501 converts the record field in place before either
+        the comparison or the refresh reads it. Five values, each carried as text to match the
         character slices the source compares. The card verification value of that
         source comparison is absent: it is immutable here and no response of this
         service carries it.
@@ -1577,7 +1591,17 @@ components:
         embossedName:
           type: string
           maxLength: 50
-          description: The stored embossed name, padded to fifty characters.
+          description: >-
+            The stored embossed name, UPPER CASE and padded to fifty characters.
+            9300-CHECK-CHANGE-IN-REC. runs
+            INSPECT CARD-EMBOSSED-NAME CONVERTING LIT-LOWER TO LIT-UPPER over the
+            record field IN PLACE at app/cbl/COCRDUPC.cbl:L1499-L1501, so the
+            MOVE CARD-EMBOSSED-NAME TO CCUP-OLD-CRDNAME at :L1513 refreshes the
+            operator's field from the already-folded value. Resubmitting this
+            value verbatim therefore stores the name in upper case, which is what
+            the source does too. GET /cards/{cardToken} returns the same column as
+            the row holds it, so the two routes differ deliberately: this member is
+            the value the source comparison refreshed, not a read of the column.
 
         expiryYear:
           type: string
@@ -1601,7 +1625,12 @@ components:
           type: string
           minLength: 1
           maxLength: 1
-          description: The stored one-character active status.
+          enum: ['Y', 'N']
+          description: >-
+            The stored one-character active status, one of the two values
+            88 FLG-YES-NO-VALID VALUES 'Y', 'N' at app/cbl/COCRDUPC.cbl:L91
+            declares and constraint ck_card_active_status on table card holds
+            the column to.
 
     CardUpdated:
       type: object

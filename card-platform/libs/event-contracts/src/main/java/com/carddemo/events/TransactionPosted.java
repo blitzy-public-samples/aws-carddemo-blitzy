@@ -1,5 +1,6 @@
 package com.carddemo.events;
 
+import com.carddemo.events.correlation.CorrelatedEvent;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Instant;
@@ -174,7 +175,8 @@ public record TransactionPosted(
         @JsonInclude(JsonInclude.Include.NON_NULL) String merchantName,
         @JsonInclude(JsonInclude.Include.NON_NULL) String merchantCity,
         @JsonInclude(JsonInclude.Include.NON_NULL) String merchantZip,
-        @JsonInclude(JsonInclude.Include.NON_NULL) String originTimestamp) {
+        @JsonInclude(JsonInclude.Include.NON_NULL) String originTimestamp)
+        implements CorrelatedEvent {
 
     /**
      * The one value {@link #eventType()} accepts.
@@ -664,7 +666,7 @@ public record TransactionPosted(
      * onto the posted record, and {@code app/cbl/CBTRN02C.cbl:L438} stamps the posting timestamp,
      * which is the argument below.
      *
-     * <h2>Why the version is derived and not assumed</h2>
+     * <h2>The version is derived rather than assumed</h2>
      *
      * <p>The card token is the one component of a posted event that no other component can supply.
      * {@code schemas/transaction-authorized-v2.json} requires it and

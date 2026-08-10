@@ -45,6 +45,19 @@ spring:
     hikari:
       connection-timeout: ${SPRING_DATASOURCE_HIKARI_CONNECTION_TIMEOUT:3000}
       validation-timeout: ${SPRING_DATASOURCE_HIKARI_VALIDATION_TIMEOUT:2000}
+      # Sized for the work that holds a connection at once, rather than left at the pool
+      # default of ten: the relay pass; the retention sweep, which may spend thirty seconds on
+      # a table; and eight for the list, read and update routes. This module registers no
+      # listener, so it has no consumer threads to size for. A request that finds no free
+      # connection waits out connection-timeout above and is then refused, so the pool is
+      # deliberately smaller than carddemo.api.rate-limit.concurrent-requests and requests
+      # queue on it under a burst.
+      maximum-pool-size: ${SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE:10}
+      # The pool keeps as many idle connections as its maximum unless told otherwise, so the
+      # six services would hold their whole maxima open against a server admitting one
+      # hundred while nothing was happening. Connections above this floor are opened when
+      # they are asked for and closed again when they fall idle.
+      minimum-idle: ${SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE:4}
 
   flyway:
     enabled: true
@@ -73,12 +86,17 @@ spring:
   #
   # value-serializer writes bytes and validates nothing, which is correct here and is
   # not the whole story. The payload this service publishes is already-validated text.
-  # CardUpdated.toValidatedJson() produces it through
+  # outbox/OutboxWriter.java writes every card event through
+  # CardUpdated.toValidatedJson(), which serializes through
   # com.carddemo.events.serde.JsonSchemaValidatingSerializer, the one publish-side gate
-  # of this platform, which checks the document against schemas/card-updated-v2.json and
-  # refuses one wider than the 8192-byte platform ceiling. That text is what the
-  # outbox_event payload column stores, and messaging/KafkaEventPublisher.java checks it
-  # again through com.carddemo.events.serde.EventJsonValidator before it reaches the
+  # of this platform. That gate screens the document for a forbidden property and for a
+  # card number in free text, checks it against schemas/card-updated-v1.json, and refuses
+  # one wider than the 8192-byte platform ceiling; the writer reports its refusal as an
+  # IllegalArgumentException, so a payload the contract refuses leaves the request's
+  # transaction able to roll back with no row stored. That text is what the outbox_event
+  # payload column stores, held there to the 4000-character guard
+  # entity/OutboxEventEntity.java applies, and messaging/KafkaEventPublisher.java checks
+  # it again through com.carddemo.events.serde.EventJsonValidator before it reaches the
   # broker. Neither serializer below carries any validation responsibility, and none is
   # claimed for them.
   #
@@ -137,15 +155,20 @@ spring:
         request.timeout.ms: 2000
         linger.ms: 0
         max.block.ms: 2000
-    # This module registers no listener, and it needs none. Its two copies of state
-    # another service owns are the card table, which it owns outright, and the
-    # card_xref replica, which no event can change: every column of
-    # app/cpy/CVACT03Y.cpy is a card number, a customer identifier or an account
-    # identifier, and no operation this platform serves alters any of the three.
-    # V2__seed.sql puts the opening state there and nothing writes it afterwards.
-    # No path reads it either: app/cbl/COCRDUPC.cbl has *COPY CVACT03Y. commented out
-    # at :L356 and its three file operations touch only the card file. The maintenance
-    # the replica owes is recorded as an open task in docs/suggested-next-tasks.md.
+    # This module registers no listener, and it needs none. Its two copies of state are
+    # the card table, which it owns outright, and the card_xref replica, which no event
+    # this platform publishes can change: every column of app/cpy/CVACT03Y.cpy is a card
+    # number, a customer identifier or an account identifier, and no event carries a full
+    # card number or a customer identifier. The replica is not left to drift for that
+    # reason. V2__seed.sql puts the opening state there and
+    # domain/CardCrossReferenceReconciler reconciles the row of every card this service
+    # updates, inside the same transaction that saves the card row: it confirms an
+    # agreeing mapping, corrects a diverged one against CARD-ACCT-ID PIC 9(11) at
+    # app/cpy/CVACT02Y.cpy:L6, and reports a card number holding no row rather than
+    # inventing the mandatory XREF-CUST-ID it cannot know. Three counters on
+    # config/ObservabilityConfig carry those three outcomes. A card this service never
+    # updates is never compared, which is the residual the reconciler does not close and
+    # docs/suggested-next-tasks.md records.
     #
     # The two settings below still hold the platform acknowledgement discipline, so a
     # listener added later inherits it rather than choosing it: a listener commits its
@@ -157,6 +180,24 @@ spring:
       enable-auto-commit: false
     listener:
       ack-mode: manual_immediate
+      # Declared for the same reason as the two settings above: a listener added later reads
+      # one thread per partition rather than the framework default of one thread for every
+      # partition of its topic. Every topic of this platform ships three partitions, from
+      # KAFKA_TOPIC_PARTITIONS in card-platform/.env.example, and the group assignor gives one
+      # partition to exactly one thread, so records of one account stay in publish order.
+      concurrency: ${SPRING_KAFKA_LISTENER_CONCURRENCY:3}
+
+  # The scheduler behind both @Scheduled methods of this service, outbox/OutboxRelay and
+  # domain/RetentionSweep. The framework's pool holds one thread, so the hourly sweep — up to
+  # thirty seconds a table — delayed every relay pass that fell inside it, and a relay pass is
+  # due every 500 ms. A thread for each task removes that wait. Fixed-delay scheduling measures
+  # the next run from the end of the previous one, so no task overlaps itself however many
+  # threads the pool holds.
+  task:
+    scheduling:
+      pool:
+        size: ${SPRING_TASK_SCHEDULING_POOL_SIZE:2}
+      thread-name-prefix: carddemo-scheduling-
 
 # Properties this module owns. The first topic below carries a card update, and a card
 # list or a card read publishes nothing. The second carries the terminal diagnostic the
@@ -332,6 +373,24 @@ logging:
   structured:
     format:
       console: logstash
+    # Members every record carries beside the framework's own. `service` names which of the six
+    # services wrote a record, which no logstash member does; the Mapped Diagnostic Context supplies
+    # correlationId, causationId, eventId, eventType and transactionId per request and per delivery,
+    # and the framework renders every context entry as a top-level member of its own.
+    json:
+      add:
+        service: ${spring.application.name:card-service}
+      # Withheld from every record this service writes. `stack_trace` is the one logstash
+      # member that renders a throwable, and it renders the exception message ahead of the
+      # frames. Spring Kafka reports a delivery it has given up on through
+      # LogAccessor.error(Throwable, Supplier) from SeekUtils, a call no log level reaches, so
+      # a message quoting a rejected payload, a constraint or a statement would reach the log
+      # past every rule this platform applies to its own logging. Withholding the member drops
+      # the rendering and nothing else: the exception still propagates, so the container still
+      # retries and still routes the record. Each service reports a failure itself, as a type
+      # chain with the record coordinates, which is the record an operator should read.
+      exclude:
+        - stack_trace
   level:
     root: ${LOG_LEVEL:INFO}
     # INFO rather than DEBUG. A DEBUG default writes identifiers into every
@@ -339,3 +398,17 @@ logging:
     # who starts this service directly rather than through compose or Kubernetes.
     # Raise it for one run when tracing a message, and lower it again afterwards.
     com.carddemo: ${LOG_LEVEL_CARDDEMO:INFO}
+    # OFF, not a level. This logger renders the server's own message for every failed
+    # statement, and PostgreSQL puts the whole failing row in the DETAIL of a constraint
+    # violation. On a table holding a card number, a verification value or a social security
+    # number that one line publishes all of them, which is the CWE-532 the platform closes
+    # everywhere else: LogHygieneContractTest holds every shipped source to rendering a
+    # failure as its type. The framework's own logger was the last site outside that rule.
+    # Nothing diagnostic is lost. The exception still reaches this service's own handler,
+    # which answers a problem document and logs the failure type and the SQL state.
+    #
+    # The name is the Hibernate 7 one. Under Hibernate 5 and 6 this logger was
+    # org.hibernate.engine.jdbc.spi.SqlExceptionHelper, and naming that instead silently
+    # suppresses nothing: it was tried here first, and a card number reached a published
+    # report anyway. CardholderDataInArtifactsContractTest asserts this exact name.
+    org.hibernate.orm.jdbc.error: "OFF"

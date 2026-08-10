@@ -13,7 +13,7 @@
 #
 # By hand, in this directory:
 #
-#     cp .env.example .env
+#     install -m 600 .env.example .env    # cp would leave it world-readable
 #     mvn -f pom.xml clean package
 #     scripts/generate-env.sh      # or the per-variable commands in .env.example
 #     docker compose up -d --build
@@ -391,14 +391,12 @@ services:
       NOTIFICATION_KAFKA_USER: ${NOTIFICATION_KAFKA_USER:-carddemo-notification}
       ACCOUNT_KAFKA_USER: ${ACCOUNT_KAFKA_USER:-carddemo-account}
       CARD_KAFKA_USER: ${CARD_KAFKA_USER:-carddemo-card}
-      # Consumer groups the entries name, one for each of the eleven listeners, plus
-      # GROUP_AUTHORIZATION, which is only the framework-level default group id of the
-      # authorization service and names no entry, because both of its listeners set their
-      # own group. A group is not a credential.
+      # Consumer groups the entries name, one for each of the eleven listeners. A group is not
+      # a credential.
       # Every name below appears in a grant_consumer call further down: a name here that no
       # call uses would install no entry, and a call naming a group that is not here would
-      # install an entry for an empty name.
-      GROUP_AUTHORIZATION: ${GROUP_AUTHORIZATION:-authorization}
+      # install an entry for an empty name. The authorization service's framework-level default
+      # group is absent for exactly that reason — no listener joins it, so no call grants it.
       GROUP_LEDGER_POSTING: ${GROUP_LEDGER_POSTING:-ledger-posting}
       GROUP_FRAUD_DETECTION: ${GROUP_FRAUD_DETECTION:-fraud-detection}
       GROUP_NOTIFICATION_AUTHORIZED: ${GROUP_NOTIFICATION_AUTHORIZED:-notification-authorized}
@@ -740,10 +738,12 @@ services:
     # from the context below when the tag is absent locally, and no registry holds it.
     image: carddemo/authorization-service:1.0.0-SNAPSHOT
     build:
-      # The module directory. Its Dockerfile copies the archive Maven wrote into
-      # target, so mvn clean package runs before docker compose up.
-      context: ./services/authorization-service
-      dockerfile: Dockerfile
+      # This directory, because the builder stage of the Dockerfile compiles the module
+      # from source and needs the aggregator descriptor and both shared libraries in
+      # reach. services/authorization-service/Dockerfile.dockerignore reduces what is sent
+      # to exactly that, and no host archive is used or required.
+      context: .
+      dockerfile: services/authorization-service/Dockerfile
     container_name: card-platform${CLONE_INDEX:-}-authorization-service
     environment:
       <<: *service-environment
@@ -804,6 +804,11 @@ services:
       OUTBOX_RELAY_INTERVAL_MS: ${OUTBOX_RELAY_INTERVAL_MS:-500}
       OUTBOX_RELAY_BATCH_SIZE: ${OUTBOX_RELAY_BATCH_SIZE:-100}
       OUTBOX_RELAY_CLAIM_TIMEOUT: ${OUTBOX_RELAY_CLAIM_TIMEOUT:-PT2M}
+      # Longest one send waits for the broker before messaging/KafkaEventPublisher fails the
+      # stage it returned. The row then stays unpublished and the next sweep claims it again, so
+      # a slow broker delays an event and never loses one. Wider than the producer window of one
+      # send and narrower than the sweep deadline below.
+      OUTBOX_RELAY_PUBLISH_TIMEOUT: ${OUTBOX_RELAY_PUBLISH_TIMEOUT:-PT10S}
       # Milliseconds one relay pass may spend waiting for broker acknowledgements. Read once
       # per pass as a monotonic deadline, so a slow broker costs one pass and not an unbounded
       # one. It stays above the producer window of one send, MAX_BLOCK_MS + DELIVERY_TIMEOUT_MS.
@@ -811,6 +816,15 @@ services:
       OUTBOX_PUBLISHED_RETENTION_HOURS: ${OUTBOX_PUBLISHED_RETENTION_HOURS:-168}
       PROCESSED_EVENT_RETENTION_HOURS: ${PROCESSED_EVENT_RETENTION_HOURS:-720}
       RETENTION_SWEEP_INTERVAL_MS: ${RETENTION_SWEEP_INTERVAL_MS:-3600000}
+      # Days a row of authorization_decision and unresolved_card_attempt remains. Each is the
+      # attribution record of a financial decision rather than a message in flight, so it
+      # outlives the outbox row that carried the event. Only this service reads it.
+      DECISION_RETENTION_DAYS: ${DECISION_RETENTION_DAYS:-365}
+      # Bytes the largest legitimate request body occupies. config/RequestBodyCeilingFilter
+      # refuses a request declaring more, and config/JsonReadCeilingConfig bounds the parser for
+      # one declaring no length at all. Only the three services that accept a request body
+      # install that filter, so this is a per-service key and not part of the shared block.
+      API_MAX_REQUEST_BODY_BYTES: ${API_MAX_REQUEST_BODY_BYTES:-65536}
       # This service calls no other service. It resolves a card and reads the credit limit,
       # both cycle counters and the expiry date from card_xref and account_credit_snapshot
       # in its own schema, and two listeners keep those two tables current from
@@ -878,10 +892,12 @@ services:
     # from the context below when the tag is absent locally, and no registry holds it.
     image: carddemo/ledger-posting-service:1.0.0-SNAPSHOT
     build:
-      # The module directory. Its Dockerfile copies the archive Maven wrote into
-      # target, so mvn clean package runs before docker compose up.
-      context: ./services/ledger-posting-service
-      dockerfile: Dockerfile
+      # This directory, because the builder stage of the Dockerfile compiles the module
+      # from source and needs the aggregator descriptor and both shared libraries in
+      # reach. services/ledger-posting-service/Dockerfile.dockerignore reduces what is sent
+      # to exactly that, and no host archive is used or required.
+      context: .
+      dockerfile: services/ledger-posting-service/Dockerfile
     container_name: card-platform${CLONE_INDEX:-}-ledger-posting-service
     environment:
       <<: *service-environment
@@ -972,10 +988,12 @@ services:
     # from the context below when the tag is absent locally, and no registry holds it.
     image: carddemo/fraud-detection-service:1.0.0-SNAPSHOT
     build:
-      # The module directory. Its Dockerfile copies the archive Maven wrote into
-      # target, so mvn clean package runs before docker compose up.
-      context: ./services/fraud-detection-service
-      dockerfile: Dockerfile
+      # This directory, because the builder stage of the Dockerfile compiles the module
+      # from source and needs the aggregator descriptor and both shared libraries in
+      # reach. services/fraud-detection-service/Dockerfile.dockerignore reduces what is sent
+      # to exactly that, and no host archive is used or required.
+      context: .
+      dockerfile: services/fraud-detection-service/Dockerfile
     container_name: card-platform${CLONE_INDEX:-}-fraud-detection-service
     environment:
       <<: *service-environment
@@ -1058,10 +1076,12 @@ services:
     # from the context below when the tag is absent locally, and no registry holds it.
     image: carddemo/notification-service:1.0.0-SNAPSHOT
     build:
-      # The module directory. Its Dockerfile copies the archive Maven wrote into
-      # target, so mvn clean package runs before docker compose up.
-      context: ./services/notification-service
-      dockerfile: Dockerfile
+      # This directory, because the builder stage of the Dockerfile compiles the module
+      # from source and needs the aggregator descriptor and both shared libraries in
+      # reach. services/notification-service/Dockerfile.dockerignore reduces what is sent
+      # to exactly that, and no host archive is used or required.
+      context: .
+      dockerfile: services/notification-service/Dockerfile
     container_name: card-platform${CLONE_INDEX:-}-notification-service
     environment:
       <<: *service-environment
@@ -1139,10 +1159,12 @@ services:
     # from the context below when the tag is absent locally, and no registry holds it.
     image: carddemo/account-service:1.0.0-SNAPSHOT
     build:
-      # The module directory. Its Dockerfile copies the archive Maven wrote into
-      # target, so mvn clean package runs before docker compose up.
-      context: ./services/account-service
-      dockerfile: Dockerfile
+      # This directory, because the builder stage of the Dockerfile compiles the module
+      # from source and needs the aggregator descriptor and both shared libraries in
+      # reach. services/account-service/Dockerfile.dockerignore reduces what is sent
+      # to exactly that, and no host archive is used or required.
+      context: .
+      dockerfile: services/account-service/Dockerfile
     container_name: card-platform${CLONE_INDEX:-}-account-service
     environment:
       <<: *service-environment
@@ -1208,6 +1230,11 @@ services:
       OUTBOX_RELAY_INTERVAL_MS: ${OUTBOX_RELAY_INTERVAL_MS:-500}
       OUTBOX_RELAY_BATCH_SIZE: ${OUTBOX_RELAY_BATCH_SIZE:-100}
       OUTBOX_RELAY_CLAIM_TIMEOUT: ${OUTBOX_RELAY_CLAIM_TIMEOUT:-PT2M}
+      # Longest one send waits for the broker before messaging/KafkaEventPublisher fails the
+      # stage it returned. The row then stays unpublished and the next sweep claims it again, so
+      # a slow broker delays an event and never loses one. Wider than the producer window of one
+      # send and narrower than the sweep deadline below.
+      OUTBOX_RELAY_PUBLISH_TIMEOUT: ${OUTBOX_RELAY_PUBLISH_TIMEOUT:-PT10S}
       # Milliseconds one relay pass may spend waiting for broker acknowledgements. Read once
       # per pass as a monotonic deadline, so a slow broker costs one pass and not an unbounded
       # one. It stays above the producer window of one send, MAX_BLOCK_MS + DELIVERY_TIMEOUT_MS.
@@ -1217,6 +1244,11 @@ services:
       RETENTION_SWEEP_INTERVAL_MS: ${RETENTION_SWEEP_INTERVAL_MS:-3600000}
       # Bound on how long a locked read of one update waits for a row another writer holds.
       WRITE_LOCK_WAIT_MS: ${WRITE_LOCK_WAIT_MS:-3000}
+      # Bytes the largest legitimate request body occupies. config/RequestBodyCeilingFilter
+      # refuses a request declaring more, and config/JsonReadCeilingConfig bounds the parser for
+      # one declaring no length at all. Only the three services that accept a request body
+      # install that filter, so this is a per-service key and not part of the shared block.
+      API_MAX_REQUEST_BODY_BYTES: ${API_MAX_REQUEST_BODY_BYTES:-65536}
     ports:
       # Both mappings bind the loopback address. The service port carries the
       # Representational State Transfer (REST) surface; the management port
@@ -1251,10 +1283,12 @@ services:
     # from the context below when the tag is absent locally, and no registry holds it.
     image: carddemo/card-service:1.0.0-SNAPSHOT
     build:
-      # The module directory. Its Dockerfile copies the archive Maven wrote into
-      # target, so mvn clean package runs before docker compose up.
-      context: ./services/card-service
-      dockerfile: Dockerfile
+      # This directory, because the builder stage of the Dockerfile compiles the module
+      # from source and needs the aggregator descriptor and both shared libraries in
+      # reach. services/card-service/Dockerfile.dockerignore reduces what is sent
+      # to exactly that, and no host archive is used or required.
+      context: .
+      dockerfile: services/card-service/Dockerfile
     container_name: card-platform${CLONE_INDEX:-}-card-service
     environment:
       <<: *service-environment
@@ -1291,8 +1325,8 @@ services:
       KAFKA_SASL_USERNAME: ${CARD_KAFKA_USER:-carddemo-card}
       KAFKA_SASL_PASSWORD: ${CARD_KAFKA_PASSWORD:?CARD_KAFKA_PASSWORD must be set; copy .env.example to .env and give this service its own broker password}
       # The one business topic this service is to publish, on a mutation only. Its
-      # payload matches schemas/card-updated-v2.json in event-contracts. The v1
-      # document remains governed for old records.
+      # payload matches schemas/card-updated-v1.json in event-contracts, the one
+      # governed CardUpdated document.
       TOPIC_CARD_UPDATED: ${TOPIC_CARD_UPDATED:-card.updated}
       # The shared dead-letter topic. This service registers no listener, so nothing
       # of its own is dead-lettered on consumption. outbox/OutboxRelay publishes one
@@ -1326,6 +1360,11 @@ services:
       OUTBOX_RELAY_INTERVAL_MS: ${OUTBOX_RELAY_INTERVAL_MS:-500}
       OUTBOX_RELAY_BATCH_SIZE: ${OUTBOX_RELAY_BATCH_SIZE:-100}
       OUTBOX_RELAY_CLAIM_TIMEOUT: ${OUTBOX_RELAY_CLAIM_TIMEOUT:-PT2M}
+      # Longest one send waits for the broker before messaging/KafkaEventPublisher fails the
+      # stage it returned. The row then stays unpublished and the next sweep claims it again, so
+      # a slow broker delays an event and never loses one. Wider than the producer window of one
+      # send and narrower than the sweep deadline below.
+      OUTBOX_RELAY_PUBLISH_TIMEOUT: ${OUTBOX_RELAY_PUBLISH_TIMEOUT:-PT10S}
       # Milliseconds one relay sweep may spend waiting for broker acknowledgements. Read once
       # per sweep as a monotonic deadline, so a slow broker costs one sweep and not an unbounded
       # one. It stays above the producer window of one send, MAX_BLOCK_MS + DELIVERY_TIMEOUT_MS.
@@ -1335,6 +1374,11 @@ services:
       RETENTION_SWEEP_INTERVAL_MS: ${RETENTION_SWEEP_INTERVAL_MS:-3600000}
       # Bound on how long a locked read of one update waits for a row another writer holds.
       WRITE_LOCK_WAIT_MS: ${WRITE_LOCK_WAIT_MS:-3000}
+      # Bytes the largest legitimate request body occupies. config/RequestBodyCeilingFilter
+      # refuses a request declaring more, and config/JsonReadCeilingConfig bounds the parser for
+      # one declaring no length at all. Only the three services that accept a request body
+      # install that filter, so this is a per-service key and not part of the shared block.
+      API_MAX_REQUEST_BODY_BYTES: ${API_MAX_REQUEST_BODY_BYTES:-65536}
     ports:
       # Both mappings bind the loopback address. The service port carries the
       # Representational State Transfer (REST) surface; the management port

@@ -14,6 +14,7 @@ import com.carddemo.notification.config.SecurityConfig.SecurityIdentities;
 import com.carddemo.notification.config.SecurityConfig.SecurityIdentities.Identity;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.DisplayName;
@@ -399,6 +400,56 @@ class SecurityConfigTest {
                     .withProperty(PanMasker.CARD_TOKEN_SECRET_VARIABLE, GENERATED_CARD_TOKEN_KEY);
         }
 
+        /**
+         * Returns a usable environment that records which properties were read.
+         *
+         * <p>The two accepting cases below have nothing to assert on otherwise. Both call a
+         * {@code void} guard with a configuration it should accept, so both pass against a guard
+         * that reads nothing and returns — which is the one failure a start-up check must not have.
+         * Recording the reads turns "it did not object" into "it looked, and then it did not
+         * object", and it is what lets the encryption case assert the thing its name claims: that
+         * the keystore is not merely accepted while empty, but never asked for.</p>
+         *
+         * @return an environment holding the same values as {@link #usable()}
+         */
+        private RecordingEnvironment recording() {
+            RecordingEnvironment environment = new RecordingEnvironment();
+            environment.setProperty(SecurityConfig.DATASOURCE_PASSWORD_PROPERTY,
+                    "a-generated-value");
+            environment.setProperty(SecurityConfig.BROKER_JAAS_PROPERTY, BROKER_JAAS);
+            environment.setProperty(PanMasker.CARD_TOKEN_SECRET_VARIABLE, GENERATED_CARD_TOKEN_KEY);
+            return environment;
+        }
+
+        /** A {@link MockEnvironment} that remembers every property key asked of it. */
+        private static final class RecordingEnvironment extends MockEnvironment {
+
+            /** Keys read, in the order the guard read them. */
+            private final List<String> reads = new ArrayList<>();
+
+            @Override
+            public String getProperty(String key) {
+                reads.add(key);
+                return super.getProperty(key);
+            }
+
+            @Override
+            public <T> T getProperty(String key, Class<T> targetType, T defaultValue) {
+                reads.add(key);
+                return super.getProperty(key, targetType, defaultValue);
+            }
+
+            /** Reports whether the guard read one property. */
+            boolean read(String key) {
+                return reads.contains(key);
+            }
+
+            /** Returns the keys read, for a failure message. */
+            List<String> reads() {
+                return List.copyOf(reads);
+            }
+        }
+
         /** The message from refusing one identity password, so a case below reads as one line. */
         private String refusalFor(String identityPassword) {
             return assertThrows(IllegalStateException.class,
@@ -408,9 +459,20 @@ class SecurityConfigTest {
         }
 
         @Test
-        @DisplayName("a usable configuration passes")
+        @DisplayName("a usable configuration passes, and the guard reads every value it vouches for")
         void usableConfigurationPasses() {
-            SecurityConfig.requireUsableCredentials(usable());
+            RecordingEnvironment environment = recording();
+
+            SecurityConfig.requireUsableCredentials(environment);
+
+            assertAll(
+                    () -> assertTrue(environment.read(SecurityConfig.DATASOURCE_PASSWORD_PROPERTY),
+                            "the datasource password was never read: " + environment.reads()),
+                    () -> assertTrue(environment.read(SecurityConfig.BROKER_JAAS_PROPERTY),
+                            "the broker credential was never read: " + environment.reads()),
+                    () -> assertTrue(environment.read(SecurityConfig.SERVER_SSL_ENABLED_PROPERTY),
+                            "the encryption switch was never read, so the keystore rule below it"
+                                    + " never ran: " + environment.reads()));
         }
 
         @Test
@@ -587,10 +649,25 @@ class SecurityConfigTest {
         @Test
         @DisplayName("encryption switched off asks for no keystore at all")
         void encryptionOffAsksForNoKeystore() {
-            SecurityConfig.requireUsableCredentials(usable()
-                    .withProperty(SecurityConfig.SERVER_SSL_ENABLED_PROPERTY, "false")
-                    .withProperty(SecurityConfig.SERVER_SSL_KEYSTORE_PROPERTY, "")
-                    .withProperty(SecurityConfig.SERVER_SSL_KEYSTORE_PASSWORD_PROPERTY, ""));
+            RecordingEnvironment environment = recording();
+            environment.setProperty(SecurityConfig.SERVER_SSL_ENABLED_PROPERTY, "false");
+            environment.setProperty(SecurityConfig.SERVER_SSL_KEYSTORE_PROPERTY, "");
+            environment.setProperty(SecurityConfig.SERVER_SSL_KEYSTORE_PASSWORD_PROPERTY, "");
+
+            SecurityConfig.requireUsableCredentials(environment);
+
+            assertAll(
+                    () -> assertTrue(environment.read(SecurityConfig.SERVER_SSL_ENABLED_PROPERTY),
+                            "the switch is read, because the answer depends on it: "
+                                    + environment.reads()),
+                    () -> assertFalse(environment.read(SecurityConfig.SERVER_SSL_KEYSTORE_PROPERTY),
+                            "the keystore was read. Accepting an empty keystore is a weaker"
+                                    + " guarantee than never asking for one, and only the second is"
+                                    + " what this name claims: " + environment.reads()),
+                    () -> assertFalse(
+                            environment.read(SecurityConfig.SERVER_SSL_KEYSTORE_PASSWORD_PROPERTY),
+                            "the keystore password was read, for a port that encrypts nothing: "
+                                    + environment.reads()));
         }
 
         @Test

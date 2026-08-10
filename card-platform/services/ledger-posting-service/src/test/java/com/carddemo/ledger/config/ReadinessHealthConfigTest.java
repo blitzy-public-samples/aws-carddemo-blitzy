@@ -3,6 +3,8 @@ package com.carddemo.ledger.config;
 import com.carddemo.ledger.entity.OutboxEventEntity;
 import com.carddemo.ledger.repository.OutboxEventRepository;
 
+import java.time.Instant;
+import java.util.Optional;
 import java.util.List;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -75,16 +77,27 @@ class ReadinessHealthConfigTest {
                 .containsEntry("reason", IllegalStateException.class.getSimpleName());
     }
 
+    /**
+     * Asserts all three declared listeners have to be running.
+     *
+     * <p>This service declares three: the authorized feed it posts, the declined feed it records, and
+     * the account-state feed its replica follows. The count named here was two, which passed only
+     * because readiness compared the registry against itself. It now compares against the number the
+     * service declares, so a fixture short of a listener reads as short rather than as consistent.
+     */
     @Test
-    @DisplayName("requires both listeners to be running")
-    void requiresBothListenersToBeRunning() {
+    @DisplayName("requires all three declared listeners to be running")
+    void requiresAllThreeDeclaredListenersToBeRunning() {
         ObjectProvider<KafkaListenerEndpointRegistry> provider = mock();
         KafkaListenerEndpointRegistry registry = mock(KafkaListenerEndpointRegistry.class);
         MessageListenerContainer transaction = mock(MessageListenerContainer.class);
+        MessageListenerContainer declined = mock(MessageListenerContainer.class);
         MessageListenerContainer accountState = mock(MessageListenerContainer.class);
         when(transaction.isRunning()).thenReturn(true);
+        when(declined.isRunning()).thenReturn(true);
         when(accountState.isRunning()).thenReturn(true, false);
-        when(registry.getListenerContainers()).thenReturn(List.of(transaction, accountState));
+        when(registry.getListenerContainers())
+                .thenReturn(List.of(transaction, declined, accountState));
         when(provider.getIfAvailable()).thenReturn(registry);
         HealthIndicator indicator = config.listenersHealthIndicator(provider);
 
@@ -93,13 +106,67 @@ class ReadinessHealthConfigTest {
     }
 
     /**
+     * Asserts a registry short of a declared listener holds readiness down.
+     *
+     * <p>This is the state the old rule reported ready. Two containers running out of three declared
+     * satisfied "everything registered is running", so an instance that posted transactions while its
+     * account-state replica never started received traffic. The declined feed is the one missing here,
+     * so nothing would record a refusal.
+     */
+    @Test
+    @DisplayName("stays down while a declared listener never registered")
+    void staysDownWhileADeclaredListenerNeverRegistered() {
+        ObjectProvider<KafkaListenerEndpointRegistry> provider = mock();
+        KafkaListenerEndpointRegistry registry = mock(KafkaListenerEndpointRegistry.class);
+        MessageListenerContainer transaction = mock(MessageListenerContainer.class);
+        MessageListenerContainer accountState = mock(MessageListenerContainer.class);
+        when(transaction.isRunning()).thenReturn(true);
+        when(accountState.isRunning()).thenReturn(true);
+        when(registry.getListenerContainers()).thenReturn(List.of(transaction, accountState));
+        when(provider.getIfAvailable()).thenReturn(registry);
+
+        Health health = config.listenersHealthIndicator(provider).health();
+
+        assertThat(health.getStatus()).isEqualTo(Status.DOWN);
+        assertThat(health.getDetails())
+                .containsEntry("declared", 3)
+                .containsEntry("registered", 2)
+                .containsEntry("running", 2L);
+    }
+
+    /**
+     * Asserts an empty registry holds readiness down for a service that consumes.
+     *
+     * <p>An empty registry has nothing that is not running, which is why the old rule reported ready
+     * for it. That answer is wrong for every service but the one that consumes nothing: this instance
+     * would post no transaction and let its replica of the account record fall behind without limit,
+     * while a probe declared it fit to receive traffic.
+     */
+    @Test
+    @DisplayName("an empty registry holds readiness down for a consuming service")
+    void anEmptyRegistryHoldsReadinessDownForAConsumingService() {
+        ObjectProvider<KafkaListenerEndpointRegistry> provider = mock();
+        KafkaListenerEndpointRegistry registry = mock(KafkaListenerEndpointRegistry.class);
+        when(registry.getListenerContainers()).thenReturn(List.of());
+        when(provider.getIfAvailable()).thenReturn(registry);
+
+        Health health = config.listenersHealthIndicator(provider).health();
+
+        assertThat(health.getStatus()).isEqualTo(Status.DOWN);
+        assertThat(health.getDetails())
+                .containsEntry("declared", 3)
+                .containsEntry("registered", 0)
+                .containsEntry("running", 0L);
+    }
+
+    /**
      * Asserts a registered listener that is not running holds readiness down.
      *
-     * <p>This is the condition the probe exists to catch. The expected number of listeners is read
-     * from the registry rather than written into the class, so what readiness can still tell an
-     * operator is whether the listeners that registered are actually consuming. A listener registered
-     * and stopped means this instance either posts nothing or lets its replica of the account record
-     * fall behind without limit, and it must not receive traffic.
+     * <p>This is the condition the probe exists to catch, and the one the old rule did catch. A
+     * listener registered and stopped means this instance either posts nothing or lets its replica of
+     * the account record fall behind without limit, and it must not receive traffic. The rule now also
+     * reads the number of listeners this service declares, so the two states the old rule could not
+     * tell apart are covered by the tests above: a listener short, and none at all.
      */
     @Test
     @DisplayName("stays down while a registered listener is not running")
@@ -125,10 +192,13 @@ class ReadinessHealthConfigTest {
      * Asserts a listener added later needs no edit to this class.
      *
      * <p>A literal expected count is what made the notification service permanently unready: the
-     * number named there was two while three listeners were declared. This service reached two
-     * listeners the same way, by gaining the account-state listener. Readiness now counts what
-     * registered, so a third listener reports ready the moment it runs, and the inventory of listeners
-     * the platform should declare is held at build time by the equivalence contract suite instead.
+     * number named there was two while three listeners were declared. That failure is why the count
+     * this service declares is a floor and not an exact match. A fourth listener registering and
+     * running still reports ready, so no edit here can make this service refuse traffic it can serve.
+     *
+     * <p>The exact agreement between the count and the listeners is checked where a disagreement costs
+     * a build rather than a deployment, by {@code equivalence-tests}
+     * {@code ReadinessListenerExpectationContractTest}.
      */
     @Test
     @DisplayName("a listener added later reports ready without an edit here")
@@ -180,6 +250,93 @@ class ReadinessHealthConfigTest {
 
         assertThat(indicator.health().getStatus()).isEqualTo(Status.UP);
         assertThat(indicator.health().getStatus()).isEqualTo(Status.DOWN);
+    }
+
+    @Test
+    @DisplayName("reports the backlog it read beside the reading")
+    void reportsTheBacklogItRead() {
+        OutboxEventRepository repository = mock(OutboxEventRepository.class);
+        when(repository.existsByRelayState(OutboxEventEntity.RelayState.ABANDONED))
+                .thenReturn(false);
+        when(repository.countDueBefore(any())).thenReturn(3L);
+        when(repository.findEarliestDueBefore(any()))
+                .thenReturn(Optional.of(Instant.now().minusSeconds(45)));
+
+        Health health = config.outboxHealthIndicator(repository).health();
+
+        assertThat(health.getStatus()).isEqualTo(Status.UP);
+        assertThat(health.getDetails())
+                .as("the rows waiting, so a stopped relay is visible before the first abandonment")
+                .containsEntry("due", 3L)
+                .as("three rows waiting under a minute is a relay keeping up")
+                .containsEntry("state", ReadinessHealthConfig.BACKLOG_CLEAR);
+        assertThat((Long) health.getDetails().get("oldestDueAgeSeconds"))
+                .as("how long the longest-waiting row has waited")
+                .isGreaterThanOrEqualTo(44L);
+    }
+
+    @Test
+    @DisplayName("a backlog alone does not fail readiness")
+    void aBacklogAloneDoesNotFailReadiness() {
+        OutboxEventRepository repository = mock(OutboxEventRepository.class);
+        when(repository.existsByRelayState(OutboxEventEntity.RelayState.ABANDONED))
+                .thenReturn(false);
+        when(repository.countDueBefore(any())).thenReturn(5_000L);
+        when(repository.findEarliestDueBefore(any()))
+                .thenReturn(Optional.of(Instant.now().minusSeconds(3_600)));
+
+        Health health = config.outboxHealthIndicator(repository).health();
+
+        assertThat(health.getStatus())
+                .as("a broker hiccup reports its backlog without removing this pod from service")
+                .isEqualTo(Status.UP);
+        assertThat(health.getDetails())
+                .containsEntry("due", 5_000L)
+                .as("the backlog is named as behind, which is a reading and not an eviction")
+                .containsEntry("state", ReadinessHealthConfig.BACKLOG_BEHIND);
+    }
+
+    @Test
+    @DisplayName("an abandoned row reports the backlog beside the reason it is down")
+    void anAbandonedRowReportsTheBacklogBesideTheReason() {
+        OutboxEventRepository repository = mock(OutboxEventRepository.class);
+        when(repository.existsByRelayState(OutboxEventEntity.RelayState.ABANDONED))
+                .thenReturn(true);
+        when(repository.countDueBefore(any())).thenReturn(2L);
+        when(repository.findEarliestDueBefore(any())).thenReturn(Optional.empty());
+
+        Health health = config.outboxHealthIndicator(repository).health();
+
+        assertThat(health.getStatus()).isEqualTo(Status.DOWN);
+        assertThat(health.getDetails())
+                .as("the abandoned row remains the reason, and the backlog is context beside it")
+                .containsEntry("state", "abandoned-row")
+                .containsEntry("due", 2L)
+                .containsEntry("oldestDueAgeSeconds", 0L);
+    }
+
+    @Test
+    @DisplayName("the backlog is named against a threshold on size and one on age")
+    void theBacklogIsNamedAgainstBothThresholds() {
+        assertThat(ReadinessHealthConfig.backlogState(0L, 0L))
+                .as("an empty outbox").isEqualTo(ReadinessHealthConfig.BACKLOG_CLEAR);
+        assertThat(ReadinessHealthConfig.backlogState(
+                ReadinessHealthConfig.BACKLOG_DUE_THRESHOLD - 1, 0L))
+                .as("one row below the size threshold")
+                .isEqualTo(ReadinessHealthConfig.BACKLOG_CLEAR);
+        assertThat(ReadinessHealthConfig.backlogState(
+                ReadinessHealthConfig.BACKLOG_DUE_THRESHOLD, 0L))
+                .as("a burst larger than the size threshold, whatever its age")
+                .isEqualTo(ReadinessHealthConfig.BACKLOG_BEHIND);
+        assertThat(ReadinessHealthConfig.backlogState(
+                1L, ReadinessHealthConfig.BACKLOG_AGE_THRESHOLD_SECONDS - 1))
+                .as("one row waiting just inside the age threshold")
+                .isEqualTo(ReadinessHealthConfig.BACKLOG_CLEAR);
+        assertThat(ReadinessHealthConfig.backlogState(
+                1L, ReadinessHealthConfig.BACKLOG_AGE_THRESHOLD_SECONDS))
+                .as("one row waiting past the age threshold names a stopped relay that a size"
+                        + " reading alone would report as healthy")
+                .isEqualTo(ReadinessHealthConfig.BACKLOG_BEHIND);
     }
 
     /**

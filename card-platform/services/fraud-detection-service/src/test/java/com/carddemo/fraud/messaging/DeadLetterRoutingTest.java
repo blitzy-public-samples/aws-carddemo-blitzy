@@ -84,7 +84,19 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
         properties = {
                 "spring.kafka.bootstrap-servers=${spring.embedded.kafka.brokers}",
                 "spring.kafka.security.protocol=PLAINTEXT",
-                "KAFKA_SASL_PASSWORD=not-a-real-broker-password"
+                "KAFKA_SASL_PASSWORD=not-a-real-broker-password",
+                // One consumer thread here, against the three the shipped file declares. The subject
+                // of this class is what one assignment does with one record: three attempts, then the
+                // dead-letter topic. A retry sequence spans two backoff intervals, and three
+                // consumers joining a group of one partition rebalance during that span, which
+                // revokes the partition mid-sequence and hands the uncommitted record to the member
+                // that receives it next. That member starts the count again, so the delivery reaches
+                // the listener a fourth time. The redelivery is correct Kafka behaviour and the
+                // platform absorbs it through the processed-event marker; it is simply a different
+                // subject from the retry policy, and it cannot arise where one member holds the
+                // partition throughout. The shipped value of three is asserted by
+                // ShippedConfigurationContractTest and by the platform's own delivery contract.
+                "spring.kafka.listener.concurrency=1"
         })
 @EmbeddedKafka(
         count = 1,

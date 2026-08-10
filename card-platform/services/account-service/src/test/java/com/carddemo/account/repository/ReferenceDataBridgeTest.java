@@ -23,7 +23,7 @@ import org.springframework.beans.factory.annotation.Autowired;
  * Compares the three reference bands the Java library holds against the three reference tables the
  * migration seeds, value for value and in both directions.
  *
- * <p><b>Why this test exists.</b> The same three bands of {@code app/cpy/CSLKPCDY.cpy} were
+ * <p><b>What this test measures.</b> The same three bands of {@code app/cpy/CSLKPCDY.cpy} were
  * transformed twice. {@code libs/cobol-compat} holds them as three sets, and
  * {@code src/main/resources/db/migration/V3__reference_data.sql} holds them as three tables.
  * {@code UsPhoneAreaCodesTest}, {@code UsStateCodesTest} and {@code UsStateZipPrefixesTest} assert

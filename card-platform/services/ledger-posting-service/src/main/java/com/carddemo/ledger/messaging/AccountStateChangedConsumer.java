@@ -53,15 +53,23 @@ import tools.jackson.databind.JsonNode;
  *   <li>{@code ACCOUNT_UPDATED} on a row this projection does hold writes nothing at all.</li>
  * </ul>
  *
- * <p>That last case is the one worth stating plainly, because the obvious alternative is wrong. The
- * three value columns are produced here by the posting arithmetic at
- * {@code app/cbl/CBTRN02C.cbl:L545-L560}, and the account service's copy of them carries no posting
- * at all: it consumes no {@code TransactionPosted}, so its copy is behind by every amount this
- * service has ever posted. Replacing this row with that copy discarded real balance movement, and it
- * did so with no exception, no metric and no dead letter — the {@code transaction} rows still summed
- * to a movement the balance no longer showed. The source had one {@code ACCTDAT} record and two
- * writers, so a rewrite from either was authoritative; the target has two copies, so only the writer
- * that derives a value may replace it.
+ * <p>That last case is the one worth stating plainly, because the obvious alternative is wrong for two
+ * reasons rather than one. The three value columns are produced here by the posting arithmetic at
+ * {@code app/cbl/CBTRN02C.cbl:L545-L560}. The account service applies that same arithmetic to its own
+ * record — its {@code messaging/TransactionPostedConsumer} consumes {@code TransactionPosted} and
+ * calls {@code domain/PostedTransactionService.applyPostedAmount} — so the copy an account change
+ * carries is not a copy without the postings. It is a copy that trails them by every posting whose
+ * event it has not consumed yet, and nothing bounds that gap: a relay backlog, a paused listener or a
+ * retry each widen it. Replacing this row with a trailing copy moved the balance backwards with no
+ * exception, no metric and no dead letter, and the next posting then added to a figure that had lost
+ * movements — the {@code transaction} rows still summed to a movement the balance no longer showed.
+ *
+ * <p>The second reason is that such a change is a copy of this service's own output. Applying a posted
+ * amount is itself what makes the account service publish {@code ACCOUNT_UPDATED}, so an event this
+ * service caused travels out on {@code transaction.posted} and returns here on
+ * {@code account.state-changed}. Writing nothing is what ends that round trip. The source had one
+ * {@code ACCTDAT} record and two writers, so a rewrite from either was authoritative; the target has
+ * two copies, so only the writer that derives a value may replace it.
  *
  * <p>The credit limit and the expiry date are the account service's to own, and the decline rules
  * that read them live in the authorization service, which keeps its own snapshot. Neither reaches
@@ -164,6 +172,14 @@ public class AccountStateChangedConsumer {
      * ignored, because silently accepting a message this contract cannot produce would hide a producer
      * defect.
      *
+     * <p>Every exit is counted, timed and classified. A record that arrived was consumed whatever
+     * became of it, so the consumed count and the latency clock start before the payload is read and
+     * the latency is recorded in a {@code finally}. The classification splits at the read:
+     * {@link #readEvent(JsonNode)} counts a message it could not read on the deserialization series,
+     * and everything after it counts on the processing series. Building the record before counting
+     * anything left a message that failed those checks unmeasured on all three series, which is the
+     * state an observability review found.
+     *
      * @param message        the schema-checked message tree, or {@code null} for a tombstone
      * @param messageKey     the key the record arrived under, which must name the account the
      *                       payload names
@@ -183,30 +199,64 @@ public class AccountStateChangedConsumer {
             @Header(KafkaHeaders.RECEIVED_TOPIC) String consumedTopic) {
 
         Objects.requireNonNull(acknowledgment, "acknowledgment is required");
-        if (message == null) {
-            meters.recordDeserializeFailure();
-            throw new IllegalArgumentException("account.state-changed carries no tombstone, and a "
-                    + "record with no payload cannot name the account it changed");
-        }
 
-        AccountStateChanged event = AccountStateChanged.from(message);
         meters.recordEventConsumed();
         long startedAt = System.nanoTime();
         try {
-            requireKeyNamesAggregate(messageKey, aggregateIdOf(message), event.accountId());
-            self.getObject().applyOneEvent(event, consumedTopic);
-        } catch (RuntimeException failure) {
-            meters.recordProcessFailure();
-            LOG.warn("Change {} was not applied. The failure was a {}, the offset stays uncommitted,"
-                            + " and the container decides between a retry and the dead-letter"
-                            + " topic.",
-                    event.eventId(), failure.getClass().getSimpleName());
-            throw failure;
+            AccountStateChanged event = readEvent(message);
+            try {
+                requireKeyNamesAggregate(messageKey, aggregateIdOf(message), event.accountId());
+                self.getObject().applyOneEvent(event, consumedTopic);
+            } catch (RuntimeException failure) {
+                meters.recordProcessFailure();
+                LOG.warn("Change {} was not applied. The failure was a {}, the offset stays"
+                                + " uncommitted, and the container decides between a retry and the"
+                                + " dead-letter topic.",
+                        event.eventId(), failure.getClass().getSimpleName());
+                throw failure;
+            }
         } finally {
             meters.recordProcessingLatency(Duration.ofNanos(System.nanoTime() - startedAt));
         }
 
         acknowledgment.acknowledge();
+    }
+
+    /**
+     * Reads one message tree as an account state change, or refuses it.
+     *
+     * <p>Two refusals live here and both are read failures rather than processing failures. A
+     * {@code null} payload is Kafka's tombstone, which this stream does not produce. A tree the
+     * record cannot be built from is a message that passed schema validation and still does not
+     * satisfy the record's own checks, which is the same class of fault one step further in.
+     *
+     * <p>Both are counted on the deserialization series, so a stream of unreadable messages is
+     * visible as a reading rather than only as a log line. Neither counted anything before, so a
+     * refused delivery was indistinguishable from one that never arrived.
+     *
+     * <p>The line names the failure class and the broker coordinates. It names no account
+     * identifier, no balance and no message content, because a message this method could not read
+     * has no field it can be trusted to name.
+     *
+     * @param message the schema-checked message tree, or {@code null} for a tombstone
+     * @return the event the tree carries
+     * @throws IllegalArgumentException if the payload is a tombstone
+     */
+    private AccountStateChanged readEvent(JsonNode message) {
+        try {
+            if (message == null) {
+                throw new IllegalArgumentException("account.state-changed carries no tombstone, and"
+                        + " a record with no payload cannot name the account it changed");
+            }
+            return AccountStateChanged.from(message);
+        } catch (RuntimeException unreadable) {
+            meters.recordDeserializeFailure();
+            LOG.warn("A delivery on the account state stream could not be read as a state change."
+                            + " The failure was a {}, the offset stays uncommitted, and the"
+                            + " container decides between a retry and the dead-letter topic.",
+                    unreadable.getClass().getSimpleName());
+            throw unreadable;
+        }
     }
 
     /**

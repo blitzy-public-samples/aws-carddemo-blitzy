@@ -56,6 +56,21 @@
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
 
+    <!--
+      The modification time every archive entry carries. Without it the Jar plugin and the
+      Spring Boot repackage stamp each entry with the moment the build ran, so two builds of
+      one commit produced two different archives and neither the provenance statement the
+      pipeline records nor a reader comparing two images could tell a rebuild from a change.
+      This property is the mechanism Maven defines for that, and both plugins read it.
+
+      It is a fixed date rather than the commit time: a property cannot read git, and a value
+      derived per build would restore the problem it removes. Raise it when a release is cut.
+      DocumentationContractTest is not what proves this works — a second `mvn clean package`
+      producing a byte-identical archive is, and that comparison is recorded in
+      card-platform/docs/decision-log.md.
+    -->
+    <project.build.outputTimestamp>2026-08-10T00:00:00Z</project.build.outputTimestamp>
+
     <!-- Dependency versions. Every other version comes from the imported bill of materials. -->
     <spring-boot.version>4.1.0</spring-boot.version>
     <json-schema-validator.version>3.0.6</json-schema-validator.version>
@@ -417,6 +432,14 @@
           <version>${maven-failsafe-plugin.version}</version>
           <configuration>
             <classesDirectory>${project.build.outputDirectory}</classesDirectory>
+            <!-- Fail the module when the plugin selected nothing. Without this the plugin's own
+                 default is to pass silently, so a change to an include pattern, a class rename away
+                 from *IT or *EquivalenceTest, or a directory move turns the integration phase into a
+                 no-op that still reports success. Every module that declares this plugin owns at
+                 least one class the patterns select, so an empty selection is always a defect. The
+                 companion guard scripts/check-published-test-counts.sh reads the written reports
+                 after verify, which catches the case a module stops declaring the plugin at all. -->
+            <failIfNoTests>true</failIfNoTests>
             <systemPropertyVariables>
               <carddemo.card-token.secret>${carddemo.card-token.secret}</carddemo.card-token.secret>
               <carddemo.card-token.version>${carddemo.card-token.version}</carddemo.card-token.version>
@@ -466,13 +489,21 @@
             <configuration>
               <fail>true</fail>
               <rules>
+                <!--
+                  Both ranges end where the tested toolchain ends. They used to be
+                  [3.9.16,4.0.0) and [25,), which admitted every future Maven 3.9 patch and
+                  every future major JDK: the build then ran on a toolchain nothing here had
+                  been exercised against, while .github/workflows/ci.yml installed one exact
+                  Temurin build and card-platform/docs/onboarding.md named the same one. Three
+                  places now agree, and raising the toolchain is a deliberate edit to all three.
+                -->
                 <requireMavenVersion>
-                  <version>[3.9.16,4.0.0)</version>
-                  <message>This build runs on Apache Maven 3.9.16 or a later 3.9 release.</message>
+                  <version>[3.9.16,3.10.0)</version>
+                  <message>This build is exercised on Apache Maven 3.9.16. The range admits the 3.9.16 patch line and nothing else: Maven 4 removes behaviour this build relies on, and a later 3.x minor has not been tested here. Raise this range, .github/workflows/ci.yml and card-platform/docs/onboarding.md together.</message>
                 </requireMavenVersion>
                 <requireJavaVersion>
-                  <version>[25,)</version>
-                  <message>This build runs on JDK 25 or later. Every module compiles at release 25.</message>
+                  <version>[25,26)</version>
+                  <message>This build is exercised on Eclipse Temurin OpenJDK 25.0.4+7, and every module compiles at release 25. The range admits release 25 and nothing later, because a newer major would compile release-25 bytecode on a runtime no test here has run on. Raise this range, .github/workflows/ci.yml and card-platform/docs/onboarding.md together.</message>
                 </requireJavaVersion>
                 <!--
                   The compile release of the module being built. requireJavaVersion above
@@ -591,5 +622,44 @@
       </plugin>
     </plugins>
   </build>
+
+  <profiles>
+    <!--
+      Lets a stage run the integration suites without repeating the unit suites another
+      stage already ran.
+
+      WHY IT IS A PROFILE AND NOT A PLUGIN SETTING. Surefire and Failsafe read the same
+      skipTests property, so no command-line flag skips one and leaves the other. Binding
+      Surefire's skip to a property of its own would work, and it would also mean the
+      configuration always carries that binding: -DskipTests would then stop skipping
+      Surefire, and `mvn -DskipTests package` - which the compile stage, the container
+      stage, scripts/start-demo.sh and every service README run - would execute the whole
+      unit suite instead of none of it. A profile changes nothing until its property is
+      named, so the default build and every documented command behave exactly as before.
+
+      Nothing in this repository passes it except .github/workflows/ci.yml, where the
+      service integration stage and the equivalence stage both name it because the unit
+      stage has already run every Surefire test in the reactor and kept its reports.
+    -->
+    <profile>
+      <id>skip-unit-tests</id>
+      <activation>
+        <property>
+          <name>skipUnitTests</name>
+        </property>
+      </activation>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-surefire-plugin</artifactId>
+            <configuration>
+              <skipTests>true</skipTests>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
 
 </project>

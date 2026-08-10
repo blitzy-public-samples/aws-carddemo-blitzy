@@ -8,12 +8,10 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Tag;
 import io.micrometer.core.instrument.Timer;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
-import com.carddemo.notification.config.ObservabilityConfig.NotificationMetrics;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
@@ -40,7 +38,7 @@ import org.springframework.core.env.PropertySource;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Asserts the notification service registers six meters under one prefix, and asserts the
+ * Asserts the notification service registers seven meters under one prefix, and asserts the
  * observability properties {@code src/main/resources/application.yml} declares. Every test starts a
  * bare application context holding one {@link SimpleMeterRegistry}, so {@code mvn test} runs with no
  * database, no message broker and no container.

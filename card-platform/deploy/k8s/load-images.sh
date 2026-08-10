@@ -15,12 +15,25 @@
 #   deploy/k8s/load-images.sh docker-desktop
 #
 # KIND_CLUSTER_NAME (default kind) and MINIKUBE_PROFILE (default minikube) choose the
-# cluster. IMAGE_TAG overrides the tag, which is otherwise the version in
-# card-platform/pom.xml, the one value the manifests, Compose and the pipeline all name.
+# cluster.
+#
+# IMAGE_TAG names the tag to build and load. It is checked rather than simply obeyed,
+# because building a tag the manifests do not request loads an image no Pod will ever run:
+# the kubelet asks for the tag kustomization.yaml sets and refuses anything else under
+# imagePullPolicy: Never, so the cluster reports ErrImageNeverPull exactly as it would have
+# with no images at all. This script therefore refuses an IMAGE_TAG the manifests do not
+# name, and prints the `kustomize edit set image` command that changes what they ask for.
+# Left unset, the tag is the version in card-platform/pom.xml, the one value the manifests,
+# Compose and the pipeline all name; the script checks that the manifests still agree with
+# it rather than assuming they do.
 #
 # Re-running is safe: each image is rebuilt and replaced in the cluster. A Deployment
 # already running an older copy needs a restart to pick the new one up, and the command
 # for that is printed at the end.
+#
+# Docker is the only tool this script requires. Each image compiles its own module inside a
+# builder stage, so no Java Development Kit and no Maven installation has to be present on
+# this machine.
 #
 # Rationale for the choices here: card-platform/docs/decision-log.md
 # Cluster walkthrough: card-platform/docs/onboarding.md
@@ -48,11 +61,47 @@ fail() {
 command -v docker >/dev/null 2>&1 || fail "docker is not on the path."
 docker info >/dev/null 2>&1 || fail "the Docker daemon is not reachable. Start Docker."
 
-image_tag="${IMAGE_TAG:-}"
-if [ -z "${image_tag}" ]; then
-    image_tag="$(grep -m1 -o '<version>[^<]*</version>' pom.xml | sed 's|</\{0,1\}version>||g')"
+project_version="$(grep -m1 -o '<version>[^<]*</version>' pom.xml | sed 's|</\{0,1\}version>||g')"
+[ -n "${project_version}" ] \
+    || fail "cannot read the project version from ${platform_root}/pom.xml"
+
+# The tag the manifests actually request. kustomization.yaml is the one place the six
+# platform image references live, so its newTag is what the kubelet will ask for.
+kustomization="deploy/k8s/kustomization.yaml"
+[ -f "${kustomization}" ] || fail "${platform_root}/${kustomization} is missing"
+requested_tags="$(sed -n 's/^ *newTag: *//p' "${kustomization}" | sort -u)"
+requested_tag_count="$(printf '%s\n' "${requested_tags}" | grep -c .)"
+if [ "${requested_tag_count}" -ne 1 ]; then
+    fail "the six entries in ${kustomization} request ${requested_tag_count} different tags:
+$(printf '%s\n' "${requested_tags}" | sed 's/^/  /')
+Give all six the same newTag, or pin them by digest, before loading images."
 fi
-[ -n "${image_tag}" ] || fail "cannot read the project version from ${platform_root}/pom.xml"
+manifest_tag="${requested_tags}"
+
+if [ "${manifest_tag}" != "${project_version}" ]; then
+    fail "${kustomization} requests '${manifest_tag}' but pom.xml declares '${project_version}'.
+Compose and the pipeline both build '${project_version}', so the cluster would ask for a tag
+nothing produces. Bring them back into step:
+
+  cd ${platform_root}/deploy/k8s
+  for service in ${services[*]}; do
+    kustomize edit set image \"carddemo/\${service}=carddemo/\${service}:${project_version}\"
+  done"
+fi
+
+image_tag="${IMAGE_TAG:-${manifest_tag}}"
+if [ "${image_tag}" != "${manifest_tag}" ]; then
+    fail "IMAGE_TAG is '${image_tag}' but the manifests request '${manifest_tag}'.
+Loading '${image_tag}' would leave every Pod reporting ErrImageNeverPull, because
+imagePullPolicy: Never makes the kubelet run the requested tag or refuse the Pod. Change what
+the manifests ask for first, then run this again with the same value:
+
+  cd ${platform_root}/deploy/k8s
+  for service in ${services[*]}; do
+    kustomize edit set image \"carddemo/\${service}=carddemo/\${service}:${image_tag}\"
+  done"
+fi
+note "building and loading tag ${image_tag}, which ${kustomization} requests"
 
 runtime="${1:-}"
 if [ -z "${runtime}" ]; then
@@ -81,27 +130,21 @@ case "${runtime}" in
     *) fail "unknown runtime '${runtime}'. Use kind, minikube or docker-desktop." ;;
 esac
 
-# Every Dockerfile copies a packaged archive out of its own module's target/ directory, so
-# a missing archive fails the build with a message about a COPY rather than about Maven.
-missing_archive="no"
+# Each Dockerfile builds its module from source in a Java Development Kit 25 builder stage,
+# so nothing has to be packaged on this machine first and no Maven installation is required
+# here at all. The context is this directory rather than the module directory, because that
+# builder needs the aggregator descriptor and both shared libraries in reach;
+# services/<service>/Dockerfile.dockerignore reduces what is sent to exactly that.
+#
+# BuildKit is named explicitly because each builder stage mounts a cache for the local Maven
+# repository. The first build populates it and the other five resolve from it, so six
+# in-image builds cost one dependency download rather than six.
 for service in "${services[@]}"; do
-    # shellcheck disable=SC2086
-    set -- services/"${service}"/target/"${service}"-*.jar
-    [ -f "$1" ] || missing_archive="yes"
-done
-if [ "${missing_archive}" = "yes" ]; then
-    note "an archive is missing, so the reactor is packaged first"
-    command -v mvn >/dev/null 2>&1 \
-        || fail "mvn is not on the path and the archives are missing. Package them first."
-    mvn -B -ntp -DskipTests package
-fi
-
-for service in "${services[@]}"; do
-    note "building carddemo/${service}:${image_tag}"
-    docker build \
+    note "building carddemo/${service}:${image_tag} from source"
+    DOCKER_BUILDKIT=1 docker build \
         --file "services/${service}/Dockerfile" \
         --tag "carddemo/${service}:${image_tag}" \
-        "services/${service}"
+        .
 done
 
 case "${runtime}" in
@@ -137,6 +180,13 @@ case "${runtime}" in
         ;;
 esac
 
+# The six application Deployments by name. `rollout restart deployment` with no argument
+# restarts every Deployment in the namespace, including the broker and the database.
+restart_targets=""
+for service in "${services[@]}"; do
+    restart_targets="${restart_targets:+${restart_targets} }deployment/${service}"
+done
+
 cat <<APPLY
 
 load-images: the images are in the cluster. Apply the manifests in the order
@@ -150,16 +200,19 @@ load-images: the images are in the cluster. Apply the manifests in the order
        # replace every REPLACE value in ~/carddemo-secrets.yaml, then
        kubectl apply -f ~/carddemo-secrets.yaml
 
-  3. Everything else, in filename order, with the template excluded:
+  3. Everything else, through the kustomization:
 
-       ls deploy/k8s/*.yaml \\
-         | grep -v '31-secret.example.yaml' \\
-         | xargs -n1 kubectl apply -f
+       kubectl apply -k deploy/k8s
 
-Applying the whole folder instead would overwrite step 2 with the placeholders the
-template publishes, and every workload would refuse to start.
+     kustomization.yaml lists the ten manifests to apply and omits
+     31-secret.example.yaml, so this cannot overwrite step 2 with the placeholders
+     that template publishes. It also cannot try to apply kustomization.yaml
+     itself, which is not a Kubernetes API object.
 
-load-images: after a rebuild, restart the workloads so they pick the new image up:
+load-images: after a rebuild, restart the six application Deployments so they pick
+the new image up. Kafka and PostgreSQL are named out deliberately: restarting the
+whole namespace would cycle the broker and the database as well, which drops every
+consumer group and every open connection for no reason.
 
-  kubectl -n carddemo rollout restart deployment
+  kubectl -n carddemo rollout restart ${restart_targets}
 APPLY

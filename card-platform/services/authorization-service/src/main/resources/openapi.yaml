@@ -16,9 +16,14 @@ info:
     paragraphs 1500-A-LOOKUP-XREF and 1500-B-LOOKUP-ACCT at app/cbl/CBTRN02C.cbl:L380-L420, and the
     request field set from the online capture program app/cbl/COTRN02C.cbl:L442-L465.
 
-    One event per decision, and no event without one. Every decision this service reaches - approval
-    or decline - writes its decision row and exactly one outbox row in a single local transaction, so
-    the two commit together or neither does. A call refused before the decision writes neither: 400,
+    A decided request persists one decision and publishes exactly one outcome event. An approval
+    writes its decision row and one TransactionAuthorized outbox row in a single local transaction. A decline that resolved an account - reject reason 0101, 0102 or 0103 - writes its decision
+    row and one TransactionDeclined outbox row the same way, so the two commit together or neither
+    does. Reject reason 0100 is the one decided outcome that publishes without an account: the card
+    resolved none, so its event is keyed on the 16-character transaction identifier instead of the
+    11-digit account identifier and declares no accountId. The outcome is persisted in
+    unresolved_card_attempt and in authorization_decision beside that event, and the three rows commit
+    together. A call refused before the decision writes neither: 400,
     401, 403, 406, 413, 415 and 503 are all answered before any rule runs, they leave no decision row
     and they publish nothing. A 403 in particular is not a decline and carries no reject code, because
     the service never decided the transaction at all.
@@ -60,12 +65,14 @@ paths:
         carrying the one reject code that stands. No decline answers 500 or 503.
 
 
-        At most one event is published per request, and never more than one. An approval publishes
-        TransactionAuthorized and a decline carrying reason 0101, 0102 or 0103 publishes
-        TransactionDeclined. Reason 0100 publishes nothing: it fires where the cross-reference read
-        missed, so no account identifier exists, and every event here names an account and is keyed on
-        one. That outcome is still answered to the caller as a 422 decline and still recorded, in
-        unresolved_card_attempt and authorization_decision. A request refused before the rule chain is
+        Exactly one event is published per decided request, and never more than one. An approval
+        publishes TransactionAuthorized and a decline publishes TransactionDeclined. A decline carrying
+        reason 0101, 0102 or 0103 travels under schemas/transaction-declined-v3.json, keyed on the account
+        identifier the cross-reference resolved. Reason 0100 fires where that read missed, so no
+        account identifier exists, and it travels under schemas/transaction-declined-v2.json, which declares
+        no accountId and keys on the sixteen-character transaction identifier. That outcome is
+        answered to the caller as a 422 decline and recorded in unresolved_card_attempt and
+        authorization_decision alongside its event. A request refused before the rule chain is
         entered records nothing at all: 401, 403 and a body the reader or the bean constraints reject
         all leave every table untouched.
 
@@ -73,7 +80,7 @@ paths:
         Access is decided by role alone. ACQUIRER and ADMIN are the two roles this operation admits,
         and every other identity is refused with 403, a cardholder USER included. No ownership scope
         applies, because the card is named in the request body rather than in a path a caller could be
-        said to own, which leaves the role as the whole access decision: an operation reaching every
+        said to own, which leaves the role as the whole access decision. An operation reaching every
         card the platform holds must not be reachable by an identity entitled to one card. ACQUIRER is
         the machine identity a point-of-sale network presents and it owns no account, no customer and
         no card. Every other service in this platform does apply ownership scopes.
@@ -92,8 +99,8 @@ paths:
             Present on every state-changing request. config/CrossSiteRequestFilter refuses a
             request that carries no value here, and refuses one whose Sec-Fetch-Site or Origin
             names somewhere other than this service. An HTML form can set no header at all, and a
-            cross-origin script call that set one would need a preflight no chain here grants, so
-            this header is what separates a first-party client from a browser replaying a cached
+            cross-origin script call that set one would need a preflight no chain here grants.
+            This header therefore separates a first-party client from a browser replaying a cached
             HTTP Basic credential from a page a cardholder was reading. The value is not a secret
             and is not read: only its presence matters. The header name is configurable through
             carddemo.api.cross-site.required-header, which card-platform/.env.example documents.
@@ -114,19 +121,31 @@ paths:
             examples:
               currentEraAuthorization:
                 summary: >-
-                  THE EXAMPLE TO COPY FOR A LIVE CALL. The same synthetic card and merchant as the
-                  fixture examples below, with both timestamps generated at call time instead of
-                  taken from the fixture. Replace the two timestamp values with the current moment in
-                  the shapes shown: originTimestamp is YYYY-MM-DD HH:MM:SS.ffffff and
-                  processingTimestamp is YYYY-MM-DD-HH.MM.SS.ffffff. The two values here are a
-                  well-formed moment so that the example validates against its own schema, and they
-                  stand for "now" rather than being a date to send literally. No bound relates the capture moment to the
-                  clock of this service; reject code 0103 is the whole of the test applied to it.
-                  The card number below is synthetic and resolves to nothing, so this document
-                  ships no number a reader could replay. Read a real one, which resolves to account
-                  00000000007 with a credit limit of 2065.00 and an expiry date of 2024-12-13, from
-                  record 1 of app/data/ASCII/carddata.txt with
-                  `cut -c1-16 app/data/ASCII/carddata.txt | sed -n '1p'`.
+                  THE EXAMPLE TO COPY FOR A LIVE CALL. It names its subject by account identifier, so
+                  it needs no card number and publishes none. Replace the two timestamp values with
+                  the moment of the call, in the shapes shown: originTimestamp is
+                  YYYY-MM-DD HH:MM:SS.ffffff and processingTimestamp is YYYY-MM-DD-HH.MM.SS.ffffff.
+                  The values below are a well-formed moment, so the example validates against its own
+                  schema, and they stand for "now" rather than being a date to send literally.
+
+
+                  What this body answers turns on one demo-only migration. It is approved on the
+                  shipped Compose and cluster settings, because
+                  src/main/resources/db/demo/V900__demo_expiry_extension.sql lifts every seeded
+                  account expiry to 2099-12-31. Account 00000000007 then accepts a capture date in
+                  any year, and 504.77 sits inside its credit limit of 2065.00 while both cycle
+                  accumulators hold their seeded 0.00.
+
+
+                  The same body is declined 0103 against the untouched fixture, whose newest expiry
+                  is 2025-12-28. No bound relates the capture moment to the clock of this service,
+                  and reject code 0103 is the whole of the test applied to it.
+
+
+                  A caller naming the card instead reads a real number from record 1 of
+                  app/data/ASCII/carddata.txt with
+                  `cut -c1-16 app/data/ASCII/carddata.txt | sed -n '1p'`. That number resolves to
+                  this same account.
                 value:
                   transactionTypeCode: '01'
                   transactionCategoryCode: '0001'
@@ -137,36 +156,20 @@ paths:
                   merchantName: Abshire-Lowe
                   merchantCity: North Enoshaven
                   merchantZip: '72112'
-                  cardNumber: '4000000000000000'
+                  accountId: '00000000007'
                   originTimestamp: '2026-01-15 12:00:00.000000'
                   processingTimestamp: '2026-01-15-12.00.00.000000'
               approvedAuthorization:
                 summary: >-
-                  Record 1 of app/data/ASCII/dailytran.txt, transaction 0000000000683580, presenting
-                  a card number. The card number below is synthetic and no seeded row carries it, so
-                  a caller substitutes the card of the account under test, read from
-                  app/data/ASCII/carddata.txt. The card of record 1 resolves to account 00000000007,
-                  whose credit limit is 2065.00 and whose expiry date is 2024-12-13, so each rule
-                  accepts.
-                value:
-                  transactionTypeCode: '01'
-                  transactionCategoryCode: '0001'
-                  source: POS TERM
-                  description: Purchase at Abshire-Lowe
-                  amount: '504.77'
-                  merchantId: '800000000'
-                  merchantName: Abshire-Lowe
-                  merchantCity: North Enoshaven
-                  merchantZip: '72112'
-                  cardNumber: '4000000000000000'
-                  originTimestamp: '2022-06-10 19:27:53.000000'
-                  processingTimestamp: '2022-06-10-19.27.53.000000'
-              byAccountIdentifier:
-                summary: >-
-                  The same purchase naming its subject by account identifier alone, which is the
-                  branch app/cbl/COTRN02C.cbl:L196-L209 takes first. The cross-reference is read by
-                  account 00000000007 through its alternate index, and the decision then runs on the
-                  card that row carries.
+                  Record 1 of app/data/ASCII/dailytran.txt, transaction 0000000000683580, naming its
+                  subject by account identifier. This is the branch app/cbl/COTRN02C.cbl:L196-L209
+                  takes first: the cross-reference is read by account through its alternate index,
+                  and the decision then runs on the card that row carries.
+
+
+                  This body is approved on the untouched fixture as well as on the demo settings. The
+                  capture date 2022-06-10 precedes the seeded expiry 2024-12-13 of account
+                  00000000007, and 504.77 sits inside its credit limit of 2065.00.
                 value:
                   transactionTypeCode: '01'
                   transactionCategoryCode: '0001'
@@ -180,13 +183,45 @@ paths:
                   accountId: '00000000007'
                   originTimestamp: '2022-06-10 19:27:53.000000'
                   processingTimestamp: '2022-06-10-19.27.53.000000'
+              byCardNumberUnresolved:
+                summary: >-
+                  The same purchase naming its subject by card number, which is the field
+                  app/cbl/CBTRN02C.cbl:L382-L383 keys the cross-reference on. The value below is
+                  synthetic and no seeded row carries it, so this body is declined 0100 exactly as
+                  published: the keyed read takes its INVALID KEY limb and resolves no account.
+
+
+                  That decline is also the one outcome publishing no event, because the event key is
+                  the account identifier and none was resolved. The decision row is still written.
+
+
+                  Substitute a real number, read from record 1 of app/data/ASCII/carddata.txt with
+                  `cut -c1-16 app/data/ASCII/carddata.txt | sed -n '1p'`, to reach the approval above
+                  through this branch instead.
+                value:
+                  transactionTypeCode: '01'
+                  transactionCategoryCode: '0001'
+                  source: POS TERM
+                  description: Purchase at Abshire-Lowe
+                  amount: '504.77'
+                  merchantId: '800000000'
+                  merchantName: Abshire-Lowe
+                  merchantCity: North Enoshaven
+                  merchantZip: '72112'
+                  cardNumber: '4000000000000000'
+                  originTimestamp: '2022-06-10 19:27:53.000000'
+                  processingTimestamp: '2022-06-10-19.27.53.000000'
               declinedOverlimit:
                 summary: >-
-                  The record carrying transaction 0000000148803688 in app/data/ASCII/dailytran.txt.
-                  The card number below is synthetic, as above, and the real one is read from
-                  app/data/ASCII/carddata.txt. It resolves to account 00000000030, whose credit
-                  limit is 120.00, and 203.44 exceeds it. Thirteen of the 300 fixture records
-                  decline this way, across four accounts.
+                  The record carrying transaction 0000000148803688 in app/data/ASCII/dailytran.txt,
+                  naming its subject by account identifier. Account 00000000030 holds a credit limit
+                  of 120.00, and 203.44 exceeds it, so this body is declined 0102 exactly as
+                  published. Thirteen of the 300 fixture records decline this way, across four
+                  accounts.
+
+
+                  The answer is the same on either setting. The credit rule runs before the expiry
+                  rule, so the demo expiry extension changes nothing here.
                 value:
                   transactionTypeCode: '01'
                   transactionCategoryCode: '0001'
@@ -197,14 +232,45 @@ paths:
                   merchantName: Crist Inc
                   merchantCity: Spencerchester
                   merchantZip: '18577'
-                  cardNumber: '4000000000000010'
+                  accountId: '00000000030'
                   originTimestamp: '2022-06-10 19:27:53.000000'
+                  processingTimestamp: '2022-06-10-19.27.53.000000'
+              invalidOriginDate:
+                summary: >-
+                  A refused request whose body its own schema accepts. 2022-02-30 satisfies the
+                  declared originTimestamp pattern, and February holds no thirtieth day, so the date
+                  policy of app/cbl/COTRN02C.cbl:L397-L400 declines the value.
+
+
+                  The answer is 422 carrying "Orig Date - Not a valid date...", which is the text
+                  app/cbl/COTRN02C.cbl:L401 writes. Nothing is decided and nothing is published,
+                  because the refusal stands before the rule chain is entered.
+                value:
+                  transactionTypeCode: '01'
+                  transactionCategoryCode: '0001'
+                  source: POS TERM
+                  description: Purchase at Abshire-Lowe
+                  amount: '504.77'
+                  merchantId: '800000000'
+                  merchantName: Abshire-Lowe
+                  merchantCity: North Enoshaven
+                  merchantZip: '72112'
+                  accountId: '00000000007'
+                  originTimestamp: '2022-02-30 19:27:53.000000'
                   processingTimestamp: '2022-06-10-19.27.53.000000'
               validationFailure:
                 summary: >-
                   The same purchase naming neither identifier. app/cbl/COTRN02C.cbl:L224 reaches its
                   WHEN OTHER branch for this body and app/cbl/COTRN02C.cbl:L226 writes the text the
                   422 answer carries.
+
+
+                  This is the one example here that its own schema refuses, and the omission is
+                  deliberate. The anyOf above requires one identifier, so a body naming neither
+                  cannot validate, and a valid body could not illustrate the refusal the 422 answer
+                  below is documented against. Two tests hold it that way, asserting it stays
+                  invalid, so it cannot quietly become a sendable body while still being described as
+                  a refusal. invalidOriginDate above is the refusal whose body does validate.
                 value:
                   transactionTypeCode: '01'
                   transactionCategoryCode: '0001'
@@ -242,7 +308,7 @@ paths:
           description: >-
             The request body does not read as this schema. Three conditions reach this status: the
             body is not JavaScript Object Notation (JSON) at all, it carries a property the schema
-            does not declare, or it sends a property declared as text with a JSON number or a boolean
+            does not declare. The third sends a property declared as text with a JSON number or a boolean
             in its place. The last of those is how the money rule is enforced rather than merely
             documented, since amount is a decimal string and never a JSON number.
 
@@ -309,7 +375,7 @@ paths:
             The credential was usable and the identity it names may not use this operation. Only
             the acquirer role and the administrator role authorize a transaction: the request names a
             card in its body rather than an identifier in its path, so no SCOPE_ authority can be
-            compared against it, and a cardholder identity carrying USER is refused here rather than
+            compared against it. A cardholder identity carrying USER is refused here rather than
             allowed to authorize against a card it does not hold. config/SecurityConfig writes this
             answer too, so it carries the same problem document and no challenge header: repeating
             the challenge would invite a caller to retry a credential that was already accepted.
@@ -497,6 +563,17 @@ paths:
                     error: Validation failed
                     messages:
                       - Account or Card Number must be entered...
+                    timestamp: '2022-06-10T19:27:53.412Z'
+                invalidOriginDate:
+                  summary: >-
+                    The answer to the invalidOriginDate request example above, whose capture date is
+                    well formed and is not a real date. The text is the one
+                    app/cbl/COTRN02C.cbl:L401 writes, and it names no value read from the request.
+                  value:
+                    status: 422
+                    error: Validation failed
+                    messages:
+                      - Orig Date - Not a valid date...
                     timestamp: '2022-06-10T19:27:53.412Z'
                 refusedRequest:
                   summary: >-
@@ -774,13 +851,11 @@ components:
 
             The pattern is the grammar FUNCTION NUMVAL-C reads, which app/cbl/COTRN02C.cbl:L383 and
             app/cbl/COTRN02C.cbl:L456 apply to this field. It is wider than the twelve-character
-            screen form app/cbl/COTRN02C.cbl:L339-L351 tests positionally: leading and trailing
-            spaces, one sign before or after the digits, one currency sign before or after them,
+            screen form app/cbl/COTRN02C.cbl:L339-L351 tests positionally. It accepts leading and trailing spaces, one sign before or after the digits, one currency sign before or after them,
             grouping commas inside the integer part, and CR or DB in place of a trailing minus. So
             504.77, 504.7, 504, $1,234.56, +00000504.77 and 125.00CR are each accepted and carry the
             value their digits name. A sign appears before the digits or after them and never in both
-            places, and at most one currency sign appears; the pattern states both of those, and a
-            body carrying two signs or two currency signs is refused with 400. maxLength is the
+            places, and at most one currency sign appears; the pattern states both of those. A body carrying two signs or two currency signs is refused with 400. maxLength is the
             argument ceiling libs/cobol-compat NumvalParser reads.
 
 
@@ -891,8 +966,7 @@ components:
             is TPROCDTI, validated at app/cbl/COTRN02C.cbl:L409-L423 with the shape
             app/cbl/COTRN02C.cbl:L375 states. The twenty-six character form is
             DALYTRAN-PROC-TS PIC X(26) at app/cpy/CVTRA06Y.cpy:L17, holding a dash at position 11 and
-            points at positions 14, 17 and 20, with two significant fractional digits then four zero
-            characters: app/cbl/CBTRN02C.cbl:L173 declares DB2-MIL PIC 9(002),
+            points at positions 14, 17 and 20, with two significant fractional digits then four zero characters. app/cbl/CBTRN02C.cbl:L173 declares DB2-MIL PIC 9(002),
             app/cbl/CBTRN02C.cbl:L174 declares DB2-REST PIC X(04), and app/cbl/CBTRN02C.cbl:L701
             fills that remainder with zeros.
 
@@ -966,10 +1040,11 @@ components:
         one.
 
 
-        The 0100 branch is also the one decided outcome that publishes no event, for the same reason:
-        every event here names an account and is keyed on one, and this branch resolved none. The
-        outcome is still recorded, in unresolved_card_attempt and in authorization_decision with a
-        null event identifier, so a body carrying 0100 is a decision and not a lost request.
+        The 0100 branch is the one decided outcome whose event names no account, for the same reason:
+        it resolved none. Its decline travels under schemas/transaction-declined-v2.json keyed on the
+        transaction identifier, and the outcome is recorded in unresolved_card_attempt and in
+        authorization_decision naming that event, so a body carrying 0100 is a decision with an event
+        behind it and not a lost request.
       allOf:
         - $ref: '#/components/schemas/AuthorizationResponse'
         - type: object

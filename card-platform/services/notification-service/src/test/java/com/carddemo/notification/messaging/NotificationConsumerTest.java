@@ -139,7 +139,10 @@ class NotificationConsumerTest {
 
             InOrder order = inOrder(processedEvents, statementTransactions, acknowledgment);
             order.verify(processedEvents).claimEvent(any(), any(), eq("transaction.posted"));
-            order.verify(statementTransactions).save(any());
+            // One upsert statement, inside the same transaction as the claim above it.
+            order.verify(statementTransactions).upsertRow(anyString(), anyString(), anyString(),
+                    anyString(), anyString(), anyString(), anyString(), any(), anyString(),
+                    anyString(), anyString(), anyString(), anyString(), anyString());
             order.verify(acknowledgment).acknowledge();
         }
 
@@ -158,7 +161,11 @@ class NotificationConsumerTest {
         @DisplayName("a failing write leaves the offset uncommitted")
         void aFailingWriteLeavesTheOffsetUncommitted() {
             when(processedEvents.claimEvent(any(), any(), anyString())).thenReturn(CLAIM_TAKEN);
-            when(statementTransactions.save(any()))
+            // The write is one upsert statement now, not a read followed by a merge, so the fault is
+            // injected where the row is actually stored.
+            when(statementTransactions.upsertRow(anyString(), anyString(), anyString(), anyString(),
+                    anyString(), anyString(), anyString(), any(), anyString(), anyString(),
+                    anyString(), anyString(), anyString(), anyString()))
                     .thenThrow(new DataAccessResourceFailureException("read model unreachable"));
 
             assertThrows(DataAccessResourceFailureException.class, () ->
