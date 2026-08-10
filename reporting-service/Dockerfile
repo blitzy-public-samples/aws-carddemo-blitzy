@@ -39,7 +39,8 @@
 
 # --- Stage 1: build the executable fat jar with the Maven reactor ------------
 # Apache Maven 3.9.16 on Eclipse Temurin (JDK 21), pinned per AAP 0.5.1.
-FROM maven:3.9.16-eclipse-temurin-21 AS build
+# Digest-pinned build image so the compiler/toolchain cannot drift between builds.
+FROM maven:3.9.16-eclipse-temurin-21@sha256:c07f7ccfb8ca6c9fa29ee523f00afa7d2ca6132c92f8652c4aebb5ee3491f502 AS build
 
 WORKDIR /build
 
@@ -76,7 +77,11 @@ RUN mvn -B -ntp -pl reporting-service -am -DskipTests clean package
 # --- Stage 2: slim runtime image ---------------------------------------------
 # Runtime base pinned to eclipse-temurin:21-jre per AAP 0.5.1 (Service base
 # image). JRE-only keeps the image small.
-FROM eclipse-temurin:21-jre
+# Digest-pinned base image: the `21-jre` tag is mutable, so the digest is what
+# makes this build reproducible and makes a base-image swap visible in review.
+# Digest resolves to Temurin 21.0.11+10, the newest published 21-jre build
+# (Adoptium has no 21.0.12 container image); rationale in docs/decision-log.md.
+FROM eclipse-temurin:21-jre@sha256:8cef5fc7bebe421363ab543a2f4db5caf7d119d8db67d56b0f56c485d2de4d55
 
 # Run as a dedicated non-root system user (security best practice; the image
 # never runs as root). The docker-compose.yml backend anchor additionally pins

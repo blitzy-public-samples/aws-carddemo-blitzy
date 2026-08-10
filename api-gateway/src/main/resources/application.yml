@@ -75,6 +75,31 @@ spring:
     gateway:
       server:
         webmvc:
+          # Which peers may contribute to the X-Forwarded-* headers this gateway builds
+          # for the downstream hop. Spring Cloud Gateway logs a WARN while this is unset
+          # ("Untrusted hosts might be added to X-Forwarded header") and falls back to its
+          # deprecated constructor, which appends the caller's address unconditionally: a
+          # value an internet client controls then rides into the header the downstream
+          # services and their logs read. With the pattern set, an address that does not
+          # match is refused and recorded ("Remote address not trusted").
+          #
+          # The default trusts loopback and the RFC 1918 ranges, which is exactly where
+          # the legitimate hops live in the shipped topologies: the SPA's nginx container
+          # on the compose bridge (172.16/12), and the ingress / service network in
+          # Kubernetes. A deployment whose edge sits outside those ranges overrides it
+          # with SPRING_CLOUD_GATEWAY_SERVER_WEBMVC_TRUSTED_PROXIES.
+          #
+          # NOTE: this value deliberately carries no ${...:default} placeholder. The regex
+          # contains {1,3} quantifiers, and the placeholder parser would end the default at
+          # the first '}' inside one of them and silently truncate the pattern. Environment
+          # overriding does not need a placeholder - Boot's relaxed binding already maps
+          # the environment variable onto this key.
+          #
+          # This does NOT make the gateway trust a forwarded address for anything it did
+          # not already: the rate limiter keys on getRemoteAddr() and the audit trail
+          # records the peer address, neither of which consults these headers (see
+          # RateLimitFilter and docs/decision-log.md).
+          trusted-proxies: '127\.0\.0\.1|::1|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}'
           routes:
             - id: auth-service
               uri: ${AUTH_SERVICE_URI:http://localhost:8081}
@@ -269,6 +294,11 @@ spring:
     gateway:
       server:
         webmvc:
+          # Repeated for this profile for the same reason the route table is: Spring
+          # REPLACES a list/scalar for the active profile rather than merging it, and the
+          # docker topology's legitimate peer (the SPA nginx container on the compose
+          # bridge) must stay trusted. Same pattern, same rationale as the default profile.
+          trusted-proxies: '127\.0\.0\.1|::1|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}'
           routes:
             - id: auth-service
               uri: ${AUTH_SERVICE_URI:http://auth-service:8080}

@@ -9,7 +9,7 @@
     <parent>
         <groupId>com.carddemo</groupId>
         <artifactId>carddemo-parent</artifactId>
-        <version>1.0.0-SNAPSHOT</version>
+        <version>1.0.0</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 
@@ -32,6 +32,30 @@
     -->
     <dependencyManagement>
         <dependencies>
+            <!--
+              Security override for BouncyCastle, declared BEFORE the imported BOM
+              because a version stated directly in a module's own dependencyManagement
+              wins over one that arrives through an import.
+
+              bcprov-jdk18on enters this module only, transitively, through
+              spring-cloud-starter-gateway-server-webmvc (exactly one row in the
+              physical SBOM; no other service resolves it). The train's managed 1.81.1
+              is affected by CVE-2026-14682 (HIGH 8.7, CWE-789 excessive allocation in
+              DefiniteLengthInputStream.toByteArray) and CVE-2026-0636 (LDAP injection,
+              CWE-90). 1.84 fixes only the latter, so 1.85 is the floor.
+
+              Neither is reachable here - BouncyCastle is never registered as a JCE
+              provider, there is no LDAP surface, and the PII cipher is JDK-native
+              SunJCE AES/GCM/NoPadding - but a fixed version exists, and shipping a
+              known-vulnerable artifact is a release failure independently of
+              reachability. The pin is a floor, not a downgrade: if a future train
+              manages a HIGHER version, remove this block rather than hold it back.
+            -->
+            <dependency>
+                <groupId>org.bouncycastle</groupId>
+                <artifactId>bcprov-jdk18on</artifactId>
+                <version>1.85</version>
+            </dependency>
             <dependency>
                 <groupId>org.springframework.cloud</groupId>
                 <artifactId>spring-cloud-dependencies</artifactId>

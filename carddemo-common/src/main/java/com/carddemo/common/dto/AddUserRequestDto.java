@@ -16,6 +16,7 @@
 package com.carddemo.common.dto;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
+import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 
 /**
@@ -34,8 +35,20 @@ import jakarta.validation.constraints.Size;
  */
 public class AddUserRequestDto {
 
-    /** :purpose: the entered user id (``SEC-USR-ID`` ``PIC X(08)``). */
+    /**
+     * :purpose: the entered user id (``SEC-USR-ID`` ``PIC X(08)``).
+     * :note: The character set is restricted to letters and digits, which is what an EBCDIC
+     *     3270 terminal could key into this field. Without it an administrator could create
+     *     the id ``U+0410 CYRILLIC CAPITAL A`` + ``DMIN001``: a distinct row that signs on
+     *     with ``ROLE_ADMIN`` yet renders identically to the legitimate ``ADMIN001`` in every
+     *     log line, dashboard panel and report, because the audit trail keys on the user id
+     *     alone (CWE-1007). The pattern tolerates an absent, empty or all-blank value so the
+     *     verbatim ``COUSR01C`` presence edit in the service still owns that case and keeps
+     *     its legacy literal; ``@Size`` still owns anything longer than the field width.
+     */
     @Size(max = 8, message = "User ID must be at most 8 characters")
+    @Pattern(regexp = "\\s*[A-Za-z0-9]{0,8}\\s*",
+             message = "User ID must contain only letters and digits")
     private String userId;
 
     /** :purpose: the entered first name (``SEC-USR-FNAME`` ``PIC X(20)``). */

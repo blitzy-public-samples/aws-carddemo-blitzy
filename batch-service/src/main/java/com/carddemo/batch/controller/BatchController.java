@@ -17,6 +17,7 @@
 package com.carddemo.batch.controller;
 
 import com.carddemo.batch.config.JobSchedulingConfig;
+import com.carddemo.common.batch.BatchExitMessageSanitizer;
 import com.carddemo.common.dto.BatchJobExecutionDto;
 import com.carddemo.common.exception.CardDemoException;
 import com.carddemo.common.exception.RecordNotFoundException;
@@ -242,6 +243,9 @@ public class BatchController {
      * :param jobName: the job's name.
      * :param execution: the execution to project.
      * :returns: the populated {@link BatchJobExecutionDto}.
+     * :note: The exit description passes through {@link BatchExitMessageSanitizer}: Spring
+     *  Batch records the stack trace of the cause there for a failed run, and publishing it
+     *  handed the caller the exception type, the generated SQL and the framework frames.
      */
     private BatchJobExecutionDto toDto(String jobName, JobExecution execution) {
         return new BatchJobExecutionDto(
@@ -250,7 +254,9 @@ public class BatchController {
                 execution.getJobInstance() == null ? null : execution.getJobInstance().getInstanceId(),
                 execution.getStatus() == null ? null : execution.getStatus().name(),
                 execution.getExitStatus() == null ? null : execution.getExitStatus().getExitCode(),
-                execution.getExitStatus() == null ? null : execution.getExitStatus().getExitDescription());
+                execution.getExitStatus() == null
+                        ? null
+                        : BatchExitMessageSanitizer.sanitize(execution.getExitStatus().getExitDescription()));
     }
 
 }

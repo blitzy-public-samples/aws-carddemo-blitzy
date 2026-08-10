@@ -74,12 +74,25 @@ public class SecurityConfig {
     private static final String ANY_JOB_PATH = "/batch/jobs/*";
 
     /**
+     * :purpose: The execution-status read surface. It reports a run's internals -- status,
+     *     exit code and exit description -- for ANY execution id, which is operator
+     *     information: on the mainframe the equivalent was the JES spool of a job an operator
+     *     submitted, never a screen an ordinary signed-on user could reach. It carries the
+     *     administrator authority, matching the identical capability in transaction-service
+     *     (``/transactions/batch/**`` → ``hasRole("ADMIN")``). Leaving it at
+     *     ``authenticated()`` let an ordinary user enumerate every execution -- and read the
+     *     failure diagnostic of each one.
+     */
+    private static final String JOB_EXECUTION_PATH = "/batch/jobs/executions/**";
+
+    /**
      * :purpose: Builds the stateless REST security filter chain: applies the shared
      *     hardening (session-derived principal, no persisted security context, no
      *     saved-request cache, hardened response headers, ``401`` entry point,
      *     audited denials), permits the anonymous health endpoints and the container
      *     ``ERROR`` dispatch, restricts each job launch to the authority its legacy
-     *     submission path carried, and requires an authenticated principal for every
+     *     submission path carried, restricts the execution-status read surface to the
+     *     administrator authority, and requires an authenticated principal for every
      *     other request.
      * :param http: the Spring Security ``HttpSecurity`` builder.
      * :returns: the configured ``SecurityFilterChain``.
@@ -102,6 +115,11 @@ public class SecurityConfig {
                 // first: the wildcard rule below would otherwise claim it.
                 .requestMatchers(HttpMethod.POST, USER_LAUNCHABLE_JOB_PATH)
                     .hasAnyRole("USER", "ADMIN")
+                // Reading a run's internals is an operator capability, so it is matched
+                // BEFORE the launch wildcard (which is POST-only and would otherwise leave
+                // this GET to the catch-all) and gated exactly as transaction-service gates
+                // the same capability.
+                .requestMatchers(JOB_EXECUTION_PATH).hasRole("ADMIN")
                 .requestMatchers(HttpMethod.POST, ANY_JOB_PATH).hasRole("ADMIN")
                 .anyRequest().authenticated())
             .httpBasic(httpBasic -> httpBasic.disable())

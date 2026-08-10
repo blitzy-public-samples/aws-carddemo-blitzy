@@ -22,9 +22,11 @@ import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.carddemo.batch.controller.BatchController;
+import com.carddemo.common.batch.BatchExitMessageSanitizer;
 import com.carddemo.common.config.GlobalExceptionHandler;
 import com.carddemo.common.dto.SessionAttributes;
 import com.carddemo.common.dto.SessionContext;
@@ -200,6 +202,99 @@ class BatchLaunchAuthorizationTest {
                 .andExpect(status().isUnauthorized());
 
         verifyNoInteractions(jobSchedulingConfig);
+    }
+
+    /**
+     * :purpose: The execution-status read surface carries the operator authority. A signed-on
+     *     USER could otherwise enumerate every run and read its exit description, which for a
+     *     failed run is the stack trace of the cause; the same capability is already
+     *     ADMIN-only in transaction-service, so the two must not disagree.
+     */
+    @Test
+    @DisplayName("a signed-on USER is refused the execution-status read surface with 403")
+    void userIsRefusedTheExecutionStatusSurface() throws Exception {
+        MockHttpSession session =
+                signedOnSession("USER0001", SessionContext.UserType.CDEMO_USRTYP_USER);
+
+        mockMvc.perform(get("/batch/jobs/executions/{id}", 6L).session(session))
+                .andExpect(status().isForbidden());
+
+        verifyNoInteractions(jobRepository);
+    }
+
+    /**
+     * :purpose: An anonymous caller is refused the execution-status read surface before any
+     *     lookup happens.
+     */
+    @Test
+    @DisplayName("an anonymous caller is refused the execution-status read surface with 401")
+    void anonymousIsRefusedTheExecutionStatusSurface() throws Exception {
+        mockMvc.perform(get("/batch/jobs/executions/{id}", 6L))
+                .andExpect(status().isUnauthorized());
+
+        verifyNoInteractions(jobRepository);
+    }
+
+    /**
+     * :purpose: An ADMIN reads the run, and even for that principal the response carries the
+     *     OUTCOME rather than the diagnostic: the stack trace Spring Batch records as the exit
+     *     description of a failed run is replaced, so the exception type, the generated SQL
+     *     and the framework frames never reach the wire from any principal.
+     */
+    @Test
+    @DisplayName("an ADMIN reads the run and the failure stack trace is not published")
+    void adminReadsTheRunWithoutTheFailureStackTrace() throws Exception {
+        MockHttpSession session =
+                signedOnSession("ADMIN001", SessionContext.UserType.CDEMO_USRTYP_ADMIN);
+        when(jobRepository.getJobExecution(6L)).thenReturn(failedExecution());
+
+        mockMvc.perform(get("/batch/jobs/executions/{id}", 6L).session(session))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("FAILED"))
+                .andExpect(jsonPath("$.exitMessage")
+                        .value(BatchExitMessageSanitizer.WITHHELD_MESSAGE));
+    }
+
+    /**
+     * :purpose: The legacy-visible outcome text -- the ``CBTRN02C`` reject tally the posting
+     *     job's own listener writes -- is still published verbatim, so sanitizing the
+     *     diagnostic did not cost the caller the return code the mainframe reported.
+     */
+    @Test
+    @DisplayName("the legacy return-code text is still published unchanged")
+    void legacyReturnCodeTextIsPublishedUnchanged() throws Exception {
+        MockHttpSession session =
+                signedOnSession("ADMIN001", SessionContext.UserType.CDEMO_USRTYP_ADMIN);
+        JobExecution execution = new JobExecution(3L, new JobInstance(3L, "job"), new JobParameters());
+        execution.setStatus(BatchStatus.COMPLETED);
+        execution.setExitStatus(new ExitStatus("COMPLETED_WITH_REJECTS",
+                "Return code 4: 38 transaction(s) rejected"));
+        when(jobRepository.getJobExecution(3L)).thenReturn(execution);
+
+        mockMvc.perform(get("/batch/jobs/executions/{id}", 3L).session(session))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.exitCode").value("COMPLETED_WITH_REJECTS"))
+                .andExpect(jsonPath("$.exitMessage")
+                        .value("Return code 4: 38 transaction(s) rejected"));
+    }
+
+    /**
+     * :purpose: Build the execution a failed run leaves behind, with the exit description
+     *     Spring Batch actually recorded for the observed failure: the exception type, the
+     *     generated UPDATE statement and a framework frame.
+     * :returns: a FAILED {@link JobExecution} carrying that description.
+     */
+    private static JobExecution failedExecution() {
+        JobExecution execution = new JobExecution(6L, new JobInstance(6L, "interestCalculationJob"),
+                new JobParameters());
+        execution.setStatus(BatchStatus.FAILED);
+        execution.setExitStatus(new ExitStatus("FAILED",
+                "org.springframework.orm.ObjectOptimisticLockingFailureException: Unexpected row "
+                        + "count (expected row count 1 but was 0) [update accounts set "
+                        + "acct_active_status=?,version=? where acct_id=? and version=?] for entity "
+                        + "[com.carddemo.common.domain.Account with id '6']\n\tat "
+                        + "org.springframework.orm.jpa.vendor.HibernateJpaDialect.java:223"));
+        return execution;
     }
 
     /**

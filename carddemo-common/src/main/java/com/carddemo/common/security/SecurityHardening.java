@@ -61,6 +61,65 @@ public final class SecurityHardening {
             "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()";
 
     /**
+     * :purpose: Request header a TLS-terminating edge (ingress, load balancer, or the SPA's
+     *     nginx) sets to report the scheme the CLIENT used, which is the only way a service
+     *     behind that edge can know the request arrived over TLS.
+     */
+    private static final String FORWARDED_PROTO_HEADER = "X-Forwarded-Proto";
+
+    /**
+     * :purpose: The value of {@link #FORWARDED_PROTO_HEADER} that means the client hop was TLS.
+     */
+    private static final String HTTPS_SCHEME = "https";
+
+    /**
+     * :purpose: ``max-age`` published with ``Strict-Transport-Security``, in seconds: one year,
+     *     the value the HSTS preload requirements state.
+     */
+    private static final long HSTS_MAX_AGE_SECONDS = 31_536_000L;
+
+    /**
+     * :purpose: Decide whether a response may assert HSTS. Spring Security's default matcher
+     *     is ``request.isSecure()`` alone, which is FALSE for every request in this topology
+     *     because TLS is terminated at the edge and the hop into the service is plain HTTP --
+     *     so no surface emitted the header at all, and AAP 0.6.7 ("all traffic uses TLS")
+     *     had no enforcement on the wire. This matcher additionally accepts a request whose
+     *     edge reported ``X-Forwarded-Proto: https``.
+     * :note: Consulting the forwarded header HERE, in the one header writer that needs it,
+     *     is deliberate and is NOT the same as enabling ``server.forward-headers-strategy``.
+     *     That property installs ``ForwardedHeaderFilter``, which also rewrites
+     *     ``getRemoteAddr()`` from ``X-Forwarded-For`` -- a header an internet client controls
+     *     -- and the gateway's rate limiter and the security audit trail both read the remote
+     *     address. Enabling it would hand an attacker a per-request rate-limit key and would
+     *     write spoofed source addresses into the audit log. Nothing but the HSTS decision
+     *     trusts this header, and an asserted HSTS policy is not something an attacker can
+     *     turn against another caller: a response's headers are derived from that request's
+     *     own headers.
+     */
+    private static final org.springframework.security.web.util.matcher.RequestMatcher HSTS_MATCHER =
+            request -> request.isSecure() || forwardedOverHttps(request);
+
+    /**
+     * :purpose: Report whether the edge said the CLIENT hop used TLS.
+     * :param request: the current request.
+     * :returns: ``true`` when ``X-Forwarded-Proto`` names ``https`` for the client hop.
+     * :note: Only the FIRST value is read. Each proxy appends its own hop, and the api-gateway
+     *     appends too (``x-forwarded-request-headers-filter.protoAppend`` defaults to on), so a
+     *     request that entered over TLS and was proxied twice arrives as ``https,http``. The
+     *     leftmost entry is the client hop by convention, and comparing the whole header would
+     *     have made the header silent for exactly the multi-hop topology it exists to serve.
+     */
+    private static boolean forwardedOverHttps(jakarta.servlet.http.HttpServletRequest request) {
+        String forwarded = request.getHeader(FORWARDED_PROTO_HEADER);
+        if (forwarded == null) {
+            return false;
+        }
+        int separator = forwarded.indexOf(',');
+        String clientHop = separator < 0 ? forwarded : forwarded.substring(0, separator);
+        return HTTPS_SCHEME.equalsIgnoreCase(clientHop.trim());
+    }
+
+    /**
      * :purpose: Request-scoped security-context repository shared by every CardDemo
      *     chain. It is stateless and holds nothing between requests, so a single
      *     instance is safe; using one instance guarantees the chain and the
@@ -133,19 +192,42 @@ public final class SecurityHardening {
             //    an unauthenticated one is handed to the 401 entry point. Restoring it later
             //    left every token-less write looking unauthenticated.
             .addFilterBefore(sessionAuthenticationFilter, CsrfFilter.class)
-            .headers(headers -> headers
-                .contentSecurityPolicy(csp -> csp.policyDirectives(API_CONTENT_SECURITY_POLICY))
-                .referrerPolicy(referrer -> referrer.policy(
-                        org.springframework.security.web.header.writers.ReferrerPolicyHeaderWriter
-                                .ReferrerPolicy.NO_REFERRER))
-                .permissionsPolicyHeader(permissions -> permissions.policy(PERMISSIONS_POLICY))
-                .cacheControl(cacheControl -> {
-                    // Spring Security's default no-store/no-cache directives are kept:
-                    // API payloads can carry account, card, and customer data.
-                }))
+            .headers(SecurityHardening::applyResponseHeaders)
             .exceptionHandling(exceptions -> exceptions
                 .authenticationEntryPoint(new AuditingAuthenticationEntryPoint())
                 .accessDeniedHandler(new AuditingAccessDeniedHandler()));
         return http;
+    }
+
+    /**
+     * :purpose: Write the hardened response headers. Extracted so that a chain which is NOT
+     *     the business API chain -- the management/telemetry chain, which has its own
+     *     ``securityMatcher`` and therefore its own header configurer -- emits the IDENTICAL
+     *     set. It previously did not: the ``/actuator/prometheus`` ``401`` challenge carried
+     *     ``X-Content-Type-Options``, ``X-Frame-Options`` and ``Cache-Control`` but no CSP,
+     *     no ``Referrer-Policy`` and no ``Permissions-Policy``, so one surface of every
+     *     service answered with a weaker header set than the rest.
+     * :param headers: the header configurer of the chain being hardened.
+     * :returns: nothing; the configurer is mutated in place.
+     */
+    public static void applyResponseHeaders(
+            org.springframework.security.config.annotation.web.configurers.HeadersConfigurer<HttpSecurity> headers) {
+        headers
+            .contentSecurityPolicy(csp -> csp.policyDirectives(API_CONTENT_SECURITY_POLICY))
+            .referrerPolicy(referrer -> referrer.policy(
+                    org.springframework.security.web.header.writers.ReferrerPolicyHeaderWriter
+                            .ReferrerPolicy.NO_REFERRER))
+            .permissionsPolicyHeader(permissions -> permissions.policy(PERMISSIONS_POLICY))
+            // HSTS is asserted whenever the edge reports the client hop was TLS. Spring
+            // Security's default matcher (isSecure() only) never matched behind a
+            // terminating proxy, so the header was absent everywhere.
+            .httpStrictTransportSecurity(hsts -> hsts
+                    .requestMatcher(HSTS_MATCHER)
+                    .maxAgeInSeconds(HSTS_MAX_AGE_SECONDS)
+                    .includeSubDomains(true))
+            .cacheControl(cacheControl -> {
+                // Spring Security's default no-store/no-cache directives are kept:
+                // API payloads can carry account, card, and customer data.
+            });
     }
 }

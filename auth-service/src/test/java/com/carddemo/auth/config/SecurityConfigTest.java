@@ -334,6 +334,39 @@ class SecurityConfigTest {
     }
 
     /**
+     * :purpose: ``Strict-Transport-Security`` is asserted when the TLS-terminating edge reports
+     *   the client hop as ``https``, and stays ABSENT on a genuinely cleartext request. Spring
+     *   Security's default matcher is ``request.isSecure()`` alone, which is false for every
+     *   request in this topology because TLS terminates at the edge, so no surface emitted the
+     *   header at all and AAP 0.6.7 ("all traffic uses TLS") had no expression on the wire.
+     *   Emitting it unconditionally instead would have been the wrong repair: a policy served
+     *   over cleartext is ignored by browsers and misstates what this listener can promise.
+     */
+    @Test
+    @DisplayName("HSTS is emitted for a forwarded-HTTPS request and withheld on cleartext")
+    void hstsFollowsTheForwardedScheme() throws Exception {
+        mockMvc.perform(get("/auth/profile"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(header().doesNotExist("Strict-Transport-Security"));
+
+        mockMvc.perform(get("/auth/profile").header("X-Forwarded-Proto", "https"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(header().string("Strict-Transport-Security",
+                        "max-age=31536000 ; includeSubDomains"));
+
+        // Each hop appends its own scheme, and the api-gateway appends too, so a request that
+        // entered over TLS and was proxied twice arrives as "https,http". The leftmost entry is
+        // the client hop; comparing the whole header would silence HSTS for exactly the
+        // multi-hop topology it exists to serve.
+        mockMvc.perform(get("/auth/profile").header("X-Forwarded-Proto", "https,http"))
+                .andExpect(header().string("Strict-Transport-Security",
+                        "max-age=31536000 ; includeSubDomains"));
+
+        mockMvc.perform(get("/auth/profile").header("X-Forwarded-Proto", "http"))
+                .andExpect(header().doesNotExist("Strict-Transport-Security"));
+    }
+
+    /**
      * :purpose: The same hardening headers accompany a successful public sign-on, so the
      *   protections are not limited to rejections.
      */

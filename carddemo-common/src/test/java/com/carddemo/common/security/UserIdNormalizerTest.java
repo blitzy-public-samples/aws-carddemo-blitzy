@@ -118,4 +118,35 @@ class UserIdNormalizerTest {
         String once = UserIdNormalizer.normalize("  admin001 ");
         assertThat(UserIdNormalizer.normalize(once)).isEqualTo(once);
     }
+
+    /**
+     * :purpose: A Unicode compatibility form must fold to the character it stands for BEFORE the
+     *   id is stored or looked up. Two ids a reviewer reads as the same string would otherwise be
+     *   two rows and two principals: fullwidth ``ＡDMIN001`` stored beside ``ADMIN001``.
+     */
+    @Test
+    @DisplayName("NFKC folds a fullwidth id to its canonical form")
+    void nfkcFoldsFullwidthCharacters() {
+        // U+FF21 FULLWIDTH LATIN CAPITAL LETTER A followed by "DMIN001".
+        String fullwidth = "\uFF21DMIN001";
+
+        assertThat(UserIdNormalizer.normalize(fullwidth)).isEqualTo("ADMIN001");
+    }
+
+    /**
+     * :purpose: NFKC deliberately does NOT equate characters from different scripts, so
+     *   canonicalization alone cannot be the homoglyph defence. This test pins that boundary:
+     *   the Cyrillic id stays distinct here, and is refused instead by the add-user request DTO
+     *   pattern and by the ``chk_sec_usr_id_charset`` database constraint. If a future change
+     *   moved the charset rule into this class, this expectation is what would flag it.
+     */
+    @Test
+    @DisplayName("NFKC does not fold a Cyrillic homoglyph into its Latin lookalike")
+    void nfkcDoesNotFoldCrossScriptHomoglyphs() {
+        // U+0410 CYRILLIC CAPITAL LETTER A followed by "DMIN001".
+        String cyrillic = "\u0410DMIN001";
+
+        assertThat(UserIdNormalizer.normalize(cyrillic)).isNotEqualTo("ADMIN001");
+        assertThat(UserIdNormalizer.normalize(cyrillic)).isEqualTo(cyrillic);
+    }
 }

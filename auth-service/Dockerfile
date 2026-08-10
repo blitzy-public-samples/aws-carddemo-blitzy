@@ -4,7 +4,11 @@
 # build context excludes the sibling carddemo-common source, so this image copies
 # the pre-built target/auth-service.jar instead of compiling here.
 
-FROM eclipse-temurin:21-jre
+# Digest-pinned base image: the `21-jre` tag is mutable, so the digest is what
+# makes this build reproducible and makes a base-image swap visible in review.
+# Digest resolves to Temurin 21.0.11+10, the newest published 21-jre build
+# (Adoptium has no 21.0.12 container image); rationale in docs/decision-log.md.
+FROM eclipse-temurin:21-jre@sha256:8cef5fc7bebe421363ab543a2f4db5caf7d119d8db67d56b0f56c485d2de4d55
 
 WORKDIR /app
 

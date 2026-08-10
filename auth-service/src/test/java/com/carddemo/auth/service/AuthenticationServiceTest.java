@@ -424,17 +424,17 @@ class AuthenticationServiceTest {
     /**
      * :purpose: A sign-on presenting a session that carries no sign-on context -- one this
      *  service cannot recognise as signed on, because it expired or ``UserService`` revoked
-     *  it in place -- REUSES that record, emptied of every attribute, and neither rotates
-     *  nor invalidates it. Rotation deletes the store entry, and the gateway that proxied
-     *  the call still holds its own handle on it: its save then failed outside any
-     *  exception handler, the caller was answered ``500``, and because the replacement id
-     *  was never persisted every later request on it was refused, so the operator could
-     *  never sign on again. Emptying the record keeps the pre-authentication state from
-     *  surviving without breaking the other participant.
+     *  it in place -- ROTATES that record's id and empties every attribute from it. Both
+     *  halves matter: emptying keeps pre-authentication state from surviving, and rotating
+     *  keeps an id the caller knew BEFORE authentication from becoming the authenticated one
+     *  (session fixation, CWE-384). Rotation deletes the previous store entry and the
+     *  gateway hop still holds its own handle on it; that write-back is absorbed by
+     *  ``RemovedSessionTolerantSessionRepository``, so rotation no longer turns a successful
+     *  sign-on into a ``500``.
      */
     @Test
-    @DisplayName("Sign-on over a context-less session reuses it, emptied, without rotating")
-    void signon_success_reusesContextLessSessionWithoutRotating() {
+    @DisplayName("Sign-on over a context-less session rotates its id and empties it")
+    void signon_success_rotatesContextLessSessionAndEmptiesIt() {
         SecurityUser user = mock(SecurityUser.class);
         when(session.getId()).thenReturn("reused-id");
         when(session.getAttributeNames())
@@ -451,15 +451,86 @@ class AuthenticationServiceTest {
 
         authenticationService.signon(new SignonRequestDto("admin001", "password"), httpRequest);
 
-        // The shared record is neither rotated nor destroyed, so no other participant of
-        // this request loses the entry it is holding.
-        verify(httpRequest, never()).changeSessionId();
+        // The identifier is replaced in place: the record survives for the other
+        // participants of this request, but the id the caller presented does not.
+        verify(httpRequest).changeSessionId();
+        // In-place rotation succeeded, so neither fallback path is taken.
         verify(httpRequest, never()).getSession(true);
         verify(session, never()).invalidate();
         // Nothing written before sign-on survives into the authenticated session.
         verify(session).removeAttribute("stale.attribute");
         verify(session).setAttribute(SESSION_KEY, ctx);
         verify(sessionPrincipalIndex).register("ADMIN001", "reused-id");
+    }
+
+    /**
+     * :purpose: Rotation is observable end to end: the sign-on context is written to the
+     *  session the POST-rotation id names, that id is the one indexed for the principal, and
+     *  the index entry naming the PRE-rotation id -- the id an attacker could have supplied
+     *  -- is removed. This is the assertion that fails if ``rotateSession`` ever degrades to
+     *  reusing the presented id again (session fixation, CWE-384).
+     */
+    @Test
+    @DisplayName("Sign-on indexes the post-rotation id and drops the pre-rotation one")
+    void signon_success_indexesRotatedIdAndDropsPresentedId() {
+        SessionContext live = new SessionContext();
+        live.setUserId("ADMIN001");
+        live.setUserType(SessionContext.UserType.CDEMO_USRTYP_ADMIN);
+        SecurityUser user = mock(SecurityUser.class);
+        // First read is the PRESENTED id, captured before rotation; the second is the id
+        // rotation minted, which is what the principal index must name.
+        when(session.getId()).thenReturn("attacker-known-id", "rotated-id");
+        when(httpRequest.getSession(false)).thenReturn(session);
+        when(session.getAttribute(SESSION_KEY)).thenReturn(live);
+        when(session.getAttributeNames()).thenReturn(Collections.enumeration(List.of(SESSION_KEY)));
+        when(securityUserRepository.findBySecUsrId("ADMIN001")).thenReturn(Optional.of(user));
+        when(user.getSecUsrPwd()).thenReturn(STORED_HASH);
+        when(passwordEncoder.matches("password", STORED_HASH)).thenReturn(true);
+        SessionContext fresh = new SessionContext();
+        fresh.setUserId("ADMIN001");
+        when(signonMapper.toSignonResponse(user))
+                .thenReturn(new SignonResponseDto("ADMIN001", SessionContext.UserType.CDEMO_USRTYP_ADMIN, "CA00"));
+        when(signonMapper.toSessionContext(user)).thenReturn(fresh);
+
+        authenticationService.signon(new SignonRequestDto("admin001", "password"), httpRequest);
+
+        verify(httpRequest).changeSessionId();
+        verify(sessionPrincipalIndex).deregister("ADMIN001", "attacker-known-id");
+        verify(sessionPrincipalIndex).register("ADMIN001", "rotated-id");
+        verify(session).setAttribute(SESSION_KEY, fresh);
+    }
+
+    /**
+     * :purpose: When the container declines to rotate in place, sign-on still refuses to
+     *  publish authenticated state under the presented id: it invalidates that record and
+     *  mints a new one. The fixation defence must not depend on ``changeSessionId()``
+     *  succeeding.
+     */
+    @Test
+    @DisplayName("Container refusing changeSessionId falls back to invalidate-and-create")
+    void signon_success_fallsBackToInvalidateAndCreateWhenRotationRefused() {
+        SecurityUser user = mock(SecurityUser.class);
+        HttpSession replacement = mock(HttpSession.class);
+        when(replacement.getId()).thenReturn("replacement-id");
+        when(httpRequest.getSession(false)).thenReturn(session);
+        when(session.getAttributeNames()).thenReturn(Collections.enumeration(List.of()));
+        when(httpRequest.changeSessionId()).thenThrow(new IllegalStateException("no session"));
+        when(httpRequest.getSession(true)).thenReturn(replacement);
+        when(securityUserRepository.findBySecUsrId("ADMIN001")).thenReturn(Optional.of(user));
+        when(user.getSecUsrPwd()).thenReturn(STORED_HASH);
+        when(passwordEncoder.matches("password", STORED_HASH)).thenReturn(true);
+        SessionContext ctx = new SessionContext();
+        ctx.setUserId("ADMIN001");
+        when(signonMapper.toSignonResponse(user))
+                .thenReturn(new SignonResponseDto("ADMIN001", SessionContext.UserType.CDEMO_USRTYP_ADMIN, "CA00"));
+        when(signonMapper.toSessionContext(user)).thenReturn(ctx);
+
+        authenticationService.signon(new SignonRequestDto("admin001", "password"), httpRequest);
+
+        verify(session).invalidate();
+        verify(httpRequest).getSession(true);
+        verify(replacement).setAttribute(SESSION_KEY, ctx);
+        verify(sessionPrincipalIndex).register("ADMIN001", "replacement-id");
     }
 
     /**
@@ -551,10 +622,13 @@ class AuthenticationServiceTest {
         verify(passwordEncoder).matches("password", STORED_HASH);
         verify(session).setAttribute(SESSION_KEY, fresh);
         verify(sessionPrincipalIndex).register("ADMIN001", "reused-id");
-        // The same principal keeps its index entry: there is no outgoing user to drop.
-        verify(sessionPrincipalIndex, never()).deregister(any(), any());
-        // The shared record is still neither rotated nor destroyed.
-        verify(httpRequest, never()).changeSessionId();
+        // Re-sign-on rotates too, so the index entry naming the id that was just replaced
+        // is dropped even though the principal did not change: leaving it behind would grow
+        // the principal's index by one dead id per sign-on.
+        verify(sessionPrincipalIndex).deregister("ADMIN001", "reused-id");
+        verify(httpRequest).changeSessionId();
+        // Rotation is in place, so the record itself is not destroyed and no other
+        // participant of this request loses it.
         verify(httpRequest, never()).getSession(true);
         verify(session, never()).invalidate();
     }
@@ -634,7 +708,9 @@ class AuthenticationServiceTest {
         // Nothing the previous principal wrote survives into the new sign-on.
         verify(session).removeAttribute(SESSION_KEY);
         verify(session).setAttribute(SESSION_KEY, fresh);
-        verify(httpRequest, never()).changeSessionId();
+        // The take-over rotates the identifier as well as the attributes, so the outgoing
+        // principal's id cannot be replayed against the incoming principal's session.
+        verify(httpRequest).changeSessionId();
         verify(httpRequest, never()).getSession(true);
         verify(session, never()).invalidate();
     }
@@ -666,6 +742,9 @@ class AuthenticationServiceTest {
         verify(session, never()).setAttribute(any(), any());
         verify(session, never()).removeAttribute(any());
         verify(session, never()).invalidate();
+        // A REFUSED sign-on must not rotate either: an attacker who knows a victim's
+        // session id could otherwise replace it at will with nothing but a wrong password.
+        verify(httpRequest, never()).changeSessionId();
         verifyNoInteractions(sessionPrincipalIndex);
     }
 }

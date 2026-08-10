@@ -78,7 +78,7 @@ spec:
       automountServiceAccountToken: false
       containers:
         - name: postgres
-          image: postgres:18
+          image: postgres:18@sha256:a02db8cac496f15b094798a38254f14d6e00741f709360e5e00bb6668ea31636
           imagePullPolicy: IfNotPresent
           # Connection budget. Each JPA service now holds a bounded
           # HikariCP pool (steady state 15 connections in total, ceiling 68 for a
@@ -123,6 +123,13 @@ spec:
             # trip over a volume-root "lost+found" directory.
             - name: PGDATA
               value: /var/lib/postgresql/data/pgdata
+            # Force scram-sha-256 on every pg_hba.conf entry initdb writes.
+            # The stock docker layout grants `trust` to the local socket and to
+            # 127.0.0.1/::1, which makes any in-pod process an owner-level session
+            # regardless of password. Applied by initdb, so it governs a cluster
+            # initialised empty; matches docker-compose.yml.
+            - name: POSTGRES_INITDB_ARGS
+              value: --auth-local=scram-sha-256 --auth-host=scram-sha-256
             # Per-service role passwords consumed by the first-boot DB-init script
             # below (the eight roles the service Secrets reference must be
             # never created). Each value is read from the SAME Secret the owning

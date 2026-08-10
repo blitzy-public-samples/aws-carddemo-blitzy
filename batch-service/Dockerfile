@@ -22,7 +22,11 @@
 # =============================================================================
 
 # --- Stage 1 (builder): extract the Spring Boot layers from the boot jar -----
-FROM eclipse-temurin:21-jre AS builder
+# Digest-pinned base image: the `21-jre` tag is mutable, so the digest is what
+# makes this build reproducible and makes a base-image swap visible in review.
+# Digest resolves to Temurin 21.0.11+10, the newest published 21-jre build
+# (Adoptium has no 21.0.12 container image); rationale in docs/decision-log.md.
+FROM eclipse-temurin:21-jre@sha256:8cef5fc7bebe421363ab543a2f4db5caf7d119d8db67d56b0f56c485d2de4d55 AS builder
 WORKDIR /app
 
 # Copy the single repackaged boot jar. The *.jar glob matches only
@@ -35,7 +39,11 @@ COPY target/*.jar app.jar
 RUN java -Djarmode=tools -jar app.jar extract --layers --launcher --destination extracted
 
 # --- Stage 2 (runtime): minimal JRE image running the exploded layers --------
-FROM eclipse-temurin:21-jre
+# Digest-pinned base image: the `21-jre` tag is mutable, so the digest is what
+# makes this build reproducible and makes a base-image swap visible in review.
+# Digest resolves to Temurin 21.0.11+10, the newest published 21-jre build
+# (Adoptium has no 21.0.12 container image); rationale in docs/decision-log.md.
+FROM eclipse-temurin:21-jre@sha256:8cef5fc7bebe421363ab543a2f4db5caf7d119d8db67d56b0f56c485d2de4d55
 WORKDIR /app
 
 # Copy the extracted layers from least- to most-frequently-changing so Docker

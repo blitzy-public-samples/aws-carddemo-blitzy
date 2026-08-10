@@ -70,6 +70,36 @@ x-schema-dependencies: &schema-dependencies
     condition: service_healthy
 
 # ---------------------------------------------------------------------------
+# Bounded log retention, applied to EVERY container in this file.
+#
+# Why this is a data-protection control and not just housekeeping: the
+# structured application logs carry subject identifiers (user ids, account ids,
+# correlation ids that resolve to a session). Docker's default `json-file`
+# driver has NO size or age bound, so those identifiers would be retained
+# indefinitely on the host and would survive the deletion of the subject they
+# describe — an erasure request could be honoured in the database while the log
+# still evidences the person. Capping each container at max-size x max-file
+# gives every identifier a finite lifetime: the oldest file is discarded once
+# the cap is reached, so log content ages out on a rolling basis without any
+# operator action.
+#
+# 10m x 5 = a 50 MB ceiling per container (750 MB for the 15-container stack).
+# Both values are overridable so a deployment can trade retention depth against
+# disk. Note that this bounds retention by VOLUME, not by wall-clock age: a
+# busy service ages its logs out faster than an idle one. A deployment with a
+# fixed statutory retention period must ship the logs to a store that can
+# enforce age directly, which is what the k8s topology does — there, container
+# stdout is rotated by the kubelet (`containerLogMaxSize` /
+# `containerLogMaxFiles`) rather than by this file, so the equivalent setting
+# lives in the node configuration and is called out in docs/decision-log.md.
+# ---------------------------------------------------------------------------
+x-logging: &service-logging
+  driver: json-file
+  options:
+    max-size: "${CARDDEMO_LOG_MAX_SIZE:-10m}"
+    max-file: "${CARDDEMO_LOG_MAX_FILES:-5}"
+
+# ---------------------------------------------------------------------------
 # Shared definition for every runnable Spring Boot service. Each backend block
 # merges this anchor and then supplies only its own build context (and, for the
 # services that must wait for the schema, its own depends_on). Services do
@@ -77,6 +107,9 @@ x-schema-dependencies: &schema-dependencies
 # services listen on 8080 internally.
 # ---------------------------------------------------------------------------
 x-backend-service: &backend-service
+  # Bounded log retention (see x-logging above). Safe under the SHALLOW merge
+  # warning below because no backend service declares its own `logging:` key.
+  logging: *service-logging
   # Gate startup on the datastores being fully ready, not merely started.
   # Anchored separately from the service anchor because a YAML merge key is
   # SHALLOW: a service that needs one extra variable (batch-service and
@@ -210,7 +243,9 @@ services:
   # =========================================================================
 
   postgres:
-    image: postgres:18
+    image: postgres:18@sha256:a02db8cac496f15b094798a38254f14d6e00741f709360e5e00bb6668ea31636
+    # Bounded log retention (see x-logging).
+    logging: *service-logging
     environment:
       POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB in .env}
       POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in .env}
@@ -226,6 +261,23 @@ services:
       CARDDEMO_BILLPAY_DB_PASSWORD: ${CARDDEMO_BILLPAY_DB_PASSWORD:?set CARDDEMO_BILLPAY_DB_PASSWORD in .env}
       CARDDEMO_REPORTING_DB_PASSWORD: ${CARDDEMO_REPORTING_DB_PASSWORD:?set CARDDEMO_REPORTING_DB_PASSWORD in .env}
       CARDDEMO_BATCH_DB_PASSWORD: ${CARDDEMO_BATCH_DB_PASSWORD:?set CARDDEMO_BATCH_DB_PASSWORD in .env}
+      # Authentication method for the entries initdb writes into pg_hba.conf.
+      # WITHOUT this, the stock docker layout grants `trust` to the local socket and
+      # to 127.0.0.1/::1, so ANY password authenticates as the cluster owner from
+      # inside the container (`PGPASSWORD=wrong psql -h 127.0.0.1` succeeds). The
+      # port is unpublished, so that is a defence-in-depth gap rather than a remote
+      # hole - but it means a foothold in any co-located process is an immediate
+      # owner-level database session, and it makes the container's own audit trail
+      # unattributable. scram-sha-256 on every entry closes it.
+      #
+      # Applied by initdb, so it takes effect only when the data directory is
+      # initialised empty; an existing volume keeps the pg_hba.conf it was created
+      # with. Nothing in this repository depends on `trust`: the healthcheck uses
+      # pg_isready (which does not authenticate), the first-boot role script runs
+      # over the local socket as POSTGRES_USER with the password present in the
+      # environment, and every service and the k8s backup job already supply a
+      # password.
+      POSTGRES_INITDB_ARGS: --auth-local=scram-sha-256 --auth-host=scram-sha-256
     # Connection budget. The eight JPA services each hold a bounded
     # HikariCP pool now (steady state 15 connections in total, absolute ceiling 68 -
     # see the spring.datasource.hikari block in every service's application.yml), but
@@ -285,7 +337,9 @@ services:
     restart: unless-stopped
 
   redis:
-    image: redis:8
+    image: redis:8@sha256:344e3945a0b431c8ff1eecd58c5573538126bd756f02fc7e218ddf1fc2546366
+    # Bounded log retention (see x-logging).
+    logging: *service-logging
     environment:
       # Consumed by both the server (--requirepass) and the healthcheck. The
       # $$ escaping keeps the literal out of the rendered config; the value is
@@ -613,6 +667,8 @@ services:
   # table and the 17 page components are all on disk, and `npm run build` produces
   # the dist/ tree this image serves.
   frontend:
+    # Bounded log retention (see x-logging).
+    logging: *service-logging
     profiles:
       - frontend
     build:
@@ -678,7 +734,9 @@ services:
   # default: traces are development evidence, not durable data, so no volume is
   # mounted and nothing survives a restart by design.
   jaeger:
-    image: jaegertracing/jaeger:2.11.0
+    image: jaegertracing/jaeger:2.20.0@sha256:46a886260e04002d8f45e213fc39063fa11a50446048fdaa64786fc0840cb9f8
+    # Bounded log retention (see x-logging).
+    logging: *service-logging
     # Only the query UI/API is published, on loopback; the OTLP receivers stay on
     # the private carddemo-net bridge exactly like the datastores.
     ports:
@@ -710,7 +768,9 @@ services:
     # to :latest, so two `docker compose pull` runs weeks apart can start different
     # Prometheus majors against the same scrape config and dashboards; 3.13.2 is
     # the version this stack was verified against.
-    image: prom/prometheus:v3.13.2
+    image: prom/prometheus:v3.13.2@sha256:508729e0e2d18e11fd742a5a5ca70e557b940a93948c3c95fd0123a6fd538b69
+    # Bounded log retention (see x-logging).
+    logging: *service-logging
     volumes:
       - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       # Alerting rules referenced by the `rule_files` entry in prometheus.yml. The
@@ -763,12 +823,36 @@ services:
     # validated against this release - notably its handling of the saved `refresh`
     # interval and the table legend - so a floating :latest could change rendering
     # behaviour without any repository change.
-    image: grafana/grafana:13.1.1
+    image: grafana/grafana:13.1.2@sha256:d177053ab62253815f130d81504f77063baf5fd4ca93299d6048453bd31e047a
+    # Bounded log retention (see x-logging).
+    logging: *service-logging
     environment:
       # Admin credentials are externalized; no admin/admin default.
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:?set GRAFANA_ADMIN_USER in .env}
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD in .env}
       GF_USERS_ALLOW_SIGN_UP: "false"
+      # Make the Go runtime aware of the container's memory limit.
+      #
+      # This is the SAME class of defect the nine JVM services solved with
+      # -XX:MaxRAMPercentage: a managed runtime that cannot see the cgroup cap
+      # grows its heap until the cap terminates the process. Grafana is a Go
+      # binary and Go's garbage collector is driven by GOGC relative to the live
+      # heap, with NO knowledge of the cgroup limit unless GOMEMLIMIT is set.
+      #
+      # Measured: with this unset, holding the 26-panel dashboard open costs
+      # ~+250 MiB immediately and then grows ~+62 MiB/min under the 30 s refresh
+      # (958 /api/ds/query calls over one soak), reaching 99.8% of a 512 MiB cap
+      # in about twelve minutes and exiting with code 0 — no OOM kill, because
+      # the runtime gives up before the kernel intervenes. Raising the cap alone
+      # only moves the deadline, which is why the limit AND this setting are set
+      # together.
+      #
+      # 440MiB against the 512m limit leaves ~72 MiB for the non-Go footprint
+      # (bleve index pages, thread stacks, the wget healthcheck). GOMEMLIMIT is a
+      # SOFT limit: the collector works harder as it approaches, and is allowed
+      # to exceed it rather than fail an allocation, so it degrades into more GC
+      # rather than into a dead container.
+      GOMEMLIMIT: 440MiB
     configs:
       - source: grafana_datasource
         target: /etc/grafana/provisioning/datasources/prometheus.yml
@@ -781,18 +865,52 @@ services:
     # Container port 3000; published on loopback 3001 (frontend uses 3000).
     ports:
       - "127.0.0.1:3001:3000"
-    # Local-stack bounds (no Kubernetes manifest for the monitoring backends):
-    # one provisioned datasource and one dashboard need no more.
+    # Local-stack bounds (no Kubernetes manifest for the monitoring backends).
+    #
+    # 384m was the original figure, on the reasoning that "one provisioned
+    # datasource and one dashboard need no more". Measurement falsified that:
+    # under a real authenticated browser session rendering all 26 data panels
+    # (9 series each) the container terminated and was restarted by the policy
+    # below NINE times in thirty minutes — exit code 0, not an OOM kill, so
+    # nothing in `docker compose ps` or the logs announced it. Grafana 13 also
+    # runs a bleve search backend that indexes on demand, which the original
+    # figure did not account for.
+    #
+    # Raising the cap to 512m was NOT sufficient on its own and must not be
+    # read as the fix: re-soaked at 512m the container still died, just later
+    # (T+11m33s instead of ~3m), because memory was growing ~+62 MiB/min with
+    # no upper bound. The actual fix is GOMEMLIMIT in the environment above,
+    # which makes the Go collector reclaim before the cgroup cap is reached.
+    # This limit and that setting only work as a pair - the limit gives the
+    # runtime something to aim below, and GOMEMLIMIT makes it aim.
+    #
+    # Verified after both changes: a 32-minute authenticated browser soak over
+    # all 26 panels held memory in a bounded 391-431 MiB sawtooth (peak 84% of
+    # this cap, 8 MiB under GOMEMLIMIT) with a net trend of +0.002 MiB/min,
+    # RestartCount unchanged at 0, and the live WebSocket never dropping.
     deploy:
       resources:
         limits:
           cpus: "0.5"
-          memory: 384m
+          memory: 512m
         reservations:
           cpus: "0.1"
           memory: 128m
     security_opt:
       - no-new-privileges:true
+    # Grafana was the ONE container in this file with no health probe, which is
+    # precisely why the restarts above went unnoticed: with no healthcheck the
+    # service reports a bare "running" no matter what state it is in. Grafana's
+    # own readiness endpoint reports database connectivity, and wget is present
+    # in the image (BusyBox), unlike the JRE-based service images.
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - wget -q -O /dev/null http://127.0.0.1:3000/api/health || exit 1
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     depends_on:
       - prometheus
     networks:

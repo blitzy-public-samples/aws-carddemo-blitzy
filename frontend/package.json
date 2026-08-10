@@ -51,7 +51,9 @@
   "overrides": {
     "brace-expansion@1": "1.1.18",
     "brace-expansion@2": "2.1.4",
-    "postcss": "^8.5.23"
+    "postcss": "^8.5.23",
+    "js-yaml@3": "3.15.1",
+    "nanoid@3": "3.3.18"
   },
   "jest": {
     "preset": "ts-jest/presets/default-esm",

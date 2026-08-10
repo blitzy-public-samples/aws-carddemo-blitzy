@@ -1,0 +1,114 @@
+---
+# =============================================================================
+# k8s/ingress.yaml
+# -----------------------------------------------------------------------------
+# TLS-terminating ingress for the two publicly reachable CardDemo surfaces: the
+# React 19 SPA (service `frontend`, port 80) and the API gateway (service
+# `api-gateway`, port 8080).
+#
+# WHY THIS FILE EXISTS
+#   AAP 0.6.7 states that all traffic uses TLS, and both `frontend/nginx.conf`
+#   and docs/decision-log.md defer TLS termination to "the ingress edge". That
+#   edge did not exist: the manifest set had 32 files and no Ingress, so the
+#   only shipped topology served every surface over plain HTTP and no
+#   Strict-Transport-Security header was emitted anywhere in the system. This
+#   manifest is that edge.
+#
+# WHAT IT GUARANTEES
+#   * TLS termination for both host names, from the `carddemo-tls` Secret.
+#   * A permanent redirect of plain HTTP to HTTPS, so a cleartext request is
+#     never served, only redirected.
+#   * Strict-Transport-Security with a one-year max-age and includeSubDomains on
+#     every response the edge produces.
+#   * `X-Forwarded-Proto: https` reaching the backends, which is what makes the
+#     application tier assert HSTS as well: `SecurityHardening` matches on that
+#     header (see its HSTS_MATCHER) and `frontend/nginx.conf` maps it to
+#     $carddemo_hsts. Both are silent without it, on purpose, because a
+#     plain-HTTP hop cannot honestly assert a TLS policy.
+#
+# ANNOTATIONS ARE INGRESS-CONTROLLER SPECIFIC
+#   The annotations below target ingress-nginx, the controller CardDemo's own
+#   SPA edge already uses, so one HTTP server implementation is reasoned about
+#   rather than two. `ingressClassName` is the portable field and is set
+#   explicitly; a cluster running a different controller keeps the spec (hosts,
+#   paths, backends, tls) and replaces the annotation block with that
+#   controller's equivalents -- Traefik and HAProxy both express the same three
+#   properties (redirect, HSTS, forwarded scheme) under their own keys.
+#
+# PREREQUISITE
+#   The `carddemo-tls` Secret must hold the server certificate and key for both
+#   host names. It is NOT created here: a certificate is environment-specific
+#   material and k8s/secret.yaml deliberately carries only labelled
+#   placeholders, never key material. Provision it with cert-manager (add
+#   `cert-manager.io/cluster-issuer` to the annotations and the controller
+#   creates the Secret) or once, out of band:
+#     kubectl create secret tls carddemo-tls --cert=tls.crt --key=tls.key
+#
+# HOST NAMES
+#   `carddemo.example.com` and `api.carddemo.example.com` are placeholders for
+#   the deployment's own names and must be replaced together with the
+#   certificate that covers them. They are NOT reachable names; nothing in the
+#   application resolves or embeds them (the SPA calls the gateway through the
+#   same-origin relative path /api/, so the API host is for direct API clients).
+# =============================================================================
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: carddemo
+  labels:
+    app.kubernetes.io/name: carddemo
+    app.kubernetes.io/part-of: carddemo
+    app.kubernetes.io/component: ingress
+  annotations:
+    # Refuse to serve cleartext: answer a plain-HTTP request with a permanent
+    # redirect to the same URL over HTTPS.
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    # HSTS on every response from this edge. One year, subdomains included; the
+    # value matches SecurityHardening.HSTS_MAX_AGE_SECONDS and the
+    # $carddemo_hsts map in frontend/nginx.conf so the three cannot drift.
+    # `preload` is deliberately NOT asserted: submitting a name to the preload
+    # list is irreversible for months and is a deployment decision, not a
+    # manifest default.
+    nginx.ingress.kubernetes.io/hsts: "true"
+    nginx.ingress.kubernetes.io/hsts-max-age: "31536000"
+    nginx.ingress.kubernetes.io/hsts-include-subdomains: "true"
+    nginx.ingress.kubernetes.io/hsts-preload: "false"
+    # Terminate at the edge and reach the backends over plain HTTP on the
+    # cluster network, which is what both backends already listen on.
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
+    # Bound the request body at the edge with the same 1 MiB cap the services
+    # enforce themselves (carddemo-common RequestSizeLimitFilter), so an
+    # oversized body is refused before it is proxied rather than twice.
+    nginx.ingress.kubernetes.io/proxy-body-size: "1m"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - carddemo.example.com
+        - api.carddemo.example.com
+      secretName: carddemo-tls
+  rules:
+    # The SPA: every path not claimed by the API host.
+    - host: carddemo.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend
+                port:
+                  number: 80
+    # The API gateway, for clients that call the REST surface directly rather
+    # than through the SPA's same-origin /api/ proxy.
+    - host: api.carddemo.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-gateway
+                port:
+                  number: 8080

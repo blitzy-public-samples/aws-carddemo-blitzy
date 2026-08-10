@@ -69,7 +69,7 @@ spec:
       # base image ships neither curl nor wget).
       initContainers:
         - name: await-schema
-          image: eclipse-temurin:21-jre
+          image: eclipse-temurin:21-jre@sha256:8cef5fc7bebe421363ab543a2f4db5caf7d119d8db67d56b0f56c485d2de4d55
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false

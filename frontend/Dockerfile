@@ -13,7 +13,8 @@
 # =============================================================================
 
 # --- Stage 1: build the Vite production bundle -------------------------------
-FROM node:24 AS build
+# Digest-pinned build image so the bundler toolchain cannot drift between builds.
+FROM node:24@sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584 AS build
 
 WORKDIR /app
 
@@ -48,10 +49,12 @@ ENV VITE_SYS_ID=$VITE_SYS_ID
 RUN npm run build
 
 # --- Stage 2: serve the static bundle with nginx -----------------------------
-# Pinned to an explicit version: `alpine` is a floating tag that
+# Pinned to an explicit version AND digest: `alpine` is a floating tag that
 # moves with every nginx release, so two builds of the same commit could ship
-# different servers.
-FROM nginx:1.29-alpine
+# different servers, and a version tag alone is still re-pointable upstream.
+# 1.31.3 is the fixed release for the 1.29.x HTTP/3 and SSL-session advisories;
+# see docs/decision-log.md for the upgrade rationale.
+FROM nginx:1.31.3-alpine@sha256:4a73073bd557c65b759505da037898b61f1be6cbcc3c2c3aeac22d2a470c1752
 
 # Static bundle emitted by the build stage (Vite outDir `dist`).
 COPY --from=build /app/dist /usr/share/nginx/html

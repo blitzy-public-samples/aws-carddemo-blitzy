@@ -33,6 +33,8 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessException;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -80,6 +82,13 @@ public class AuthenticationService {
      *  COMMAREA is one object rather than several divergent copies.
      */
     public static final String SESSION_CONTEXT_ATTRIBUTE = SessionAttributes.SESSION_CONTEXT;
+
+    /**
+     * :purpose: Logger for the one operational event this service reports that is not part
+     *  of the security audit trail: a container declining to rotate the session id in place,
+     *  after which sign-on falls back to invalidate-and-create.
+     */
+    private static final Logger log = LoggerFactory.getLogger(AuthenticationService.class);
 
     private final SecurityUserRepository securityUserRepository;
     private final PasswordEncoder passwordEncoder;
@@ -138,12 +147,14 @@ public class AuthenticationService {
      *  neither a reason to refuse the request nor a reason to grant it: a verified sign-on
      *  takes over that session record, and a REFUSED one leaves it exactly as it was, so a
      *  typo can never cost the operator the session they are still signed on to.
-     * :note: The session record is reused rather than invalidated and re-minted. The
-     *  api-gateway is a second Spring Session participant holding the same record, so
-     *  deleting its key mid-request makes the gateway's own write-back fail: the caller was
-     *  answered ``500`` and, because the replacement id was never persisted, every retry
-     *  was answered ``200`` and then refused ``401`` for ever. ``rotateSession`` strips the
-     *  record instead, which is what makes taking over a live session safe here.
+     * :note: A presented session is ROTATED, not reused: the identifier an attacker knows
+     *  can never become the authenticated one (session fixation, CWE-384). Rotation deletes
+     *  the previous store entry, and the api-gateway is a second Spring Session participant
+     *  holding the same record for the same request, so its own write-back finds the entry
+     *  gone; that refusal is absorbed by
+     *  {@link com.carddemo.common.config.RemovedSessionTolerantSessionRepository}, which is
+     *  what makes rotating a shared record safe here. Stripping the attributes alone is not
+     *  sufficient — it leaves the attacker holding a live, now-authenticated identifier.
      */
     @Transactional(readOnly = true)
     public SignonResponseDto signon(SignonRequestDto request, HttpServletRequest httpRequest) {
@@ -191,15 +202,21 @@ public class AuthenticationService {
         loginAttemptService.recordSuccess(userId);
         SignonResponseDto response = signonMapper.toSignonResponse(user);
         SessionContext context = signonMapper.toSessionContext(user);
+        // The id the caller PRESENTED, captured before rotation replaces it. The principal
+        // index is keyed by the id a session was registered under, so an outgoing principal
+        // can only be dropped from it by that id, not by the post-rotation one.
+        String presentedSessionId = presentedSessionId(httpRequest);
         // Credentials verified: only now is a session worth creating, and its id is
         // rotated first so a session id obtained before sign-on can never become an
         // authenticated one.
         HttpSession session = rotateSession(httpRequest);
-        // The record is being taken over, so the principal that held it no longer does.
-        // Leaving the stale entry behind would make a later revocation of the OUTGOING
-        // user reach into the session the INCOMING user is now signed on to.
-        if (live != null && !live.getUserId().equals(context.getUserId())) {
-            sessionPrincipalIndex.deregister(live.getUserId(), session.getId());
+        // Rotation removed the presented record from the store, so the index entry that
+        // named it is now stale and is dropped -- whether the principal changed or not.
+        // Leaving it behind would make a later revocation of the OUTGOING user address an
+        // id that no longer exists, and would let a user's index grow one dead entry per
+        // sign-on.
+        if (live != null && presentedSessionId != null) {
+            sessionPrincipalIndex.deregister(live.getUserId(), presentedSessionId);
         }
         session.setAttribute(SESSION_CONTEXT_ATTRIBUTE, context);
         sessionPrincipalIndex.register(context.getUserId(), session.getId());
@@ -223,30 +240,56 @@ public class AuthenticationService {
     }
 
     /**
+     * :purpose: Read the id of the session the caller PRESENTED, without creating one.
+     * :param httpRequest: the current HTTP request.
+     * :returns: the presented session id, or ``null`` when the request carried no session.
+     */
+    private String presentedSessionId(HttpServletRequest httpRequest) {
+        HttpSession existing = httpRequest.getSession(false);
+        return existing == null ? null : existing.getId();
+    }
+
+    /**
      * :purpose: Issue a fresh session id for the authenticated caller before any
      *  authenticated state is written to it, so a session id obtained before sign-on
-     *  can never become an authenticated one.
+     *  can never become an authenticated one (session fixation, CWE-384).
      * :param httpRequest: the current HTTP request.
-     * :returns: the session that must carry the sign-on context.
+     * :returns: the session that must carry the sign-on context, always identified by an
+     *  id minted during this sign-on.
+     * :note: Rotation is performed with ``HttpServletRequest.changeSessionId()`` and falls
+     *  back to invalidate-and-create if the container declines to rotate, so the id changes
+     *  on both paths. Emptying the record without rotating it -- the behaviour this
+     *  replaces -- leaves the caller holding an identifier they knew BEFORE they were
+     *  authenticated, which is precisely the fixation the rotation exists to defeat.
      */
     private HttpSession rotateSession(HttpServletRequest httpRequest) {
         HttpSession existing = httpRequest.getSession(false);
-        if (existing != null) {
-            // Neither rotate nor invalidate a session record that reached this service on
-            // the shared session cookie. Every hop of the request holds its own live handle
-            // on that record -- the gateway that proxied this call as well as this service
-            // -- and each one saves its handle after the response is produced. Rotation
-            // DELETES the old entry, so the gateway's save then failed with
-            // "Session was invalidated" outside any exception handler: the caller was
-            // answered 500, and because the replacement id was never persisted every retry
-            // was answered 200 and then refused 401 forever. Reuse the record instead, and
-            // strip every attribute so that nothing written before sign-on survives into
-            // the authenticated session.
-            clearAttributes(existing);
-            return existing;
+        if (existing == null) {
+            // No session was presented, so sign-on mints a brand-new one with a fresh id.
+            return httpRequest.getSession(true);
         }
-        // No session was presented, so sign-on mints a brand-new one with a fresh id: an
-        // id that existed before this sign-on can never become the authenticated one.
+        // Strip every attribute first so nothing written before sign-on survives into the
+        // authenticated session, then replace the identifier itself.
+        clearAttributes(existing);
+        try {
+            httpRequest.changeSessionId();
+            HttpSession rotated = httpRequest.getSession(false);
+            if (rotated != null) {
+                // Rotation DELETES the previous store entry, and every other hop of this
+                // request -- the api-gateway that proxied it -- still holds its own handle
+                // on that entry and writes it back when the response commits. That
+                // write-back is absorbed by RemovedSessionTolerantSessionRepository, so the
+                // removal stands and the already-successful sign-on is not turned into a
+                // 500 as it once was.
+                return rotated;
+            }
+        } catch (IllegalStateException | UnsupportedOperationException ex) {
+            // The container refused to rotate in place (no session under its own view of
+            // the request, or an implementation that does not support it). Fall through to
+            // invalidate-and-create, which changes the id just as effectively.
+            log.debug("changeSessionId() declined by the container; invalidating and re-creating instead");
+        }
+        existing.invalidate();
         return httpRequest.getSession(true);
     }
 
@@ -254,7 +297,7 @@ public class AuthenticationService {
      * :purpose: Remove every attribute from a session that is about to carry a new sign-on,
      *  so no state written before the caller was authenticated survives into the
      *  authenticated session.
-     * :param session: the session being reused.
+     * :param session: the session being rotated.
      * :returns: nothing; the session is emptied in place.
      */
     private void clearAttributes(HttpSession session) {

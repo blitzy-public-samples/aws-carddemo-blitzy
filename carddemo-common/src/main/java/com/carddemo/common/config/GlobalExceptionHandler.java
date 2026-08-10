@@ -49,6 +49,8 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.context.request.WebRequest;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.multipart.MaxUploadSizeExceededException;
+import org.springframework.web.multipart.MultipartException;
 import org.springframework.web.servlet.NoHandlerFoundException;
 import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExceptionHandler;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
@@ -138,6 +140,16 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
 
     /** :purpose: Caller-facing message for a body the framework could not parse. */
     private static final String MSG_BODY_MALFORMED = "Malformed request body";
+
+    /**
+     * :purpose: Caller-facing message for a request that declares a multipart content type on
+     *  an endpoint that consumes JSON. It is worded like the framework's own ``415`` detail so
+     *  a WELL-FORMED multipart request and a MALFORMED one read identically, but it names only
+     *  the media type: the framework's wording echoes the whole submitted ``Content-Type``
+     *  header, boundary included, and that header is attacker-controlled.
+     */
+    private static final String MSG_MULTIPART_UNSUPPORTED =
+            "Content-Type 'multipart/form-data' is not supported.";
 
     /**
      * :purpose: Caller-facing message for a request parameter whose submitted value could not be
@@ -616,6 +628,42 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
         HttpStatus status = HttpStatus.INTERNAL_SERVER_ERROR;
         log.error("Unhandled failure at {}: {}", loggedPath(request), ex.getClass().getName(), ex);
         return ResponseEntity.status(status).body(buildBody(status, MSG_UNEXPECTED, request));
+    }
+
+    /**
+     * :purpose: Classify a request that declares a multipart content type. No CardDemo
+     *     endpoint consumes multipart -- every write takes a JSON document -- so the outcome
+     *     is ``415 Unsupported Media Type``, which is what the framework already answered for
+     *     a WELL-FORMED multipart body. A MALFORMED one took a different path: the multipart
+     *     resolver raises {@link MultipartException} while the dispatcher is still resolving
+     *     the request, before any handler is matched, and nothing mapped that type -- only its
+     *     ``MaxUploadSizeExceededException`` subclass is mapped by the inherited advice -- so
+     *     it fell through to the catch-all and reported ``500`` with an ERROR log and a stack
+     *     trace. Seven such requests produced nineteen ERROR lines across seven services, so
+     *     an unauthenticated client could flood the operator's alerting with a content-type
+     *     header alone, and the same refusal was reported under two different statuses
+     *     depending only on whether the body's boundary happened to be well formed.
+     * :param ex: the multipart failure raised while resolving the request.
+     * :param request: the current web request.
+     * :returns: a ``415 Unsupported Media Type`` {@link ResponseEntity} carrying the shared
+     *     error body, or ``413`` when the failure is the size refusal instead.
+     * :note: Logged at WARN without a stack trace, like every other handled client error: the
+     *     condition is a caller mistake, and an ERROR with a trace per request is the flooding
+     *     channel this handler closes.
+     * :note: The size-exceeded subclass is answered ``413`` explicitly rather than left to
+     *     handler precedence, so the shared request-size cap keeps reporting one status
+     *     wherever the signal surfaces.
+     */
+    @ExceptionHandler(MultipartException.class)
+    public ResponseEntity<ErrorResponse> handleMultipart(MultipartException ex, WebRequest request) {
+        if (ex instanceof MaxUploadSizeExceededException
+                || RequestSizeLimitFilter.isSizeExceededSignal(ex)) {
+            return contentTooLarge(request);
+        }
+        HttpStatus status = HttpStatus.UNSUPPORTED_MEDIA_TYPE;
+        log.warn("Unsupported multipart request at {}: {}",
+                loggedPath(request), ex.getClass().getSimpleName());
+        return ResponseEntity.status(status).body(buildBody(status, MSG_MULTIPART_UNSUPPORTED, request));
     }
 
     /**

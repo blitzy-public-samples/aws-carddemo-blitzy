@@ -52,19 +52,24 @@ public class SessionRedisConfig {
      * :purpose: Build the allowlisted JSON serializer Spring Session uses to
      *     store session state in Redis, replacing the insecure JDK serializer.
      * :output: A ``RedisSerializer`` that writes JSON with polymorphic type
-     *     information restricted to the CardDemo and core JDK type families.
+     *     information restricted to the CardDemo session-DTO package.
      */
     @Bean
     public RedisSerializer<Object> springSessionDefaultRedisSerializer() {
-        // Allowlist the only type families that legitimately appear in the
-        // session (the CardDemo SessionContext and the JDK value types it and
-        // Spring Session use). Any other type is rejected during deserialization,
-        // closing the native-deserialization gadget surface (CWE-502).
+        // Allowlist ONE package: the CardDemo session DTOs. Exactly two attribute values
+        // are ever written to a session -- the SessionContext
+        // (com.carddemo.common.dto.SessionContext, the only polymorphically typed value in
+        // the payload) and the revoked-reason String -- and Spring Session writes the
+        // session metadata (creationTime, lastAccessedTime, maxInactiveInterval) as bare
+        // numbers. Every one of those, String included, is a FINAL type, which default
+        // typing writes without a type id and therefore never resolves through this
+        // validator. Nothing else needs to be admitted, so the JDK families this list used
+        // to carry (java.lang., java.util., java.time.) are deliberately gone: they widened
+        // the deserialization surface (CWE-502) that this validator exists to close without
+        // admitting a single type the session actually stores. A new session attribute of a
+        // non-final type must be added here explicitly, and fails loudly until it is.
         PolymorphicTypeValidator typeValidator = BasicPolymorphicTypeValidator.builder()
-            .allowIfSubType("com.carddemo.")
-            .allowIfSubType("java.util.")
-            .allowIfSubType("java.time.")
-            .allowIfSubType("java.lang.")
+            .allowIfSubType("com.carddemo.common.dto.")
             .build();
 
         return GenericJacksonJsonRedisSerializer.builder()

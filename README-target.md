@@ -203,12 +203,21 @@ names, which carry the `testcontainers-` prefix).
 | :------ | :--------- |
 | Service runtime (each Spring Boot service) | `eclipse-temurin:21-jre` |
 | Frontend build | `node:24` |
-| Frontend runtime (static SPA server) | `nginx:1.29-alpine` |
+| Frontend runtime (static SPA server) | `nginx:1.31.3-alpine` |
 | Database | `postgres:18` |
 | Session / cache store | `redis:8` |
 
-Every base image is pinned to an explicit version rather than a floating tag, so a
-rebuild cannot silently pick up a different runtime.
+Every base image is pinned to an explicit version **and to an immutable digest**
+(`name:tag@sha256:...`), so a rebuild cannot silently pick up a different runtime even
+if the upstream tag is re-pointed. The tag is retained alongside the digest for
+readability; the digest is what Docker resolves. Refresh a pin with
+`docker buildx imagetools inspect <name>:<tag>` (or `docker pull` + `docker image
+inspect --format '{{index .RepoDigests 0}}'`) and commit the new digest deliberately.
+
+The service runtime digest resolves to Temurin **21.0.11+10**, the newest published
+`21-jre` container build — Adoptium publishes a `jdk-21.0.12+8` archive but no
+matching container image, so 21.0.11+10 is the maximum attainable without leaving the
+AAP-specified `eclipse-temurin:21-jre` base.
 
 ---
 
@@ -487,7 +496,7 @@ docker compose --profile frontend up -d --build frontend
 Container health checks use a curl-free probe (bash `/dev/tcp` against
 `/actuator/health`) because the `eclipse-temurin:21-jre` base image ships neither
 `curl` nor `wget`. The frontend image is multi-stage too (`node:24` build stage →
-`nginx:1.29-alpine` runtime).
+`nginx:1.31.3-alpine` runtime).
 
 On first start, `batch-service` — the designated first starter — applies the schema
 and seed migrations against the PostgreSQL container automatically. The seven other

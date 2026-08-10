@@ -16,6 +16,7 @@
  */
 package com.carddemo.reporting.controller;
 
+import com.carddemo.common.batch.BatchExitMessageSanitizer;
 import com.carddemo.common.dto.BatchJobExecutionDto;
 import com.carddemo.common.dto.ReportRequestDto;
 import com.carddemo.common.dto.ReportResponseDto;
@@ -114,12 +115,17 @@ public class ReportController {
             @RequestParam(required = false) String stmtFile,
             @RequestParam(required = false) String htmlFile) {
         JobExecution execution = jobSchedulingConfig.launchStatementGeneration(stmtFile, htmlFile);
+        // The exit description passes through BatchExitMessageSanitizer: Spring Batch records
+        // the stack trace of the cause there for a failed run, and publishing it verbatim
+        // handed the caller the exception type, the generated SQL and the framework frames.
         return new BatchJobExecutionDto(
                 "statementGenerationJob",
                 execution.getId(),
                 execution.getJobInstance() == null ? null : execution.getJobInstance().getInstanceId(),
                 execution.getStatus() == null ? null : execution.getStatus().name(),
                 execution.getExitStatus() == null ? null : execution.getExitStatus().getExitCode(),
-                execution.getExitStatus() == null ? null : execution.getExitStatus().getExitDescription());
+                execution.getExitStatus() == null
+                        ? null
+                        : BatchExitMessageSanitizer.sanitize(execution.getExitStatus().getExitDescription()));
     }
 }

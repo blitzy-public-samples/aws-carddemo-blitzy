@@ -139,6 +139,11 @@ public class ManagementSecurityConfig {
             .csrf(csrf -> csrf.disable())
             .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .requestCache(cache -> cache.disable())
+            // The telemetry chain has its own securityMatcher and therefore its own header
+            // configurer, so it does not inherit SecurityHardening.apply's headers. Emitting
+            // the identical set here is what keeps the scrape challenge from being the one
+            // surface of each service that answers with a weaker header set than the rest.
+            .headers(SecurityHardening::applyResponseHeaders)
             .authorizeHttpRequests(authorize -> authorize.anyRequest().hasRole(MONITORING_ROLE))
             .authenticationManager(authenticationManager)
             .httpBasic(Customizer.withDefaults())
