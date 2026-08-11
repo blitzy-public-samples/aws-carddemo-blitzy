@@ -45,7 +45,6 @@ import com.carddemo.authorization.repository.AuthorizationDecisionRepository;
 import com.carddemo.authorization.repository.CardCrossReferenceRepository;
 import com.carddemo.authorization.repository.OutboxEventRepository;
 import com.carddemo.authorization.repository.ReplicaGapRepository;
-import com.carddemo.authorization.repository.UnresolvedCardAttemptRepository;
 import com.carddemo.cobol.CobolDateValidator;
 import com.carddemo.cobol.NumvalParser;
 import com.carddemo.cobol.PicClause;
@@ -523,7 +522,6 @@ final class AuthorizationControllerTest {
 
         AuthorizationService service = new AuthorizationService(rules, cardCrossReferences,
                 identifiers, new OutboxWriter(outboxEvents),
-                mock(UnresolvedCardAttemptRepository.class),
                 mock(AuthorizationDecisionRepository.class),
                 Metrics.globalRegistry, immediateTransactions(), tolerantProperties(),
                 cycleExposure, () -> ReplicaSynchronization.Verdict.synchronizedAt(0L),
@@ -597,6 +595,14 @@ final class AuthorizationControllerTest {
                     .andExpect(jsonPath("$.declineReasonDescription").doesNotExist());
         }
 
+        /**
+         * Every reject code the enum carries renders as one 422 body.
+         *
+         * <p>The loop covers {@link DeclineReason#INVALID_CARD_NUMBER} as well, which
+         * {@code domain/AuthorizationService} refuses rather than decides. This controller renders the
+         * outcome it is handed and encodes no rule about which outcomes exist, so the value is stubbed
+         * here to prove the mapping is uniform across the enum.
+         */
         @Test
         void eachDeclineAnswersFourTwentyTwo() throws Exception {
             for (DeclineReason reason : DeclineReason.values()) {
@@ -615,40 +621,16 @@ final class AuthorizationControllerTest {
         }
 
         /**
-         * The decline whose cross-reference read resolved nothing answers 422 naming the account it
-         * was decided against.
-         *
-         * <p>{@code app/cbl/CBTRN02C.cbl:L385} assigns that reject code inside the invalid-key limb
-         * of the cross-reference read, so the account the body carries is the one the caller declared.
-         * A call that declares none is refused before a decision and never reaches this body, which
-         * {@code domain/AuthorizationServiceTest} measures.
-         */
-        @Test
-        void theUnresolvedCardDeclineAnswersFourTwentyTwoNamingItsAccount() throws Exception {
-            stubDecline(DeclineReason.INVALID_CARD_NUMBER);
-
-            mockMvc.perform(post(ROUTE).contentType(MediaType.APPLICATION_JSON)
-                            .content(json(completeBody())))
-                    .andExpect(status().isUnprocessableContent())
-                    .andExpect(jsonPath("$.approved").value(false))
-                    .andExpect(jsonPath("$.declineReasonCode")
-                            .value(DeclineReason.INVALID_CARD_NUMBER.code()))
-                    .andExpect(jsonPath("$.declineReasonDescription")
-                            .value(DeclineReason.INVALID_CARD_NUMBER.description()))
-                    .andExpect(jsonPath("$.accountId").value(WORKED_EXAMPLE_ACCOUNT));
-        }
-
-        /**
-         * A card resolving no cross-reference row on a request declaring no account answers 422 with
-         * the text the source writes for it.
+         * A card resolving no cross-reference row answers 422 with the text the source writes for it.
          *
          * <p>{@code READ-CCXREF-FILE} answers its {@code NOTFND} limb with
          * {@value AuthorizationRequest#CARD_NUMBER_NOT_FOUND_MESSAGE} at
          * {@code app/cbl/COTRN02C.cbl:L625-L626} and re-sends the screen. No decision was taken, so
-         * the body carries the refusal shape and no reject code.
+         * the body carries the refusal shape and no reject code. Every caller receives this answer,
+         * whatever the request body declared, which {@code domain/AuthorizationServiceTest} measures.
          */
         @Test
-        void aCardResolvingNoRowWithNoDeclaredAccountAnswersItsOwnText() throws Exception {
+        void aCardResolvingNoRowAnswersItsOwnText() throws Exception {
             when(authorizations.authorize(any(), any())).thenThrow(
                     new AuthorizationService.CardNumberNotFoundInCrossReferenceException());
 
@@ -2129,14 +2111,21 @@ final class AuthorizationControllerTest {
         }
 
         /**
-         * A card no row carries declines with the cross-reference code, naming the account declared.
+         * A card no row carries is refused, and the account the request declared reaches no response.
          *
-         * <p>{@code app/cbl/CBTRN02C.cbl:L385-L387} assigns that code inside the invalid-key limb of
-         * the keyed read, so the account named is the one the request declared. The card number is
-         * constructed, since the code is reached zero times over the fixtures.
+         * <p>{@code app/cbl/CBTRN02C.cbl:L385-L387} assigns reject code {@code 0100} inside the
+         * invalid-key limb of a keyed read, before {@code app/cbl/CBTRN02C.cbl:L394} has any account to
+         * move. This route answers the way its synchronous ancestor does at
+         * {@code app/cbl/COTRN02C.cbl:L625-L626}: it reports the card as unknown and decides nothing.
+         *
+         * <p>The account on the request is what this test watches. An earlier form of this route
+         * answered {@code 0100} naming that account, which let a caller holding a broad role write a
+         * decision, an audit row and a declined event against an account it had merely typed. The body
+         * now carries the source text and no reject code, no approval flag and no account at all. The
+         * card number is constructed, since the code is reached zero times over the fixtures.
          */
         @Test
-        void aCardNoRowCarriesDeclinesWithTheCrossReferenceCode() throws Exception {
+        void aCardNoRowCarriesIsRefusedAndNamesNoDeclaredAccount() throws Exception {
             Map<String, String> body = completeBody();
             body.put(CARD_NUMBER_FIELD, UNKNOWN_CARD);
             body.put(ACCOUNT_ID_FIELD, WORKED_EXAMPLE_ACCOUNT);
@@ -2144,10 +2133,11 @@ final class AuthorizationControllerTest {
             decisionPath.perform(post(ROUTE).contentType(MediaType.APPLICATION_JSON)
                             .content(json(body)))
                     .andExpect(status().isUnprocessableContent())
-                    .andExpect(jsonPath("$.approved").value(false))
-                    .andExpect(jsonPath("$.declineReasonCode")
-                            .value(DeclineReason.INVALID_CARD_NUMBER.code()))
-                    .andExpect(jsonPath("$.accountId").value(WORKED_EXAMPLE_ACCOUNT));
+                    .andExpect(jsonPath("$.messages[0]")
+                            .value(AuthorizationRequest.CARD_NUMBER_NOT_FOUND_MESSAGE))
+                    .andExpect(jsonPath("$.approved").doesNotExist())
+                    .andExpect(jsonPath("$.declineReasonCode").doesNotExist())
+                    .andExpect(jsonPath("$.accountId").doesNotExist());
         }
 
         /**
@@ -2193,24 +2183,26 @@ final class AuthorizationControllerTest {
         }
 
         /**
-         * The cross-reference code stops the chain ahead of the account code.
+         * The cross-reference miss stops the chain ahead of the account read.
          *
          * <p>{@code app/cbl/CBTRN02C.cbl:L372} runs the account read only while the reject code holds
-         * zero, so a card that resolves nothing reports the first code and the account read never
-         * runs.
+         * zero, so a card that resolves nothing never reaches it. The short-circuit is what this test
+         * measures, and it is visible in the read that does not happen: the response carries the card
+         * text rather than the account reject code, and no account row is read for the account the
+         * request declared.
          */
         @Test
-        void theCrossReferenceCodeStopsTheChainAheadOfTheAccountCode() throws Exception {
+        void theCrossReferenceMissStopsTheChainAheadOfTheAccountRead() throws Exception {
             Map<String, String> body = completeBody();
             body.put(CARD_NUMBER_FIELD, UNKNOWN_CARD);
             body.put(ACCOUNT_ID_FIELD, WORKED_EXAMPLE_ACCOUNT);
 
             decisionPath.perform(post(ROUTE).contentType(MediaType.APPLICATION_JSON)
                             .content(json(body)))
-                    .andExpect(jsonPath("$.declineReasonCode")
-                            .value(DeclineReason.INVALID_CARD_NUMBER.code()))
-                    .andExpect(jsonPath("$.declineReasonCode")
-                            .value(Matchers.not(DeclineReason.ACCOUNT_NOT_FOUND.code())));
+                    .andExpect(status().isUnprocessableContent())
+                    .andExpect(jsonPath("$.messages[0]")
+                            .value(AuthorizationRequest.CARD_NUMBER_NOT_FOUND_MESSAGE))
+                    .andExpect(jsonPath("$.declineReasonCode").doesNotExist());
 
             verify(accountSnapshots, never()).findForUpdateByAccountId(any());
         }

@@ -1,5 +1,7 @@
 package com.carddemo.notification.config;
 
+import java.lang.reflect.RecordComponent;
+import java.util.Arrays;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -55,10 +57,6 @@ class NotificationPropertiesTest {
             assertThat(properties.history().statementRetentionDays()).isEqualTo(400);
             assertThat(properties.history().logRetentionDays()).isEqualTo(90);
             assertThat(properties.history().sweepIntervalMs()).isEqualTo(3_600_000L);
-            assertThat(properties.processedEvent().markerRetentionHours())
-                    .as("the marker horizon outlasts broker retention rather than equalling it")
-                    .isEqualTo(720);
-            assertThat(properties.processedEvent().brokerRetentionHours()).isEqualTo(168);
         });
     }
 
@@ -118,17 +116,6 @@ class NotificationPropertiesTest {
     }
 
     @Test
-    @DisplayName("a marker retention under one stops start-up")
-    void aMarkerRetentionUnderOneStopsStartUp() {
-        shipped.withPropertyValues("carddemo.processed-event.marker-retention-hours=0")
-                .run(context -> {
-                    assertThat(context).hasFailed();
-                    assertThat(context.getStartupFailure())
-                            .hasStackTraceContaining("processedEvent.markerRetentionHours");
-                });
-    }
-
-    @Test
     @DisplayName("the history record carries three horizons and no page size")
     void theHistoryRecordCarriesThreeHorizonsAndNoPageSize() {
         NotificationProperties.History history =
@@ -143,39 +130,32 @@ class NotificationPropertiesTest {
     }
 
 
+    /**
+     * A duplicate-delivery claim carries no configurable horizon, and this asserts the absence.
+     *
+     * <p>A security review found the marker horizon of 720 hours removing a claim while the effects
+     * it guards outlive it: a read-model row kept for four hundred days and a rendered alert kept
+     * for ninety. A claim is now permanent, so this record carries no {@code processedEvent}
+     * component and no nested {@code ProcessedEvent} type.
+     *
+     * <p>The withdrawn key is set here as well. It binds nothing, which is what makes the
+     * withdrawal a property of the code rather than of the shipped configuration file.
+     */
     @Test
-    @DisplayName("a marker horizon that does not outlast broker retention stops start-up")
-    void aMarkerHorizonUnderTheMarginStopsStartUp() {
-        shipped.withPropertyValues("carddemo.processed-event.marker-retention-hours=168")
-                .run(context -> {
-                    assertThat(context).hasFailed();
-                    assertThat(context.getStartupFailure())
-                            .hasStackTraceContaining("markerRetentionHours")
-                            .hasStackTraceContaining("brokerRetentionHours");
-                });
-    }
+    @DisplayName("no configured value can expire a duplicate-delivery claim")
+    void noConfiguredValueCanExpireADuplicateDeliveryClaim() {
+        assertThat(Arrays.stream(NotificationProperties.class.getRecordComponents())
+                .map(RecordComponent::getName))
+                .as("a component here would be a horizon a deployment could shorten")
+                .doesNotContain("processedEvent");
+        assertThat(Arrays.stream(NotificationProperties.class.getDeclaredClasses())
+                .map(Class::getSimpleName))
+                .doesNotContain("ProcessedEvent");
 
-    @Test
-    @DisplayName("a marker horizon at exactly the margin starts")
-    void aMarkerHorizonAtExactlyTheMarginStarts() {
-        shipped.withPropertyValues("carddemo.processed-event.marker-retention-hours=336")
-                .run(context -> {
-                    assertThat(context).hasNotFailed();
-                    assertThat(context.getBean(NotificationProperties.class).processedEvent()
-                            .markerRetentionHours()).isEqualTo(336);
-                });
-    }
-
-    @Test
-    @DisplayName("raising broker retention without raising the marker horizon stops start-up")
-    void raisingBrokerRetentionAloneStopsStartUp() {
-        shipped.withPropertyValues("carddemo.processed-event.broker-retention-hours=720")
-                .run(context -> {
-                    assertThat(context).hasFailed();
-                    assertThat(context.getStartupFailure())
-                            .hasStackTraceContaining("markerRetentionHours must be at")
-                            .hasStackTraceContaining("least 2 times");
-                });
+        shipped.withPropertyValues("carddemo.processed-event.marker-retention-hours=1")
+                .run(context -> assertThat(context)
+                        .as("the withdrawn key binds nothing and cannot reintroduce a horizon")
+                        .hasNotFailed());
     }
 
     @Test

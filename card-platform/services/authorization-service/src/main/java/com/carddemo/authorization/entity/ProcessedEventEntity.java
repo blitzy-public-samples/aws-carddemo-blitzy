@@ -4,7 +4,6 @@ import jakarta.persistence.Column;
 import jakarta.persistence.Embeddable;
 import jakarta.persistence.EmbeddedId;
 import jakarta.persistence.Entity;
-import jakarta.persistence.Index;
 import jakarta.persistence.Table;
 import java.io.Serializable;
 import java.time.Instant;
@@ -34,7 +33,9 @@ import java.util.UUID;
  * reads {@code card_xref} and {@code account_credit_snapshot} on every decision, so applying one of
  * those events twice would double-count a cycle accumulator and applying one none would authorize
  * against a value its owner has already changed. {@code repository/ProcessedEventRepository} owns
- * the existence check, the insert and the retention purge.
+ * the existence check and the insert. A marker is never removed: it guards a decision row and a
+ * replica value that outlive any window, so migration {@code V21} withdrew the horizon a security
+ * review found too short and nothing expires a row of this table.
  *
  * <p><b>The topic is part of the identity.</b> Those two listeners read two topics, and the
  * event identifiers on them are assigned independently by two different producing services. Two
@@ -45,12 +46,12 @@ import java.util.UUID;
  * the topic, duplicate suppression within one topic is unchanged and the cross-topic collision stops
  * being one.
  *
- * <p>Three columns and one index, created on PostgreSQL 18.4 by
+ * <p>Three columns, created on PostgreSQL 18.4 by
  * {@code src/main/resources/db/migration/V1__schema.sql} and re-keyed by
  * {@code src/main/resources/db/migration/V6__processed_event_topic_key.sql}, which are authoritative
- * for their definitions: {@code event_id} and {@code consumed_topic} as the primary key,
- * {@code processed_at}, and {@code ix_processed_event_processed_at} over {@code processed_at} for the
- * retention purge.
+ * for their definitions: {@code event_id} and {@code consumed_topic} as the primary key, and
+ * {@code processed_at} as evidence of when the claim was made. The index that once served the
+ * retention purge went with the purge, in {@code V21__processed_event_claims_are_permanent.sql}.
  *
  * <p>The producer assigns the event identifier while building the event envelope, the delivery
  * carries the topic in its own header, and the writer supplies the timestamp. Each of the other five
@@ -65,9 +66,7 @@ import java.util.UUID;
  * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 @Entity
-@Table(name = "processed_event",
-        indexes = @Index(name = "ix_processed_event_processed_at",
-                columnList = "processed_at"))
+@Table(name = "processed_event")
 public class ProcessedEventEntity {
 
     /**

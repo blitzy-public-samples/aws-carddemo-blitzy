@@ -88,7 +88,7 @@ import org.junit.jupiter.api.Test;
 class EntitySchemaMappingContractTest {
 
     /** Entities the six services declare between them. */
-    private static final int ENTITY_COUNT = 31;
+    private static final int ENTITY_COUNT = 32;
 
     /**
      * Persistent attributes those entities map between them.
@@ -150,14 +150,22 @@ class EntitySchemaMappingContractTest {
      * additive and have no COBOL ancestor: the source carries no identifier that spans two
      * programs.</p>
      *
-     * <p>The most recent is the authorization service's {@code unresolved_card_attempt.account_id},
-     * added by {@code V19__unresolved_decline_names_its_account.sql}. It holds the eleven-digit
-     * account a decline for reject code 0100 was decided against, at the width of
-     * {@code XREF-ACCT-ID PIC 9(11)}, and it is the value the published decline keys on. The column
-     * is nullable and its check carries {@code NOT VALID}, because a row written before that
-     * migration recorded no subject.</p>
+     * <p>Seven columns left the model most recently, and the whole of the authorization service's
+     * {@code unresolved_card_attempt} table with them. {@code V20__unresolved_card_attempt_withdrawn.sql}
+     * drops it because the outcome it recorded is no longer decided: a card that resolves no
+     * cross-reference row is refused rather than decided against the account a caller named in the
+     * request body, which is what a security review found. The observation that an unknown card was
+     * presented is kept as a metric, and a metric has no column.</p>
+     *
+     * <p>Sixteen arrived with the card-token rotation a security review asked for, and none has a
+     * COBOL ancestor because the source holds no token: {@code app/bms/COCRDSL.bms:L99} shows a card
+     * in full. Three of the sixteen record which key a stored token belongs to and where it came
+     * from, two on {@code card} and one on {@code authorization_decision}, and thirteen make up the
+     * two tables {@code V10__card_token_version_and_rotation.sql} creates. Eight of those thirteen
+     * are the audit record of one rotation run and five are one re-keyed card, which is what the
+     * three stores holding a token and no card number are re-keyed from.</p>
      */
-    private static final int MAPPED_COLUMN_COUNT = 272;
+    private static final int MAPPED_COLUMN_COUNT = 281;
 
     /** Dialect the mapping model renders SQL types for, matching the shipped database. */
     private static final String POSTGRES_DIALECT = "org.hibernate.dialect.PostgreSQLDialect";
@@ -451,8 +459,7 @@ class EntitySchemaMappingContractTest {
                     com.carddemo.authorization.entity.CardCrossReferenceEntity.class,
                     com.carddemo.authorization.entity.OutboxEventEntity.class,
                     com.carddemo.authorization.entity.ProcessedEventEntity.class,
-                    com.carddemo.authorization.entity.ReplicaGapEntity.class,
-                    com.carddemo.authorization.entity.UnresolvedCardAttemptEntity.class)),
+                    com.carddemo.authorization.entity.ReplicaGapEntity.class)),
             new ServiceModule("ledger-posting-service", "ledger", List.of(
                     com.carddemo.ledger.entity.AccountBalanceProjectionEntity.class,
                     com.carddemo.ledger.entity.OutboxEventEntity.class,
@@ -480,6 +487,8 @@ class EntitySchemaMappingContractTest {
             new ServiceModule("card-service", "card", List.of(
                     com.carddemo.card.entity.CardCrossReferenceEntity.class,
                     com.carddemo.card.entity.CardEntity.class,
+                    com.carddemo.card.entity.CardTokenRotationEntity.class,
+                    com.carddemo.card.entity.CardTokenRotationMappingEntity.class,
                     com.carddemo.card.entity.OutboxEventEntity.class,
                     com.carddemo.card.entity.ProcessedEventEntity.class)));
 
@@ -1151,7 +1160,7 @@ class EntitySchemaMappingContractTest {
     }
 
     @Nested
-    @DisplayName("Column mapping of all 31 entities")
+    @DisplayName("Column mapping of all 32 entities")
     class ColumnMapping {
 
         /** Every attribute of every entity maps a column its migration declares. */
@@ -1378,7 +1387,7 @@ class EntitySchemaMappingContractTest {
     }
 
     @Nested
-    @DisplayName("Keys and indexes of all 31 entities")
+    @DisplayName("Keys and indexes of all 32 entities")
     class KeysAndIndexes {
 
         /** Every entity's identifier maps exactly the primary key columns its migration declares. */

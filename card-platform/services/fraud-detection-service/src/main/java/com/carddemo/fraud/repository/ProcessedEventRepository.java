@@ -73,30 +73,4 @@ public interface ProcessedEventRepository
     int claimEvent(@Param("eventId") UUID eventId,
             @Param("processedAt") Instant processedAt,
             @Param("consumedTopic") String consumedTopic);
-
-    /**
-     * Deletes at most {@code limit} markers older than the horizon, and returns how many it removed.
-     *
-     * <p>The bound keeps one retention pass from producing a single very large statement on a schema
-     * that has been idle for a long time. A caller repeats the call until it returns zero.
-     *
-     * <p>The subquery selects and the delete matches on both key columns. Matching on the event
-     * identifier alone would remove a marker of the same identifier on another topic whose own
-     * {@code processed_at} is newer than the horizon, which would unguard a delivery the retention
-     * rule was not asked to forget.
-     *
-     * @param horizon the instant before which a marker is removed
-     * @param limit   the largest number of rows one statement removes
-     * @return the number of rows removed
-     */
-    @Modifying
-    @Query(value = """
-            DELETE FROM processed_event
-            WHERE (event_id, consumed_topic) IN (SELECT event_id, consumed_topic
-                                                 FROM processed_event
-                                                 WHERE processed_at < :horizon
-                                                 ORDER BY processed_at
-                                                 LIMIT :limit)
-            """, nativeQuery = true)
-    int deleteMarkersProcessedBefore(@Param("horizon") Instant horizon, @Param("limit") int limit);
 }

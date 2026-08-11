@@ -37,24 +37,22 @@ import java.util.Objects;
  * comparison has already failed, and never at all for an administrator.
  *
  * <p>A call whose card resolved no account reaches this check with a {@code null} account identifier,
- * so only card ownership can carry it. That is deliberate: it means an unentitled caller probing a
- * card number receives the same refusal whether or not that card exists, instead of a reject code
- * {@code 0100} that confirms the card is unknown and an approval that confirms it is known. Card
- * existence stops being observable to a caller that owns nothing.
+ * so only card ownership can carry it. That is deliberate: an unentitled caller probing a card number
+ * receives the same refusal whether or not that card exists. Card existence stops being observable to
+ * a caller that owns nothing.
  *
- * <p>The account this check reads is the resolved one and never the declared one, and the difference
- * matters on exactly that path. A reason-0100 decision does name an account — the one the caller
- * declared, which is the subject its event is keyed on — and passing that value here would let any
- * caller owning any account probe card numbers: an unknown card would answer reject code
- * {@code 0100} and a known card belonging to someone else would answer a refusal.
- * {@code domain/AuthorizationService} therefore passes {@code null} here for a card that resolved
- * nothing and uses the declared account only as the subject of a decision this check has already
- * allowed.
+ * <p>The account this check reads is the resolved one, and no account read from the request body
+ * reaches it or reaches any other decision. A security review found the earlier behaviour, where a
+ * card resolving no row was decided against the account the caller had declared: any caller owning
+ * any account could then pair it with an unknown card and learn from the answer whether that card
+ * existed. {@code domain/AuthorizationService} now refuses such a call outright, immediately after
+ * this check, and {@code card-platform/docs/decision-log.md} records what the review found.
  *
  * <p>Where this check runs is as important as what it decides. {@code domain/AuthorizationService}
- * applies it after the chain has resolved the card and the account and before it allocates a
- * transaction identifier, so a refused call consumes no sequence value, records no decision, writes no
- * unresolved-card attempt and produces no event.
+ * applies it after the chain has resolved the card and the account, before the refusal above and
+ * before it allocates a transaction identifier, so a refused call consumes no sequence value, records
+ * no decision and produces no event. Running it first is what keeps the two refusals
+ * indistinguishable to a caller that owns nothing.
  *
  * <p>Every member is static, so no instance is created and no thread shares state.
  */

@@ -4,7 +4,6 @@ import jakarta.persistence.Column;
 import jakarta.persistence.Embeddable;
 import jakarta.persistence.EmbeddedId;
 import jakarta.persistence.Entity;
-import jakarta.persistence.Index;
 import jakarta.persistence.Table;
 import java.io.Serializable;
 import java.time.Instant;
@@ -38,17 +37,17 @@ import java.util.UUID;
  *
  * <p>Three columns carry the marker: {@code event_id}, a Universally Unique Identifier (UUID),
  * {@code consumed_topic}, the topic the delivery arrived on, and {@code processed_at}, the moment a
- * consumer's side effects committed. The first two together are the primary key. An index over
- * {@code processed_at} serves the retention purge. {@code V1__schema.sql} is authoritative for the
- * columns and {@code V6__processed_event_topic_key.sql} for the key. A second insert of one
- * identifier on one topic violates that key, and
- * {@code repository/ProcessedEventRepository} owns the claim, the existence check and the retention
- * purge. Configuration supplies the schema name, and the table annotation names none.</p>
+ * consumer's side effects committed. The first two together are the primary key, and the third is
+ * evidence of when the claim was made rather than a purge key: a marker guards a balance this service
+ * never expires, so {@code V11__processed_event_claims_are_permanent.sql} withdrew the horizon a
+ * security review found too short and dropped the index that served it. {@code V1__schema.sql} is
+ * authoritative for the columns and {@code V6__processed_event_topic_key.sql} for the key. A second
+ * insert of one identifier on one topic violates that key, and
+ * {@code repository/ProcessedEventRepository} owns the claim and the existence check. Configuration
+ * supplies the schema name, and the table annotation names none.</p>
  */
 @Entity
-@Table(name = "processed_event",
-        indexes = @Index(name = "ix_processed_event_processed_at",
-                columnList = "processed_at"))
+@Table(name = "processed_event")
 public class ProcessedEventEntity {
 
     /**

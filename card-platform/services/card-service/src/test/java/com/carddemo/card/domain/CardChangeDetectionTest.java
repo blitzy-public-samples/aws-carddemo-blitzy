@@ -794,9 +794,17 @@ class CardChangeDetectionTest {
          * <p>{@code app/cpy/CVACT02Y.cpy:L5-L10} declares six fields, and
          * {@code V1__schema.sql} adds {@code card_token} for the platform identity of a card. The
          * catalogue query below reads the column names of schema {@value #MIGRATED_SCHEMA}.
+         *
+         * <p>{@code V10__card_token_version_and_rotation.sql} adds two more, and neither is a row
+         * version. {@code card_token_version} names the card-token key a stored token was taken
+         * under and {@code card_token_provenance} says whether this deployment derived it, which is
+         * what separates correcting a seeded literal from moving an identity three other stores
+         * hold. Both describe the token rather than the row, so a concurrent change to an embossed
+         * name still moves neither, and the comparison at
+         * {@code app/cbl/COCRDUPC.cbl:L1503-L1508} remains the whole of the check.
          */
         @Test
-        @DisplayName("the card table declares seven columns and none named version")
+        @DisplayName("the card table declares nine columns and none named version")
         void theCardTableDeclaresNoVersionColumn() {
             List<String> columns = jdbc.queryForList(
                     "SELECT column_name FROM information_schema.columns"
@@ -806,7 +814,8 @@ class CardChangeDetectionTest {
 
             assertAll(
                     () -> assertEquals(List.of("account_id", "active_status", "card_number",
-                            "card_token", "card_verification_value", "embossed_name",
+                            "card_token", "card_token_provenance", "card_token_version",
+                            "card_verification_value", "embossed_name",
                             "expiration_date"), columns),
                     () -> assertFalse(columns.contains("version"),
                             "the change check is the field comparison at"

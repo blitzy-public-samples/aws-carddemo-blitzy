@@ -52,6 +52,10 @@ class HistoryContractTest {
     /** The migration that renamed one column and one index, and added {@code outcome}. */
     private static final String RENAME_MIGRATION = "/db/migration/V5__rendered_not_delivered.sql";
 
+    /** The migration that withdraws the marker purge and the index it ran on. */
+    private static final String PERMANENT_CLAIM_MIGRATION =
+            "/db/migration/V8__processed_event_claims_are_permanent.sql";
+
     /** The only path the description declares. */
     private static final String HISTORY_PATH = "/notifications/{cardToken}";
 
@@ -256,6 +260,10 @@ class HistoryContractTest {
      * with the column it orders. Both names are asserted here: V1's because it is still the
      * statement that created the index, and V5's because it is the name the live schema carries and
      * the one {@code repository/NotificationLogRepository} documents.</p>
+     *
+     * <p>V1 created a fourth index over {@code processed_event.processed_at} for a marker purge, and
+     * {@code V8__processed_event_claims_are_permanent.sql} withdraws both. A claim is permanent now,
+     * so that table has no retention delete and needs no index for one.</p>
      */
     @Test
     @DisplayName("The migration carries an index for each retention delete")
@@ -263,8 +271,10 @@ class HistoryContractTest {
         assertThat(rawMigration)
                 .contains("ix_statement_transaction_processing_timestamp")
                 .contains("ix_notification_log_attempted_at")
-                .contains("ix_cardholder_context_observed_at")
-                .contains("ix_processed_event_processed_at");
+                .contains("ix_cardholder_context_observed_at");
+        assertThat(readClasspathResource(PERMANENT_CLAIM_MIGRATION))
+                .as("the migration that withdraws the marker purge and the index it ran on")
+                .contains("DROP INDEX IF EXISTS ix_processed_event_processed_at");
         assertThat(readClasspathResource(RENAME_MIGRATION))
                 .as("the index the rendered-alert purge runs on, under the name it now carries")
                 .contains("ALTER INDEX ix_notification_log_attempted_at")

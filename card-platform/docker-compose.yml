@@ -21,6 +21,39 @@
 # Each build context below is therefore the module directory rather than this one. No
 # compiler, no build tool and no source tree enter an image.
 #
+# TRANSPORT POSTURE OF THIS STACK. One operator, one machine, synthetic fixtures.
+#
+# Three transports here carry a credential without encrypting it or without authenticating
+# the peer, and each is a deliberate choice for this stack rather than an oversight:
+#
+#   * The six service ports speak HTTP with HTTP Basic. SERVER_SSL_ENABLED is false.
+#   * The broker speaks SASL_PLAINTEXT, which authenticates a client and encrypts nothing.
+#   * The six database connections ask for sslmode=require, which encrypts the connection
+#     and does not authenticate the server, because a laptop has no certificate authority
+#     and the server generates its own certificate on first start.
+#
+# What makes that acceptable is a posture, and the posture has three parts. Every published
+# port binds 127.0.0.1, so nothing off this machine reaches any of them, and
+# ComposeEnvironmentIsolationContractTest fails the build on a binding that does not.
+# Everything between containers crosses one Docker bridge on the same machine. And the data
+# is the nine synthetic fixture files under app/data/ASCII: fifty accounts, fifty customers
+# and three hundred transactions that describe nobody.
+#
+# What this stack is not for. It carries no real cardholder data, it is not reachable by a
+# second person, and it is not a deployment. A host shared with an untrusted account, or a
+# second user on the same bridge, is outside what the posture covers.
+#
+# The deployed answer is elsewhere and it is encrypted throughout: deploy/k8s/30-configmap.yaml
+# sets SASL_SSL, sslmode=verify-full against a mounted authority, and Transport Layer Security
+# on both ports of every service. KAFKA_SECURITY_PROTOCOL, SPRING_DATASOURCE_OPTIONS and the
+# two SSL switches are the values that differ between the two paths.
+#
+# An authenticated Transport Layer Security profile for this file is designed and not
+# delivered: card-platform/docs/suggested-next-tasks.md carries the procedure and the check.
+# The reasoning behind the posture, its alternatives and the risk it accepts:
+# card-platform/docs/decision-log.md, under "A local stack states its transport posture and
+# binds it to one machine".
+#
 # Rationale for the choices in this file: card-platform/docs/decision-log.md
 #
 ---
@@ -136,11 +169,6 @@ x-service-environment: &service-environment
   MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: ${MANAGEMENT_ENDPOINTS:-health,metrics,prometheus}
   # Keeps the readiness and liveness health groups available on the management port.
   MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED: ${MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED:-true}
-  # The broker log retention every service is told to assume, so each can refuse a
-  # processed-event marker horizon that would not outlast a replay of the record it
-  # suppresses. One value reaches the broker above and all six services here, so the
-  # two cannot drift apart.
-  KAFKA_LOG_RETENTION_HOURS: ${KAFKA_LOG_RETENTION_HOURS:-168}
   # Request-surface controls, shared because the policy is the same in all six services.
   #
   # API_CROSS_SITE_HEADER names the header a state-changing request has to carry.
@@ -423,6 +451,12 @@ services:
       # topics this platform uses. A mistyped name then fails loudly instead of
       # quietly opening a new stream on an unauthenticated broker.
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      # The broker's half of the wire ceiling ladder, aligned to the governed event envelope:
+      # 8192 bytes is the value ceiling libs/event-contracts refuses above, 16384 is the
+      # producer's max.request.size, and this is 32768 so a producer request always fits with
+      # room for compression and batch overhead. A record above it is refused at the broker
+      # rather than accepted onto a partition, which is the bound this line exists for.
+      KAFKA_MESSAGE_MAX_BYTES: 32768
       KAFKA_LOG_DIRS: /var/lib/kafka/data
       # Every topic name travels as an environment value, so the program below
       # reads each one as data. None becomes part of the program text.
@@ -814,11 +848,11 @@ services:
       # one. It stays above the producer window of one send, MAX_BLOCK_MS + DELIVERY_TIMEOUT_MS.
       OUTBOX_RELAY_MAX_DURATION_MS: ${OUTBOX_RELAY_MAX_DURATION_MS:-5000}
       OUTBOX_PUBLISHED_RETENTION_HOURS: ${OUTBOX_PUBLISHED_RETENTION_HOURS:-168}
-      PROCESSED_EVENT_RETENTION_HOURS: ${PROCESSED_EVENT_RETENTION_HOURS:-720}
       RETENTION_SWEEP_INTERVAL_MS: ${RETENTION_SWEEP_INTERVAL_MS:-3600000}
-      # Days a row of authorization_decision and unresolved_card_attempt remains. Each is the
-      # attribution record of a financial decision rather than a message in flight, so it
-      # outlives the outbox row that carried the event. Only this service reads it.
+      # Days a row of authorization_decision remains. It is the attribution record of a
+      # financial decision rather than a message in flight, so it outlives the outbox row that
+      # carried the event. Only this service reads it. It governed unresolved_card_attempt too
+      # until migration V20 withdrew that table.
       DECISION_RETENTION_DAYS: ${DECISION_RETENTION_DAYS:-365}
       # Bytes the largest legitimate request body occupies. config/RequestBodyCeilingFilter
       # refuses a request declaring more, and config/JsonReadCeilingConfig bounds the parser for
@@ -950,7 +984,6 @@ services:
       # the producer window of one send, MAX_BLOCK_MS + DELIVERY_TIMEOUT_MS.
       OUTBOX_RELAY_MAX_DURATION_MS: ${OUTBOX_RELAY_MAX_DURATION_MS:-5000}
       OUTBOX_PUBLISHED_RETENTION_HOURS: ${OUTBOX_PUBLISHED_RETENTION_HOURS:-168}
-      PROCESSED_EVENT_RETENTION_HOURS: ${PROCESSED_EVENT_RETENTION_HOURS:-720}
       RETENTION_SWEEP_INTERVAL_MS: ${RETENTION_SWEEP_INTERVAL_MS:-3600000}
       # rejected_transaction declared ninety days in its COMMENT ON TABLE before any code
       # applied it. domain/RetentionSweep now reads this value.
@@ -1033,7 +1066,6 @@ services:
       # one. It stays above the producer window of one send, MAX_BLOCK_MS + DELIVERY_TIMEOUT_MS.
       OUTBOX_RELAY_MAX_DURATION_MS: ${OUTBOX_RELAY_MAX_DURATION_MS:-5000}
       OUTBOX_PUBLISHED_RETENTION_HOURS: ${OUTBOX_PUBLISHED_RETENTION_HOURS:-168}
-      PROCESSED_EVENT_RETENTION_HOURS: ${PROCESSED_EVENT_RETENTION_HOURS:-720}
       RETENTION_SWEEP_INTERVAL_MS: ${RETENTION_SWEEP_INTERVAL_MS:-3600000}
       # Both fraud_assessment and velocity_window declared a horizon in their COMMENT ON
       # TABLE before any code applied it. domain/RetentionSweep now reads both values, and
@@ -1121,7 +1153,6 @@ services:
       TOPIC_DEAD_LETTER: ${TOPIC_DEAD_LETTER:-carddemo.dead-letter}
       CONSUMER_MAX_RETRY_ATTEMPTS: ${CONSUMER_MAX_RETRY_ATTEMPTS:-3}
       CONSUMER_RETRY_BACKOFF_MS: ${CONSUMER_RETRY_BACKOFF_MS:-1000}
-      PROCESSED_EVENT_RETENTION_HOURS: ${PROCESSED_EVENT_RETENTION_HOURS:-720}
       RETENTION_SWEEP_INTERVAL_MS: ${RETENTION_SWEEP_INTERVAL_MS:-3600000}
       STATEMENT_RETENTION_DAYS: ${STATEMENT_RETENTION_DAYS:-400}
       NOTIFICATION_LOG_RETENTION_DAYS: ${NOTIFICATION_LOG_RETENTION_DAYS:-90}
@@ -1240,7 +1271,6 @@ services:
       # one. It stays above the producer window of one send, MAX_BLOCK_MS + DELIVERY_TIMEOUT_MS.
       OUTBOX_RELAY_MAX_DURATION_MS: ${OUTBOX_RELAY_MAX_DURATION_MS:-5000}
       OUTBOX_PUBLISHED_RETENTION_HOURS: ${OUTBOX_PUBLISHED_RETENTION_HOURS:-168}
-      PROCESSED_EVENT_RETENTION_HOURS: ${PROCESSED_EVENT_RETENTION_HOURS:-720}
       RETENTION_SWEEP_INTERVAL_MS: ${RETENTION_SWEEP_INTERVAL_MS:-3600000}
       # Bound on how long a locked read of one update waits for a row another writer holds.
       WRITE_LOCK_WAIT_MS: ${WRITE_LOCK_WAIT_MS:-3000}
@@ -1307,6 +1337,21 @@ services:
       # Not key material. The version is part of the message the code covers, so raising it
       # rolls every token over under the same key.
       CARD_TOKEN_VERSION: ${CARD_TOKEN_VERSION:-1}
+      # The three rotation settings, delivered to this service alone because it is the only one
+      # that rewrites a stored token. All three are unset or false in ordinary operation.
+      #
+      # CARD_TOKEN_PREVIOUS_SECRET carries the key the stored tokens were taken under, which is
+      # what makes the previous token of a card derivable beside the current one. Without it a
+      # rotation cannot write the mapping the notification read model, the authorization decision
+      # diagnostics and every granted SCOPE_CARD authority are re-keyed from, so it refuses.
+      CARD_TOKEN_PREVIOUS_SECRET: ${CARD_TOKEN_PREVIOUS_SECRET:-}
+      # The version those stored tokens were taken under. Absent, it falls back to the current
+      # version, so turning the key over without raising the version needs one setting.
+      CARD_TOKEN_PREVIOUS_VERSION: ${CARD_TOKEN_PREVIOUS_VERSION:-}
+      # The operator's statement that a rotation is intended. Left false, domain/CardTokenReconciler
+      # refuses to start rather than rewriting an identity three other stores already name, which is
+      # the silent rewrite a security review found. services/card-service/README.md is the procedure.
+      CARD_TOKEN_ROTATION_ENABLED: ${CARD_TOKEN_ROTATION_ENABLED:-false}
       CARD_DB_NAME: ${CARD_DB_NAME:-carddemo_card}
       SPRING_DATASOURCE_URL: jdbc:postgresql://${POSTGRES_HOST:-postgres}:5432/${CARD_DB_NAME:-carddemo_card}?currentSchema=${CARD_DB_SCHEMA:-card_service}&sslmode=require
       # This service's own login. It owns carddemo_card and can connect to no other database:
@@ -1370,7 +1415,6 @@ services:
       # one. It stays above the producer window of one send, MAX_BLOCK_MS + DELIVERY_TIMEOUT_MS.
       OUTBOX_RELAY_MAX_DURATION_MS: ${OUTBOX_RELAY_MAX_DURATION_MS:-5000}
       OUTBOX_PUBLISHED_RETENTION_HOURS: ${OUTBOX_PUBLISHED_RETENTION_HOURS:-168}
-      PROCESSED_EVENT_RETENTION_HOURS: ${PROCESSED_EVENT_RETENTION_HOURS:-720}
       RETENTION_SWEEP_INTERVAL_MS: ${RETENTION_SWEEP_INTERVAL_MS:-3600000}
       # Bound on how long a locked read of one update waits for a row another writer holds.
       WRITE_LOCK_WAIT_MS: ${WRITE_LOCK_WAIT_MS:-3000}
@@ -1588,6 +1632,22 @@ volumes:
 
   # Database files and broker log segments survive `docker compose down`.
   # `docker compose down -v` discards both.
+  #
+  # NEITHER VOLUME IS ENCRYPTED BY ANYTHING IN THIS FILE, AND NEITHER MAY HOLD REAL DATA.
+  # Both are local named volumes under this machine's Docker data root. postgres-data holds all six
+  # schemas and kafka-data holds every published event, so a copy of either is a copy of everything
+  # this stack knows, past every control above it: the request identities, the six database logins,
+  # the seven broker identities and the loopback-only bindings.
+  #
+  # This stack is a single-operator demonstration holding the synthetic fixtures under app/data
+  # ALONE. Fifty card numbers, fifty verification values and fifty customer records, all of them
+  # test data checked into this repository. The control that applies here is whole-disk encryption on
+  # the machine running Docker, which is the operator's to switch on and not something a compose file
+  # can declare. Destruction is one command: `docker compose down -v`.
+  #
+  # A deployment holding anything other than those fixtures uses the Kubernetes path instead, where
+  # the requirement is declared on both claims and one overlay binds an encrypted storage class:
+  # card-platform/deploy/k8s/README.md, under "Encryption at rest".
   postgres-data:
   kafka-data:
 

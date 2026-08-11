@@ -433,17 +433,31 @@ public interface CardRepository extends ListCrudRepository<CardEntity, String> {
      * <p>The {@code <>} predicate makes a repeat harmless and makes two instances starting together
      * converge: the second one's statement changes nothing and answers zero rather than conflicting.
      *
+     * <p>The statement moves three columns together, because a token and the version it was taken
+     * under are one fact and separating them is what a security review found. It also sets the
+     * provenance to {@code DERIVED}: whatever the row carried before, the value it carries after this
+     * statement was derived by this deployment, so a later difference is a rotation rather than a
+     * bootstrap. {@code V10__card_token_version_and_rotation.sql} declares the two columns.
+     *
      * @param cardNumber the row to rewrite
      * @param cardToken  the token the row should carry
+     * @param version    the card-token version that token was taken under
+     * @param provenance {@code CardEntity.TOKEN_PROVENANCE_DERIVED}, which is the only value this
+     *                   statement writes and which the caller passes so the constant stays in one
+     *                   place
      * @return one where the row was rewritten, zero where it already carried the value
      */
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query("""
             UPDATE CardEntity c
-               SET c.cardToken = :cardToken
+               SET c.cardToken = :cardToken,
+                   c.cardTokenVersion = :version,
+                   c.cardTokenProvenance = :provenance
              WHERE c.cardNumber = :cardNumber
                AND c.cardToken <> :cardToken
             """)
     int reassignCardToken(@Param("cardNumber") String cardNumber,
-            @Param("cardToken") String cardToken);
+            @Param("cardToken") String cardToken,
+            @Param("version") String version,
+            @Param("provenance") String provenance);
 }

@@ -23,8 +23,8 @@ import tools.jackson.databind.ObjectMapper;
  * document declares for it, and runs a body violating each stated invariant through the same schema.
  *
  * <p>The document states invariants a reader relies on: an approval carries no reject code, a decline
- * carries one paired with its own verbatim text, reject code {@code 0100} alone names no account, a
- * request names one identifier, and no request supplies a transaction identifier. A schema that
+ * carries one paired with its own verbatim text, a published decline never carries reject code
+ * {@code 0100}, a request names one identifier, and no request supplies a transaction identifier. A schema that
  * describes those in prose and enforces none of them tells a caller a body is valid that the service
  * refuses, and a schema that refuses a body the service accepts is no better.
  *
@@ -194,12 +194,15 @@ class OpenApiExampleValidationTest {
      * Asserts the two decision schemas enforce the invariants of their own status.
      *
      * <p>{@code app/cbl/CBTRN02C.cbl:L211} states an approval as a reject-code field holding zero, so
-     * an approval carrying a code is not an outcome the source can produce. The four pairings come
-     * from {@code app/cbl/CBTRN02C.cbl:L385-L419}, one {@code MOVE} of a code beside one
-     * {@code MOVE} of its text. Reject code {@code 0100} follows the {@code INVALID KEY} branch at
-     * {@code app/cbl/CBTRN02C.cbl:L383-L384}, which resolved no account of its own, so the account it
-     * names is the one the caller declared; a body carrying that code and no account is a decision
-     * nobody can attribute and the schema refuses it.
+     * an approval carrying a code is not an outcome the source can produce. The three pairings this
+     * route publishes come from {@code app/cbl/CBTRN02C.cbl:L397-L419}, one {@code MOVE} of a code
+     * beside one {@code MOVE} of its text.
+     *
+     * <p>Reject code {@code 0100} is not among them. It follows the {@code INVALID KEY} branch at
+     * {@code app/cbl/CBTRN02C.cbl:L383-L384}, which resolves no account, and the account the batch
+     * writes its reject record against comes from {@code :L394} reading the row that branch did not
+     * find. This route therefore refuses such a call rather than deciding it, so the decline schema
+     * enumerates three codes and refuses a body carrying {@code 0100} at all.
      */
     @Test
     @DisplayName("each decision schema enforces the invariants of its status")
@@ -224,8 +227,8 @@ class OpenApiExampleValidationTest {
         assertInvalid(declined,
                 decision(false, "00000000030", "0102", "TRANSACTION RECEIVED AFTER ACCT EXPIRATION"),
                 "a decline pairing one reject code with the text of another");
-        assertValid(declined, decision(false, "00000000030", "0100", "INVALID CARD NUMBER FOUND"),
-                "a decline carrying 0100 and naming the account it was decided against");
+        assertInvalid(declined, decision(false, "00000000030", "0100", "INVALID CARD NUMBER FOUND"),
+                "a decline carrying 0100, which this route refuses rather than decides");
         assertInvalid(declined, decision(false, null, "0100", "INVALID CARD NUMBER FOUND"),
                 "a decline carrying 0100 and naming no account");
         assertInvalid(declined, decision(false, null, "0102", "OVERLIMIT TRANSACTION"),

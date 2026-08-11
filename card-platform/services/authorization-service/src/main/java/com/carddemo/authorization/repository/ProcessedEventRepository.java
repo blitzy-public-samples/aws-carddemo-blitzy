@@ -35,8 +35,15 @@ import org.springframework.data.repository.query.Param;
  *
  * <p>The interface extends {@link Repository} rather than a full create-read-update-delete base,
  * because a marker has exactly three operations. A consumer asks whether an identifier is already
- * present, writes one that is not, and a purge removes markers past the retention horizon. Nothing
- * updates a marker and nothing deletes one by identifier, so neither operation is exposed.
+ * present, claims one that is not, and writes the marker. Nothing updates a marker and nothing
+ * deletes one, so neither operation is exposed.
+ *
+ * <p><b>A claim is permanent.</b> This interface exposed a purge over a 720-hour horizon until a
+ * security review found that horizon expiring claims while the effects they guard outlived them: a
+ * decision row kept for audit, and two replica tables kept for as long as the service runs. A
+ * restored or deliberately replayed record arriving after the purge was new to the guard and applied
+ * twice. Migration {@code V21__processed_event_claims_are_permanent.sql} states the same thing in
+ * the catalogue, and there is no method here to remove a row.
  *
  */
 public interface ProcessedEventRepository
@@ -105,30 +112,4 @@ public interface ProcessedEventRepository
      * @return the written marker
      */
     ProcessedEventEntity save(ProcessedEventEntity marker);
-
-    /**
-     * Deletes at most {@code limit} markers older than the horizon, and returns how many it removed.
-     *
-     * <p>The bound keeps one retention pass from producing a single very large statement on a schema
-     * that has been idle for a long time. A caller repeats the call until it returns zero.
-     *
-     * <p>The subquery selects and the delete matches on both key columns. Matching on the event
-     * identifier alone would remove a marker of the same identifier on another topic whose own
-     * {@code processed_at} is newer than the horizon, which would unguard a delivery the retention
-     * rule was not asked to forget.
-     *
-     * @param horizon the instant before which a marker is removed
-     * @param limit   the largest number of rows one statement removes
-     * @return the number of rows removed
-     */
-    @Modifying
-    @Query(value = """
-            DELETE FROM processed_event
-            WHERE (event_id, consumed_topic) IN (SELECT event_id, consumed_topic
-                                                 FROM processed_event
-                                                 WHERE processed_at < :horizon
-                                                 ORDER BY processed_at
-                                                 LIMIT :limit)
-            """, nativeQuery = true)
-    int deleteMarkersProcessedBefore(@Param("horizon") Instant horizon, @Param("limit") int limit);
 }

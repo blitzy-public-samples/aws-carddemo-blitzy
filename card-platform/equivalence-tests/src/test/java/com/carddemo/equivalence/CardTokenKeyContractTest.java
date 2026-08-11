@@ -46,6 +46,16 @@ import org.junit.jupiter.api.Test;
  * belongs to the build-scope key and is re-derived at start-up, and that every published contract
  * naming the token names the keyed primitive the code applies.
  *
+ * <p>Four more cover a key that moves. A security review found the card service re-deriving
+ * {@code card.card_token} at every start-up whenever the derivation changed, while three other stores
+ * hold a token derived from the same key and hold no card number to re-derive from:
+ * {@code statement_transaction.card_token} and {@code notification_log.card_token} in the notification
+ * service, and {@code authorization_decision.card_token} in the authorization service. A granted
+ * {@code SCOPE_CARD} authority is a fourth. The four assertions are that no shipped path carries a
+ * previous key or states a rotation, that the three rotation settings reach the one service holding a
+ * card number, that the refusal and the operator procedure are both shipped, and that the two columns
+ * separating a bootstrap from a rotation default to the seeded case.
+ *
  * <p>The derivation itself is proved by {@code com.carddemo.cobol.PanMaskerTest}, the seeded literals
  * are compared against a live database by {@code CardRepositoryIT}, and the reconciliation is
  * exercised there too. This class adds what none of those can see, which is the shape of the
@@ -294,6 +304,151 @@ class CardTokenKeyContractTest {
         assertTrue(reconciler.contains("PanMasker.cardToken("),
                 "the reconciliation must derive through the one helper this platform holds, or a"
                         + " row it rewrites carries a value nothing else agrees with");
+    }
+
+    /**
+     * Proves no shipped path carries a usable previous key, and none states that it is rotating.
+     *
+     * <p>The previous key is the read half of a rotation: it makes the token a stored row carries
+     * derivable beside the token it should carry, which is the mapping the three stores holding a
+     * token and no card number are re-keyed from. It is therefore key material of exactly the same
+     * kind as the current key, and a shipped value would publish a key some deployment's rows were
+     * taken under.
+     *
+     * <p>The statement is asserted for the opposite reason. A rotation rewrites a value other stores
+     * and every granted authority already name, so an unedited deployment must not perform one.
+     */
+    @Test
+    @DisplayName("no shipped path carries a previous card-token key or states a rotation")
+    void noShippedPathCarriesAPreviousKeyOrStatesARotation() {
+        String compose = read(platformDirectory().resolve("docker-compose.yml"));
+        String configMap = read(platformDirectory().resolve("deploy/k8s/30-configmap.yaml"));
+        String secretTemplate =
+                read(platformDirectory().resolve("deploy/k8s/31-secret.example.yaml"));
+
+        assertEquals("", dotenvValue(PanMasker.CARD_TOKEN_PREVIOUS_SECRET_VARIABLE),
+                ".env.example carries a previous card-token key. A rotation is the only state that"
+                        + " needs one, and a value shipped here is a key some deployment's stored"
+                        + " tokens were taken under");
+        assertTrue(secretTemplate.contains(PanMasker.CARD_TOKEN_PREVIOUS_SECRET_VARIABLE + ": \"\""),
+                "deploy/k8s/31-secret.example.yaml must declare the previous key empty, so applying"
+                        + " the template unedited deploys no key and starts no rotation");
+        assertTrue(compose.contains(PanMasker.CARD_TOKEN_PREVIOUS_SECRET_VARIABLE + ": ${"
+                        + PanMasker.CARD_TOKEN_PREVIOUS_SECRET_VARIABLE + ":-}"),
+                "docker-compose.yml must default the previous key to nothing rather than requiring"
+                        + " it, because the ordinary state of this platform is not rotating");
+
+        assertEquals("false", dotenvValue(PanMasker.CARD_TOKEN_ROTATION_VARIABLE),
+                ".env.example states that it is rotating. A rotation moves an identity three other"
+                        + " stores and every granted SCOPE_CARD authority name, so it is a thing an"
+                        + " operator states for one run rather than a shipped default");
+        assertTrue(configMap.contains(PanMasker.CARD_TOKEN_ROTATION_VARIABLE + ": \"false\""),
+                "deploy/k8s/30-configmap.yaml must ship the statement as false, so the refusal is"
+                        + " what an unedited cluster gets");
+        assertTrue(compose.contains(PanMasker.CARD_TOKEN_ROTATION_VARIABLE + ": ${"
+                        + PanMasker.CARD_TOKEN_ROTATION_VARIABLE + ":-false}"),
+                "docker-compose.yml must default the statement to false for the same reason");
+        assertEquals("", dotenvValue(PanMasker.CARD_TOKEN_PREVIOUS_VERSION_VARIABLE),
+                ".env.example names a previous card-token version while no rotation is in progress."
+                        + " Empty, it falls back to the current version, which is what turning only"
+                        + " the key over needs");
+    }
+
+    /**
+     * Proves the three rotation settings reach the one service that can perform a rotation.
+     *
+     * <p>A rotation derives both halves of the mapping from a card number, and {@code card} is the
+     * only table on this platform that holds one. The authorization service derives a token for a
+     * decision diagnostic and holds no card number afterwards, so a previous key would reach a
+     * service that cannot use it and could only leak.
+     */
+    @Test
+    @DisplayName("the rotation settings reach the card service alone")
+    void theRotationSettingsReachTheCardServiceAlone() {
+        String compose = read(platformDirectory().resolve("docker-compose.yml"));
+
+        for (String variable : List.of(PanMasker.CARD_TOKEN_PREVIOUS_SECRET_VARIABLE,
+                PanMasker.CARD_TOKEN_PREVIOUS_VERSION_VARIABLE,
+                PanMasker.CARD_TOKEN_ROTATION_VARIABLE)) {
+            assertEquals(1, occurrences(compose, "      " + variable + ":"),
+                    "docker-compose.yml must name " + variable + " inside the card service block"
+                            + " and nowhere else. Only that service holds a card number, so only it"
+                            + " can derive the two halves of a mapping row");
+        }
+
+        String cardBlock = compose.substring(compose.indexOf("  card-service:"));
+        for (String variable : List.of(PanMasker.CARD_TOKEN_PREVIOUS_SECRET_VARIABLE,
+                PanMasker.CARD_TOKEN_ROTATION_VARIABLE)) {
+            assertTrue(cardBlock.contains("      " + variable + ":"),
+                    variable + " is named outside the card service block, so the one service that"
+                            + " can rotate does not receive it");
+        }
+    }
+
+    /**
+     * Proves the refusal a security review asked for is shipped, together with its procedure.
+     *
+     * <p>The finding was that a key change re-derived {@code card.card_token} at start-up and left
+     * {@code statement_transaction}, {@code notification_log},
+     * {@code authorization_decision} and every granted authority naming a card nobody could reach.
+     * Three things answer it: the reconciler refuses a rewrite nobody asked for, it derives the
+     * previous token so the rewrite is mappable, and the operator has the statements that apply the
+     * mapping to the other schemas.
+     */
+    @Test
+    @DisplayName("the rotation refusal, the dual read and the operator procedure are shipped")
+    void theRotationRefusalAndItsProcedureAreShipped() {
+        String reconciler = read(platformDirectory().resolve("services/card-service/src/main/java/"
+                + "com/carddemo/card/domain/CardTokenReconciler.java"));
+        String readme = read(platformDirectory().resolve("services/card-service/README.md"));
+
+        assertTrue(reconciler.contains("PanMasker.cardTokenRotationRequested()"),
+                "the reconciler must refuse a rotation nobody asked for, which is the finding a"
+                        + " security review raised against a silent start-up rewrite");
+        assertTrue(reconciler.contains("PanMasker.previousCardToken("),
+                "and derive what the stored row was called, or the rewrite it performs is not"
+                        + " mappable and the other three stores cannot be re-keyed");
+        assertTrue(reconciler.contains("CardTokenRotationMappingEntity("),
+                "and write one mapping row per moved card, which is what an operator exports");
+
+        assertTrue(readme.contains("## Rotating the card-token key"),
+                "services/card-service/README.md must carry the procedure, because a refusal that"
+                        + " names no procedure leaves an operator with a service that will not"
+                        + " start");
+        for (String statement : List.of("statement_transaction", "notification_log",
+                "authorization_decision", "SCOPE_CARD")) {
+            assertTrue(readme.contains(statement),
+                    "the procedure must name " + statement + " among the places a rotation leaves"
+                            + " behind, or one of them is re-keyed by nobody");
+        }
+        assertTrue(readme.contains("card_token_rotation_mapping"),
+                "and name the table the re-key statements read from");
+    }
+
+    /**
+     * Proves the two columns that separate a bootstrap from a rotation default to the seeded case.
+     *
+     * <p>The fifty checked-in literals are a bootstrap: they belong to the build-scope key and are
+     * corrected without anybody asking. A default that read as a value this deployment derived would
+     * turn every first start-up into a refused rotation.
+     */
+    @Test
+    @DisplayName("the provenance and version columns default to the seeded case")
+    void theProvenanceAndVersionColumnsDefaultToTheSeededCase() {
+        String migration = read(platformDirectory().resolve("services/card-service/src/main/"
+                + "resources/db/migration/V10__card_token_version_and_rotation.sql"));
+
+        assertTrue(migration.contains("ADD COLUMN card_token_version VARCHAR(3) NOT NULL"
+                        + " DEFAULT '" + PanMasker.DEFAULT_CARD_TOKEN_VERSION + "'"),
+                "the version column must default to the version the seeded literals were taken"
+                        + " under, or the fifty rows arrive claiming another one");
+        assertTrue(migration.contains("ADD COLUMN card_token_provenance VARCHAR(7) NOT NULL"
+                        + " DEFAULT 'SEED'"),
+                "and the provenance column must default to the seeded case, or a first start-up"
+                        + " reads fifty bootstrap rows as fifty refused rotations");
+        assertTrue(migration.contains("CREATE TABLE card_token_rotation_mapping"),
+                "the mapping table is the deliverable of a rotation, so the migration that admits"
+                        + " one has to create it");
     }
 
     @Test

@@ -409,13 +409,34 @@ spec:
       targetPort: 5432
       protocol: TCP
 ---
-# The Deployment mounts this claim. The claim names no storage class, so the
-# cluster binds the volume with its default class.
+# The Deployment mounts this claim.
+#
+# THE STORAGE HOLDING IT HAS TO BE ENCRYPTED, AND THIS CLAIM DOES NOT BIND AN ENCRYPTED CLASS.
+# This one volume holds all six schemas: fifty full card numbers and fifty card verification values
+# in the card schema, the only table on this platform describing an identifiable person in the
+# account schema, and the card-keyed replicas, token-keyed read models and financial rows of the
+# other four. A copied volume, an unprotected snapshot or a lost disk therefore bypasses the six
+# database logins, the NetworkPolicy and every Transport Layer Security session above.
+#
+# The claim names no storage class on purpose, so the documented local demo binds whatever class the
+# cluster already has and works with no edit. A deployment holding anything other than the synthetic
+# fixtures binds an encrypted class instead, by applying the overlay rather than this file:
+#
+#   kubectl apply -k card-platform/deploy/k8s/overlays/encrypted-storage
+#
+# The overlay sets storageClassName on this claim and on kafka-data in one place. A claim's class
+# cannot change once it is bound, so the overlay has to be applied before the first apply of this
+# folder. card-platform/deploy/k8s/README.md carries key ownership, rotation, backup encryption and
+# the restore proof, and the annotations below are the machine-readable form of this paragraph.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: postgres-data
   namespace: carddemo
+  annotations:
+    carddemo.io/requires-encryption-at-rest: "true"
+    carddemo.io/data-classification: "cardholder-and-customer"
+    carddemo.io/encryption-overlay: "card-platform/deploy/k8s/overlays/encrypted-storage"
   labels:
     app.kubernetes.io/name: postgres
     app.kubernetes.io/component: database

@@ -199,9 +199,30 @@ class CardRepositoryIT {
      * applied the earlier bytes and had its checksums repaired rather than its volume discarded. It
      * declares no table, column, index or constraint, so {@link ActiveStatusDomain} reads the same
      * constraint it read at version 7.
+     *
+     * <p>Version 9 is {@code V9__processed_event_claims_are_permanent.sql}. It withdraws the
+     * retention horizon of {@code processed_event} and drops {@code ix_processed_event_processed_at}
+     * with the purge that index served, so a duplicate-delivery claim is kept for good. It declares
+     * no table, no column and no constraint, and the claim assertions in this class read the same
+     * rows they read at version 8.
+     *
+     * <p>Version 10 is {@code V10__card_token_version_and_rotation.sql}. It adds
+     * {@code card_token_version} and {@code card_token_provenance} to {@code card}, both with a
+     * default that describes the fifty seeded rows exactly, and creates the two tables a rotation
+     * writes: {@code card_token_rotation} and {@code card_token_rotation_mapping}. A security review
+     * found that a key change re-derived {@code card.card_token} alone and left three other stores
+     * naming a card nobody could reach. Every row this class reads still carries the seeded token, so
+     * each existing assertion reads the value it read at version 9, and the two new columns are
+     * asserted by {@link CardTokenProvenance}.
+     *
+     * <p>Version 11 is {@code V11__card_verification_value_exception.sql}. It records the formal
+     * exception under which this schema keeps {@code card.card_verification_value} and re-issues the
+     * {@code card} and {@code card_xref} comments, one of them pointing at the subject-request
+     * procedure. It declares no table, no column, no index and no constraint, so every assertion in
+     * this class reads exactly what it read at version 10.
      */
     private static final List<String> MIGRATION_VERSIONS =
-            List.of("1", "2", "3", "4", "5", "6", "7", "8");
+            List.of("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11");
 
     /**
      * Card number of the row a test inserts to place a second card on one account.
@@ -913,6 +934,291 @@ class CardRepositoryIT {
                             "8888888888888888"),
                     "ck_card_card_token_hex must refuse a value that is not sixty-four lower-case "
                             + "hexadecimal characters");
+        }
+    }
+
+    /**
+     * Proves a stored token records which key it belongs to, and that moving one is an audited act.
+     *
+     * <p>A security review found this service re-deriving {@code card.card_token} at every start-up
+     * whenever the derivation changed, with nothing recording which key a stored token belonged to.
+     * Three other stores hold a token derived from the same key and hold no card number, so none can
+     * re-derive its own rows: {@code statement_transaction.card_token} and
+     * {@code notification_log.card_token} in the notification service, and
+     * {@code authorization_decision.card_token} in the authorization service. A granted
+     * {@code SCOPE_CARD} authority is a fourth. A silent rewrite therefore left all four naming a card
+     * nobody could reach, with no mapping back and no way to undo it.
+     *
+     * <p>{@code V10__card_token_version_and_rotation.sql} separates the two reasons a stored token can
+     * differ from the derivation. A seeded row is a bootstrap and is corrected without being asked. A
+     * row this deployment derived is a rotation, and it is refused unless an operator states it, which
+     * is what these four tests assert against a real database.
+     *
+     * <p>This group carries {@link Transactional} like every other, so each row it drifts and each
+     * audit row a rotation writes roll back and the fifty seeded rows stand for the next test.
+     */
+    @Nested
+    @Transactional
+    @DisplayName("The card-token version, its provenance, and an audited rotation")
+    class CardTokenProvenance {
+
+        /** A key of the minimum width, standing for the key a rotation is leaving behind. */
+        private static final String PREVIOUS_KEY = "card-repository-it-previous-key-01";
+
+        /** Reads one column of one card row. */
+        private String cardColumn(String column, String cardNumber) {
+            return jdbcTemplate.queryForObject("SELECT " + column + " FROM " + schema
+                    + ".card WHERE card_number = ?", String.class, cardNumber);
+        }
+
+        /** Drifts one row onto a supplied token and provenance, as a key change would leave it. */
+        private void drift(String cardNumber, String cardToken, String provenance) {
+            jdbcTemplate.update("UPDATE " + schema + ".card SET card_token = ?,"
+                            + " card_token_provenance = ? WHERE card_number = ?",
+                    cardToken, provenance, cardNumber);
+            entityManager.clear();
+        }
+
+        /** Derives the token one card number carries under a named key, as a stored row would hold. */
+        private String tokenUnder(String key, String cardNumber) {
+            String held = System.getProperty(PanMasker.CARD_TOKEN_SECRET_PROPERTY);
+            try {
+                System.setProperty(PanMasker.CARD_TOKEN_SECRET_PROPERTY, key);
+                return PanMasker.cardToken(cardNumber);
+            } finally {
+                if (held == null) {
+                    System.clearProperty(PanMasker.CARD_TOKEN_SECRET_PROPERTY);
+                } else {
+                    System.setProperty(PanMasker.CARD_TOKEN_SECRET_PROPERTY, held);
+                }
+            }
+        }
+
+        /** Runs one body with a previous key configured and a rotation stated or unstated. */
+        private <T> T asRotation(boolean stated, java.util.function.Supplier<T> body) {
+            System.setProperty(PanMasker.CARD_TOKEN_PREVIOUS_SECRET_PROPERTY, PREVIOUS_KEY);
+            if (stated) {
+                System.setProperty(PanMasker.CARD_TOKEN_ROTATION_PROPERTY, "true");
+            }
+            try {
+                return body.get();
+            } finally {
+                System.clearProperty(PanMasker.CARD_TOKEN_PREVIOUS_SECRET_PROPERTY);
+                System.clearProperty(PanMasker.CARD_TOKEN_ROTATION_PROPERTY);
+            }
+        }
+
+        /** The card numbers the seed loaded, in primary-key order. */
+        private List<String> seededCardNumbers() {
+            return cardRepository.findAll().stream()
+                    .map(CardEntity::getCardNumber).sorted().toList();
+        }
+
+        /**
+         * Asserts every seeded row states the version and the provenance the migration defaults.
+         *
+         * <p>The defaults have to describe the fifty checked-in literals exactly, because a seeded row
+         * that read as one this deployment derived would be refused at the next start-up rather than
+         * corrected.
+         */
+        @Test
+        @DisplayName("every seeded row carries version one and SEED provenance")
+        void theSeededRowsCarryTheDefaultVersionAndSeedProvenance() {
+            List<String> versions = jdbcTemplate.queryForList(
+                    "SELECT DISTINCT card_token_version FROM " + schema + ".card", String.class);
+            List<String> provenances = jdbcTemplate.queryForList(
+                    "SELECT DISTINCT card_token_provenance FROM " + schema + ".card", String.class);
+
+            assertAll(
+                    () -> assertEquals(SEEDED_ROW_COUNT, cardRepository.count(),
+                            "the seed loaded fifty rows for this comparison"),
+                    () -> assertEquals(List.of(PanMasker.DEFAULT_CARD_TOKEN_VERSION), versions,
+                            "the seeded literals were taken under the default version, so every row"
+                                    + " has to say so"),
+                    () -> assertEquals(List.of(CardEntity.TOKEN_PROVENANCE_SEED), provenances,
+                            "a seeded literal is a bootstrap rather than a value this deployment"
+                                    + " derived, and a row that claimed otherwise would refuse to"
+                                    + " start rather than being corrected"));
+        }
+
+        /**
+         * Asserts a bootstrap stamps the version, flips the provenance, and audits nothing.
+         *
+         * <p>A bootstrap moves a value no other store holds, because the reconciliation finishes
+         * before the readiness probe accepts traffic and before any event carries a token derived
+         * here. An audit row for it would report a rotation that never happened.
+         */
+        @Test
+        @DisplayName("a bootstrap stamps the version, flips provenance, and writes no audit row")
+        void aBootstrapStampsTheVersionAndWritesNoAuditRow() {
+            String cardNumber = seededCardNumbers().get(0);
+            drift(cardNumber, "0".repeat(PanMasker.CARD_TOKEN_LENGTH),
+                    CardEntity.TOKEN_PROVENANCE_SEED);
+
+            int rewritten = cardTokenReconciler.reconcile();
+            // The flush is what makes the reconciliation's own writes visible to the queries below.
+            // Each write runs inside this test's transaction, which never commits, and a clear
+            // without a flush would discard the pending inserts rather than reveal them.
+            entityManager.flush();
+            entityManager.clear();
+
+            assertAll(
+                    () -> assertEquals(1, rewritten, "one row carried a foreign token"),
+                    () -> assertEquals(PanMasker.cardToken(cardNumber),
+                            cardColumn("card_token", cardNumber),
+                            "the corrected row carries the token the configured key derives"),
+                    () -> assertEquals(PanMasker.cardTokenVersion(),
+                            cardColumn("card_token_version", cardNumber),
+                            "a corrected row states the version it was taken under, or the next"
+                                    + " rotation cannot tell a reached row from an unreached one"),
+                    () -> assertEquals(CardEntity.TOKEN_PROVENANCE_DERIVED,
+                            cardColumn("card_token_provenance", cardNumber),
+                            "a row this deployment derived says so, which is what makes the next"
+                                    + " drift a rotation rather than a second bootstrap"),
+                    () -> assertEquals(0, rotationRowCount(),
+                            "a bootstrap moves no value another store holds, so it opens no audit"
+                                    + " record"),
+                    () -> assertEquals(0, mappingRowCount(),
+                            "and it leaves no mapping to re-key anything from"));
+        }
+
+        /**
+         * Asserts a drifted derived row stops start-up rather than being rewritten silently.
+         *
+         * <p>This is the finding. The row is intact afterwards, which is the property that matters: a
+         * refusal leaves the identity the other stores name where they can still find it.
+         */
+        @Test
+        @DisplayName("a drifted derived row refuses to start unless a rotation is stated")
+        void aDriftedDerivedRowRefusesWithoutAStatedRotation() {
+            String cardNumber = seededCardNumbers().get(0);
+            String stored = tokenUnder(PREVIOUS_KEY, cardNumber);
+            drift(cardNumber, stored, CardEntity.TOKEN_PROVENANCE_DERIVED);
+
+            IllegalStateException refused = assertThrows(IllegalStateException.class,
+                    () -> cardTokenReconciler.reconcile(),
+                    "a row this deployment derived under another key was rewritten without being"
+                            + " asked, which is what the review found");
+            entityManager.clear();
+
+            assertAll(
+                    () -> assertTrue(refused.getMessage()
+                                    .contains(PanMasker.CARD_TOKEN_ROTATION_VARIABLE),
+                            "the refusal must name the statement that authorises the rotation: "
+                                    + refused.getMessage()),
+                    () -> assertTrue(refused.getMessage()
+                                    .contains("card-platform/services/card-service/README.md"),
+                            "and the procedure that performs it: " + refused.getMessage()),
+                    () -> assertFalse(refused.getMessage().contains(cardNumber),
+                            "no refusal may quote a card number"),
+                    () -> assertEquals(stored, cardColumn("card_token", cardNumber),
+                            "the refused row keeps the identity the other stores name"),
+                    () -> assertEquals(0, rotationRowCount(),
+                            "a refused rotation opens no audit record"));
+        }
+
+        /**
+         * Asserts a stated rotation rewrites the row and leaves the mapping the platform needs.
+         *
+         * <p>The mapping is the deliverable. Without it the three stores holding a token and no card
+         * number cannot be re-keyed, and the rollback has nothing to read in reverse.
+         */
+        @Test
+        @DisplayName("a stated rotation rewrites the row, audits the run, and maps the old token")
+        void aStatedRotationRewritesTheRowAndMapsTheOldToken() {
+            String cardNumber = seededCardNumbers().get(0);
+            String stored = tokenUnder(PREVIOUS_KEY, cardNumber);
+            String expected = PanMasker.cardToken(cardNumber);
+            drift(cardNumber, stored, CardEntity.TOKEN_PROVENANCE_DERIVED);
+
+            int rewritten = asRotation(true, () -> cardTokenReconciler.reconcile());
+            entityManager.flush();
+            entityManager.clear();
+
+            List<java.util.Map<String, Object>> rotations = jdbcTemplate.queryForList(
+                    "SELECT rotation_id, from_version, to_version, rows_read, rows_rewritten,"
+                            + " actor, started_at, finished_at FROM " + schema
+                            + ".card_token_rotation");
+            List<java.util.Map<String, Object>> mapped = jdbcTemplate.queryForList(
+                    "SELECT rotation_id, previous_card_token, card_token, previous_version, version"
+                            + " FROM " + schema + ".card_token_rotation_mapping");
+
+            assertAll(
+                    () -> assertEquals(1, rewritten, "one row belonged to the previous key"),
+                    () -> assertEquals(expected, cardColumn("card_token", cardNumber),
+                            "the rotated row carries the token the configured key derives"),
+                    () -> assertEquals(CardEntity.TOKEN_PROVENANCE_DERIVED,
+                            cardColumn("card_token_provenance", cardNumber),
+                            "a rotated row is still one this deployment derived"),
+                    () -> assertEquals(1, rotations.size(),
+                            "one run that moved an identity writes one audit row"),
+                    () -> assertEquals(SEEDED_ROW_COUNT,
+                            ((Number) rotations.get(0).get("rows_read")).intValue(),
+                            "the audit row records every row the run read"),
+                    () -> assertEquals(1,
+                            ((Number) rotations.get(0).get("rows_rewritten")).intValue(),
+                            "and how many of them it moved"),
+                    () -> assertEquals(PanMasker.cardTokenVersion(),
+                            rotations.get(0).get("to_version"),
+                            "the audit row names the version the tokens moved to"),
+                    () -> assertFalse(String.valueOf(rotations.get(0).get("actor")).isBlank(),
+                            "and the identity the process ran under"),
+                    () -> assertEquals(1, mapped.size(),
+                            "one moved row yields one mapping row, which is what the notification"
+                                    + " read model and the decision diagnostics are re-keyed from"),
+                    () -> assertEquals(stored,
+                            String.valueOf(mapped.get(0).get("previous_card_token")).strip(),
+                            "the mapping names the value the other stores are holding now"),
+                    () -> assertEquals(expected,
+                            String.valueOf(mapped.get(0).get("card_token")).strip(),
+                            "and the value they have to hold afterwards"),
+                    () -> assertEquals(rotations.get(0).get("rotation_id"),
+                            mapped.get(0).get("rotation_id"),
+                            "a mapping row belongs to the run that wrote it, so an operator can"
+                                    + " export one run's mapping and no other"));
+        }
+
+        /**
+         * Asserts a token belonging to neither key stops the run rather than being mapped from.
+         *
+         * <p>A mapping row for such a value would name a token no store ever held, and applying it
+         * would move nothing while reporting that it had.
+         */
+        @Test
+        @DisplayName("a token belonging to neither key stops a stated rotation")
+        void aTokenBelongingToNeitherKeyStopsTheRotation() {
+            String cardNumber = seededCardNumbers().get(0);
+            drift(cardNumber, "1".repeat(PanMasker.CARD_TOKEN_LENGTH),
+                    CardEntity.TOKEN_PROVENANCE_DERIVED);
+
+            IllegalStateException refused = assertThrows(IllegalStateException.class,
+                    () -> asRotation(true, () -> cardTokenReconciler.reconcile()),
+                    "a value belonging to neither key was rotated, so the mapping it wrote names a"
+                            + " token no store held");
+            entityManager.clear();
+
+            assertAll(
+                    () -> assertTrue(refused.getMessage()
+                                    .contains(PanMasker.CARD_TOKEN_PREVIOUS_SECRET_VARIABLE),
+                            "the refusal must name the setting that supplies the key those tokens"
+                                    + " were taken under: " + refused.getMessage()),
+                    () -> assertEquals(0, mappingRowCount(),
+                            "a refused rotation writes no mapping row"));
+        }
+
+        /** Rows the audit table holds. */
+        private int rotationRowCount() {
+            Integer count = jdbcTemplate.queryForObject(
+                    "SELECT count(*) FROM " + schema + ".card_token_rotation", Integer.class);
+            return count == null ? 0 : count;
+        }
+
+        /** Rows the mapping table holds. */
+        private int mappingRowCount() {
+            Integer count = jdbcTemplate.queryForObject(
+                    "SELECT count(*) FROM " + schema + ".card_token_rotation_mapping",
+                    Integer.class);
+            return count == null ? 0 : count;
         }
     }
 
@@ -1944,30 +2250,29 @@ class CardRepositoryIT {
         }
 
         /**
-         * Runs the bounded marker retention delete over rows written directly.
+         * Reads back two claims written directly, one stamped a decade before the other.
          *
          * <p>This service registers no listener, so its marker repository declares no claim and no
          * save: nothing in the service writes a marker. The table exists because the shape is
-         * uniform across the six schemas, and the retention delete has to work wherever the table
-         * does, so the rows here are written through the driver.
+         * uniform across the six schemas, so the rows here are written through the driver.
+         *
+         * <p>A purge over a 720-hour horizon used to remove the older row. A security review found
+         * that horizon expiring claims while the rows they guard stayed, so a claim is permanent now
+         * and the store exposes nothing that removes one.
          */
         @Test
-        @DisplayName("the marker retention delete takes the expired marker and keeps the newer one")
-        void theMarkerRetentionDeleteTakesOnlyExpiredMarkers() {
-            UUID expired = UUID.randomUUID();
-            UUID recent = UUID.randomUUID();
-            storeMarker(expired, Instant.parse("2020-01-01T00:00:00Z"));
-            storeMarker(recent, Instant.parse("2030-01-01T00:00:00Z"));
+        @DisplayName("a claim stamped in 2020 is still readable, because nothing expires one")
+        void anAncientClaimIsStillReadable() {
+            UUID ancient = UUID.randomUUID();
+            UUID current = UUID.randomUUID();
+            storeMarker(ancient, Instant.parse("2020-01-01T00:00:00Z"));
+            storeMarker(current, Instant.parse("2030-01-01T00:00:00Z"));
 
-            int removed = processedEventRepository.deleteMarkersProcessedBefore(
-                    Instant.parse("2021-01-01T00:00:00Z"), 1000);
-
-            assertAll("the bounded marker delete",
-                    () -> assertEquals(1, removed, "one marker precedes the horizon"),
-                    () -> assertFalse(processedEventRepository.existsByEventIdOnAnyTopic(expired),
-                            "the expired marker is gone"),
-                    () -> assertTrue(processedEventRepository.existsByEventIdOnAnyTopic(recent),
-                            "a marker inside the horizon stays"));
+            assertAll("two claims stamped a decade apart",
+                    () -> assertTrue(processedEventRepository.existsByEventIdOnAnyTopic(ancient),
+                            "a purge over a 720-hour horizon used to remove this row"),
+                    () -> assertTrue(processedEventRepository.existsByEventIdOnAnyTopic(current),
+                            "and the current claim is readable alongside it"));
         }
 
         /**

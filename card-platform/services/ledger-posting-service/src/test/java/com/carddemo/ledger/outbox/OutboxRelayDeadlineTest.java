@@ -122,7 +122,6 @@ class OutboxRelayDeadlineTest {
                 new LedgerProperties.Consumer(new LedgerProperties.Consumer.Retry(3, 1000L)),
                 new LedgerProperties.Outbox(new LedgerProperties.Outbox.Relay(
                         500L, 1, "deadline-test", Duration.ofSeconds(30L), PASS_DEADLINE_MS), 168L),
-                new LedgerProperties.ProcessedEvent(720L, 168L),
                 new LedgerProperties.Retention(3_600_000L, 90));
     }
 

@@ -6,6 +6,19 @@ server:
   # http://localhost:8080/actuator/health, and ACCOUNT_PORT publishes it on the host.
   port: 8080
 
+  # Forwarded headers are not trusted, and this line says so rather than leaving it to a default.
+  # The shipped posture is direct Transport Layer Security: a caller reaches this container, or the
+  # cluster Service in front of it, and nothing between them rewrites the address or the host.
+  # config/RequestRateCeilingFilter keys its ceilings on the peer address and
+  # config/CrossSiteRequestFilter compares Origin against the host the request arrived on, so
+  # honouring X-Forwarded-For here would move both onto a value the caller supplies: every request
+  # would look like one source, and a forged Origin would compare equal.
+  # A deployment that does terminate at a proxy activates the trusted-proxy profile, which is
+  # application-trusted-proxy.yml beside this file. SERVER_FORWARD_HEADERS_STRATEGY overrides this
+  # value the way any environment variable overrides a bound property, and the profile exists
+  # because the strategy alone is not enough: it has to be the strategy that checks who forwarded.
+  forward-headers-strategy: none
+
   # Transport Layer Security for the Representational State Transfer surface, off in the
   # shipped file and on in the cluster. The compose stack runs every service on one
   # Docker bridge on one machine and publishes each port on the loopback address alone.
@@ -140,6 +153,13 @@ spring:
     security:
       protocol: "${KAFKA_SECURITY_PROTOCOL:SASL_PLAINTEXT}"
     properties:
+      # Hostname verification, stated rather than inherited. The client default is https,
+      # and a default is a thing a library may change; a broker whose certificate names another
+      # host is refused because this line says so. It applies to the producer, the consumer and
+      # the admin client, and it does nothing under SASL_PLAINTEXT, where there is no
+      # certificate to verify. deploy/k8s/30-configmap.yaml sets SASL_SSL, and that is the
+      # profile this line exists for.
+      ssl.endpoint.identification.algorithm: https
       sasl.mechanism: "${KAFKA_SASL_MECHANISM:PLAIN}"
       # A username is not a credential and carries a default. The password carries none,
       # so an unset variable stops start-up rather than presenting a password this
@@ -162,6 +182,13 @@ spring:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: org.apache.kafka.common.serialization.StringSerializer
       properties:
+        # The largest request this producer may send, aligned to the governed event ceiling.
+        # libs/event-contracts EventWireBounds.MAX_EVENT_BYTES refuses a value above 8192 bytes
+        # before it reaches an outbox row, so 16384 is two envelopes: one record, its key and its
+        # headers, with room for the batch that carries it. Below the envelope a record the gate
+        # accepted would fail at the send; far above it a bug could put megabytes on a partition.
+        # The broker's own message.max.bytes is 32768, so a request this size always fits.
+        max.request.size: 16384
         enable.idempotence: true
         max.in.flight.requests.per.connection: 5
         delivery.timeout.ms: 2000
@@ -185,6 +212,13 @@ spring:
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
       properties:
+        # The fetch ceilings, the read side of the same ladder: 8192 governed envelope, 16384
+        # producer request, 32768 broker message, 65536 one partition, 262144 one fetch. A
+        # partition ceiling of eight envelopes bounds the memory one poll can hold while still
+        # returning a batch, and Kafka returns an oversized first batch regardless, so no record
+        # this platform publishes can wedge a consumer.
+        max.partition.fetch.bytes: 65536
+        fetch.max.bytes: 262144
         spring.deserializer.value.delegate.class: com.carddemo.events.serde.JsonSchemaValidatingDeserializer
     listener:
       ack-mode: manual_immediate
@@ -288,24 +322,16 @@ carddemo:
       # deadline bounds the whole sweep, rather than allowing batch-size sends to each consume
       # delivery.timeout.ms.
       max-duration-ms: ${OUTBOX_RELAY_MAX_DURATION_MS:5000}
-    # Retention. A published row has done its work and stays only for diagnosis, and a
-    # processed-event marker matters only while a redelivery of its event is still
-    # possible. domain/RetentionSweep calls the two repository purge methods on the
-    # configured interval, and ix_outbox_event_published_at plus
-    # ix_processed_event_processed_at serve those deletes.
+    # Retention. A published row has done its work and stays only for diagnosis, so
+    # domain/RetentionSweep removes it after this horizon and ix_outbox_event_published_at
+    # serves that delete. A duplicate-delivery claim is not swept at all: it guards effects
+    # that outlive any window, which the migration withdrawing its horizon states in full.
     published-retention-hours: ${OUTBOX_PUBLISHED_RETENTION_HOURS:168}
-  processed-event:
-    # A marker has to outlast every window the record itself can come back through,
-    # and broker log retention is the shortest of those and the only one this
-    # platform configures. The two were equal, which left no room for segment
-    # cleanup lag, a restored backup, or a manually replayed window: a record still
-    # readable after its marker was swept is applied a second time. config/*Properties
-    # refuses a marker horizon under twice the broker figure at start-up, so the
-    # relationship is checked rather than remembered.
-    marker-retention-hours: ${PROCESSED_EVENT_RETENTION_HOURS:720}
-    # The broker retention this service is told to assume, which
-    # KAFKA_LOG_RETENTION_HOURS sets for the broker and for every service at once.
-    broker-retention-hours: ${KAFKA_LOG_RETENTION_HOURS:168}
+  # Duplicate-delivery claims are permanent. A claim and the side effects it guards commit in
+  # one local transaction in one database, so the two can only be restored together, and a
+  # security review found the horizon that used to expire a claim shorter than the effects it
+  # guarded. Nothing here retires a claim, domain/RetentionSweep no longer names
+  # processed_event, and the migration that withdrew the horizon states the whole rule.
   retention:
     sweep-interval-ms: ${RETENTION_SWEEP_INTERVAL_MS:3600000}
   # Bound on how long each locked read of one update waits for a row another writer holds.

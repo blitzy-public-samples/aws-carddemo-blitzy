@@ -55,7 +55,7 @@ Run it again after every `git pull`. It reconciles an existing `.env` rather tha
 
 Three cases get more than that. An assignment your file carries and the example no longer declares is named in the output and left in place. The script cannot tell a retired setting from one you chose. An assignment holding a key this repository publishes is replaced with a generated one, because two services refuse to start on a published key. An assignment whose value differs from the example's is reported with both values and left as you set it.
 
-That third case is where a start-up refusal after an upgrade usually comes from: a default this platform has tightened still looks like a working value in your file. The run ends by proving your file declares all 134 assignments. A variable Compose needs therefore cannot be silently absent, which is the failure that used to stop `docker compose config` on the first command after an upgrade.
+That third case is where a start-up refusal after an upgrade usually comes from: a default this platform has tightened still looks like a working value in your file. The run ends by proving your file declares all 136 assignments. A variable Compose needs therefore cannot be silently absent, which is the failure that used to stop `docker compose config` on the first command after an upgrade.
 
 The rest of this section is the same work performed by hand. Read it to understand what the script does, or follow it when you want to set a value yourself.
 
@@ -442,7 +442,7 @@ kubectl -n carddemo rollout restart \
   deployment/account-service deployment/card-service
 ```
 
-The Compose stack and the cluster are alternatives rather than layers, because the transport differs between them. Compose serves HTTP on loopback with `SASL_PLAINTEXT`, and the manifests serve HTTPS with `SASL_SSL` and mounted key material. [The platform README](../README.md) carries the comparison.
+The Compose stack and the cluster are alternatives rather than layers, because the transport differs between them. Compose serves HTTP on loopback with `SASL_PLAINTEXT`, and the manifests serve HTTPS with `SASL_SSL` and mounted key material. Compose runs under a stated posture of one operator, one machine, synthetic fixtures, and every published port binds `127.0.0.1` to hold it there. A shared host or a second person on the bridge is outside that posture and wants the cluster. [The platform README](../README.md) carries the comparison.
 
 ## Domain context
 
@@ -664,7 +664,7 @@ Setting both location keys to `classpath:db/migration` is the base-profile opt-o
 
 **Cause:** every service refuses a `POST`, `PUT`, `PATCH` or `DELETE` that carries no such header. It also refuses one declaring a `Sec-Fetch-Site` other than `same-origin` or `same-site`, and one naming an `Origin` other than the service it reached. Reads are unaffected.
 
-**Fix:** add `-H 'X-CardDemo-Request: 1'` and the call works. A deployment terminating Transport Layer Security at a proxy also has to set `SERVER_FORWARD_HEADERS_STRATEGY=framework`. Without it each service compares `Origin` against the address the proxy dialled rather than the one the browser used, and bounds the proxy's address rather than the caller's. Both filters count inside one process, so several replicas bound each replica rather than the service as a whole.
+**Fix:** add `-H 'X-CardDemo-Request: 1'` and the call works. A deployment terminating Transport Layer Security at a proxy also has to activate the `trusted-proxy` profile. Without it each service compares `Origin` against the address the proxy dialled rather than the one the browser used, and bounds the proxy's address rather than the caller's. Both filters count inside one process, so several replicas bound each replica rather than the service as a whole.
 
 ### 13. An older demo volume fails Flyway validation after pulling this revision
 
@@ -682,11 +682,69 @@ Setting both location keys to `classpath:db/migration` is the base-profile opt-o
 
 **Fix:** change both, and check the pool of any service you raise. Set `SPRING_KAFKA_LISTENER_CONCURRENCY` to the new partition count, then `SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE` to that count times the number of topics the service reads, plus its scheduled tasks, plus a margin for request handling. `RetentionSweepContractTest.everyScheduledTaskHasASchedulerThreadOfItsOwn` and `KafkaDeliveryGuaranteeContractTest.ConsumerThroughput` fail the build if the concurrency and the shipped partition count come apart, or if a service schedules more tasks than its scheduler has threads. Ordering is safe in both directions and needs no thought: Kafka assigns one partition to exactly one consumer of a group, and the account identifier is the message key of every event this platform publishes.
 
+### 15. Discarding the database volume discards every duplicate-delivery claim with it
+
+**Symptom:** after `docker compose down -v`, resetting a consumer group to the earliest offset applies every record again, and the balances move a second time.
+
+**Cause:** a claim lives in the same database as the effect it guards, one row of `processed_event` per event and topic. The `-v` flag removes the `postgres-data` volume, so the claims and the balances they guarded go together. A replay onto the rebuilt database is applying each record for the first time, which is what it looks like and what it is.
+
+**Fix:** nothing, in that case. In every other case, back up and restore the database as a whole rather than table by table. A claim and the effect it guards commit in one local transaction, so a consistent snapshot carries both or neither. Nothing expires a claim, so no window can retire one while its effect stands, however long ago the claim was written. `docker compose down` without `-v` keeps the volume and keeps every claim.
+
+### 16. Changing the card-token key stops the card service rather than re-deriving
+
+**Symptom:** `CARD_TOKEN_SECRET` is replaced, the stack is restarted, and the card service exits during start-up with a message naming a row ordinal, `CARD_TOKEN_ROTATION_ENABLED` and this repository's card-service README. Nothing else in the stack complains.
+
+**Cause:** the refusal is deliberate, and it is the answer to a security review finding. A card token is a keyed code over a card number, so a key change gives every card a new name. Four places hold that name and only `card` holds a card number. They are `statement_transaction.card_token` and `notification_log.card_token` in the notification service, `authorization_decision.card_token` in the authorization service, and any `SCOPE_CARD` authority granted in `USER_SCOPES`. Re-deriving `card.card_token` alone used to leave all four naming a card nobody could reach, with no mapping back.
+
+**Fix:** follow `services/card-service/README.md`, section *Rotating the card-token key*. In outline: set `CARD_TOKEN_PREVIOUS_SECRET` to the key the stored rows were taken under, set `CARD_TOKEN_ROTATION_ENABLED=true`, and restart the card service alone. It re-keys `card`, writes one audit row and one mapping row per moved card, and the README's three statements apply that mapping to the other two schemas. Reissue any `SCOPE_CARD` authority from the same mapping. To undo the change instead, put the previous key back as `CARD_TOKEN_SECRET` and restart: a stored row that already matches is left alone, so nothing is rewritten.
+
+### 17. A Kubernetes claim bound without the encryption overlay cannot be encrypted afterwards
+
+**Symptom:** the base manifests are applied, the stack runs, and a later attempt to set `storageClassName` on either claim is rejected or silently ignored. The volume holding fifty card numbers, fifty card verification values and the only table describing an identifiable person stays on whatever class the cluster gave it.
+
+**Cause:** a `PersistentVolumeClaim` names its storage class once. The field is immutable after the claim is bound, which is a Kubernetes rule rather than a platform one. The base names no class deliberately, so the documented demonstration binds on kind, minikube and Docker Desktop with no edit. Both claims carry `carddemo.io/requires-encryption-at-rest` to say that a real deployment has to do better.
+
+**Fix:** decide before the first apply. Provide a `StorageClass` whose provisioner encrypts, name it in `deploy/k8s/overlays/encrypted-storage/kustomization.yaml`, and run `kubectl apply -k card-platform/deploy/k8s/overlays/encrypted-storage` instead of applying the base. On a cluster that already bound the claims, the claims have to be deleted, which deletes the data. `deploy/k8s/README.md`, under *Encryption at rest*, carries that sequence, the key-ownership question and the backup obligation a volume does not cover.
+
+### 18. Putting a proxy in front of a service silently changes two controls
+
+**Symptom:** an Ingress or a load balancer is added, and every caller in the world begins sharing one rate-limit quota. A first-party state-changing call starts answering 403 for no reason a caller can see.
+
+**Cause:** both controls read the connection rather than a header, deliberately. `config/RequestRateCeilingFilter` keys its ceilings on the address the container resolved, and `config/CrossSiteRequestFilter` compares `Origin` against the host the request arrived on. Behind a terminating proxy both of those become the proxy. Every shipped `application.yml` states `forward-headers-strategy: none`, so nothing rewrites them by default, and a caller reaching a container directly therefore cannot claim an address it does not have.
+
+**Fix:** activate the profile each service ships for it. Add `trusted-proxy` to `SPRING_PROFILES_ACTIVE` and set `TRUSTED_PROXY_ADDRESSES` to an expression matching the addresses your proxy sends from. The variable carries no default on purpose: an activated profile with no value stops start-up naming the variable, which is better than one that quietly trusts nothing.
+
+The profile uses Tomcat's `native` strategy rather than the framework's. The framework strategy honours the headers on every request whoever sent them, which is the spoofable arrangement this avoids. The valve rewrites only for a request whose immediate peer matches the expression, so the trust is conditional. Your proxy still has to overwrite `X-Forwarded-For`, `X-Forwarded-Proto` and `X-Forwarded-Host` rather than append to them, and drop `Forwarded`. A proxy that appends leaves a client-supplied address in the position the valve reads, and no setting here can detect that.
+
+### 19. Running the secret scanner locally reports findings the pipeline never sees
+
+**Symptom:** `gitleaks dir .` reports 13 findings on a clean checkout, and the same scan in `.github/workflows/ci.yml` passes.
+
+**Cause:** every one of the 13 sits in `card-platform/.env`, which `.gitignore` excludes and no checkout of this repository ever contains. `gitleaks dir` reads the files on disk rather than the files git tracks, so a local run reads the generated passwords of your own demonstration stack. The history is the other half of the same surprise: scanned with no configuration it reports 151 findings across every ref, and 113 of them survive `card-platform/.gitleaks.toml`. Those 113 sit on commits this branch cannot reach and are recorded by fingerprint in `card-platform/.gitleaks-baseline.json`.
+
+**Fix:** scan the way the pipeline does. `gitleaks dir . --config card-platform/.gitleaks.toml` is the working-tree gate every event runs, and it is clean once `.env` is out of the way. For the history, add `--baseline-path card-platform/.gitleaks-baseline.json` to a `gitleaks git .` run, which is what the weekly scheduled scan does. A push and a pull request read only the commit range under review, so a local range scan is `--log-opts "$(git merge-base origin/main HEAD)..HEAD"`.
+
+### 20. Editing the deck's inline module opens it as a blank page
+
+**Symptom:** `presentation/executive-summary.html` opens completely blank. The console carries one refusal naming `script-src` and a SHA-384 digest, and nothing else.
+
+**Cause:** the deck states a Content Security Policy in its head, and the policy admits the deck's own inline module by the digest of that module's exact text. No `unsafe-inline` keyword stands behind it, deliberately, so the digest is the only thing that admits the script. Any edit to the module changes its bytes and the stated digest stops matching. The blank page comes from the stylesheet and not from the refusal. `reveal.css` loads and collapses the stage to nothing until the script marks a slide present, and the script never runs.
+
+**Fix:** recompute the digest and restate it in the policy. Read the exact text between `<script type="module">` and its closing tag, take its SHA-384, base64 encode it, and write it into `script-src` as `'sha384-<value>'`. `PresentationAndProseContractTest` recomputes the same value from the shipped text on every build and fails when the two disagree, so a forgotten update stops the build rather than the talk. Editing the head comment, the stylesheet or a slide is safe: the digest covers the module alone.
+
+### 21. Adding one file makes the traceability matrix fail the build
+
+**Symptom:** `DocumentationContractTest` fails naming paths that are "delivered and carry no backward row", or naming a published statement it says has to read a different number. Nothing in the message is a file you edited.
+
+**Cause:** Rule 1 requires `docs/traceability-matrix.md` to read backward from every delivered path, and the test holds that closure exactly. It derives the count from the rows themselves, compares it against `git ls-files --cached --others --exclude-standard card-platform .github README.md .gitattributes`, and then requires eleven published figures to agree with what it measured. Six of those state the count and five state the citation split. One new file breaks all eleven at once.
+
+**Fix:** add the row first, in the group table its path belongs to, with a provenance cell naming the source members the file itself cites or opening `None cited`. Then add one to that group's tally and to the total in the closure table. Then restate the eleven figures: the failure message quotes the exact string each one has to contain, so run the module test and work down what it names. A path the command cannot see fails a second test instead, which lists every repository entry that is neither delivered nor recorded as outside the set.
+
 ## Where to go next
 
-`suggested-next-tasks.md` is the first stop for a second contributor. It carries 52 tasks in 16 groups, each with the evidence that raised it and the criterion that would close it. The groups begin with correctness decisions only a human should make, then the validations this migration deliberately did not add. The rest cover interest and cycle ownership, projection lifecycle, security migration, source hygiene, and test depth.
+`suggested-next-tasks.md` is the first stop for a second contributor. It carries 69 tasks in 21 groups, each with the evidence that raised it and the criterion that would close it. The groups begin with correctness decisions only a human should make, then the validations this migration deliberately did not add. The rest cover interest and cycle ownership, projection lifecycle, security migration, source hygiene, and test depth.
 
-- [Suggested Next Tasks](suggested-next-tasks.md) — the 52 follow-up tasks, with verification criteria
+- [Suggested Next Tasks](suggested-next-tasks.md) — the 69 follow-up tasks, with verification criteria
 - [Platform README](../README.md) — repository map and short quickstart
 - [Architecture, Before and After](architecture-before-after.md) — both migration states, at full size
 - [Event Flow](event-flow.md) — every topic, group, and delivery guarantee

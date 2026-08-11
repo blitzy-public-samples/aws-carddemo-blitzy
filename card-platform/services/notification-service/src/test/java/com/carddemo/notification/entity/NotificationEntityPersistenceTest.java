@@ -300,12 +300,12 @@ class NotificationEntityPersistenceTest {
     /** The horizon the retention checks apply, in the twenty-six character source form. */
     private static final String RETENTION_HORIZON_TEXT = "2025-01-01-00.00.00.000000";
 
-    /** A marker this class writes and expects the retention delete to take. */
-    private static final java.util.UUID RETENTION_EXPIRED_EVENT_ID =
+    /** A claim this class writes with an ancient stamp, which no pass may expire. */
+    private static final java.util.UUID ANCIENT_CLAIM_EVENT_ID =
             java.util.UUID.fromString("00000000-0000-4000-8000-0000000000b1");
 
-    /** A marker this class writes and expects the retention delete to keep. */
-    private static final java.util.UUID RETENTION_RECENT_EVENT_ID =
+    /** A second claim, sharing an identifier with no other, written with a current stamp. */
+    private static final java.util.UUID CURRENT_CLAIM_EVENT_ID =
             java.util.UUID.fromString("00000000-0000-4000-8000-0000000000b2");
 
     /** Shape of {@link #ORIGIN_TIMESTAMP}. */
@@ -676,15 +676,16 @@ class NotificationEntityPersistenceTest {
     }
 
     /**
-     * Holds that the retention delete leaves a same-identifier marker whose own instant is newer.
+     * Asserts one identifier claimed on two topics keeps both claims for good.
      *
-     * <p>The statement matches on both key columns. Matching on the identifier alone would remove
-     * the sibling marker on the other topic as well, and that marker guards a delivery the retention
-     * rule was not asked to forget: the next redelivery of it would be applied a second time.
+     * <p>The two rows are two different deliveries, because two producing services assign
+     * identifiers independently. A purge over a shared horizon used to take whichever row was older,
+     * which left the guard able to answer for one delivery and not the other. Nothing expires either
+     * row now, so neither guard can be the one that goes.
      */
     @Test
-    @DisplayName("The retention delete leaves a same-identifier marker on another topic")
-    void theRetentionDeleteLeavesASameIdentifierMarkerOnAnotherTopic() {
+    @DisplayName("One identifier claimed on two topics keeps both claims for good")
+    void oneIdentifierClaimedOnTwoTopicsKeepsBothClaims() {
         UUID sharedId = UUID.randomUUID();
         committedTransaction().executeWithoutResult(status -> {
             processedEvents.claimEvent(sharedId, Instant.parse("2020-06-01T00:00:00Z"),
@@ -693,47 +694,45 @@ class NotificationEntityPersistenceTest {
                     OTHER_CLAIMED_TOPIC);
         });
 
-        int removed = committedTransaction().execute(status -> processedEvents
-                .deleteMarkersProcessedBefore(Instant.parse("2025-01-01T00:00:00Z"), PURGE_BATCH));
-
-        assertAll("the retention pass over one identifier on two topics",
-                () -> assertEquals(1, removed, "one marker sits behind the horizon"),
-                () -> assertFalse(processedEvents.existsById(
+        assertAll("one identifier claimed on two topics",
+                () -> assertTrue(processedEvents.existsById(
                         new ProcessedEventId(sharedId, CLAIMED_TOPIC)),
-                        "and it is the one that was removed"),
+                        "the older claim stays, however far back its stamp is"),
                 () -> assertTrue(processedEvents.existsById(
                         new ProcessedEventId(sharedId, OTHER_CLAIMED_TOPIC)),
-                        "the sibling still guards its own delivery"));
+                        "and the sibling still guards its own delivery"));
     }
 
     /**
-     * Runs the bounded marker retention delete and reads the result back.
+     * Proves a claim stamped in 2020 still refuses its redelivery.
      *
-     * <p>A marker outliving the broker's retention of its event is what makes a redelivery harmless,
-     * so this delete removing the wrong row would reintroduce double processing.
+     * <p>This is the behaviour a security review found missing. A purge removed claims older than
+     * 720 hours, and the read-model row and rendered alert they guard are kept for four hundred days
+     * and ninety days, so an archived or replayed record arriving after the purge was applied a
+     * second time. A claim is permanent now, and the assertions below read it back after an interval
+     * no horizon would have survived.
      */
     @Test
-    @DisplayName("The marker retention delete takes the expired marker and keeps the newer one")
-    void theMarkerRetentionDeleteTakesOnlyExpiredMarkers() {
-        Instant expiredAt = Instant.parse("2020-01-01T00:00:00Z");
-        Instant recentAt = Instant.parse("2030-01-01T00:00:00Z");
+    @DisplayName("A claim stamped in 2020 still refuses its redelivery")
+    void anAncientClaimStillRefusesItsRedelivery() {
+        Instant ancientAt = Instant.parse("2020-01-01T00:00:00Z");
+        Instant currentAt = Instant.parse("2030-01-01T00:00:00Z");
         committedTransaction().executeWithoutResult(status -> {
-            processedEvents.claimEvent(RETENTION_EXPIRED_EVENT_ID, expiredAt, CLAIMED_TOPIC);
-            processedEvents.claimEvent(RETENTION_RECENT_EVENT_ID, recentAt, CLAIMED_TOPIC);
+            processedEvents.claimEvent(ANCIENT_CLAIM_EVENT_ID, ancientAt, CLAIMED_TOPIC);
+            processedEvents.claimEvent(CURRENT_CLAIM_EVENT_ID, currentAt, CLAIMED_TOPIC);
         });
 
-        int removed = committedTransaction().execute(status ->
-                processedEvents.deleteMarkersProcessedBefore(
-                        Instant.parse("2021-01-01T00:00:00Z"), 100));
+        int replay = committedTransaction().execute(status ->
+                processedEvents.claimEvent(ANCIENT_CLAIM_EVENT_ID, currentAt, CLAIMED_TOPIC));
 
-        assertAll("the bounded marker delete",
-                () -> assertEquals(1, removed, "one marker precedes the horizon"),
-                () -> assertFalse(processedEvents.existsById(
-                        new ProcessedEventId(RETENTION_EXPIRED_EVENT_ID, CLAIMED_TOPIC)),
-                        "the expired marker is gone"),
+        assertAll("a replay of an ancient claim",
+                () -> assertEquals(0, replay, "the redelivery writes no row, so it is suppressed"),
                 () -> assertTrue(processedEvents.existsById(
-                        new ProcessedEventId(RETENTION_RECENT_EVENT_ID, CLAIMED_TOPIC)),
-                        "a marker inside the horizon stays, so its redelivery is still refused"));
+                        new ProcessedEventId(ANCIENT_CLAIM_EVENT_ID, CLAIMED_TOPIC)),
+                        "the ancient claim is still there to answer with"),
+                () -> assertTrue(processedEvents.existsById(
+                        new ProcessedEventId(CURRENT_CLAIM_EVENT_ID, CLAIMED_TOPIC)),
+                        "and so is the current one"));
     }
 
     /**
@@ -1186,7 +1185,9 @@ class NotificationEntityPersistenceTest {
                 () -> assertEquals(Set.of("pk_notification_log", "ix_notification_log_card_token",
                                 "ix_notification_log_rendered_at"),
                         indexes.get(NOTIFICATION_LOG), NOTIFICATION_LOG + " indexes"),
-                () -> assertEquals(Set.of("pk_processed_event", "ix_processed_event_processed_at"),
+                // The primary key alone. ix_processed_event_processed_at served the retention
+                // purge V8 withdrew, and an index nothing reads costs a write on every claim.
+                () -> assertEquals(Set.of("pk_processed_event"),
                         indexes.get(PROCESSED_EVENT), PROCESSED_EVENT + " indexes"),
                 () -> assertEquals(Set.of("pk_cardholder_context",
                                 "ix_cardholder_context_observed_at"),
@@ -1403,8 +1404,15 @@ class NotificationEntityPersistenceTest {
                         "so repeated batches converge on an empty horizon"));
     }
 
+    /**
+     * Asserts a stored claim has no expiry, whatever its stamp says.
+     *
+     * <p>Two claims are written two years apart and both are read back. The store exposes no method
+     * that removes one, which is asserted here as well: a purge over a stamp is what a security
+     * review found expiring claims while the rows they guard stayed.
+     */
     @Test
-    void theMarkerPurgeDeletesOnlyRowsBeforeItsCutoff() {
+    void everyStoredClaimStaysAndTheStoreExposesNoDelete() {
         UUID oldId = UUID.fromString("9267c7fd-b346-4701-b613-1bf89b7f43f1");
         UUID currentId = UUID.fromString("9267c7fd-b346-4701-b613-1bf89b7f43f2");
         processedEvents.save(new ProcessedEventEntity(
@@ -1412,16 +1420,17 @@ class NotificationEntityPersistenceTest {
         processedEvents.save(new ProcessedEventEntity(
                 currentId, Instant.parse("2026-01-01T00:00:00Z"), CLAIMED_TOPIC));
 
-        int removed = committedTransaction().execute(status -> processedEvents
-                .deleteMarkersProcessedBefore(
-                        Instant.parse("2025-01-01T00:00:00Z"), PURGE_BATCH));
-
-        assertAll("bounded marker retention delete",
-                () -> assertEquals(1, removed, "one old marker removed"),
-                () -> assertFalse(processedEvents.existsById(
-                        new ProcessedEventId(oldId, CLAIMED_TOPIC))),
+        assertAll("two claims stamped two years apart",
                 () -> assertTrue(processedEvents.existsById(
-                        new ProcessedEventId(currentId, CLAIMED_TOPIC))));
+                        new ProcessedEventId(oldId, CLAIMED_TOPIC)),
+                        "a claim stamped two years back is not a row any horizon covers"),
+                () -> assertTrue(processedEvents.existsById(
+                        new ProcessedEventId(currentId, CLAIMED_TOPIC))),
+                () -> assertTrue(java.util.Arrays
+                                .stream(processedEvents.getClass().getMethods())
+                                .map(java.lang.reflect.Method::getName)
+                                .noneMatch(name -> name.equals("deleteMarkersProcessedBefore")),
+                        "a horizon delete on this store would expire a claim on a timer"));
     }
 
     // ---------------------------------------------------------------------------------------

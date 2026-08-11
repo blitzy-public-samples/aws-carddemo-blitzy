@@ -253,6 +253,42 @@ class CardUpdatedTest {
                 "the wire form declares an embossed-name property: " + json);
     }
 
+    /**
+     * Holds this event to having no free-text component, which is why no screen can be defeated here.
+     *
+     * <p>The publish gate screens every value on the way into an outbox row, and the shapes it looks
+     * for — a long digit run, a social security number, a labelled or bare verification code — can
+     * only arrive through a value a person wrote. This event has no such value: the masked card
+     * number, the account identifier, the expiry text and the active-status flag are each bound to a
+     * pattern by the record itself, from {@code app/cpy/CVACT02Y.cpy:L5-L11} and
+     * {@code app/cbl/COCRDUPC.cbl:L190-L202}.
+     *
+     * <p>Recording it as a test rather than as a comment is what keeps it true. A component added
+     * later that accepts prose fails this test, and whoever adds it is told where the screens then
+     * have to be exercised.
+     */
+    @Test
+    @DisplayName("no component of this event is free text, so the screens have nothing to catch")
+    void noComponentOfThisEventIsFreeText() {
+        assertThrows(IllegalArgumentException.class,
+                () -> CardUpdated.ofUnmaskedCardNumber(FULL_CARD_NUMBER, ACCOUNT_ID,
+                        "Card 4111111111111111", "Y"),
+                "the expiry component accepted prose, so a screened shape can now reach a payload");
+        assertThrows(IllegalArgumentException.class,
+                () -> CardUpdated.ofUnmaskedCardNumber(FULL_CARD_NUMBER, ACCOUNT_ID, "2023-03-09",
+                        "cvv 123"),
+                "the status component accepted prose, so a screened shape can now reach a payload");
+
+        List<String> componentNames = Arrays.stream(CardUpdated.class.getRecordComponents())
+                .map(RecordComponent::getName)
+                .toList();
+
+        assertEquals(List.of("eventId", "eventType", "schemaVersion", "occurredAt", "aggregateId",
+                        "maskedCardNumber", "accountId", "expirationDate", "activeStatus"),
+                componentNames,
+                "a component was added or renamed, so the free-text claim above needs rechecking");
+    }
+
     @Test
     @DisplayName("the diagnostic rendering carries no card value")
     void theRenderingCarriesNoCardValue() {

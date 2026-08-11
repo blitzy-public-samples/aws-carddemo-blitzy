@@ -1,6 +1,8 @@
 package com.carddemo.fraud.config;
 
 import java.time.Duration;
+import java.lang.reflect.RecordComponent;
+import java.util.Arrays;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -64,10 +66,6 @@ class FraudPropertiesTest {
             assertThat(properties.fraud().risk().velocityCountThreshold()).isEqualTo(5);
             assertThat(properties.fraud().risk().amountAnomalyThreshold())
                     .isEqualTo(new java.math.BigDecimal("500.00"));
-            assertThat(properties.processedEvent().markerRetentionHours())
-                    .as("the marker horizon outlasts broker retention rather than equalling it")
-                    .isEqualTo(720L);
-            assertThat(properties.processedEvent().brokerRetentionHours()).isEqualTo(168L);
             assertThat(properties.retention().sweepIntervalMs()).isEqualTo(3_600_000L);
             assertThat(properties.retention().assessmentRetentionDays())
                     .as("the horizon COMMENT ON TABLE fraud_assessment declares")
@@ -229,41 +227,6 @@ class FraudPropertiesTest {
     }
 
 
-    @Test
-    @DisplayName("a marker horizon that does not outlast broker retention stops start-up")
-    void aMarkerHorizonUnderTheMarginStopsStartUp() {
-        shipped.withPropertyValues("carddemo.processed-event.marker-retention-hours=168")
-                .run(context -> {
-                    assertThat(context).hasFailed();
-                    assertThat(context.getStartupFailure())
-                            .hasStackTraceContaining("markerRetentionHours")
-                            .hasStackTraceContaining("brokerRetentionHours");
-                });
-    }
-
-    @Test
-    @DisplayName("a marker horizon at exactly the margin starts")
-    void aMarkerHorizonAtExactlyTheMarginStarts() {
-        shipped.withPropertyValues("carddemo.processed-event.marker-retention-hours=336")
-                .run(context -> {
-                    assertThat(context).hasNotFailed();
-                    assertThat(context.getBean(FraudProperties.class).processedEvent()
-                            .markerRetentionHours()).isEqualTo(336L);
-                });
-    }
-
-    @Test
-    @DisplayName("raising broker retention without raising the marker horizon stops start-up")
-    void raisingBrokerRetentionAloneStopsStartUp() {
-        shipped.withPropertyValues("carddemo.processed-event.broker-retention-hours=720")
-                .run(context -> {
-                    assertThat(context).hasFailed();
-                    assertThat(context.getStartupFailure())
-                            .hasStackTraceContaining("markerRetentionHours must be at")
-                            .hasStackTraceContaining("least 2 times");
-                });
-    }
-
     /**
      * Asserts a claim timeout that cannot protect an active claim stops start-up.
      *
@@ -288,6 +251,34 @@ class FraudPropertiesTest {
                     assertThat(context.getStartupFailure())
                             .hasStackTraceContaining("claimTimeout");
                 });
+    }
+
+    /**
+     * A duplicate-delivery claim carries no configurable horizon, and this asserts the absence.
+     *
+     * <p>A security review found the marker horizon of 720 hours removing a claim while the effects
+     * it guards outlive it: a risk assessment kept for ninety days and the velocity buckets it
+     * counted into. A claim is now permanent, so this record carries no {@code processedEvent}
+     * component and no nested {@code ProcessedEvent} type.
+     *
+     * <p>The withdrawn key is set here as well. It binds nothing, which is what makes the
+     * withdrawal a property of the code rather than of the shipped configuration file.
+     */
+    @Test
+    @DisplayName("no configured value can expire a duplicate-delivery claim")
+    void noConfiguredValueCanExpireADuplicateDeliveryClaim() {
+        assertThat(Arrays.stream(FraudProperties.class.getRecordComponents())
+                .map(RecordComponent::getName))
+                .as("a component here would be a horizon a deployment could shorten")
+                .doesNotContain("processedEvent");
+        assertThat(Arrays.stream(FraudProperties.class.getDeclaredClasses())
+                .map(Class::getSimpleName))
+                .doesNotContain("ProcessedEvent");
+
+        shipped.withPropertyValues("carddemo.processed-event.marker-retention-hours=1")
+                .run(context -> assertThat(context)
+                        .as("the withdrawn key binds nothing and cannot reintroduce a horizon")
+                        .hasNotFailed());
     }
 
     @Test

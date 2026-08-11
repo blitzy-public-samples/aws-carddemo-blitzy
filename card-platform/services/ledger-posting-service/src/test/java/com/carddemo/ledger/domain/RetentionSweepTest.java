@@ -16,9 +16,11 @@ import com.carddemo.ledger.config.LedgerProperties;
 import com.carddemo.ledger.repository.OutboxEventRepository;
 import com.carddemo.ledger.repository.ProcessedEventRepository;
 import com.carddemo.ledger.repository.RejectedTransactionRepository;
+import java.lang.reflect.Constructor;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -39,9 +41,13 @@ import org.springframework.transaction.support.TransactionTemplate;
  *
  * <p>The defect these tests close is a single unbounded {@code DELETE} on two tables that are on the
  * hot write path. {@code outbox_event} is swept by the relay every half second and
- * {@code processed_event} is written by all three listeners, so one statement holding every expired
- * row under one lock blocks all four of them for a duration nobody can predict from the
- * configuration.
+ * {@code rejected_transaction} is written by every reject all three listeners record, so one
+ * statement holding every expired row under one lock blocks them for a duration nobody can predict
+ * from the configuration.
+ *
+ * <p>{@code processed_event} is absent from every assertion below, and one test asserts that absence
+ * directly. A security review found the marker horizon expiring claims while the posting they guard
+ * stayed, so a claim is now permanent and this sweep holds no store over that table.
  *
  * <p>Nothing here opens a database connection. Each repository is a stand-in that answers with a row
  * count, and the transaction template runs its callback directly so the number of transactions is
@@ -49,26 +55,17 @@ import org.springframework.transaction.support.TransactionTemplate;
  *
  * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
-@DisplayName("RetentionSweep, its three tables, its bounded batches and its finite drain")
+@DisplayName("RetentionSweep, its two tables, its bounded batches and its finite drain")
 class RetentionSweepTest {
 
     /** Hours a published outbox row stays, matching the shipped default. */
     private static final long PUBLISHED_RETENTION_HOURS = 168L;
-
-    /** Hours a processed-event marker stays, matching the shipped default. */
-    private static final long MARKER_RETENTION_HOURS = 720L;
-
-    /** Hours the broker keeps a topic log, which the marker horizon has to outlast. */
-    private static final long BROKER_RETENTION_HOURS = 168L;
 
     /** Days a reject stays, matching the horizon COMMENT ON TABLE rejected_transaction declares. */
     private static final int REJECTED_RETENTION_DAYS = 90;
 
     /** Store of the published rows, stubbed here. */
     private OutboxEventRepository outboxEvents;
-
-    /** Store of the duplicate-delivery markers, stubbed here. */
-    private ProcessedEventRepository processedEvents;
 
     /** Store of the refused feed records, stubbed here. */
     private RejectedTransactionRepository rejectedTransactions;
@@ -82,22 +79,19 @@ class RetentionSweepTest {
     @BeforeEach
     void buildSweep() {
         outboxEvents = mock(OutboxEventRepository.class);
-        processedEvents = mock(ProcessedEventRepository.class);
         rejectedTransactions = mock(RejectedTransactionRepository.class);
         transactions = new ArrayList<>();
-        sweep = new RetentionSweep(outboxEvents, processedEvents, rejectedTransactions,
+        sweep = new RetentionSweep(outboxEvents, rejectedTransactions,
                 countingTransactions(transactions), properties());
     }
 
     /** Stubs every delete to report an empty table, which is one statement each. */
     private void everyTableIsEmpty() {
         when(outboxEvents.deletePublishedBefore(any(Instant.class), anyInt())).thenReturn(0);
-        when(processedEvents.deleteMarkersProcessedBefore(any(Instant.class), anyInt()))
-                .thenReturn(0);
         when(rejectedTransactions.deleteRejectedBefore(any(Instant.class), anyInt())).thenReturn(0);
     }
 
-    /** Settings carrying the three shipped horizons and the shipped sweep interval. */
+    /** Settings carrying the two shipped horizons and the shipped sweep interval. */
     private static LedgerProperties properties() {
         return new LedgerProperties(
                 new LedgerProperties.Kafka(new LedgerProperties.Kafka.Topics(
@@ -107,8 +101,6 @@ class RetentionSweepTest {
                 new LedgerProperties.Outbox(new LedgerProperties.Outbox.Relay(
                         500L, 100, "retention-test", Duration.ofMinutes(2L), 5_000L),
                         PUBLISHED_RETENTION_HOURS),
-                new LedgerProperties.ProcessedEvent(MARKER_RETENTION_HOURS,
-                        BROKER_RETENTION_HOURS),
                 new LedgerProperties.Retention(3_600_000L, REJECTED_RETENTION_DAYS));
     }
 
@@ -144,11 +136,9 @@ class RetentionSweepTest {
 
             verify(outboxEvents).deletePublishedBefore(any(Instant.class),
                     eq(RetentionSweep.PURGE_BATCH_SIZE));
-            verify(processedEvents).deleteMarkersProcessedBefore(any(Instant.class),
-                    eq(RetentionSweep.PURGE_BATCH_SIZE));
             verify(rejectedTransactions).deleteRejectedBefore(any(Instant.class),
                     eq(RetentionSweep.PURGE_BATCH_SIZE));
-            assertEquals(3, transactions.size(), "one transaction per statement, and no more");
+            assertEquals(2, transactions.size(), "one transaction per statement, and no more");
         }
 
         @Test
@@ -161,22 +151,15 @@ class RetentionSweepTest {
 
             ArgumentCaptor<Instant> published = ArgumentCaptor.forClass(Instant.class);
             verify(outboxEvents).deletePublishedBefore(published.capture(), anyInt());
-            ArgumentCaptor<Instant> markers = ArgumentCaptor.forClass(Instant.class);
-            verify(processedEvents).deleteMarkersProcessedBefore(markers.capture(), anyInt());
             ArgumentCaptor<Instant> rejects = ArgumentCaptor.forClass(Instant.class);
             verify(rejectedTransactions).deleteRejectedBefore(rejects.capture(), anyInt());
 
             Instant publishedHorizon = published.getValue();
-            Instant markerHorizon = markers.getValue();
             Instant rejectedHorizon = rejects.getValue();
             assertTrue(publishedHorizon
                             .isBefore(before.minus(Duration.ofHours(PUBLISHED_RETENTION_HOURS))
                                     .plusSeconds(1L)),
                     "the published horizon is not the configured week back: " + publishedHorizon);
-            assertTrue(markerHorizon
-                            .isBefore(before.minus(Duration.ofHours(MARKER_RETENTION_HOURS))
-                                    .plusSeconds(1L)),
-                    "the marker horizon is not the configured month back: " + markerHorizon);
             assertTrue(rejectedHorizon
                             .isBefore(before.minus(Duration.ofDays(REJECTED_RETENTION_DAYS))
                                     .plusSeconds(1L)),
@@ -190,10 +173,32 @@ class RetentionSweepTest {
 
             sweep.purgeExpiredRows();
 
-            assertEquals(3, transactions.size(),
-                    "only outbox_event, processed_event and rejected_transaction expire here; the"
-                            + " transaction, category-balance and balance-projection stores are not"
+            assertEquals(2, transactions.size(),
+                    "only outbox_event and rejected_transaction expire here; the transaction,"
+                            + " category-balance and balance-projection stores are not"
                             + " collaborators of this sweep at all");
+        }
+
+        /**
+         * Asserts nothing in this class can expire a duplicate-delivery claim.
+         *
+         * <p>Stated structurally, because a sweep holding no store over {@code processed_event}
+         * cannot delete from it however it is scheduled or configured. The effects a claim guards are
+         * a posted transaction, a category balance and a balance projection, and
+         * {@code app/cbl/CBTRN02C.cbl} adds to each and removes from none.
+         */
+        @Test
+        @DisplayName("no constructor takes a store over processed_event, so no claim expires")
+        void noConstructorTakesAStoreOverProcessedEvent() {
+            assertTrue(Arrays.stream(RetentionSweep.class.getDeclaredFields())
+                            .map(field -> field.getType())
+                            .noneMatch(ProcessedEventRepository.class::equals),
+                    "a field over processed_event is a delete waiting to be reintroduced");
+            assertTrue(Arrays.stream(RetentionSweep.class.getDeclaredConstructors())
+                            .map(Constructor::getParameterTypes)
+                            .flatMap(Arrays::stream)
+                            .noneMatch(ProcessedEventRepository.class::equals),
+                    "no constructor may take a store over processed_event");
         }
     }
 
@@ -207,21 +212,17 @@ class RetentionSweepTest {
             when(outboxEvents.deletePublishedBefore(any(Instant.class), anyInt()))
                     .thenReturn(RetentionSweep.PURGE_BATCH_SIZE,
                             RetentionSweep.PURGE_BATCH_SIZE, 7);
-            when(processedEvents.deleteMarkersProcessedBefore(any(Instant.class), anyInt()))
-                    .thenReturn(0);
             when(rejectedTransactions.deleteRejectedBefore(any(Instant.class), anyInt()))
                     .thenReturn(0);
 
             sweep.purgeExpiredRows();
 
             verify(outboxEvents, times(3)).deletePublishedBefore(any(Instant.class), anyInt());
-            verify(processedEvents, times(1))
-                    .deleteMarkersProcessedBefore(any(Instant.class), anyInt());
             verify(rejectedTransactions, times(1))
                     .deleteRejectedBefore(any(Instant.class), anyInt());
-            assertEquals(5, transactions.size(),
-                    "three outbox statements, one marker statement and one reject statement, each"
-                            + " in its own transaction");
+            assertEquals(4, transactions.size(),
+                    "three outbox statements and one reject statement, each in its own"
+                            + " transaction");
         }
 
         @Test
@@ -252,17 +253,14 @@ class RetentionSweepTest {
         @Test
         @DisplayName("an endless backlog stops at the table ceiling rather than holding the thread")
         void anEndlessBacklogStopsAtTheTableCeiling() {
-            RetentionSweep bounded = new RetentionSweep(outboxEvents, processedEvents,
-                    rejectedTransactions, countingTransactions(transactions), properties(),
-                    Duration.ofMillis(50L));
+            RetentionSweep bounded = new RetentionSweep(outboxEvents, rejectedTransactions,
+                    countingTransactions(transactions), properties(), Duration.ofMillis(50L));
             everyTableIsEmpty();
             when(outboxEvents.deletePublishedBefore(any(Instant.class), anyInt()))
                     .thenReturn(RetentionSweep.PURGE_BATCH_SIZE);
 
             assertTimeout(Duration.ofSeconds(10L), bounded::purgeExpiredRows);
 
-            verify(processedEvents, times(1))
-                    .deleteMarkersProcessedBefore(any(Instant.class), anyInt());
             verify(rejectedTransactions, times(1))
                     .deleteRejectedBefore(any(Instant.class), anyInt());
             assertTrue(RetentionSweep.MAX_TABLE_DURATION.toSeconds() > 0L,
@@ -270,19 +268,15 @@ class RetentionSweepTest {
         }
 
         @Test
-        @DisplayName("a failure on one table still sweeps the others")
+        @DisplayName("a failure on one table still sweeps the other")
         void aFailureOnOneTableStillSweepsTheOthers() {
             everyTableIsEmpty();
             when(outboxEvents.deletePublishedBefore(any(Instant.class), anyInt()))
                     .thenThrow(new TransientDataAccessResourceException("outbox_event unavailable"));
-            when(processedEvents.deleteMarkersProcessedBefore(any(Instant.class), anyInt()))
-                    .thenReturn(3);
 
             assertDoesNotThrow(() -> sweep.purgeExpiredRows(),
                     "a scheduled method that raises stops the schedule for the rest of the run");
 
-            verify(processedEvents, times(1))
-                    .deleteMarkersProcessedBefore(any(Instant.class), anyInt());
             verify(rejectedTransactions, times(1))
                     .deleteRejectedBefore(any(Instant.class), anyInt());
         }

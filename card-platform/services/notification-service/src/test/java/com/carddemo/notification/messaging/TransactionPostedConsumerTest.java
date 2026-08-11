@@ -1055,9 +1055,6 @@ class TransactionPostedConsumerTest {
         @Override public void deleteAll() { throw unused(); }
 
         @Override
-        public int deleteMarkersProcessedBefore(Instant horizon, int limit) { throw unused(); }
-
-        @Override
         public <S extends ProcessedEventEntity> List<S> saveAll(Iterable<S> batch) {
             throw unused();
         }

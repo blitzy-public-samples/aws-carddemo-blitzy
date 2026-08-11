@@ -7,11 +7,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -89,6 +91,41 @@ class PresentationAndProseContractTest {
 
     /** Rule 4 caps the body text of a content slide. */
     private static final int RULE_FOUR_WORD_LIMIT = 40;
+
+    /**
+     * The Mermaid bundle this deck runs, and the digest its bytes answer to.
+     *
+     * <p>A review found the previous 11.4.0 line carrying nine advisories, loaded by an import
+     * expression that can hold no integrity attribute. Both halves moved: the version is the fixed
+     * line, and the single-file bundle replaces the module graph so one digest covers every byte
+     * rather than the 30 KB entry of a graph whose chunks were fetched unverified.
+     */
+    private static final String MERMAID_BUNDLE = "mermaid@11.16.1/dist/mermaid.min.js";
+
+    /** The digest of that bundle, as jsDelivr serves it. */
+    private static final String MERMAID_DIGEST =
+            "sha384-aBQXj4hK6Jm05i7aQAsUV3bLdSUrHX1BGYfMB0166TtWt/RRaw+h0Eelme9OCOvy";
+
+    /**
+     * Directives the deck's Content Security Policy has to state, each with the value it takes.
+     *
+     * <p>{@code default-src 'none'} is what makes the rest of the list a list of exceptions rather
+     * than a set of additions. Style is the one relaxation and it is deliberate: reveal.js writes
+     * element styles and Mermaid appends a style element beside every drawing, so neither can be
+     * digested ahead of time.
+     */
+    private static final Map<String, String> POLICY_DIRECTIVES =
+            Map.ofEntries(
+                    Map.entry("default-src", "'none'"),
+                    Map.entry("style-src",
+                            "https://cdn.jsdelivr.net https://fonts.googleapis.com 'unsafe-inline'"),
+                    Map.entry("font-src", "https://fonts.gstatic.com"),
+                    Map.entry("img-src", "data:"),
+                    Map.entry("connect-src", "https://cdn.jsdelivr.net"),
+                    Map.entry("base-uri", "'none'"),
+                    Map.entry("object-src", "'none'"),
+                    Map.entry("frame-src", "'none'"),
+                    Map.entry("form-action", "'none'"));
 
     /** The three classic assets that can carry a Subresource Integrity digest. */
     private static final List<String> INTEGRITY_PINNED_ASSETS =
@@ -373,7 +410,7 @@ class PresentationAndProseContractTest {
     void theDeckPinsRequiredLibrariesAndHasNoLocalMediaDependency() {
         assertTrue(deck.contains("reveal.js@5.1.0/dist/reveal.css"));
         assertTrue(deck.contains("reveal.js@5.1.0/dist/reveal.js"));
-        assertTrue(deck.contains("mermaid@11.4.0/dist/mermaid.esm.min.mjs"));
+        assertTrue(deck.contains(MERMAID_BUNDLE));
         assertTrue(deck.contains("lucide@0.460.0/dist/umd/lucide.min.js"));
         assertTrue(deck.contains("family=Fira+Code"));
         assertTrue(deck.contains("family=Inter"));
@@ -402,6 +439,73 @@ class PresentationAndProseContractTest {
                     "A digest without an anonymous origin cannot be verified for " + asset);
         }
         assertEquals(INTEGRITY_PINNED_ASSETS.size(), occurrences(deck, "integrity=\"sha384-"));
+        // The fourth library is pinned too, on the element the module creates for it. Its digest is
+        // stated here rather than read out of the deck, so a bundle swapped for another under the
+        // same version fails this test instead of passing it.
+        assertTrue(deck.contains(MERMAID_DIGEST),
+                "Mermaid's bundle is not pinned to the bytes this deck was verified against");
+        assertTrue(enclosingTag(deck, "fonts.googleapis.com/css2").contains("rel=\"stylesheet\""),
+                "the font stylesheet is the one asset carrying no digest, and it has to stay the"
+                        + " ordinary stylesheet link the head comment says it is");
+        assertFalse(enclosingTag(deck, "fonts.googleapis.com/css2").contains("integrity="),
+                "a digest over a stylesheet generated per user agent would fail for some readers"
+                        + " and pass for others");
+    }
+
+    /**
+     * Asserts the deck states a policy, and that the policy admits its own script and nothing else.
+     *
+     * <p>A review found no policy at all. The deck is one file opened from disk, so a header is not
+     * available and a meta element is the only place a policy can be stated. Three properties are
+     * read. Every directive is present with the value it was verified under. The inline module is
+     * admitted by the digest of its own text rather than by an unsafe-inline keyword, which is what
+     * makes an injected script inert. And the digest is recomputed here from the script the deck
+     * actually holds, so an edit to that script fails this test rather than silently disabling the
+     * only script the policy allows.
+     */
+    @Test
+    @DisplayName("the deck states a policy that admits its own module by digest and nothing else")
+    void theDeckStatesAPolicyThatAdmitsItsOwnModuleByDigest() {
+        String policy = firstGroup(
+                Pattern.compile("(?s)<meta http-equiv=\"Content-Security-Policy\" content=\"(.*?)\">"),
+                deck,
+                "Content-Security-Policy meta element");
+        String flattened = policy.replaceAll("\\s+", " ").trim();
+
+        POLICY_DIRECTIVES.forEach((directive, value) ->
+                assertTrue(flattened.contains(directive + " " + value + ";")
+                                || flattened.endsWith(directive + " " + value),
+                        "the policy states no " + directive + " of " + value + ": " + flattened));
+
+        String expected = "'sha384-" + base64Sha384(deckScript) + "'";
+        assertTrue(flattened.contains("script-src https://cdn.jsdelivr.net " + expected + ";"),
+                "the policy admits the inline module by the digest of its own text, and that digest"
+                        + " is now " + expected + ". An edit to the module changes it, and a policy"
+                        + " naming the old one blocks the only script this deck runs");
+        assertFalse(flattened.contains("script-src 'unsafe-inline'")
+                        || flattened.contains("'unsafe-inline' https://cdn.jsdelivr.net"),
+                "a script-src carrying unsafe-inline would admit a script injected into this"
+                        + " document, which is the whole point of digesting the one that belongs");
+        assertFalse(flattened.contains("'unsafe-eval'"),
+                "neither library evaluates a string, measured against both pinned bundles");
+        assertTrue(deckScript.contains("securityLevel: \"strict\""),
+                "the diagram library has to escape the labels it draws and refuse a click binding,"
+                        + " which is what its strict level does");
+    }
+
+    /**
+     * Digests one string the way a policy and an integrity attribute state a digest.
+     *
+     * @param content the text to digest
+     * @return the SHA-384 digest, base64 encoded
+     */
+    private static String base64Sha384(String content) {
+        try {
+            return Base64.getEncoder().encodeToString(MessageDigest.getInstance("SHA-384")
+                    .digest(content.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException("SHA-384 must be present in the JDK", impossible);
+        }
     }
 
     @Test
@@ -840,15 +944,25 @@ class PresentationAndProseContractTest {
     @Test
     @DisplayName("the diagram lifecycle is serialized, self-contained and degrades readably")
     void theDiagramLifecycleIsSerializedSelfContainedAndDegradesReadably() {
-        assertTrue(
-                Pattern.compile("import\\(\\s*\"https://[^\"]*mermaid@11\\.4\\.0")
-                        .matcher(deckScript)
-                        .find(),
-                "Mermaid must load through an import expression so a failure is catchable");
+        // Mermaid is fetched by a script element this module creates. An element carries an
+        // integrity attribute where an import expression cannot, and an inserted element is
+        // asynchronous, so the first slide is still drawn without waiting for the library. Both
+        // properties are read here because losing either one is a silent regression: the first
+        // would leave 3.5 MB unverified, and the second would delay every talk by a download.
+        assertTrue(deckScript.contains("document.createElement(\"script\")"),
+                "Mermaid has to load through an element the module inserts, which is what lets its"
+                        + " bytes be digested");
+        assertTrue(deckScript.contains("element.integrity = MERMAID_DIGEST")
+                        && deckScript.contains("element.crossOrigin = \"anonymous\""),
+                "the inserted element has to carry the digest and the anonymous origin a digest"
+                        + " needs to be checked at all");
+        assertTrue(deckScript.contains("element.addEventListener(\"error\""),
+                "a failed load or a digest mismatch has to reach the failure path rather than"
+                        + " leaving the promise pending forever");
         assertFalse(
                 Pattern.compile("(?m)^\\s*import\\s").matcher(deckScript).find(),
                 "A static import failure aborts the whole module, including Reveal start-up");
-        assertTrue(deckScript.contains(".catch("), "The Mermaid import declares no failure path");
+        assertTrue(deckScript.contains(".catch("), "The Mermaid load declares no failure path");
         assertTrue(
                 deckScript.contains("if (window.Reveal)"),
                 "Reveal start-up must not assume the library loaded");

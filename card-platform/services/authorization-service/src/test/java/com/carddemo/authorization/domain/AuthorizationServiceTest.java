@@ -23,14 +23,12 @@ import com.carddemo.authorization.entity.AccountCreditSnapshotEntity;
 import com.carddemo.authorization.entity.AuthorizationDecisionEntity;
 import com.carddemo.authorization.entity.CardCrossReferenceEntity;
 import com.carddemo.authorization.entity.OutboxEventEntity;
-import com.carddemo.authorization.entity.UnresolvedCardAttemptEntity;
 import com.carddemo.authorization.outbox.OutboxWriter;
 import com.carddemo.authorization.repository.AccountCreditSnapshotRepository;
 import com.carddemo.authorization.repository.AuthorizationDecisionRepository;
 import com.carddemo.authorization.repository.CardCrossReferenceRepository;
 import com.carddemo.authorization.repository.OutboxEventRepository;
 import com.carddemo.authorization.repository.ReplicaGapRepository;
-import com.carddemo.authorization.repository.UnresolvedCardAttemptRepository;
 import com.carddemo.cobol.PanMasker;
 import com.carddemo.events.DeclineReason;
 import com.carddemo.events.TransactionAuthorized;
@@ -111,7 +109,6 @@ final class AuthorizationServiceTest {
     private CardCrossReferenceRepository cardCrossReferences;
     private AccountCreditSnapshotRepository accountSnapshots;
     private OutboxEventRepository outboxEvents;
-    private UnresolvedCardAttemptRepository unresolvedCardAttempts;
     private AuthorizationDecisionRepository authorizationDecisions;
     private TransactionIdentifierSource identifiers;
     private List<AuthorizationDecisionEntity> audited;
@@ -126,7 +123,6 @@ final class AuthorizationServiceTest {
         cardCrossReferences = mock(CardCrossReferenceRepository.class);
         accountSnapshots = mock(AccountCreditSnapshotRepository.class);
         outboxEvents = mock(OutboxEventRepository.class);
-        unresolvedCardAttempts = mock(UnresolvedCardAttemptRepository.class);
         authorizationDecisions = mock(AuthorizationDecisionRepository.class);
         written = new ArrayList<>();
         audited = new ArrayList<>();
@@ -159,7 +155,7 @@ final class AuthorizationServiceTest {
 
         meters = new SimpleMeterRegistry();
         service = new AuthorizationService(rules, cardCrossReferences, identifiers,
-                new OutboxWriter(outboxEvents), unresolvedCardAttempts, authorizationDecisions,
+                new OutboxWriter(outboxEvents), authorizationDecisions,
                 meters, immediateTransactions(), properties(),
                 cycleExposure, caughtUp(), replicaGaps);
     }
@@ -361,82 +357,44 @@ final class AuthorizationServiceTest {
     }
 
     /**
-     * Asserts an unresolved card declines with reject code {@code 0100} and publishes exactly one
-     * account-keyed event carrying the reject detail.
+     * Asserts a card that resolves no cross-reference row is refused even when the request declares an
+     * account, and that the declared account reaches nothing at all.
      *
-     * <p>AAP transformation rule T4 gives one authorization call one event, written through the outbox
-     * in the transaction that recorded the decision, and it admits no exception.
+     * <p>This is the case a security review found. An earlier form of this service took the account
+     * off the request as the subject of a reject code {@code 0100} decision, so a caller holding the
+     * acquirer or administrator role could present an unknown sixteen-digit card together with any
+     * eleven-digit account and have this service record a decision, an audit row and a declined event
+     * against an account it had merely named. Nothing tied that account to the card.
      *
-     * <p>The event is {@code schemas/transaction-declined-v3.json}, the same contract the other three
-     * reject codes publish. Reject code {@code 0100} is assigned inside the {@code INVALID KEY} branch
-     * of {@code app/cbl/CBTRN02C.cbl:L383-L387}, so the cross-reference read resolved no account; the
-     * account it names is the one this request declared, which the interface pattern already held to
-     * eleven digits. That is what lets the decline be keyed like every other event of that account,
-     * and it is what lets {@code app/cbl/CBTRN02C.cbl:L446-L465} produce its reject record downstream.
+     * <p>The account on a request is the one value on it no stored row of this platform corroborates.
+     * The feed record the batch path validates carries no account either — {@code app/cpy/CVTRA06Y.cpy}
+     * declares twelve fields and none is an account identifier — which is why
+     * {@code app/cbl/CBTRN02C.cbl:L394} has to move {@code XREF-ACCT-ID} out of the resolved row before
+     * {@code app/cbl/CBTRN02C.cbl:L446-L465} can write the reject record against an account. The
+     * synchronous ancestor is plainer still: the {@code NOTFND} limb of {@code READ-CCXREF-FILE} at
+     * {@code app/cbl/COTRN02C.cbl:L625-L626} reports the card as unknown and decides nothing.
      *
-     * <p>The extra durable row is this service's addition. The source captures nothing on its own
-     * synchronous path: {@code app/cbl/COTRN02C.cbl:L620-L636} answers a card number the
-     * cross-reference does not carry with {@code 'Card Number NOT found...'} and re-sends the screen.
+     * <p>Reject code {@code 0100} therefore stays a batch outcome. {@code rules/CardCrossReferenceRule}
+     * still assigns it, because that is what leaves the account unresolved and stops the chain, and the
+     * rule's own tests and the equivalence suite still hold the code and its verbatim text to
+     * {@code app/cbl/CBTRN02C.cbl:L385-L387}.
      */
     @Test
-    void anUnresolvedCardDeclinesAndPublishesOneAccountKeyedEvent() {
+    void anUnresolvedCardIsRefusedEvenWhenTheRequestDeclaresAnAccount() {
         when(cardCrossReferences.findByCardNumber(CARD_NUMBER)).thenReturn(Optional.empty());
 
-        AuthorizationService.Outcome outcome =
-                service.authorize(requestNamingBothIdentifiers("504.77"), CALLER);
+        AuthorizationService.CardNumberNotFoundInCrossReferenceException refused =
+                assertThrows(AuthorizationService.CardNumberNotFoundInCrossReferenceException.class,
+                        () -> service.authorize(requestNamingBothIdentifiers("504.77"), CALLER),
+                        "an account the caller declared must not become the subject of a decision");
 
-        assertFalse(outcome.approved(), "no cross-reference row carries the card number");
-        assertEquals(Optional.of(DeclineReason.INVALID_CARD_NUMBER), outcome.declineReason(),
-                "app/cbl/CBTRN02C.cbl:L385 assigns this code for an invalid key");
-        assertEquals("INVALID CARD NUMBER FOUND", describe(outcome),
-                "the text comes from app/cbl/CBTRN02C.cbl:L386-L387");
-        assertEquals(new BigDecimal(ACCOUNT_ID), outcome.accountId(),
-                "the outcome names the account it was decided against, which the caller declared");
-
-        assertEquals(1, written.size(),
-                "one authorization call writes one outbox row, which is AAP rule T4, and this"
-                        + " outcome is a decided one");
-        OutboxEventEntity row = written.get(0);
-        assertEquals(TransactionDeclined.EVENT_TYPE, row.getEventType(),
-                "the decided outcome is a decline, so it publishes the decline contract");
-        assertEquals(ACCOUNT_ID, row.getAggregateId(),
-                "the message key is the account the decision applies to, so this decline stays"
-                        + " ordered with every other event of that account");
-
-        String payload = row.getPayload();
-        assertTrue(payload.contains("\"schemaVersion\":"
-                        + TransactionDeclined.TRANSACTION_DETAIL_SCHEMA_VERSION),
-                "the payload declares the one version a producer writes: " + payload);
-        assertTrue(payload.contains("\"accountId\":\"" + ACCOUNT_ID + "\""),
-                "and it names the account beside the message key: " + payload);
-        assertTrue(payload.contains("\"transactionId\":\"" + ALLOCATED_ID + "\""),
-                "the payload names the transaction the decision applies to: " + payload);
-        assertTrue(payload.contains("\"declineReasonCode\":\"0100\""),
-                "the payload carries the reject code app/cbl/CBTRN02C.cbl:L385 assigns: " + payload);
-        assertTrue(payload.contains("\"declineReasonDescription\":\"INVALID CARD NUMBER FOUND\""),
-                "paired with the text app/cbl/CBTRN02C.cbl:L386-L387 writes: " + payload);
-        assertTrue(payload.contains("\"amount\":\"504.77\""),
-                "and the attempted amount as a decimal string: " + payload);
-        assertTrue(payload.contains("\"merchantName\":\"Abshire-Lowe\""),
-                "and the nine descriptive values REJECT-TRAN-DATA needs: " + payload);
-        assertTrue(payload.contains("\"maskedCardNumber\":\"************7065\""),
-                "masked, so no full Primary Account Number travels: " + payload);
-        assertFalse(payload.contains(CARD_NUMBER),
-                "and the full card number appears nowhere in the payload: " + payload);
-
-        ArgumentCaptor<UnresolvedCardAttemptEntity> attempt =
-                ArgumentCaptor.forClass(UnresolvedCardAttemptEntity.class);
-        verify(unresolvedCardAttempts).save(attempt.capture());
-        assertEquals("************7065", attempt.getValue().getMaskedCardNumber(),
-                "the attempt records the masked card number and never the full one");
-        assertEquals("0100", attempt.getValue().getDeclineReasonCode(),
-                "the attempt records the reject code the source assigns");
-        assertEquals(ACCOUNT_ID, attempt.getValue().getAccountId(),
-                "and the account the decision applied to, so the row and its event agree on the"
-                        + " subject");
-        assertEquals(row.getEventId(), audited.get(0).getEventId(),
-                "and the decision row names the outbox row it published through, which"
-                        + " ck_authorization_decision_event holds it to");
+        assertEquals(AuthorizationRequest.CARD_NUMBER_NOT_FOUND_MESSAGE, refused.getMessage(),
+                "the refusal carries the text app/cbl/COTRN02C.cbl:L625-L626 writes");
+        assertTrue(written.isEmpty(),
+                "no event is written, so no partition of the declared account carries this call");
+        assertTrue(audited.isEmpty(),
+                "and no decision row attributes an outcome to the declared account");
+        verify(identifiers, never()).nextIdentifier();
     }
 
     /**
@@ -462,40 +420,35 @@ final class AuthorizationServiceTest {
                 "the refusal carries the text app/cbl/COTRN02C.cbl:L625-L626 writes");
         assertTrue(written.isEmpty(), "a refusal before a decision publishes nothing");
         assertTrue(audited.isEmpty(), "and records no decision");
-        verify(unresolvedCardAttempts, never()).save(any());
         verify(identifiers, never()).nextIdentifier();
     }
 
     /**
-     * Asserts two unresolved-card declines of one account key on that account and carry the two
-     * identifiers the sequence allocated.
+     * Asserts repeated unresolved cards draw no identifier and write nothing, however many arrive.
      *
-     * <p>{@code repository/TransactionIdentifierSource} draws one value per call from a database
-     * sequence, replacing the browse-backwards allocation of {@code app/cbl/COTRN02C.cbl:L444-L451},
-     * so two calls cannot share an identifier and one call cannot change its own. The message key is
-     * the account rather than the identifier, so both declines of one account stay ordered against
-     * each other, which is what a consumer applying them in publish order needs.
+     * <p>Where the refusal sits is what this test measures. It runs before
+     * {@code repository/TransactionIdentifierSource} is asked for a value, so a caller sending unknown
+     * card numbers one after another consumes no sequence value, leaves no gap in the identifiers real
+     * decisions carry, and writes nothing a consumer has to read. The sequence replaced the
+     * browse-backwards allocation of {@code app/cbl/COTRN02C.cbl:L444-L451} and a probe that advanced
+     * it would be the one thing able to move an identifier nobody decided under.
+     *
+     * <p>What is visible instead is a count. Each refusal increments the unresolved-card stage of
+     * {@code carddemo.authorization.failures}, so a probe is observable without any cardholder value
+     * being stored for it.
      */
     @Test
-    void twoUnresolvedCardsCarryTheTransactionIdentifiersTheSequenceAllocated() {
-        String secondIdentifier = "0000001000000002";
-        when(identifiers.nextIdentifier()).thenReturn(ALLOCATED_ID, secondIdentifier);
+    void repeatedUnresolvedCardsDrawNoIdentifierAndWriteNothing() {
         when(cardCrossReferences.findByCardNumber(CARD_NUMBER)).thenReturn(Optional.empty());
 
-        service.authorize(requestNamingBothIdentifiers("504.77"), CALLER);
-        service.authorize(requestNamingBothIdentifiers("11.00"), CALLER);
+        for (String amount : List.of("504.77", "11.00", "0.01")) {
+            assertThrows(AuthorizationService.CardNumberNotFoundInCrossReferenceException.class,
+                    () -> service.authorize(requestNamingBothIdentifiers(amount), CALLER));
+        }
 
-        assertEquals(2, written.size(), "two calls write two rows, one each");
-        assertEquals(List.of(ACCOUNT_ID, ACCOUNT_ID),
-                written.stream().map(OutboxEventEntity::getAggregateId).toList(),
-                "both rows are keyed on the account the decisions applied to, so the two declines"
-                        + " stay ordered against each other on one partition");
-        assertEquals(List.of(ALLOCATED_ID, secondIdentifier),
-                written.stream().map(row -> transactionIdentifierOf(row.getPayload())).toList(),
-                "and each payload names the identifier its own call allocated");
-        assertEquals(2, written.stream().map(OutboxEventEntity::getEventId).distinct().count(),
-                "and each carries its own event identifier, which is what every consumer"
-                        + " deduplicates on");
+        assertTrue(written.isEmpty(), "three refusals write no outbox row between them");
+        assertTrue(audited.isEmpty(), "and record no decision");
+        verify(identifiers, never()).nextIdentifier();
     }
 
     /**
@@ -512,33 +465,39 @@ final class AuthorizationServiceTest {
     }
 
     /**
-     * Asserts a rule that declines without resolving an account and names another reject code is
-     * refused rather than recorded.
+     * Asserts a rule that declines before any account is resolved produces no decision, whatever reject
+     * code it names.
      *
-     * <p>The unresolved-card path writes one audit row saying the cross-reference read resolved
-     * nothing, and that row carries the reject code the chain assigned. The delivered chain cannot
-     * reach an unresolved account under any code but {@code 0100}, because
-     * {@code rules/CardCrossReferenceRule} is the only rule that can decline before the account is
-     * resolved. A rule list assembled differently can, and the service refuses it there rather than
-     * recording an audit row and an event that disagree about why the decline happened.
+     * <p>The delivered chain reaches an unresolved account through {@code rules/CardCrossReferenceRule}
+     * alone, which assigns reject code {@code 0100}. A chain assembled differently can reach it under
+     * another code, and the answer has to be the same either way: with no account the cross-reference
+     * resolved, this service has no subject it can vouch for, so it refuses rather than deciding
+     * against whatever the request happened to name.
+     *
+     * <p>An earlier form of this service refused only the mismatch — a decline without an account under
+     * a code other than {@code 0100} — and decided the rest against the declared account. The refusal
+     * now covers both, which is why this test asserts the same outcome for a rule naming reject code
+     * {@code 0101}.
      */
     @Test
-    void aDeclineWithoutAnAccountUnderAnotherReasonIsRefused() {
+    void aDeclineWithoutAnAccountProducesNoDecision() {
         AuthorizationService misconfigured = new AuthorizationService(
                 List.of(new StoppingRuleNamingAnotherReason()), cardCrossReferences, identifiers,
-                new OutboxWriter(outboxEvents), unresolvedCardAttempts, authorizationDecisions,
+                new OutboxWriter(outboxEvents), authorizationDecisions,
                 new SimpleMeterRegistry(), immediateTransactions(), properties(), cycleExposure,
                 caughtUp(), replicaGaps);
 
-        IllegalStateException refused = assertThrows(IllegalStateException.class,
-                () -> misconfigured.authorize(requestNamingBothIdentifiers("504.77"), CALLER));
+        AuthorizationService.CardNumberNotFoundInCrossReferenceException refused =
+                assertThrows(AuthorizationService.CardNumberNotFoundInCrossReferenceException.class,
+                        () -> misconfigured.authorize(requestNamingBothIdentifiers("504.77"),
+                                CALLER),
+                        "a decline that resolved no account has no subject to be recorded against");
 
-        assertTrue(refused.getMessage()
-                        .contains(DeclineReason.INVALID_CARD_NUMBER.code() + " alone"),
-                "the refusal names the one reject code that path admits: " + refused.getMessage());
-        assertTrue(refused.getMessage().contains(DeclineReason.ACCOUNT_NOT_FOUND.code()),
-                "and the code the chain named instead: " + refused.getMessage());
+        assertEquals(AuthorizationRequest.CARD_NUMBER_NOT_FOUND_MESSAGE, refused.getMessage(),
+                "the refusal carries the one source text this path answers with");
         assertTrue(written.isEmpty(), "nothing is published for a state the service refuses");
+        assertTrue(audited.isEmpty(), "and no decision row records it");
+        verify(identifiers, never()).nextIdentifier();
     }
 
     /**
@@ -598,16 +557,14 @@ final class AuthorizationServiceTest {
 
         audited.clear();
         when(cardCrossReferences.findByCardNumber(CARD_NUMBER)).thenReturn(Optional.empty());
-        service.authorize(requestNamingBothIdentifiers("504.77"), CALLER);
 
-        assertEquals(1, audited.size(), "an unresolved card records one decision too");
-        assertEquals(ACCOUNT_ID, audited.get(0).getAccountId(),
-                "the row names the account the decision applied to, which the caller declared");
-        assertEquals(DeclineReason.INVALID_CARD_NUMBER.code(),
-                audited.get(0).getDeclineReasonCode(),
-                "the row records the reject code app/cbl/CBTRN02C.cbl:L385 assigns");
-        assertEquals(ACTOR, audited.get(0).getActor(),
-                "and the identity that asked for it, as every other outcome does");
+        assertThrows(AuthorizationService.CardNumberNotFoundInCrossReferenceException.class,
+                () -> service.authorize(requestNamingBothIdentifiers("504.77"), CALLER));
+
+        // A card that resolves no cross-reference row is not an outcome and therefore records no
+        // identity: there is no account the decision could be attributed to. It used to be recorded
+        // against the account the request named, which is what a security review objected to.
+        assertTrue(audited.isEmpty(), "a refusal records no decision, so it attributes none");
     }
 
     /**
@@ -662,7 +619,8 @@ final class AuthorizationServiceTest {
     void aMissingCardNeverReachesTheAccountRead() {
         when(cardCrossReferences.findByCardNumber(CARD_NUMBER)).thenReturn(Optional.empty());
 
-        service.authorize(requestNamingBothIdentifiers("504.77"), CALLER);
+        assertThrows(AuthorizationService.CardNumberNotFoundInCrossReferenceException.class,
+                () -> service.authorize(requestNamingBothIdentifiers("504.77"), CALLER));
 
         verify(accountSnapshots, never()).findByAccountId(any());
         verify(accountSnapshots, never()).findForUpdateByAccountId(any());
@@ -1031,32 +989,41 @@ final class AuthorizationServiceTest {
     }
 
     /**
-     * Asserts a request whose card resolves no cross-reference row records the unresolved attempt
-     * against the account it declared.
+     * Asserts an account named on the request selects a card and never becomes a decision subject.
      *
-     * <p>Reject reason {@code 0100} at {@code app/cbl/CBTRN02C.cbl:L385-L387} is the outcome of a
-     * cross-reference read that missed. The attempt row is what this service adds over the decision
-     * row: it records that the card reached the service and no row held it, and it names the same
-     * subject the event names so the two read as one outcome.
+     * <p>Both branches of {@code VALIDATE-INPUT-KEY-FIELDS} at {@code app/cbl/COTRN02C.cbl:L195-L230}
+     * are still here, and the account branch still does what {@code MOVE XREF-CARD-NUM} does at
+     * {@code :L209}: it reads the cross-reference by account and authorizes the card that read named.
+     * What the account on the request cannot do is stand in for an account no read resolved. This test
+     * runs the two cases side by side — the account branch, where the read resolves a row, and the card
+     * branch with the same account declared, where it resolves none.
      */
     @Test
-    void aCardResolvingNoRowRecordsTheUnresolvedAttempt() {
+    void anAccountOnTheRequestSelectsACardAndNeverBecomesASubject() {
+        resolveCardFromAccount();
+        resolveCard();
+        resolveAccount(new BigDecimal("5000.00"), new BigDecimal("0.00"), new BigDecimal("0.00"),
+                EXPIRY_AFTER_CAPTURE);
+
+        AuthorizationService.Outcome resolvedByAccount =
+                service.authorize(requestNamingOnlyAnAccount(), CALLER);
+
+        assertTrue(resolvedByAccount.approved(),
+                "the account branch resolved a row, so its account is the subject");
+        assertEquals(new BigDecimal(ACCOUNT_ID), resolvedByAccount.accountId(),
+                "and that subject came out of the cross-reference row, not out of the request");
+
+        written.clear();
+        audited.clear();
         when(cardCrossReferences.findByCardNumber(CARD_NUMBER)).thenReturn(Optional.empty());
 
-        AuthorizationService.Outcome outcome =
-                service.authorize(requestNamingBothIdentifiers("504.77"), CALLER);
+        assertThrows(AuthorizationService.CardNumberNotFoundInCrossReferenceException.class,
+                () -> service.authorize(requestNamingBothIdentifiers("504.77"), CALLER),
+                "the same account declared beside an unknown card resolves nothing and decides"
+                        + " nothing");
 
-        assertEquals(Optional.of(DeclineReason.INVALID_CARD_NUMBER), outcome.declineReason());
-        assertEquals(new BigDecimal(ACCOUNT_ID), outcome.accountId(),
-                "the outcome names the account the caller declared");
-        assertEquals(ALLOCATED_ID, outcome.transactionId(),
-                "the decision still carries the identifier this service allocated for it");
-        assertEquals(ACCOUNT_ID, audited.get(0).getAccountId(),
-                "the audit row names that account too");
-        assertEquals(1, written.size(),
-                "and one event is published, as every decided outcome publishes one");
-        assertEquals(ACCOUNT_ID, written.get(0).getAggregateId(),
-                "keyed on the account the decision applies to");
+        assertTrue(written.isEmpty(), "so no event is keyed on it");
+        assertTrue(audited.isEmpty(), "and no decision row names it");
     }
 
     /**
@@ -1107,8 +1074,8 @@ final class AuthorizationServiceTest {
         TransactionIdentifierSource identifiers = mock(TransactionIdentifierSource.class);
         when(identifiers.nextIdentifier()).thenReturn(ALLOCATED_ID);
         AuthorizationService extended = new AuthorizationService(rules, cardCrossReferences,
-                identifiers, new OutboxWriter(outboxEvents), unresolvedCardAttempts,
-                authorizationDecisions, new SimpleMeterRegistry(),
+                identifiers, new OutboxWriter(outboxEvents), authorizationDecisions,
+                new SimpleMeterRegistry(),
                 immediateTransactions(), properties(), cycleExposure, caughtUp(), replicaGaps);
 
         AuthorizationService.Outcome outcome = extended.authorize(request("504.77"), CALLER);
@@ -1175,16 +1142,16 @@ final class AuthorizationServiceTest {
     /**
      * Names one decided outcome, with the reject reason the source assigns to it.
      *
-     * <p>The five values are the whole decided outcome set of
-     * {@code app/cbl/CBTRN02C.cbl:L380-L420}: the approval, and the four reject reasons.
+     * <p>Four values, and they are every outcome this service decides. The reject reasons of
+     * {@code app/cbl/CBTRN02C.cbl:L380-L420} number four, and reject code {@code 0100} is the one that
+     * is not decided here: it is assigned in the {@code INVALID KEY} limb of a read that resolved no
+     * account, so the call is refused rather than decided, and
+     * {@link #anUnresolvedCardIsRefusedEvenWhenTheRequestDeclaresAnAccount()} measures that instead.
      */
     private enum DecidedOutcome {
 
         /** Every rule accepted. */
         APPROVAL(null),
-
-        /** Reject code 0100: the cross-reference carries no row for the card. */
-        UNRESOLVED_CARD(DeclineReason.INVALID_CARD_NUMBER),
 
         /** Reject code 0101: the account file does not carry the account. */
         ACCOUNT_MISSING(DeclineReason.ACCOUNT_NOT_FOUND),
@@ -1206,10 +1173,10 @@ final class AuthorizationServiceTest {
     /**
      * Asserts every decided outcome writes exactly one outbox row and names it on the decision.
      *
-     * <p>This is transformation rule T4 measured across the whole outcome set rather than one branch
-     * at a time. Reject code {@code 0100} is counted here beside the others precisely because it once
-     * counted zero, and its row is keyed on the same account form as every other because it names the
-     * account the caller declared.
+     * <p>This is transformation rule T4 measured across the whole decided outcome set rather than one
+     * branch at a time. Every row is keyed on the eleven-digit account the cross-reference resolved,
+     * which is the only subject a decision of this service has. Reject code {@code 0100} is absent from
+     * the set because it resolves no account and is refused rather than decided.
      *
      * @param outcomeUnderTest the outcome to arrange and measure
      */
@@ -1249,9 +1216,6 @@ final class AuthorizationServiceTest {
                 resolveAccount(new BigDecimal("5000.00"), new BigDecimal("0.00"),
                         new BigDecimal("0.00"), EXPIRY_AFTER_CAPTURE);
             }
-            case UNRESOLVED_CARD ->
-                    when(cardCrossReferences.findByCardNumber(CARD_NUMBER))
-                            .thenReturn(Optional.empty());
             case ACCOUNT_MISSING -> {
                 resolveCard();
                 when(accountSnapshots.findForUpdateByAccountId(ACCOUNT_ID))
@@ -1482,7 +1446,7 @@ final class AuthorizationServiceTest {
             when(identifiers.nextIdentifier()).thenReturn(ALLOCATED_ID);
 
             return new AuthorizationService(rules, cardCrossReferences, identifiers,
-                    new OutboxWriter(outboxEvents), unresolvedCardAttempts, authorizationDecisions,
+                    new OutboxWriter(outboxEvents), authorizationDecisions,
                     meters, immediateTransactions(), properties(), cycleExposure, synchronization,
                     replicaGaps);
         }
@@ -1560,21 +1524,25 @@ final class AuthorizationServiceTest {
         }
 
         /**
-         * A card that resolves no cross-reference row is already reject reason {@code 0100} per
-         * {@code app/cbl/CBTRN02C.cbl:L385-L387}, and it read no replica value worth checking.
-         * Refusing it would replace a reject reason the source defines with a service fault.
+         * A card that resolves no cross-reference row read no replica value worth checking, so the
+         * freshness refusal has nothing to say about it. The call is refused for the card, and the
+         * answer names the card rather than the replica: an operator reading a stale-replica refusal
+         * would go looking for a consumer that had stopped, and there is none to find.
          */
         @Test
         @DisplayName("does not apply to a call whose card resolves no cross-reference row")
         void doesNotApplyToACallWhoseCardResolvesNoCrossReferenceRow() {
             when(cardCrossReferences.findByCardNumber(CARD_NUMBER)).thenReturn(Optional.empty());
 
-            AuthorizationService.Outcome outcome = serviceOver(behind())
-                    .authorize(requestNamingBothIdentifiers("504.77"), CALLER);
+            assertThrows(AuthorizationService.CardNumberNotFoundInCrossReferenceException.class,
+                    () -> serviceOver(behind())
+                            .authorize(requestNamingBothIdentifiers("504.77"), CALLER),
+                    "the card is what this call cannot resolve, and the refusal must say so");
 
-            assertFalse(outcome.approved(), "an unresolved card is declined");
-            assertEquals(Optional.of(DeclineReason.INVALID_CARD_NUMBER), outcome.declineReason(),
-                    "and it carries reason 0100, not a refusal");
+            assertEquals(0.0d,
+                    meters.counter(AuthorizationService.FAILURES_COUNTER, "stage",
+                            AuthorizationService.REPLICA_STAGE).count(),
+                    "and it is not counted as a stale replica");
         }
 
         /**
@@ -1628,7 +1596,7 @@ final class AuthorizationServiceTest {
             };
 
             return new AuthorizationService(rules, cardCrossReferences, identifiers,
-                    new OutboxWriter(outboxEvents), unresolvedCardAttempts, authorizationDecisions,
+                    new OutboxWriter(outboxEvents), authorizationDecisions,
                     meters, failing, properties(), cycleExposure, caughtUp(), replicaGaps);
         }
 
@@ -1889,7 +1857,6 @@ final class AuthorizationServiceTest {
                             + "approval would confirm it is known");
 
             assertEquals(List.of(), written, "and no decline event names a card the caller sent");
-            verifyNoInteractions(unresolvedCardAttempts);
         }
 
         /**
@@ -1918,7 +1885,6 @@ final class AuthorizationServiceTest {
             assertEquals(List.of(), written, "no event names the card that was probed");
             assertEquals(List.of(), audited, "and no decision row records the probe");
             verify(identifiers, never()).nextIdentifier();
-            verifyNoInteractions(unresolvedCardAttempts);
         }
 
         /**

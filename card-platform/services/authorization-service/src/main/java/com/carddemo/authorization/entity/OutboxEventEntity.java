@@ -93,9 +93,9 @@ public class OutboxEventEntity {
      * <p>No row written from migration {@code V19} forward carries this form, and the column keeps room
      * for it because rows written before it do. One retained contract used it:
      * {@code schemas/transaction-declined-v2.json}, the decline whose card resolved no cross-reference
-     * row, which declared no {@code accountId} and keyed on the transaction identifier instead. Reject
-     * code {@code 0100} now names the account the caller declared and keys on it like every other
-     * decline. {@code ck_outbox_event_aggregate_id} still admits this width, because a
+     * row, which declared no {@code accountId} and keyed on the transaction identifier instead. No
+     * producer writes reject code {@code 0100} at all now: a card resolving no cross-reference row
+     * resolves no subject, so {@code domain/AuthorizationService} refuses the call. {@code ck_outbox_event_aggregate_id} still admits this width, because a
      * {@code CHECK} narrowed after those rows exist is enforced on every {@code UPDATE} of them and
      * the relay writes a column on every row it claims; {@code outbox/OutboxWriter} holds the one
      * form a new row may carry, and the relay publishes the older rows unchanged.

@@ -1,12 +1,10 @@
 package com.carddemo.account.messaging;
 
 import com.carddemo.events.EventEnvelope;
-import com.carddemo.events.serde.EventContracts;
-import com.carddemo.events.serde.JsonSchemaValidatingSerializer;
+import com.carddemo.events.serde.PublishGate;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
-import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.Objects;
 import java.util.UUID;
@@ -148,15 +146,6 @@ public record CustomerContextChanged(
     private static final Pattern FICO_SCORE_MATCHER = Pattern.compile(FICO_SCORE_PATTERN);
 
     /**
-     * The one publish-side gate, shared with every other event of this platform.
-     *
-     * <p>The instance holds no mutable state and compiles every governed schema once, so one
-     * instance serves the whole service.
-     */
-    private static final JsonSchemaValidatingSerializer<Object> SHARED_SERIALIZER =
-            new JsonSchemaValidatingSerializer<>();
-
-    /**
      * Checks all sixteen components against the widths their source fields declare.
      *
      * <p>The five envelope components pass through {@link EventEnvelope}, which applies the envelope
@@ -289,20 +278,25 @@ public record CustomerContextChanged(
     /**
      * Serializes this event through the one publish-side gate every event of this platform passes.
      *
-     * <p>{@link JsonSchemaValidatingSerializer} writes the flat wire form, checks the result against
-     * {@code schemas/customer-context-changed-v1.json} in {@code com.carddemo:event-contracts}, and
+     * <p>{@link PublishGate} writes the flat wire form, screens every property and every value for
+     * cardholder data, checks the result against {@code schemas/customer-context-changed-v1.json} in
+     * {@code com.carddemo:event-contracts}, refuses a version no released contract publishes, and
      * refuses a document wider than the platform ceiling. The returned text is what a caller stores
      * in the {@code payload} column of {@code outbox_event} and what the relay later hands to the
      * broker unchanged.
      *
+     * <p>The screens matter most on this event, because it is the one payload of this platform whose
+     * fields a person filled in: a name, three address lines and a postal code, from
+     * {@code app/cpy/CVCUS01Y.cpy:L6-L16}. A cardholder number typed into an address line reaches
+     * this method, and does not reach a row.
+     *
      * @return this event as validated JavaScript Object Notation text, in UTF-8
-     * @throws org.apache.kafka.common.errors.SerializationException when this event breaks its schema
-     *         or exceeds the platform event ceiling
+     * @throws IllegalArgumentException when this event breaks its schema, carries a value the
+     *         cardholder-data screens refuse, declares a version no contract publishes, or exceeds
+     *         the platform event ceiling
      */
     public String toValidatedJson() {
-        return new String(
-                SHARED_SERIALIZER.serialize(EventContracts.defaultTopicFor(EVENT_TYPE), this),
-                StandardCharsets.UTF_8);
+        return PublishGate.checkedJsonOf(this);
     }
 
     /**

@@ -25,9 +25,10 @@ import org.yaml.snakeyaml.Yaml;
  * scheduler that contract needs.
  *
  * <p>The retention half asserts what a sweep does: one transaction for each delete, the shipped
- * interval, both horizons bound, and a table swept exactly when its own catalogue comment declares a
- * window. The scheduler half asserts what a sweep may not cost, which is publication latency for
- * every account while it drains.
+ * interval, every applied horizon bound, and a table swept exactly when its own catalogue comment
+ * declares a window. It also asserts what no sweep does, which is expire a duplicate-delivery claim.
+ * The scheduler half asserts what a sweep may not cost, which is publication latency for every
+ * account while it drains.
  */
 class RetentionSweepContractTest {
 
@@ -76,10 +77,10 @@ class RetentionSweepContractTest {
     /**
      * Every service that owns a {@code domain/RetentionSweep}, including the one with no outbox.
      *
-     * <p>{@link #SERVICES} covers the five producer services and asserts the outbox and marker
-     * contract each of them shares. The notification service publishes no event and therefore has
-     * no outbox, so it is absent from that list, and it is the service with the most declared
-     * horizons. The horizon contract below applies to all six.
+     * <p>{@link #SERVICES} covers the five producer services and asserts the outbox contract each of
+     * them shares. The notification service publishes no event and therefore has no outbox, so it is
+     * absent from that list, and it is the service with the most declared horizons. The horizon
+     * contract below applies to all six.
      */
     private static final List<SweepSource> SWEEP_SOURCES = List.of(
             new SweepSource("account-service", "account", "purgeExpiredRows"),
@@ -127,7 +128,7 @@ class RetentionSweepContractTest {
                     com.carddemo.ledger.repository.ProcessedEventRepository.class));
 
     @Test
-    void everyProducerRunsBothDeletesThroughExplicitTransactions() throws Exception {
+    void everyProducerRunsEveryDeleteThroughAnExplicitTransaction() throws Exception {
         for (ServiceContract service : SERVICES) {
             Method sweep = service.sweepClass().getMethod("purgeExpiredRows");
             Scheduled scheduled = sweep.getAnnotation(Scheduled.class);
@@ -150,32 +151,58 @@ class RetentionSweepContractTest {
                     .as("%s transactions, one per delete", service.name())
                     .isEqualTo(1);
             assertThat(source)
-                    .contains("deletePublishedBefore", "deleteMarkersProcessedBefore");
+                    .as("%s sweeps its published outbox rows", service.name())
+                    .contains("deletePublishedBefore");
+            // No marker delete. A duplicate-delivery claim is permanent, because every effect a
+            // claim guards outlives any horizon a marker could carry, so a sweep naming
+            // processed_event would expire the guard while the effect stood.
+            assertThat(source)
+                    .as("%s must not sweep processed_event", service.name())
+                    .doesNotContain("deleteMarkersProcessedBefore")
+                    .doesNotContain("\"processed_event\"");
         }
     }
 
+    /**
+     * Asserts each producer binds the horizons it applies, and binds none for a claim.
+     *
+     * <p>The processed-event record used to carry two components, a marker horizon and the broker log
+     * retention it was checked against. A security review found the horizon expiring claims while the
+     * effects they guard stood, so the record is gone and the marker store exposes no delete. Both
+     * absences are asserted, because either alone can be undone: a component with no delete is a
+     * setting that does nothing, and a delete with no component is a horizon in the code.
+     */
     @Test
-    void everyProducerBindsBothHorizonsAndTheSweepInterval() throws Exception {
+    void everyProducerBindsItsAppliedHorizonsAndNoneForAClaim() throws Exception {
         for (ServiceContract service : SERVICES) {
             Class<?> outbox = nested(service.propertiesClass(), "Outbox");
-            Class<?> processedEvent = nested(service.propertiesClass(), "ProcessedEvent");
             Class<?> retention = nested(service.propertiesClass(), "Retention");
 
             assertThat(componentNames(outbox)).contains("relay", "publishedRetentionHours");
-            // Two components rather than one since a security review found the marker horizon
-            // equal to broker log retention. The record now carries the broker figure as well
-            // and refuses a horizon under twice it, so the relationship is enforced at
-            // start-up rather than documented.
-            assertThat(componentNames(processedEvent))
-                    .containsExactly("markerRetentionHours", "brokerRetentionHours");
+            assertThat(componentNames(service.propertiesClass()))
+                    .as("%s must bind no processed-event block", service.name())
+                    .doesNotContain("processedEvent");
+            assertThat(nestedOrNull(service.propertiesClass(), "ProcessedEvent"))
+                    .as("%s must declare no ProcessedEvent record", service.name())
+                    .isNull();
             assertThat(componentNames(retention)).contains("sweepIntervalMs");
             assertThat(hasHorizonDelete(service.outboxRepository(), "deletePublishedBefore"))
                     .as("%s outbox retention method", service.name())
                     .isTrue();
-            assertThat(hasHorizonDelete(service.processedRepository(),
-                    "deleteMarkersProcessedBefore"))
-                    .as("%s marker retention method", service.name())
-                    .isTrue();
+            // A horizon delete rather than any delete. The card service's store extends a
+            // create-read-update-delete base and inherits deleteById, which removes one named row
+            // and expires nothing. What may not exist is a delete taking a moment: that is a
+            // horizon, and a horizon is what a security review found expiring claims.
+            assertThat(Arrays.stream(service.processedRepository().getMethods())
+                            .filter(method -> method.getName()
+                                    .toLowerCase(java.util.Locale.ROOT).contains("delete"))
+                            .filter(method -> method.getParameterCount() >= 1
+                                    && method.getParameterTypes()[0]
+                                            .equals(java.time.Instant.class))
+                            .map(Method::getName)
+                            .toList())
+                    .as("%s marker store must expose no delete taking a horizon", service.name())
+                    .isEmpty();
         }
     }
 
@@ -293,8 +320,8 @@ class RetentionSweepContractTest {
      *
      * <p>A declared horizon names a purge column and a window. The window may be a span,
      * {@code retention=90 days}, or the setting that carries it,
-     * {@code retention=carddemo.processed-event.marker-retention-hours}; naming the setting is the
-     * better form, because a number restated in a comment drifts from the one the sweep reads.
+     * {@code retention=carddemo.history.log-retention-days}; naming the setting is the better form,
+     * because a number restated in a comment drifts from the one the sweep reads.
      * {@code retention=relationship} and {@code retention=reference} name no window, and
      * {@code purge_key=none} says outright that nothing expires the row.
      *
@@ -485,6 +512,20 @@ class RetentionSweepContractTest {
                 .filter(type -> type.getSimpleName().equals(simpleName))
                 .findFirst()
                 .orElseThrow();
+    }
+
+    /**
+     * Returns one nested type by simple name, or {@code null} where the enclosing type declares none.
+     *
+     * @param enclosing  the type to search
+     * @param simpleName the nested type's simple name
+     * @return the nested type, or {@code null} when it is absent
+     */
+    private static Class<?> nestedOrNull(Class<?> enclosing, String simpleName) {
+        return Arrays.stream(enclosing.getDeclaredClasses())
+                .filter(type -> type.getSimpleName().equals(simpleName))
+                .findFirst()
+                .orElse(null);
     }
 
     private static List<String> componentNames(Class<?> recordType) {

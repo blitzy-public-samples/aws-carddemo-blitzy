@@ -77,6 +77,21 @@ class ComposeEnvironmentIsolationContractTest {
     private static final Pattern ENVIRONMENT_KEY =
             Pattern.compile("(?m)^ {6}([A-Z][A-Z0-9_]*):");
 
+    /** A published port mapping, with the part before the container port captured. */
+    private static final Pattern PUBLISHED_PORT =
+            Pattern.compile("(?m)^ {6}- \"([^\"]+)\"\\s*$");
+
+    /** The address every mapping has to name. */
+    private static final String LOOPBACK = "127.0.0.1";
+
+    /**
+     * Fewest published mappings the scan must find before its verdict means anything.
+     *
+     * <p>Fourteen ship: the database, the broker, and a service port and a management port for each
+     * of the six services.
+     */
+    private static final int PUBLISHED_PORT_FLOOR = 14;
+
     private static final Pattern QUOTED_BCRYPT = Pattern.compile(
             "(?m)^(ADMIN|ACQUIRER|USER|MONITORING)_PASSWORD_HASH="
                     + "'(\\{bcrypt}\\$2a\\$10\\$REPLACE-[^']+)'$");
@@ -225,6 +240,140 @@ class ComposeEnvironmentIsolationContractTest {
                 "is to register a listener");
     }
 
+    /**
+     * Holds the transport posture of the local stack: one operator, one machine, synthetic fixtures.
+     *
+     * <p><b>What this stands over.</b> A review found three transports here carrying a credential
+     * without encrypting it, or encrypting without authenticating the peer: HTTP Basic over HTTP on
+     * the six service ports, {@code SASL_PLAINTEXT} on the broker, and {@code sslmode=require}
+     * against a server that signs its own certificate. Its resolution offered two routes, and this
+     * platform took the second: state the posture and enforce it.
+     *
+     * <p>Enforcement is what this class adds. A posture stated in a comment is a promise, and the
+     * binding is the thing that makes it true, so every published port is read here and a mapping
+     * that reaches beyond this machine fails the build. The three transports are read too, because
+     * the posture only holds while they are the set it describes.
+     */
+    @Test
+    @DisplayName("every published port binds the loopback address and nothing else")
+    void everyPublishedPortBindsTheLoopbackAddress() {
+        String compose = read(repositoryRoot().resolve("card-platform/docker-compose.yml"));
+
+        List<String> mappings = new ArrayList<>();
+        Matcher published = PUBLISHED_PORT.matcher(compose);
+        while (published.find()) {
+            mappings.add(published.group(1));
+        }
+
+        assertThat(mappings)
+                .as("the eight containers publish fourteen mappings: one each for the database and"
+                        + " the broker, and a service port and a management port for each of the six"
+                        + " services. A count below this floor means the scan stopped reading and"
+                        + " its verdict would mean nothing")
+                .hasSizeGreaterThanOrEqualTo(PUBLISHED_PORT_FLOOR);
+
+        assertThat(mappings)
+                .as("every mapping names the loopback address. A mapping written as \"8081:8080\""
+                        + " or \"0.0.0.0:8081:8080\" listens on every interface of the host, which"
+                        + " puts an HTTP Basic credential and a SASL_PLAINTEXT password on whatever"
+                        + " network that host is attached to. The posture this stack states depends"
+                        + " on the binding rather than on the comment beside it")
+                .allSatisfy(mapping -> {
+                    assertThat(mapping).startsWith(LOOPBACK + ":");
+                    assertThat(mapping.chars().filter(character -> character == ':').count())
+                            .as("a host-address form names three parts: the address, the host port"
+                                    + " and the container port")
+                            .isGreaterThanOrEqualTo(2);
+                });
+
+        assertThat(compose)
+                .as("no mapping names the wildcard address, in any form")
+                .doesNotContain("0.0.0.0:", "\"::\"", "[::]:");
+    }
+
+    /**
+     * Asserts the stack states the posture where an operator meets it, and states its boundary.
+     *
+     * <p>Three places are read, because an operator arrives at one of the three. The composition is
+     * where the transports are configured, the environment template is where the credentials are
+     * generated, and the platform guide is where the stack is described. Each has to name the
+     * posture and the case it does not cover, and the composition additionally has to name the
+     * encrypted path that answers that case.
+     */
+    @Test
+    @DisplayName("the composition, the template and the guide each state the posture and its bound")
+    void theCompositionTheTemplateAndTheGuideEachStateThePosture() {
+        Path root = repositoryRoot();
+        Map<String, String> stated = Map.of(
+                "docker-compose.yml", read(root.resolve("card-platform/docker-compose.yml")),
+                ".env.example", read(root.resolve("card-platform/.env.example")),
+                "README.md", read(root.resolve("card-platform/README.md")));
+
+        stated.forEach((name, text) -> {
+            assertThat(text)
+                    .as("%s states the posture in the words the others use, so an operator meets"
+                            + " one statement rather than three", name)
+                    .containsIgnoringCase("one operator, one machine, synthetic fixtures");
+            assertThat(text)
+                    .as("%s names the loopback binding that enforces it", name)
+                    .contains(LOOPBACK);
+        });
+
+        String compose = stated.get("docker-compose.yml");
+        assertThat(compose)
+                .as("the composition names each of the three transports the posture covers, so a"
+                        + " fourth added later has no statement standing over it")
+                .contains("SASL_PLAINTEXT", "sslmode=require", "SERVER_SSL_ENABLED");
+        assertThat(compose)
+                .as("and names the deployed path that answers the case this one does not, which is"
+                        + " encrypted throughout")
+                .contains("deploy/k8s/30-configmap.yaml", "SASL_SSL", "sslmode=verify-full");
+        assertThat(compose)
+                .as("the profile that would encrypt this path is designed and not delivered, and"
+                        + " the composition says where the procedure is rather than implying one"
+                        + " exists")
+                .contains("card-platform/docs/suggested-next-tasks.md");
+
+        assertThat(read(root.resolve("card-platform/README.md")))
+                .as("the guide states what the posture does not cover, because a reader who assumes"
+                        + " it covers a shared host has been misled by a document that only said"
+                        + " what it does cover")
+                .contains("untrusted account");
+    }
+
+    /**
+     * Asserts the encrypted values stay out of the local composition and in the manifests.
+     *
+     * <p>The two paths are alternatives rather than layers, and the four values below are what
+     * differ. Reading them from both sides keeps the comparison in the platform guide honest, and
+     * catches the half-migration where a composition claims an encrypted transport it does not
+     * configure.
+     */
+    @Test
+    @DisplayName("the encrypted transport values are configured in the manifests, not the composition")
+    void theEncryptedTransportValuesAreConfiguredInTheManifests() {
+        Path root = repositoryRoot();
+        String compose = read(root.resolve("card-platform/docker-compose.yml"));
+        String configuration = read(root.resolve("card-platform/deploy/k8s/30-configmap.yaml"));
+
+        assertThat(compose)
+                .as("the composition configures the unencrypted forms, as the posture states")
+                .contains("KAFKA_SECURITY_PROTOCOL: ${KAFKA_SECURITY_PROTOCOL:-SASL_PLAINTEXT}",
+                        "SERVER_SSL_ENABLED: ${SERVER_SSL_ENABLED:-false}",
+                        "MANAGEMENT_SSL_ENABLED: ${MANAGEMENT_SSL_ENABLED:-false}");
+        assertThat(compose)
+                .as("and configures no encrypted form, because a value set in one place and"
+                        + " defaulted in another is the shape a half-migration takes")
+                .doesNotContain("KAFKA_SECURITY_PROTOCOL: SASL_SSL", "sslmode=verify-full&");
+
+        assertThat(configuration)
+                .as("the manifests configure the encrypted forms of all four")
+                .contains("KAFKA_SECURITY_PROTOCOL: \"SASL_SSL\"",
+                        "SERVER_SSL_ENABLED: \"true\"",
+                        "MANAGEMENT_SSL_ENABLED: \"true\"",
+                        "sslmode=verify-full");
+    }
+
     private static void assertOnlyOwnSecretSource(
             String service, String block, List<String> allSources, String ownSource) {
         assertThat(block).as("%s own secret source", service).contains("${" + ownSource + ":?");
@@ -282,9 +431,11 @@ class ComposeEnvironmentIsolationContractTest {
     }
 
     private static Map<String, Set<String>> requiredServiceKeys() {
+        // PROCESSED_EVENT_RETENTION_HOURS is deliberately absent. It set a horizon after which a
+        // duplicate-delivery claim was deleted, and a security review found every effect a claim
+        // guards outliving that horizon, so a claim is permanent and no service binds the key.
         Set<String> producerRetention = Set.of(
                 "OUTBOX_PUBLISHED_RETENTION_HOURS",
-                "PROCESSED_EVENT_RETENTION_HOURS",
                 "RETENTION_SWEEP_INTERVAL_MS");
         Set<String> consumerRetry = Set.of(
                 "CONSUMER_MAX_RETRY_ATTEMPTS",
@@ -302,7 +453,6 @@ class ComposeEnvironmentIsolationContractTest {
                 "TOPIC_FRAUD_ASSESSED",
                 "TOPIC_CUSTOMER_CONTEXT_CHANGED",
                 "TOPIC_DEAD_LETTER",
-                "PROCESSED_EVENT_RETENTION_HOURS",
                 "RETENTION_SWEEP_INTERVAL_MS"));
         required.put("account-service", union(producerRetention, Set.of("TOPIC_DEAD_LETTER")));
         required.put("card-service", union(producerRetention, Set.of("TOPIC_DEAD_LETTER")));

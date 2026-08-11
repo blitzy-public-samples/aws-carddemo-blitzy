@@ -6,14 +6,12 @@ import com.carddemo.events.EventEnvelope;
 import com.carddemo.events.TransactionAuthorized;
 import com.carddemo.events.TransactionDeclined;
 import com.carddemo.events.correlation.EventCorrelation;
-import com.carddemo.events.serde.EventContracts;
+import com.carddemo.events.serde.PublishGate;
 import java.time.Clock;
-import java.util.List;
 import java.util.Objects;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
-import tools.jackson.databind.json.JsonMapper;
 
 /**
  * Writes one event into {@code outbox_event}, in the transaction that already holds the decision.
@@ -47,10 +45,16 @@ import tools.jackson.databind.json.JsonMapper;
  * transaction-declined documents name the account-keyed form, the account-less form released for
  * reject code {@code 0100}, and the detail-bearing form every decline publishes under.
  *
- * <p>Every payload is measured against the document its event type and contract version select,
- * before the row is saved. A payload the publish gate refuses therefore never reaches the table,
- * where it would stall the relay. A rejection message holds JSON pointers and broken keywords, so no
- * card number and no account identifier reaches a log through it.
+ * <p>Every payload crosses {@link PublishGate} before the row is saved, which is the one
+ * publish-side boundary of this platform: the class must name a registered event type, that type must
+ * belong on its topic, neither sensitive-data screen may refuse the written JavaScript Object
+ * Notation, the document its contract version selects must accept it, it must fit the platform byte
+ * ceiling, and that version must be one a producer may still write. The row stores exactly the text
+ * the gate checked and {@link OutboxRelay} publishes those bytes unchanged, so nothing a gate has not
+ * seen reaches a topic. A payload the gate refuses never reaches the table, where it would stall the
+ * relay, and the caller's transaction rolls back with nothing stored. A rejection message holds JSON
+ * pointers, broken keywords and property names, so no card number and no account identifier reaches a
+ * log through it.
  *
  * <p>This class publishes nothing, holds no broker type, and starts no thread. It allocates no
  * transaction identifier either: {@code domain/TransactionIdentifierSource} allocates the sixteen
@@ -70,14 +74,6 @@ public class OutboxWriter {
 
     /** Stores the rows {@link OutboxRelay} later reads. */
     private final OutboxEventRepository outboxEvents;
-
-    /**
-     * Writes one event record to text. Jackson 3, matching the platform.
-     *
-     * <p>The mapper belongs to this class. A payload is therefore shaped by the contract of its own
-     * event, and by no setting of the web layer.
-     */
-    private final JsonMapper jsonMapper = JsonMapper.builder().build();
 
     /**
      * Stamps {@code created_at}, in Coordinated Universal Time.
@@ -140,20 +136,22 @@ public class OutboxWriter {
      * {@code app/cbl/CBTRN02C.cbl:L446-L465} stays out of this row. The ledger posting service owns
      * it, in its own {@code rejected_transaction} table.
      *
-     * <p>TWO VERSIONS REACH THIS METHOD, AND THE REJECT CODE SELECTS WHICH. Version 1 keys on the
-     * eleven-digit account identifier the cross-reference resolved, and reasons {@code 0101},
-     * {@code 0102} and {@code 0103} are the three that reach it, because each fires after that read
-     * succeeded.
+     * <p>ONE VERSION REACHES THIS METHOD. Version 1 keys on the eleven-digit account identifier the
+     * cross-reference resolved, and reasons {@code 0101}, {@code 0102} and {@code 0103} are the three
+     * that reach it, because each fires after that read succeeded.
      *
-     * <p>Reject code {@code 0100} reaches version 2. It is assigned at
+     * <p>Reject code {@code 0100} reaches nothing here. It is assigned at
      * {@code app/cbl/CBTRN02C.cbl:L385}, inside the {@code INVALID KEY} branch of the cross-reference
      * read at {@code :L383}, and the short-circuit at {@code :L376-L378} stops the account read from
-     * running, so no account identifier exists to key an event on.
-     * {@code schemas/transaction-declined-v2.json} carries no {@code accountId} and keys on the
-     * sixteen-character transaction identifier instead, which {@code aggregate_id} holds as readily as
-     * eleven digits. {@code domain/AuthorizationService} writes it in the transaction that recorded
-     * the decision, so one authorization call writes exactly one outbox row whichever outcome it
-     * reached, which is what AAP transformation rule T4 requires.
+     * running, so no account identifier exists to key an event on. A subject this service cannot
+     * resolve from a stored row is a call it refuses rather than a decision it records, so
+     * {@code domain/AuthorizationService} answers such a request before any identifier is allocated
+     * and writes neither a decision nor a row. {@code schemas/transaction-declined-v2.json} declared
+     * that shape and {@code contracts/released-contracts.json} records it as retained rather than
+     * published, so {@link #write} refuses it here.
+     *
+     * <p>Every call that does reach a decision writes exactly one outbox row inside the transaction
+     * that recorded the decision, which is what AAP transformation rule T4 requires.
      *
      * @param event the decline event, carrying its own envelope, its reject code and its masked card
      *              number
@@ -190,13 +188,7 @@ public class OutboxWriter {
     private OutboxEventEntity write(EventEnvelope envelope, Record event) {
         String eventType = envelope.eventType();
         String messageKey = messageKeyOf(envelope);
-        String payload = jsonMapper.writeValueAsString(event);
-
-        List<String> violations = EventContracts.publishViolationsOf(eventType, payload);
-        if (!violations.isEmpty()) {
-            throw new IllegalArgumentException(
-                    EventContracts.describeViolations(eventType, violations));
-        }
+        String payload = PublishGate.checkedJsonOf(event);
 
         return outboxEvents.save(correlated(new OutboxEventEntity(envelope.eventId(), eventType,
                 messageKey, payload, clock.instant())));

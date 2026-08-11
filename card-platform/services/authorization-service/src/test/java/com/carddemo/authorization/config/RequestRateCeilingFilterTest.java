@@ -489,10 +489,14 @@ class RequestRateCeilingFilterTest {
             Order order = RequestRateCeilingFilter.class.getAnnotation(Order.class);
 
             assertTrue(order != null, "the filter must declare an order");
-            assertEquals(SecurityFilterProperties.DEFAULT_FILTER_ORDER - 1, order.value());
+            assertEquals(SecurityFilterProperties.DEFAULT_FILTER_ORDER - 3, order.value());
             assertTrue(order.value() < SecurityFilterProperties.DEFAULT_FILTER_ORDER,
                     "a rate refusal has to cost less than the bcrypt verification it refuses, so "
                             + "this filter runs ahead of the security chain");
+            assertTrue(order.value()
+                            > CorrelationContextFilter.class.getAnnotation(Order.class).value(),
+                    "the correlation filter runs first, so a refusal here carries the correlation "
+                            + "identity of the request it refused");
         }
     }
 

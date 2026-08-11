@@ -78,7 +78,7 @@ The counts below describe the delivered tree rather than one moment, and the mec
 |---|---:|
 | Failsafe equivalence tests | 229 passed across the nine `*EquivalenceTest` classes |
 | Failsafe end-to-end flow test in the same module | 6 passed in `ThreeConsumerAuthorizationFlowIT`, giving 235 for this module's whole Failsafe run |
-| Surefire unit and contract tests in the same module | 506 passed |
+| Surefire unit and contract tests in the same module | 562 passed |
 | `*EquivalenceTest` classes executed | 9 |
 | Required named equivalence classes | 6 present and passing |
 | Checked-in expected-output files | 14, every one read by its declared consumer |
@@ -125,22 +125,22 @@ The reject record itself is compared as bytes. `renderRejectRecord` copies the f
 | `CardSeedEquivalenceTest` | 7 |
 | `ThreeConsumerAuthorizationFlowIT` | 6 |
 
-The whole reactor ran 6,335 Surefire and 592 Failsafe tests in the same run, with zero failures, zero errors and zero skips. Those two figures belong here rather than in a service guide, because one run identity is easier to keep true than seven.
+The whole reactor ran 6,501 Surefire and 599 Failsafe tests in the same run, with zero failures, zero errors and zero skips. Those two figures belong here rather than in a service guide, because one run identity is easier to keep true than seven.
 
 Here is where they came from, module by module. `scripts/check-published-test-counts.sh` compares every cell below against the reports of a completed build, so a figure in this table is measured rather than asserted.
 
 | Reactor module | Surefire | Failsafe |
 |---|---:|---:|
-| `libs/event-contracts` | 316 | 0 |
-| `libs/cobol-compat` | 125 | 0 |
-| `services/authorization-service` | 815 | 52 |
-| `services/ledger-posting-service` | 481 | 22 |
-| `services/fraud-detection-service` | 717 | 74 |
-| `services/notification-service` | 863 | 39 |
-| `services/account-service` | 1,757 | 51 |
-| `services/card-service` | 755 | 119 |
-| `equivalence-tests` | 506 | 235 |
-| **Reactor total** | **6,335** | **592** |
+| `libs/event-contracts` | 335 | 0 |
+| `libs/cobol-compat` | 130 | 0 |
+| `services/authorization-service` | 833 | 53 |
+| `services/ledger-posting-service` | 498 | 23 |
+| `services/fraud-detection-service` | 728 | 74 |
+| `services/notification-service` | 868 | 39 |
+| `services/account-service` | 1,773 | 51 |
+| `services/card-service` | 774 | 124 |
+| `equivalence-tests` | 562 | 235 |
+| **Reactor total** | **6,501** | **599** |
 
 The two library modules carry no Failsafe figure because neither holds a class the integration patterns select: `**/*IT.java` and `**/*EquivalenceTest.java` match nothing under either. Every other module holds at least one, and the script fails when one of them writes no Failsafe report, which is the fail-open case a silently empty selection would otherwise leave green.
 
@@ -336,6 +336,10 @@ No equivalence assertion compares a raw timestamp. Raw comparison would fail on 
 No unintended divergence between service behaviour and source rule was observed in the completed run. The section stays because its presence is what tells a reader the question was asked.
 
 Four divergences are deliberate reproductions of source behaviour. Each names where its explanation lives, so that none reads as a defect in the platform.
+
+One divergence runs the other way, and it is a departure from the source rather than a reproduction of it. The batch path declines a card that resolves no cross-reference row, at `app/cbl/CBTRN02C.cbl:L385-L387`, and writes the reject record of `:L446-L465` against the account `:L394` took out of that row. Where the read misses there is no such account, and the feed record at `app/cpy/CVTRA06Y.cpy` carries none of its own.
+
+This platform therefore refuses the call with the text the synchronous ancestor uses at `app/cbl/COTRN02C.cbl:L625-L626`, and publishes no reject reason `0100` at all. `SYN-100-XREF-MISS` in `synthetic-boundary-cases.csv` still states the source outcome, because that file records what the source does. The departure is recorded in `docs/decision-log.md` under "The subject of a decision comes from a stored row".
 
 | Reproduced divergence | Source | Result | Recorded in |
 |---|---|---|---|

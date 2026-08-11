@@ -1,7 +1,5 @@
 package com.carddemo.card.messaging;
 
-import com.carddemo.events.serde.EventContracts;
-import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.Objects;
 import java.util.UUID;
@@ -9,7 +7,7 @@ import java.util.regex.Pattern;
 
 import com.carddemo.cobol.PanMasker;
 import com.carddemo.events.EventEnvelope;
-import com.carddemo.events.serde.JsonSchemaValidatingSerializer;
+import com.carddemo.events.serde.PublishGate;
 
 /**
  * The event the card service publishes when a card update commits.
@@ -311,41 +309,28 @@ public record CardUpdated(
     }
 
     /**
-     * The one publish-side gate, shared with every other event of this platform.
-     *
-     * <p>The instance holds no mutable state and compiles every governed schema once, so one
-     * instance serves the whole service.
-     */
-    private static final JsonSchemaValidatingSerializer<Object> SHARED_SERIALIZER =
-            new JsonSchemaValidatingSerializer<>();
-
-    /**
      * Serializes this event through the one publish-side gate every event of this platform passes.
      *
-     * <p>{@link JsonSchemaValidatingSerializer} does the work: it writes the flat wire form, checks
-     * the result against {@code schemas/card-updated-v2.json} in
-     * {@code com.carddemo:event-contracts}, and refuses a document wider than the platform ceiling.
-     * The returned text is what a caller stores in the {@code payload} column of
-     * {@code outbox_event} and what the relay later hands to the broker unchanged.
+     * <p>{@link PublishGate#checkedJsonOf(Record)} does the work, and every producer of this platform
+     * calls the same method: the class must name a registered event type, that type must belong on
+     * its topic, neither sensitive-data screen may refuse the written JavaScript Object Notation,
+     * {@code schemas/card-updated-v2.json} must accept it, it must fit
+     * {@code EventWireBounds.MAX_EVENT_BYTES}, and the contract version it declares must be one a
+     * producer may still write. The returned text is what a caller stores in the {@code payload}
+     * column of {@code outbox_event} and what the relay later hands to the broker unchanged.
      *
      * <p>{@code outbox/OutboxWriter.writeCardUpdated} is the one production caller, so every card
-     * event stored in {@code outbox_event} passed this gate before its row was written, and the relay
-     * publishes that same text. The gate also screens for a property no event may carry and for a
-     * card number or government identifier in a free-text property, which a schema check alone does
-     * not do.
+     * event stored in {@code outbox_event} passed this gate before its row was written. The posture
+     * check now belongs to the gate as well, so the writer no longer applies it separately.
      *
      * @return this event as validated JavaScript Object Notation text, in UTF-8
-     * @throws org.apache.kafka.common.errors.SerializationException when this event breaks its
-     *         schema or exceeds {@code EventWireBounds.MAX_EVENT_BYTES}
+     * @throws IllegalArgumentException when this event breaks its schema document, carries a
+     *         forbidden property or a sensitive value, exceeds
+     *         {@code EventWireBounds.MAX_EVENT_BYTES}, or declares a contract version that is
+     *         retained rather than published
      */
     public String toValidatedJson() {
-        // The topic is supplied because the serializer refuses to write a registered event type
-        // onto a topic it does not belong on, and a null topic is one of those. The default topic
-        // is the right one here: a deployment that renames a topic applies the rename through the
-        // producer property the publisher reads, not through this in-process gate.
-        return new String(
-                SHARED_SERIALIZER.serialize(EventContracts.defaultTopicFor(EVENT_TYPE), this),
-                StandardCharsets.UTF_8);
+        return PublishGate.checkedJsonOf(this);
     }
 
     /**

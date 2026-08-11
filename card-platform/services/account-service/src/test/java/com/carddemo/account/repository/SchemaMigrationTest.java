@@ -18,7 +18,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Checks that the nine Flyway migrations of the account service apply to an empty schema, and that
+ * Checks that the twelve Flyway migrations of the account service apply to an empty schema, and that
  * the seed loads the row counts its fixtures carry.
  *
  * <p>Every method here reads, and none writes. Other test classes in this package assert the same
@@ -124,12 +124,12 @@ class SchemaMigrationTest extends AbstractAccountPostgresTest {
     // assertion below reads one.
     // ------------------------------------------------------------------------------------------
 
-    /** Versions Flyway parses from the ten migration file names, in installed order. */
+    /** Versions Flyway parses from the twelve migration file names, in installed order. */
     private static final String[] MIGRATION_VERSIONS =
-            {"1", "2", "3", "4", "5", "6", "7", "8", "9", "10"};
+            {"1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"};
 
     /**
-     * The ten files under {@code src/main/resources/db/migration}, in installed order.
+     * The twelve files under {@code src/main/resources/db/migration}, in installed order.
      *
      * <p>{@code V4} and {@code V7} both appear, and both have to. An applied migration is not
      * edited, so {@code V4} stays in the history that created the {@code card_xref} replica and
@@ -155,6 +155,18 @@ class SchemaMigrationTest extends AbstractAccountPostgresTest {
      * being in flight at once, and that claim reads {@code outbox_event} by aggregate and arrival
      * order. Adding the index a migration later than {@code V1} is the same rule again: {@code V1}
      * has run.</p>
+     *
+     * <p>{@code V11} withdraws the retention horizon of {@code processed_event} and drops the index
+     * that purge ranged over. A security review found the horizon expiring duplicate-delivery claims
+     * while the balance and cycle accumulators they guard stayed, so a claim is permanent now. It
+     * drops an index and adds no table, so the table assertion and the seeded row counts are
+     * unchanged once more.</p>
+     *
+     * <p>{@code V12} carries no data-definition statement either. It points the {@code customer},
+     * {@code account_customer_link} and {@code customer.social_security_number} comments at the
+     * subject-request procedure {@code card-platform/docs/data-model.md} carries, which is the
+     * documented route {@code V8} recorded the absence of. It changes no table, so every assertion
+     * below reads what it read at {@code V11}.</p>
      */
     private static final String[] MIGRATION_SCRIPTS = {
             "V1__schema.sql",
@@ -166,7 +178,9 @@ class SchemaMigrationTest extends AbstractAccountPostgresTest {
             "V7__account_customer_link.sql",
             "V8__subject_request_posture.sql",
             "V9__outbox_correlation.sql",
-            "V10__outbox_aggregate_head_index.sql"
+            "V10__outbox_aggregate_head_index.sql",
+            "V11__processed_event_claims_are_permanent.sql",
+            "V12__subject_request_procedure.sql"
     };
 
     // ------------------------------------------------------------------------------------------
@@ -197,7 +211,7 @@ class SchemaMigrationTest extends AbstractAccountPostgresTest {
     /** Ordinal of the single column each counting query selects. */
     private static final int FIRST_COLUMN = 1;
 
-    /** The component that applied the nine migrations, and the source of the schema name. */
+    /** The component that applied the twelve migrations, and the source of the schema name. */
     @Autowired
     private Flyway flyway;
 
@@ -220,7 +234,7 @@ class SchemaMigrationTest extends AbstractAccountPostgresTest {
     /**
      * Returns the schema the Flyway bean reports, holding it to an unquoted lower-case identifier.
      *
-     * @return the schema the nine migrations landed in
+     * @return the schema the twelve migrations landed in
      */
     private String migratedSchema() {
         String reported = flyway.getConfiguration().getDefaultSchema();
@@ -364,7 +378,7 @@ class SchemaMigrationTest extends AbstractAccountPostgresTest {
     }
 
     // ------------------------------------------------------------------------------------------
-    // The nine migrations applied, and applied in order
+    // The twelve migrations applied, and applied in order
     // ------------------------------------------------------------------------------------------
 
     /**
@@ -374,7 +388,7 @@ class SchemaMigrationTest extends AbstractAccountPostgresTest {
      * @throws SQLException when the history query fails
      */
     @Test
-    @DisplayName("flyway_schema_history holds nine versioned rows, versions 1 through 9 in "
+    @DisplayName("flyway_schema_history holds eleven versioned rows, versions 1 through 11 in "
             + "installed-rank order")
     void historyHoldsEveryVersionInInstalledRankOrder() throws SQLException {
         List<AppliedMigration> applied = appliedMigrations();
@@ -401,12 +415,12 @@ class SchemaMigrationTest extends AbstractAccountPostgresTest {
     }
 
     /**
-     * Asserts the nine script names in installed-rank order.
+     * Asserts the eleven script names in installed-rank order.
      *
      * @throws SQLException when the history query fails
      */
     @Test
-    @DisplayName("the nine versioned rows name all account migration scripts in order")
+    @DisplayName("the eleven versioned rows name all account migration scripts in order")
     void historyNamesEveryMigrationScript() throws SQLException {
         assertThat(appliedMigrations()).extracting(AppliedMigration::script)
                 .as("scripts under src/main/resources/db/migration, read in installed-rank order")
@@ -534,7 +548,7 @@ class SchemaMigrationTest extends AbstractAccountPostgresTest {
      * @throws SQLException when the counting query fails
      */
     @Test
-    @DisplayName("outbox_event holds no row after the nine migrations")
+    @DisplayName("outbox_event holds no row after the twelve migrations")
     void outboxEventHoldsNoRowAfterMigration() throws SQLException {
         assertThat(countRows(OUTBOX_EVENT_TABLE))
                 .as("rows in %s, which no migration of this module inserts into",
@@ -549,7 +563,7 @@ class SchemaMigrationTest extends AbstractAccountPostgresTest {
      * @throws SQLException when the counting query fails
      */
     @Test
-    @DisplayName("processed_event holds no row after the nine migrations")
+    @DisplayName("processed_event holds no row after the twelve migrations")
     void processedEventHoldsNoRowAfterMigration() throws SQLException {
         assertThat(countRows(PROCESSED_EVENT_TABLE))
                 .as("rows in %s, which no migration of this module inserts into",

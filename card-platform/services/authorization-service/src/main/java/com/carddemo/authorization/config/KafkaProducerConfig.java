@@ -31,11 +31,11 @@ import org.springframework.kafka.core.ProducerFactory;
  * condition and on to its abend routine. All eight file definitions in {@code app/csd/CARDDEMO.CSD}
  * carry {@code RECOVERY(NONE)} and {@code JOURNAL(NO)}.
  *
- * <p>Most message keys are the eleven-digit account identifier of
- * {@code XREF-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT03Y.cpy:L7}. The unresolved-card decline
- * has no account and uses its sixteen-character transaction identifier. Both travel as text, so
- * leading zeros survive. A broker keeps message order inside one partition and the key selects the
- * partition.
+ * <p>Every message key this service writes is the eleven-digit account identifier of
+ * {@code XREF-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT03Y.cpy:L7}. A sixteen-character form is
+ * still admitted, because one released document declares it and a record already on a topic has to
+ * stay readable, and no producer writes it. A key travels as text, so leading zeros survive. A
+ * broker keeps message order inside one partition and the key selects the partition.
  *
  * <p>Neither bean below reaches the broker while the context builds, and a producer connects on its
  * first send. A send that finds no broker fails, and the outbox row it came from stays unpublished

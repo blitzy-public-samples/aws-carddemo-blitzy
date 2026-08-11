@@ -102,7 +102,7 @@ This service calls no other service. It holds no web client, and every route the
 
 A refusal answers 429 with `Retry-After` and counts `carddemo.ledger.requests.throttled`, tagged with the stage that refused: `authentication`, `source`, `identity`, `write` or `concurrency`. The five ceilings read `API_RATE_WINDOW_SECONDS`, `API_RATE_REQUESTS_PER_WINDOW`, `API_RATE_WRITE_REQUESTS_PER_WINDOW`, `API_RATE_AUTHENTICATION_FAILURES_PER_WINDOW` and `API_RATE_CONCURRENT_REQUESTS` from [`.env.example`](../../.env.example). The management base path is exempt, because a throttled probe reads as a failed container.
 
-Both filters count in this process, so several replicas bound each replica rather than the service as a whole, and the source address is the one the container resolves rather than a forwarding header a caller could write. A deployment behind a proxy sets `SERVER_FORWARD_HEADERS_STRATEGY=framework` so the container resolves the client address and the client-facing host. Both residual limits are recorded in [suggested next tasks](../../docs/suggested-next-tasks.md), and the reasoning behind the two controls is in the [Decision Log](../../docs/decision-log.md).
+Both filters count in this process, so several replicas bound each replica rather than the service as a whole, and the source address is the one the container resolves rather than a forwarding header a caller could write. A deployment behind a proxy activates the `trusted-proxy` profile, which trusts those headers from the proxy's own addresses alone. Both residual limits are recorded in [suggested next tasks](../../docs/suggested-next-tasks.md), and the reasoning behind the two controls is in the [Decision Log](../../docs/decision-log.md).
 
 <br/>
 
@@ -372,11 +372,11 @@ Use these versions. They are the tested set, not a floor.
 | Outbox relay | every 500 ms, up to 100 rows, claim timeout `PT2M` |
 | Scheduler threads | 2, one for the relay and one for the retention sweep |
 | Datasource pool | at most 16 connections, 4 kept idle |
-| Migrations | Ten, listed below |
+| Migrations | Eleven, listed below |
 
 The build runtime and the build tool are exact because the enforcer plugin refuses a build outside `[25,26)` and `[3.9.16,3.10.0)`; a newer Maven fails rather than passes. The four image tags are exact because each is pinned by digest as well. Docker Engine and Compose are floors: nothing here constrains them, so the versions given are the ones this was exercised on.
 
-Flyway owns this schema and runs ten migrations on every start, in this order:
+Flyway owns this schema and runs eleven migrations on every start, in this order:
 
 | Migration | What it does |
 | :--- | :--- |
@@ -389,6 +389,7 @@ Flyway owns this schema and runs ten migrations on every start, in this order:
 | `V7__category_balance_ceiling.sql` | Records what the four monetary columns do with a sum wider than the COBOL field behind them. They keep the low-order digits and the sign, because none of the five `ADD` statements at `app/cbl/CBTRN02C.cbl:L508`, `:L527`, `:L547`, `:L549` and `:L551` carries an `ON SIZE ERROR` phrase. Until that store was reproduced a sum past nine integer digits reached `category_balance NUMERIC(11,2)`, SQLSTATE 22003 rolled the posting back and an approved authorization reached the dead-letter topic. It is a migration rather than an edit because `V1` has run |
 | `V8__outbox_correlation.sql` | Adds `outbox_event.correlation_id` and `outbox_event.causation_id`, so the posted event the relay publishes names the authorization it came from and the event that caused it |
 | `V9__outbox_aggregate_head_index.sql` | Adds `ix_outbox_event_aggregate_head`, the partial index the relay's aggregate-head claim reads. That claim answers with the due head row of each account, so two events of one account are never in flight at once and every consumer of the account's partition reads them in the order this service wrote them. Without the index the correlated check re-read an account's backlog for every candidate row |
+| `V11__processed_event_claims_are_permanent.sql` | Withdraws the retention horizon of `processed_event` and drops `ix_processed_event_processed_at` with it. The 720-hour horizon bounded how long the broker could redeliver a record and said nothing about how long the posted transaction, the category balance and the balance projection a claim guards stand, so a record archived, restored or deliberately replayed after it was new to the guard and applied twice. Nothing removes a claim now, and nothing bounds the table's growth either — the partitioning work a deployment measuring real volumes would want is in `card-platform/docs/suggested-next-tasks.md` |
 | `V10__ledger_retention_owner.sql` | Names an archival owner for `transaction`, `transaction_category_balance` and `account_balance_projection`. `V1` recorded that no timer deletes a financial record, which was right, but recorded no owner for the decision it was deferring — and a comment stating only an absence reads as a question already settled. Each comment now names the owner as unassigned, what that owner has to decide before sustained use, and the fact that `proc_ts` is the range key either an archive-then-delete or a partition detach would scan. It changes no column, no index and no constraint. It is a migration rather than an edit because `V1` has run |
 
 Run the four steps in this order. The Dockerfile compiles this module in a Java Development Kit 25 builder stage. Its build context is `card-platform` rather than this directory, because `mvn -pl services/ledger-posting-service -am` needs the aggregator descriptor and both shared libraries in reach. The packaging step below is required for the credential hashes rather than for the image.

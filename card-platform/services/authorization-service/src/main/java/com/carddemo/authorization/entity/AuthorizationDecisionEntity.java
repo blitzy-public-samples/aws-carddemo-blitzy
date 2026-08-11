@@ -91,6 +91,12 @@ public class AuthorizationDecisionEntity implements Persistable<String> {
     /** Characters {@code cardToken} holds, from {@link PanMasker#CARD_TOKEN_LENGTH}. */
     public static final int CARD_TOKEN_LENGTH = PanMasker.CARD_TOKEN_LENGTH;
 
+    /**
+     * Characters {@code cardTokenVersion} holds at most: one to three digits, the shape
+     * {@link PanMasker} holds a configured card-token version to.
+     */
+    public static final int CARD_TOKEN_VERSION_LENGTH = 3;
+
     /** Characters a reject code holds, from {@code WS-VALIDATION-FAIL-REASON PIC 9(04)}. */
     public static final int DECLINE_REASON_CODE_LENGTH = 4;
 
@@ -139,6 +145,21 @@ public class AuthorizationDecisionEntity implements Persistable<String> {
     @Column(name = "card_token", nullable = false, length = CARD_TOKEN_LENGTH,
             columnDefinition = "bpchar(" + PanMasker.CARD_TOKEN_LENGTH + ")")
     private String cardToken;
+
+    /**
+     * The card-token version {@link #cardToken} was taken under.
+     *
+     * <p>Column {@code card_token_version VARCHAR(3) NOT NULL}, added by
+     * {@code V22__authorization_decision_card_token_version.sql}. The version is part of the message
+     * the code covers, so a row whose value is behind the configured version carries a token a
+     * rotation has not reached. This table holds no card number and cannot re-derive its own rows, so
+     * recording the version is what makes a stale diagnostic identifiable at all.
+     *
+     * <p>No caller supplies it. It is read from the configured version at the moment the row is
+     * written, which is the only moment its value is knowable here.
+     */
+    @Column(name = "card_token_version", nullable = false, length = CARD_TOKEN_VERSION_LENGTH)
+    private String cardTokenVersion;
 
     @Column(name = "amount", nullable = false, precision = PicClause.DALYTRAN_AMT_PRECISION,
             scale = PicClause.DALYTRAN_AMT_SCALE)
@@ -252,6 +273,7 @@ public class AuthorizationDecisionEntity implements Persistable<String> {
         this.accountId = accountId;
         this.maskedCardNumber = maskedCardNumber;
         this.cardToken = cardToken;
+        this.cardTokenVersion = PanMasker.cardTokenVersion();
         this.amount = Objects.requireNonNull(amount, "amount must be present");
         this.approved = approved;
         this.declineReasonCode = declineReasonCode;
@@ -301,11 +323,12 @@ public class AuthorizationDecisionEntity implements Persistable<String> {
     /**
      * Builds the row of a call one rule declined.
      *
-     * <p>{@code accountId} names the account the decision applied to on every outcome this service
-     * records. Reject code {@code 0100} at {@code app/cbl/CBTRN02C.cbl:L385-L387} follows the
-     * {@code INVALID KEY} branch of the cross-reference read at {@code :L383}, so its value is the
-     * account the caller declared rather than the one that read resolved. The parameter stays nullable
-     * because a row written before migration {@code V19} honestly holds none.
+     * <p>{@code accountId} names the account the decision applied to, and every outcome this service
+     * records resolves that account from a cross-reference row. Reject code {@code 0100} at
+     * {@code app/cbl/CBTRN02C.cbl:L385-L387} follows the {@code INVALID KEY} branch of the read at
+     * {@code :L383}, which resolves no row, so this service refuses such a call rather than recording
+     * it. The parameter stays nullable because a row written before migration {@code V19} honestly
+     * holds none.
      *
      * @param transactionId            identifier of the decided transaction
      * @param actor                    the request identity this decision is recorded against
@@ -431,6 +454,16 @@ public class AuthorizationDecisionEntity implements Persistable<String> {
      */
     public String getCardToken() {
         return cardToken;
+    }
+
+    /**
+     * Returns the card-token version the stored token was taken under.
+     *
+     * @return one to three digits, the value of column {@code card_token_version}, never
+     *         {@code null}
+     */
+    public String getCardTokenVersion() {
+        return cardTokenVersion;
     }
 
     /**

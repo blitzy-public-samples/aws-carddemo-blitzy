@@ -256,6 +256,200 @@ class OutboxWriterTest {
     }
 
     /**
+     * What the publish gate refuses inside a free-text field, before the row exists to roll back.
+     *
+     * <p>{@code TRAN-DESC PIC X(100)} at {@code app/cpy/CVTRA05Y.cpy:L9} and the merchant name and city
+     * beside it are the only values on this event a caller writes in prose, so they are the only values
+     * that can carry a cardholder number, a social security number or a card verification code by
+     * accident. The gate screens them on the way into the outbox rather than on the way out of it,
+     * which is what makes the refusal and the decision roll back together: no row is saved at all.
+     *
+     * <p>Each test asserts the repository was never asked to save, because a row that reached the
+     * repository would commit with the request and publish afterwards.
+     */
+    @Nested
+    @DisplayName("free-text fields, screened before a row is saved")
+    class ScreenedNarrative {
+
+        /** Asserts a cardholder number in the description stops the write. */
+        @Test
+        void aCardNumberInTheDescriptionIsRefused() {
+            assertRefused(() -> writer.writeAuthorized(
+                    authorizedWithDescription("Refund for card 4111111111111111")), "digit run");
+        }
+
+        /** Asserts the punctuated form of the same number stops the write. */
+        @Test
+        void aPunctuatedCardNumberInTheDescriptionIsRefused() {
+            assertRefused(() -> writer.writeAuthorized(
+                    authorizedWithDescription("Refund for card 4111-1111-1111-1111")),
+                    "separated digit run");
+        }
+
+        /** Asserts a formatted social security number in the description stops the write. */
+        @Test
+        void aFormattedSocialSecurityNumberInTheDescriptionIsRefused() {
+            assertRefused(() -> writer.writeAuthorized(
+                    authorizedWithDescription("Cardholder SSN 123-45-6789")), "social security");
+        }
+
+        /**
+         * Asserts the unseparated form of the same number stops the write.
+         *
+         * <p>Nine digits in a row carries no separator to key on, so the narrative screen refuses the
+         * shape rather than the format. {@code app/data/ASCII/dailytran.txt} carries no description of
+         * that shape across its three hundred records, so nothing the fixtures publish is caught by it.
+         */
+        @Test
+        void anUnseparatedSocialSecurityNumberInTheDescriptionIsRefused() {
+            assertRefused(() -> writer.writeAuthorized(
+                    authorizedWithDescription("Cardholder ref 123456789")), "nine digits");
+        }
+
+        /** Asserts a labelled card verification code in the description stops the write. */
+        @Test
+        void aLabelledVerificationCodeInTheDescriptionIsRefused() {
+            assertRefused(() -> writer.writeAuthorized(
+                    authorizedWithDescription("Phone order, cvv 123 supplied")), "verification");
+        }
+
+        /**
+         * Asserts a description that is a bare three-digit value stops the write.
+         *
+         * <p>A verification code carries no label when a field holds nothing else, so the narrative
+         * screen refuses a value that is only three or four digits. Every description in
+         * {@code app/data/ASCII/dailytran.txt} is prose, so none is refused by this rule.
+         */
+        @Test
+        void aBareVerificationCodeInTheDescriptionIsRefused() {
+            assertRefused(() -> writer.writeAuthorized(authorizedWithDescription("123")),
+                    "bare code");
+        }
+
+        /** Asserts the merchant name is screened on the same terms as the description. */
+        @Test
+        void aCardNumberInTheMerchantNameIsRefused() {
+            assertRefused(() -> writer.writeAuthorized(
+                    authorizedWithMerchantName("Abshire-Lowe 4111111111111111")), "merchant name");
+        }
+
+        /** Asserts the merchant city is screened on the same terms as the description. */
+        @Test
+        void aCardNumberInTheMerchantCityIsRefused() {
+            assertRefused(() -> writer.writeAuthorized(
+                    authorizedWithMerchantCity("North Enoshaven 4111111111111111")),
+                    "merchant city");
+        }
+
+        /**
+         * Asserts the capture source is screened, which is the shortest free-text value on the event.
+         *
+         * <p>{@code TRAN-SOURCE PIC X(10)} at {@code app/cpy/CVTRA05Y.cpy:L8} holds ten characters,
+         * so a card number cannot fit and an unseparated government identifier can.
+         */
+        @Test
+        void anUnseparatedSocialSecurityNumberInTheSourceIsRefused() {
+            assertRefused(() -> writer.writeAuthorized(authorizedWithSource("123456789")),
+                    "capture source");
+        }
+
+        /** Asserts a decline carries the same screen, so a rejected transaction cannot leak either. */
+        @Test
+        void aCardNumberInADeclineDescriptionIsRefused() {
+            assertRefused(() -> writer.writeDeclined(
+                    declinedWithDescription("Refund for card 4111111111111111")), "decline");
+        }
+
+        /**
+         * Asserts ordinary prose still reaches a row, so the screen has not closed the field.
+         *
+         * <p>Without this the tests above would pass against a writer that refused every description,
+         * which would break every record in the fixtures.
+         */
+        @Test
+        void ordinaryProseStillReachesARow() {
+            OutboxEventEntity row = writer.writeAuthorized(
+                    authorizedWithDescription("Purchase at Abshire-Lowe, order 4471"));
+
+            assertEquals(ACCOUNT_ID, row.getAggregateId(), "the row was saved under its account");
+            verify(outboxEvents).save(any(OutboxEventEntity.class));
+        }
+
+        /**
+         * Runs the write, asserts it was refused, and asserts nothing was saved.
+         *
+         * @param write what the writer was asked to do
+         * @param what  the shape under test, named in the assertion message
+         */
+        private void assertRefused(org.junit.jupiter.api.function.Executable write, String what) {
+            assertThrows(IllegalArgumentException.class, write,
+                    "the gate admitted a " + what + " into an outbox row");
+            verify(outboxEvents, never()).save(any(OutboxEventEntity.class));
+        }
+    }
+
+    /**
+     * Builds an authorized event carrying the supplied description and nothing else unusual.
+     *
+     * @param description the description under test
+     * @return the authorized event naming {@link #ACCOUNT_ID}
+     */
+    private static TransactionAuthorized authorizedWithDescription(String description) {
+        return TransactionAuthorized.of(ACCOUNT_ID, TRANSACTION_ID, "01", "0001", "POS TERM",
+                description, AMOUNT, "800000000", "Abshire-Lowe", "North Enoshaven", "72112",
+                MASKED_CARD_NUMBER, CARD_TOKEN, ORIGIN_TIMESTAMP);
+    }
+
+    /**
+     * Builds an authorized event carrying the supplied merchant name.
+     *
+     * @param merchantName the merchant name under test
+     * @return the authorized event naming {@link #ACCOUNT_ID}
+     */
+    private static TransactionAuthorized authorizedWithMerchantName(String merchantName) {
+        return TransactionAuthorized.of(ACCOUNT_ID, TRANSACTION_ID, "01", "0001", "POS TERM",
+                "Purchase at Abshire-Lowe", AMOUNT, "800000000", merchantName, "North Enoshaven",
+                "72112", MASKED_CARD_NUMBER, CARD_TOKEN, ORIGIN_TIMESTAMP);
+    }
+
+    /**
+     * Builds an authorized event carrying the supplied merchant city.
+     *
+     * @param merchantCity the merchant city under test
+     * @return the authorized event naming {@link #ACCOUNT_ID}
+     */
+    private static TransactionAuthorized authorizedWithMerchantCity(String merchantCity) {
+        return TransactionAuthorized.of(ACCOUNT_ID, TRANSACTION_ID, "01", "0001", "POS TERM",
+                "Purchase at Abshire-Lowe", AMOUNT, "800000000", "Abshire-Lowe", merchantCity,
+                "72112", MASKED_CARD_NUMBER, CARD_TOKEN, ORIGIN_TIMESTAMP);
+    }
+
+    /**
+     * Builds an authorized event carrying the supplied capture source.
+     *
+     * @param source the capture source under test
+     * @return the authorized event naming {@link #ACCOUNT_ID}
+     */
+    private static TransactionAuthorized authorizedWithSource(String source) {
+        return TransactionAuthorized.of(ACCOUNT_ID, TRANSACTION_ID, "01", "0001", source,
+                "Purchase at Abshire-Lowe", AMOUNT, "800000000", "Abshire-Lowe", "North Enoshaven",
+                "72112", MASKED_CARD_NUMBER, CARD_TOKEN, ORIGIN_TIMESTAMP);
+    }
+
+    /**
+     * Builds a declined event carrying the supplied description.
+     *
+     * @param description the description under test
+     * @return the declined event naming {@link #ACCOUNT_ID}
+     */
+    private static TransactionDeclined declinedWithDescription(String description) {
+        return TransactionDeclined.withTransactionDetail(ACCOUNT_ID, TRANSACTION_ID,
+                DeclineReason.OVER_CREDIT_LIMIT, "01", "0001", "POS TERM", description, AMOUNT,
+                "800000000", "Abshire-Lowe", "North Enoshaven", "72112", MASKED_CARD_NUMBER,
+                ORIGIN_TIMESTAMP);
+    }
+
+    /**
      * Builds the decline a producer writes, carrying the nine values {@code REJECT-TRAN-DATA} needs.
      *
      * @param reason the reject reason that stands, any of the four

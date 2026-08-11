@@ -4,20 +4,16 @@ import com.carddemo.events.EventEnvelope;
 import com.carddemo.events.FraudCleared;
 import com.carddemo.events.FraudFlagged;
 import com.carddemo.events.correlation.EventCorrelation;
-import com.carddemo.events.serde.EventContracts;
+import com.carddemo.events.serde.PublishGate;
 import com.carddemo.fraud.entity.OutboxEventEntity;
 import com.carddemo.fraud.repository.OutboxEventRepository;
 import java.time.Clock;
 import java.time.Instant;
-import java.util.List;
 import java.util.Objects;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
-import tools.jackson.databind.DeserializationFeature;
-import tools.jackson.databind.ObjectMapper;
-import tools.jackson.databind.json.JsonMapper;
 
 /**
  * Inserts one row of {@code outbox_event} for one fraud assessment event, inside the transaction
@@ -49,14 +45,11 @@ public class OutboxWriter {
      */
     private final OutboxEventRepository outboxEvents;
 
-    /** Writes one event record to text. Jackson 3, matching the platform. */
-    private final ObjectMapper objectMapper;
-
     /** Supplies the creation instant of each stored row. */
     private final Clock clock;
 
     /**
-     * Takes the store this writer saves through and builds the one mapper it writes payloads with.
+     * Takes the store this writer saves through.
      *
      * @param outboxEvents store of unpublished events
      * @throws NullPointerException if {@code outboxEvents} is null
@@ -74,7 +67,6 @@ public class OutboxWriter {
      */
     OutboxWriter(OutboxEventRepository outboxEvents, Clock clock) {
         this.outboxEvents = Objects.requireNonNull(outboxEvents, "outboxEvents must be present");
-        this.objectMapper = eventMapper();
         this.clock = Objects.requireNonNull(clock, "clock must be present");
     }
 
@@ -94,12 +86,15 @@ public class OutboxWriter {
      * <p>The row stores the serialized text unchanged. Writing the same event twice fails on the
      * primary key and produces no second message.
      *
-     * <p>{@link EventContracts#postureViolationsOf(String, int)} checks the contract version this
-     * row would carry before the row is saved. The document gate lives in the producer serializer
-     * {@code com.carddemo.events.serde.JsonSchemaValidatingSerializer}, which the relay publishes
-     * through; this check answers the other question, which is whether a producer may still write
-     * the version at all. A version the released baseline retains rather than publishes is refused
-     * while the caller's transaction can still roll back.
+     * <p>{@link PublishGate} writes and checks the payload before the row is saved, and it is the one
+     * publish-side boundary of this platform: the class must name a registered event type, that type
+     * must belong on its topic, neither sensitive-data screen may refuse the written JSON, the
+     * document its contract version selects must accept it, it must fit the platform byte ceiling,
+     * and that version must be one a producer may still write. The row then stores exactly the
+     * checked text and the relay publishes those bytes unchanged. This writer used to check the
+     * contract version alone and store text no other gate had read, which a security review recorded
+     * as a producer-side bypass: a triggered-rule name carrying a card number reached a topic and the
+     * consume side then refused it.
      *
      * @param event one {@link FraudFlagged} or one {@link FraudCleared}
      * @return the row saved, unpublished, carrying the event identifier the relay publishes under
@@ -113,14 +108,7 @@ public class OutboxWriter {
     @Transactional(propagation = Propagation.MANDATORY)
     public OutboxEventEntity write(Object event) {
         EventEnvelope envelope = publishableEnvelope(event);
-        String payload = objectMapper.writeValueAsString(event);
-
-        List<String> posture = EventContracts.postureViolationsOf(envelope.eventType(),
-                envelope.schemaVersion());
-        if (!posture.isEmpty()) {
-            throw new IllegalArgumentException(
-                    EventContracts.describeViolations(envelope.eventType(), posture));
-        }
+        String payload = PublishGate.checkedJsonOf(publishableRecord(event));
 
         return outboxEvents.save(correlated(new OutboxEventEntity(envelope.eventId(),
                 envelope.eventType(), envelope.aggregateId(), payload, Instant.now(clock))));
@@ -199,23 +187,28 @@ public class OutboxWriter {
     }
 
     /**
-     * The one mapper this writer holds.
+     * Reads one fraud event as the record {@link PublishGate} takes.
      *
-     * <p>The mapper writes an event record flat, so no {@code envelope} property reaches a row.
-     * {@code FAIL_ON_UNKNOWN_PROPERTIES} governs reading rather than writing, so it is not what
-     * closes the written document: the {@code additionalProperties} of {@code false} in both fraud
-     * schema documents is, and {@code com.carddemo.events.serde.EventContracts} applies it when this
-     * writer validates the payload before saving.
+     * <p>The gate resolves the event type from the class rather than from a property of the written
+     * JavaScript Object Notation, so it takes a record. {@link #publishableEnvelope(Object)} has
+     * already refused every class this service does not publish by the time this method is reached,
+     * and this method states the remaining condition rather than assuming it.
      *
-     * <p>No setting quotes an ordinary number, so {@code schemaVersion} and {@code riskScore} reach
-     * a row as JSON integers. No setting writes a date as a number, so {@code occurredAt} and
-     * {@code assessedAt} reach a row as ISO-8601 text.
+     * <p>The written document is closed by {@code additionalProperties} of {@code false} in both
+     * fraud schema documents, which the gate applies. No setting quotes an ordinary number, so
+     * {@code schemaVersion} and {@code riskScore} reach a row as JSON integers, and no setting writes
+     * a date as a number, so {@code occurredAt} and {@code assessedAt} reach a row as ISO-8601 text.
      *
-     * @return the mapper, built once for each instance of this class
+     * @param event the event to read
+     * @return the same event, as a record
+     * @throws IllegalArgumentException if {@code event} is not a record
      */
-    private static ObjectMapper eventMapper() {
-        return JsonMapper.builder()
-                .enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
-                .build();
+    private static Record publishableRecord(Object event) {
+        if (event instanceof Record record) {
+            return record;
+        }
+        throw new IllegalArgumentException("this service publishes " + FraudFlagged.EVENT_TYPE
+                + " and " + FraudCleared.EVENT_TYPE + ", and " + event.getClass().getName()
+                + " is not a record at all");
     }
 }

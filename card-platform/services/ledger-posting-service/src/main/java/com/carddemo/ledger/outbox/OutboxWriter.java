@@ -3,16 +3,14 @@ package com.carddemo.ledger.outbox;
 import com.carddemo.events.EventEnvelope;
 import com.carddemo.events.TransactionPosted;
 import com.carddemo.events.correlation.EventCorrelation;
-import com.carddemo.events.serde.EventContracts;
+import com.carddemo.events.serde.PublishGate;
 import com.carddemo.ledger.entity.OutboxEventEntity;
 import com.carddemo.ledger.repository.OutboxEventRepository;
 import java.time.Clock;
-import java.util.List;
 import java.util.Objects;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
-import tools.jackson.databind.json.JsonMapper;
 
 /**
  * Inserts one row into {@code outbox_event} for one ledger event, in the transaction its caller
@@ -38,19 +36,15 @@ public class OutboxWriter {
 
     private final OutboxEventRepository outboxEvents;
 
-    private final JsonMapper jsonMapper;
-
     /** Stamps {@code created_at}, in Coordinated Universal Time. */
     private final Clock clock = Clock.systemUTC();
 
     /**
      * @param outboxEvents store of unpublished events
-     * @param jsonMapper   the framework-supplied JavaScript Object Notation (JSON) mapper
-     * @throws NullPointerException if either argument is {@code null}
+     * @throws NullPointerException if {@code outboxEvents} is {@code null}
      */
-    public OutboxWriter(OutboxEventRepository outboxEvents, JsonMapper jsonMapper) {
+    public OutboxWriter(OutboxEventRepository outboxEvents) {
         this.outboxEvents = Objects.requireNonNull(outboxEvents, "outboxEvents must be present");
-        this.jsonMapper = Objects.requireNonNull(jsonMapper, "jsonMapper must be present");
     }
 
     /**
@@ -69,11 +63,15 @@ public class OutboxWriter {
      * {@code app/cpy/CVACT03Y.cpy:L7}.
      *
      * <p>The payload is one flat JSON object carrying the five envelope properties beside the
-     * payload properties, so no {@code envelope} key reaches the row. The writer checks that
-     * payload against the schema document its event type names before it saves. A malformed event
-     * therefore fails while the caller's transaction can still roll back. A failure message holds
-     * JSON pointers and broken keywords only, so no card number and no account identifier reaches a
-     * log through it.
+     * payload properties, so no {@code envelope} key reaches the row. {@link PublishGate} writes and
+     * checks it: the class must name a registered event type, that type must belong on its topic,
+     * neither sensitive-data screen may refuse the written JSON, the document its contract version
+     * selects must accept it, it must fit the platform byte ceiling, and that version must be one a
+     * producer may still write. The row then stores exactly the checked text and the relay publishes
+     * those bytes unchanged. A malformed or sensitive-bearing event therefore fails while the
+     * caller's transaction can still roll back. A failure message holds JSON pointers, broken
+     * keywords and property names only, so no card number and no account identifier reaches a log
+     * through it.
      *
      * @param event the event to enqueue, a {@link TransactionPosted}
      * @return the row saved, carrying the event identifier the relay publishes under
@@ -87,13 +85,8 @@ public class OutboxWriter {
     public OutboxEventEntity write(Object event) {
         EventEnvelope envelope = envelopeOf(event);
         String eventType = envelope.eventType();
-        String payload = jsonMapper.writeValueAsString(event);
-        List<String> violations = EventContracts.publishViolationsOf(eventType, payload);
+        String payload = PublishGate.checkedJsonOf(recordOf(event));
 
-        if (!violations.isEmpty()) {
-            throw new IllegalArgumentException(
-                    EventContracts.describeViolations(eventType, violations));
-        }
         return outboxEvents.save(correlated(new OutboxEventEntity(envelope.eventId(), eventType,
                 envelope.aggregateId(), payload, clock.instant())));
     }
@@ -120,6 +113,30 @@ public class OutboxWriter {
                 EventCorrelation.currentCorrelationId().orElseGet(row::getEventId),
                 EventCorrelation.currentEventId().orElse(null));
         return row;
+    }
+
+    /**
+     * Reads one ledger event as the record {@link PublishGate} takes.
+     *
+     * <p>The gate resolves the event type from the class rather than from a property of the written
+     * JSON, so it takes a record and not an arbitrary object. {@link #envelopeOf(Object)} has
+     * already refused every class this service does not publish by the time this method is reached,
+     * and this method states the remaining condition rather than assuming it.
+     *
+     * @param event the event to read
+     * @return the same event, as a record
+     * @throws NullPointerException     if {@code event} is {@code null}
+     * @throws IllegalArgumentException if {@code event} is not a record
+     */
+    private static Record recordOf(Object event) {
+        Objects.requireNonNull(event, "event must be present");
+
+        if (event instanceof Record record) {
+            return record;
+        }
+        throw new IllegalArgumentException("the ledger posting service publishes "
+                + TransactionPosted.EVENT_TYPE + " alone, and " + event.getClass().getName()
+                + " is not a record at all");
     }
 
     /**

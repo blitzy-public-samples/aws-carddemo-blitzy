@@ -90,7 +90,6 @@ class DeadLetterRouteSerializerContractTest {
                 new LedgerProperties.Consumer(new LedgerProperties.Consumer.Retry(3, 10L)),
                 new LedgerProperties.Outbox(new LedgerProperties.Outbox.Relay(1000L, 100,
                         "ledger-relay", Duration.ofMinutes(2L), 5_000L), 168L),
-                new LedgerProperties.ProcessedEvent(720L, 168L),
                 new LedgerProperties.Retention(3_600_000L, 90));
     }
 
@@ -387,7 +386,6 @@ class DeadLetterRouteSerializerContractTest {
                     new LedgerProperties.Consumer(new LedgerProperties.Consumer.Retry(1, 0L)),
                     new LedgerProperties.Outbox(new LedgerProperties.Outbox.Relay(1000L, 100,
                             "ledger-relay", Duration.ofMinutes(2L), 5_000L), 168L),
-                    new LedgerProperties.ProcessedEvent(720L, 168L),
                     new LedgerProperties.Retention(3_600_000L, 90));
         }
 

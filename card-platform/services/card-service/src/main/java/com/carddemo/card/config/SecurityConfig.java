@@ -6,9 +6,12 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.TreeSet;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
@@ -132,6 +135,18 @@ public class SecurityConfig {
     /** Additive role a metrics scrape carries. It reaches no business route. */
     static final String ROLE_MONITORING = "MONITORING";
 
+    /**
+     * Additive role the acquiring workload carries. No route of this service names it.
+     *
+     * <p>The role belongs to the platform rather than to one service: it is the machine identity a
+     * point-of-sale network presents, and it reaches {@code POST /authorizations} of the
+     * authorization service alone. It is named here because an identity list is a deployment's to
+     * compose, and a deployment that hands one list to every service must not be stopped by a role
+     * this service simply grants nothing for. Such an identity authenticates and reaches nothing,
+     * which is what the chain's closing {@code denyAll} is for.
+     */
+    static final String ROLE_ACQUIRER = "ACQUIRER";
+
     /** Prefix Spring Security expects on a role authority. */
     static final String ROLE_PREFIX = "ROLE_";
 
@@ -155,6 +170,36 @@ public class SecurityConfig {
      * card-token key, and it names one card.
      */
     static final String CARD_SCOPE = "CARD";
+
+    /**
+     * The role names an identity may carry.
+     *
+     * <p>A role reaches the authority list as {@code ROLE_} plus the configured word. A word outside
+     * this set produces an authority no rule of any service mentions, which authenticates a caller
+     * that can reach nothing: a typo that reads as a working identity until the first request is
+     * refused. Start-up refuses it instead.
+     *
+     * <p>The set is the platform's four roles rather than the ones this file's own rules name.
+     * {@link #ROLE_ACQUIRER} reaches no route here and is still a role the platform defines, so an
+     * identity list composed once for every service is accepted everywhere and grants only what each
+     * service's own rules allow.
+     */
+    static final Set<String> KNOWN_ROLES =
+            Set.of(ROLE_ADMIN, ROLE_USER, ROLE_MONITORING, ROLE_ACQUIRER);
+
+    /**
+     * The shape each ownership kind's value has to hold, exactly as the column holds it.
+     *
+     * <p>An account identifier is eleven digits with its leading zeros, from
+     * {@code XREF-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT03Y.cpy:L7}. A customer identifier is
+     * nine, from {@code CUST-ID PIC 9(09)} at {@code app/cpy/CVCUS01Y.cpy:L4}. A card token is the
+     * sixty-four lower-case hexadecimal characters {@link PanMasker#CARD_TOKEN_PATTERN} declares. A
+     * scope naming a shape outside these reaches no row, so it grants nothing and says otherwise.
+     */
+    private static final Map<String, Pattern> SCOPE_VALUE_SHAPES = Map.of(
+            ACCOUNT_SCOPE, Pattern.compile("^[0-9]{11}$"),
+            CUSTOMER_SCOPE, Pattern.compile("^[0-9]{9}$"),
+            CARD_SCOPE, Pattern.compile(PanMasker.CARD_TOKEN_PATTERN));
 
     /** Realm name a 401 carries, so a client knows which credential to present. */
     private static final String REALM = "carddemo";
@@ -292,7 +337,8 @@ public class SecurityConfig {
         require(identity.password(), "password");
         requireUsableSecret(identity.password(), IDENTITY_PASSWORD_PROPERTY);
         require(identity.role(), "role");
-        List<String> scopes = identity.scopes() == null ? List.of() : identity.scopes();
+        requireKnownRole(identity.role());
+        List<String> scopes = checkedScopes(identity.scopes());
         return User.withUsername(identity.username())
                 .password(identity.password())
                 .authorities(Stream.concat(Stream.of(ROLE_PREFIX + identity.role()),
@@ -313,6 +359,85 @@ public class SecurityConfig {
             throw new IllegalStateException(
                     "every entry of carddemo.security.users carries a " + field);
         }
+    }
+
+    /**
+     * Rejects a configured role this service grants nothing for.
+     *
+     * <p>A role is not a credential, so the message reports the configured word: an operator
+     * correcting a typo needs to know which one to correct. Rationale and the alternatives weighed:
+     * {@code card-platform/docs/decision-log.md}.
+     *
+     * @param role the configured role, already known to be present and non-blank
+     * @throws IllegalStateException when the role is outside {@link #KNOWN_ROLES}
+     */
+    private static void requireKnownRole(String role) {
+        if (!KNOWN_ROLES.contains(role.trim())) {
+            throw new IllegalStateException("carddemo.security.users[].role '" + role.trim()
+                    + "' is not a role this service grants anything for. The roles are "
+                    + new TreeSet<>(KNOWN_ROLES)
+                    + ", and an unknown one authenticates an identity that can reach nothing.");
+        }
+    }
+
+    /**
+     * Reads the configured ownership scopes, refusing any entry that cannot grant what it claims.
+     *
+     * <p>Four shapes are refused. An entry that does not open with {@code SCOPE_} is not an ownership
+     * authority at all. An entry opening with {@code ROLE_} is a role smuggled into the scope list,
+     * and a role granted this way would pass a route rule that names it: this is the one refusal
+     * here that closes a privilege escalation rather than a configuration mistake. An entry naming a
+     * kind outside {@link #SCOPE_VALUE_SHAPES} reaches no rule. An entry whose value misses its
+     * kind's shape reaches no row.
+     *
+     * <p>A blank entry is dropped rather than refused, because the shipped deployment artifacts pass
+     * an empty {@code USER_SCOPES} to a container and an empty authority is not a claim.
+     *
+     * @param scopes the configured scopes, or {@code null} when the identity holds none
+     * @return the scopes to grant, each one well formed
+     * @throws IllegalStateException when an entry cannot grant what it names
+     */
+    private static List<String> checkedScopes(List<String> scopes) {
+        if (scopes == null) {
+            return List.of();
+        }
+        List<String> checked = new ArrayList<>(scopes.size());
+        for (String entry : scopes) {
+            if (entry == null || entry.isBlank()) {
+                continue;
+            }
+            String scope = entry.trim();
+            if (scope.startsWith(ROLE_PREFIX)) {
+                throw new IllegalStateException("carddemo.security.users[].scopes carries '" + scope
+                        + "', which is a role rather than an ownership scope. A role granted through "
+                        + "the scope list would pass a route rule that names it, so it is refused "
+                        + "here rather than at the first request.");
+            }
+            if (!scope.startsWith(SCOPE_PREFIX)) {
+                throw new IllegalStateException("carddemo.security.users[].scopes carries '" + scope
+                        + "', which opens with neither " + SCOPE_PREFIX + " nor a kind this service "
+                        + "reads. An ownership scope reads " + SCOPE_PREFIX + "<kind>_<value>.");
+            }
+            String remainder = scope.substring(SCOPE_PREFIX.length());
+            int separator = remainder.indexOf('_');
+            String kind = separator < 0 ? remainder : remainder.substring(0, separator);
+            String value = separator < 0 ? "" : remainder.substring(separator + 1);
+            Pattern shape = SCOPE_VALUE_SHAPES.get(kind);
+            if (shape == null) {
+                throw new IllegalStateException("carddemo.security.users[].scopes carries '" + scope
+                        + "', naming ownership kind '" + kind + "'. The kinds are "
+                        + new TreeSet<>(SCOPE_VALUE_SHAPES.keySet())
+                        + ", and no route rule reads any other.");
+            }
+            if (!shape.matcher(value).matches()) {
+                throw new IllegalStateException("carddemo.security.users[].scopes carries '" + scope
+                        + "', whose value does not hold the shape a " + kind + " identifier has. "
+                        + "A scope that cannot name a row grants nothing while reading as though it "
+                        + "does.");
+            }
+            checked.add(scope);
+        }
+        return List.copyOf(checked);
     }
 
     /**

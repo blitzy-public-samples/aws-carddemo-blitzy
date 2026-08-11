@@ -3,8 +3,6 @@ package com.carddemo.authorization.domain;
 import com.carddemo.authorization.config.AuthorizationProperties;
 import com.carddemo.authorization.repository.AuthorizationDecisionRepository;
 import com.carddemo.authorization.repository.OutboxEventRepository;
-import com.carddemo.authorization.repository.ProcessedEventRepository;
-import com.carddemo.authorization.repository.UnresolvedCardAttemptRepository;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Objects;
@@ -18,8 +16,11 @@ import org.springframework.transaction.support.TransactionCallback;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
- * Removes published outbox rows, processed-event markers, decision rows and unresolved-card attempts
- * after their configured horizons.
+ * Removes published outbox rows and decision rows after their configured horizons.
+ *
+ * <p>{@code processed_event} is deliberately absent. A duplicate-delivery claim is permanent, so
+ * nothing removes one and this sweep has no horizon to apply to that table. Migration
+ * {@code V21__processed_event_claims_are_permanent.sql} states the same thing in the catalogue.
  *
  * <p>No COBOL ancestor. The source has no retention concern at all: every dataset is a Virtual
  * Storage Access Method file whose lifetime the Job Control Language owns, and
@@ -44,8 +45,8 @@ import org.springframework.transaction.support.TransactionTemplate;
  * <p>The drain is itself bounded, by {@link #MAX_TABLE_DURATION} measured from a monotonic clock. A
  * table whose backlog cannot be cleared inside that window leaves the remainder to the next pass
  * rather than holding the scheduled thread. That ceiling is what stops one very large table from
- * starving the other three, which is why the four are swept in sequence with a deadline each rather
- * than under one budget shared between them.
+ * starving the ones swept after it, which is why the tables are swept in sequence with a deadline
+ * each rather than under one budget shared between them.
  *
  * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
@@ -76,14 +77,8 @@ public class RetentionSweep {
     /** Holds the published rows this sweep removes. */
     private final OutboxEventRepository outboxEvents;
 
-    /** Holds the duplicate-delivery markers this sweep removes. */
-    private final ProcessedEventRepository processedEvents;
-
     /** Holds the decision rows this sweep removes. */
     private final AuthorizationDecisionRepository decisions;
-
-    /** Holds the unresolved-card attempts this sweep removes. */
-    private final UnresolvedCardAttemptRepository unresolvedCardAttempts;
 
     /**
      * The boundary each bounded delete runs inside.
@@ -97,10 +92,7 @@ public class RetentionSweep {
     /** How long a published outbox row stays for diagnosis. */
     private final Duration publishedRetention;
 
-    /** How long a processed-event marker stays while a redelivery is still possible. */
-    private final Duration markerRetention;
-
-    /** How long a decision row and an unresolved-card attempt stay for audit. */
+    /** How long a decision row stays for audit. */
     private final Duration decisionRetention;
 
     /**
@@ -112,12 +104,10 @@ public class RetentionSweep {
     private final Duration maxTableDuration;
 
     /**
-     * Takes the four stores, the transaction boundary and the three horizons.
+     * Takes the two stores, the transaction boundary and the two horizons.
      *
      * @param outboxEvents           store over {@code outbox_event}
-     * @param processedEvents        store over {@code processed_event}
      * @param decisions              store over {@code authorization_decision}
-     * @param unresolvedCardAttempts store over {@code unresolved_card_attempt}
      * @param transactionTemplate    the boundary each bounded delete runs inside
      * @param properties             the bound {@code carddemo} settings
      * @throws NullPointerException when any argument is {@code null}
@@ -127,11 +117,9 @@ public class RetentionSweep {
     // context load rather than naming the ambiguity.
     @Autowired
     public RetentionSweep(OutboxEventRepository outboxEvents,
-            ProcessedEventRepository processedEvents, AuthorizationDecisionRepository decisions,
-            UnresolvedCardAttemptRepository unresolvedCardAttempts,
-            TransactionTemplate transactionTemplate, AuthorizationProperties properties) {
-        this(outboxEvents, processedEvents, decisions, unresolvedCardAttempts, transactionTemplate,
-                properties, MAX_TABLE_DURATION);
+            AuthorizationDecisionRepository decisions, TransactionTemplate transactionTemplate,
+            AuthorizationProperties properties) {
+        this(outboxEvents, decisions, transactionTemplate, properties, MAX_TABLE_DURATION);
     }
 
     /**
@@ -142,29 +130,21 @@ public class RetentionSweep {
      * looping.
      *
      * @param outboxEvents           store over {@code outbox_event}
-     * @param processedEvents        store over {@code processed_event}
      * @param decisions              store over {@code authorization_decision}
-     * @param unresolvedCardAttempts store over {@code unresolved_card_attempt}
      * @param transactionTemplate    the boundary each bounded delete runs inside
      * @param properties             the bound {@code carddemo} settings
      * @param maxTableDuration       the drain ceiling for one table
      * @throws NullPointerException when any argument is {@code null}
      */
-    RetentionSweep(OutboxEventRepository outboxEvents, ProcessedEventRepository processedEvents,
-            AuthorizationDecisionRepository decisions,
-            UnresolvedCardAttemptRepository unresolvedCardAttempts,
-            TransactionTemplate transactionTemplate, AuthorizationProperties properties,
-            Duration maxTableDuration) {
+    RetentionSweep(OutboxEventRepository outboxEvents,
+            AuthorizationDecisionRepository decisions, TransactionTemplate transactionTemplate,
+            AuthorizationProperties properties, Duration maxTableDuration) {
         this.outboxEvents = Objects.requireNonNull(outboxEvents, "outboxEvents");
-        this.processedEvents = Objects.requireNonNull(processedEvents, "processedEvents");
         this.decisions = Objects.requireNonNull(decisions, "decisions");
-        this.unresolvedCardAttempts =
-                Objects.requireNonNull(unresolvedCardAttempts, "unresolvedCardAttempts");
         this.transactionTemplate =
                 Objects.requireNonNull(transactionTemplate, "transactionTemplate");
         AuthorizationProperties checked = Objects.requireNonNull(properties, "properties");
         this.publishedRetention = Duration.ofHours(checked.outbox().publishedRetentionHours());
-        this.markerRetention = Duration.ofHours(checked.processedEvent().markerRetentionHours());
         this.decisionRetention = Duration.ofDays(checked.retention().decisionRetentionDays());
         this.maxTableDuration = Objects.requireNonNull(maxTableDuration, "maxTableDuration");
     }
@@ -173,28 +153,23 @@ public class RetentionSweep {
      * Drains each table in bounded batches, each batch in its own explicit transaction.
      *
      * <p>No failure leaves this method. Each table reports its own outcome, so a permission problem
-     * on one does not hide the other three.
+     * on one does not hide the other.
      *
-     * <p>The two audit tables share one horizon. A decision row and the unresolved-card attempt that
-     * accompanies a reason-{@code 0100} decline are two halves of one record of the same call, so a
-     * horizon that kept one and removed the other would leave an audit trail that answers half a
-     * question.
+     * <p>One audit table remains, and {@code carddemo.retention.decision-retention-days} is its
+     * horizon. {@code unresolved_card_attempt} was the second, and it is withdrawn: a card that
+     * resolves no cross-reference row now refuses the call rather than deciding it, so nothing
+     * writes that table and migration {@code V20} drops it.
      */
     @Scheduled(fixedDelayString = "${carddemo.retention.sweep-interval-ms:3600000}")
     public void purgeExpiredRows() {
         Instant now = Instant.now();
         Instant publishedHorizon = now.minus(publishedRetention);
-        Instant markerHorizon = now.minus(markerRetention);
         Instant auditHorizon = now.minus(decisionRetention);
 
         drain("outbox_event",
                 limit -> outboxEvents.deletePublishedBefore(publishedHorizon, limit));
-        drain("processed_event",
-                limit -> processedEvents.deleteMarkersProcessedBefore(markerHorizon, limit));
         drain("authorization_decision",
                 limit -> decisions.deleteDecidedBefore(auditHorizon, limit));
-        drain("unresolved_card_attempt",
-                limit -> unresolvedCardAttempts.deleteAttemptedBefore(auditHorizon, limit));
     }
 
     /**

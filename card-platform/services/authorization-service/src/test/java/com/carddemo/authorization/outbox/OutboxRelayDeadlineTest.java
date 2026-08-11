@@ -99,7 +99,6 @@ class OutboxRelayDeadlineTest {
                                 500L, 1, "deadline-test", Duration.ofSeconds(30L),
                                 PASS_DEADLINE_MS, Duration.ofSeconds(10L)),
                         168L),
-                new AuthorizationProperties.ProcessedEvent(720L, 168L),
                 new AuthorizationProperties.Retention(3_600_000L, 400L),
                 new AuthorizationProperties.Replica(0L),
                 new AuthorizationProperties.Decision(3_000L, Duration.ofMinutes(15L)));

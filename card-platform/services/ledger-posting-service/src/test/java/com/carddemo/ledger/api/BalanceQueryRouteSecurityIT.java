@@ -128,6 +128,9 @@ class BalanceQueryRouteSecurityIT {
     /** The fixed detail a 403 carries, from the same class. */
     private static final String FORBIDDEN_DETAIL = "This identity may not use this operation.";
 
+    /** The header every state-changing request carries, from CrossSiteRequestFilter. */
+    private static final String CROSS_SITE_HEADER = "X-CardDemo-Request";
+
     /** Longest one request waits for an answer. */
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(60);
 
@@ -400,7 +403,12 @@ class BalanceQueryRouteSecurityIT {
         return HttpRequest.newBuilder(URI.create(baseUri() + path))
                 .timeout(REQUEST_TIMEOUT)
                 .header("Authorization", "Basic " + credential)
-                .header("Accept", "application/json");
+                .header("Accept", "application/json")
+                // config/CrossSiteRequestFilter runs ahead of the security chain and refuses a
+                // state-changing request that omits this header, so a test measuring a route rule
+                // has to present it. Nothing here is testing that filter, and a safe method ignores
+                // the header entirely.
+                .header(CROSS_SITE_HEADER, "route-security");
     }
 
     /**

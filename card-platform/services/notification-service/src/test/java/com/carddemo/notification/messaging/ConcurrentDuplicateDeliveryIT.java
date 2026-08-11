@@ -95,8 +95,7 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
         "spring.jpa.hibernate.ddl-auto=validate",
         "carddemo.history.sweep-interval-ms=3600000",
         "carddemo.history.statement-retention-days=200000",
-        "carddemo.history.log-retention-days=200000",
-        "carddemo.processed-event.marker-retention-hours=4800000"
+        "carddemo.history.log-retention-days=200000"
 })
 @DisplayName("Two deliveries of one event, released together against PostgreSQL")
 class ConcurrentDuplicateDeliveryIT {

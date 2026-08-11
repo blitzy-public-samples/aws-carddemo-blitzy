@@ -4,13 +4,35 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>AWS CardDemo Modernization — Executive Summary</title>
+  <!-- Content Security Policy. The deck is one file opened from disk, so this is the only place a
+       policy can be stated. It names the two origins this deck reads from and nothing else, and it
+       forbids a plugin, a frame, a form target and a rewritten base address outright. The inline
+       module below is admitted by the digest of its own text and not by an unsafe-inline keyword, so
+       a script injected into this document runs nothing. Style is the one relaxation: reveal.js writes
+       element styles and Mermaid adds a style element beside every drawing, and neither can be
+       digested ahead of time.
+
+       Editing the module below changes its digest, and a policy naming the old one refuses it: the
+       deck then opens as a blank page with a refusal in the console. Recompute the digest whenever
+       the module changes. PresentationAndProseContractTest recomputes it from the shipped text on
+       every build, so the drift fails there and not in front of an audience. Rationale,
+       alternatives considered and accepted risks: card-platform/docs/decision-log.md. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none';
+    script-src https://cdn.jsdelivr.net 'sha384-BCsdzPfcs6sEGUnAYwSuA72wI3P/q4wdk8sgMThAnKKrDoYEaNzUAs6VH7hj9maX';
+    style-src https://cdn.jsdelivr.net https://fonts.googleapis.com 'unsafe-inline';
+    font-src https://fonts.gstatic.com;
+    img-src data:;
+    connect-src https://cdn.jsdelivr.net;
+    base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&amp;family=Inter:wght@400;500;600;700&amp;family=Space+Grotesk:wght@500;600;700&amp;display=swap" rel="stylesheet">
-  <!-- Subresource integrity covers the three classic assets: this stylesheet and the two
-       scripts below. The Mermaid ES module is loaded by an import expression, which carries no
-       integrity attribute, and the Google Fonts stylesheet above is generated per user agent, so
-       both are pinned by version and origin alone. -->
+  <!-- Subresource integrity covers every library this deck runs. This stylesheet and the two
+       scripts below carry a digest on the element that loads them. Mermaid is a single bundle
+       fetched by a script element the module creates, which carries the same digest attribute, so
+       all 3.5 MB of it are verified, where a module graph would have digested only its 30 KB entry. The Google Fonts
+       stylesheet above is the one exception: it is generated per user agent, so its bytes differ
+       between readers and no one digest describes them. It is pinned by version and origin. -->
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.css"
         integrity="sha384-YgvgKeZJykuztG+iQPoZHNZENTFZvOcOJ/uRzmJTje6GHYN9zAw+y5rx/L8MQKA/"
         crossorigin="anonymous">
@@ -959,16 +981,41 @@ graph LR
       });
     }
 
-    /* Loads Mermaid on its own, so a failed import leaves reveal, the icons and every other
-       slide untouched. Resolves to the library, or to null once the failure is reported. */
-    const mermaidReady = import("https://cdn.jsdelivr.net/npm/mermaid@11.4.0/dist/mermaid.esm.min.mjs")
-      .then((module) => {
-        const mermaid = module.default;
-        window.mermaid = mermaid;
+    /* Fetches Mermaid on its own, so a failed load leaves reveal, the icons and every other slide
+       untouched. Resolves to the library, or to null once the failure is reported.
+
+       The element is created here instead of being written into the document head, for two reasons,
+       and both are measured. A script element inserted by a script is asynchronous, so the deck's first
+       slide is drawn without waiting for the library, exactly as an import expression behaved. And
+       an element carries an integrity attribute where an import expression cannot, so the whole
+       bundle is verified against a digest instead of the entry file of a module graph. The digest is
+       the SHA-384 of mermaid@11.16.1/dist/mermaid.min.js as jsDelivr serves it. */
+    const MERMAID_SOURCE = "https://cdn.jsdelivr.net/npm/mermaid@11.16.1/dist/mermaid.min.js";
+    const MERMAID_DIGEST =
+      "sha384-aBQXj4hK6Jm05i7aQAsUV3bLdSUrHX1BGYfMB0166TtWt/RRaw+h0Eelme9OCOvy";
+
+    const mermaidReady = new Promise((resolve, reject) => {
+      const element = document.createElement("script");
+      element.src = MERMAID_SOURCE;
+      element.integrity = MERMAID_DIGEST;
+      element.crossOrigin = "anonymous";
+      element.addEventListener("load", () => resolve(window.mermaid));
+      element.addEventListener("error", () =>
+        reject(new Error("Mermaid did not load, or its bytes did not match " + MERMAID_DIGEST)));
+      document.head.appendChild(element);
+    })
+      .then((mermaid) => {
+        if (!mermaid) {
+          throw new Error("Mermaid loaded but published no library");
+        }
         mermaid.initialize({
           startOnLoad: false,
           theme: "base",
           htmlLabels: false,
+          // Strict is the library's own default and is stated here because a diagram is text this
+          // deck holds. Under strict the library escapes the labels it draws and refuses a click
+          // binding, so the three diagrams below cannot become a script injection point.
+          securityLevel: "strict",
           flowchart: {
             htmlLabels: false,
             wrappingWidth: 420

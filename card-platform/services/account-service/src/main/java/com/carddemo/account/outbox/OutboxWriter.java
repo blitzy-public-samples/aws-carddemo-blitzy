@@ -5,16 +5,13 @@ import com.carddemo.account.messaging.AccountStateChanged;
 import com.carddemo.account.messaging.CustomerContextChanged;
 import com.carddemo.account.repository.OutboxEventRepository;
 import com.carddemo.events.correlation.EventCorrelation;
-import com.carddemo.events.serde.EventContracts;
+import com.carddemo.events.serde.PublishGate;
 import java.nio.charset.StandardCharsets;
-import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
-import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
-import tools.jackson.databind.ObjectMapper;
 
 /**
  * Persists one {@code outbox_event} row inside the transaction its caller opened, and publishes
@@ -57,28 +54,20 @@ public class OutboxWriter {
     private final OutboxEventRepository outboxEventRepository;
 
     /**
-     * Writes one event to JavaScript Object Notation (JSON) text.
+     * Takes the repository this writer saves through.
      *
-     * <p>{@code config/KafkaProducerConfig} declares this bean under the name
-     * {@code accountEventObjectMapper} and settles every serialization setting it carries. Each
-     * monetary property of {@link AccountStateChanged} takes a quoted decimal form of its own, and
-     * {@code schemaVersion} stays an unquoted integer.
-     */
-    private final ObjectMapper objectMapper;
-
-    /**
-     * Takes the repository this writer saves through and the mapper it serializes with.
+     * <p>No mapper arrives with it. {@link PublishGate} serializes every event this class stores, so
+     * the text a row holds is the text a gate checked; a mapper of this class's own would write bytes
+     * no gate had seen. {@code config/KafkaProducerConfig} still declares
+     * {@code accountEventObjectMapper}, which {@code outbox/OutboxRelay} reads a stored payload back
+     * with.
      *
      * @param outboxEventRepository store of unpublished events
-     * @param objectMapper          the module-local Jackson 3 mapper, bean
-     *                              {@code accountEventObjectMapper}
-     * @throws NullPointerException when either argument is {@code null}
+     * @throws NullPointerException when {@code outboxEventRepository} is {@code null}
      */
-    public OutboxWriter(OutboxEventRepository outboxEventRepository,
-            @Qualifier("accountEventObjectMapper") ObjectMapper objectMapper) {
+    public OutboxWriter(OutboxEventRepository outboxEventRepository) {
         this.outboxEventRepository = Objects.requireNonNull(outboxEventRepository,
                 "outboxEventRepository must be present");
-        this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper must be present");
     }
 
     /**
@@ -179,31 +168,39 @@ public class OutboxWriter {
      * event no consumer can deserialize beside committed business state. Rationale and the alternatives
      * weighed: {@code card-platform/docs/decision-log.md}.
      *
-     * <p>{@link EventContracts} holds the one registry pairing an event type with its schema
-     * document, so the document consulted here is the document the publisher and every consumer
-     * validate against. The account service publishes two types and this method serves both, which
-     * is why the type and the identifier arrive as arguments rather than being read from a
-     * particular record.
+     * <p>{@link PublishGate} is the one publish-side boundary of this platform, and it is what this
+     * method crosses: the class must name a registered event type, that type must belong on its
+     * topic, neither sensitive-data screen may refuse the written JSON, the document its contract
+     * version selects must accept it, it must fit the platform byte ceiling, and that version must be
+     * one a producer may still write. The row then stores exactly the text the gate checked and the
+     * relay publishes those bytes unchanged, so nothing a gate has not seen reaches a topic. The
+     * account service publishes two types and this method serves both, which is why the type and the
+     * identifier arrive as arguments rather than being read from a particular record.
+     *
+     * <p>The screens are the substantive change a security review asked for. A cardholder name or an
+     * address line is narrative text an administrator supplies, and until the gate ran on this path a
+     * Primary Account Number written into one of them committed with the account rewrite and reached
+     * the notification read model.
      *
      * <p>A refusal message holds JavaScript Object Notation pointers, broken keyword names and the
      * event identifier. None of those is a customer value, so no account identifier, cardholder
      * name, Social Security number or monetary amount reaches a log through a refusal.
      *
-     * @param eventType the governed event type, which selects the contract document
+     * @param eventType the governed event type this writer publishes, named in a refusal
      * @param eventId   the identifier of the event being written, named in a refusal
-     * @param event     the event to write
+     * @param event     the event to write, a record of this service
      * @return the event as JSON text, checked against its document and its column width
      * @throws IllegalArgumentException when the written payload breaks its contract document, when
      *                                  the version it declares is retained rather than published, or
      *                                  when it exceeds {@value #PAYLOAD_MAX_BYTES} octets of UTF-8
      */
-    private String writeAndCheck(String eventType, UUID eventId, Object event) {
-        String payload = objectMapper.writeValueAsString(event);
-
-        List<String> violations = EventContracts.publishViolationsOf(eventType, payload);
-        if (!violations.isEmpty()) {
+    private String writeAndCheck(String eventType, UUID eventId, Record event) {
+        String payload;
+        try {
+            payload = PublishGate.checkedJsonOf(event);
+        } catch (IllegalArgumentException refused) {
             throw new IllegalArgumentException("event " + eventId + " breaks its contract: "
-                    + EventContracts.describeViolations(eventType, violations));
+                    + refused.getMessage(), refused);
         }
 
         int octets = payload.getBytes(StandardCharsets.UTF_8).length;

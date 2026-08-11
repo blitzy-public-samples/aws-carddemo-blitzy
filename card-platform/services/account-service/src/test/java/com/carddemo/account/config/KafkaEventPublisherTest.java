@@ -233,7 +233,6 @@ class KafkaEventPublisherTest {
                 new AccountProperties.Outbox(
                         new AccountProperties.Outbox.Relay(500L, 100, "publisher-test",
                                 Duration.ofSeconds(30L), 5_000L, publishTimeout), 168L),
-                new AccountProperties.ProcessedEvent(720L, 168L),
                 new AccountProperties.Retention(3_600_000L),
                 new AccountProperties.Write(3_000L));
     }

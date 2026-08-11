@@ -317,7 +317,7 @@ Each service owns one database, one schema, and the tables below. Column types, 
 
 | Service | Database and schema | Owned tables |
 | --- | --- | --- |
-| authorization | `carddemo_authorization`, `authorization_service` | `card_xref`, `account_credit_snapshot`, `authorization_decision`, `unresolved_card_attempt`, `replica_gap`, `outbox_event`, `processed_event` |
+| authorization | `carddemo_authorization`, `authorization_service` | `card_xref`, `account_credit_snapshot`, `authorization_decision`, `replica_gap`, `outbox_event`, `processed_event` |
 | ledger posting | `carddemo_ledger`, `ledger_service` | `transaction`, `transaction_category_balance`, `account_balance_projection`, `transaction_type`, `transaction_category`, `rejected_transaction`, `outbox_event`, `processed_event` |
 | fraud detection | `carddemo_fraud`, `fraud_service` | `fraud_assessment`, `velocity_window`, `outbox_event`, `processed_event` |
 | notification | `carddemo_notification`, `notification_service` | `statement_transaction`, `cardholder_context`, `notification_log`, `processed_event` |

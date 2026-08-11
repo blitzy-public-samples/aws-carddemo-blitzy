@@ -112,6 +112,33 @@ public class CardEntity {
     private static final String ACTIVE_STATUS_NO = "N";
 
     /**
+     * Characters {@code card_token_version} holds at most: one to three digits, from the shape
+     * {@code cobol-compat PanMasker} holds a configured version to.
+     */
+    static final int CARD_TOKEN_VERSION_WIDTH = 3;
+
+    /** Characters {@code card_token_provenance} holds at most, the width of the longer value. */
+    static final int TOKEN_PROVENANCE_WIDTH = 7;
+
+    /**
+     * Provenance of a token that is the checked-in seed literal, taken under the build-scope key.
+     *
+     * <p>{@code V2__seed.sql} loads fifty such rows and the column defaults to this value, so every
+     * row of a freshly migrated database carries it. Bringing one onto the deployment's own key is a
+     * bootstrap rather than a rotation.
+     */
+    public static final String TOKEN_PROVENANCE_SEED = "SEED";
+
+    /**
+     * Provenance of a token this deployment derived under its own configured key.
+     *
+     * <p>A difference between such a token and the derivation means the key or the version moved
+     * under it, which is a rotation an operator has to ask for rather than a consequence of a
+     * restart.
+     */
+    public static final String TOKEN_PROVENANCE_DERIVED = "DERIVED";
+
+    /**
      * Full card number, {@code CARD-NUM PIC X(16)} at {@code app/cpy/CVACT02Y.cpy:L5}.
      *
      * <p>Column {@code card_number CHAR(16) NOT NULL}, the primary key from {@code KEYS(16 0)} at
@@ -268,6 +295,37 @@ public class CardEntity {
     private String cardToken;
 
     /**
+     * The card-token version {@link #cardToken} was taken under.
+     *
+     * <p>Column {@code card_token_version VARCHAR(3) NOT NULL}, added by
+     * {@code V10__card_token_version_and_rotation.sql}. The version is part of the message the code
+     * covers, so a row whose value is behind the configured version carries a token a rotation has
+     * not reached. Recording it is what lets an operator find such a row without deriving anything.
+     *
+     * <p>There is deliberately no setter, for the same reason {@link #cardToken} has none: a row this
+     * service builds is correct by construction, and a row it did not build is corrected by
+     * {@code CardRepository.reassignCardToken}, which moves the token, the version and the
+     * provenance together.
+     */
+    @Column(name = "card_token_version", nullable = false,
+            length = CARD_TOKEN_VERSION_WIDTH)
+    private String cardTokenVersion;
+
+    /**
+     * Where {@link #cardToken} came from: {@value #TOKEN_PROVENANCE_SEED} or
+     * {@value #TOKEN_PROVENANCE_DERIVED}.
+     *
+     * <p>Column {@code card_token_provenance VARCHAR(7) NOT NULL}, added by the same migration. It
+     * separates the two reasons a stored token can differ from the derivation. A seeded row carries a
+     * literal taken under the build-scope key, and bringing it onto the deployment's key is a
+     * bootstrap. A derived row was taken under this deployment's own key, so a difference means the
+     * key or the version moved and rewriting it is a rotation an operator has to ask for.
+     */
+    @Column(name = "card_token_provenance", nullable = false,
+            length = TOKEN_PROVENANCE_WIDTH)
+    private String cardTokenProvenance;
+
+    /**
      * No-argument constructor for the persistence provider.
      *
      * <p>Hibernate calls this constructor to materialise a row, then populates the seven fields
@@ -332,6 +390,8 @@ public class CardEntity {
         this.expirationDate = expirationDate;
         this.activeStatus = activeStatus;
         this.cardToken = PanMasker.cardToken(cardNumber);
+        this.cardTokenVersion = PanMasker.cardTokenVersion();
+        this.cardTokenProvenance = TOKEN_PROVENANCE_DERIVED;
     }
 
     /**
@@ -505,6 +565,25 @@ public class CardEntity {
      */
     public String getCardToken() {
         return cardToken;
+    }
+
+    /**
+     * Returns the card-token version the stored token was taken under.
+     *
+     * @return the value of column {@code card_token_version}, one to three digits
+     */
+    public String getCardTokenVersion() {
+        return cardTokenVersion;
+    }
+
+    /**
+     * Returns where the stored token came from.
+     *
+     * @return {@value #TOKEN_PROVENANCE_SEED} or {@value #TOKEN_PROVENANCE_DERIVED}, the value of
+     *         column {@code card_token_provenance}
+     */
+    public String getCardTokenProvenance() {
+        return cardTokenProvenance;
     }
 
     /**

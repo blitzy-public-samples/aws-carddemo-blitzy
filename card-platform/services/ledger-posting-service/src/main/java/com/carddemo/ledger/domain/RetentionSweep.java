@@ -2,7 +2,6 @@ package com.carddemo.ledger.domain;
 
 import com.carddemo.ledger.config.LedgerProperties;
 import com.carddemo.ledger.repository.OutboxEventRepository;
-import com.carddemo.ledger.repository.ProcessedEventRepository;
 import com.carddemo.ledger.repository.RejectedTransactionRepository;
 import java.time.Duration;
 import java.time.Instant;
@@ -17,8 +16,12 @@ import org.springframework.transaction.support.TransactionCallback;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
- * Removes published outbox rows, processed-event markers and expired rejects after their
- * configured horizons.
+ * Removes published outbox rows and expired rejects after their configured horizons.
+ *
+ * <p>{@code processed_event} is deliberately absent. A duplicate-delivery claim is permanent,
+ * because the posting it guards is permanent, so nothing removes a claim and this sweep has no
+ * horizon to apply to that table. Migration
+ * {@code V11__processed_event_claims_are_permanent.sql} states the same thing in the catalogue.
  *
  * <p>No COBOL ancestor. The source has no retention concern at all: every dataset is a Virtual
  * Storage Access Method file whose lifetime the Job Control Language owns, and
@@ -42,12 +45,13 @@ import org.springframework.transaction.support.TransactionTemplate;
  *
  * <h2>Each delete is bounded and drained</h2>
  *
- * <p>All three tables are on the hot write path. {@code outbox_event} is written by every posting and
- * swept by the relay on a fixed delay of half a second, and {@code processed_event} is written by
- * every one of the three listeners. A single unbounded {@code DELETE} holds every row it removes
- * under one lock for the whole statement, so a schema that has been idle long enough to accumulate a
- * week of rows takes one long-running delete that blocks the relay and all three listeners while it
- * runs. The row count is not knowable in advance, so neither is how long that lasts.
+ * <p>Both swept tables are on the hot write path. {@code outbox_event} is written by every posting
+ * and swept by the relay on a fixed delay of half a second, and {@code rejected_transaction} is
+ * written by every reject the three listeners record. A single unbounded {@code DELETE} holds every
+ * row it removes under one lock for the whole statement, so a schema that has been idle long enough
+ * to accumulate a week of rows takes one long-running delete that blocks the relay and all three
+ * listeners while it runs. The row count is not knowable in advance, so neither is how long that
+ * lasts.
  *
  * <p>Each delete is therefore issued as a bounded, ordered statement of at most
  * {@value #PURGE_BATCH_SIZE} rows in a transaction of its own, and repeated until it removes fewer
@@ -58,8 +62,8 @@ import org.springframework.transaction.support.TransactionTemplate;
  * <p>The drain is itself bounded, by {@link #MAX_TABLE_DURATION} measured from a monotonic clock. A
  * table whose backlog cannot be drained inside that window keeps the remainder for the next pass
  * rather than holding this thread. That ceiling is what stops one very large table from starving the
- * others, and it is why the three tables are swept in sequence with a deadline each rather than
- * under one shared budget.
+ * other, and it is why the two tables are swept in sequence with a deadline each rather than under
+ * one shared budget.
  *
  * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
@@ -91,9 +95,6 @@ public class RetentionSweep {
     /** Holds the published rows this sweep removes. */
     private final OutboxEventRepository outboxEvents;
 
-    /** Holds the duplicate-delivery markers this sweep removes. */
-    private final ProcessedEventRepository processedEvents;
-
     /** Holds the expired rejects this sweep removes. */
     private final RejectedTransactionRepository rejectedTransactions;
 
@@ -108,9 +109,6 @@ public class RetentionSweep {
 
     /** How long a published outbox row stays for diagnosis. */
     private final Duration publishedRetention;
-
-    /** How long a processed-event marker stays while a redelivery is still possible. */
-    private final Duration markerRetention;
 
     /**
      * How long a reject stays before its privacy horizon expires it.
@@ -129,10 +127,9 @@ public class RetentionSweep {
     private final Duration maxTableDuration;
 
     /**
-     * Takes the three stores, the transaction boundary and the three horizons.
+     * Takes the two stores, the transaction boundary and the two horizons.
      *
      * @param outboxEvents         store over {@code outbox_event}
-     * @param processedEvents      store over {@code processed_event}
      * @param rejectedTransactions store over {@code rejected_transaction}
      * @param transactionTemplate  the boundary each bounded delete runs inside
      * @param properties           the bound {@code carddemo} settings
@@ -143,10 +140,9 @@ public class RetentionSweep {
     // context load rather than naming the ambiguity.
     @Autowired
     public RetentionSweep(OutboxEventRepository outboxEvents,
-            ProcessedEventRepository processedEvents,
             RejectedTransactionRepository rejectedTransactions,
             TransactionTemplate transactionTemplate, LedgerProperties properties) {
-        this(outboxEvents, processedEvents, rejectedTransactions, transactionTemplate, properties,
+        this(outboxEvents, rejectedTransactions, transactionTemplate, properties,
                 MAX_TABLE_DURATION);
     }
 
@@ -158,26 +154,23 @@ public class RetentionSweep {
      * looping.
      *
      * @param outboxEvents         store over {@code outbox_event}
-     * @param processedEvents      store over {@code processed_event}
      * @param rejectedTransactions store over {@code rejected_transaction}
      * @param transactionTemplate  the boundary each bounded delete runs inside
      * @param properties           the bound {@code carddemo} settings
      * @param maxTableDuration     the drain ceiling for one table
      * @throws NullPointerException when any argument is {@code null}
      */
-    RetentionSweep(OutboxEventRepository outboxEvents, ProcessedEventRepository processedEvents,
+    RetentionSweep(OutboxEventRepository outboxEvents,
             RejectedTransactionRepository rejectedTransactions,
             TransactionTemplate transactionTemplate, LedgerProperties properties,
             Duration maxTableDuration) {
         this.outboxEvents = Objects.requireNonNull(outboxEvents, "outboxEvents");
-        this.processedEvents = Objects.requireNonNull(processedEvents, "processedEvents");
         this.rejectedTransactions =
                 Objects.requireNonNull(rejectedTransactions, "rejectedTransactions");
         this.transactionTemplate =
                 Objects.requireNonNull(transactionTemplate, "transactionTemplate");
         LedgerProperties checked = Objects.requireNonNull(properties, "properties");
         this.publishedRetention = Duration.ofHours(checked.outbox().publishedRetentionHours());
-        this.markerRetention = Duration.ofHours(checked.processedEvent().markerRetentionHours());
         this.rejectedRetention =
                 Duration.ofDays(checked.retention().rejectedTransactionRetentionDays());
         this.maxTableDuration = Objects.requireNonNull(maxTableDuration, "maxTableDuration");
@@ -193,13 +186,10 @@ public class RetentionSweep {
     public void purgeExpiredRows() {
         Instant now = Instant.now();
         Instant publishedHorizon = now.minus(publishedRetention);
-        Instant markerHorizon = now.minus(markerRetention);
         Instant rejectedHorizon = now.minus(rejectedRetention);
 
         drain("outbox_event",
                 limit -> outboxEvents.deletePublishedBefore(publishedHorizon, limit));
-        drain("processed_event",
-                limit -> processedEvents.deleteMarkersProcessedBefore(markerHorizon, limit));
         drain("rejected_transaction",
                 limit -> rejectedTransactions.deleteRejectedBefore(rejectedHorizon, limit));
     }

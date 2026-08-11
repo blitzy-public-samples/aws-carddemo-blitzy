@@ -119,6 +119,13 @@ class EntitySchemaValidationIT {
     private static final String IX_FRAUD_ASSESSMENT_ACCOUNT_CURSOR =
             "ix_fraud_assessment_account_cursor";
     private static final String IX_VELOCITY_WINDOW_START = "ix_velocity_window_start";
+    /**
+     * The index that served the withdrawn marker purge, asserted absent below.
+     *
+     * <p>{@code V10__processed_event_claims_are_permanent.sql} drops it. A claim is permanent, so no
+     * statement ranges over {@code processed_at} and an index nothing reads costs a write on every
+     * claim.
+     */
     private static final String IX_PROCESSED_EVENT_PROCESSED_AT = "ix_processed_event_processed_at";
 
     private static final String COLUMN_TRANSACTION_ID = "transaction_id";
@@ -368,8 +375,8 @@ class EntitySchemaValidationIT {
 
     @Test
     @DisplayName("Flyway created the one schema both properties name, and applied versions 1, 3, "
-            + "4, 5, 6, 7, 8 and 9")
-    void flywayCreatedTheSchemaAndAppliedItsEightMigrations() {
+            + "4, 5, 6, 7, 8, 9 and 10")
+    void flywayCreatedTheSchemaAndAppliedItsNineMigrations() {
         String schema = schema();
         Integer schemaRows = jdbc.queryForObject(
                 "SELECT count(*) FROM pg_namespace WHERE nspname = ?", Integer.class, schema);
@@ -400,6 +407,9 @@ class EntitySchemaValidationIT {
         Boolean versionNineApplied = jdbc.queryForObject(
                 "SELECT success FROM " + qualified(FLYWAY_HISTORY) + " WHERE version = '9'",
                 Boolean.class);
+        Boolean versionTenApplied = jdbc.queryForObject(
+                "SELECT success FROM " + qualified(FLYWAY_HISTORY) + " WHERE version = '10'",
+                Boolean.class);
         Integer versionRows = jdbc.queryForObject(
                 "SELECT count(*) FROM " + qualified(FLYWAY_HISTORY) + " WHERE version IS NOT NULL",
                 Integer.class);
@@ -427,8 +437,11 @@ class EntitySchemaValidationIT {
                 () -> assertEquals(Boolean.TRUE, versionNineApplied, "migration version 9, "
                         + "V9__fraud_assessment_account_cursor_index.sql, which indexes the page the "
                         + "collection route walks and drops the two prefixes of that index"),
-                () -> assertEquals(Integer.valueOf(8), versionRows,
-                        "the eight versioned migrations this service ships"));
+                () -> assertEquals(Boolean.TRUE, versionTenApplied, "migration version 10, "
+                        + "V10__processed_event_claims_are_permanent.sql, which withdraws the marker "
+                        + "horizon and drops the index its purge ranged over"),
+                () -> assertEquals(Integer.valueOf(9), versionRows,
+                        "the nine versioned migrations this service ships"));
     }
 
     @Test
@@ -496,11 +509,11 @@ class EntitySchemaValidationIT {
     }
 
     @Test
-    @DisplayName("processed_event carries its primary-key index and the range index its purge "
-            + "reads, and no other")
-    void processedEventCarriesItsTwoIndexesAndNoOther() {
-        assertEquals(List.of(IX_PROCESSED_EVENT_PROCESSED_AT, PK_PROCESSED_EVENT),
-                indexNames(PROCESSED_EVENT), PROCESSED_EVENT + " indexes");
+    @DisplayName("processed_event carries its primary-key index alone, since its purge is withdrawn")
+    void processedEventCarriesItsPrimaryKeyIndexAlone() {
+        assertEquals(List.of(PK_PROCESSED_EVENT), indexNames(PROCESSED_EVENT),
+                PROCESSED_EVENT + " indexes, which must no longer include "
+                        + IX_PROCESSED_EVENT_PROCESSED_AT);
     }
 
     @Test
@@ -1346,33 +1359,36 @@ class EntitySchemaValidationIT {
     private static final int RETENTION_BATCH_SIZE = 1000;
 
     /**
-     * Runs the bounded marker delete against the migrated schema, then reads the result back.
+     * Proves a claim stamped in 2020 still refuses its redelivery against the migrated schema.
      *
-     * <p>{@code ddl-auto: validate} reads no {@code @Query} text, so a native statement is unchecked
-     * until it runs. {@code outbox/RetentionSweeper} owns this call.
+     * <p>A purge over a 720-hour horizon used to remove it. A security review found the assessment
+     * and the velocity buckets a claim guards outliving that horizon, so an archived or replayed
+     * record arriving afterwards was scored a second time. A claim is permanent now, and the replay
+     * below still writes no row.
      */
     @Test
-    @DisplayName("The marker retention delete takes the expired marker and keeps the newer one")
-    void markerRetentionDeleteTakesOnlyExpiredMarkers() {
-        UUID expired = UUID.fromString("00000000-0000-4000-8000-0000000000a1");
-        UUID recent = UUID.fromString("00000000-0000-4000-8000-0000000000a2");
+    @DisplayName("A claim stamped in 2020 still refuses its redelivery")
+    void anAncientClaimStillRefusesItsRedelivery() {
+        UUID ancient = UUID.fromString("00000000-0000-4000-8000-0000000000a1");
+        UUID current = UUID.fromString("00000000-0000-4000-8000-0000000000a2");
         jdbc.update("DELETE FROM " + qualified(PROCESSED_EVENT));
         transactionTemplate.executeWithoutResult(status -> {
-            markers.claimEvent(expired, RETENTION_EXPIRED_AT, CONSUMED_TOPIC);
-            markers.claimEvent(recent, RETENTION_HORIZON.plusSeconds(60), CONSUMED_TOPIC);
+            markers.claimEvent(ancient, RETENTION_EXPIRED_AT, CONSUMED_TOPIC);
+            markers.claimEvent(current, RETENTION_HORIZON.plusSeconds(60), CONSUMED_TOPIC);
         });
-        assertEquals(2L, markerRowsCarrying(expired) + markerRowsCarrying(recent),
-                "both markers are present before the delete, so the counts below read the delete "
+        assertEquals(2L, markerRowsCarrying(ancient) + markerRowsCarrying(current),
+                "both claims are present before the replay, so the counts below read the replay "
                         + "and not the set-up");
 
-        int removed = transactionTemplate.execute(status ->
-                markers.deleteMarkersProcessedBefore(RETENTION_HORIZON, RETENTION_BATCH_SIZE));
+        int replay = transactionTemplate.execute(status ->
+                markers.claimEvent(ancient, RETENTION_HORIZON.plusSeconds(60), CONSUMED_TOPIC));
 
-        assertAll("the bounded marker delete",
-                () -> assertEquals(1, removed, "one marker precedes the horizon"),
-                () -> assertEquals(0L, markerRowsCarrying(expired), "the expired marker is gone"),
-                () -> assertEquals(1L, markerRowsCarrying(recent),
-                        "a marker inside the horizon stays, so its redelivery is still refused"));
+        assertAll("a replay of a claim stamped a year before the withdrawn horizon",
+                () -> assertEquals(0, replay, "the redelivery writes no row, so it is suppressed"),
+                () -> assertEquals(1L, markerRowsCarrying(ancient),
+                        "the ancient claim is still the one row there was"),
+                () -> assertEquals(1L, markerRowsCarrying(current),
+                        "and the current claim still guards its own delivery"));
     }
 
     /**

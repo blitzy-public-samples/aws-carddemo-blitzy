@@ -25,24 +25,24 @@ One row per target. `Paragraphs` counts the prose blocks scoring reads and `Sent
 
 | # | Target | Paragraphs | Sentences | Over thirty words | Paragraphs over five | Buzzwords |
 |---:|---|---:|---:|---:|---:|---:|
-| 1 | `docs/decision-log.md` | 39 | 118 | 11 | 1 | 0 |
-| 2 | `docs/traceability-matrix.md` | 34 | 93 | 2 | 2 | 0 |
+| 1 | `docs/decision-log.md` | 40 | 120 | 11 | 1 | 0 |
+| 2 | `docs/traceability-matrix.md` | 37 | 104 | 2 | 2 | 0 |
 | 3 | `docs/architecture-before-after.md` | 49 | 135 | 0 | 2 | 0 |
-| 4 | `docs/event-flow.md` | 117 | 322 | 15 | 4 | 0 |
-| 5 | `docs/data-model.md` | 104 | 261 | 17 | 7 | 0 |
-| 6 | `docs/onboarding.md` | 164 | 414 | 8 | 2 | 0 |
-| 7 | `docs/suggested-next-tasks.md` | 300 | 655 | 52 | 3 | 0 |
-| 8 | `docs/business-rule-flags.md` | 40 | 125 | 9 | 2 | 0 |
-| 9 | `docs/equivalence-results.md` | 83 | 232 | 12 | 2 | 0 |
-| 10 | `docs/prose-validation.md` | 182 | 239 | 0 | 0 | 0 |
-| 11 | `README.md` | 121 | 225 | 10 | 6 | 0 |
-| 12 | `services/authorization-service/README.md` | 175 | 397 | 29 | 6 | 0 |
+| 4 | `docs/event-flow.md` | 133 | 355 | 15 | 4 | 0 |
+| 5 | `docs/data-model.md` | 140 | 366 | 17 | 7 | 0 |
+| 6 | `docs/onboarding.md` | 186 | 491 | 8 | 2 | 0 |
+| 7 | `docs/suggested-next-tasks.md` | 341 | 797 | 46 | 3 | 0 |
+| 8 | `docs/business-rule-flags.md` | 47 | 155 | 8 | 2 | 0 |
+| 9 | `docs/equivalence-results.md` | 85 | 238 | 12 | 2 | 0 |
+| 10 | `docs/prose-validation.md` | 183 | 246 | 0 | 0 | 0 |
+| 11 | `README.md` | 123 | 235 | 10 | 6 | 0 |
+| 12 | `services/authorization-service/README.md` | 177 | 404 | 28 | 5 | 0 |
 | 13 | `services/ledger-posting-service/README.md` | 139 | 305 | 6 | 6 | 0 |
 | 14 | `services/fraud-detection-service/README.md` | 111 | 272 | 15 | 3 | 0 |
-| 15 | `services/notification-service/README.md` | 150 | 333 | 24 | 7 | 0 |
-| 16 | `services/account-service/README.md` | 149 | 356 | 20 | 6 | 0 |
-| 17 | `services/card-service/README.md` | 127 | 324 | 16 | 10 | 0 |
-| 18 | `../README.md` | 24 | 44 | 2 | 1 | 0 |
+| 15 | `services/notification-service/README.md` | 155 | 355 | 24 | 7 | 0 |
+| 16 | `services/account-service/README.md` | 151 | 362 | 20 | 6 | 0 |
+| 17 | `services/card-service/README.md` | 149 | 407 | 16 | 10 | 0 |
+| 18 | `../README.md` | 24 | 45 | 1 | 1 | 0 |
 | 19 | `presentation/executive-summary.html` | 109 | 115 | 0 | 0 | 0 |
 
 ## Summary
@@ -55,21 +55,21 @@ One row per target. `Paragraphs` counts the prose blocks scoring reads and `Sent
 | 4 | `docs/event-flow.md` | NEEDS WORK | 0 | 19 |
 | 5 | `docs/data-model.md` | NEEDS WORK | 0 | 24 |
 | 6 | `docs/onboarding.md` | NEEDS WORK | 0 | 10 |
-| 7 | `docs/suggested-next-tasks.md` | NEEDS WORK | 0 | 55 |
-| 8 | `docs/business-rule-flags.md` | NEEDS WORK | 0 | 11 |
+| 7 | `docs/suggested-next-tasks.md` | NEEDS WORK | 0 | 49 |
+| 8 | `docs/business-rule-flags.md` | NEEDS WORK | 0 | 10 |
 | 9 | `docs/equivalence-results.md` | NEEDS WORK | 0 | 14 |
 | 10 | `docs/prose-validation.md` | CLEAN | 0 | 0 |
 | 11 | `README.md` | NEEDS WORK | 0 | 16 |
-| 12 | `services/authorization-service/README.md` | NEEDS WORK | 0 | 35 |
+| 12 | `services/authorization-service/README.md` | NEEDS WORK | 0 | 33 |
 | 13 | `services/ledger-posting-service/README.md` | NEEDS WORK | 0 | 12 |
 | 14 | `services/fraud-detection-service/README.md` | NEEDS WORK | 0 | 18 |
 | 15 | `services/notification-service/README.md` | NEEDS WORK | 0 | 31 |
 | 16 | `services/account-service/README.md` | NEEDS WORK | 0 | 26 |
 | 17 | `services/card-service/README.md` | NEEDS WORK | 0 | 26 |
-| 18 | `../README.md` | CLEAN | 0 | 3 |
+| 18 | `../README.md` | CLEAN | 0 | 2 |
 | 19 | `presentation/executive-summary.html` | CLEAN | 0 | 0 |
 
-Across the nineteen targets the measurement finds 248 sentences over thirty words, 70 paragraphs over five sentences and 0 buzzword uses. That is 4 CLEAN, 15 NEEDS WORK and 0 ROUGH DRAFT.
+Across the nineteen targets the measurement finds 239 sentences over thirty words, 69 paragraphs over five sentences and 0 buzzword uses. That is 4 CLEAN, 15 NEEDS WORK and 0 ROUGH DRAFT.
 
 ## Content binding
 
@@ -77,25 +77,25 @@ Each digest is the SHA-256 of one target's bytes, in lower-case hexadecimal. It 
 
 | # | Target | SHA-256 of the text scored |
 |---:|---|---|
-| 1 | `docs/decision-log.md` | `821ed0c910870b240c4df3e442194827ce79f870f3597b0b70482d97afeb6585` |
-| 2 | `docs/traceability-matrix.md` | `ba7823302046d71940d3ef9c947d4d3e20daabf6aea5a4c14a20119dd217e1c3` |
-| 3 | `docs/architecture-before-after.md` | `24a53c76626bc3aca88b643b1116210a266431655544693efe623d5307374511` |
-| 4 | `docs/event-flow.md` | `6aac0bc27ddc6cf60a0bb02e207db293f23e88a21c5ca32ad87bc0979550d748` |
-| 5 | `docs/data-model.md` | `a5b9edc15606bffefea041a8053777acb737f769eccd5a46472a4b3c54fff0f7` |
-| 6 | `docs/onboarding.md` | `4f02908e458dc43bb66faa6f9864500801110814908b52260b14ae81eec398c4` |
-| 7 | `docs/suggested-next-tasks.md` | `0af8483eee5f56fbfbcd1350fecb9f9ddfe9974fcc8d9cdc8bbf38d91a81617c` |
-| 8 | `docs/business-rule-flags.md` | `a843dd76753670d7bcac28feb154849db7261755ec3adc6e91676af5132c376e` |
-| 9 | `docs/equivalence-results.md` | `e0070d63ace9fc07b701d140f093ba3444c78b4d7458273aaec68bf35d59582d` |
+| 1 | `docs/decision-log.md` | `6c9981c083fae0089369d4fea5039a3768a72db1b05f8b8c8cdc65cd8082b780` |
+| 2 | `docs/traceability-matrix.md` | `0d285c5e93ec42ea55ab1f61af34a650a5fa389f5e1cb978b3c6d08aa02bccbe` |
+| 3 | `docs/architecture-before-after.md` | `ee2d6b4e2613babbfdd60086cc70bbed34b57b56d4ddb09e75d8c8d2a281d579` |
+| 4 | `docs/event-flow.md` | `b593e70d284babaa1a84e9f34a33c77757734602504087a82eb9a5b71525ba49` |
+| 5 | `docs/data-model.md` | `0614f8def009c58ecc6c597afe55a45d68d6ba21b651d3488d377c89f07d2159` |
+| 6 | `docs/onboarding.md` | `2ee1a7c19b5c28382e4ed55f51f8647de6000888f7bf81529a6001b4d603824d` |
+| 7 | `docs/suggested-next-tasks.md` | `fb85110e51d127e8953c426ba9d354a24e48aa2e80deaf2a56a542868da4cdf3` |
+| 8 | `docs/business-rule-flags.md` | `9707a805dc4412dd9e367f6560d8090513de354e36851c30471ef4747c4c686d` |
+| 9 | `docs/equivalence-results.md` | `30adc72fbee294bda69feb645907bceb94e7a9198165378601acb218849c9932` |
 | 10 | `docs/prose-validation.md` | This report carries no digest: a file cannot publish the digest of its own bytes |
-| 11 | `README.md` | `37d457645f588665da620f2c5b2898cecaa94f53f57dfec94918b5f346f39fb8` |
-| 12 | `services/authorization-service/README.md` | `5fcb1d62a6279cd7892303072f5defc7d34b298787f6c59a9d21c681c24cf720` |
-| 13 | `services/ledger-posting-service/README.md` | `a6f95a9bfd8522bcbbf93dadc32b4df8052fbfabae1718c1c5cf83ea8545b577` |
-| 14 | `services/fraud-detection-service/README.md` | `716a794b46ab4f632d1093e823acfdc9e0a608aa376bdae62bd45d7d1a122c7d` |
-| 15 | `services/notification-service/README.md` | `804903c84f7e13c39ba1a812078bd9242b2036e6e4430ecbc14b2354a190fbc6` |
-| 16 | `services/account-service/README.md` | `0ec21d399d2f8e1b99d0300ef2aed298fe1f5effee2878bcc685ec0ec51b30f1` |
-| 17 | `services/card-service/README.md` | `5891d4a857dfc3653e1e0fa84eca69474c5793f07cf4673d6319ed79f5158243` |
-| 18 | `../README.md` | `2e865216acdd11b326b2c08cc0dfbef1fc585e940e7ef95cc67102bf2b9b7dc6` |
-| 19 | `presentation/executive-summary.html` | `6c431562ee756df50ee167de2376c07af0a437fb1ae4e1cb8506166e038569c1` |
+| 11 | `README.md` | `e7cbad3c9fac39505bb2864c69e8eabaa03497e157253b2eddd0fc12ccbbcbb0` |
+| 12 | `services/authorization-service/README.md` | `3ec13eb8c2d4009c9c44a031a509c8c45902c5c662f98e02ec9dec820c511f39` |
+| 13 | `services/ledger-posting-service/README.md` | `4b69ed340491f0f6b437a931cb505e47f82747250545590743f28924cae3cd57` |
+| 14 | `services/fraud-detection-service/README.md` | `d5b8adbc6f9bec408c1bd1fcfa9753c8f56c6a1b2056f46418c4b59e9dfd41f1` |
+| 15 | `services/notification-service/README.md` | `84f154940b55a7127b242443752988ea115a9a4d80cf4310c12042cd67af1fb3` |
+| 16 | `services/account-service/README.md` | `d39fae13c3baa5af2e87819f3b1a2ad750d669a267d2f4ca1c09615dc45de9df` |
+| 17 | `services/card-service/README.md` | `68b0ce42bf148d242436768db4e64a9368b31ccd84aa78d52d27c4d5e028d052` |
+| 18 | `../README.md` | `d7847e427bc11c311c31a97e1ef2147caf220813fe957ebc5f02c83558e33068` |
+| 19 | `presentation/executive-summary.html` | `bf635958527e92cb47277440c94d94f8a5542fd399e97b1d05165515c3e9bb61` |
 
 ## Per-document reports
 
@@ -409,9 +409,9 @@ Each digest is the SHA-256 of one target's bytes, in lower-case hexadecimal. It 
 
 ### 7. `docs/suggested-next-tasks.md`
 
-**Overall verdict:** **NEEDS WORK** — 0 hard violations, 55 soft violations.
+**Overall verdict:** **NEEDS WORK** — 0 hard violations, 49 soft violations.
 
-**Measured:** 52 sentences over thirty words, 3 paragraphs over five sentences, 0 buzzword uses.
+**Measured:** 46 sentences over thirty words, 3 paragraphs over five sentences, 0 buzzword uses.
 
 | Principle number and name | Weight | Result | Worst offender quoted |
 |---|---|---|---|
@@ -462,9 +462,9 @@ Each digest is the SHA-256 of one target's bytes, in lower-case hexadecimal. It 
 
 ### 8. `docs/business-rule-flags.md`
 
-**Overall verdict:** **NEEDS WORK** — 0 hard violations, 11 soft violations.
+**Overall verdict:** **NEEDS WORK** — 0 hard violations, 10 soft violations.
 
-**Measured:** 9 sentences over thirty words, 2 paragraphs over five sentences, 0 buzzword uses.
+**Measured:** 8 sentences over thirty words, 2 paragraphs over five sentences, 0 buzzword uses.
 
 | Principle number and name | Weight | Result | Worst offender quoted |
 |---|---|---|---|
@@ -656,9 +656,9 @@ None. This target has no measured violation.
 
 ### 12. `services/authorization-service/README.md`
 
-**Overall verdict:** **NEEDS WORK** — 0 hard violations, 35 soft violations.
+**Overall verdict:** **NEEDS WORK** — 0 hard violations, 33 soft violations.
 
-**Measured:** 29 sentences over thirty words, 6 paragraphs over five sentences, 0 buzzword uses.
+**Measured:** 28 sentences over thirty words, 5 paragraphs over five sentences, 0 buzzword uses.
 
 | Principle number and name | Weight | Result | Worst offender quoted |
 |---|---|---|---|
@@ -974,9 +974,9 @@ None. This target has no measured violation.
 
 ### 18. `../README.md`
 
-**Overall verdict:** **CLEAN** — 0 hard violations, 3 soft violations.
+**Overall verdict:** **CLEAN** — 0 hard violations, 2 soft violations.
 
-**Measured:** 2 sentences over thirty words, 1 paragraphs over five sentences, 0 buzzword uses.
+**Measured:** 1 sentences over thirty words, 1 paragraphs over five sentences, 0 buzzword uses.
 
 | Principle number and name | Weight | Result | Worst offender quoted |
 |---|---|---|---|
@@ -1015,15 +1015,15 @@ None. This target has no measured violation.
 
 **Why the rewrite is better:** Three claims shared one sentence, and two sentences carry them with nine fewer words.
 
-**18.2 — V2: Do not ramble** — soft violation, 6 sentences in one paragraph.
+**18.2 — V2: Do not ramble** — soft violation, 7 sentences in one paragraph.
 
 > A client calls one Representational State Transfer (REST) endpoint, `POST /authorizations`, which only `authorization-service` … the three calls another, and none of them blocks the authorization response.
 
-**Rewrite** — split into paragraphs of 3 and 3 sentences:
+**Rewrite** — split into paragraphs of 4 and 3 sentences:
 
 > Start a new paragraph at "`authorization-service` is the only service that writes the decision.".
 
-**Why the rewrite is better:** 6 sentences in one block ask a reader to hold the whole argument at once. The break lands where the paragraph changes subject, so the first 3 sentences carry one claim and the last 3 carry the next.
+**Why the rewrite is better:** 7 sentences in one block ask a reader to hold the whole argument at once. The break lands where the paragraph changes subject, so the first 4 sentences carry one claim and the last 3 carry the next.
 
 ### 19. `presentation/executive-summary.html`
 

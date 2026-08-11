@@ -152,8 +152,17 @@ class AccountControllerIT {
      * <p>{@code V10__outbox_aggregate_head_index.sql} adds one index to {@code outbox_event} and no
      * table. The relay claims the due head row of each account rather than the oldest due rows
      * outright, and that claim reads the table by aggregate and arrival order.</p>
+     *
+     * <p>{@code V11__processed_event_claims_are_permanent.sql} withdraws the retention horizon of
+     * {@code processed_event} and drops {@code ix_processed_event_processed_at} with the purge that
+     * index served. It declares no table and no column, so every reader below is unchanged.</p>
+     *
+     * <p>{@code V12__subject_request_procedure.sql} points the {@code customer},
+     * {@code account_customer_link} and {@code customer.social_security_number} comments at the
+     * subject-request procedure {@code card-platform/docs/data-model.md} carries. It declares no
+     * table, no column, no index and no constraint, so every reader below is unchanged again.</p>
      */
-    private static final int MIGRATION_COUNT = 10;
+    private static final int MIGRATION_COUNT = 12;
 
     /** Rows {@code V2__seed.sql} loads into {@code account}, from {@code app/data/ASCII/acctdata.txt}. */
     private static final int SEEDED_ACCOUNT_COUNT = 50;
@@ -474,10 +483,10 @@ class AccountControllerIT {
                             + " WHERE version IS NOT NULL ORDER BY installed_rank");
 
             assertEquals(MIGRATION_COUNT, applied.size(),
-                    "db/migration carries V1 through V10 and Flyway applied every one");
+                    "db/migration carries V1 through V12 and Flyway applied every one");
             assertTrue(applied.stream().allMatch(row -> Boolean.TRUE.equals(row.get("success"))),
                     "a migration that failed would leave a row reporting failure: " + applied);
-            assertEquals(List.of("1", "2", "3", "4", "5", "6", "7", "8", "9", "10"),
+            assertEquals(List.of("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"),
                     applied.stream().map(row -> String.valueOf(row.get("version"))).toList(),
                     "the versions applied, in the order Flyway applied them");
         }

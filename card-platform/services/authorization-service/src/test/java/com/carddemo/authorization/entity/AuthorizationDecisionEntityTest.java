@@ -115,6 +115,34 @@ final class AuthorizationDecisionEntityTest {
         assertEquals(DECIDED_AT, decision.getDecidedAt(), "the moment the decision was taken");
     }
 
+    /**
+     * Proves the row records which card-token key its stored token belongs to.
+     *
+     * <p>A security review found that a card-token key change re-derived {@code card.card_token} in
+     * the card service and left this table naming a card nobody could reach. This table holds no card
+     * number, so it cannot re-derive its own rows, and without the version a stale diagnostic is
+     * indistinguishable from a current one. No caller supplies the value: a caller naming a version
+     * would be naming a key it does not hold, so the row reads the configured version at the moment
+     * it is written.
+     */
+    @Test
+    @DisplayName("a decision records the card-token version its token was taken under")
+    void aDecisionRecordsTheCardTokenVersionOfItsToken() {
+        AuthorizationDecisionEntity approved = approval();
+        AuthorizationDecisionEntity declined = decline(ACCOUNT_ID,
+                DeclineReason.OVER_CREDIT_LIMIT);
+
+        assertEquals(PanMasker.cardTokenVersion(), approved.getCardTokenVersion(),
+                "the row must name the version the configured key derives under, which is the only"
+                        + " way a rotation can tell a reached row from an unreached one");
+        assertEquals(PanMasker.cardTokenVersion(), declined.getCardTokenVersion(),
+                "a decline carries a token on the same terms as an approval");
+        assertEquals(AuthorizationDecisionEntity.CARD_TOKEN_VERSION_LENGTH,
+                "999".length(),
+                "the column holds one to three digits, the shape PanMasker holds a configured"
+                        + " version to");
+    }
+
     @Test
     @DisplayName("an approval naming no account cannot be built")
     void anApprovalNamingNoAccountCannotBeBuilt() {

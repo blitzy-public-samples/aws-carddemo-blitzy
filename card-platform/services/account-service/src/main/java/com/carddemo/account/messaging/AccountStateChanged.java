@@ -1,10 +1,7 @@
 package com.carddemo.account.messaging;
 
 import com.carddemo.events.EventEnvelope;
-import com.carddemo.events.serde.EventContracts;
-import com.carddemo.events.serde.JsonSchemaValidatingSerializer;
-
-import java.nio.charset.StandardCharsets;
+import com.carddemo.events.serde.PublishGate;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -298,38 +295,27 @@ public record AccountStateChanged(
     }
 
     /**
-     * The one publish-side gate, shared with every other event of this platform.
-     *
-     * <p>The instance holds no mutable state and compiles every governed schema once, so one
-     * instance serves the whole service.
-     */
-    private static final JsonSchemaValidatingSerializer<Object> SHARED_SERIALIZER =
-            new JsonSchemaValidatingSerializer<>();
-
-    /**
      * Serializes this event through the one publish-side gate every event of this platform passes.
      *
-     * <p>{@link JsonSchemaValidatingSerializer} does the work: it writes the flat wire form, checks
-     * the result against {@code schemas/account-state-changed-v1.json} in
-     * {@code com.carddemo:event-contracts}, and refuses a document wider than the platform ceiling.
-     * The returned text is what a caller stores in the {@code payload} column of
-     * {@code outbox_event} and what the relay later hands to the broker unchanged.
+     * <p>{@link PublishGate} does the work, and it is the only boundary a payload of this platform
+     * crosses on its way to a row: it resolves the registered event type, writes the flat wire form
+     * through {@code JsonSchemaValidatingSerializer}, screens every property and every value for
+     * cardholder data, checks the result against {@code schemas/account-state-changed-v1.json} in
+     * {@code com.carddemo:event-contracts}, refuses a version no released contract publishes, and
+     * refuses a document wider than the platform ceiling. The returned text is what a caller stores
+     * in the {@code payload} column of {@code outbox_event} and what the relay later hands to the
+     * broker unchanged.
      *
      * <p>This method is the only path from this event to a topic, so no publisher can reach one
      * without passing that gate, and the closed property set keeps an undeclared field out.
      *
      * @return this event as validated JavaScript Object Notation text, in UTF-8
-     * @throws org.apache.kafka.common.errors.SerializationException when this event breaks its
-     *         schema or exceeds {@code EventWireBounds.MAX_EVENT_BYTES}
+     * @throws IllegalArgumentException when this event breaks its schema, carries a value the
+     *         cardholder-data screens refuse, declares a version no contract publishes, or exceeds
+     *         {@code EventWireBounds.MAX_EVENT_BYTES}
      */
     public String toValidatedJson() {
-        // The topic is supplied because the serializer refuses to write a registered event type
-        // onto a topic it does not belong on, and a null topic is one of those. The default topic
-        // is the right one here: a deployment that renames a topic applies the rename through the
-        // producer property the publisher reads, not through this in-process gate.
-        return new String(
-                SHARED_SERIALIZER.serialize(EventContracts.defaultTopicFor(EVENT_TYPE), this),
-                StandardCharsets.UTF_8);
+        return PublishGate.checkedJsonOf(this);
     }
 
     /**

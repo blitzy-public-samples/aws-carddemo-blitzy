@@ -144,7 +144,7 @@ string.
 
 A refusal answers 429 with `Retry-After` and counts `carddemo.account.requests.throttled`, tagged with the stage that refused: `authentication`, `source`, `identity`, `write` or `concurrency`. The five ceilings read `API_RATE_WINDOW_SECONDS`, `API_RATE_REQUESTS_PER_WINDOW`, `API_RATE_WRITE_REQUESTS_PER_WINDOW`, `API_RATE_AUTHENTICATION_FAILURES_PER_WINDOW` and `API_RATE_CONCURRENT_REQUESTS` from [`.env.example`](../../.env.example). The management base path is exempt, because a throttled probe reads as a failed container.
 
-Both filters count in this process, so several replicas bound each replica rather than the service as a whole, and the source address is the one the container resolves rather than a forwarding header a caller could write. A deployment behind a proxy sets `SERVER_FORWARD_HEADERS_STRATEGY=framework` so the container resolves the client address and the client-facing host. Both residual limits are recorded in [suggested next tasks](../../docs/suggested-next-tasks.md), and the reasoning behind the two controls is in the [Decision Log](../../docs/decision-log.md).
+Both filters count in this process, so several replicas bound each replica rather than the service as a whole, and the source address is the one the container resolves rather than a forwarding header a caller could write. A deployment behind a proxy activates the `trusted-proxy` profile, which trusts those headers from the proxy's own addresses alone. Both residual limits are recorded in [suggested next tasks](../../docs/suggested-next-tasks.md), and the reasoning behind the two controls is in the [Decision Log](../../docs/decision-log.md).
 
 ## Events
 
@@ -497,10 +497,21 @@ account with the customer it belongs to, and no card number. It is read to resol
 customer and is never written by a request. It replaces the card-number-keyed `card_xref` replica that
 `V4__card_cross_reference_replica.sql` created, which V7 drops.
 
+**Where a subject request starts.** `customer` is the only row on this platform holding a name, so
+every export and every erasure begins with a lookup here. `account_customer_link` is the hop from a
+customer identifier to every account, because the account record carries no customer identifier at
+all.
+
+The procedure is in [docs/data-model.md](../../docs/data-model.md), under *Subject data: purpose,
+retention, export and erasure*. It names all twenty-three stores a request reaches, the order the erasure runs in, and what
+a retained broker record and a backup mean for a completed request. No endpoint, event or scheduled
+task on this platform erases or exports a subject: the procedure is an operator's, and
+`V12__subject_request_procedure.sql` points the three catalogue comments at it.
+
 ### Migrations
 
-Ten migrations run here, and four of them exist in no other module. An eleventh file ships and is
-not applied by default.
+Twelve migrations run here, and four of them exist in no other module. A thirteenth file ships and
+is not applied by default.
 
 | Migration | Responsibility |
 | :--- | :--- |
@@ -514,6 +525,8 @@ not applied by default.
 | `V8__subject_request_posture.sql` | One column comment, re-issued. `V1` said an erasure request cleared `customer.social_security_number` with the rest of the row, and no export or erasure workflow exists anywhere on this platform to send one. It declares no table, column, index or row, and it is a migration rather than an edit to `V1` because `V1` has run |
 | `V9__outbox_correlation.sql` | `outbox_event.correlation_id` and `outbox_event.causation_id`, the two identifiers the relay attaches to the record it publishes, so a state change names the request or the posted event behind it |
 | `V10__outbox_aggregate_head_index.sql` | Adds `ix_outbox_event_aggregate_head`, the partial index the relay's aggregate-head claim reads. That claim answers with the due head row of each account, so two events of one account are never in flight at once and every consumer of the account's partition reads them in the order this service wrote them. Without the index the correlated check re-read an account's backlog for every candidate row |
+| `V11__processed_event_claims_are_permanent.sql` | Withdraws the retention horizon of `processed_event` and drops `ix_processed_event_processed_at` with it. The 720-hour horizon bounded how long the broker could redeliver a record and said nothing about how long the balance and the two cycle accumulators a claim guards stand, so a record archived, restored or deliberately replayed after it was new to the guard and applied twice. Nothing removes a claim now, and nothing bounds the table's growth either — the partitioning work a deployment measuring real volumes would want is in `card-platform/docs/suggested-next-tasks.md` |
+| `V12__subject_request_procedure.sql` | Points the `customer`, `account_customer_link` and `customer.social_security_number` comments at the subject-request procedure `card-platform/docs/data-model.md` now carries, under "Subject data: purpose, retention, export and erasure". `V7` and `V8` had replaced comments promising an erasure route with ones stating that none existed. A documented operator procedure now exists, and this schema is where a request starts: `customer` is the only row on the platform holding a name, and `account_customer_link` is the hop to every account, because the account record carries no customer identifier. No endpoint, event or scheduled task erases or exports a subject, and the comments say so. Declares no table, column, index or row |
 
 `src/main/resources/db/demo/V900__demo_expiry_extension.sql` is the tenth, and it lives in
 `db/demo` rather than `db/migration` so a plain start never applies it. It lifts every seeded account

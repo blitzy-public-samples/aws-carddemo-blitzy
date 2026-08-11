@@ -89,13 +89,9 @@ class ProcessedEventRepositoryTest extends AbstractAccountPostgresTest {
     private static final UUID REPLAYED_EVENT_ID =
             UUID.fromString("3e5a7c9b-4d6f-4c8a-b0d2-5f7a9c1e3b4d");
 
-    /** Identifier of the marker the purge removes. */
-    private static final UUID OLDER_EVENT_ID =
+    /** Identifier of the claim written far enough back that the withdrawn purge would have gone. */
+    private static final UUID ANCIENT_EVENT_ID =
             UUID.fromString("4f6b8d0a-5e7c-4d9b-a1c3-6a8c0e2f4b5d");
-
-    /** Identifier of the marker the purge keeps. */
-    private static final UUID NEWER_EVENT_ID =
-            UUID.fromString("5a7c9e0b-6f8d-4e0c-b2d4-7a9c1e3f5b6d");
 
     /**
      * Processing time each single-marker test writes. Six fractional digits match the precision the
@@ -125,14 +121,14 @@ class ProcessedEventRepositoryTest extends AbstractAccountPostgresTest {
     /** Event type carried by the side-effect row. */
     private static final String SIDE_EFFECT_EVENT_TYPE = "AccountStateChanged";
 
-    /** Processing time of the marker that sits before the purge horizon. */
-    private static final Instant OLDER_PROCESSED_AT = Instant.parse("2026-01-04T00:00:00.000000Z");
-
-    /** Processing time of the marker that sits after the purge horizon. */
-    private static final Instant NEWER_PROCESSED_AT = Instant.parse("2026-03-04T00:00:00.000000Z");
-
-    /** Horizon the purge ranges below, sitting between the two written processing times. */
-    private static final Instant PURGE_HORIZON = Instant.parse("2026-02-04T00:00:00.000000Z");
+    /**
+     * Processing time of the ancient claim, five years before the other stamps in this class.
+     *
+     * <p>Far past the 720 hours the withdrawn purge used, so a claim carrying it is exactly the one
+     * that purge would have removed.
+     */
+    private static final Instant ANCIENT_PROCESSED_AT =
+            Instant.parse("2021-02-17T09:41:22.123456Z");
 
     /** The interface under test, discovered from the {@code com.carddemo.account} scan root. */
     @Autowired
@@ -173,10 +169,17 @@ class ProcessedEventRepositoryTest extends AbstractAccountPostgresTest {
         });
     }
 
+    /**
+     * Asserts the surface is a claim, a question and a write, with nothing that removes a row.
+     *
+     * <p>A fourth method, {@code deleteMarkersProcessedBefore}, removed claims older than 720 hours
+     * until a security review found the effect a claim guards outliving it: this service adds an
+     * amount to a balance and to one cycle accumulator, and nothing reverses that. Naming the exact
+     * set is what stops the purge returning as a convenience.
+     */
     @Test
-    @DisplayName("the interface declares existsById, save, claimEvent and "
-            + "deleteMarkersProcessedBefore and no other method")
-    void theInterfaceDeclaresFourMethodsAndNoOther() {
+    @DisplayName("the interface declares existsById, save and claimEvent and no other method")
+    void theInterfaceDeclaresThreeMethodsAndNoOther() {
         List<String> declared = Arrays.stream(ProcessedEventRepository.class.getDeclaredMethods())
                 .filter(method -> !method.isSynthetic())
                 .map(ProcessedEventRepositoryTest::signatureOf)
@@ -185,7 +188,6 @@ class ProcessedEventRepositoryTest extends AbstractAccountPostgresTest {
 
         assertThat(declared).containsExactly(
                 "claimEvent(java.util.UUID,java.time.Instant,java.lang.String):int",
-                "deleteMarkersProcessedBefore(java.time.Instant,int):int",
                 "existsById(com.carddemo.account.entity.ProcessedEventEntity$ProcessedEventId)"
                         + ":boolean",
                 "save(com.carddemo.account.entity.ProcessedEventEntity)"
@@ -371,54 +373,32 @@ class ProcessedEventRepositoryTest extends AbstractAccountPostgresTest {
         assertThat(outboxEvents.findById(SIDE_EFFECT_EVENT_ID)).isPresent();
     }
 
+    /**
+     * Proves a claim written five years ago still refuses its redelivery.
+     *
+     * <p>This is the behaviour the withdrawn purge took away. A claim stamped further back than the
+     * 720-hour horizon was removed, and the next delivery of that event took the claim again and
+     * applied the posting a second time. The stamp here is five years old and the claim still wins,
+     * because nothing removes one.
+     */
     @Test
     @Transactional
-    @DisplayName("deleteMarkersProcessedBefore removes the earlier marker and keeps the later one")
-    void deleteMarkersProcessedBeforeRemovesTheEarlierMarker() {
+    @DisplayName("a claim written five years ago still refuses its redelivery")
+    void anAncientClaimStillRefusesItsRedelivery() {
         repository.save(
-                new ProcessedEventEntity(OLDER_EVENT_ID, OLDER_PROCESSED_AT, POSTED_TOPIC));
-        repository.save(
-                new ProcessedEventEntity(NEWER_EVENT_ID, NEWER_PROCESSED_AT, POSTED_TOPIC));
+                new ProcessedEventEntity(ANCIENT_EVENT_ID, ANCIENT_PROCESSED_AT, POSTED_TOPIC));
         entityManager.flush();
-
-        int removed = repository.deleteMarkersProcessedBefore(PURGE_HORIZON, 500);
         entityManager.clear();
 
-        assertThat(removed).isEqualTo(1);
-        assertThat(markersCarrying(OLDER_EVENT_ID)).isZero();
-        assertThat(markersCarrying(NEWER_EVENT_ID)).isEqualTo(1L);
-    }
+        int replay = repository.claimEvent(ANCIENT_EVENT_ID, Instant.now(), POSTED_TOPIC);
 
-    @Test
-    @Transactional
-    @DisplayName("the marker purge removes at most the row ceiling it is given, oldest first")
-    void markerPurgeRemovesAtMostItsCeilingOldestFirst() {
-        repository.save(
-                new ProcessedEventEntity(OLDER_EVENT_ID, OLDER_PROCESSED_AT, POSTED_TOPIC));
-        repository.save(
-                new ProcessedEventEntity(NEWER_EVENT_ID, NEWER_PROCESSED_AT, POSTED_TOPIC));
-        entityManager.flush();
-
-        int firstBatch = repository.deleteMarkersProcessedBefore(NEWER_PROCESSED_AT.plusSeconds(1L),
-                1);
-        entityManager.clear();
-
-        assertThat(firstBatch)
-                .as("a bound of one removes one marker and leaves the other for the next batch")
-                .isEqualTo(1);
-        assertThat(markersCarrying(OLDER_EVENT_ID))
-                .as("the ordering removes the oldest marker first")
+        assertThat(replay)
+                .as("a replay five years later must still lose the claim, so the insert writes"
+                        + " nothing")
                 .isZero();
-        assertThat(markersCarrying(NEWER_EVENT_ID)).isEqualTo(1L);
-
-        int secondBatch = repository.deleteMarkersProcessedBefore(
-                NEWER_PROCESSED_AT.plusSeconds(1L), 1);
-        entityManager.clear();
-
-        assertThat(secondBatch)
-                .as("the second batch removes the remaining marker")
-                .isEqualTo(1);
-        assertThat(markersCarrying(NEWER_EVENT_ID)).isZero();
+        assertThat(markersCarrying(ANCIENT_EVENT_ID))
+                .as("the claim is still there to answer with, so nothing expired it")
+                .isEqualTo(1L);
     }
 
     /**

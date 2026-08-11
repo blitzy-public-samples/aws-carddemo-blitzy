@@ -8,10 +8,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -231,6 +233,34 @@ class ContinuousIntegrationWorkflowContractTest {
      * downloaded binary and never invokes Maven, so it installs no toolchain at all.
      */
     private static final int TOOLCHAIN_ACTION_USES = 9;
+
+    /**
+     * Findings the reviewed secret baseline records, measured with gitleaks 8.30.1 over every ref.
+     *
+     * <p>None sits on a commit this branch can reach, and none inside the range this engagement
+     * authored. The triage, finding by finding, is in card-platform/docs/decision-log.md.
+     */
+    private static final int BASELINE_FINDINGS = 113;
+
+    /** The reviewed baseline the scheduled history scan reads. */
+    private static final String BASELINE_PATH = "card-platform/.gitleaks-baseline.json";
+
+    /** The base a push carries for the first push of a new branch. */
+    private static final String EMPTY_TREE_BASE = "0000000000000000000000000000000000000000";
+
+    /**
+     * Exceptions the image scan carries for the two pinned infrastructure images.
+     *
+     * <p>Thirteen in {@code apache/kafka:4.2.1} and fifteen in {@code postgres:18.4}, each one a
+     * package inside an image this project consumes rather than one it builds.
+     */
+    private static final int IMAGE_EXCEPTIONS = 28;
+
+    /** The dated exceptions the infrastructure image scan runs under. */
+    private static final String EXCEPTION_FILE = ".trivyignore.yaml";
+
+    /** Where every rationale this platform ships points. */
+    private static final String DECISION_LOG = "card-platform/docs/decision-log.md";
 
     private static Path platformRoot;
     /**
@@ -452,9 +482,11 @@ class ContinuousIntegrationWorkflowContractTest {
         assertFalse(Files.exists(platformRoot.getParent().resolve(".gitleaks.toml")),
                 "a second copy at the repository root would sit outside the two directories this"
                         + " engagement adds to");
-        assertEquals(3, occurrences(workflow, "--exit-code 1"),
-                "both scans fail the run on a finding, and the canary reads the same signal to"
-                        + " prove the scanner still produces it");
+        assertEquals(6, occurrences(workflow, "--exit-code 1"),
+                "every scan fails the run on a finding, and every canary reads the same signal to"
+                        + " prove the scanner still produces it: the working tree, the range under"
+                        + " review, the scheduled whole history, the baseline canary and the two"
+                        + " planted-secret canaries");
 
         assertTrue(workflow.contains("build-mode: manual"),
                 "the analysis database is built from a real compile rather than inferred");
@@ -1182,6 +1214,322 @@ class ContinuousIntegrationWorkflowContractTest {
         // The stage selects by pattern, so the count is evidence rather than configuration.
         assertTrue(workflow.contains("-pl \"${modules}\" -am -DskipUnitTests=true verify"),
                 "the integration stage runs the six service modules under Failsafe by pattern");
+    }
+
+    /**
+     * Asserts the secret scan gates the change under review and reads the history on a schedule.
+     *
+     * <p><b>What this stands over.</b> The stage read the whole history of every ref on every
+     * event with no baseline. That scan reports 113 findings on 39 commits, none of them reachable
+     * from this branch and none inside the range this engagement authored, so every push failed
+     * before an image was built. A gate that can never pass is a gate somebody switches off.
+     *
+     * <p>Four properties are read, and each one is the difference between a gate and a formality.
+     * The range comes from the event rather than being assumed. The whole-history scan is
+     * conditioned on a trigger a push does not carry. The baseline is named on that scan and on the
+     * fallback alone, never on the working tree. And the schedule the scan needs is declared.
+     */
+    @Test
+    @DisplayName("the secret scan gates the range under review and reads the history on a schedule")
+    void theSecretScanGatesTheRangeAndReadsTheHistoryOnASchedule() {
+        Map<String, Map<?, ?>> steps = stepsByName("secret-scan");
+
+        Map<?, ?> tree = steps.get("Read the working tree");
+        assertNotNull(tree, "every file as it stands still has to be clean on every event");
+        assertFalse(String.valueOf(tree.get("run")).contains("--baseline-path"),
+                "the working tree is held to the strict standard: a baseline there would excuse a"
+                        + " value sitting in a delivered file");
+
+        Map<?, ?> range = steps.get("Read the commit range under review");
+        assertNotNull(range, "the stage has to gate the change this event proposes");
+        String rangeScript = String.valueOf(range.get("run"));
+        assertTrue(rangeScript.contains("github.event.pull_request.base.sha || github.event.before"),
+                "the base comes from the event: a pull request carries its base and a push carries"
+                        + " the commit the branch pointed at before it");
+        assertTrue(rangeScript.contains("git merge-base"),
+                "the range starts where the branch left the base rather than at the base itself, so"
+                        + " a base that has moved on does not drag unrelated commits in");
+        assertTrue(rangeScript.contains("--log-opts \"${merge_base}..${head}\""),
+                "and the scanner is told to read exactly that range");
+        assertTrue(rangeScript.contains(EMPTY_TREE_BASE)
+                        && rangeScript.contains("--baseline-path " + BASELINE_PATH),
+                "the first push of a branch carries an all-zero base, and an event with no usable"
+                        + " base reads the whole history against the baseline rather than nothing");
+        assertFalse(range.containsKey("if"),
+                "the range scan runs on every event, because it is the gate a push answers to");
+
+        Map<?, ?> history = steps.get("Read the whole history against the reviewed baseline");
+        assertNotNull(history, "the whole history still has to be read, on a schedule");
+        String condition = String.valueOf(history.get("if"));
+        assertTrue(condition.contains("'schedule'") && condition.contains("'workflow_dispatch'"),
+                "a push and a pull request skip it: reading 2,580 commits on every push is what"
+                        + " made this stage unpassable, and the range scan is what replaced it");
+        assertTrue(String.valueOf(history.get("run")).contains("--baseline-path " + BASELINE_PATH),
+                "the scheduled scan reads the reviewed baseline, so a finding it does not name"
+                        + " fails wherever in the history that finding sits");
+
+        assertTrue(workflow.contains("  schedule:\n    - cron: \"17 3 * * 1\""),
+                "the scheduled scan needs a schedule trigger, declared where a reader of the"
+                        + " triggers is looking");
+    }
+
+    /**
+     * Asserts the reviewed baseline names its findings and never records what they held.
+     *
+     * <p>The baseline is committed, so it is a file anyone with the repository can read. Every
+     * entry is matched by fingerprint, which is the commit, the path, the rule and the line, and
+     * every value reads {@code REDACTED}. Two further properties are what make it a review rather
+     * than a suppression: no entry sits on a commit this branch can reach, and two workflow steps
+     * prove the file suppresses only its own entries and carries no value of its own.
+     */
+    @Test
+    @DisplayName("every baseline entry is redacted, fingerprinted and unreachable from this branch")
+    void everyBaselineEntryIsRedactedFingerprintedAndUnreachable() {
+        Path baseline = platformRoot.resolve(".gitleaks-baseline.json");
+        assertTrue(Files.isRegularFile(baseline),
+                "the baseline the scheduled scan names has to exist at " + BASELINE_PATH);
+
+        String text = readFile(baseline);
+        assertEquals(BASELINE_FINDINGS, occurrences(text, "\"Fingerprint\": \""),
+                "one entry per finding the history carried when it was reviewed");
+        assertEquals(BASELINE_FINDINGS, occurrences(text, "\"Secret\": \"REDACTED\""),
+                "every value is redacted: the file records which finding was reviewed and never"
+                        + " what that finding held");
+        assertFalse(text.contains("\"Secret\": \"\""),
+                "an empty value is not a redacted one, and it would match a finding the scanner"
+                        + " reports with a value");
+
+        Set<String> reachable = commitsReachableFromHead();
+        List<String> reachableEntries = new ArrayList<>();
+        Matcher commits = Pattern.compile("\"Commit\": \"([0-9a-f]{40})\"").matcher(text);
+        while (commits.find()) {
+            if (reachable.contains(commits.group(1))) {
+                reachableEntries.add(commits.group(1));
+            }
+        }
+        assertEquals(List.of(), reachableEntries,
+                "an entry on a commit this branch can reach would excuse a finding in the delivered"
+                        + " history. Every one of the " + BASELINE_FINDINGS + " sits on an unrelated"
+                        + " ref of a shared sample repository, which the scanner reads because it"
+                        + " reads every ref");
+
+        Map<String, Map<?, ?>> steps = stepsByName("secret-scan");
+        Map<?, ?> canary = steps.get("Prove the baseline hides nothing it does not name");
+        assertNotNull(canary, "a clean scheduled scan says the baseline names every finding the"
+                + " history holds, and says nothing about an unnamed one");
+        String script = String.valueOf(canary.get("run"));
+        assertTrue(script.contains("jq '.[1:]'"),
+                "the canary withholds one entry from a copy of the baseline");
+        assertTrue(script.contains("test \"${reported}\" -eq 1"),
+                "and requires exactly that finding back, which is what proves the comparison is"
+                        + " per fingerprint rather than per file, per rule or per run");
+        assertTrue(script.contains("::error::the history scan reported clean with one baseline"),
+                "a canary that catches nothing has to name what it missed");
+
+        Map<?, ?> redaction = steps.get("Prove every baseline entry is redacted");
+        assertNotNull(redaction, "the count above is measured once here and enforced on every run");
+        assertTrue(String.valueOf(redaction.get("run")).contains("select(.Secret != \"REDACTED\")"),
+                "the step counts the entries carrying a value, and fails on the first one");
+    }
+
+    /**
+     * Asserts the image stage scans the two images this platform deploys, not only the six it builds.
+     *
+     * <p><b>What this stands over.</b> The stage scanned the six service images and gated on their
+     * fixable findings alone, so a green stage established nothing about the broker or the
+     * database. {@code apache/kafka:4.2.1} carries thirteen fixable high findings and
+     * {@code postgres:18.4} fifteen including one critical.
+     *
+     * <p>Three properties are read. The reference is derived from the shipped deployment files, so
+     * the scan cannot drift from what is deployed and the two deployment paths cannot disagree. The
+     * gate is the one the six service images already answer to. And the exception file is the only
+     * reason it passes, which a canary proves by running the same scan without it.
+     */
+    @Test
+    @DisplayName("the image stage scans the deployed broker and database at the shipped digest")
+    void theImageStageScansTheDeployedBrokerAndDatabase() {
+        Map<String, Map<?, ?>> steps = stepsByName("container-builds");
+
+        Map<?, ?> scan = steps.get("Scan the two infrastructure images this platform deploys");
+        assertNotNull(scan, "the two images this platform deploys are never scanned, so a green"
+                + " image stage establishes nothing about either of them");
+        String script = String.valueOf(scan.get("run"));
+        assertTrue(script.contains("docker-compose.yml") && script.contains("deploy/k8s/$2"),
+                "the reference is read out of the shipped files, because a digest written again in"
+                        + " the workflow is a third copy and the copy that goes stale is the one"
+                        + " nothing deploys");
+        assertTrue(script.contains("[kafka]=10-kafka.yaml")
+                        && script.contains("[postgres]=20-postgres.yaml"),
+                "both deployment descriptions are read");
+        assertTrue(script.contains("if [ \"${composed}\" != \"${clustered}\" ]"),
+                "and the two have to name one digest, because a scan of one proves nothing about"
+                        + " the other");
+        assertTrue(script.contains("--ignorefile " + EXCEPTION_FILE),
+                "the dated exceptions are what this gate passes under");
+        assertTrue(script.contains("test \"${fixable_total}\" -eq 0"),
+                "a high or critical finding with a fix available fails the stage, which is the gate"
+                        + " the six service images already answer to");
+
+        Map<?, ?> canary = steps.get("Prove the infrastructure gate still fires");
+        assertNotNull(canary, "a clean result under the exception file says the exceptions hold and"
+                + " says nothing about whether the gate would fail without them");
+        String canaryScript = String.valueOf(canary.get("run"));
+        assertFalse(canaryScript.contains("--ignorefile"),
+                "the canary runs the same scan of the broker with no exception file");
+        assertTrue(canaryScript.contains("::error::the broker image reports no fixable finding"),
+                "and names what a clean unexcused scan would mean");
+
+        assertTrue(indexOfStepNamed(stepList("container-builds"),
+                        "Scan the two infrastructure images")
+                        < indexOfStepNamed(stepList("container-builds"), "Keep the image-scan"),
+                "both infrastructure reports are written before the upload that keeps them");
+    }
+
+    /**
+     * Asserts every image exception names a package, an owner, a reason and an expiry.
+     *
+     * <p>An exception with no expiry is a decision nobody revisits, and trivy is what enforces the
+     * date: it stops honouring an entry the day after, so the finding returns and the image stage
+     * fails. Each entry is read for four things rather than for its identifier alone, and one
+     * further property is read of the file as a whole. An entry that cannot establish
+     * non-reachability has to say so, because that difference is what a reader is deciding on.
+     */
+    @Test
+    @DisplayName("every image exception names a package, an owner, a reason and an expiry")
+    void everyImageExceptionNamesAPackageAnOwnerAReasonAndAnExpiry() {
+        Path exceptions = platformRoot.resolve(".trivyignore.yaml");
+        assertTrue(Files.isRegularFile(exceptions),
+                "the exception file the image stage names has to exist at " + EXCEPTION_FILE);
+
+        String text = readFile(exceptions);
+        assertEquals(IMAGE_EXCEPTIONS, occurrences(text, "\n  - id: "),
+                "one entry per fixable finding the two pinned images carry: thirteen in the broker"
+                        + " and fifteen in the database");
+        assertEquals(IMAGE_EXCEPTIONS, occurrences(text, "\n    expired_at: "),
+                "every entry carries the day it stops being honoured, because an exception with no"
+                        + " date is a decision nobody revisits");
+        assertEquals(IMAGE_EXCEPTIONS, occurrences(text, "\n    statement: >-"),
+                "and the reason it was accepted");
+        assertEquals(IMAGE_EXCEPTIONS, occurrences(text, "owner: project owner"),
+                "and who accepted it");
+        assertEquals(IMAGE_EXCEPTIONS,
+                occurrences(text, "\n    paths:") + occurrences(text, "\n    purls:"),
+                "every entry is scoped to the path or the package it excuses, so the same"
+                        + " identifier elsewhere in either image still fails the stage");
+        assertTrue(text.contains("Reachability is NOT claimed"),
+                "an entry that cannot establish non-reachability says so rather than implying it,"
+                        + " because that difference is what a reader of this file is deciding on");
+        assertTrue(text.contains(DECISION_LOG),
+                "and the file points at the decision its exceptions were taken under");
+
+        assertEquals(Set.of("2026-11-30"), expiryDatesOf(text),
+                "one shared expiry means one review answers all " + IMAGE_EXCEPTIONS + " rather"
+                        + " than " + IMAGE_EXCEPTIONS + " reviews spread over a year");
+    }
+
+    /**
+     * Asserts the decision every new security artifact cites is recorded under the heading it names.
+     *
+     * <p>Rule 1 puts rationale in one place and has each file point at it, which makes a quoted
+     * heading a reference that can dangle. Nothing else in this build resolves one: the pointer
+     * check reads the path and stops there, and it reads no YAML at all. Both headings the two
+     * artifacts of this review name are resolved here against the log itself.
+     */
+    @Test
+    @DisplayName("the decision each security artifact quotes is recorded under that exact heading")
+    void theDecisionEachSecurityArtifactQuotesIsRecorded() {
+        String log = readFile(platformRoot.resolve("docs/decision-log.md"));
+        String citing = unwrapComments(workflow)
+                + unwrapComments(readFile(platformRoot.resolve(EXCEPTION_FILE)));
+        List<String> quoted = List.of(
+                "A secret scan reads the change under review, and the whole history on a schedule",
+                "Two pinned infrastructure images carry a dated exception rather than an unpinned"
+                        + " upgrade");
+        for (String heading : quoted) {
+            assertTrue(citing.contains(heading),
+                    "no shipped file quotes this heading any longer, so the assertion below is"
+                            + " protecting a reference nothing makes: " + heading);
+            assertTrue(log.contains("### " + heading),
+                    DECISION_LOG + " carries no heading \"" + heading + "\", so a shipped file"
+                            + " points a reader at a decision that is not recorded");
+        }
+    }
+
+    /**
+     * Reads commented text as the sentences it holds, with the markers and the wrapping removed.
+     *
+     * <p>A quoted heading is wrapped across lines by whatever comment marker the file uses, so a
+     * plain search for it finds nothing. Stripping the leading marker of every line and collapsing
+     * the whitespace leaves the sentence a reader sees.
+     */
+    private static String unwrapComments(String text) {
+        StringBuilder unwrapped = new StringBuilder();
+        for (String line : text.split("\n")) {
+            unwrapped.append(line.replaceFirst("^\\s*#+\\s?", "")).append(' ');
+        }
+        return unwrapped.toString().replaceAll("\\s+", " ");
+    }
+
+    /** Reads one job's steps as a list. */
+    private static List<?> stepList(String job) {
+        return assertInstanceOf(List.class,
+                assertInstanceOf(Map.class, jobs.get(job)).get("steps"));
+    }
+
+    /**
+     * Indexes one job's steps by name.
+     *
+     * @param job the job to read
+     * @return each step body under the name it declares
+     */
+    private static Map<String, Map<?, ?>> stepsByName(String job) {
+        Map<String, Map<?, ?>> byName = new LinkedHashMap<>();
+        for (Object step : stepList(job)) {
+            Map<?, ?> body = assertInstanceOf(Map.class, step);
+            byName.put(String.valueOf(body.get("name")), body);
+        }
+        return byName;
+    }
+
+    /** Answers with every distinct expiry the exception file declares. */
+    private static Set<String> expiryDatesOf(String exceptions) {
+        Set<String> dates = new LinkedHashSet<>();
+        Matcher declared = Pattern.compile("expired_at: (\\d{4}-\\d{2}-\\d{2})").matcher(exceptions);
+        while (declared.find()) {
+            dates.add(declared.group(1));
+        }
+        return dates;
+    }
+
+    /**
+     * Answers with every commit this branch can reach.
+     *
+     * <p>Read from git rather than assumed, because the property being asserted is that no baseline
+     * entry sits on one of them and that set changes with every commit.
+     */
+    private static Set<String> commitsReachableFromHead() {
+        try {
+            Process process = new ProcessBuilder("git", "rev-list", "HEAD")
+                    .directory(platformRoot.getParent().toFile())
+                    .redirectErrorStream(true)
+                    .start();
+            String output = new String(process.getInputStream().readAllBytes(),
+                    StandardCharsets.UTF_8);
+            assertEquals(0, process.waitFor(), () -> "git rev-list HEAD failed: " + output);
+            Set<String> reachable = new LinkedHashSet<>();
+            for (String line : output.split("\n")) {
+                String commit = line.trim();
+                if (!commit.isEmpty()) {
+                    reachable.add(commit);
+                }
+            }
+            return reachable;
+        } catch (IOException unreadable) {
+            throw new UncheckedIOException("cannot run git rev-list", unreadable);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError("interrupted while running git rev-list", interrupted);
+        }
     }
 
     /** Answers with the pin recorded for one action, failing when the name is unknown. */

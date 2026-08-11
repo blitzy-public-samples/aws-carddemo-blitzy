@@ -1,0 +1,39 @@
+# The trusted-proxy profile for the fraud detection service: this container behind a terminating proxy.
+#
+# What it is for. The shipped application.yml trusts no forwarded header, which is right for the
+# documented paths: Compose publishes a loopback port and the cluster reaches each pod through a
+# Service. An Ingress or a load balancer that terminates Transport Layer Security breaks that, in
+# two quiet ways. config/RequestRateCeilingFilter keys its ceilings on the peer address, which
+# becomes the proxy, so every caller in the world shares one quota. config/CrossSiteRequestFilter
+# compares Origin against the host the request arrived on, which becomes the internal host, so a
+# first-party call compares unequal and a state change is refused.
+#
+# How to activate it. Add trusted-proxy to SPRING_PROFILES_ACTIVE and set TRUSTED_PROXY_ADDRESSES
+# to a regular expression matching the addresses your proxy sends from. The variable carries no
+# default, so activating the profile without it stops start-up naming the variable: a profile that
+# quietly trusts nothing would be worse than one that refuses.
+#
+# What the proxy has to do. It has to overwrite X-Forwarded-For, X-Forwarded-Proto and
+# X-Forwarded-Host rather than append to a value a client sent, and it has to drop Forwarded. A
+# proxy that appends leaves a client-supplied address as the first element, which is the one a
+# valve reads. Nothing in this file can check that, so it is stated here as the condition it is.
+#
+# The strategy is native rather than framework. The framework strategy honours the headers on
+# every request, whoever sent them, which is the spoofable arrangement this profile avoids. The
+# native strategy is Tomcat's own valve, and it rewrites the address only for a request whose
+# immediate peer matches internal-proxies. A request arriving from anywhere else keeps its own
+# address and its own host, so a caller reaching the container directly cannot claim forwarding.
+#
+# Rationale, alternatives considered and accepted risks: card-platform/docs/decision-log.md, under
+# "Forwarded headers are trusted in one profile, and only behind a named proxy".
+
+server:
+  forward-headers-strategy: native
+  tomcat:
+    remoteip:
+      # A regular expression, not a list: Tomcat matches the peer address against it. There is no
+      # default, so an activated profile with no value stops start-up rather than trusting nothing.
+      internal-proxies: "${TRUSTED_PROXY_ADDRESSES}"
+      remote-ip-header: x-forwarded-for
+      protocol-header: x-forwarded-proto
+      host-header: x-forwarded-host

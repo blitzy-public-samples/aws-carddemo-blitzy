@@ -849,9 +849,17 @@ class EventSerdeSecurityTest {
         }
     }
 
+    /**
+     * Holds the consume side open to ordinary additive traffic, which is what the subtree is for.
+     *
+     * <p>The produce side closes the same subtree, asserted by
+     * {@link #theProduceSideClosesTheExtensionsSubtreeTheConsumeSideKeepsOpen()}. This test is the
+     * other half: a control that refused every extension on the read side would refuse the enriched
+     * record a later version publishes, which is the compatibility this platform promises.
+     */
     @Test
-    @DisplayName("an ordinary extension name and value still passes both ends")
-    void anOrdinaryExtensionStillPassesBothEnds() {
+    @DisplayName("an ordinary extension name and value still reaches a consumer")
+    void anOrdinaryExtensionStillReachesAConsumer() {
         for (String pair : List.of(
                 quoted("replayOf") + ":" + quoted("3f1d9c62-8b4e-4a17-9f0c-2d6a5e73b418"),
                 quoted("posEntryMode") + ":" + quoted("chip"),
@@ -865,6 +873,270 @@ class EventSerdeSecurityTest {
                     "a screen that refuses " + pair + " refuses ordinary additive traffic, and a"
                             + " control that fires on everything gets switched off");
         }
+    }
+
+    @Test
+    @DisplayName("a bare card code fills a narrative property and is refused on both sides")
+    void aBareCardCodeInANarrativePropertyIsRefused() {
+        for (String bare : List.of("123", "4321", "0007")) {
+            SerializationException publishRefused = assertThrows(SerializationException.class,
+                    () -> serializer.serialize(topicFor(authorized()),
+                            authorizedWithDescription(bare)),
+                    "a description of " + bare + " reached a topic, and three or four digits is the"
+                            + " width of CARD-CVV-CD PIC 9(03) at app/cpy/CVACT02Y.cpy:L7");
+            assertTrue(publishRefused.getMessage().contains("description"),
+                    "the refusal has to name the property a reader must look at: "
+                            + publishRefused.getMessage());
+            assertFalse(publishRefused.getMessage().contains(bare),
+                    "the refusal repeated the value it refused, which puts it in a log");
+
+            String smuggled = serializedWithNarrative("description", bare);
+            assertThrows(SerializationException.class,
+                    () -> deserializer.deserialize("topic",
+                            smuggled.getBytes(StandardCharsets.UTF_8)),
+                    "the consume side accepted a description of " + bare
+                            + ", so the two ends disagree about what a narrative property may hold");
+        }
+
+        // The record refuses a full-width digit before a gate is reached, because
+        // TransactionAuthorized holds its description to the characters the source field carries. A
+        // document built by hand reaches the screen, and the screen reads the value normalized.
+        String fullWidth = serializedWithNarrative("description", "\uff11\uff12\uff13");
+        assertThrows(SerializationException.class,
+                () -> deserializer.deserialize("topic", fullWidth.getBytes(StandardCharsets.UTF_8)),
+                "three full-width digits render as a card code to a reader and passed the screen");
+    }
+
+    @Test
+    @DisplayName("an unseparated government identifier inside narrative text is refused")
+    void anUnseparatedGovernmentIdentifierInsideNarrativeTextIsRefused() {
+        for (String written : List.of("020973888", "holder 020973888", "SSN020973888",
+                "0209738881", "020973888123")) {
+            SerializationException refused = assertThrows(SerializationException.class,
+                    () -> serializer.serialize(topicFor(authorized()),
+                            authorizedWithMerchantName(written)),
+                    "a merchant name of " + written + " reached a topic. CUST-SSN PIC 9(09) at"
+                            + " app/cpy/CVCUS01Y.cpy:L20 holds nine digits with no separator, and"
+                            + " the separated screen cannot see that form");
+            assertTrue(refused.getMessage().contains("merchantName"),
+                    "the refusal has to name merchantName: " + refused.getMessage());
+        }
+    }
+
+    @Test
+    @DisplayName("a postal code keeps both of the forms the repository holds")
+    void aPostalCodeKeepsBothOfTheFormsTheRepositoryHolds() {
+        for (String written : List.of("72112", "72112-1234", "721121234", "00022")) {
+            TransactionAuthorized published = authorizedWithMerchantZip(written);
+
+            byte[] bytes = assertDoesNotThrow(
+                    () -> serializer.serialize(topicFor(published), published),
+                    "a merchant postal code of " + written + " was refused. Records of"
+                            + " app/data/ASCII/dailytran.txt hold the five-digit and the hyphenated"
+                            + " nine-digit form, and a screen that refuses valid traffic gets"
+                            + " switched off");
+
+            assertEquals(published, deserializer.deserialize("topic", bytes),
+                    "the postal code did not survive the round trip it passed");
+        }
+    }
+
+    @Test
+    @DisplayName("a narrative property keeps ordinary prose that happens to carry short runs")
+    void aNarrativePropertyKeepsOrdinaryProse() {
+        for (String written : List.of("Purchase at STORE 101", "Pizza 4 U", "Refund 12.34",
+                "Order 1234 of 5678", "Purchase at Abshire-Lowe")) {
+            TransactionAuthorized published = authorizedWithDescription(written);
+
+            assertDoesNotThrow(() -> serializer.serialize(topicFor(published), published),
+                    "the description " + written + " was refused, and a control that fires on"
+                            + " ordinary prose is one an operator turns off");
+        }
+    }
+
+    @Test
+    @DisplayName("the property that owns an array is what a refusal names")
+    void thePropertyThatOwnsAnArrayIsWhatARefusalNames() {
+        String smuggled = withProperty(serialized(
+                        FraudFlagged.of(ACCOUNT_ID, TRANSACTION_ID, 82, List.of("VELOCITY"),
+                                Instant.parse("2022-06-10T19:27:53.412Z")))
+                        .replace("[\"VELOCITY\"]", "[\"4111 1111 1111 1111\"]"), quoted("unused")
+                        + ":" + quoted("x"));
+
+        SerializationException refused = assertThrows(SerializationException.class,
+                () -> deserializer.deserialize("topic", smuggled.getBytes(StandardCharsets.UTF_8)));
+
+        assertTrue(refused.getMessage().contains("triggeredRules")
+                        || refused.getMessage().contains("unused"),
+                "a value inside an array used to be reported as \"extensions\", which names a"
+                        + " property the event does not carry: " + refused.getMessage());
+        assertFalse(refused.getMessage().contains("4111"),
+                "the refusal repeated the value it refused: " + refused.getMessage());
+    }
+
+    @Test
+    @DisplayName("a cardholder name or address line is screened as narrative text")
+    void aCardholderNameOrAddressLineIsScreenedAsNarrativeText() {
+        for (String property : List.of("firstName", "lastName", "addressLine1", "addressLine2",
+                "addressLine3")) {
+            String smuggled = customerContextDocument(property, "4111111111111111");
+
+            SerializationException refused = assertThrows(SerializationException.class,
+                    () -> deserializer.deserialize("topic",
+                            smuggled.getBytes(StandardCharsets.UTF_8)),
+                    "a card number written into " + property + " reached a consumer. The account"
+                            + " service publishes these ten fields to the notification read model,"
+                            + " and until this screen covered them nothing read their values");
+            assertTrue(refused.getMessage().contains(property),
+                    "the refusal has to name " + property + ": " + refused.getMessage());
+        }
+    }
+
+    @Test
+    @DisplayName("a cardholder postal code keeps its nine-digit form")
+    void aCardholderPostalCodeKeepsItsNineDigitForm() {
+        String allowed = customerContextDocument("zipCode", "198526716");
+
+        assertDoesNotThrow(() -> deserializer.deserialize("topic",
+                        allowed.getBytes(StandardCharsets.UTF_8)),
+                "app/data/ASCII/custdata.txt holds a hyphenated nine-digit postal code, so the"
+                        + " unseparated form is legitimate traffic and not a government identifier");
+    }
+
+    @Test
+    @DisplayName("a full-width property name folds onto the name it renders as")
+    void aFullWidthPropertyNameFoldsOntoTheNameItRendersAs() {
+        String smuggled = withProperty(serialized(authorized()),
+                quoted("\uff43\uff56\uff56") + ":" + quoted("123"));
+
+        SerializationException refused = assertThrows(SerializationException.class,
+                () -> deserializer.deserialize("topic", smuggled.getBytes(StandardCharsets.UTF_8)),
+                "a property named in full-width characters folded to nothing and passed the name"
+                        + " screens, so the same three digits travelled under a name that reads as"
+                        + " cvv");
+
+        assertNotNull(refused.getMessage());
+    }
+
+    @Test
+    @DisplayName("the produce side closes the extensions subtree the consume side keeps open")
+    void theProduceSideClosesTheExtensionsSubtreeTheConsumeSideKeepsOpen() {
+        String enriched = withProperty(serialized(authorized()),
+                quoted("extensions") + ":{" + quoted("posEntryMode") + ":" + quoted("chip") + "}");
+
+        List<String> refusals = EventContracts.publishViolationsOf(
+                EventContracts.TRANSACTION_AUTHORIZED, enriched);
+
+        assertFalse(refusals.isEmpty(),
+                "a producer wrote an extensions object, and no record of this platform declares"
+                        + " one, so the JSON was built outside its own record");
+        assertTrue(refusals.stream().anyMatch(entry -> entry.contains("extensions")),
+                "the refusal has to name the property: " + refusals);
+        assertDoesNotThrow(() -> deserializer.deserialize("topic",
+                        enriched.getBytes(StandardCharsets.UTF_8)),
+                "the consume side has to keep reading an enriched record, which is the"
+                        + " compatibility every schema document promises through extensions");
+    }
+
+    @Test
+    @DisplayName("the text-form producer check refuses what the record-form gate refuses")
+    void theTextFormProducerCheckRefusesWhatTheRecordFormGateRefuses() {
+        String smuggled = serializedWithNarrative("description", "4111111111111111");
+
+        List<String> refusals = EventContracts.publishViolationsOf(
+                EventContracts.TRANSACTION_AUTHORIZED, smuggled);
+
+        assertFalse(refusals.isEmpty(),
+                "the text-form check accepted a card number in a free-text property while the"
+                        + " record-form gate refused it, which is the split a security review found");
+        assertTrue(refusals.stream().anyMatch(entry -> entry.contains("description")), refusals::toString);
+        assertFalse(refusals.stream().anyMatch(entry -> entry.contains("4111")), refusals::toString);
+    }
+
+    @Test
+    @DisplayName("the text-form producer check applies the platform byte ceiling")
+    void theTextFormProducerCheckAppliesThePlatformByteCeiling() {
+        String oversized = withProperty(serialized(authorized()),
+                quoted("filler") + ":" + quoted("x".repeat(EventWireBounds.MAX_EVENT_BYTES)));
+
+        List<String> refusals = EventContracts.publishViolationsOf(
+                EventContracts.TRANSACTION_AUTHORIZED, oversized);
+
+        assertTrue(refusals.stream().anyMatch(entry -> entry.contains("byte ceiling")),
+                "a payload wider than the platform ceiling was measurable only by the serializer,"
+                        + " so a relay re-checking stored text could publish one: " + refusals);
+    }
+
+    /** One authorized event whose description carries the supplied narrative text. */
+    private TransactionAuthorized authorizedWithDescription(String description) {
+        return TransactionAuthorized.of(ACCOUNT_ID, TRANSACTION_ID, "01", "0001", "POS TERM",
+                description, new BigDecimal("50.47"), "800000000", "Abshire-Lowe",
+                "North Enoshaven", "72112", MASKED_CARD_NUMBER, CARD_TOKEN, AUTHORIZED_AT);
+    }
+
+    /** One authorized event whose merchant name carries the supplied narrative text. */
+    private TransactionAuthorized authorizedWithMerchantName(String merchantName) {
+        return TransactionAuthorized.of(ACCOUNT_ID, TRANSACTION_ID, "01", "0001", "POS TERM",
+                "Purchase at Abshire-Lowe", new BigDecimal("50.47"), "800000000", merchantName,
+                "North Enoshaven", "72112", MASKED_CARD_NUMBER, CARD_TOKEN, AUTHORIZED_AT);
+    }
+
+    /** One authorized event whose merchant postal code carries the supplied value. */
+    private TransactionAuthorized authorizedWithMerchantZip(String merchantZip) {
+        return TransactionAuthorized.of(ACCOUNT_ID, TRANSACTION_ID, "01", "0001", "POS TERM",
+                "Purchase at Abshire-Lowe", new BigDecimal("50.47"), "800000000", "Abshire-Lowe",
+                "North Enoshaven", merchantZip, MASKED_CARD_NUMBER, CARD_TOKEN, AUTHORIZED_AT);
+    }
+
+    /**
+     * One authorized document whose named narrative property carries the supplied text.
+     *
+     * <p>Written by replacing the value in a document the serializer produced, so every other
+     * property stays the one the record writes and the document still validates.
+     *
+     * @param property the narrative property to overwrite
+     * @param value    the text to write into it
+     * @return the document, as text
+     */
+    private String serializedWithNarrative(String property, String value) {
+        JsonNode tree = MAPPER_TREE.readTree(serialized(authorized()));
+        return MAPPER_TREE.writeValueAsString(
+                ((tools.jackson.databind.node.ObjectNode) tree).put(property, value));
+    }
+
+    /**
+     * One {@code CustomerContextChanged} document, written by hand, with one property overwritten.
+     *
+     * <p>The record lives in the account service, which this module does not depend on, so the
+     * document is assembled here from the schema this module ships. Every value is the shape
+     * {@code app/cpy/CVCUS01Y.cpy} declares, so the document validates and the screens are what
+     * decide the outcome.
+     *
+     * @param property the property to overwrite
+     * @param value    the value to write into it
+     * @return the document, as text
+     */
+    private String customerContextDocument(String property, String value) {
+        String document = """
+                {"eventId":"3f1d9c62-8b4e-4a17-9f0c-2d6a5e73b418",
+                 "eventType":"CustomerContextChanged",
+                 "schemaVersion":1,
+                 "occurredAt":"2022-06-10T19:27:53.412Z",
+                 "aggregateId":"00000000007",
+                 "accountId":"00000000007",
+                 "firstName":"Aniya",
+                 "middleName":"Rae",
+                 "lastName":"Von",
+                 "addressLine1":"618 Deshaun Route",
+                 "addressLine2":"Suite 4",
+                 "addressLine3":"Lake Wilfrid",
+                 "stateCode":"CO",
+                 "countryCode":"USA",
+                 "zipCode":"12546",
+                 "ficoScore":"747"}""".replace("\n", "");
+        JsonNode tree = MAPPER_TREE.readTree(document);
+        return MAPPER_TREE.writeValueAsString(
+                ((tools.jackson.databind.node.ObjectNode) tree).put(property, value));
     }
 
     private List<Object> coreEvents() {

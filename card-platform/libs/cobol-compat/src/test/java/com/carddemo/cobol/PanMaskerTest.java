@@ -174,7 +174,27 @@ class PanMaskerTest {
             java.util.Map.entry("CARD_TOKEN_SECRET_VARIABLE", "CARD_TOKEN_SECRET"),
             java.util.Map.entry("CARD_TOKEN_VERSION_PROPERTY", "carddemo.card-token.version"),
             java.util.Map.entry("CARD_TOKEN_VERSION_VARIABLE", "CARD_TOKEN_VERSION"),
+            java.util.Map.entry("CARD_TOKEN_PREVIOUS_SECRET_PROPERTY",
+                    "carddemo.card-token.previous-secret"),
+            java.util.Map.entry("CARD_TOKEN_PREVIOUS_SECRET_VARIABLE",
+                    "CARD_TOKEN_PREVIOUS_SECRET"),
+            java.util.Map.entry("CARD_TOKEN_PREVIOUS_VERSION_PROPERTY",
+                    "carddemo.card-token.previous-version"),
+            java.util.Map.entry("CARD_TOKEN_PREVIOUS_VERSION_VARIABLE",
+                    "CARD_TOKEN_PREVIOUS_VERSION"),
+            java.util.Map.entry("CARD_TOKEN_ROTATION_PROPERTY",
+                    "carddemo.card-token.rotation-enabled"),
+            java.util.Map.entry("CARD_TOKEN_ROTATION_VARIABLE", "CARD_TOKEN_ROTATION_ENABLED"),
             java.util.Map.entry("DEFAULT_CARD_TOKEN_VERSION", "1"));
+
+    /**
+     * The single-argument string methods that return a digest rather than mask characters.
+     *
+     * <p>Each holds digits of its own, so the guarantee they are held to is that the digest is not
+     * its argument and takes the declared shape, rather than that it carries no digit.</p>
+     */
+    private static final Set<String> DIGEST_METHODS =
+            Set.of("cardToken", "tokenOf", "previousCardToken");
 
     @Test
     void maskCardNumberHidesAllButTheLastFourCharacters() {
@@ -321,21 +341,23 @@ class PanMaskerTest {
         }
 
         assertEquals(Set.of("maskCardNumber", "redactCardVerificationValue", "cardToken",
-                        "tokenOf"),
+                        "tokenOf", "previousCardToken"),
                 names,
                 "the set of single-argument string methods changed, and each new method needs its"
                         + " own disclosure guarantee stated here");
 
         // maskCardNumber and redactCardVerificationValue both return mask characters alone, so a
-        // returned digit would be a disclosure. cardToken and tokenOf return a digest rendered as
-        // hexadecimal, which holds digits of its own; the guarantee it makes is tested by
-        // cardTokenHoldsNoCharacterOfItsArgumentAndNoVerificationValue and by
+        // returned digit would be a disclosure. cardToken, tokenOf and previousCardToken return a
+        // digest rendered as hexadecimal, which holds digits of its own; the guarantee it makes is
+        // tested by cardTokenHoldsNoCharacterOfItsArgumentAndNoVerificationValue and by
         // cardTokenIsNotReversibleForAnyStoredVerificationValueWidthArgument below.
+        // previousCardToken derives under the key a rotation is leaving behind, so it is held to the
+        // same shape and the same non-reversal, under a previous pair this test configures.
         for (Method method : stringMethods) {
-            if (method.getName().equals("cardToken") || method.getName().equals("tokenOf")) {
+            if (DIGEST_METHODS.contains(method.getName())) {
                 for (int value = 0; value < STORED_VERIFICATION_VALUE_COMBINATIONS; value++) {
                     String stored = String.format("%03d", value);
-                    String returned = (String) method.invoke(null, stored);
+                    String returned = derive(method, stored);
 
                     assertTrue(returned.matches(PanMasker.CARD_TOKEN_PATTERN),
                             method.getName() + " returned a value outside its declared shape for"
@@ -407,11 +429,12 @@ class PanMaskerTest {
             field.setAccessible(true);
             String held = (String) field.get(null);
 
-            // Ten string fields are declared text rather than mask characters: the token shape a
-            // schema document and a check constraint repeat, the label the keyed code covers, the
-            // algorithm name, the redaction a rendered key holder shows, and the five configuration
-            // names and the default version. Each is compared against the literal expected here,
-            // which is how this test still proves the field holds no argument value.
+            // Nineteen of the twenty-two string fields are declared text rather than mask
+            // characters: the token shape a schema document and a check constraint repeat, the
+            // absent-token sentinel, the label the keyed code covers, the algorithm name, the
+            // redaction a rendered key holder shows, the twelve configuration names, the published
+            // demonstration key and the default version. Each is compared against the literal
+            // expected here, which is how this test still proves the field holds no argument value.
             if (DECLARED_TOKEN_TEXT.containsKey(field.getName())) {
                 assertEquals(DECLARED_TOKEN_TEXT.get(field.getName()), held,
                         "field " + field.getName() + " stopped holding its declared literal");
@@ -732,6 +755,185 @@ class PanMaskerTest {
                 "an absent card number needs no key, because it derives no code");
     }
 
+    /**
+     * Proves the read half of a rotation derives under the key being left behind.
+     *
+     * <p>A store holding a token and no card number cannot derive its own replacement, so a rotation
+     * has to state which stored value became which new value. That statement is only possible while
+     * both keys are readable, which is what the previous pair is for.
+     */
+    @Test
+    void previousCardTokenDerivesUnderTheKeyARotationIsLeavingBehind() throws Exception {
+        String underPrevious = withConfiguration(A_KEY, null,
+                () -> withPreviousConfiguration(ANOTHER_KEY, null,
+                        () -> PanMasker.previousCardToken(FULL_CARD_NUMBER)));
+
+        assertEquals(expectedToken(ANOTHER_KEY, PanMasker.DEFAULT_CARD_TOKEN_VERSION,
+                        FULL_CARD_NUMBER),
+                underPrevious,
+                "the previous token is not the code the previous key takes over the same message,"
+                        + " so a mapping built from it names a card no store ever held");
+        assertNotEquals(withConfiguration(A_KEY, null,
+                        () -> PanMasker.cardToken(FULL_CARD_NUMBER)),
+                underPrevious,
+                "the two halves of the dual read agreed, so nothing moved and the mapping is empty");
+        assertEquals(underPrevious, withConfiguration(A_KEY, null,
+                        () -> withPreviousConfiguration(ANOTHER_KEY, null,
+                                () -> PanMasker.previousCardToken("  " + FULL_CARD_NUMBER + "  "))),
+                "surrounding whitespace changed the previous token, so a padded stored card number"
+                        + " would map onto a value no row carries");
+    }
+
+    /**
+     * Proves a version raised on its own is a rotation, and that the previous version defaults.
+     *
+     * <p>Turning the key over and leaving the version alone is the common case, so it has to need one
+     * setting rather than two. Raising the version alone rolls every token over under one key, and the
+     * read half has to name the earlier version for that case to be mappable.
+     */
+    @Test
+    void thePreviousVersionDefaultsToTheCurrentOneAndIsHeldToItsShape() throws Exception {
+        assertEquals("2", withConfiguration(A_KEY, "2",
+                        () -> withPreviousConfiguration(ANOTHER_KEY, null,
+                                PanMasker::previousCardTokenVersion)),
+                "an unset previous version has to read as the current version, so turning only the"
+                        + " key over needs one setting");
+        assertEquals("1", withConfiguration(A_KEY, "2",
+                        () -> withPreviousConfiguration(ANOTHER_KEY, "1",
+                                PanMasker::previousCardTokenVersion)),
+                "a configured previous version is the version the stored token was taken under");
+
+        assertEquals(expectedToken(A_KEY, "1", FULL_CARD_NUMBER),
+                withConfiguration(A_KEY, "2",
+                        () -> withPreviousConfiguration(A_KEY, "1",
+                                () -> PanMasker.previousCardToken(FULL_CARD_NUMBER))),
+                "a version raised on one key must be a rotation the read half can derive, or a"
+                        + " version rollover leaves the other stores unmappable");
+
+        IllegalStateException badVersion = assertThrows(IllegalStateException.class,
+                () -> withConfiguration(A_KEY, null,
+                        () -> withPreviousConfiguration(ANOTHER_KEY, "0",
+                                PanMasker::previousCardTokenVersion)),
+                "a previous version outside the declared shape was accepted");
+        assertTrue(badVersion.getMessage()
+                        .contains(PanMasker.CARD_TOKEN_PREVIOUS_VERSION_PROPERTY),
+                "the refusal must name the property that supplied the previous version: "
+                        + badVersion.getMessage());
+    }
+
+    /**
+     * Proves the three ways a previous pair can be unusable are refused rather than derived under.
+     *
+     * <p>Each refusal exists because the alternative is a mapping that reads as complete and is
+     * wrong: an absent key derives nothing, a key too short was never a key this platform derived
+     * under, and a pair equal to the current one maps every value onto itself.
+     */
+    @Test
+    void anUnusablePreviousPairDerivesNoTokenAtAll() throws Exception {
+        assertFalse(PanMasker.previousCardTokenConfigured(),
+                "this build configures no previous pair, so a rotation is not in progress and"
+                        + " nothing may report one");
+
+        IllegalStateException unconfigured = assertThrows(IllegalStateException.class,
+                () -> withPreviousConfiguration(null, null,
+                        () -> PanMasker.previousCardToken(FULL_CARD_NUMBER)),
+                "an unconfigured previous key derived a token, so a rotation could invent the value"
+                        + " it claims a store held");
+        assertTrue(unconfigured.getMessage()
+                        .contains(PanMasker.CARD_TOKEN_PREVIOUS_SECRET_PROPERTY),
+                "the refusal must name the property that supplies the previous key: "
+                        + unconfigured.getMessage());
+        assertTrue(unconfigured.getMessage()
+                        .contains(PanMasker.CARD_TOKEN_PREVIOUS_SECRET_VARIABLE),
+                "and the variable that carries it: " + unconfigured.getMessage());
+
+        String tooShort = "x".repeat(PanMasker.CARD_TOKEN_SECRET_MIN_LENGTH - 1);
+        IllegalStateException short_ = assertThrows(IllegalStateException.class,
+                () -> withPreviousConfiguration(tooShort, null,
+                        () -> PanMasker.previousCardToken(FULL_CARD_NUMBER)),
+                "a previous key under the required length was accepted, and this platform never"
+                        + " derived under one");
+        assertFalse(short_.getMessage().contains(tooShort),
+                "the refusal quoted the key material");
+
+        IllegalStateException samePair = assertThrows(IllegalStateException.class,
+                () -> withConfiguration(A_KEY, null,
+                        () -> withPreviousConfiguration(A_KEY, null,
+                                () -> PanMasker.previousCardToken(FULL_CARD_NUMBER))),
+                "a previous pair equal to the current pair was accepted, so a rotation would report"
+                        + " a mapping of every value onto itself");
+        assertTrue(samePair.getMessage()
+                        .contains(PanMasker.CARD_TOKEN_PREVIOUS_SECRET_PROPERTY),
+                "the refusal must name the setting to correct: " + samePair.getMessage());
+
+        assertThrows(NullPointerException.class,
+                () -> withPreviousConfiguration(ANOTHER_KEY, null,
+                        () -> PanMasker.previousCardToken(null)),
+                "an absent card number names no card, and a mapping row for it would name none"
+                        + " either");
+        assertThrows(IllegalArgumentException.class,
+                () -> withPreviousConfiguration(ANOTHER_KEY, null,
+                        () -> PanMasker.previousCardToken("   ")),
+                "a blank card number names no card");
+    }
+
+    /**
+     * Proves the previous key is not held to the published-key refusal the current key is.
+     *
+     * <p>Rotating away from the published demonstration key is the case that refusal exists to force.
+     * Holding the read half to it would make the one rotation this platform most needs impossible to
+     * perform.
+     */
+    @Test
+    void thePublishedKeyIsDerivableAsThePreviousKeyOfARotation() throws Exception {
+        String held = System.getProperty(PanMasker.CARD_TOKEN_ALLOW_PUBLISHED_KEY_PROPERTY);
+        try {
+            System.clearProperty(PanMasker.CARD_TOKEN_ALLOW_PUBLISHED_KEY_PROPERTY);
+
+            String underPublished = withConfiguration(A_KEY, null,
+                    () -> withPreviousConfiguration(PanMasker.PUBLISHED_DEMO_CARD_TOKEN_SECRET,
+                            null, () -> PanMasker.previousCardToken(FULL_CARD_NUMBER)));
+
+            assertEquals(expectedToken(PanMasker.PUBLISHED_DEMO_CARD_TOKEN_SECRET,
+                            PanMasker.DEFAULT_CARD_TOKEN_VERSION, FULL_CARD_NUMBER),
+                    underPublished,
+                    "a deployment leaving the published key behind must be able to derive what its"
+                            + " rows carried, or the rotation the refusal forces cannot be done");
+        } finally {
+            restore(PanMasker.CARD_TOKEN_ALLOW_PUBLISHED_KEY_PROPERTY, held);
+        }
+    }
+
+    /**
+     * Proves a rotation is stated rather than inferred, and that only {@code true} states it.
+     *
+     * <p>A rotation rewrites a value other stores and granted authorities already name. Reading any
+     * non-empty value as approval would let a typo re-key a platform.
+     */
+    @Test
+    void aRotationIsRequestedOnlyByTheStatedValue() throws Exception {
+        String held = System.getProperty(PanMasker.CARD_TOKEN_ROTATION_PROPERTY);
+        try {
+            System.clearProperty(PanMasker.CARD_TOKEN_ROTATION_PROPERTY);
+            assertFalse(PanMasker.cardTokenRotationRequested(),
+                    "an unstated deployment must not be rotating");
+
+            System.setProperty(PanMasker.CARD_TOKEN_ROTATION_PROPERTY, "true");
+            assertTrue(PanMasker.cardTokenRotationRequested(),
+                    "the stated value has to request the rotation it states");
+
+            System.setProperty(PanMasker.CARD_TOKEN_ROTATION_PROPERTY, "yes");
+            assertFalse(PanMasker.cardTokenRotationRequested(),
+                    "only true states the intent: any other value has to read as unstated");
+
+            System.setProperty(PanMasker.CARD_TOKEN_ROTATION_PROPERTY, "");
+            assertFalse(PanMasker.cardTokenRotationRequested(),
+                    "an empty value states nothing");
+        } finally {
+            restore(PanMasker.CARD_TOKEN_ROTATION_PROPERTY, held);
+        }
+    }
+
     @Test
     void theResolvedKeyRendersWithoutItsKeyMaterial() throws Exception {
         PanMasker.cardToken(FULL_CARD_NUMBER);
@@ -797,6 +999,40 @@ class PanMaskerTest {
             restore(PanMasker.CARD_TOKEN_SECRET_PROPERTY, heldKey);
             restore(PanMasker.CARD_TOKEN_VERSION_PROPERTY, heldVersion);
         }
+    }
+
+    /**
+     * Runs one derivation under a named previous key and version, then restores what was held.
+     *
+     * <p>A deployment that is not rotating configures neither setting, which is the state every
+     * other test in this class runs in, so a test of the read half has to supply the pair itself.
+     */
+    private static <T> T withPreviousConfiguration(String key, String version,
+            java.util.concurrent.Callable<T> body) throws Exception {
+        String heldKey = System.getProperty(PanMasker.CARD_TOKEN_PREVIOUS_SECRET_PROPERTY);
+        String heldVersion = System.getProperty(PanMasker.CARD_TOKEN_PREVIOUS_VERSION_PROPERTY);
+        try {
+            restore(PanMasker.CARD_TOKEN_PREVIOUS_SECRET_PROPERTY, key);
+            restore(PanMasker.CARD_TOKEN_PREVIOUS_VERSION_PROPERTY, version);
+            return body.call();
+        } finally {
+            restore(PanMasker.CARD_TOKEN_PREVIOUS_SECRET_PROPERTY, heldKey);
+            restore(PanMasker.CARD_TOKEN_PREVIOUS_VERSION_PROPERTY, heldVersion);
+        }
+    }
+
+    /**
+     * Invokes one digest method on one argument, supplying a previous pair where it needs one.
+     *
+     * <p>{@code previousCardToken} refuses to derive without a previous key, and refuses a previous
+     * pair equal to the current one, so the reflective sweep supplies a key of its own.
+     */
+    private static String derive(Method method, String argument) throws Exception {
+        if (!"previousCardToken".equals(method.getName())) {
+            return (String) method.invoke(null, argument);
+        }
+        return withPreviousConfiguration(ANOTHER_KEY, null,
+                () -> (String) method.invoke(null, argument));
     }
 
     private static void restore(String property, String value) {
@@ -896,11 +1132,16 @@ class PanMaskerTest {
 
         // Every method that takes a card-shaped value takes exactly that one value, so none can
         // combine two of them into one result. The exceptions each take no card-shaped value at
-        // all: cardTokenVersion reports the configured version, resolvedKey builds the key,
-        // configured reads one setting from a property name and a variable name, and
-        // requireCardTokenSecretFitForUse reads the configured key and the statement beside it.
+        // all: cardTokenVersion and previousCardTokenVersion report a configured version,
+        // requireVersionShape holds one configured version to its shape and names where it came
+        // from, resolvedKey builds the key, configured reads one setting from a property name and a
+        // variable name, previousCardTokenConfigured and cardTokenRotationRequested each read one
+        // setting, and requireCardTokenSecretFitForUse reads the configured key and the statement
+        // beside it.
         Set<String> argumentFreeOfCardValues = Set.of("cardTokenVersion", "resolvedKey",
-                "configuredSecret", "configured", "requireCardTokenSecretFitForUse");
+                "configuredSecret", "configured", "requireCardTokenSecretFitForUse",
+                "previousCardTokenVersion", "previousCardTokenConfigured",
+                "cardTokenRotationRequested", "requireVersionShape");
         for (Method method : PanMasker.class.getDeclaredMethods()) {
             if (method.isSynthetic() || argumentFreeOfCardValues.contains(method.getName())) {
                 continue;
@@ -916,7 +1157,9 @@ class PanMaskerTest {
             }
         }
         assertEquals(Set.of("maskCardNumber", "redactCardVerificationValue", "cardToken",
-                        "tokenOf", "cardTokenVersion", "requireCardTokenSecretFitForUse"),
+                        "tokenOf", "cardTokenVersion", "requireCardTokenSecretFitForUse",
+                        "previousCardToken", "previousCardTokenVersion",
+                        "previousCardTokenConfigured", "cardTokenRotationRequested"),
                 publicSurface,
                 "the public surface changed, and every addition needs its own disclosure"
                         + " guarantee stated in this class");

@@ -245,7 +245,10 @@ data:
   # card-platform/.env.example carries the same value.
   OUTBOX_RELAY_MAX_DURATION_MS: "5000"
   OUTBOX_PUBLISHED_RETENTION_HOURS: "168"
-  PROCESSED_EVENT_RETENTION_HOURS: "720"
+  # No key expires a duplicate-delivery marker. A security review found the horizon that used
+  # to expire one bounded only against broker log retention, which says nothing about how long
+  # the side effect a marker guards stands, so every service keeps its claims permanently. Each
+  # service's processed_event_claims_are_permanent migration carries the whole rule.
   RETENTION_SWEEP_INTERVAL_MS: "3600000"
   # Business-table horizons. Each was declared in a COMMENT ON TABLE before any code
   # applied it, so the catalogue described an intention while the table only grew. A
@@ -263,11 +266,11 @@ data:
   # defines the source's reject generation group with LIMIT(5) and SCRATCH, so a sixth
   # write deletes the oldest generation.
   LEDGER_REJECTED_RETENTION_DAYS: "90"
-  # Days a row of authorization_decision and unresolved_card_attempt remains. Each is the
-  # attribution record of a financial decision rather than a message in flight, so it
-  # outlives the outbox row that carried the event, and a year is the horizon the
-  # authorization service ships. Only that service reads this, and the whole-ConfigMap pull
-  # carries it to the other five, which ignore it.
+  # Days a row of authorization_decision remains. It is the attribution record of a financial
+  # decision rather than a message in flight, so it outlives the outbox row that carried the
+  # event, and a year is the horizon the authorization service ships. Only that service reads
+  # this, and the whole-ConfigMap pull carries it to the other five, which ignore it. It
+  # governed unresolved_card_attempt as well until migration V20 withdrew that table.
   DECISION_RETENTION_DAYS: "365"
   # OUTBOX_RELAY_INSTANCE_ID is deliberately NOT a key here, and this is the one
   # exception to the parity invariant in the header worth explaining twice. It names
@@ -380,7 +383,14 @@ data:
   #
   # An Ingress terminating Transport Layer Security has to forward the client-facing host and
   # scheme, and each service has to be told to read them, or the Origin comparison sees the
-  # address the Ingress dialled. Set SERVER_FORWARD_HEADERS_STRATEGY to framework for that.
+  # address the Ingress dialled and every caller shares one rate ceiling. These manifests carry
+  # no Ingress, so every service ships forward-headers-strategy: none and trusts no such header.
+  # A deployment that adds one activates the trusted-proxy profile instead of setting a strategy
+  # by hand: add trusted-proxy to SPRING_PROFILES_ACTIVE and set TRUSTED_PROXY_ADDRESSES to a
+  # regular expression matching the addresses the Ingress sends from. The profile uses Tomcat's
+  # valve rather than the framework filter, so a request that did not come through the proxy keeps
+  # its own address. services/*/src/main/resources/application-trusted-proxy.yml carries it, with
+  # the header-rewriting the proxy itself has to do.
   API_CROSS_SITE_HEADER: "X-CardDemo-Request"
   # The five rate ceilings, counted over one fixed window by config/RequestRateCeilingFilter,
   # which runs ahead of the security chain so a refusal costs less than the bcrypt
@@ -460,6 +470,26 @@ data:
   # does not survive it. card-platform/.env.example carries the same value, so a demo
   # scripted on Compose reproduces here.
   CARD_TOKEN_VERSION: "1"
+
+  # The two non-secret halves of a card-token rotation. Both are inert in ordinary
+  # operation and only the card service reads either.
+  #
+  # A stored card token is an identity three other places already name and none of those
+  # three holds a card number, so none can derive its own replacement:
+  # statement_transaction and notification_log in the notification service,
+  # authorization_decision in the authorization service, and a granted SCOPE_CARD
+  # authority. Turning the key or the version over moves that identity, so
+  # CardTokenReconciler refuses to start rather than rewriting it silently, and the
+  # refusal names the procedure in card-platform/services/card-service/README.md.
+  #
+  # CARD_TOKEN_PREVIOUS_VERSION is the version the stored tokens were taken under. Empty,
+  # it falls back to CARD_TOKEN_VERSION above, so turning the key over without raising the
+  # version needs no value here. The key itself is CARD_TOKEN_PREVIOUS_SECRET in
+  # carddemo-card-token-secret, because it is key material and this file is not a Secret.
+  CARD_TOKEN_PREVIOUS_VERSION: ""
+  # The operator's statement that a rotation is intended. A seeded token is not a rotation
+  # and is brought onto the deployment key whatever this says.
+  CARD_TOKEN_ROTATION_ENABLED: "false"
 
   # NO statement about a published key appears here, and that is deliberate.
   # 31-secret.example.yaml carries a placeholder rather than a key, so a cluster applying

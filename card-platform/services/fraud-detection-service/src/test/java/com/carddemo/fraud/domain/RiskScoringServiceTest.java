@@ -507,7 +507,7 @@ class RiskScoringServiceTest {
      * other property, so only the risk block holds a value.
      */
     private static FraudProperties settingsFlaggingAt(int threshold) {
-        return new FraudProperties(null, null, null, null, null,
+        return new FraudProperties(null, null, null, null,
                 new FraudProperties.Fraud(new FraudProperties.Fraud.Risk(threshold, 60, 5,
                         new BigDecimal("500.00"))));
     }

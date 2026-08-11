@@ -5,12 +5,10 @@ import com.carddemo.authorization.config.AuthorizationProperties;
 import com.carddemo.authorization.config.ObservabilityConfig;
 import com.carddemo.authorization.entity.CardCrossReferenceEntity;
 import com.carddemo.authorization.entity.AuthorizationDecisionEntity;
-import com.carddemo.authorization.entity.UnresolvedCardAttemptEntity;
 import com.carddemo.authorization.outbox.OutboxWriter;
 import com.carddemo.authorization.repository.AuthorizationDecisionRepository;
 import com.carddemo.authorization.repository.CardCrossReferenceRepository;
 import com.carddemo.authorization.repository.ReplicaGapRepository;
-import com.carddemo.authorization.repository.UnresolvedCardAttemptRepository;
 import com.carddemo.cobol.PanMasker;
 import com.carddemo.cobol.PicClause;
 import com.carddemo.events.DeclineReason;
@@ -50,11 +48,10 @@ import org.springframework.transaction.support.TransactionTemplate;
  * raises nothing.
  *
  * <p>Every decided call writes exactly one event, and the event row commits with the decision that
- * produced it. A call whose card resolves to an account keys that event on the account identifier. A
- * call whose card resolves to none keys it on the transaction identifier and publishes
- * {@code schemas/transaction-declined-v2.json}, which declares no account identifier, and records an
- * {@code unresolved_card_attempt} row beside it. Add a fifth reject reason by adding one
- * {@link DeclineRule} bean; this class needs no edit for it.
+ * produced it. Every event is keyed on the eleven-digit account the cross-reference resolved, which is
+ * the only subject a decision of this service has: a call whose card resolves no row is refused rather
+ * than decided, because the account a caller named in the request body is a value nothing corroborates.
+ * Add a fifth reject reason by adding one {@link DeclineRule} bean; this class needs no edit for it.
  */
 @Service
 public class AuthorizationService {
@@ -100,6 +97,16 @@ public class AuthorizationService {
      */
     static final String ENTITLEMENT_STAGE = ObservabilityConfig.ENTITLEMENT_STAGE;
 
+    /**
+     * The {@link #FAILURES_COUNTER} stage of a call whose card resolved no cross-reference row.
+     *
+     * <p>A refusal and not a fault, exactly as {@link #ENTITLEMENT_STAGE} is, and it is counted for
+     * the same reason: a caller presenting unknown card numbers one after another is invisible if the
+     * refusal is counted nowhere. It replaces the {@code unresolved_card_attempt} row this service
+     * used to write, which named an account the caller had merely declared.
+     */
+    static final String UNRESOLVED_CARD_STAGE = ObservabilityConfig.UNRESOLVED_CARD_STAGE;
+
     /** Scale a scale-0 account identifier holds, from {@code XREF-ACCT-ID PIC 9(11)}. */
     private static final int ACCOUNT_IDENTIFIER_SCALE = 0;
 
@@ -120,7 +127,7 @@ public class AuthorizationService {
      * @param approved      whether the call may proceed, true only when every rule accepted
      * @param declineReason the one reject reason that stands, empty on an approval
      * @param accountId     the account this decision applies to, at scale zero and never negative,
-     *                      which the cross-reference resolved or the caller declared
+     *                      always the one the cross-reference resolved
      * @param transactionId the identifier this decision applies to
      */
     public record Outcome(boolean approved, Optional<DeclineReason> declineReason,
@@ -191,8 +198,8 @@ public class AuthorizationService {
          * Builds the outcome of a call one rule declined.
          *
          * @param declineReason the one reject reason that stands
-         * @param accountId     the account this decision applies to, at scale zero, which the
-         *                      cross-reference resolved or the caller declared
+         * @param accountId     the account this decision applies to, at scale zero, always the
+         *                      one the cross-reference resolved
          * @param transactionId the identifier this decision applies to
          * @return the declined decision, holding the measurements it earned
          * @throws NullPointerException     when {@code declineReason} or {@code transactionId} is
@@ -232,9 +239,6 @@ public class AuthorizationService {
 
     /** Writes the one event a resolved call produces. */
     private final OutboxWriter outboxWriter;
-
-    /** Records the one outcome whose cross-reference read resolved no account. */
-    private final UnresolvedCardAttemptRepository unresolvedCardAttempts;
 
     /** Records each decision and the identity that asked for it. */
     private final AuthorizationDecisionRepository authorizationDecisions;
@@ -294,7 +298,6 @@ public class AuthorizationService {
      * @param cardCrossReferences    store the card number resolves through
      * @param transactionIdentifiers allocator of transaction identifiers
      * @param outboxWriter           writer of the one event a resolved call produces
-     * @param unresolvedCardAttempts store of attempts that name no account
      * @param authorizationDecisions store of each decision and the identity behind it
      * @param meters                 registry the three measurements register with
      * @param transactionTemplate    opens the one transaction a decision commits in, so every meter
@@ -311,7 +314,6 @@ public class AuthorizationService {
     public AuthorizationService(List<DeclineRule> rules,
             CardCrossReferenceRepository cardCrossReferences,
             TransactionIdentifierSource transactionIdentifiers, OutboxWriter outboxWriter,
-            UnresolvedCardAttemptRepository unresolvedCardAttempts,
             AuthorizationDecisionRepository authorizationDecisions, MeterRegistry meters,
             TransactionTemplate transactionTemplate, AuthorizationProperties properties,
             CycleExposureReservation cycleExposure, ReplicaSynchronization replicaSynchronization,
@@ -344,8 +346,6 @@ public class AuthorizationService {
         this.transactionIdentifiers = Objects.requireNonNull(transactionIdentifiers,
                 "transactionIdentifiers must be present");
         this.outboxWriter = Objects.requireNonNull(outboxWriter, "outboxWriter must be present");
-        this.unresolvedCardAttempts = Objects.requireNonNull(unresolvedCardAttempts,
-                "unresolvedCardAttempts must be present");
         this.authorizationDecisions = Objects.requireNonNull(authorizationDecisions,
                 "authorizationDecisions must be present");
         this.meters = Objects.requireNonNull(meters, "meters must be present");
@@ -388,9 +388,9 @@ public class AuthorizationService {
      * committed outcome and expected traffic per {@code app/cbl/CBTRN02C.cbl:L229-L230}. The publish
      * stage is recorded by the relay, which is the only component that publishes.
      *
-     * <p>A caller refused the subject its request resolved to increments the entitlement stage, and
-     * that refusal is counted here for the same reason: nothing inside the transactional unit touches a
-     * meter.
+     * <p>A caller refused the subject its request resolved to increments the entitlement stage, and a
+     * card that resolved no cross-reference row increments the unresolved-card stage. Both refusals are
+     * counted here for the same reason: nothing inside the transactional unit touches a meter.
      *
      * @param request the validated request body
      * @param caller  the request identity and what it is entitled to reach, built by
@@ -401,6 +401,9 @@ public class AuthorizationService {
      * @throws CallerNotEntitledException when the caller owns neither the resolved account nor the
      *                             resolved card, in which case no decision was recorded and no event
      *                             was written
+     * @throws CardNumberNotFoundInCrossReferenceException when the card the request named resolves no
+     *                             cross-reference row, so no account can be vouched for and, again,
+     *                             no identifier was drawn, no decision recorded and no event written
      */
     public Outcome authorize(AuthorizationRequest request, RequestCaller caller) {
         Objects.requireNonNull(request, "request must be present");
@@ -413,6 +416,9 @@ public class AuthorizationService {
 
             decision.record(this);
             return decision.outcome();
+        } catch (CardNumberNotFoundInCrossReferenceException unresolvedCard) {
+            countFailure(UNRESOLVED_CARD_STAGE);
+            throw unresolvedCard;
         } catch (CallerNotEntitledException notEntitled) {
             countFailure(ENTITLEMENT_STAGE);
             throw notEntitled;
@@ -499,22 +505,33 @@ public class AuthorizationService {
      * being authorized. An account identifier resolves a card only where the request carried none,
      * which is the {@code MOVE XREF-CARD-NUM} of {@code app/cbl/COTRN02C.cbl:L196-L209}.
      *
-     * <p>The subject of the decision is the account the cross-reference resolved, and the account the
-     * caller declared wherever that read resolved none. Reject reason {@code 0100} is the one reason
-     * assigned before that read resolves anything, at {@code app/cbl/CBTRN02C.cbl:L385-L387}, and
-     * {@code app/cbl/CBTRN02C.cbl:L446-L465} still writes the 430-byte reject record the subject
-     * account owns. A declared account is a validated eleven-digit identifier the interface pattern
-     * already refused anything else for, so the decision applies to it and its event is keyed on it.
+     * <p>The subject of the decision is the account the cross-reference resolved, and nothing else may
+     * become one. An account named on the request is a value the caller chose, so a decision keyed on
+     * it would record an outcome against an account no stored row ties to the card presented. The feed
+     * record the batch path validates carries no account either: {@code app/cpy/CVTRA06Y.cpy}
+     * declares twelve fields and none of them is an account identifier, which is why
+     * {@code app/cbl/CBTRN02C.cbl:L394} has to move {@code XREF-ACCT-ID} out of the cross-reference
+     * row before {@code app/cbl/CBTRN02C.cbl:L446-L465} can write the reject record against it.
      *
-     * <p>Three refusals precede any of that, and they are the limbs
+     * <p>Four refusals precede any of that, and they are the limbs
      * {@code app/cbl/COTRN02C.cbl:L195-L230} ends on.
      * {@link #resolveCard(AuthorizationRequest)} raises
      * {@link AccountNotFoundInCrossReferenceException} where an account resolved no card, this method
      * raises {@value AuthorizationRequest#IDENTIFIER_REQUIRED_MESSAGE} where no usable identifier
-     * arrived at all, and it raises {@link CardNumberNotFoundInCrossReferenceException} where a card
-     * resolved no row on a request that declared no account either, which is the {@code NOTFND} limb
-     * of {@code READ-CCXREF-FILE} at {@code app/cbl/COTRN02C.cbl:L625-L626}. None of the three
-     * allocates an identifier, writes an event or records a decision.
+     * arrived at all, {@link CallerEntitlement} raises {@link CallerNotEntitledException} where the
+     * caller owns neither subject, and this method raises
+     * {@link CardNumberNotFoundInCrossReferenceException} where a card resolved no cross-reference
+     * row, which is the {@code NOTFND} limb of {@code READ-CCXREF-FILE} at
+     * {@code app/cbl/COTRN02C.cbl:L625-L626}. None of the four allocates an identifier, writes an
+     * event or records a decision.
+     *
+     * <p>Reject reason {@code 0100} is therefore a batch outcome and not a synchronous one.
+     * {@code app/cbl/CBTRN02C.cbl:L385-L387} assigns it inside the {@code INVALID KEY} limb of a read
+     * whose feed record the job already owns, and the reject file it lands in is keyed by nothing. A
+     * synchronous caller gets the answer its own ancestor gives: the card is unknown, and no decision
+     * exists to attribute. {@code rules/CardCrossReferenceRule} still assigns the reason, because it
+     * is what leaves the account unresolved and stops the chain, and the equivalence suite still holds
+     * that rule to the source code and its verbatim text.
      *
      * <p>Two more things happen here that the source has no counterpart for, and both are additions
      * this service needs because it answers concurrent calls against an account another service owns.
@@ -522,11 +539,11 @@ public class AuthorizationService {
      * an account cannot hold its request open without limit. And after the chain has resolved the card
      * and the account, the caller is refused unless it owns one of them.
      *
-     * <p>The entitlement check sits exactly between the subject resolution and the identifier
-     * allocation, and both neighbours matter. It runs after resolution because the account it
-     * compares against is the subject of the decision. It runs before allocation because a refused
-     * call must consume no sequence value, record no decision, write no unresolved-card attempt and
-     * produce no event.
+     * <p>The entitlement check sits between the chain and the unresolved-card refusal, and both
+     * neighbours matter. It runs after the chain because the account it compares against is the one
+     * the cross-reference resolved. It runs before the refusal because a caller owning nothing must
+     * receive the same answer whichever way the card read went, and it runs before allocation because
+     * a refused call must consume no sequence value, record no decision and produce no event.
      *
      * @param request the validated request body
      * @param caller  the request identity, whose name the decision row records and whose entitlements
@@ -552,30 +569,26 @@ public class AuthorizationService {
         DeclineReason standing = runChain(context);
         String resolvedAccountId = context.getResolvedAccountId();
 
-        // The subject the decision applies to. The cross-reference row names it wherever the read
-        // resolved one, exactly as MOVE XREF-ACCT-ID TO FD-ACCT-ID does at
-        // app/cbl/CBTRN02C.cbl:L394. Where that read resolved none, reject reason 0100 stands and the
-        // account the caller declared is the subject; where the caller declared none either, nothing
-        // names a subject and the call is refused rather than decided.
-        String subjectAccountId =
-                resolvedAccountId == null ? resolved.declaredAccountId() : resolvedAccountId;
-        if (subjectAccountId == null) {
+        // Entitlement is decided on what the caller owns, never on what it declared, and it is
+        // decided before the refusal below. A caller owning nothing is therefore refused whether or
+        // not the card exists, so card existence stays unobservable to it.
+        // domain/CallerEntitlement records why that ordering is the security property.
+        CallerEntitlement.require(caller, resolvedAccountId, cardNumber);
+
+        // The subject the decision applies to is the account the cross-reference row named, exactly
+        // as MOVE XREF-ACCT-ID TO FD-ACCT-ID does at app/cbl/CBTRN02C.cbl:L394. Where that read
+        // resolved none, this service can vouch for no subject: the account on the request is a value
+        // the caller chose, and DALYTRAN-* at app/cpy/CVTRA06Y.cpy carries no account at all, so the
+        // reject record of app/cbl/CBTRN02C.cbl:L446-L465 has no authoritative account to be written
+        // against either. The call is refused, which is what the synchronous ancestor does at the
+        // NOTFND limb of READ-CCXREF-FILE, app/cbl/COTRN02C.cbl:L625-L626: it reports the card as
+        // unknown, captures nothing and decides nothing.
+        if (resolvedAccountId == null) {
             throw new CardNumberNotFoundInCrossReferenceException();
         }
 
-        // Entitlement is decided on what the caller owns, never on what it declared. The resolved
-        // account is passed rather than the subject, so a caller owning no subject of this call is
-        // refused whether or not the card exists: an account it declared itself cannot carry it past
-        // this check. domain/CallerEntitlement records why card existence must stay unobservable.
-        CallerEntitlement.require(caller, resolvedAccountId, cardNumber);
-
         String actor = caller.actor();
         String transactionId = allocateTransactionId();
-
-        if (resolvedAccountId == null) {
-            return declineUnresolvedCard(request, context, transactionId, subjectAccountId, amount,
-                    standing, actor);
-        }
 
         requireUsableReplica(context, resolvedAccountId);
 
@@ -782,88 +795,6 @@ public class AuthorizationService {
     }
 
     /**
-     * Records the decided outcome whose cross-reference read resolved no account, publishes its
-     * decline event and answers with it.
-     *
-     * <p>The attempt lands in {@code unresolved_card_attempt}, which carries the reject reason
-     * {@code app/cbl/CBTRN02C.cbl:L385-L387} assigns and the account the decision applies to, the
-     * decision lands in {@code authorization_decision} beside it, and the event lands in
-     * {@code outbox_event}. All three writes join the transaction
-     * {@link #authorize(AuthorizationRequest, String)} opened, so a committed attempt always has a
-     * committed decision and a committed event, and a rollback leaves none of the three.
-     *
-     * <p><strong>This outcome publishes one event, as every decided outcome does.</strong> AAP
-     * transformation rule T4 requires one authorization call to produce one event, written through the
-     * outbox in the transaction that recorded the decision, and it admits no exception.
-     *
-     * <p>The event is the same detail-bearing contract the other three reject codes publish, keyed on
-     * the same account form, and {@link #decline} writes it. Reject code {@code 0100} differs from
-     * them in one way only: the cross-reference read at {@code app/cbl/CBTRN02C.cbl:L383-L387} missed,
-     * so the subject is the account the caller declared rather than the one
-     * {@code MOVE XREF-ACCT-ID TO FD-ACCT-ID} at {@code app/cbl/CBTRN02C.cbl:L394} would have moved.
-     * The subject is an eleven-digit identifier either way, which is why the two paths publish one
-     * contract: {@code app/cbl/CBTRN02C.cbl:L446-L465} writes the 430-byte reject record for every
-     * record {@code 1500-VALIDATE-TRAN} refused, reject code {@code 0100} included, and a consumer
-     * needs the account to store that row against.
-     *
-     * <p>A call that can name no subject never reaches this method.
-     * {@link #decide(AuthorizationRequest, RequestCaller)} raises
-     * {@link CardNumberNotFoundInCrossReferenceException} where a card resolved no row and the request
-     * declared no account, which is the {@code NOTFND} limb of {@code READ-CCXREF-FILE} at
-     * {@code app/cbl/COTRN02C.cbl:L625-L626}, and nothing is allocated, recorded or published for it.
-     *
-     * <p>The extra row is what this method adds over {@link #decline}. A decline whose card resolved
-     * nothing is worth an audit record of its own: the card number reached this service, no
-     * cross-reference row held it, and {@code unresolved_card_attempt} is where that fact is durable.
-     * The batch path has the same fact in the reject record it writes at
-     * {@code app/cbl/CBTRN02C.cbl:L446-L465}, and the source's synchronous path captures nothing at
-     * all.
-     *
-     * <p>The outcome is a decline and not an exception, which is what AAP 0.4.1 requires of a keyed
-     * lookup miss: the caller receives reject code {@code 0100} and its verbatim text, and
-     * {@code api/AuthorizationController} answers {@code 422}.
-     *
-     * <p>One reject code reaches this method, and it is checked rather than trusted. The chain of
-     * {@link #runChain(DeclineRule.Context)} can leave the account unresolved only through
-     * {@code rules/CardCrossReferenceRule}, which assigns
-     * {@link TransactionDeclined#UNRESOLVED_ACCOUNT_REASON}. A rule list that declined for another
-     * reason without resolving an account would make the audit row and the event disagree about why,
-     * so this method refuses that state instead of recording the disagreement.
-     *
-     * @param request           the validated request body, whose nine descriptive values the event
-     *                          carries
-     * @param context           the chain context, holding the card the decision ran on
-     * @param transactionId     the identifier this decision applies to
-     * @param subjectAccountId  the eleven-digit account this decision applies to, which the caller
-     *                          declared because the cross-reference read resolved none
-     * @param amount            the amount at two digits after the decimal point
-     * @param standing          the reject reason a rule assigned, or {@code null} when no rule ran
-     * @param actor             the request identity the decision row records
-     * @return the declined decision and the measurements it earned
-     * @throws IllegalStateException when a rule declined without resolving an account and named a
-     *                              reject code other than
-     *                              {@link TransactionDeclined#UNRESOLVED_ACCOUNT_REASON}
-     */
-    private Decision declineUnresolvedCard(AuthorizationRequest request, DeclineRule.Context context,
-            String transactionId, String subjectAccountId, BigDecimal amount, DeclineReason standing,
-            String actor) {
-        DeclineReason reason =
-                standing == null ? TransactionDeclined.UNRESOLVED_ACCOUNT_REASON : standing;
-        if (reason != TransactionDeclined.UNRESOLVED_ACCOUNT_REASON) {
-            throw new IllegalStateException("a decision whose cross-reference read resolved no"
-                    + " account carries reject code "
-                    + TransactionDeclined.UNRESOLVED_ACCOUNT_REASON.code() + " alone, and the rule"
-                    + " chain named " + reason.code());
-        }
-
-        unresolvedCardAttempts.save(new UnresolvedCardAttemptEntity(transactionId,
-                PanMasker.maskCardNumber(context.getCardNumber()), amount, reason.code(),
-                reason.description(), clock.instant(), subjectAccountId));
-        return decline(request, context, transactionId, subjectAccountId, amount, reason, actor,
-                request.recordProcessingTimestamp());
-    }
-
-    /**
      * Reads the card number this call authorizes against, at the width the cross-reference key
      * holds.
      *
@@ -884,12 +815,14 @@ public class AuthorizationService {
      * branch resolves a card only where the request carried none, which is the case the source's own
      * {@code MOVE XREF-CARD-NUM} at {@code :L209} covers.
      *
-     * <p>The account identifier the caller declared travels beside the card, because it is the
-     * subject of the decision wherever the cross-reference resolves none of its own.
-     * {@code app/cbl/CBTRN02C.cbl:L385-L387} assigns reject reason {@code 0100} in the
-     * {@code INVALID KEY} limb of that read, and {@code app/cbl/CBTRN02C.cbl:L446-L465} still writes
-     * the reject record the account owns. A synchronous caller declares its subject, so the decision
-     * has one even where the read resolved none.
+     * <p>An account identifier the caller declared selects the card on the account branch and travels
+     * no further. It is not the subject of any decision:
+     * {@code app/cbl/CBTRN02C.cbl:L385-L387} assigns reject reason {@code 0100} inside the
+     * {@code INVALID KEY} limb of a read whose feed record carries no account of its own, and
+     * {@code app/cbl/CBTRN02C.cbl:L394} has to take {@code XREF-ACCT-ID} out of the resolved row
+     * before {@code app/cbl/CBTRN02C.cbl:L446-L465} can write the reject record against an account.
+     * A card that resolves no row therefore leaves this service with nothing it can vouch for, and
+     * {@code decide} refuses the call.
      *
      * <p>An account that holds no cross-reference row resolves no card, and this method raises
      * {@link AccountNotFoundInCrossReferenceException} carrying
@@ -920,9 +853,8 @@ public class AuthorizationService {
      * the same row either way rather than a cached one — nothing is held between requests.
      *
      * @param request the validated request body
-     * @return the resolved card, the row that resolved it where the account branch read one, and the
-     *         account identifier the caller declared where it declared one, or {@code null} when the
-     *         request named no usable identifier
+     * @return the resolved card and the row that resolved it where the account branch read one, or
+     *         {@code null} when the request named no usable identifier
      * @throws AccountNotFoundInCrossReferenceException when the account the request named holds no
      *                                                 cross-reference row
      */
@@ -935,31 +867,30 @@ public class AuthorizationService {
         // fail later, where the refusal no longer names the reason.
         String cardNumber = request.canonicalCardNumber();
         if (cardNumber != null) {
-            return new ResolvedCard(cardNumber, null, declaredAccountId);
+            return new ResolvedCard(cardNumber, null);
         }
 
         if (declaredAccountId != null) {
             CardCrossReferenceEntity row =
                     cardCrossReferences.findFirstByAccountIdOrderByCardNumberAsc(declaredAccountId)
                             .orElseThrow(AccountNotFoundInCrossReferenceException::new);
-            return new ResolvedCard(row.getCardNumber(), row, declaredAccountId);
+            return new ResolvedCard(row.getCardNumber(), row);
         }
         return null;
     }
 
     /**
-     * The card one call decides against, the cross-reference row that named it where one did, and the
-     * account the caller declared where it declared one.
+     * The card one call decides against, and the cross-reference row that named it where one did.
+     *
+     * <p>No account the caller declared travels here. An account on the request selects the card on
+     * the account branch and takes no further part: the subject of a decision is the account the
+     * cross-reference resolved, and a call that resolves none is refused rather than decided.
      *
      * @param cardNumber        full sixteen-character Primary Account Number (PAN) the rules run on
      * @param crossReference    the row the account branch read, or {@code null} on the card branch,
      *                          where the caller named the card and no row has been read yet
-     * @param declaredAccountId the eleven-digit account identifier the caller declared, or
-     *                          {@code null} when it declared none. It is the subject of the decision
-     *                          wherever the cross-reference read resolves none of its own
      */
-    private record ResolvedCard(String cardNumber, CardCrossReferenceEntity crossReference,
-            String declaredAccountId) {
+    private record ResolvedCard(String cardNumber, CardCrossReferenceEntity crossReference) {
     }
 
     /**
@@ -1156,23 +1087,23 @@ public class AuthorizationService {
     }
 
     /**
-     * Raised when the card a request named holds no cross-reference row and the request declared no
-     * account either, so nothing names the subject a decision would apply to.
+     * Raised when the card a request named holds no cross-reference row, so nothing this service can
+     * vouch for names the subject a decision would apply to.
      *
      * <p>{@code READ-CCXREF-FILE} answers its {@code NOTFND} limb with
      * {@value AuthorizationRequest#CARD_NUMBER_NOT_FOUND_MESSAGE} at
-     * {@code app/cbl/COTRN02C.cbl:L625-L626} and re-sends the screen, so the source tells the caller
-     * which of its two values could not be resolved and captures nothing. This type carries that
-     * text, and it carries no value read from the request, so {@code api/GlobalExceptionHandler} can
-     * publish the message as it stands.
+     * {@code app/cbl/COTRN02C.cbl:L625-L626} and re-sends the screen, so the source reports the card
+     * as unknown and captures nothing. This type carries that text, and it carries no value read from
+     * the request, so {@code api/GlobalExceptionHandler} can publish the message as it stands.
      *
-     * <p>This is not reject reason {@code 0100}. That reason is a decision about an account:
-     * {@code app/cbl/CBTRN02C.cbl:L385-L387} assigns it, {@code app/cbl/CBTRN02C.cbl:L446-L465}
-     * writes the reject record the account owns, and the declined event is keyed on that account so
-     * it stays ordered with every other event of it. A request that declares an account is decided
-     * that way even when its card resolves nothing. A request that declares none establishes no
-     * subject at all, and refusing it is the only answer that neither invents an account nor
-     * publishes a decision nobody can attribute.
+     * <p>Every caller reaches this refusal, whatever the request body declared. Reject reason
+     * {@code 0100} is a decision about an account, and the account it applies to comes from the
+     * resolved cross-reference row at {@code app/cbl/CBTRN02C.cbl:L394}: the feed record of
+     * {@code app/cpy/CVTRA06Y.cpy} carries no account of its own, so a read that missed leaves the
+     * batch with a reject file to write and no account to attribute the reject to. An account named in
+     * a request body is a value the caller chose rather than a subject, which is why an earlier
+     * revision that decided against it was withdrawn by a security review.
+     * {@code card-platform/docs/decision-log.md} carries what the review found.
      */
     public static class CardNumberNotFoundInCrossReferenceException
             extends IllegalArgumentException {

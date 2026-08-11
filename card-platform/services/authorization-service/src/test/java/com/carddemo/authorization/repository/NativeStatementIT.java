@@ -883,11 +883,10 @@ class NativeStatementIT {
         /**
          * Asserts a row of the shape written before {@code V19} stays readable, account column and all.
          *
-         * <p>Every decision this service records now names the account it applies to, because a
-         * reason-{@code 0100} call takes that subject from the account the caller declared and a call
-         * declaring none is refused before a decision. A database that ran earlier holds rows written
-         * while that outcome resolved no subject, so the column stays nullable and the mapping has to
-         * read one. {@code V13__decision_without_event.sql} dropped the {@code NOT NULL} that used to
+         * <p>Every decision this service records now names the account it applies to, because the
+         * subject comes from the cross-reference row and a call resolving none is refused before a
+         * decision. A database that ran earlier holds rows written while that outcome resolved no
+         * subject, so the column stays nullable and the mapping has to read one. {@code V13__decision_without_event.sql} dropped the {@code NOT NULL} that used to
          * force an event identifier here, and {@code V15__unresolved_decline_is_published.sql}
          * requires one of every new row through {@code ck_authorization_decision_event}, which is
          * {@code NOT VALID} for the same reason.
@@ -1006,7 +1005,7 @@ class NativeStatementIT {
     }
 
     @Nested
-    @DisplayName("The three bounded retention deletes outbox/RetentionSweeper runs")
+    @DisplayName("The two bounded retention deletes domain/RetentionSweep runs")
     class RetentionPurge {
 
         @Test
@@ -1041,25 +1040,52 @@ class NativeStatementIT {
             assertEquals(3, outbox.count(), "the rest wait for the next statement");
         }
 
+        /**
+         * Proves a claim written long before any withdrawn horizon still refuses its redelivery.
+         *
+         * <p>The claim is stamped two thousand days back, which is far past the 720 hours a purge
+         * once used and past the 400 days a decision row is kept. A security review found that purge
+         * removing claims while the effects they guard outlived them, so a restored or deliberately
+         * replayed record arriving afterwards was new to the guard.
+         *
+         * <p>The claim is permanent now, so the second claim of the same event still reads
+         * {@link ProcessedEventRepository#ALREADY_CLAIMED} and the row is still there to read.
+         */
         @Test
-        @DisplayName("a marker past the horizon goes and a newer one stays")
-        void onlyMarkersPastTheHorizonGo() {
-            UUID expired = UUID.randomUUID();
-            UUID recent = UUID.randomUUID();
-            transactionTemplate.execute(status -> markers.claimEvent(expired,
-                    BASE_MOMENT.minus(Duration.ofDays(30)), CONSUMED_TOPIC));
-            transactionTemplate.execute(status -> markers.claimEvent(recent,
-                    BASE_MOMENT.minus(Duration.ofHours(1)), CONSUMED_TOPIC));
+        @DisplayName("a claim from two thousand days ago still refuses its redelivery")
+        void anAncientClaimStillRefusesItsRedelivery() {
+            UUID ancient = UUID.randomUUID();
+            Instant longBefore = BASE_MOMENT.minus(Duration.ofDays(2000));
+            int firstClaim = transactionTemplate.execute(status ->
+                    markers.claimEvent(ancient, longBefore, CONSUMED_TOPIC));
 
-            int removed = transactionTemplate.execute(status ->
-                    markers.deleteMarkersProcessedBefore(
-                            BASE_MOMENT.minus(Duration.ofDays(7)), 1000));
+            int replay = transactionTemplate.execute(status ->
+                    markers.claimEvent(ancient, BASE_MOMENT, CONSUMED_TOPIC));
 
-            assertEquals(1, removed, "one marker is past the horizon");
-            assertFalse(markers.existsById(new ProcessedEventId(expired, CONSUMED_TOPIC)),
-                    "the expired marker is gone");
-            assertTrue(markers.existsById(new ProcessedEventId(recent, CONSUMED_TOPIC)),
-                    "a marker inside the horizon stays, so its redelivery is still refused");
+            assertEquals(1, firstClaim, "the first delivery takes the claim");
+            assertEquals(ProcessedEventRepository.ALREADY_CLAIMED, replay,
+                    "a replay two thousand days later must still lose the claim");
+            assertTrue(markers.existsById(new ProcessedEventId(ancient, CONSUMED_TOPIC)),
+                    "nothing removes a claim, so the guard is still able to answer");
+        }
+
+        /**
+         * Asserts the store exposes no way to remove a claim.
+         *
+         * <p>The behavioural test above proves an old claim still refuses a replay. This one proves
+         * the property cannot be undone by calling something, which is the half a horizon defeated:
+         * the purge existed, so it ran.
+         */
+        @Test
+        @DisplayName("the marker store exposes no delete, so nothing can expire a claim")
+        void theMarkerStoreExposesNoDelete() {
+            assertTrue(java.util.Arrays.stream(ProcessedEventRepository.class.getMethods())
+                            .map(java.lang.reflect.Method::getName)
+                            .noneMatch(name -> name.toLowerCase(java.util.Locale.ROOT)
+                                    .contains("delete")),
+                    "a delete on this store is a horizon in waiting: "
+                            + java.util.Arrays.stream(ProcessedEventRepository.class.getMethods())
+                                    .map(java.lang.reflect.Method::getName).toList());
         }
 
         @Test

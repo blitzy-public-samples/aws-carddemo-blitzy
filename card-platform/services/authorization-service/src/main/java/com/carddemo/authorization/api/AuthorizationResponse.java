@@ -25,19 +25,17 @@ import java.util.regex.Pattern;
  *
  * <p>Every decided outcome carries one account identifier into this response, into the event
  * published beside it and into the Kafka message key. {@code TransactionAuthorized} and
- * {@code TransactionDeclined} both require those eleven digits.
- * {@link DeclineReason#INVALID_CARD_NUMBER} is the one outcome whose cross-reference read resolved
- * none of its own, because that read at {@code app/cbl/CBTRN02C.cbl:L383-L384} took its invalid-key
- * branch; the identifier it carries is the one the caller declared, which
- * {@code AuthorizationRequest#ACCOUNT_ID_PATTERN} already held to eleven digits. A request that
- * declared none establishes no subject and is refused before a decision, so no factory here has to
- * invent a substitute account identifier and none does.
+ * {@code TransactionDeclined} both require those eleven digits, and the value always comes from the
+ * cross-reference row {@code app/cbl/CBTRN02C.cbl:L394} reads. {@link DeclineReason#INVALID_CARD_NUMBER}
+ * follows the invalid-key branch of that read at {@code app/cbl/CBTRN02C.cbl:L383-L384}, which
+ * resolves no such row, so this platform refuses the call rather than deciding it and no response
+ * here carries that code. No factory has to invent a substitute account identifier and none does.
  *
  * <p>A declined response carries one decline reason and its text. The source field holds a single
  * {@code PIC 9(04)} value, overwritten by whichever test fails last. This record holds one decline
  * reason or none, never a list, a set or a bit mask.
- * {@link #decline(String, String, DeclineReason)} builds the three outcomes that follow a resolved
- * account, and reads the text from {@link DeclineReason#description()}.
+ * {@link #decline(String, String, DeclineReason)} builds the three outcomes a resolved account
+ * reaches, and reads the text from {@link DeclineReason#description()}.
  *
  * <p>A decline is expected traffic. {@code app/cbl/CBTRN02C.cbl:L214-L215} counts the record and
  * writes a reject row, and {@code app/cbl/CBTRN02C.cbl:L229-L230} ends the batch job with return
@@ -45,7 +43,8 @@ import java.util.regex.Pattern;
  *
  * <p>{@link DeclineReason} serializes as four zero-padded characters, {@code "0100"} through
  * {@code "0103"}. A serialized response carries {@code "0102"} and never the number 102. The four
- * texts live on that enum, and this record restates none of them.
+ * texts live on that enum, and this record restates none of them. Only three of the four reach a
+ * response, because reject code {@code "0100"} resolves no subject to answer with.
  *
  * <p>No component carries a card number, masked or unmasked. None carries the card verification
  * value stored at {@code app/cpy/CVACT02Y.cpy:L7}, an amount, a merchant field, a timestamp, a card
@@ -193,14 +192,15 @@ public record AuthorizationResponse(
      * <p>The description comes from {@link DeclineReason#description()}, which reproduces the text
      * the source moves into {@code WS-VALIDATION-FAIL-REASON-DESC} beside each reject code.
      *
-     * <p>This factory builds all four declines. Three of them follow a resolved account:
+     * <p>This factory builds the three declines a decision can reach:
      * {@link DeclineReason#ACCOUNT_NOT_FOUND}, {@link DeclineReason#OVER_CREDIT_LIMIT} and
      * {@link DeclineReason#ACCOUNT_EXPIRED} are each reached only after
      * {@code app/cbl/CBTRN02C.cbl:L390-L394} read the cross-reference record and took the account
      * identifier from it. {@link DeclineReason#INVALID_CARD_NUMBER} follows the invalid-key branch of
-     * that read at {@code app/cbl/CBTRN02C.cbl:L383-L387}, and the identifier it names is the one the
-     * caller declared. The identifier is required for all four, because every decided outcome names
-     * the account it applies to and keys its event on it.
+     * that read at {@code app/cbl/CBTRN02C.cbl:L383-L387}, which resolves no account, so
+     * {@code domain/AuthorizationService} refuses that call instead of calling this factory. The
+     * identifier is required, because every decided outcome names the account it applies to and keys
+     * its event on it.
      *
      * @param transactionId     identifier of the transaction this decision applies to, at most
      *                          {@value #TRANSACTION_ID_MAX_LENGTH} characters
@@ -225,12 +225,11 @@ public record AuthorizationResponse(
     /**
      * Tests the one invariant that ties the account identifier to the outcome.
      *
-     * <p>Every decided outcome names the account it applies to. An approval names the account it
-     * authorized against, three declines name the account they read, and the decline carrying
-     * {@link DeclineReason#INVALID_CARD_NUMBER} names the account the caller declared, because the
-     * cross-reference read resolved none of its own. Without this test a response could reach the
-     * outbox with no identifier to key its event on, and the event contract requiring eleven digits
-     * would fail after the decision had already been taken.
+     * <p>Every decided outcome names the account it applies to, and that account is always one a
+     * cross-reference row named. An approval names the account it authorized against and each decline
+     * names the account it read. Without this test a response could reach the outbox with no
+     * identifier to key its event on, and the event contract requiring eleven digits would fail after
+     * the decision had already been taken.
      *
      * <p>No failure text repeats the identifier. The outcome or the word {@code absent} stands in for
      * it.

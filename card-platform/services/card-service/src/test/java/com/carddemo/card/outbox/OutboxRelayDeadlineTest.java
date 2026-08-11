@@ -148,7 +148,6 @@ class OutboxRelayDeadlineTest {
                         500L, 1, "deadline-test", Duration.ofMinutes(2L), SWEEP_DEADLINE_MS,
                         Duration.ofSeconds(10L)),
                         168L),
-                new CardProperties.ProcessedEvent(720L, 168L),
                 new CardProperties.Retention(3_600_000L),
                 new CardProperties.Write(3_000L));
     }

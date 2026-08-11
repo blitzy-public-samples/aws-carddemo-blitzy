@@ -591,7 +591,6 @@ class OutboxRelayTest {
     void clearWrittenRows() {
         jdbcTemplate.update("DELETE FROM outbox_event");
         jdbcTemplate.update("DELETE FROM authorization_decision");
-        jdbcTemplate.update("DELETE FROM unresolved_card_attempt");
         jdbcTemplate.update("DELETE FROM processed_event");
         jdbcTemplate.update("DELETE FROM card_xref WHERE card_number IN (?, ?)",
                 APPROVING_CARD_NUMBER, DECLINING_CARD_NUMBER);

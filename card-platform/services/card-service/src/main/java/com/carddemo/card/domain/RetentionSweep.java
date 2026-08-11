@@ -2,7 +2,6 @@ package com.carddemo.card.domain;
 
 import com.carddemo.card.config.CardProperties;
 import com.carddemo.card.repository.OutboxEventRepository;
-import com.carddemo.card.repository.ProcessedEventRepository;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Objects;
@@ -15,9 +14,13 @@ import org.springframework.transaction.support.TransactionCallback;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
- * Removes published outbox rows and processed-event markers after their configured horizons.
+ * Removes published outbox rows after their configured horizon.
  *
- * <p>Each table is drained in bounded batches, one transaction per batch, under a per-table
+ * <p>{@code processed_event} is deliberately absent. A duplicate-delivery claim is permanent, so
+ * nothing removes one and this sweep has no horizon to apply to that table. Migration
+ * {@code V9__processed_event_claims_are_permanent.sql} states the same thing in the catalogue.
+ *
+ * <p>The table is drained in bounded batches, one transaction per batch, under a per-table
  * ceiling. Both the bound and the repetition are needed: the bound keeps one delete from locking
  * every expired row at once, and the repetition keeps a backlog larger than one batch from
  * outliving every run.
@@ -48,17 +51,14 @@ public class RetentionSweep {
     static final Duration MAX_TABLE_DURATION = Duration.ofSeconds(30);
 
     private final OutboxEventRepository outboxEvents;
-    private final ProcessedEventRepository processedEvents;
     private final TransactionTemplate transactionTemplate;
     private final Duration publishedRetention;
-    private final Duration markerRetention;
     private final Duration maxTableDuration;
 
     @Autowired
     public RetentionSweep(OutboxEventRepository outboxEvents,
-            ProcessedEventRepository processedEvents, TransactionTemplate transactionTemplate,
-            CardProperties properties) {
-        this(outboxEvents, processedEvents, transactionTemplate, properties, MAX_TABLE_DURATION);
+            TransactionTemplate transactionTemplate, CardProperties properties) {
+        this(outboxEvents, transactionTemplate, properties, MAX_TABLE_DURATION);
     }
 
     /**
@@ -69,25 +69,21 @@ public class RetentionSweep {
      * shipped thirty seconds.
      *
      * @param outboxEvents        the published-row purge
-     * @param processedEvents     the marker purge
      * @param transactionTemplate the boundary one batch commits in
-     * @param properties          the two configured horizons
+     * @param properties          the configured horizon
      * @param maxTableDuration    longest one table is swept for
      * @throws NullPointerException if any argument is {@code null}
      */
     RetentionSweep(OutboxEventRepository outboxEvents,
-            ProcessedEventRepository processedEvents, TransactionTemplate transactionTemplate,
-            CardProperties properties, Duration maxTableDuration) {
+            TransactionTemplate transactionTemplate, CardProperties properties,
+            Duration maxTableDuration) {
         this.outboxEvents = Objects.requireNonNull(outboxEvents, "outboxEvents");
-        this.processedEvents = Objects.requireNonNull(processedEvents, "processedEvents");
         this.transactionTemplate =
                 Objects.requireNonNull(transactionTemplate, "transactionTemplate");
         this.maxTableDuration = Objects.requireNonNull(maxTableDuration, "maxTableDuration");
         CardProperties checked = Objects.requireNonNull(properties, "properties");
         this.publishedRetention =
                 Duration.ofHours(checked.outbox().publishedRetentionHours());
-        this.markerRetention =
-                Duration.ofHours(checked.processedEvent().markerRetentionHours());
     }
 
     /** Drains each bounded delete, one explicit transaction per batch. */
@@ -96,9 +92,6 @@ public class RetentionSweep {
         Instant now = Instant.now();
         drain("outbox_event",
                 limit -> outboxEvents.deletePublishedBefore(now.minus(publishedRetention), limit));
-        drain("processed_event",
-                limit -> processedEvents.deleteMarkersProcessedBefore(now.minus(markerRetention),
-                        limit));
     }
 
     /**
@@ -110,11 +103,11 @@ public class RetentionSweep {
      * short of {@link #PURGE_BATCH_SIZE} is the last one there was anything to remove in, which is
      * how the loop ends on a drained table without asking for a count first.
      *
-     * <p>Both statements order their rows, so successive batches move forward through the table
+     * <p>The statement orders its rows, so successive batches move forward through the table
      * rather than re-reading what an earlier batch already considered.
      *
      * <p>A failure leaves the table for the next run. The batches that already committed stand, and
-     * the remaining tables are still swept, because one unreachable table is not a reason to stop
+     * any table swept after it is still swept, because one unreachable table is not a reason to stop
      * removing rows from the others.
      *
      * @param table  the table being swept, named in the log line

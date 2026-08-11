@@ -18,12 +18,34 @@
 # Rationale for every choice in this folder: card-platform/docs/decision-log.md
 ---
 # The broker log, KRaft metadata, topic data and committed consumer offsets outlive a Pod
-# replacement. The claim names no storage class, so the cluster binds its default class.
+# replacement.
+#
+# THE STORAGE HOLDING THEM HAS TO BE ENCRYPTED, AND THIS CLAIM DOES NOT BIND AN ENCRYPTED CLASS.
+# A log segment holds every event this platform published: an authorization amount, a masked card
+# number, a card token, and the ten cardholder fields CustomerContextChanged carries. A copied
+# volume, an unprotected snapshot or a lost disk therefore bypasses every Transport Layer Security
+# session, every Simple Authentication and Security Layer identity and every access control entry
+# above.
+#
+# The claim names no storage class on purpose, so the documented local demo binds whatever class the
+# cluster already has and works with no edit. A deployment holding anything other than the synthetic
+# fixtures binds an encrypted class instead, by applying the overlay rather than this file:
+#
+#   kubectl apply -k card-platform/deploy/k8s/overlays/encrypted-storage
+#
+# The overlay sets storageClassName on this claim and on postgres-data in one place. A claim's class
+# cannot change once it is bound, so the overlay has to be applied before the first apply of this
+# folder. card-platform/deploy/k8s/README.md carries key ownership, rotation, backup encryption and
+# the restore proof, and the annotations below are the machine-readable form of this paragraph.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: kafka-data
   namespace: carddemo
+  annotations:
+    carddemo.io/requires-encryption-at-rest: "true"
+    carddemo.io/data-classification: "published-events"
+    carddemo.io/encryption-overlay: "card-platform/deploy/k8s/overlays/encrypted-storage"
   labels:
     app.kubernetes.io/name: kafka
     app.kubernetes.io/component: event-broker
@@ -341,6 +363,14 @@ spec:
             # quietly opening a stream nobody meant to open.
             - name: KAFKA_AUTO_CREATE_TOPICS_ENABLE
               value: "false"
+            # The broker's half of the wire ceiling ladder, aligned to the governed event
+            # envelope: 8192 bytes is the value ceiling libs/event-contracts refuses above,
+            # 16384 is each service's producer max.request.size, and this is 32768 so a
+            # producer request always fits with room for compression and batch overhead. The
+            # value is a literal rather than a ConfigMap key, because it is derived from a
+            # constant in the code rather than chosen by a deployment.
+            - name: KAFKA_MESSAGE_MAX_BYTES
+              value: "32768"
             - name: KAFKA_NUM_PARTITIONS
               valueFrom:
                 configMapKeyRef:

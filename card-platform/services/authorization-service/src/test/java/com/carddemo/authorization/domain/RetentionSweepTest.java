@@ -16,10 +16,11 @@ import com.carddemo.authorization.config.AuthorizationProperties;
 import com.carddemo.authorization.repository.AuthorizationDecisionRepository;
 import com.carddemo.authorization.repository.OutboxEventRepository;
 import com.carddemo.authorization.repository.ProcessedEventRepository;
-import com.carddemo.authorization.repository.UnresolvedCardAttemptRepository;
+import java.lang.reflect.Constructor;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -32,7 +33,8 @@ import org.springframework.transaction.support.TransactionCallback;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
- * Proves each of the four retention deletes is bounded, drained and finite.
+ * Proves each retention delete is bounded, drained and finite, and that no pass expires a
+ * duplicate-delivery claim.
  *
  * <p>No COBOL ancestor. The source has no retention concern: every dataset's lifetime belongs to the
  * Job Control Language, and {@code app/jcl/POSTTRAN.jcl} deletes and redefines its output rather than
@@ -41,7 +43,7 @@ import org.springframework.transaction.support.TransactionTemplate;
  * <p>The defect these tests close is <strong>not</strong> the one the sibling services had. Every
  * statement here was already bounded to a batch ceiling, so no statement ever held a large lock. What
  * was missing was the repetition: one pass issued exactly one bounded delete per table and stopped,
- * once an hour. Four tables times one thousand rows an hour is a fixed removal rate, so any arrival
+ * once an hour. One thousand rows an hour per table is a fixed removal rate, so any arrival
  * rate above it grew the schema for ever while every individual statement stayed small and fast. A
  * bound without a drain is a slower leak, not a fixed one, and it is the harder of the two to notice
  * because nothing about it is ever slow.
@@ -50,9 +52,14 @@ import org.springframework.transaction.support.TransactionTemplate;
  * that the caller repeated the delete until it came back short. It did not, so the sentence a reader
  * would have relied on was the opposite of the behaviour.
  *
- * <p>Nothing here opens a database connection. Each of the four stores is a stand-in that answers
- * with a row count, and the transaction template runs its callback directly, so the number of
- * recorded transactions is exactly the number of statements issued.
+ * <p>{@code processed_event} is absent from every assertion below, and one test asserts that
+ * absence directly. A security review found the marker horizon removing claims while the decision
+ * row and the two replica tables they guard outlived it, so a claim is now permanent and this sweep
+ * holds no store over that table.
+ *
+ * <p>Nothing here opens a database connection. Each store is a stand-in that answers with a row
+ * count, and the transaction template runs its callback directly, so the number of recorded
+ * transactions is exactly the number of statements issued.
  *
  * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
@@ -62,34 +69,17 @@ class RetentionSweepTest {
     /** Hours a published outbox row stays, matching the shipped default. */
     private static final long PUBLISHED_RETENTION_HOURS = 168L;
 
-    /** Hours a processed-event marker stays, matching the shipped default. */
-    private static final long MARKER_RETENTION_HOURS = 720L;
-
-    /**
-     * Hours the broker keeps a record, matching the shipped default.
-     *
-     * <p>The marker horizon has to outlast this, so a replayed record cannot arrive after the marker
-     * that suppresses it has gone.
-     */
-    private static final long BROKER_RETENTION_HOURS = 168L;
-
     /** Days a decision row and its accompanying unresolved-card attempt stay, shipped default. */
     private static final long DECISION_RETENTION_DAYS = 400L;
 
     /** Tables one pass sweeps, and therefore statements a pass with nothing to remove issues. */
-    private static final int SWEPT_TABLES = 4;
+    private static final int SWEPT_TABLES = 2;
 
     /** Store over {@code outbox_event}, stubbed here. */
     private OutboxEventRepository outboxEvents;
 
-    /** Store over {@code processed_event}, stubbed here. */
-    private ProcessedEventRepository processedEvents;
-
     /** Store over {@code authorization_decision}, stubbed here. */
     private AuthorizationDecisionRepository decisions;
-
-    /** Store over {@code unresolved_card_attempt}, stubbed here. */
-    private UnresolvedCardAttemptRepository unresolvedCardAttempts;
 
     /** Counts how many transactions the sweep opened. */
     private List<String> transactions;
@@ -100,22 +90,16 @@ class RetentionSweepTest {
     @BeforeEach
     void buildSweep() {
         outboxEvents = mock(OutboxEventRepository.class);
-        processedEvents = mock(ProcessedEventRepository.class);
         decisions = mock(AuthorizationDecisionRepository.class);
-        unresolvedCardAttempts = mock(UnresolvedCardAttemptRepository.class);
         transactions = new ArrayList<>();
-        sweep = new RetentionSweep(outboxEvents, processedEvents, decisions, unresolvedCardAttempts,
-                countingTransactions(transactions), properties());
+        sweep = new RetentionSweep(outboxEvents, decisions, countingTransactions(transactions),
+                properties());
     }
 
     /** Makes every table answer that it holds nothing expired, so one pass issues one statement each. */
     private void everyTableIsEmpty() {
         when(outboxEvents.deletePublishedBefore(any(Instant.class), anyInt())).thenReturn(0);
-        when(processedEvents.deleteMarkersProcessedBefore(any(Instant.class), anyInt()))
-                .thenReturn(0);
         when(decisions.deleteDecidedBefore(any(Instant.class), anyInt())).thenReturn(0);
-        when(unresolvedCardAttempts.deleteAttemptedBefore(any(Instant.class), anyInt()))
-                .thenReturn(0);
     }
 
     /** Settings carrying the shipped horizons and the shipped sweep interval. */
@@ -132,8 +116,6 @@ class RetentionSweepTest {
                                 500L, 100, "retention-test", Duration.ofSeconds(30L), 5_000L,
                                 Duration.ofSeconds(10L)),
                         PUBLISHED_RETENTION_HOURS),
-                new AuthorizationProperties.ProcessedEvent(MARKER_RETENTION_HOURS,
-                        BROKER_RETENTION_HOURS),
                 new AuthorizationProperties.Retention(3_600_000L, DECISION_RETENTION_DAYS),
                 new AuthorizationProperties.Replica(0L),
                 new AuthorizationProperties.Decision(3_000L, Duration.ofMinutes(15L)));
@@ -163,7 +145,7 @@ class RetentionSweepTest {
     class OneStatement {
 
         @Test
-        @DisplayName("each of the four deletes names the batch ceiling rather than the whole table")
+        @DisplayName("each of the two deletes names the batch ceiling rather than the whole table")
         void eachDeleteNamesTheBatchCeiling() {
             everyTableIsEmpty();
 
@@ -171,11 +153,7 @@ class RetentionSweepTest {
 
             verify(outboxEvents).deletePublishedBefore(any(Instant.class),
                     eq(RetentionSweep.PURGE_BATCH_SIZE));
-            verify(processedEvents).deleteMarkersProcessedBefore(any(Instant.class),
-                    eq(RetentionSweep.PURGE_BATCH_SIZE));
             verify(decisions).deleteDecidedBefore(any(Instant.class),
-                    eq(RetentionSweep.PURGE_BATCH_SIZE));
-            verify(unresolvedCardAttempts).deleteAttemptedBefore(any(Instant.class),
                     eq(RetentionSweep.PURGE_BATCH_SIZE));
             assertEquals(SWEPT_TABLES, transactions.size(),
                     "one transaction per statement, and no more");
@@ -191,8 +169,6 @@ class RetentionSweepTest {
 
             ArgumentCaptor<Instant> published = ArgumentCaptor.forClass(Instant.class);
             verify(outboxEvents).deletePublishedBefore(published.capture(), anyInt());
-            ArgumentCaptor<Instant> markers = ArgumentCaptor.forClass(Instant.class);
-            verify(processedEvents).deleteMarkersProcessedBefore(markers.capture(), anyInt());
             ArgumentCaptor<Instant> decided = ArgumentCaptor.forClass(Instant.class);
             verify(decisions).deleteDecidedBefore(decided.capture(), anyInt());
 
@@ -201,11 +177,6 @@ class RetentionSweepTest {
                                     .plusSeconds(1L)),
                     "the published horizon is not the configured week back: "
                             + published.getValue());
-            assertTrue(markers.getValue()
-                            .isBefore(before.minus(Duration.ofHours(MARKER_RETENTION_HOURS))
-                                    .plusSeconds(1L)),
-                    "the marker horizon is not the configured thirty days back: "
-                            + markers.getValue());
             assertTrue(decided.getValue()
                             .isBefore(before.minus(Duration.ofDays(DECISION_RETENTION_DAYS))
                                     .plusSeconds(1L)),
@@ -214,22 +185,42 @@ class RetentionSweepTest {
         }
 
         @Test
-        @DisplayName("the two audit tables are swept against one horizon, not two")
-        void theTwoAuditTablesShareOneHorizon() {
+        @DisplayName("two tables are swept, and the withdrawn audit table is not among them")
+        void twoTablesAreSweptAndTheWithdrawnOneIsNot() {
             everyTableIsEmpty();
 
             sweep.purgeExpiredRows();
 
-            ArgumentCaptor<Instant> decided = ArgumentCaptor.forClass(Instant.class);
-            verify(decisions).deleteDecidedBefore(decided.capture(), anyInt());
-            ArgumentCaptor<Instant> attempted = ArgumentCaptor.forClass(Instant.class);
-            verify(unresolvedCardAttempts).deleteAttemptedBefore(attempted.capture(), anyInt());
+            // unresolved_card_attempt was one of four until migration V20 withdrew it. A card that
+            // resolves no cross-reference row is now refused rather than decided, so nothing writes
+            // that table and no delete has to reach it. A sweep still naming it would fail against a
+            // migrated database rather than quietly doing nothing.
+            verify(outboxEvents).deletePublishedBefore(any(Instant.class), anyInt());
+            verify(decisions).deleteDecidedBefore(any(Instant.class), anyInt());
+            assertEquals(SWEPT_TABLES, transactions.size(),
+                    "one transaction per swept table, and the withdrawn table is not swept");
+        }
 
-            // A decision row and the unresolved-card attempt beside a reason-0100 decline are two
-            // halves of one record of one call. Two horizons would keep one half and remove the
-            // other, leaving an audit trail that answers half a question.
-            assertEquals(decided.getValue(), attempted.getValue(),
-                    "a decision and the attempt beside it must expire together");
+        /**
+         * Asserts nothing in this class can expire a duplicate-delivery claim.
+         *
+         * <p>Stated structurally rather than behaviourally, because a sweep holding no store over
+         * {@code processed_event} cannot delete from it however it is scheduled or configured. The
+         * effects a claim guards are a decision row kept for audit and two replica tables kept for
+         * as long as the service runs, all of which outlived the 720-hour horizon this replaced.
+         */
+        @Test
+        @DisplayName("no constructor takes a store over processed_event, so no claim expires")
+        void noConstructorTakesAStoreOverProcessedEvent() {
+            assertTrue(Arrays.stream(RetentionSweep.class.getDeclaredFields())
+                            .map(field -> field.getType())
+                            .noneMatch(ProcessedEventRepository.class::equals),
+                    "a field over processed_event is a delete waiting to be reintroduced");
+            assertTrue(Arrays.stream(RetentionSweep.class.getDeclaredConstructors())
+                            .map(Constructor::getParameterTypes)
+                            .flatMap(Arrays::stream)
+                            .noneMatch(ProcessedEventRepository.class::equals),
+                    "no constructor may take a store over processed_event");
         }
     }
 
@@ -248,11 +239,9 @@ class RetentionSweepTest {
             sweep.purgeExpiredRows();
 
             verify(outboxEvents, times(3)).deletePublishedBefore(any(Instant.class), anyInt());
-            verify(processedEvents, times(1))
-                    .deleteMarkersProcessedBefore(any(Instant.class), anyInt());
             assertEquals(SWEPT_TABLES + 2, transactions.size(),
-                    "three outbox statements and one each for the other three tables, every one in"
-                            + " its own transaction");
+                    "three outbox statements and one for the other table, every one in its own"
+                            + " transaction");
         }
 
         @Test
@@ -261,14 +250,13 @@ class RetentionSweepTest {
             everyTableIsEmpty();
             when(decisions.deleteDecidedBefore(any(Instant.class), anyInt()))
                     .thenReturn(RetentionSweep.PURGE_BATCH_SIZE, 1);
-            when(unresolvedCardAttempts.deleteAttemptedBefore(any(Instant.class), anyInt()))
+            when(outboxEvents.deletePublishedBefore(any(Instant.class), anyInt()))
                     .thenReturn(RetentionSweep.PURGE_BATCH_SIZE, 0);
 
             sweep.purgeExpiredRows();
 
             verify(decisions, times(2)).deleteDecidedBefore(any(Instant.class), anyInt());
-            verify(unresolvedCardAttempts, times(2))
-                    .deleteAttemptedBefore(any(Instant.class), anyInt());
+            verify(outboxEvents, times(2)).deletePublishedBefore(any(Instant.class), anyInt());
         }
 
         @Test
@@ -286,29 +274,24 @@ class RetentionSweepTest {
         @Test
         @DisplayName("an endless backlog stops at the table ceiling rather than holding the thread")
         void anEndlessBacklogStopsAtTheTableCeiling() {
-            RetentionSweep bounded = new RetentionSweep(outboxEvents, processedEvents, decisions,
-                    unresolvedCardAttempts, countingTransactions(transactions), properties(),
-                    Duration.ofMillis(50L));
+            RetentionSweep bounded = new RetentionSweep(outboxEvents, decisions,
+                    countingTransactions(transactions), properties(), Duration.ofMillis(50L));
             everyTableIsEmpty();
             when(outboxEvents.deletePublishedBefore(any(Instant.class), anyInt()))
                     .thenReturn(RetentionSweep.PURGE_BATCH_SIZE);
 
             assertTimeout(Duration.ofSeconds(10L), bounded::purgeExpiredRows);
 
-            // The ceiling stopping one table is only useful if the tables behind it are still
+            // The ceiling stopping one table is only useful if the table behind it is still
             // reached, which is why the sweep gives each table a deadline of its own rather than
-            // sharing one budget between the four.
-            verify(processedEvents, times(1))
-                    .deleteMarkersProcessedBefore(any(Instant.class), anyInt());
+            // sharing one budget between them.
             verify(decisions, times(1)).deleteDecidedBefore(any(Instant.class), anyInt());
-            verify(unresolvedCardAttempts, times(1))
-                    .deleteAttemptedBefore(any(Instant.class), anyInt());
             assertTrue(RetentionSweep.MAX_TABLE_DURATION.toSeconds() > 0L,
                     "the production ceiling must be finite and positive");
         }
 
         @Test
-        @DisplayName("a failure on one table still sweeps the other three")
+        @DisplayName("a failure on one table still sweeps the other")
         void aFailureOnOneTableStillSweepsTheOthers() {
             everyTableIsEmpty();
             when(outboxEvents.deletePublishedBefore(any(Instant.class), anyInt()))
@@ -317,11 +300,7 @@ class RetentionSweepTest {
             assertDoesNotThrow(() -> sweep.purgeExpiredRows(),
                     "a scheduled method that raises stops the schedule for the rest of the run");
 
-            verify(processedEvents, times(1))
-                    .deleteMarkersProcessedBefore(any(Instant.class), anyInt());
             verify(decisions, times(1)).deleteDecidedBefore(any(Instant.class), anyInt());
-            verify(unresolvedCardAttempts, times(1))
-                    .deleteAttemptedBefore(any(Instant.class), anyInt());
         }
     }
 }

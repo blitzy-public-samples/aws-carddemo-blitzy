@@ -4,7 +4,6 @@ import jakarta.persistence.Column;
 import jakarta.persistence.Embeddable;
 import jakarta.persistence.EmbeddedId;
 import jakarta.persistence.Entity;
-import jakarta.persistence.Index;
 import jakarta.persistence.Table;
 import java.io.Serializable;
 import java.time.Instant;
@@ -38,9 +37,7 @@ import java.util.UUID;
  * one.</p>
  */
 @Entity
-@Table(name = "processed_event",
-        indexes = @Index(name = "ix_processed_event_processed_at",
-                columnList = "processed_at"))
+@Table(name = "processed_event")
 public class ProcessedEventEntity {
 
     /**

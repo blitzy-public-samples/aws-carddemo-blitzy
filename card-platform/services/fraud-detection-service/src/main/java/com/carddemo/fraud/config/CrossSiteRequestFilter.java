@@ -12,6 +12,8 @@ import java.util.Locale;
 import java.util.Objects;
 import java.util.Set;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.security.autoconfigure.web.servlet.SecurityFilterProperties;
+import org.springframework.core.annotation.Order;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -46,12 +48,17 @@ import org.springframework.web.filter.OncePerRequestFilter;
  * asked for it. That is also why no path is exempted: the liveness probe and the metrics scrape
  * are reads, so they never reach a test here.
  *
- * <p>The filter carries the default component order, so it runs after the security chain that
- * {@code config/SecurityConfig} builds, exactly as {@code config/RequestBodyCeilingFilter} does. A
- * request carrying no credential therefore still receives 401 rather than this refusal, and a
- * forged call that did authenticate is refused before any handler runs. Cross-site protection has
- * to precede the state change and not the credential check, because the forged call is by
- * definition authenticated.
+ * <p>The filter runs at {@link SecurityFilterProperties#DEFAULT_FILTER_ORDER} minus one, which puts
+ * it ahead of the security chain and last of the four filters that run there. A forged call is by
+ * definition authenticated, so refusing it before the chain is what stops this platform paying for a
+ * bcrypt verification on a request it was always going to refuse.
+ *
+ * <p>Running early is only safe because the check defers when the request carries no
+ * {@code Authorization} header. Such a request is refused by the chain with 401 and no password to
+ * verify, so nothing is spent and the answer a caller sees is the one it saw when this filter ran
+ * after the chain. A cross-site request presenting a credential is refused here with 403, before the
+ * verification and before {@code api/AuthorizationController} runs. The two answers a caller can
+ * observe are therefore unchanged, and the cost of the refusal is not.
  *
  * <p>The refusal is 403 carrying the same problem document {@code config/SecurityConfig} writes for
  * an unauthorized or forbidden request. It names no route, no header value and no identifier.
@@ -65,6 +72,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
  * <p>Decisions: {@code card-platform/docs/decision-log.md}.
  */
 @Component
+@Order(SecurityFilterProperties.DEFAULT_FILTER_ORDER - 1)
 public class CrossSiteRequestFilter extends OncePerRequestFilter {
 
     /** The header a first-party client sets, and the shipped default of the property below. */
@@ -132,6 +140,13 @@ public class CrossSiteRequestFilter extends OncePerRequestFilter {
 
         String method = request.getMethod();
         if (method != null && SAFE_METHODS.contains(method.toUpperCase(Locale.ROOT))) {
+            chain.doFilter(request, response);
+            return;
+        }
+        if (request.getHeader(HttpHeaders.AUTHORIZATION) == null) {
+            // No credential, so there is no cached credential to forge with and no password to
+            // verify. The chain answers 401, which is the answer this route gave before this
+            // filter was ordered ahead of it.
             chain.doFilter(request, response);
             return;
         }

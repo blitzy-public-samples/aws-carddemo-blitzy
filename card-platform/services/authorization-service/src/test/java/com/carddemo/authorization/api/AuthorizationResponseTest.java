@@ -113,17 +113,16 @@ final class AuthorizationResponseTest {
     }
 
     /**
-     * Asserts reject code {@code 0100} reaches a caller through the one decline factory, carrying the
-     * account its decision applied to.
+     * Asserts reject code {@code 0100} is shaped by the one decline factory like any other code.
      *
-     * <p>{@code app/cbl/CBTRN02C.cbl:L383-L387} assigns that code where the cross-reference read
-     * missed, so the account it names is the one the caller declared rather than the one that read
-     * would have resolved. A request declaring none establishes no subject and is refused before a
-     * decision by {@code domain/AuthorizationService}, so no response of this shape exists without an
-     * account and no factory here has to invent one.
+     * <p>This record is a shape rather than a rule: one factory builds every decline and none of them
+     * decides which outcomes a service may reach. {@code domain/AuthorizationService} refuses a card
+     * that resolves no cross-reference row instead of deciding it, so no published response carries
+     * this code. The factory is still held to the same invariants for it, because a response of this
+     * shape must name an account whatever code it carries, and no factory here invents one.
      */
     @Test
-    void theUnresolvedCardCodeTravelsThroughTheOneDeclineFactory() {
+    void theUnresolvedCardCodeIsShapedLikeAnyOtherDecline() {
         AuthorizationResponse response =
                 AuthorizationResponse.decline(TRANSACTION_ID, ACCOUNT_ID, UNRESOLVED_CARD);
 

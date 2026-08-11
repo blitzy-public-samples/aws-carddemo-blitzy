@@ -30,7 +30,7 @@ The Maven aggregator contains nine child modules and builds ten reactor projects
 
 | Capability | Delivered implementation |
 | :--- | :--- |
-| Authorization | Four source-derived decline rules, one response, one persisted decision, and exactly one outcome event for each authenticated, parseable request that reaches an authorization decision. Reject reason 0100 is the one decided outcome whose event is keyed on the transaction identifier |
+| Authorization | Four source-derived decline rules, one response, one persisted decision, and exactly one outcome event for each authenticated, parseable request that reaches an authorization decision. Reject reason 0100 resolves no subject, so it refuses the call instead of deciding it |
 | Posting | Transaction, category-balance, account-balance, account-state replica, feed-reject, outbox, and duplicate-delivery handling |
 | Fraud | Three net-new risk rules, persisted assessments, and flagged or cleared events |
 | Notification | Authorized-transaction, posted-transaction, fraud, and customer-context consumers, private read models, two renderers, alert-attempt metadata, and history API |
@@ -279,13 +279,17 @@ One surface is the exception, and it is a request body rather than a request lin
 
 The Compose stack binds every published port to `127.0.0.1`. It uses separate database and Kafka credentials for each service.
 
+Its transport posture is one operator, one machine, synthetic fixtures, and each half of that sentence carries weight. Three transports there authenticate without encrypting, or encrypt without authenticating. They are HTTP Basic over HTTP on the six service ports, `SASL_PLAINTEXT` on the broker, and `sslmode=require` against a database that signs its own certificate.
+
+What bounds them is the binding rather than a promise. Every published port names the loopback address, nothing off the machine reaches any of them, and `ComposeEnvironmentIsolationContractTest` fails the build on a binding that does not. The data is the nine fixture files under `app/data/ASCII`, which describe nobody.
+
 | Transport | Compose | Kubernetes |
 | :--- | :--- | :--- |
 | Database | `sslmode=require` | `sslmode=verify-full` |
 | Kafka | `SASL_PLAINTEXT` on the private bridge | `SASL_SSL` |
 | Service ports | HTTP on loopback | HTTPS with mounted key material |
 
-The demonstration uses synthetic repository fixtures. Do not expose the Compose ports or load real cardholder data.
+The demonstration uses synthetic repository fixtures. Do not expose the Compose ports or load real cardholder data. A host shared with an untrusted account is outside what the posture covers, and so is a second person on the same bridge. Either case wants the Kubernetes path, which is encrypted throughout. An authenticated Transport Layer Security profile for Compose is designed and not delivered; [Suggested Next Tasks](docs/suggested-next-tasks.md) carries the procedure.
 
 <br/>
 
@@ -489,7 +493,7 @@ Seven business topics, six source-specific dead-letter topics, and one shared fa
 
 Every governed event carries `eventId`, `eventType`, `schemaVersion`, `occurredAt`, and an aggregate key. Money travels as a decimal string.
 
-The account identifier is the Kafka key and the ordering unit of every event a producer writes. An authorization whose card resolves none names the account the caller declared, and its reject code 0100 publishes under `transaction-declined-v3` keyed on that account. The refusal is recorded in `unresolved_card_attempt` and `authorization_decision` beside the event, so **one decided call produces exactly one event**. A call that establishes neither a resolvable card nor an account is refused before a decision, and publishes nothing.
+The account identifier is the Kafka key and the ordering unit of every event a producer writes. It always comes from a stored row rather than from a request body. An authorization whose card resolves no cross-reference row therefore resolves no subject, and is refused before a decision: it draws no identifier, writes no row and publishes nothing. Reasons 0101, 0102 and 0103 publish under `transaction-declined-v3` keyed on the account the cross-reference resolved, beside one `authorization_decision` row, so **one decided call produces exactly one event**.
 
 Fourteen schema documents cover eight business event types, five released versions above version one, and the dead-letter envelope. Publish and consume paths validate against the registered document. `contracts/released-contracts.json` records every released version with a digest of its wire contract, so no document can be deleted or rewritten in place.
 
@@ -514,14 +518,14 @@ Add `-o` only once `~/.m2/repository` already holds every dependency this reacto
 The delivered suite includes:
 
 - posting over all 300 daily transaction records;
-- decline reasons 0100 through 0103 and the narrowed-precision boundary;
+- decline reasons 0100 through 0103, the refusal reason 0100 now produces, and the narrowed-precision boundary;
 - online bill-payment behavior;
 - interest-rate resolution without migrating interest processing;
 - account and card validation;
 - truncation toward zero;
 - fixture census, identifier fidelity, and card seed checks.
 
-The published run reports 229 Failsafe equivalence tests and 506 unit or contract tests, with zero failures. Both figures are measured rather than asserted: run `scripts/check-published-test-counts.sh` after `mvn verify` and it compares every published count against the reports that run wrote. See [Equivalence Results](docs/equivalence-results.md).
+The published run reports 229 Failsafe equivalence tests and 562 unit or contract tests, with zero failures. Both figures are measured rather than asserted: run `scripts/check-published-test-counts.sh` after `mvn verify` and it compares every published count against the reports that run wrote. See [Equivalence Results](docs/equivalence-results.md).
 
 Interest is verified but not migrated. `BillingCycleService` reproduces only the two accumulator resets at `app/cbl/CBACT04C.cbl:L353-L354`.
 
@@ -535,7 +539,7 @@ Interest is verified but not migrated. `BillingCycleService` reproduces only the
 | [Suggested Next Tasks](docs/suggested-next-tasks.md) | Follow-up work with locations and verification criteria |
 | [Decision Log](docs/decision-log.md) | Alternatives, reasons, accepted risks, and declared deviations |
 | [Traceability Matrix](docs/traceability-matrix.md) | Bidirectional source-to-target classification |
-| [Business Rule Flags](docs/business-rule-flags.md) | Sixty-six ambiguous, inconsistent, or undocumented source rules, each with its citation and its handling, plus four declared platform departures. Identifiers 1 to 26 are the set the specification fixes; 27 upward are appended in the order they were found, and no identifier is ever reused or renumbered |
+| [Business Rule Flags](docs/business-rule-flags.md) | Sixty-six ambiguous, inconsistent, or undocumented source rules, each with its citation and its handling, plus five declared platform departures. Identifiers 1 to 26 are the set the specification fixes; 27 upward are appended in the order they were found, and no identifier is ever reused or renumbered |
 | [Architecture, Before and After](docs/architecture-before-after.md) | Paired Mermaid migration views |
 | [Event Flow](docs/event-flow.md) | Topics, groups, outboxes, projections, and idempotency |
 | [Data Model](docs/data-model.md) | Service-owned tables and copybook-to-column provenance |

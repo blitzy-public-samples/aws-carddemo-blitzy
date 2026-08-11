@@ -3,7 +3,6 @@ package com.carddemo.fraud.domain;
 import com.carddemo.fraud.config.FraudProperties;
 import com.carddemo.fraud.repository.FraudAssessmentRepository;
 import com.carddemo.fraud.repository.OutboxEventRepository;
-import com.carddemo.fraud.repository.ProcessedEventRepository;
 import com.carddemo.fraud.repository.VelocityWindowRepository;
 import java.time.Duration;
 import java.time.Instant;
@@ -18,8 +17,12 @@ import org.springframework.transaction.support.TransactionCallback;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
- * Removes published outbox rows, processed-event markers, expired risk assessments and elapsed
- * velocity windows after their configured horizons.
+ * Removes published outbox rows, expired risk assessments and elapsed velocity windows after their
+ * configured horizons.
+ *
+ * <p>{@code processed_event} is deliberately absent. A duplicate-delivery claim is permanent, so
+ * nothing removes one and this sweep has no horizon to apply to that table. Migration
+ * {@code V10__processed_event_claims_are_permanent.sql} states the same thing in the catalogue.
  *
  * <p>No COBOL ancestor, in two senses. This whole service is ADDITIVE, so nothing in
  * {@code app/cbl/} corresponds to it; and the source has no retention concern of any kind, because
@@ -27,11 +30,10 @@ import org.springframework.transaction.support.TransactionTemplate;
  * owns rather than the program. {@code app/jcl/POSTTRAN.jcl} deletes and redefines its output
  * instead of pruning it.
  *
- * <h2>The four tables and why each grows</h2>
+ * <h2>The three swept tables and why each grows</h2>
  *
  * <p>{@code outbox_event} holds one row per published assessment and keeps it after publication so
- * a delivery can be diagnosed. {@code processed_event} holds one marker per consumed event for as
- * long as a redelivery of it is still possible. {@code velocity_window} is the one that grows
+ * a delivery can be diagnosed. {@code velocity_window} is the one that grows
  * fastest and the one whose growth is least visible: {@code domain/RiskScoringService} opens a new
  * bucket as soon as the configured span elapses, so every authorization leaves behind a row that
  * the scoring path never reads again. One row per account per span, for ever, until something
@@ -41,15 +43,15 @@ import org.springframework.transaction.support.TransactionTemplate;
  * and each declared its horizon before anything applied it. {@code COMMENT ON TABLE} in
  * {@code src/main/resources/db/migration/V1__schema.sql} names ninety days from
  * {@code assessed_at} and seven days from {@code window_start}, and this sweep once removed outbox
- * rows and markers only, so both declarations described an intention while the tables only grew.
+ * rows only, so both declarations described an intention while the tables only grew.
  * Both rows are pseudonymous rather than anonymous, because {@code account_id} and
  * {@code transaction_id} resolve to a named customer through the account and ledger services, so
  * both horizons are privacy horizons and not only housekeeping ones.
  *
  * <h2>Each delete is bounded and drained</h2>
  *
- * <p>All four tables are on the hot path. The relay sweeps {@code outbox_event} on a fixed delay,
- * the authorization listener writes {@code processed_event} on every event, and
+ * <p>All three swept tables are on the hot path. The relay sweeps {@code outbox_event} on a fixed
+ * delay, the authorization listener writes an assessment for every event it scores, and
  * {@code velocity_window} is written by the same listener and read by the velocity rule inside the
  * scoring transaction. A single unbounded {@code DELETE} holds every row it removes under one lock
  * for the whole statement, so a schema idle long enough to accumulate a week of rows takes one long
@@ -66,12 +68,12 @@ import org.springframework.transaction.support.TransactionTemplate;
  * <p>The drain is itself bounded, by {@link #MAX_TABLE_DURATION} measured from a monotonic clock. A
  * table whose backlog cannot be drained inside that window keeps the remainder for the next pass
  * rather than holding this thread. That ceiling is what stops one very large table from starving
- * the other three, which is why the four are swept in sequence with a deadline each rather than
+ * the other two, which is why the three are swept in sequence with a deadline each rather than
  * under one shared budget.
  *
  * <h2>What the velocity horizon costs</h2>
  *
- * <p>The other three horizons may be any positive duration. The velocity horizon may not: a window
+ * <p>The other two horizons may be any positive duration. The velocity horizon may not: a window
  * is counted into by every authorization arriving while it is current, so a horizon shorter than
  * the window span would delete the bucket the scoring path is still counting into. The symptom
  * would be a burst that quietly stopped triggering the velocity rule rather than an error anyone
@@ -112,9 +114,6 @@ public class RetentionSweep {
     /** Holds the published rows this sweep removes. */
     private final OutboxEventRepository outboxEvents;
 
-    /** Holds the duplicate-delivery markers this sweep removes. */
-    private final ProcessedEventRepository processedEvents;
-
     /** Holds the expired risk assessments this sweep removes. */
     private final FraudAssessmentRepository assessments;
 
@@ -132,9 +131,6 @@ public class RetentionSweep {
 
     /** How long a published outbox row stays for diagnosis. */
     private final Duration publishedRetention;
-
-    /** How long a processed-event marker stays while a redelivery is still possible. */
-    private final Duration markerRetention;
 
     /**
      * How long a risk assessment stays after it was made.
@@ -161,10 +157,9 @@ public class RetentionSweep {
     private final Duration maxTableDuration;
 
     /**
-     * Takes the four stores, the transaction boundary and the four horizons.
+     * Takes the three stores, the transaction boundary and the three horizons.
      *
      * @param outboxEvents        store over {@code outbox_event}
-     * @param processedEvents     store over {@code processed_event}
      * @param assessments         store over {@code fraud_assessment}
      * @param velocityWindows     store over {@code velocity_window}
      * @param transactionTemplate the boundary each bounded delete runs inside
@@ -176,11 +171,10 @@ public class RetentionSweep {
     // context load rather than naming the ambiguity.
     @Autowired
     public RetentionSweep(OutboxEventRepository outboxEvents,
-            ProcessedEventRepository processedEvents, FraudAssessmentRepository assessments,
-            VelocityWindowRepository velocityWindows, TransactionTemplate transactionTemplate,
-            FraudProperties properties) {
-        this(outboxEvents, processedEvents, assessments, velocityWindows, transactionTemplate,
-                properties, MAX_TABLE_DURATION);
+            FraudAssessmentRepository assessments, VelocityWindowRepository velocityWindows,
+            TransactionTemplate transactionTemplate, FraudProperties properties) {
+        this(outboxEvents, assessments, velocityWindows, transactionTemplate, properties,
+                MAX_TABLE_DURATION);
     }
 
     /**
@@ -191,7 +185,6 @@ public class RetentionSweep {
      * looping.
      *
      * @param outboxEvents        store over {@code outbox_event}
-     * @param processedEvents     store over {@code processed_event}
      * @param assessments         store over {@code fraud_assessment}
      * @param velocityWindows     store over {@code velocity_window}
      * @param transactionTemplate the boundary each bounded delete runs inside
@@ -199,19 +192,17 @@ public class RetentionSweep {
      * @param maxTableDuration    the drain ceiling for one table
      * @throws NullPointerException when any argument is {@code null}
      */
-    RetentionSweep(OutboxEventRepository outboxEvents, ProcessedEventRepository processedEvents,
+    RetentionSweep(OutboxEventRepository outboxEvents,
             FraudAssessmentRepository assessments, VelocityWindowRepository velocityWindows,
             TransactionTemplate transactionTemplate, FraudProperties properties,
             Duration maxTableDuration) {
         this.outboxEvents = Objects.requireNonNull(outboxEvents, "outboxEvents");
-        this.processedEvents = Objects.requireNonNull(processedEvents, "processedEvents");
         this.assessments = Objects.requireNonNull(assessments, "assessments");
         this.velocityWindows = Objects.requireNonNull(velocityWindows, "velocityWindows");
         this.transactionTemplate =
                 Objects.requireNonNull(transactionTemplate, "transactionTemplate");
         FraudProperties checked = Objects.requireNonNull(properties, "properties");
         this.publishedRetention = Duration.ofHours(checked.outbox().publishedRetentionHours());
-        this.markerRetention = Duration.ofHours(checked.processedEvent().markerRetentionHours());
         this.assessmentRetention = Duration.ofDays(checked.retention().assessmentRetentionDays());
         this.velocityRetention = Duration.ofDays(checked.retention().velocityRetentionDays());
         this.maxTableDuration = Objects.requireNonNull(maxTableDuration, "maxTableDuration");
@@ -254,14 +245,11 @@ public class RetentionSweep {
     public void purgeExpiredRows() {
         Instant now = Instant.now();
         Instant publishedHorizon = now.minus(publishedRetention);
-        Instant markerHorizon = now.minus(markerRetention);
         Instant assessmentHorizon = now.minus(assessmentRetention);
         Instant velocityHorizon = now.minus(velocityRetention);
 
         drain("outbox_event",
                 limit -> outboxEvents.deletePublishedBefore(publishedHorizon, limit));
-        drain("processed_event",
-                limit -> processedEvents.deleteMarkersProcessedBefore(markerHorizon, limit));
         drain("fraud_assessment",
                 limit -> assessments.deleteAssessedBefore(assessmentHorizon, limit));
         drain("velocity_window",

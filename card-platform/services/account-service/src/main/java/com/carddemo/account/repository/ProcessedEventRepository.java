@@ -39,8 +39,16 @@ import org.springframework.data.repository.query.Param;
  * length. Every operation below names both key columns for that reason.
  *
  * <p>The interface extends {@link Repository} rather than a full create-read-update-delete base,
- * because a marker has exactly three operations. Nothing updates a marker and nothing deletes one
- * by identifier, so neither operation is exposed.
+ * because a marker has exactly three operations. Nothing updates a marker and nothing deletes one,
+ * so neither operation is exposed.
+ *
+ * <p><b>A claim is permanent.</b> This interface exposed a purge over a 720-hour horizon until a
+ * security review found that horizon expiring claims while the effect they guard outlived them.
+ * {@code domain/PostedTransactionService} adds an amount to a balance and to one cycle accumulator,
+ * and nothing reverses that arithmetic, so a restored or deliberately replayed record arriving after
+ * the purge was counted twice. Migration
+ * {@code V11__processed_event_claims_are_permanent.sql} states the same thing in the catalogue, and
+ * there is no method here to remove a row.
  */
 public interface ProcessedEventRepository
         extends Repository<ProcessedEventEntity, ProcessedEventId> {
@@ -70,46 +78,6 @@ public interface ProcessedEventRepository
      * @return the written marker
      */
     ProcessedEventEntity save(ProcessedEventEntity marker);
-
-    /**
-     * Deletes markers written before the given instant, and returns how many it removed.
-     *
-     * <p>{@code carddemo.processed-event.marker-retention-hours} in
-     * {@code src/main/resources/application.yml} supplies the horizon, and
-     * {@code ix_processed_event_processed_at} serves this delete.
-     *
-     * <p>The delete matches on {@code processed_at} rather than on either key column, so it removes
-     * a whole row whichever topic keyed it.
-     *
-     * <p>{@code limit} bounds one statement. An unbounded delete holds every row it removes under
-     * one lock for the whole statement, so a schema idle long enough to accumulate a week of
-     * markers takes one long statement that blocks every listener writing this table.
-     * {@code domain/RetentionSweep} repeats this call until it removes fewer rows than the limit,
-     * which drains the same backlog in short transactions that each release their locks.
-     *
-     * <p>{@code ORDER BY processed_at} makes the batches deterministic and lets
-     * {@code ix_processed_event_processed_at} serve both the subquery and the ordering, so the
-     * oldest markers leave first and no batch overlaps another.
-     *
-     * <p>The subquery names both key columns, because {@code V6__processed_event_topic_key.sql}
-     * made the key the event identifier and the topic together, and a delete matching on one of
-     * them would remove a marker another topic's delivery still needs.
-     *
-     * @param horizon the instant before which a marker is removed
-     * @param limit   the largest number of markers one statement removes
-     * @return the number of markers removed
-     */
-    @Modifying
-    @Query(value = """
-            DELETE FROM processed_event
-            WHERE (event_id, consumed_topic) IN (SELECT event_id, consumed_topic
-                                                 FROM processed_event
-                                                 WHERE processed_at < :horizon
-                                                 ORDER BY processed_at
-                                                 LIMIT :limit)
-            """, nativeQuery = true)
-    int deleteMarkersProcessedBefore(@Param("horizon") Instant horizon,
-            @Param("limit") int limit);
 
     /**
      * Claims one event identifier for processing, and reports whether this caller is the first to

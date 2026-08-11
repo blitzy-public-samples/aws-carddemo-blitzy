@@ -2,9 +2,7 @@ package com.carddemo.card.repository;
 
 import com.carddemo.card.entity.ProcessedEventEntity;
 import com.carddemo.card.entity.ProcessedEventEntity.ProcessedEventId;
-import java.time.Instant;
 import java.util.UUID;
-import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.ListCrudRepository;
 import org.springframework.data.repository.query.Param;
@@ -55,44 +53,9 @@ public interface ProcessedEventRepository
         extends ListCrudRepository<ProcessedEventEntity, ProcessedEventId> {
 
     /**
-     * Deletes at most {@code limit} markers written before the given instant, and returns how many
-     * it removed.
-     *
-     * <p>A marker matters only while a redelivery of its event is still possible. Past that horizon
-     * it is dead weight on a table that otherwise grows for the life of the service.
-     * {@code carddemo.retention.marker-retention} in {@code src/main/resources/application.yml}
-     * supplies the horizon, and {@code ix_processed_event_processed_at} serves both the subquery and
-     * the delete.
-     *
-     * <p>{@code limit} bounds one statement, and {@code domain/RetentionSweep} names the bound. A
-     * horizon shorter than the broker's own retention lets a redelivery arrive after its marker is
-     * gone, and the delivery is then applied a second time.
-     *
-     * <p>The subquery selects and the delete matches on both key columns. Matching on the event
-     * identifier alone would remove a marker of the same identifier on another topic whose own
-     * {@code processed_at} is newer than the horizon, which would unguard a delivery the retention
-     * rule was not asked to forget.
-     *
-     * @param horizon the instant before which a marker is removed
-     * @param limit   the most markers one statement removes, at least one
-     * @return the number of markers removed, and 0 when none is past the horizon
-     */
-    @Modifying
-    @Query(value = """
-            DELETE FROM processed_event
-            WHERE (event_id, consumed_topic) IN (SELECT event_id, consumed_topic
-                                                   FROM processed_event
-                                                  WHERE processed_at < :horizon
-                                                  ORDER BY processed_at
-                                                  LIMIT :limit)
-            """, nativeQuery = true)
-    int deleteMarkersProcessedBefore(@Param("horizon") Instant horizon,
-            @Param("limit") int limit);
-
-    /**
      * Answers whether one event identifier has already been processed on any topic.
      *
-     * <p>This is a diagnostic and retention read rather than the idempotency guard. The guard is the
+     * <p>This is a diagnostic read rather than the idempotency guard. The guard is the
      * inherited {@code existsById}, which takes the whole key: a delivery is identified by its event
      * and the stream it arrived on, so a consumer that asked this question instead would refuse a
      * different event that happens to share an identifier with one already handled elsewhere. The

@@ -76,7 +76,7 @@ class OutboxWriterTest {
     @DisplayName("a state event the document accepts reaches the table as the checked text")
     void aStateEventTheDocumentAcceptsReachesTheTable() {
         OutboxEventRepository rows = mock(OutboxEventRepository.class);
-        new OutboxWriter(rows, MAPPER).write(stateChange(TEN_CHARACTER_EXPIRY));
+        new OutboxWriter(rows).write(stateChange(TEN_CHARACTER_EXPIRY));
 
         verify(rows).save(rowWith(payload -> {
             assertThat(payload.getEventType()).isEqualTo(AccountStateChanged.EVENT_TYPE);
@@ -91,7 +91,7 @@ class OutboxWriterTest {
     @DisplayName("a context event the document accepts reaches the table")
     void aContextEventTheDocumentAcceptsReachesTheTable() {
         OutboxEventRepository rows = mock(OutboxEventRepository.class);
-        new OutboxWriter(rows, MAPPER).writeCustomerContext(contextChange(OCCURRED_AT));
+        new OutboxWriter(rows).writeCustomerContext(contextChange(OCCURRED_AT));
 
         verify(rows).save(rowWith(row ->
                 assertThat(row.getEventType()).isEqualTo(CustomerContextChanged.EVENT_TYPE)));
@@ -101,7 +101,7 @@ class OutboxWriterTest {
     @DisplayName("an expiry one character short of the document stores nothing")
     void anExpiryOneCharacterShortOfTheDocumentStoresNothing() {
         OutboxEventRepository rows = mock(OutboxEventRepository.class);
-        OutboxWriter writer = new OutboxWriter(rows, MAPPER);
+        OutboxWriter writer = new OutboxWriter(rows);
         AccountStateChanged refused = stateChange(NINE_CHARACTER_EXPIRY);
 
         assertThatThrownBy(() -> writer.write(refused))
@@ -116,7 +116,7 @@ class OutboxWriterTest {
     @DisplayName("a moment outside the document's year bound stores nothing")
     void aMomentOutsideTheDocumentsYearBoundStoresNothing() {
         OutboxEventRepository rows = mock(OutboxEventRepository.class);
-        OutboxWriter writer = new OutboxWriter(rows, MAPPER);
+        OutboxWriter writer = new OutboxWriter(rows);
         CustomerContextChanged refused = contextChange(Instant.parse("+12024-05-01T00:00:00Z"));
 
         assertThatThrownBy(() -> writer.writeCustomerContext(refused))
@@ -130,7 +130,7 @@ class OutboxWriterTest {
     @Test
     @DisplayName("a refusal names the broken property and no value the payload carries")
     void aRefusalNamesTheBrokenPropertyAndNoPayloadValue() {
-        OutboxWriter writer = new OutboxWriter(mock(OutboxEventRepository.class), MAPPER);
+        OutboxWriter writer = new OutboxWriter(mock(OutboxEventRepository.class));
         CustomerContextChanged refused = new CustomerContextChanged(EVENT_ID,
                 CustomerContextChanged.EVENT_TYPE, CustomerContextChanged.SCHEMA_VERSION,
                 Instant.parse("+12024-05-01T00:00:00Z"), ACCOUNT_ID, ACCOUNT_ID,
@@ -152,7 +152,7 @@ class OutboxWriterTest {
     @DisplayName("the column ceiling still refuses an oversized payload")
     void theColumnCeilingStillRefusesAnOversizedPayload() {
         OutboxEventRepository rows = mock(OutboxEventRepository.class);
-        OutboxWriter writer = new OutboxWriter(rows, MAPPER);
+        OutboxWriter writer = new OutboxWriter(rows);
         String widest = "X".repeat(OutboxWriter.PAYLOAD_MAX_BYTES);
         ObjectMapper inflating = MAPPER;
         AccountStateChanged accepted = stateChange(TEN_CHARACTER_EXPIRY);
@@ -164,6 +164,292 @@ class OutboxWriterTest {
         writer.write(accepted);
 
         verify(rows).save(any(OutboxEventEntity.class));
+    }
+
+    /**
+     * What the publish gate refuses inside a customer free-text field, before a row exists.
+     *
+     * <p>{@link CustomerContextChanged} is the one payload of this platform whose fields a person
+     * filled in. {@code CUST-FIRST-NAME}, {@code CUST-LAST-NAME} and the three address lines of
+     * {@code app/cpy/CVCUS01Y.cpy:L6-L16} are free text at the source, and
+     * {@code app/cbl/COACTUPC.cbl:L1205-L1280} checks their width and their character class and
+     * nothing about what they say. A cardholder number typed into an address line is therefore a
+     * shape the source admits, which is why the gate screens it on the way into the outbox.
+     *
+     * <p>Each test asserts the repository was never asked to save. A row that reached the repository
+     * would commit with the customer rewrite of {@code app/cbl/COACTUPC.cbl:L4086} and publish
+     * afterwards, so the screen has to run before the row, not before the send.
+     */
+    @Nested
+    @DisplayName("Customer free-text fields are screened before a row is saved")
+    class ScreenedCustomerNarrative {
+
+        /** Asserts a cardholder number in an address line stops the write. */
+        @Test
+        @DisplayName("a card number in an address line stores nothing")
+        void aCardNumberInAnAddressLineStoresNothing() {
+            assertRefused(context -> context.addressLine1("4111111111111111"), "digit run");
+        }
+
+        /** Asserts the punctuated form of the same number stops the write. */
+        @Test
+        @DisplayName("a punctuated card number in an address line stores nothing")
+        void aPunctuatedCardNumberInAnAddressLineStoresNothing() {
+            assertRefused(context -> context.addressLine2("4111-1111-1111-1111"),
+                    "separated digit run");
+        }
+
+        /** Asserts a formatted social security number in a name stops the write. */
+        @Test
+        @DisplayName("a formatted social security number in a last name stores nothing")
+        void aFormattedSocialSecurityNumberInALastNameStoresNothing() {
+            assertRefused(context -> context.lastName("Lovelace 123-45-6789"), "social security");
+        }
+
+        /** Asserts the unseparated form of the same number stops the write. */
+        @Test
+        @DisplayName("an unseparated social security number in an address line stores nothing")
+        void anUnseparatedSocialSecurityNumberInAnAddressLineStoresNothing() {
+            assertRefused(context -> context.addressLine3("Ref 123456789"), "nine digits");
+        }
+
+        /** Asserts the middle name is screened on the same terms as the other two. */
+        @Test
+        @DisplayName("a card number in a middle name stores nothing")
+        void aCardNumberInAMiddleNameStoresNothing() {
+            assertRefused(context -> context.middleName("4111111111111111"), "middle name");
+        }
+
+        /** Asserts a labelled verification code in a name stops the write. */
+        @Test
+        @DisplayName("a labelled verification code in a first name stores nothing")
+        void aLabelledVerificationCodeInAFirstNameStoresNothing() {
+            assertRefused(context -> context.firstName("Ada cvv 123"), "verification");
+        }
+
+        /**
+         * Asserts the postal code keeps both forms its source field carries.
+         *
+         * <p>{@code CUST-ADDR-ZIP PIC X(10)} at {@code app/cpy/CVCUS01Y.cpy:L16} holds ten
+         * characters, and {@code app/data/ASCII/custdata.txt} carries both {@code 12546} and
+         * {@code 19852-6716}. The second is nine digits with a separator, which is the shape a social
+         * security number takes, so the postal code is screened for a value that looks like a
+         * cardholder number and not for that shape. A screen that refused it would refuse a seeded
+         * customer.
+         */
+        @Test
+        @DisplayName("a nine-digit postal code still reaches the table")
+        void aNineDigitPostalCodeStillReachesTheTable() {
+            OutboxEventRepository rows = mock(OutboxEventRepository.class);
+
+            new OutboxWriter(rows).writeCustomerContext(context().zipCode("19852-6716").build());
+
+            verify(rows).save(any(OutboxEventEntity.class));
+        }
+
+        /** Asserts an ordinary address still reaches a row, so the screen has not closed the field. */
+        @Test
+        @DisplayName("an ordinary address still reaches the table")
+        void anOrdinaryAddressStillReachesTheTable() {
+            OutboxEventRepository rows = mock(OutboxEventRepository.class);
+
+            new OutboxWriter(rows).writeCustomerContext(context().build());
+
+            verify(rows).save(any(OutboxEventEntity.class));
+        }
+
+        /**
+         * Applies one change to an otherwise acceptable context event and asserts nothing was saved.
+         *
+         * @param change what to put into which free-text field
+         * @param what   the shape under test, named in the assertion message
+         */
+        private void assertRefused(java.util.function.Consumer<ContextBuilder> change, String what) {
+            OutboxEventRepository rows = mock(OutboxEventRepository.class);
+            ContextBuilder builder = context();
+            change.accept(builder);
+            CustomerContextChanged event = builder.build();
+
+            assertThatThrownBy(() -> new OutboxWriter(rows).writeCustomerContext(event))
+                    .as("the gate admitted a " + what + " into an outbox row")
+                    .isInstanceOf(IllegalArgumentException.class);
+            verify(rows, never()).save(any(OutboxEventEntity.class));
+        }
+    }
+
+    /**
+     * Proves a refused customer field takes the rewrite with it, against a real database.
+     *
+     * <p>The in-memory tests above prove no row is offered to the repository. This one proves the
+     * business mutation beside it does not survive either, which is the property
+     * {@code app/csd/CARDDEMO.CSD} could not offer: every file definition there carries
+     * {@code RECOVERY(NONE)}, so the source's two rewrites at {@code app/cbl/COACTUPC.cbl:L4066} and
+     * {@code app/cbl/COACTUPC.cbl:L4086} could commit one and lose the other.
+     */
+    @Nested
+    @DisplayName("A screened customer field takes the business mutation with it")
+    class ScreenedCustomerTransactionBoundary extends AbstractAccountPostgresTest {
+
+        /** The seeded account this test mutates and then expects to find unchanged. */
+        private static final String SEEDED_ACCOUNT = "00000000001";
+
+        /** A credit limit no seeded row carries, so a leaked commit is unmistakable. */
+        private static final BigDecimal LEAKED_LIMIT = new BigDecimal("88888888.88");
+
+        @Autowired
+        private AccountRepository accounts;
+
+        @Autowired
+        private OutboxEventRepository outboxEvents;
+
+        @Autowired
+        private PlatformTransactionManager transactionManager;
+
+        @Test
+        @DisplayName("neither the rewrite nor the event row survives a screened address line")
+        void neitherTheRewriteNorTheEventRowSurvivesAScreenedAddressLine() {
+            OutboxWriter writer = new OutboxWriter(outboxEvents);
+            BigDecimal before = inNewTransaction(() ->
+                    accounts.findById(SEEDED_ACCOUNT).orElseThrow().getCreditLimit());
+            long rowsBefore = inNewTransaction(outboxEvents::count);
+
+            assertThatThrownBy(() -> inNewTransaction(() -> {
+                AccountEntity account = accounts.findById(SEEDED_ACCOUNT).orElseThrow();
+                account.setCreditLimit(LEAKED_LIMIT);
+                accounts.save(account);
+                writer.writeCustomerContext(
+                        context().addressLine1("4111111111111111").build());
+                return null;
+            })).isInstanceOf(IllegalArgumentException.class);
+
+            assertThat(inNewTransaction(() ->
+                    accounts.findById(SEEDED_ACCOUNT).orElseThrow().getCreditLimit()))
+                    .as("the rewrite rolled back with the screened event")
+                    .isEqualByComparingTo(before);
+            assertThat(inNewTransaction(outboxEvents::count))
+                    .as("no event row committed beside the rewrite")
+                    .isEqualTo(rowsBefore);
+        }
+
+        /**
+         * Runs one callback in a transaction of its own and returns its result.
+         *
+         * @param <T>      the result type
+         * @param callback the work to run
+         * @return whatever the callback answered
+         */
+        private <T> T inNewTransaction(java.util.function.Supplier<T> callback) {
+            TransactionTemplate template = new TransactionTemplate(transactionManager);
+            template.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+            return template.execute(status -> callback.get());
+        }
+    }
+
+    /** @return a builder holding the components the document accepts, one change away from a test */
+    private static ContextBuilder context() {
+        return new ContextBuilder();
+    }
+
+    /**
+     * Collects the eleven payload components of one context event so a test can change exactly one.
+     *
+     * <p>A record has no setters, and repeating an eleven-argument constructor in every test above
+     * would hide which value the test is about. This builder starts from the accepted values
+     * {@link #contextChange(Instant)} uses and lets one test name one field.
+     */
+    private static final class ContextBuilder {
+
+        /** Given name, from {@code CUST-FIRST-NAME PIC X(25)}. */
+        private String firstName = "Ada";
+
+        /** Middle name, from {@code CUST-MIDDLE-NAME PIC X(25)}. */
+        private String middleName = "B";
+
+        /** Family name, from {@code CUST-LAST-NAME PIC X(25)}. */
+        private String lastName = "Lovelace";
+
+        /** First address line, from {@code CUST-ADDR-LINE-1 PIC X(50)}. */
+        private String addressLine1 = "1 Analytical Way";
+
+        /** Second address line, from {@code CUST-ADDR-LINE-2 PIC X(50)}. */
+        private String addressLine2 = "Flat 2";
+
+        /** Third address line, from {@code CUST-ADDR-LINE-3 PIC X(50)}. */
+        private String addressLine3 = "London";
+
+        /** Postal code, from {@code CUST-ADDR-ZIP PIC X(10)}. */
+        private String zipCode = "10001";
+
+        /**
+         * @param value the given name this event carries
+         * @return this builder
+         */
+        private ContextBuilder firstName(String value) {
+            this.firstName = value;
+            return this;
+        }
+
+        /**
+         * @param value the middle name this event carries
+         * @return this builder
+         */
+        private ContextBuilder middleName(String value) {
+            this.middleName = value;
+            return this;
+        }
+
+        /**
+         * @param value the family name this event carries
+         * @return this builder
+         */
+        private ContextBuilder lastName(String value) {
+            this.lastName = value;
+            return this;
+        }
+
+        /**
+         * @param value the first address line this event carries
+         * @return this builder
+         */
+        private ContextBuilder addressLine1(String value) {
+            this.addressLine1 = value;
+            return this;
+        }
+
+        /**
+         * @param value the second address line this event carries
+         * @return this builder
+         */
+        private ContextBuilder addressLine2(String value) {
+            this.addressLine2 = value;
+            return this;
+        }
+
+        /**
+         * @param value the third address line this event carries
+         * @return this builder
+         */
+        private ContextBuilder addressLine3(String value) {
+            this.addressLine3 = value;
+            return this;
+        }
+
+        /**
+         * @param value the postal code this event carries
+         * @return this builder
+         */
+        private ContextBuilder zipCode(String value) {
+            this.zipCode = value;
+            return this;
+        }
+
+        /** @return the context event these components describe */
+        private CustomerContextChanged build() {
+            return new CustomerContextChanged(EVENT_ID, CustomerContextChanged.EVENT_TYPE,
+                    CustomerContextChanged.SCHEMA_VERSION, OCCURRED_AT, ACCOUNT_ID, ACCOUNT_ID,
+                    firstName, middleName, lastName, addressLine1, addressLine2, addressLine3,
+                    "NY", "USA", zipCode, "701");
+        }
     }
 
     /**
@@ -195,7 +481,7 @@ class OutboxWriterTest {
         @Test
         @DisplayName("neither the account rewrite nor the event row survives a refused payload")
         void neitherTheRewriteNorTheEventRowSurvives() {
-            OutboxWriter writer = new OutboxWriter(outboxEvents, MAPPER);
+            OutboxWriter writer = new OutboxWriter(outboxEvents);
             BigDecimal before = inNewTransaction(() ->
                     accounts.findById(SEEDED_ACCOUNT).orElseThrow().getCreditLimit());
             long rowsBefore = inNewTransaction(outboxEvents::count);
@@ -220,7 +506,7 @@ class OutboxWriterTest {
         @Test
         @DisplayName("the same mutation commits once the payload matches the document")
         void theSameMutationCommitsOnceThePayloadMatches() {
-            OutboxWriter writer = new OutboxWriter(outboxEvents, MAPPER);
+            OutboxWriter writer = new OutboxWriter(outboxEvents);
             BigDecimal before = inNewTransaction(() ->
                     accounts.findById(SEEDED_ACCOUNT).orElseThrow().getCreditLimit());
 
@@ -330,7 +616,6 @@ class OutboxWriterTest {
                 new AccountProperties.Outbox(
                         new AccountProperties.Outbox.Relay(500L, 1, "writer-test",
                                 Duration.ofSeconds(30L), 1_000L, Duration.ofSeconds(10L)), 168L),
-                new AccountProperties.ProcessedEvent(720L, 168L),
                 new AccountProperties.Retention(3_600_000L),
                 new AccountProperties.Write(3_000L));
     }

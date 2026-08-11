@@ -108,8 +108,7 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
         "USER_PASSWORD_HASH=" + TestIdentityPasswords.USER_PASSWORD_HASH,
         "MONITORING_PASSWORD_HASH=" + TestIdentityPasswords.MONITORING_PASSWORD_HASH,
         "carddemo.history.statement-retention-days=200000",
-        "carddemo.history.log-retention-days=200000",
-        "carddemo.processed-event.marker-retention-hours=4800000"
+        "carddemo.history.log-retention-days=200000"
 })
 @DirtiesContext(classMode = DirtiesContext.ClassMode.AFTER_CLASS)
 @DisplayName("A repeat delivery of one event identifier writes nothing a first delivery did not")

@@ -1,0 +1,204 @@
+# Time-bounded exceptions for the two infrastructure images this platform deploys.
+#
+# What this file is. The image scan of .github/workflows/ci.yml fails on a high or critical
+# vulnerability that has a fix available. apache/kafka:4.2.1 carries thirteen and postgres:18.4
+# carries fifteen, and every one of them is a package inside an image this project consumes rather
+# than one it builds. Section 0.5.1 of the plan pins both versions and states why each newer image
+# is deliberately not used, so raising a version is not a change this engagement may make. An
+# exception is what the delivered gate accepts in its place, and each entry below carries the four
+# things an exception needs: what is excused, who owns it, why it is accepted, and when it stops
+# being accepted.
+#
+# What an expiry does. Trivy reads expired_at and stops honouring the entry the day after. The
+# finding then returns and fails the image stage, which is what makes the date a decision rather
+# than a comment. Every entry expires on the same day, so one review answers all of them.
+#
+# Owner. The project owner of this repository. This platform is a demonstration and has no
+# operations team, so the owner is the person who accepts the demonstration posture the statements
+# below rely on.
+#
+# What would close each group, in order of preference: an upstream image whose tag carries the
+# fixed package; a rebuilt image this project publishes; or a documented decision to keep the
+# finding with a fresh expiry. card-platform/docs/suggested-next-tasks.md carries the task.
+#
+# Scope. Nothing here excuses a finding in an image this project builds. The six service images are
+# scanned in the same stage with no exception file at all, and their gate is zero fixable findings.
+#
+# Mechanics, alternatives considered and accepted risks:
+# card-platform/docs/decision-log.md, under "Two pinned infrastructure images carry a dated
+# exception rather than an unpinned upgrade".
+
+vulnerabilities:
+  # postgres:18.4 - fifteen Go standard-library findings in one helper binary.
+  - id: CVE-2025-61726
+    paths:
+      - usr/local/bin/gosu
+    statement: >-
+      postgres:18.4 | owner: project owner | Go standard-library finding compiled into usr/local/bin/gosu, the privilege-dropping helper the postgres entrypoint runs once to step down from root before exec'ing the server. The binary parses no network input, opens no socket and terminates by replacing itself with postgres, so the standard-library code these findings sit in is never reached. The path scope below is what keeps this entry from excusing the same identifier anywhere else in the image.
+    expired_at: 2026-11-30
+  - id: CVE-2025-61729
+    paths:
+      - usr/local/bin/gosu
+    statement: >-
+      postgres:18.4 | owner: project owner | Go standard-library finding compiled into usr/local/bin/gosu, the privilege-dropping helper the postgres entrypoint runs once to step down from root before exec'ing the server. The binary parses no network input, opens no socket and terminates by replacing itself with postgres, so the standard-library code these findings sit in is never reached. The path scope below is what keeps this entry from excusing the same identifier anywhere else in the image.
+    expired_at: 2026-11-30
+  - id: CVE-2025-68121
+    paths:
+      - usr/local/bin/gosu
+    statement: >-
+      postgres:18.4 | owner: project owner | Go standard-library finding compiled into usr/local/bin/gosu, the privilege-dropping helper the postgres entrypoint runs once to step down from root before exec'ing the server. The binary parses no network input, opens no socket and terminates by replacing itself with postgres, so the standard-library code these findings sit in is never reached. The path scope below is what keeps this entry from excusing the same identifier anywhere else in the image.
+    expired_at: 2026-11-30
+  - id: CVE-2026-25679
+    paths:
+      - usr/local/bin/gosu
+    statement: >-
+      postgres:18.4 | owner: project owner | Go standard-library finding compiled into usr/local/bin/gosu, the privilege-dropping helper the postgres entrypoint runs once to step down from root before exec'ing the server. The binary parses no network input, opens no socket and terminates by replacing itself with postgres, so the standard-library code these findings sit in is never reached. The path scope below is what keeps this entry from excusing the same identifier anywhere else in the image.
+    expired_at: 2026-11-30
+  - id: CVE-2026-27145
+    paths:
+      - usr/local/bin/gosu
+    statement: >-
+      postgres:18.4 | owner: project owner | Go standard-library finding compiled into usr/local/bin/gosu, the privilege-dropping helper the postgres entrypoint runs once to step down from root before exec'ing the server. The binary parses no network input, opens no socket and terminates by replacing itself with postgres, so the standard-library code these findings sit in is never reached. The path scope below is what keeps this entry from excusing the same identifier anywhere else in the image.
+    expired_at: 2026-11-30
+  - id: CVE-2026-32280
+    paths:
+      - usr/local/bin/gosu
+    statement: >-
+      postgres:18.4 | owner: project owner | Go standard-library finding compiled into usr/local/bin/gosu, the privilege-dropping helper the postgres entrypoint runs once to step down from root before exec'ing the server. The binary parses no network input, opens no socket and terminates by replacing itself with postgres, so the standard-library code these findings sit in is never reached. The path scope below is what keeps this entry from excusing the same identifier anywhere else in the image.
+    expired_at: 2026-11-30
+  - id: CVE-2026-32281
+    paths:
+      - usr/local/bin/gosu
+    statement: >-
+      postgres:18.4 | owner: project owner | Go standard-library finding compiled into usr/local/bin/gosu, the privilege-dropping helper the postgres entrypoint runs once to step down from root before exec'ing the server. The binary parses no network input, opens no socket and terminates by replacing itself with postgres, so the standard-library code these findings sit in is never reached. The path scope below is what keeps this entry from excusing the same identifier anywhere else in the image.
+    expired_at: 2026-11-30
+  - id: CVE-2026-32283
+    paths:
+      - usr/local/bin/gosu
+    statement: >-
+      postgres:18.4 | owner: project owner | Go standard-library finding compiled into usr/local/bin/gosu, the privilege-dropping helper the postgres entrypoint runs once to step down from root before exec'ing the server. The binary parses no network input, opens no socket and terminates by replacing itself with postgres, so the standard-library code these findings sit in is never reached. The path scope below is what keeps this entry from excusing the same identifier anywhere else in the image.
+    expired_at: 2026-11-30
+  - id: CVE-2026-33811
+    paths:
+      - usr/local/bin/gosu
+    statement: >-
+      postgres:18.4 | owner: project owner | Go standard-library finding compiled into usr/local/bin/gosu, the privilege-dropping helper the postgres entrypoint runs once to step down from root before exec'ing the server. The binary parses no network input, opens no socket and terminates by replacing itself with postgres, so the standard-library code these findings sit in is never reached. The path scope below is what keeps this entry from excusing the same identifier anywhere else in the image.
+    expired_at: 2026-11-30
+  - id: CVE-2026-33814
+    paths:
+      - usr/local/bin/gosu
+    statement: >-
+      postgres:18.4 | owner: project owner | Go standard-library finding compiled into usr/local/bin/gosu, the privilege-dropping helper the postgres entrypoint runs once to step down from root before exec'ing the server. The binary parses no network input, opens no socket and terminates by replacing itself with postgres, so the standard-library code these findings sit in is never reached. The path scope below is what keeps this entry from excusing the same identifier anywhere else in the image.
+    expired_at: 2026-11-30
+  - id: CVE-2026-39820
+    paths:
+      - usr/local/bin/gosu
+    statement: >-
+      postgres:18.4 | owner: project owner | Go standard-library finding compiled into usr/local/bin/gosu, the privilege-dropping helper the postgres entrypoint runs once to step down from root before exec'ing the server. The binary parses no network input, opens no socket and terminates by replacing itself with postgres, so the standard-library code these findings sit in is never reached. The path scope below is what keeps this entry from excusing the same identifier anywhere else in the image.
+    expired_at: 2026-11-30
+  - id: CVE-2026-39822
+    paths:
+      - usr/local/bin/gosu
+    statement: >-
+      postgres:18.4 | owner: project owner | Go standard-library finding compiled into usr/local/bin/gosu, the privilege-dropping helper the postgres entrypoint runs once to step down from root before exec'ing the server. The binary parses no network input, opens no socket and terminates by replacing itself with postgres, so the standard-library code these findings sit in is never reached. The path scope below is what keeps this entry from excusing the same identifier anywhere else in the image.
+    expired_at: 2026-11-30
+  - id: CVE-2026-39836
+    paths:
+      - usr/local/bin/gosu
+    statement: >-
+      postgres:18.4 | owner: project owner | Go standard-library finding compiled into usr/local/bin/gosu, the privilege-dropping helper the postgres entrypoint runs once to step down from root before exec'ing the server. The binary parses no network input, opens no socket and terminates by replacing itself with postgres, so the standard-library code these findings sit in is never reached. The path scope below is what keeps this entry from excusing the same identifier anywhere else in the image.
+    expired_at: 2026-11-30
+  - id: CVE-2026-42499
+    paths:
+      - usr/local/bin/gosu
+    statement: >-
+      postgres:18.4 | owner: project owner | Go standard-library finding compiled into usr/local/bin/gosu, the privilege-dropping helper the postgres entrypoint runs once to step down from root before exec'ing the server. The binary parses no network input, opens no socket and terminates by replacing itself with postgres, so the standard-library code these findings sit in is never reached. The path scope below is what keeps this entry from excusing the same identifier anywhere else in the image.
+    expired_at: 2026-11-30
+  - id: CVE-2026-42504
+    paths:
+      - usr/local/bin/gosu
+    statement: >-
+      postgres:18.4 | owner: project owner | Go standard-library finding compiled into usr/local/bin/gosu, the privilege-dropping helper the postgres entrypoint runs once to step down from root before exec'ing the server. The binary parses no network input, opens no socket and terminates by replacing itself with postgres, so the standard-library code these findings sit in is never reached. The path scope below is what keeps this entry from excusing the same identifier anywhere else in the image.
+    expired_at: 2026-11-30
+
+  # apache/kafka:4.2.1 - seven Alpine packages in the pinned broker image.
+  - id: CVE-2026-2100
+    purls:
+      - pkg:apk/alpine/p11-kit@0.25.5-r2
+    statement: >-
+      apache/kafka:4.2.1 | owner: project owner | Alpine package inside the pinned broker image. Reachability is NOT claimed: the broker terminates Transport Layer Security in the cluster path, so the cryptographic packages here are on a live path. What is accepted is the exposure of a demonstration whose broker is reachable only from inside one Compose network or one cluster namespace, for as long as the date below allows.
+    expired_at: 2026-11-30
+  - id: CVE-2026-2100
+    purls:
+      - pkg:apk/alpine/p11-kit-trust@0.25.5-r2
+    statement: >-
+      apache/kafka:4.2.1 | owner: project owner | Alpine package inside the pinned broker image. Reachability is NOT claimed: the broker terminates Transport Layer Security in the cluster path, so the cryptographic packages here are on a live path. What is accepted is the exposure of a demonstration whose broker is reachable only from inside one Compose network or one cluster namespace, for as long as the date below allows.
+    expired_at: 2026-11-30
+  - id: CVE-2026-45186
+    purls:
+      - pkg:apk/alpine/libexpat@2.7.5-r0
+    statement: >-
+      apache/kafka:4.2.1 | owner: project owner | Alpine package inside the pinned broker image. Reachability is NOT claimed: the broker terminates Transport Layer Security in the cluster path, so the cryptographic packages here are on a live path. What is accepted is the exposure of a demonstration whose broker is reachable only from inside one Compose network or one cluster namespace, for as long as the date below allows.
+    expired_at: 2026-11-30
+  - id: CVE-2026-56408
+    purls:
+      - pkg:apk/alpine/libexpat@2.7.5-r0
+    statement: >-
+      apache/kafka:4.2.1 | owner: project owner | Alpine package inside the pinned broker image. Reachability is NOT claimed: the broker terminates Transport Layer Security in the cluster path, so the cryptographic packages here are on a live path. What is accepted is the exposure of a demonstration whose broker is reachable only from inside one Compose network or one cluster namespace, for as long as the date below allows.
+    expired_at: 2026-11-30
+  - id: CVE-2026-45447
+    purls:
+      - pkg:apk/alpine/libcrypto3@3.5.6-r0
+    statement: >-
+      apache/kafka:4.2.1 | owner: project owner | Alpine package inside the pinned broker image. Reachability is NOT claimed: the broker terminates Transport Layer Security in the cluster path, so the cryptographic packages here are on a live path. What is accepted is the exposure of a demonstration whose broker is reachable only from inside one Compose network or one cluster namespace, for as long as the date below allows.
+    expired_at: 2026-11-30
+  - id: CVE-2026-45447
+    purls:
+      - pkg:apk/alpine/libssl3@3.5.6-r0
+    statement: >-
+      apache/kafka:4.2.1 | owner: project owner | Alpine package inside the pinned broker image. Reachability is NOT claimed: the broker terminates Transport Layer Security in the cluster path, so the cryptographic packages here are on a live path. What is accepted is the exposure of a demonstration whose broker is reachable only from inside one Compose network or one cluster namespace, for as long as the date below allows.
+    expired_at: 2026-11-30
+  - id: CVE-2026-45447
+    purls:
+      - pkg:apk/alpine/openssl@3.5.6-r0
+    statement: >-
+      apache/kafka:4.2.1 | owner: project owner | Alpine package inside the pinned broker image. Reachability is NOT claimed: the broker terminates Transport Layer Security in the cluster path, so the cryptographic packages here are on a live path. What is accepted is the exposure of a demonstration whose broker is reachable only from inside one Compose network or one cluster namespace, for as long as the date below allows.
+    expired_at: 2026-11-30
+
+  # apache/kafka:4.2.1 - six libraries bundled in the broker distribution.
+  - id: CVE-2026-56740
+    purls:
+      - pkg:maven/org.jline/jline-remote-telnet@3.30.4
+    statement: >-
+      apache/kafka:4.2.1 | owner: project owner | Bundled library reached only by the broker's remote telnet console, which nothing in this platform enables: no service configures it, and neither deployment description exposes a port for it. The package scope below excuses this library alone.
+    expired_at: 2026-11-30
+  - id: CVE-2026-56741
+    purls:
+      - pkg:maven/org.jline/jline-remote-telnet@3.30.4
+    statement: >-
+      apache/kafka:4.2.1 | owner: project owner | Bundled library reached only by the broker's remote telnet console, which nothing in this platform enables: no service configures it, and neither deployment description exposes a port for it. The package scope below excuses this library alone.
+    expired_at: 2026-11-30
+  - id: CVE-2026-10050
+    purls:
+      - pkg:maven/org.eclipse.jetty/jetty-security@12.0.34
+    statement: >-
+      apache/kafka:4.2.1 | owner: project owner | Bundled library reached only by the broker's embedded HTTP surfaces, which this platform neither configures nor exposes: every client speaks the Kafka protocol over the one listener each deployment declares. The package scope below excuses this library alone.
+    expired_at: 2026-11-30
+  - id: CVE-2026-54512
+    purls:
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.21.2
+    statement: >-
+      apache/kafka:4.2.1 | owner: project owner | Bundled library the broker uses to read its own configuration and its request payloads. Reachability is NOT claimed. What is accepted is the exposure of a demonstration broker reachable only from inside one Compose network or one cluster namespace, for as long as the date below allows.
+    expired_at: 2026-11-30
+  - id: CVE-2026-54513
+    purls:
+      - pkg:maven/com.fasterxml.jackson.core/jackson-databind@2.21.2
+    statement: >-
+      apache/kafka:4.2.1 | owner: project owner | Bundled library the broker uses to read its own configuration and its request payloads. Reachability is NOT claimed. What is accepted is the exposure of a demonstration broker reachable only from inside one Compose network or one cluster namespace, for as long as the date below allows.
+    expired_at: 2026-11-30
+  - id: GHSA-r7wm-3cxj-wff9
+    purls:
+      - pkg:maven/com.fasterxml.jackson.core/jackson-core@2.21.2
+    statement: >-
+      apache/kafka:4.2.1 | owner: project owner | Bundled library the broker uses to read its own configuration and its request payloads. Reachability is NOT claimed. What is accepted is the exposure of a demonstration broker reachable only from inside one Compose network or one cluster namespace, for as long as the date below allows.
+    expired_at: 2026-11-30

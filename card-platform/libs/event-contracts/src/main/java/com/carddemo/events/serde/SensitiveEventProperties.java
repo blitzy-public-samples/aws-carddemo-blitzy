@@ -62,6 +62,15 @@ import tools.jackson.databind.JsonNode;
  * {@code 4111.1111.1111.1111} is refused while the decimal amount {@code 1234567890.12} is not: a
  * card number is written in groups of at least three digits and an amount ends in a group of two.
  *
+ * <p>{@link #NARRATIVE_PROPERTIES} is screened harder than that, and the difference is the point of
+ * the split. A narrative property holds prose a caller wrote, so a value that is only three or four
+ * digits carries no prose and is refused, and an unbroken run of nine or more digits is refused as
+ * the unseparated form of {@code CUST-SSN PIC 9(09)} at {@code app/cpy/CVCUS01Y.cpy:L20}. Two
+ * screened properties are deliberately NOT narrative: a postal code legitimately holds nine digits,
+ * and the three dead-letter diagnostics are written by this platform rather than by a caller and a
+ * refusal there would suppress the dead letter itself. That sub-section records each exclusion and
+ * its reason, which is what makes the policy field-specific rather than uniform.
+ *
  * <p>{@link #APPROVED_CARD_PROPERTIES} holds the one card-number property an event may name.
  * {@code maskedCardNumber} carries twelve mask characters and the last four digits of the card
  * number, and the two state-change documents declare it alongside the three transaction documents.
@@ -196,9 +205,65 @@ public final class SensitiveEventProperties {
             "merchantzip",
             "source",
             "triggeredrules",
+            "firstname",
+            "middlename",
+            "lastname",
+            "addressline1",
+            "addressline2",
+            "addressline3",
+            "zipcode",
             "reason",
             "message",
             "culprit");
+
+    /**
+     * Properties whose value is narrative text a caller writes, in the folded form the scan compares.
+     *
+     * <p>These take two screens the other screened properties do not, because they are the properties
+     * a caller fills with prose and prose has no shape a pattern can pin. A narrative value that is
+     * ONLY three or four digits carries no narrative at all, and three or four digits is the width of
+     * {@code CARD-CVV-CD PIC 9(03)} at {@code app/cpy/CVACT02Y.cpy:L7} and of the four-digit schemes.
+     * An unbroken run of nine or more digits inside one is the unseparated form of
+     * {@code CUST-SSN PIC 9(09)} at {@code app/cpy/CVCUS01Y.cpy:L20}, which
+     * {@link #GOVERNMENT_IDENTIFIER} cannot see because that pattern reads the separated form.
+     *
+     * <p>A security review found both gaps by writing a verification value into
+     * {@code description} and an unseparated government identifier into {@code merchantName}, and
+     * both reached a topic. {@link #NARRATIVE_BARE_CODE} and {@link #NARRATIVE_DIGIT_RUN} are what
+     * refuse them now.
+     *
+     * <p>The seven cardholder properties are here because {@code CustomerContextChanged} carries the
+     * ten fields {@code app/cbl/CBSTM03A.CBL:L458-L504} renders on a statement, and until this
+     * review nothing screened them: a Primary Account Number written into an address line by an
+     * account update travelled to the notification read model unexamined.
+     *
+     * <p>{@code merchantZip} and {@code zipCode} are screened but are NOT narrative.
+     * {@code app/data/ASCII/dailytran.txt} holds five-digit and hyphenated nine-digit postal codes
+     * and {@code app/data/ASCII/custdata.txt} holds both forms too, so a rule refusing a nine-digit
+     * run would refuse valid traffic. They keep the card-number and separated-identifier screens,
+     * which no postal code matches.
+     *
+     * <p>{@code reason}, {@code message} and {@code culprit} are screened and are not narrative
+     * either, and the reason is availability rather than shape. Those three are the diagnostic
+     * components of {@code app/cpy/CSMSG02Y.cpy:L21-L29} that a dead-letter envelope carries; this
+     * platform fills them with a failure's class name and fixed wording and never with a caller's
+     * value, and a refusal raised while writing a dead letter suppresses that dead letter and leaves
+     * the broker redelivering the same record for ever. They keep the shape screens, which still
+     * refuse a card number or a separated identifier.
+     */
+    public static final Set<String> NARRATIVE_PROPERTIES = Set.of(
+            "description",
+            "declinereasondescription",
+            "merchantname",
+            "merchantcity",
+            "source",
+            "triggeredrules",
+            "firstname",
+            "middlename",
+            "lastname",
+            "addressline1",
+            "addressline2",
+            "addressline3");
 
     /** The one property whose whole subtree is caller-supplied, in folded form. */
     public static final String EXTENSION_PROPERTY = "extensions";
@@ -292,7 +357,7 @@ public final class SensitiveEventProperties {
      * A card number written with a separator between digit groups, in any of the five separators a
      * reader uses.
      *
-     * <p>{@link #DIGIT_SEPARATOR_RUN} strips a separator that sits between two digits, and stripping more than
+     * <p>This pattern admits one separator between two digits, and stripping more than
      * those two would merge a monetary amount into one run: {@code 1234567890.12} holds twelve
      * digits and is an amount, not a card. This pattern reads the grouping instead of erasing it, so
      * a dotted or slashed card number is caught without a decimal amount becoming one.
@@ -353,6 +418,42 @@ public final class SensitiveEventProperties {
      */
     private static final Pattern SHORT_CODE_RUN =
             Pattern.compile("(?<![0-9])[0-9]{3,4}(?![0-9])");
+
+    /**
+     * A narrative value that is nothing but three or four digits, with only blank space around it.
+     *
+     * <p>The width of a card verification value, and the one place a bare short run means something:
+     * a narrative property holds prose, and a value carrying no prose at all carries whatever the
+     * caller put there instead. {@code description} reading {@code "123"} is the shape a security
+     * review used to move a verification value past the screens.
+     *
+     * <p>The rule is deliberately the WHOLE value and not a run inside it. Ordinary narrative holds
+     * short runs — {@code "Purchase at STORE 101"} and {@code "Pizza 4 U"} both do — and refusing
+     * those would refuse valid traffic, which is how a screen gets switched off.
+     *
+     * <p>{@link #NARRATIVE_PROPERTIES} records which properties this applies to, and why the postal
+     * codes and the dead-letter diagnostics are outside that set.
+     */
+    private static final Pattern NARRATIVE_BARE_CODE =
+            Pattern.compile("\\s*[0-9]{3,4}\\s*");
+
+    /**
+     * An unbroken run of nine or more digits inside a narrative value.
+     *
+     * <p>{@code CUST-SSN PIC 9(09)} at {@code app/cpy/CVCUS01Y.cpy:L20} holds nine digits with no
+     * separator, and {@link #GOVERNMENT_IDENTIFIER} reads only the three-two-four separated form,
+     * so the unseparated form travelled inside narrative text unexamined. Nine is also wide enough
+     * to carry {@code ACCT-ID PIC 9(11)} and {@code CUST-ID PIC 9(09)}, which belong in their own
+     * properties and not in prose.
+     *
+     * <p>{@link #LONG_DIGIT_RUN} refuses twelve or more everywhere a value is screened. This pattern
+     * lowers the floor to nine for narrative properties alone, because the properties where a nine
+     * to eleven digit run is legitimate — a postal code, a merchant identifier — are not narrative.
+     * A monetary amount is not narrative either, and an amount reaching nine digits carries a
+     * decimal point, so its digits are two runs and not one.
+     */
+    private static final Pattern NARRATIVE_DIGIT_RUN =
+            Pattern.compile("(?<![0-9])[0-9]{9,}(?![0-9])");
 
     /**
      * Shape of a United States government identifier: three digits, two digits, then four, in
@@ -441,8 +542,7 @@ public final class SensitiveEventProperties {
             return false;
         }
 
-        String folded =
-                NON_ALPHANUMERIC.matcher(propertyName.toLowerCase(Locale.ROOT)).replaceAll("");
+        String folded = fold(propertyName);
         for (String fragment : FORBIDDEN_NAME_FRAGMENTS) {
             if (folded.contains(fragment)) {
                 return true;
@@ -463,28 +563,79 @@ public final class SensitiveEventProperties {
     }
 
     /**
-     * The first free-text property of a serialized event whose value carries a card number or a
-     * separated government identifier, searched depth first.
+     * The first {@link #EXTENSION_PROPERTY} object one serialized event carries, searched depth first.
      *
-     * <p>A property qualifies for the screen when its folded name sits in
-     * {@link #FREE_TEXT_PROPERTIES}, or when it sits anywhere under
-     * {@link #EXTENSION_PROPERTY}. Those are the values a caller writes without a pattern to hold
-     * them, and they are where a card number travels when a caller puts one there.
+     * <p>The PRODUCE side alone calls this. No record of this platform declares an extensions
+     * property, so an event about to be stored or published that carries one carries a property its
+     * own record cannot have written: something built the JSON by hand. Refusing it closes the one
+     * open subtree of every document on the side where this platform is the author.
      *
-     * <p>The screen reads a value in two forms. The text as written is sought for a run of
-     * {@code [0-9]} twelve characters or longer, and the text with grouping characters removed is
-     * sought for the same run, so {@code 4111 1111 1111 1111} is caught with
-     * {@code 4111111111111111}. The text as written is also sought for the three-two-four shape of a
-     * United States government identifier.
+     * <p>The consume side deliberately does not call it. Every schema document declares
+     * {@code extensions} as the channel additive evolution travels through, and refusing it on read
+     * would refuse the enriched record a later version publishes, which is the compatibility this
+     * platform promises. {@link #firstSensitiveValue(JsonNode)} screens those values instead.
+     *
+     * @param event the serialized event, as a JSON tree; a {@code null} tree carries nothing
+     * @return the property name exactly as the event spells it, or {@code null} when the event
+     *         carries no extensions object. No value from the object reaches the return
+     */
+    public static String firstExtensionProperty(JsonNode event) {
+        if (event == null) {
+            return null;
+        }
+
+        if (event.isObject()) {
+            for (Map.Entry<String, JsonNode> property : event.properties()) {
+                if (EXTENSION_PROPERTY.equals(fold(property.getKey()))) {
+                    return property.getKey();
+                }
+                String nested = firstExtensionProperty(property.getValue());
+                if (nested != null) {
+                    return nested;
+                }
+            }
+            return null;
+        }
+
+        if (event.isArray()) {
+            for (JsonNode element : event) {
+                String nested = firstExtensionProperty(element);
+                if (nested != null) {
+                    return nested;
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * The first screened property of a serialized event whose value carries a card number, a
+     * government identifier or a card verification code, searched depth first.
+     *
+     * <p>Two screens run, and which one a property takes is decided by its name.
+     *
+     * <ul>
+     * <li>A property whose folded name sits in {@link #FREE_TEXT_PROPERTIES}, and every property
+     * inside an {@link #EXTENSION_PROPERTY} object, takes the STRUCTURED screen: the value is sought
+     * for a run of {@code [0-9]} twelve characters or longer, both as written and with grouping
+     * characters removed so {@code 4111 1111 1111 1111} is caught with {@code 4111111111111111},
+     * and for the three-two-four shape of a United States government identifier, and for a
+     * verification code beside a word that names one.</li>
+     * <li>A property whose folded name also sits in {@link #NARRATIVE_PROPERTIES} takes the
+     * NARRATIVE screen, which is the structured screen plus two shapes that only a prose field can
+     * carry: any unbroken run of nine digits or more, and a value that is nothing but three or four
+     * digits. A postal code and a credit score keep the structured screen for exactly that reason,
+     * because both are legitimately those shapes.</li>
+     * </ul>
      *
      * @param event the serialized event, as a JavaScript Object Notation (JSON) tree; a {@code null}
      *              tree carries nothing
      * @return the name of the offending property, exactly as the event spells it, or {@code null}
-     *         when no screened value carries either shape. The value itself never reaches the
+     *         when no screened value carries any of those shapes. The value itself never reaches the
      *         return, so a caller may put the name in a message
      */
     public static String firstSensitiveValue(JsonNode event) {
-        return firstSensitiveValue(event, false, false);
+        return firstSensitiveValue(event, Screen.NONE, false, EXTENSION_PROPERTY);
     }
 
     /**
@@ -492,15 +643,17 @@ public final class SensitiveEventProperties {
      * carries it is, or when the property is an extension member whose own name says what it holds.
      *
      * @param node         the node to walk; a {@code null} node carries nothing
-     * @param screened     whether every value below this node is screened, which
-     *                     {@link #EXTENSION_PROPERTY} sets for its whole subtree
+     * @param screen       which screen every value below this node takes, inherited from the
+     *                     property that carries it
      * @param inExtensions whether this node is the extensions object or a node inside it, which is
      *                     where the property names are the caller's and the name screens apply to
      *                     the value
+     * @param owner        the property name a failure reports, which stays the property that owns
+     *                     an array rather than the index of an element inside it
      * @return the offending property name, or {@code null}
      */
-    private static String firstSensitiveValue(JsonNode node, boolean screened,
-            boolean inExtensions) {
+    private static String firstSensitiveValue(JsonNode node, Screen screen, boolean inExtensions,
+            String owner) {
 
         if (node == null) {
             return null;
@@ -510,16 +663,16 @@ public final class SensitiveEventProperties {
             for (Map.Entry<String, JsonNode> property : node.properties()) {
                 String folded = fold(property.getKey());
                 boolean extensionsBelow = inExtensions || EXTENSION_PROPERTY.equals(folded);
-                boolean screenBelow = screened || extensionsBelow
-                        || FREE_TEXT_PROPERTIES.contains(folded);
-                if (screenBelow && carriesSensitiveText(property.getValue())) {
+                Screen screenBelow = screenFor(screen, folded, extensionsBelow);
+                if (screenBelow != Screen.NONE
+                        && carriesSensitiveText(property.getValue(), screenBelow)) {
                     return property.getKey();
                 }
                 if (inExtensions && namesWhatTheValueCarries(folded, property.getValue())) {
                     return property.getKey();
                 }
-                String nested =
-                        firstSensitiveValue(property.getValue(), screenBelow, extensionsBelow);
+                String nested = firstSensitiveValue(property.getValue(), screenBelow,
+                        extensionsBelow, property.getKey());
                 if (nested != null) {
                     return nested;
                 }
@@ -529,16 +682,72 @@ public final class SensitiveEventProperties {
 
         if (node.isArray()) {
             for (JsonNode element : node) {
-                if (screened && carriesSensitiveText(element)) {
-                    return EXTENSION_PROPERTY;
+                // The name reported is the property that OWNS the array, not the array's own
+                // position and not the subtree the screen was inherited from. A card number inside
+                // triggeredRules used to be reported as "extensions", which named a property the
+                // event did not carry and sent a reader looking in the wrong place.
+                if (screen != Screen.NONE && carriesSensitiveText(element, screen)) {
+                    return owner;
                 }
-                String nested = firstSensitiveValue(element, screened, inExtensions);
+                String nested = firstSensitiveValue(element, screen, inExtensions, owner);
                 if (nested != null) {
                     return nested;
                 }
             }
         }
         return null;
+    }
+
+    /**
+     * The screen that applies to one property's value, and to everything below it.
+     *
+     * <p>An inherited screen is never weakened. A value under {@link #EXTENSION_PROPERTY} takes the
+     * structured screen and the two name-context screens of
+     * {@link #namesWhatTheValueCarries(String, JsonNode)}, and not the narrative screen. The reason is
+     * the contract rather than the risk: every schema document declares {@code extensions} as the
+     * channel additive evolution travels through, and a nine-digit merchant reference or a
+     * four-character settlement batch written there is ordinary traffic a consumer must keep reading.
+     * The produce side closes the subtree instead — {@link #firstExtensionProperty(JsonNode)} refuses
+     * an event carrying one at all, because no record of this platform declares the property — so the
+     * open reading applies to a foreign producer's record and never to one of ours.
+     *
+     * @param inherited      the screen the parent node passed down
+     * @param foldedName     the property's folded name
+     * @param extensionsHere whether this property is the extensions object or sits inside it
+     * @return the screen to apply to this property's value
+     */
+    private static Screen screenFor(Screen inherited, String foldedName, boolean extensionsHere) {
+        if (NARRATIVE_PROPERTIES.contains(foldedName)) {
+            return Screen.NARRATIVE;
+        }
+        if (extensionsHere || FREE_TEXT_PROPERTIES.contains(foldedName)) {
+            return inherited == Screen.NONE ? Screen.STRUCTURED : inherited;
+        }
+        return inherited;
+    }
+
+    /**
+     * How thoroughly one value is read.
+     *
+     * <p>{@link #NARRATIVE_PROPERTIES} states which properties take which, and why a postal code and
+     * a dead-letter diagnostic take the lesser screen.
+     */
+    private enum Screen {
+
+        /** The value is not screened: its document pins it to a shape a caller cannot fill. */
+        NONE,
+
+        /**
+         * Card-number, separated-identifier and labelled-verification-value shapes only. For a
+         * screened value whose legitimate content includes a nine-digit run, such as a postal code.
+         */
+        STRUCTURED,
+
+        /**
+         * Every {@link #STRUCTURED} shape, and additionally a value that is nothing but three or
+         * four digits and a value holding an unbroken run of nine or more digits.
+         */
+        NARRATIVE
     }
 
     /**
@@ -603,11 +812,16 @@ public final class SensitiveEventProperties {
      * {@code 1234567890.12} carries twelve digits and is an amount, and
      * {@code 2026-08-07 19:12:06} carries fourteen and is a moment.
      *
-     * @param value the node to read
-     * @return {@code true} when the text carries any of the shapes
+     * <p>A {@link Screen#NARRATIVE} value takes two further screens, which
+     * {@link #carriesNarrativeShape(String)} applies: a value that is nothing but three or four
+     * digits, and a value holding an unbroken run of nine or more.
+     *
+     * @param value  the node to read
+     * @param screen how thoroughly to read it, which the property carrying it decides
+     * @return {@code true} when the text carries any of the shapes that screen refuses
      */
-    private static boolean carriesSensitiveText(JsonNode value) {
-        if (value == null || !value.isString()) {
+    private static boolean carriesSensitiveText(JsonNode value, Screen screen) {
+        if (value == null || !value.isString() || screen == Screen.NONE) {
             return false;
         }
 
@@ -615,17 +829,32 @@ public final class SensitiveEventProperties {
         if (text == null || text.isEmpty()) {
             return false;
         }
-        if (carriesSensitiveShape(text)) {
-            return true;
-        }
-
         String normalized = Normalizer.normalize(text, Normalizer.Form.NFKC);
-        if (carriesSensitiveShape(normalized)
-                || carriesCollapsedCardNumber(text)
-                || carriesCollapsedCardNumber(normalized)) {
+        if (carriesSensitiveShape(text) || carriesSensitiveShape(normalized)) {
             return true;
         }
-        return carriesSeparatedCardNumber(text) || carriesSeparatedCardNumber(normalized);
+        if (carriesCollapsedCardNumber(text) || carriesCollapsedCardNumber(normalized)
+                || carriesSeparatedCardNumber(text) || carriesSeparatedCardNumber(normalized)) {
+            return true;
+        }
+        return screen == Screen.NARRATIVE
+                && (carriesNarrativeShape(text) || carriesNarrativeShape(normalized));
+    }
+
+    /**
+     * Whether one form of a narrative value is a bare card code or holds an unseparated identifier.
+     *
+     * <p>Both forms of the value are read, as written and normalized under
+     * {@link java.text.Normalizer.Form#NFKC}, so a full-width digit such as {@code \uff14} counts
+     * as the digit it renders as.
+     *
+     * @param text one form of the screened value
+     * @return {@code true} when the value is only three or four digits, or holds an unbroken run of
+     *         nine or more
+     */
+    private static boolean carriesNarrativeShape(String text) {
+        return NARRATIVE_BARE_CODE.matcher(text).matches()
+                || NARRATIVE_DIGIT_RUN.matcher(text).find();
     }
 
     /**
@@ -735,6 +964,7 @@ public final class SensitiveEventProperties {
      * @return the folded name
      */
     private static String fold(String propertyName) {
-        return NON_ALPHANUMERIC.matcher(propertyName.toLowerCase(Locale.ROOT)).replaceAll("");
+        String normalized = Normalizer.normalize(propertyName, Normalizer.Form.NFKC);
+        return NON_ALPHANUMERIC.matcher(normalized.toLowerCase(Locale.ROOT)).replaceAll("");
     }
 }

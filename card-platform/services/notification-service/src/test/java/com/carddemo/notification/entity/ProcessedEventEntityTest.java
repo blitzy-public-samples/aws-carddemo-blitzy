@@ -105,8 +105,14 @@ final class ProcessedEventEntityTest {
     /** Constant the class publishes for the width of {@link #TOPIC_COLUMN}. */
     private static final String TOPIC_WIDTH_CONSTANT = "CONSUMED_TOPIC_MAX_LENGTH";
 
-    /** The one index the migration creates, which a retention purge ranges over. */
-    private static final String RETENTION_INDEX = "ix_processed_event_processed_at";
+    /**
+     * The index that served the withdrawn retention purge, which no migration creates any more.
+     *
+     * <p>Named here so the assertion below can say what must be absent.
+     * {@code V8__processed_event_claims_are_permanent.sql} drops it, because a claim is permanent and
+     * nothing orders or filters by {@link #PROCESSED_AT_COLUMN}.
+     */
+    private static final String WITHDRAWN_PURGE_INDEX = "ix_processed_event_processed_at";
 
     /**
      * Names no field and no column of this table may take, in both spellings a Java author reaches
@@ -706,28 +712,27 @@ final class ProcessedEventEntityTest {
             assertAll("cardholder and account fragments over every declared name", checks);
         }
 
+        /**
+         * Asserts the table declares no index and no second key.
+         *
+         * <p>It declared one, {@link #WITHDRAWN_PURGE_INDEX}, for a retention purge that ranged over
+         * {@link #PROCESSED_AT_COLUMN}. A security review found that purge expiring claims while the
+         * read-model row and the rendered alert they guard stayed, so the purge is withdrawn and the
+         * index it served went with it: an index nothing reads costs a write on every claim.
+         */
         @Test
-        @DisplayName("one non-unique index over processed_at, and no second lookup key")
+        @DisplayName("no index and no second lookup key, since the purge that needed one is gone")
         void declaresNoSecondLookupKey() {
             Table table = table();
 
             assertEquals(0, table.uniqueConstraints().length,
                     "@Table must declare no unique constraint: the primary key is the only key");
-            assertEquals(1, table.indexes().length,
-                    "@Table must declare exactly the one index the migration creates, and it "
-                            + "declares " + indexDescriptions(table));
-
-            Index only = table.indexes()[0];
-
-            assertAll("the one declared index",
-                    () -> assertEquals(RETENTION_INDEX, only.name(),
-                            "name of the one declared index"),
-                    () -> assertEquals(PROCESSED_AT_COLUMN, only.columnList(),
-                            "the one declared index covers " + PROCESSED_AT_COLUMN + " alone, "
-                                    + "which a retention purge ranges over"),
-                    () -> assertFalse(only.unique(),
-                            "the one declared index must not be unique: a unique index over any "
-                                    + "column would be a second key"));
+            assertEquals(0, table.indexes().length,
+                    "@Table must declare no index now that no statement ranges over "
+                            + PROCESSED_AT_COLUMN + ", and it declares "
+                            + indexDescriptions(table));
+            assertFalse(indexDescriptions(table).contains(WITHDRAWN_PURGE_INDEX),
+                    "the index the withdrawn purge used must not come back with it");
         }
 
         @Test

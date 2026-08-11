@@ -338,7 +338,6 @@ class MerchantCategoryRuleTest {
                 new FraudProperties.Consumer(new FraudProperties.Consumer.Retry(3, 1_000L)),
                 new FraudProperties.Outbox(new FraudProperties.Outbox.Relay(
                         500L, 100, "fraud-relay", Duration.ofMinutes(2L), 20_000L), 168L),
-                new FraudProperties.ProcessedEvent(720L, 168L),
                 new FraudProperties.Retention(3_600_000L, 90, 7),
                 new FraudProperties.Fraud(new FraudProperties.Fraud.Risk(
                         threshold, 60, 5, new BigDecimal("500.00"))));

@@ -28,7 +28,6 @@ import com.carddemo.authorization.repository.AuthorizationDecisionRepository;
 import com.carddemo.authorization.repository.CardCrossReferenceRepository;
 import com.carddemo.authorization.repository.OutboxEventRepository;
 import com.carddemo.authorization.repository.ReplicaGapRepository;
-import com.carddemo.authorization.repository.UnresolvedCardAttemptRepository;
 import com.carddemo.cobol.CobolDecimal;
 import com.carddemo.cobol.PicClause;
 import com.carddemo.equivalence.CopybookRecordParser.AccountRecord;
@@ -928,23 +927,33 @@ class AuthorizationDecisionEquivalenceTest {
     @DisplayName("Reason 0100 — INVALID CARD NUMBER FOUND")
     class InvalidCardNumber {
 
+        /**
+         * Asserts an account named in the request body cannot become the subject of this reason.
+         *
+         * <p>The batch loop resolves its subject from the cross-reference row and from nowhere else:
+         * {@code app/cbl/CBTRN02C.cbl:L394} moves {@code XREF-ACCT-ID} out of that row, and the feed
+         * record at {@code app/cpy/CVTRA06Y.cpy} declares twelve fields of which none is an account.
+         * A read that missed therefore leaves the batch a reject file to write and no account to
+         * attribute the reject to.
+         *
+         * <p>An earlier revision decided this case against the account the caller declared, and a
+         * security review found that any entitled caller could then pair an unknown card with any
+         * account. This test names that request shape and asserts the refusal, so the earlier
+         * behaviour cannot return unnoticed.
+         */
         @Test
-        @DisplayName("ADDITIVE: an absent cross-reference row declines without an account read")
-        void anAbsentCrossReferenceRowDeclinesWithoutAnAccountRead() {
+        @DisplayName("ADDITIVE: an absent cross-reference row is refused even when the request "
+                + "declares an account")
+        void anAbsentCrossReferenceRowIsRefusedEvenWhenTheRequestDeclaresAnAccount() {
             DecisionHarness harness = DecisionHarness.overRows(Map.of(), Map.of());
 
-            Outcome outcome = harness.authorize(requestNamingBoth(ABSENT_ACCOUNT_ID,
-                    ABSENT_CARD_NUMBER, ZERO_MONEY, FEED_TIMESTAMP));
+            IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
+                    () -> harness.authorize(requestNamingBoth(ABSENT_ACCOUNT_ID,
+                            ABSENT_CARD_NUMBER, ZERO_MONEY, FEED_TIMESTAMP)),
+                    "the declared account is a value the caller chose, so it names no subject");
 
-            assertEquals(Optional.of(DeclineReason.INVALID_CARD_NUMBER), outcome.declineReason(),
-                    "CBTRN02C L385-L387 assigns reason "
-                            + DeclineReason.INVALID_CARD_NUMBER.code() + " on INVALID KEY");
-            assertEquals(CardDemoFixtureLoader.accountIdentifier(ABSENT_ACCOUNT_ID),
-                    outcome.accountId(),
-                    "CBTRN02C L385 assigns this code before L394 reads XREF-ACCT-ID, so the read "
-                            + "resolved no identifier. The subject is the account the caller "
-                            + "declared at COTRN02C L196-L209, which the batch loop has no caller "
-                            + "to supply");
+            assertEquals(AuthorizationRequest.CARD_NUMBER_NOT_FOUND_MESSAGE, refused.getMessage(),
+                    "COTRN02C L625-L626 supplies the text this refusal carries");
             assertEquals(1L, harness.crossReferences().cardLookupCount(),
                     "the miss came from the keyed read of CBTRN02C L383, not from an exception");
             assertEquals(UNREACHABLE_FROM_FIXTURES, harness.accounts().accountLookupCount(),
@@ -961,12 +970,12 @@ class AuthorizationDecisionEquivalenceTest {
          * Asserts a call that establishes no subject is refused ahead of any decision.
          *
          * <p>The synchronous contract of {@code app/cbl/COTRN02C.cbl:L196-L209} takes an account
-         * identifier or a card number. Where the card resolves no cross-reference row and the caller
-         * declared no account, nothing names the subject a decision would apply to, and
+         * identifier or a card number. Where the card resolves no cross-reference row, nothing this
+         * service can vouch for names the subject a decision would apply to, and
          * {@code app/cbl/COTRN02C.cbl:L625-L626} answers exactly that case with its own text and
          * writes nothing. No identifier is allocated, no decision is recorded, and no event is
          * published, so the reject reason of {@code app/cbl/CBTRN02C.cbl:L385-L387} is never
-         * assigned.
+         * assigned on this path.
          */
         @Test
         @DisplayName("ADDITIVE: a call that establishes no subject is refused before a decision")
@@ -1703,7 +1712,6 @@ class AuthorizationDecisionEquivalenceTest {
             AuthorizationService service = new AuthorizationService(rules, crossReferences,
                     new FixedIdentifierSource(),
                     new OutboxWriter(writeOnlySeam(OutboxEventRepository.class)),
-                    writeOnlySeam(UnresolvedCardAttemptRepository.class),
                     writeOnlySeam(AuthorizationDecisionRepository.class),
                     new SimpleMeterRegistry(), immediateTransactions(), replicaProperties(),
                     reservation, caughtUpReplica(), noReplicaGaps());
@@ -2078,7 +2086,7 @@ class AuthorizationDecisionEquivalenceTest {
      * @return properties carrying a replica window wide enough for a fixture capture moment
      */
     private static AuthorizationProperties replicaProperties() {
-        return new AuthorizationProperties(null, null, null, null,
+        return new AuthorizationProperties(null, null, null,
                 new AuthorizationProperties.Replica(LAG_CEILING),
                 new AuthorizationProperties.Decision(LOCK_WAIT_MS, RESERVATION_TTL));
     }

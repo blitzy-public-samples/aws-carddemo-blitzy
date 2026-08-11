@@ -165,12 +165,20 @@ class DeadLetterMetadataTest {
      * still arrive in publish order: a partition is assigned to exactly one consumer thread, and the
      * account identifier is the message key. Omitting it left the framework default of one thread in
      * place, which applied every partition of the topic in sequence.
+     *
+     * <p>The two fetch ceilings are the read side of the wire ladder a security review asked for.
+     * They bound one partition fetch at 65,536 bytes and one whole fetch at 262,144, against the
+     * 8,192-byte envelope {@code EventWireBounds} governs, so a record this platform publishes always
+     * fits and the memory one poll can hold is bounded. {@code KafkaDeliveryGuaranteeContractTest}
+     * holds the whole ladder in order across all six services.
      */
     private static final List<String> LISTENER_KEYS = List.of(
             "spring.kafka.consumer.auto-offset-reset",
             "spring.kafka.consumer.enable-auto-commit",
             "spring.kafka.consumer.group-id",
             "spring.kafka.consumer.key-deserializer",
+            "spring.kafka.consumer.properties.fetch.max.bytes",
+            "spring.kafka.consumer.properties.max.partition.fetch.bytes",
             "spring.kafka.consumer.properties.spring.deserializer.value.delegate.class",
             "spring.kafka.consumer.value-deserializer",
             "spring.kafka.listener.ack-mode",
@@ -698,7 +706,6 @@ class DeadLetterMetadataTest {
                                 500L, 1, "account-relay", java.time.Duration.ofSeconds(30L),
                                 30_000L, java.time.Duration.ofSeconds(10L)),
                         168L),
-                new AccountProperties.ProcessedEvent(720L, 168L),
                 new AccountProperties.Retention(3_600_000L),
                 new AccountProperties.Write(3_000L));
     }

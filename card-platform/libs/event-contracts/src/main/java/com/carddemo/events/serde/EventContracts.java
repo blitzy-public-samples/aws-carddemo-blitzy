@@ -2,6 +2,7 @@ package com.carddemo.events.serde;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -45,11 +46,19 @@ import tools.jackson.databind.json.JsonMapper;
  * a value from the payload, so a full Primary Account Number (PAN), a card verification value or an
  * account identifier cannot reach a log through a validation failure.
  *
- * <p>{@link #publishViolationsOf(String, String)} is the form every producer path calls. It reports
- * what {@link #violationsOf(String, String)} reports and one further entry when the version the
- * payload declares is retained rather than published, which {@link ReleasedContracts} decides from
- * {@code contracts/released-contracts.json}. The consume path applies no posture gate, so a record
- * written under a retained document stays readable.
+ * <p>{@link #publishViolationsOf(String, String)} is the form a producer holding TEXT calls, which is
+ * a relay re-checking an outbox row it is about to publish. It reports what
+ * {@link #violationsOf(String, String)} reports, one entry per sensitive-data screen the payload
+ * fails, one entry when the payload is wider than {@link EventWireBounds#MAX_EVENT_BYTES}, and one
+ * further entry when the version the payload declares is retained rather than published, which
+ * {@link ReleasedContracts} decides from {@code contracts/released-contracts.json}. The consume path
+ * applies no posture gate, so a record written under a retained document stays readable.
+ *
+ * <p>A producer holding a RECORD calls {@link PublishGate#checkedJsonOf(Record)} instead, which
+ * writes the text through {@link JsonSchemaValidatingSerializer} and adds the class and topic checks
+ * this class cannot make from text alone. That is the mandatory boundary before an outbox row is
+ * stored. This method is the same set of checks over text a caller already holds, so neither path is
+ * the weaker one.
  *
  * <p>{@link #violationsOf(String, JsonNode)} takes the payload already parsed and checks the same
  * documents against it. A caller that has read the envelope, or screened the payload for a property
@@ -298,29 +307,121 @@ public final class EventContracts {
     }
 
     /**
-     * Validates one outgoing payload against its document and against the posture of that document.
+     * Applies every publish-side check to one payload a caller already holds as text.
      *
-     * <p>This is the gate every producer path of this platform applies: the outbox writer of each
-     * service, and the direct publisher of the authorization service. It reports what
-     * {@link #violationsOf(String, String)} reports, and one further entry when the version the
-     * payload declares is released but retained, which {@link ReleasedContracts} decides.
+     * <p>Six checks run. The document its event type and declared version select must accept the
+     * payload, which {@link #violationsOf(String, String)} reports. Neither
+     * {@link SensitiveEventProperties} screen may refuse it. It may carry no {@code extensions}
+     * object, because no record of this platform declares one and a consumer nonetheless keeps
+     * reading one. It must fit {@link EventWireBounds#MAX_EVENT_BYTES}. And the version it declares
+     * must be one a producer may still write, which {@link ReleasedContracts} decides.
+     *
+     * <p>The two screens and the ceiling used to be absent here, and that absence is why this method
+     * exists in this form. An outbox writer wrote its own text, measured it against the document
+     * alone and stored it, so a card number in a free-text property committed with the business state
+     * and reached a topic, where the consume side refused it. The produce and consume contracts now
+     * name the same refusals whichever path a producer takes.
+     *
+     * <p>{@link PublishGate#checkedJsonOf(Record)} is the boundary a producer holding a RECORD
+     * crosses, and it adds the two checks text cannot carry: the class must name a registered event
+     * type, and that type must belong on the topic. A caller holding text has already lost both
+     * facts, so this method reports what remains measurable.
      *
      * <p>A retained document stays readable on the consume side, and
      * {@code serde/JsonSchemaValidatingDeserializer} applies no posture gate for that reason. What
-     * this gate refuses is a producer writing under a document a consumer has already moved past,
-     * which is how one event type was downgraded to a version whose successor was already on a
+     * the posture check refuses is a producer writing under a document a consumer has already moved
+     * past, which is how one event type was downgraded to a version whose successor was already on a
      * topic.
      *
      * @param eventType the routing discriminator naming the document
      * @param json      the serialized payload about to be published, validated exactly as supplied
-     * @return one entry per failure, empty when the payload validates and its version is published
+     * @return one entry per failure, empty when the payload passes every check. No entry carries a
+     *         value from the payload
      * @throws IllegalArgumentException when {@code eventType} is not registered
      * @throws IllegalStateException    when the classpath holds no such document
      */
     public static List<String> publishViolationsOf(String eventType, String json) {
         List<String> violations = new ArrayList<>(violationsOf(eventType, json));
+        violations.addAll(screenViolationsOf(json));
+        violations.addAll(byteCeilingViolationsOf(eventType, json));
         violations.addAll(postureViolationsOf(eventType, declaredVersionOf(json)));
         return List.copyOf(violations);
+    }
+
+    /**
+     * Reports the two sensitive-data screens against one serialized payload.
+     *
+     * <p>These are the screens {@link JsonSchemaValidatingDeserializer} applies to every record it
+     * reads, and {@link PublishGate} applies to every event before it is stored. This method is what
+     * keeps them on the third path as well: a producer holding text rather than a record, which is
+     * {@code messaging/KafkaEventPublisher} re-checking an outbox row it is about to publish.
+     *
+     * <p>One screen here has no consume-side counterpart, deliberately.
+     * {@link SensitiveEventProperties#firstExtensionProperty(JsonNode)} refuses a payload carrying an
+     * {@code extensions} object, because no record of this platform declares one, so a producer
+     * carrying it built its JSON outside its own record. The consume side accepts that subtree,
+     * because a record a later contract version enriched arrives through it.
+     *
+     * <p>A schema cannot do this work. Every document closes its property set, so an undeclared
+     * property is already refused, but a declared free-text property accepts any text its pattern
+     * admits, and {@code description} admits a card number as readily as a sentence.
+     *
+     * @param json the serialized payload
+     * @return one entry per screen that refuses the payload, empty when neither does. Each entry
+     *         names the offending property and never its value
+     */
+    private static List<String> screenViolationsOf(String json) {
+        JsonNode document;
+        try {
+            document = MAPPER.readTree(json);
+        } catch (RuntimeException unreadable) {
+            // Text that is not JSON carries no property to screen, and violationsOf has already
+            // reported it against the document its event type names.
+            return List.of();
+        }
+
+        List<String> violations = new ArrayList<>();
+        String forbidden = SensitiveEventProperties.firstForbiddenProperty(document);
+        if (forbidden != null) {
+            violations.add("property \"" + forbidden + "\": no event may carry it."
+                    + " See SensitiveEventProperties.");
+        }
+        String extension = SensitiveEventProperties.firstExtensionProperty(document);
+        if (extension != null) {
+            violations.add("property \"" + extension + "\": no record of this platform declares it,"
+                    + " so a payload carrying it was built outside its own record. The subtree is"
+                    + " open on the consume side, where an enriched record from a later version"
+                    + " arrives, and closed here. See SensitiveEventProperties.");
+        }
+        String sensitive = SensitiveEventProperties.firstSensitiveValue(document);
+        if (sensitive != null) {
+            violations.add("property \"" + sensitive + "\": the value carries a card number, a"
+                    + " government identifier or a card verification value, and no event may carry"
+                    + " any of them. See SensitiveEventProperties.");
+        }
+        return violations;
+    }
+
+    /**
+     * Reports the platform byte ceiling against one serialized payload.
+     *
+     * <p>{@link EventWireBounds#MAX_EVENT_BYTES} is the width one event may occupy on a topic and in
+     * an outbox row, and it is measured in UTF-8 octets rather than in characters, because a
+     * multi-byte character occupies more of a Kafka record than of a Java string.
+     *
+     * @param eventType the routing discriminator, named in the entry
+     * @param json      the serialized payload
+     * @return one entry when the payload is wider than the ceiling, empty otherwise. The entry
+     *         states the two widths and no value from the payload
+     */
+    private static List<String> byteCeilingViolationsOf(String eventType, String json) {
+        int octets = json.getBytes(StandardCharsets.UTF_8).length;
+        if (octets <= EventWireBounds.MAX_EVENT_BYTES) {
+            return List.of();
+        }
+        return List.of(eventType + " serializes to " + octets + " bytes, which exceeds the "
+                + EventWireBounds.MAX_EVENT_BYTES + " byte ceiling one event of this platform may"
+                + " occupy. No value from it appears in this message.");
     }
 
     /**
@@ -356,10 +457,13 @@ public final class EventContracts {
      * {@link EventEnvelope#SCHEMA_VERSION}. {@link #violationsOf(String, String)} has already
      * reported that payload against its document, so this method reports no failure of its own.
      *
+     * <p>Package-private rather than private, because {@link PublishGate} reads the version off the
+     * text the serializer has just checked and the posture gate takes that version as its argument.
+     *
      * @param json the serialized payload
      * @return the version the payload declares, or {@link EventEnvelope#SCHEMA_VERSION}
      */
-    private static int declaredVersionOf(String json) {
+    static int declaredVersionOf(String json) {
         try {
             return versionOf(MAPPER.readTree(json));
         } catch (RuntimeException unreadable) {

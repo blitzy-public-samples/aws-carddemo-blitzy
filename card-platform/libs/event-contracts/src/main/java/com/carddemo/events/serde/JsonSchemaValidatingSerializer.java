@@ -36,7 +36,7 @@ import tools.jackson.databind.module.SimpleModule;
  *
  * <p>No COBOL program and no copybook in this repository defines this class.
  *
- * <p>Three checks run on every call, in this order.
+ * <p>Seven checks run on every call, in this order.
  *
  * <ol>
  * <li>The event must be one of the five records of {@code com.carddemo.events}. The class of the
@@ -53,6 +53,13 @@ import tools.jackson.databind.module.SimpleModule;
  * <li>The written JSON must carry no property {@link SensitiveEventProperties} forbids. A card
  * number, a verification value or a government identifier therefore cannot travel, even where a
  * schema would tolerate an undeclared property.</li>
+ * <li>No screened value of it may carry a card number, a government identifier or a card
+ * verification code, which is the second screen of that same class. A property a person writes in
+ * prose takes the wider of the two screens it defines.</li>
+ * <li>The written JSON must carry no {@code extensions} object. Every schema declares one as the
+ * channel additive evolution travels through and no record of this platform declares the property,
+ * so a document carrying it on the way out was built by something other than its own record. The
+ * consume side deliberately keeps reading one.</li>
  * <li>The written JSON must satisfy the schema document of that event type at the contract
  * version the event itself declares, which {@link EventContracts#violationsOf(String, String)}
  * selects and checks. {@code TransactionDeclined} publishes two contracts, and validating one
@@ -252,6 +259,17 @@ public final class JsonSchemaValidatingSerializer<T> implements Serializer<T> {
                     + " carries a card number or a government identifier in the free-text property "
                     + "\"" + sensitive + "\". No event may carry either. "
                     + "See SensitiveEventProperties.");
+        }
+
+        // Every schema declares extensions as the channel additive evolution travels through, so a
+        // consumer keeps reading one. No record of this platform declares the property, so a
+        // document about to be written that carries one was not written from its own record.
+        String extension = SensitiveEventProperties.firstExtensionProperty(screened);
+        if (extension != null) {
+            throw new SerializationException("The JSON written for " + eventType + " carries an \""
+                    + extension + "\" object. No record of this platform declares one, so a"
+                    + " producer may not write it. A consumer still reads it, which is what the"
+                    + " property exists for. See SensitiveEventProperties.");
         }
 
         List<String> violations;

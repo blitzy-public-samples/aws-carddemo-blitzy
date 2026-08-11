@@ -64,6 +64,15 @@ own. A policy that permitted a pull would let a node fetch bytes from whoever do
 name, under a name that reads like ours. `Never` removes that path entirely: the kubelet
 runs the image an operator loaded onto the node, or it refuses the Pod and reports why.
 
+Both upstream digests are also read for known vulnerabilities before anything deploys them.
+The image stage of `.github/workflows/ci.yml` pulls each reference out of this folder and out
+of `docker-compose.yml`, fails when the two disagree, and fails again on a high or critical
+finding that has a fix available. Twenty-eight such findings are excused by
+`card-platform/.trivyignore.yaml`, each one scoped to a package or a path, each one owned and
+each one expiring on the same day. The scanner stops honouring an expired entry, so the stage
+fails rather than drifting. The six platform images are scanned in the same stage with no
+exception file at all.
+
 What `Never` does **not** do is make the reference immutable. THE SIX PLATFORM TAGS ARE
 MUTABLE. An operator who tags different bytes as
 `carddemo/authorization-service:1.0.0-SNAPSHOT` on one node gets those bytes, and no
@@ -92,6 +101,52 @@ the plan places production hardening out of scope and section 0.8.5 records the 
 to keep infrastructure configuration minimal and swappable.
 [Publish, sign and verify the six service images](../../docs/suggested-next-tasks.md)
 carries the task and names every file it touches.
+
+<br/>
+
+## Encryption at rest
+
+Two PersistentVolumeClaims hold everything this platform stores. `postgres-data` holds all six
+schemas, which is fifty full card numbers, fifty card verification values, the only table on the
+platform describing an identifiable person, and every financial row. `kafka-data` holds the broker
+log, which is every event published: an amount, a masked card number, a card token and the ten
+cardholder fields `CustomerContextChanged` carries.
+
+Neither claim names a storage class. That is what makes the demo work on kind, minikube and Docker
+Desktop with no edit, and it is not good enough for real data. A copied volume, an unprotected
+snapshot or a lost disk bypasses every control in this folder. That is the six database logins, the
+NetworkPolicies, the seven broker identities and every Transport Layer Security session. Both claims
+say so in a comment and in three annotations, and `carddemo.io/requires-encryption-at-rest` is the
+one a policy engine can read.
+
+Bind an encrypted class by applying the overlay instead of this folder. It patches both claims in one
+place and applies the whole base, so nothing else changes.
+
+```bash
+# Provide a StorageClass named carddemo-encrypted whose provisioner encrypts at rest, or edit
+# the one class name in the overlay to a class the cluster already has.
+kubectl apply -f card-platform/deploy/k8s/00-namespace.yaml
+kubectl apply -f /path/to/your-filled-in-secrets.yaml
+kubectl apply -k card-platform/deploy/k8s/overlays/encrypted-storage
+```
+
+A claim's storage class is immutable once bound, so on a cluster that already applied this folder the
+sequence is destructive. Take a dump, delete the two Deployments, delete the two claims, apply the
+overlay, then restore. There is no in-place move.
+
+**What the operator owns, and this platform does not.** The key is the first thing. A class
+encrypting with a provider-managed key is one decision, and a class naming a customer-managed key is
+another, with rotation and revocation attached. Nothing here creates a key or a class.
+
+**Backups are separate.** Volume encryption protects a volume, so a logical dump written with
+`pg_dump` is plaintext wherever it lands. Encrypt it where it is written, and prove a restore into an
+empty namespace by running the equivalence suite against it. **Neither is verified by this
+repository**, which ships one demonstration stack, and [suggested next
+tasks](../../docs/suggested-next-tasks.md) carries the work.
+
+The Compose stack is a different posture and states it in `docker-compose.yml`. Two local named
+volumes on one machine hold the synthetic fixtures alone, on a host disk the operator is expected to
+have encrypted. `docker compose down -v` is the whole of its destruction step.
 
 <br/>
 

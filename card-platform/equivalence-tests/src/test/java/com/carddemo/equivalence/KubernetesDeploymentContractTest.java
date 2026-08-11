@@ -13,6 +13,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.yaml.snakeyaml.LoaderOptions;
@@ -406,6 +407,121 @@ class KubernetesDeploymentContractTest {
         assertThat(read(kubernetesDirectory().resolve("00-namespace.yaml")))
                 .as("and the pin has to say why it is a pin, or the next reader restores latest")
                 .contains(".spec.os.name");
+    }
+
+    /**
+     * Every persistent claim declares encryption at rest, and one overlay binds it.
+     *
+     * <p>Two volumes hold everything this platform stores. One carries all six schemas, including
+     * fifty full card numbers, fifty card verification values and the only table describing an
+     * identifiable person. The other carries every event published, including the ten cardholder
+     * fields {@code CustomerContextChanged} holds. A security review found neither claim naming a
+     * storage class and no manifest requiring an encrypted one, so a cluster bound each with whatever
+     * default it had.
+     *
+     * <p>The base still names no class, because the documented demonstration binds on kind, minikube
+     * and Docker Desktop with no edit. What it names instead is the requirement, as annotations a
+     * person and an admission policy can both read, and the overlay that satisfies it. The sweep
+     * below reads every claim in the folder rather than the two by name, so a third claim is held to
+     * the same declaration without an edit here.
+     */
+    @Test
+    @DisplayName("every persistent claim declares encryption at rest and names the overlay")
+    void everyPersistentClaimDeclaresEncryptionAtRest() {
+        List<String> claims = new ArrayList<>();
+        for (String manifest : manifestFiles()) {
+            for (Map<String, Object> resource : resources(manifest)) {
+                if (!"PersistentVolumeClaim".equals(resource.get("kind"))) {
+                    continue;
+                }
+                String name = String.valueOf(at(resource, "metadata", "name"));
+                claims.add(name);
+                Map<String, Object> annotations = map(at(resource, "metadata", "annotations"));
+                assertThat(annotations)
+                        .as("%s in %s holds subject data, so its claim has to declare that the"
+                                + " storage under it is encrypted", name, manifest)
+                        .containsEntry("carddemo.io/requires-encryption-at-rest", "true");
+                assertThat(String.valueOf(annotations.get("carddemo.io/data-classification")))
+                        .as("%s has to say what the volume holds, or the requirement is decorative",
+                                name)
+                        .isNotBlank()
+                        .isNotEqualTo("null");
+                assertThat(String.valueOf(annotations.get("carddemo.io/encryption-overlay")))
+                        .as("%s has to name the overlay that satisfies the requirement", name)
+                        .contains("overlays/encrypted-storage");
+                assertThat(map(at(resource, "spec")))
+                        .as("the base names no storage class, so the demonstration binds on any"
+                                + " cluster and the overlay is the one place a class is chosen")
+                        .doesNotContainKey("storageClassName");
+            }
+        }
+        assertThat(claims)
+                .as("the sweep has to reach both volumes, or its verdict means nothing")
+                .containsExactlyInAnyOrder("kafka-data", "postgres-data");
+    }
+
+    /**
+     * The overlay binds an encrypted class to every claim, and cannot go stale.
+     *
+     * <p>It patches by {@code kind} rather than by name and lists the base folder rather than the
+     * eleven manifests, so a claim added or a manifest renamed needs no edit here. The sweep reads
+     * the declarations rather than the whole file, because the comment block carries the two apply
+     * commands an operator runs and those name manifests on purpose. The base
+     * kustomization does not name the overlay, because a base that included its own overlay would
+     * apply the patch to itself and leave no unencrypted path for the documented local run.
+     */
+    @Test
+    @DisplayName("the encrypted-storage overlay patches by kind and lists the base, not the manifests")
+    void theEncryptedStorageOverlayPatchesByKind() {
+        Path overlay = kubernetesDirectory()
+                .resolve("overlays/encrypted-storage/kustomization.yaml");
+        assertThat(Files.isRegularFile(overlay))
+                .as("the annotation on both claims names this file, so it has to exist")
+                .isTrue();
+
+        String text = read(overlay);
+        Map<String, Object> kustomization = map(new Yaml(
+                new SafeConstructor(new LoaderOptions())).load(text));
+        assertThat(at(kustomization, "resources"))
+                .as("the overlay applies the base folder, so it cannot fall behind a new manifest")
+                .isEqualTo(List.of("../.."));
+        assertThat(text)
+                .as("patching by kind covers a third claim without an edit here")
+                .contains("kind: PersistentVolumeClaim")
+                .contains("/spec/storageClassName");
+
+        String declarations = text.lines()
+                .filter(line -> !line.stripLeading().startsWith("#"))
+                .reduce("", (left, right) -> left + "\n" + right);
+        for (String manifest : manifestFiles()) {
+            assertThat(declarations)
+                    .as("the overlay must not declare %s as a resource, or it goes stale when a"
+                            + " manifest is renamed", manifest)
+                    .doesNotContain(manifest);
+        }
+
+        assertThat(read(kubernetesDirectory().resolve("kustomization.yaml")))
+                .as("the base must not include its own overlay, or there is no unencrypted path for"
+                        + " the documented local run")
+                .doesNotContain("overlays");
+    }
+
+    /** Every manifest of the base folder, which excludes the overlay directory below it. */
+    private static List<String> manifestFiles() {
+        try (Stream<Path> files = Files.list(kubernetesDirectory())) {
+            List<String> manifests = files.filter(Files::isRegularFile)
+                    .map(file -> file.getFileName().toString())
+                    .filter(name -> name.endsWith(".yaml"))
+                    .filter(name -> !"kustomization.yaml".equals(name))
+                    .sorted()
+                    .toList();
+            assertThat(manifests)
+                    .as("the base folder has to hold the manifests this contract reads")
+                    .hasSizeGreaterThanOrEqualTo(11);
+            return manifests;
+        } catch (IOException unreadable) {
+            throw new UncheckedIOException("cannot list " + kubernetesDirectory(), unreadable);
+        }
     }
 
     private static String manifestFor(String service) {

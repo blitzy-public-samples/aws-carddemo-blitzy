@@ -13,6 +13,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.springframework.boot.security.autoconfigure.web.servlet.SecurityFilterProperties;
 import org.springframework.core.annotation.Order;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -37,6 +38,9 @@ class CrossSiteRequestFilterTest {
 
     /** A read of the same service, which no test here refuses. */
     private static final String READ_PATH = "/accounts/00000000050";
+
+    /** A credential of the form HTTP Basic sends. Its content is never inspected here. */
+    private static final String BASIC_CREDENTIAL = "Basic dXNlcjA6cGFzc3dvcmQ=";
 
     private final MeterRegistry meters = new SimpleMeterRegistry();
 
@@ -138,8 +142,7 @@ class CrossSiteRequestFilterTest {
         void aStateChangingMethodCarryingNoHeaderIsRefused(String method) throws Exception {
             MockHttpServletResponse response = new MockHttpServletResponse();
 
-            filter.doFilter(new MockHttpServletRequest(method, WRITE_PATH), response,
-                    new MockFilterChain());
+            filter.doFilter(forgedWrite(method), response, new MockFilterChain());
 
             assertRefused(response);
         }
@@ -147,7 +150,7 @@ class CrossSiteRequestFilterTest {
         @Test
         @DisplayName("a blank request header is no header")
         void aBlankRequestHeaderIsNoHeader() throws Exception {
-            MockHttpServletRequest request = new MockHttpServletRequest("POST", WRITE_PATH);
+            MockHttpServletRequest request = forgedWrite("POST");
             request.addHeader(CrossSiteRequestFilter.DEFAULT_REQUIRED_HEADER, "   ");
             MockHttpServletResponse response = new MockHttpServletResponse();
 
@@ -189,7 +192,7 @@ class CrossSiteRequestFilterTest {
         @Test
         @DisplayName("the refusal names no route, no identifier and no header value")
         void theRefusalNamesNothingTheCallerSupplied() throws Exception {
-            MockHttpServletRequest request = new MockHttpServletRequest("POST", WRITE_PATH);
+            MockHttpServletRequest request = forgedWrite("POST");
             request.addHeader(HttpHeaders.ORIGIN, "https://attacker.example");
             MockHttpServletResponse response = new MockHttpServletResponse();
 
@@ -208,13 +211,41 @@ class CrossSiteRequestFilterTest {
             MockFilterChain chain = new MockFilterChain();
 
             for (int attempt = 0; attempt < 3; attempt++) {
-                filter.doFilter(new MockHttpServletRequest("POST", WRITE_PATH),
-                        new MockHttpServletResponse(), chain);
+                filter.doFilter(forgedWrite("POST"), new MockHttpServletResponse(), chain);
             }
 
             assertEquals(3.0D, refusals());
             assertNull(chain.getRequest(),
                     "a refused request must not reach the rest of the chain");
+        }
+
+        /**
+         * Asserts a state-changing call carrying no credential reaches the chain and is not counted.
+         *
+         * <p>This is the property that makes the rung above safe. Such a request is refused by the
+         * security chain with 401 and no password to verify, so nothing is spent and the answer a
+         * caller sees is the one this route gave while the filter ran after the chain. Refusing it
+         * here with 403 would tell an unauthenticated caller that the route exists and that its
+         * credential was the only thing missing.
+         */
+        @ParameterizedTest
+        @ValueSource(strings = {"POST", "PUT", "PATCH", "DELETE"})
+        @DisplayName("a state-changing call with no credential reaches the chain, forged or not")
+        void aCallWithNoCredentialReachesTheChain(String method) throws Exception {
+            MockFilterChain chain = new MockFilterChain();
+            MockHttpServletRequest request = new MockHttpServletRequest(method, WRITE_PATH);
+            request.addHeader(CrossSiteRequestFilter.FETCH_SITE_HEADER, "cross-site");
+            request.addHeader(HttpHeaders.ORIGIN, "https://attacker.example");
+            MockHttpServletResponse response = new MockHttpServletResponse();
+
+            filter.doFilter(request, response, chain);
+
+            assertEquals(HttpStatus.OK.value(), response.getStatus(),
+                    "the chain answers an unauthenticated request, not this filter");
+            assertEquals(request, chain.getRequest(),
+                    "the request has to reach the chain so the chain can answer 401");
+            assertEquals(0.0D, refusals(),
+                    "a request this filter did not refuse must not be counted as one");
         }
     }
 
@@ -256,14 +287,27 @@ class CrossSiteRequestFilterTest {
                     refused.getMessage());
         }
 
+        /**
+         * Asserts both request-shape filters run ahead of the security chain, on their own rungs.
+         *
+         * <p>An unordered {@code @Component} filter runs after Spring Security, so every refusal it
+         * made was paid for with the bcrypt verification of a request the service was about to turn
+         * away. Both filters therefore declare a rung, and both stand aside for a request carrying no
+         * credential so that no answer moved with the cost.
+         */
         @Test
-        @DisplayName("the filter carries no order, so it runs behind the security chain")
-        void theFilterCarriesNoOrderSoItRunsBehindTheSecurityChain() {
-            assertNull(CrossSiteRequestFilter.class.getAnnotation(Order.class),
-                    "an order here would move the refusal ahead of authentication, and an "
-                            + "unauthenticated caller would then receive 403 rather than 401");
-            assertNull(RequestBodyCeilingFilter.class.getAnnotation(Order.class),
-                    "the two request-shape filters share one placement");
+        @DisplayName("both request-shape filters run ahead of the security chain")
+        void bothRequestShapeFiltersRunAheadOfTheSecurityChain() {
+            Order crossSite = CrossSiteRequestFilter.class.getAnnotation(Order.class);
+            Order bodyCeiling = RequestBodyCeilingFilter.class.getAnnotation(Order.class);
+
+            assertEquals(SecurityFilterProperties.DEFAULT_FILTER_ORDER - 1, crossSite.value(),
+                    "the cheapest refusal of the four runs closest to the chain");
+            assertEquals(SecurityFilterProperties.DEFAULT_FILTER_ORDER - 2, bodyCeiling.value(),
+                    "measuring a declared length is cheaper still, so it runs one rung earlier");
+            assertTrue(crossSite.value() < SecurityFilterProperties.DEFAULT_FILTER_ORDER
+                            && bodyCeiling.value() < crossSite.value(),
+                    "the two rungs have to be ordered and both ahead of the chain");
         }
 
         @Test
@@ -282,10 +326,31 @@ class CrossSiteRequestFilterTest {
         }
     }
 
-    /** Builds a write that satisfies the header requirement and declares nothing else. */
+    /**
+     * Builds a write that satisfies the header requirement, presents a credential and declares
+     * nothing else.
+     *
+     * <p>The credential is what makes the request one this filter examines. The filter runs ahead of
+     * the security chain and stands aside for a request carrying no {@code Authorization} header, so
+     * a test measuring a refusal has to present one. A forged cross-site call always does: the
+     * browser attaches a cached credential by itself, which is the whole reason this control exists.
+     */
     private static MockHttpServletRequest firstPartyWrite() {
         MockHttpServletRequest request = new MockHttpServletRequest("POST", WRITE_PATH);
         request.addHeader(CrossSiteRequestFilter.DEFAULT_REQUIRED_HEADER, "1");
+        request.addHeader(HttpHeaders.AUTHORIZATION, BASIC_CREDENTIAL);
+        return request;
+    }
+
+    /**
+     * Builds a credentialed write of one method carrying no cross-site header at all.
+     *
+     * @param method the state-changing method to send
+     * @return the request
+     */
+    private static MockHttpServletRequest forgedWrite(String method) {
+        MockHttpServletRequest request = new MockHttpServletRequest(method, WRITE_PATH);
+        request.addHeader(HttpHeaders.AUTHORIZATION, BASIC_CREDENTIAL);
         return request;
     }
 

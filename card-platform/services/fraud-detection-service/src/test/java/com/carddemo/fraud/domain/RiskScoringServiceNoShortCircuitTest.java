@@ -267,7 +267,7 @@ class RiskScoringServiceNoShortCircuitTest {
     }
 
     private static FraudProperties settings() {
-        return new FraudProperties(null, null, null, null, null,
+        return new FraudProperties(null, null, null, null,
                 new FraudProperties.Fraud(new FraudProperties.Fraud.Risk(SHIPPED_THRESHOLD,
                         LOOKBACK_MINUTES, COUNT_THRESHOLD,
                         new BigDecimal(AMOUNT_ANOMALY_THRESHOLD))));

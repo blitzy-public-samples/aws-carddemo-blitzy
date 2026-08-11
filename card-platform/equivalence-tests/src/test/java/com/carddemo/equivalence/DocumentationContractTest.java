@@ -84,7 +84,10 @@ class DocumentationContractTest {
             Map.entry(17, "seventeen"),
             Map.entry(18, "eighteen"),
             Map.entry(19, "nineteen"),
-            Map.entry(20, "twenty"));
+            Map.entry(20, "twenty"),
+            Map.entry(21, "twenty-one"),
+            Map.entry(22, "twenty-two"),
+            Map.entry(23, "twenty-three"));
 
     /** A listener declaration, anchored so a Javadoc mention of the annotation is not one. */
     private static final Pattern LISTENER_ANNOTATION =
@@ -121,13 +124,27 @@ class DocumentationContractTest {
     /** A test class name as an inventory row writes it. */
     private static final Pattern TEST_CLASS_NAME = Pattern.compile("[A-Za-z0-9_]+Test\\b");
 
-    /** Arguments that make git name the delivered set rather than the tracked subset of it. */
+    /**
+     * Arguments that make git name the delivered set rather than the tracked subset of it.
+     *
+     * <p>Two paths sit at the repository root and are named individually, because the engagement
+     * delivers them and no directory argument reaches them. The root {@code README.md} is the one
+     * pre-existing document this work updates, and {@code .gitattributes} declares the line endings
+     * that document already had. A review found both absent from the matrix's inventory, which is
+     * how a document claiming closure over the whole tree closed over less than it.
+     *
+     * <p>The four remaining root files are deliberately not named. {@code CODE_OF_CONDUCT.md},
+     * {@code CONTRIBUTING.md}, {@code LICENSE} and {@code NOTICE} are untouched since the baseline
+     * commit, so a row for any of them would claim an operation this engagement did not perform.
+     */
     private static final List<String> DELIVERED_SET_ARGUMENTS = List.of(
-            "--cached", "--others", "--exclude-standard", "card-platform", ".github");
+            "--cached", "--others", "--exclude-standard", "card-platform", ".github",
+            "README.md", ".gitattributes");
 
     /** The command the matrix must name, written the way a reader would run it. */
     private static final String DELIVERED_SET_COMMAND =
-            "git ls-files --cached --others --exclude-standard card-platform .github";
+            "git ls-files --cached --others --exclude-standard card-platform .github README.md"
+                    + " .gitattributes";
 
     /** The provenance cell of a delivered file that cites nothing and says no more than that. */
     private static final String PLAIN_ABSENCE = "None cited in the file";
@@ -711,15 +728,15 @@ class DocumentationContractTest {
         // DROP TABLE, so an index a later migration withdraws, and one whose table it drops, is not
         // counted.
         int migratedIndexes = migratedIndexCount();
-        assertTrue(model.contains("**" + migratedIndexes + " indexes and 133 named constraints**"),
+        assertTrue(model.contains("**" + migratedIndexes + " indexes and 146 named constraints**"),
                 "the appendix must publish the " + migratedIndexes + " indexes the migrations leave"
                         + " behind, so a schema change restates it");
         // Each service row is asserted as well as the total, because a total that agrees with itself
         // while a row is wrong is the drift a review already found. The index column of each row is
         // measured from that service's own migrations; the constraint column and the generated
         // primary-key column are read from the catalogue and restated here.
-        int[] namedConstraints = {37, 18, 21, 14, 23, 20};
-        int[] generatedKeys = {3, 0, 0, 0, 5, 0};
+        int[] namedConstraints = {37, 18, 21, 14, 23, 33};
+        int[] generatedKeys = {2, 0, 0, 0, 5, 0};
         String[] schemaNames = {"Authorization", "Ledger posting", "Fraud detection", "Notification",
                 "Account", "Card"};
         int rowIndexTotal = 0;
@@ -735,7 +752,7 @@ class DocumentationContractTest {
         }
         assertEquals(migratedIndexes, rowIndexTotal,
                 "the per-service index counts must sum to the total the appendix publishes");
-        assertTrue(model.contains("| **Total** | **" + migratedIndexes + "** | **133** | **8** |"),
+        assertTrue(model.contains("| **Total** | **" + migratedIndexes + "** | **146** | **7** |"),
                 "the closure total must be the sum of its rows");
         // V7 drops the account card_xref replica, so no figure and no section may present it as live.
         assertFalse(model.contains("The ninth table of this schema"));
@@ -867,6 +884,11 @@ class DocumentationContractTest {
      * it as the word it reads in prose. A README that names a different count anywhere fails too,
      * so a superseded figure cannot survive in a second sentence. Demo overlays under
      * {@code db/demo} are excluded, because they are opt-in and the READMEs count them separately.
+     *
+     * <p>The second half compares on a word boundary rather than on a bare substring. A hyphenated
+     * count contains a smaller one: {@code twenty-three migrations} ends in {@code three
+     * migrations}, and the authorization README failed for stating its own count correctly the day
+     * that service reached twenty-three files.
      */
     @Test
     @DisplayName("every service README states the migration count that service ships")
@@ -893,7 +915,9 @@ class DocumentationContractTest {
                             + stated + " migrations\"");
             for (Map.Entry<Integer, String> other : NUMBER_WORDS.entrySet()) {
                 if (other.getKey() != (int) migrations) {
-                    assertFalse(readme.contains(other.getValue() + " migrations"),
+                    Pattern claim = Pattern.compile("(?<![\\w-])" + Pattern.quote(other.getValue())
+                            + " migrations");
+                    assertFalse(claim.matcher(readme).find(),
                             service + " ships " + migrations + " migrations and its README also"
                                     + " claims " + other.getValue() + ", so one of the two"
                                     + " sentences is wrong");
@@ -1277,9 +1301,17 @@ class DocumentationContractTest {
      * file carried no row, which is the one thing Rule 1's backward direction exists to prevent.
      *
      * <p>The {@code --others --exclude-standard} half matters and is easy to leave off. A plain
-     * {@code git ls-files} lists tracked paths only, so a file added in this session is invisible to
-     * it: at the time of writing the two commands differ by seven paths. A guard built on the plain
-     * form would report closure against a tree missing every file the session added.
+     * {@code git ls-files} lists tracked paths only, so a file this session added is invisible to it
+     * until that file is staged or committed. A guard built on the plain form would report closure
+     * against a tree missing every file the session added, and would report it differently before and
+     * after a commit.
+     *
+     * <p>The set the command names is every path this engagement creates or updates, which is why
+     * {@link #DELIVERED_SET_ARGUMENTS} names two files at the repository root as well as the two
+     * directories. Scoping it to the directories alone left the root {@code README.md} and
+     * {@code .gitattributes} outside a closure that claimed to cover the delivered tree, and a
+     * review measured the gap. A withdrawn path holds no row by the same rule, so the matrix records
+     * those operations in a section of their own below the closure.
      */
     @Test
     @DisplayName("the backward traceability count matches its rows, its groups and the delivered tree")
@@ -1363,13 +1395,72 @@ class DocumentationContractTest {
     }
 
     /**
+     * Repository entries the delivered set does not name, each for a stated reason.
+     *
+     * <p>{@code app}, {@code diagrams} and {@code samples} are the legacy inputs, which a project
+     * constraint makes read-only. The four files are byte-identical to the baseline commit, so a row
+     * for any of them would claim an operation this engagement did not perform.
+     */
+    private static final Set<String> ENTRIES_OUTSIDE_THE_DELIVERED_SET = Set.of(
+            "app", "diagrams", "samples",
+            "CODE_OF_CONDUCT.md", "CONTRIBUTING.md", "LICENSE", "NOTICE");
+
+    /**
+     * Holds the delivered-set definition closed against the repository rather than against itself.
+     *
+     * <p>{@link #DELIVERED_SET_ARGUMENTS} names two directories and two files, so a path written
+     * anywhere else is invisible to every closure built on it. That is how the root
+     * {@code README.md} and {@code .gitattributes} went unrowed: the command could not see them, so
+     * the count it produced agreed with the rows and both were short of the tree. A review measured
+     * the gap, which no test could.
+     *
+     * <p>This one can. Every top-level entry git resolves is either covered by the delivered set or
+     * named in {@link #ENTRIES_OUTSIDE_THE_DELIVERED_SET} with the reason it is not. A new file or
+     * directory at the repository root therefore fails here until it is either delivered or
+     * excluded on the record, rather than passing unnoticed.
+     */
+    @Test
+    @DisplayName("the delivered set covers every repository entry this engagement writes")
+    void theDeliveredSetCoversEveryRepositoryEntryThisEngagementWrites() {
+        Set<String> delivered = deliveredPaths();
+        Set<String> entries = new LinkedHashSet<>();
+        for (String path : gitListedPaths(List.of("--cached", "--others", "--exclude-standard"))) {
+            int slash = path.indexOf('/');
+            entries.add(slash < 0 ? path : path.substring(0, slash));
+        }
+        assertTrue(entries.containsAll(ENTRIES_OUTSIDE_THE_DELIVERED_SET),
+                "every excluded entry has to exist, or the exclusion is a stale name that hides a"
+                        + " real one: " + entries);
+
+        List<String> uncovered = entries.stream()
+                .filter(entry -> !ENTRIES_OUTSIDE_THE_DELIVERED_SET.contains(entry))
+                .filter(entry -> delivered.stream()
+                        .noneMatch(path -> path.equals(entry) || path.startsWith(entry + "/")))
+                .toList();
+        assertTrue(uncovered.isEmpty(),
+                "these repository entries are neither covered by the inventory command nor recorded"
+                        + " as outside it, so the traceability matrix would close over less than the"
+                        + " tree and no count would report the difference: " + uncovered);
+    }
+
+    /**
      * Returns every path this engagement delivers, as git resolves the working copy's ignore rules.
      *
      * @return the delivered paths, repository-root relative
      */
     private static Set<String> deliveredPaths() {
+        return gitListedPaths(DELIVERED_SET_ARGUMENTS);
+    }
+
+    /**
+     * Runs {@code git ls-files} with the given arguments and returns the paths it names.
+     *
+     * @param arguments the arguments to pass, in order
+     * @return the listed paths, repository-root relative, in git's order
+     */
+    private static Set<String> gitListedPaths(List<String> arguments) {
         List<String> command = new ArrayList<>(List.of("git", "ls-files"));
-        command.addAll(DELIVERED_SET_ARGUMENTS);
+        command.addAll(arguments);
         try {
             Process process = new ProcessBuilder(command)
                     .directory(repositoryRoot().toFile())

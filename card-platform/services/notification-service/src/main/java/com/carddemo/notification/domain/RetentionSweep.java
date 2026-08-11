@@ -4,7 +4,6 @@ import com.carddemo.cobol.CobolDecimal;
 import com.carddemo.cobol.PicClause;
 import com.carddemo.notification.config.NotificationProperties;
 import com.carddemo.notification.repository.NotificationLogRepository;
-import com.carddemo.notification.repository.ProcessedEventRepository;
 import com.carddemo.notification.repository.StatementTransactionRepository;
 
 import java.time.Clock;
@@ -30,29 +29,32 @@ import org.springframework.transaction.support.TransactionTemplate;
  * expires a record, because a Virtual Storage Access Method dataset was reorganised by an operator
  * and a Generation Data Group aged its own generations off. There is no ancestor to reproduce.
  *
- * <p>This class is here because three tables of this service grow by one row per consumed event and
+ * <p>This class is here because two tables of this service grow by one row per consumed event and
  * nothing else removes a row. The horizons were declared in
  * {@code src/main/resources/application.yml} and in the {@code COMMENT ON TABLE} statements of
  * {@code src/main/resources/db/migration/V1__schema.sql} before anything applied them, which made
  * every one of them a statement about intent rather than about behaviour. A horizon nothing enforces
  * is worse than no horizon at all: a reader takes the table for bounded and it is not.
  *
- * <p>Each table expires on its own clock and for its own reason. A duplicate-delivery marker matters
- * only while a redelivery of its event is still possible, so its horizon has to outlast the topic
- * retention the broker applies. A read-model row backs the history endpoint, so it outlives an alert
- * by a wide margin, and it expires on the producer's processing timestamp rather than on this
- * service's clock, because that stamp is the one moment the platform agrees on for the transaction.
- * A rendered-alert row records an alert this service produced and did not send, and is the
- * shortest-lived of the three.
+ * <p>Each table expires on its own clock and for its own reason. A read-model row backs the history
+ * endpoint, so it outlives an alert by a wide margin, and it expires on the producer's processing
+ * timestamp rather than on this service's clock, because that stamp is the one moment the platform
+ * agrees on for the transaction. A rendered-alert row records an alert this service produced and did
+ * not send, and is the shorter-lived of the two.
  *
- * <p>Each table is swept by a bounded delete repeated until the table is clear, the table's own
+ * <p>{@code processed_event} is not swept and has no horizon. A duplicate-delivery claim is
+ * permanent, because the read-model row and the rendered alert it guards outlive any horizon a claim
+ * could carry. Migration {@code V8__processed_event_claims_are_permanent.sql} states the same thing
+ * in the catalogue.
+ *
+ * <p>Each swept table is cleared by a bounded delete repeated until the table is clear, its own
  * wall-clock ceiling is reached, or the delete fails. Both halves are needed. The bound keeps one
  * statement from locking a table for as long as its backlog takes to remove, and the repetition keeps
  * that bound from making the backlog permanent, which is what a single bounded pass on an interval
  * does as soon as rows arrive faster than one batch a pass.
  *
  * <p>Each batch runs in a transaction of its own, so a table that fails part-way keeps the rows its
- * earlier batches removed and leaves the other two tables to be swept. A failure is logged and the
+ * earlier batches removed and leaves the other table to be swept. A failure is logged and the
  * schedule carries on: a sweep that cannot run is an operational condition and never a reason to fail
  * a delivery.
  *
@@ -67,7 +69,7 @@ public class RetentionSweep {
     /**
      * Rows one bounded delete removes at most.
      *
-     * <p>One number for all three tables, and the same number the sibling services use, so one
+     * <p>One number for both swept tables, and the same number the sibling services use, so one
      * figure describes the platform rather than six. It replaced two separate thousand-row limits:
      * the ceiling matters less than the drain below it, and a smaller batch releases its locks
      * sooner.
@@ -78,8 +80,8 @@ public class RetentionSweep {
      * Wall-clock ceiling on the drain of one table.
      *
      * <p>Finite by design. Without it a table with an unbounded backlog would hold the scheduled
-     * thread for as long as the backlog took to clear, and the tables after it would never be swept
-     * at all. This service sweeps three in sequence, so starving the ones behind is the real risk.
+     * thread for as long as the backlog took to clear, and the table after it would never be swept
+     * at all. This service sweeps two in sequence, so starving the one behind is the real risk.
      */
     static final Duration MAX_TABLE_DURATION = Duration.ofSeconds(30);
 
@@ -89,10 +91,7 @@ public class RetentionSweep {
     /** Store of the rendered-alert rows. */
     private final NotificationLogRepository notificationLog;
 
-    /** Store of the duplicate-delivery markers. */
-    private final ProcessedEventRepository processedEvents;
-
-    /** The bound horizons, from {@code carddemo.history} and {@code carddemo.processed-event}. */
+    /** The bound horizons, from {@code carddemo.history}. */
     private final NotificationProperties properties;
 
     /** Opens one transaction per delete. See {@link #sweepExpiredRows()} for why not an annotation. */
@@ -110,11 +109,10 @@ public class RetentionSweep {
     private final Duration maxTableDuration;
 
     /**
-     * Takes the three stores, the bound horizons and the transaction boundary.
+     * Takes the two stores, the bound horizons and the transaction boundary.
      *
      * @param statementTransactions store of the card-keyed read model
      * @param notificationLog       store of the rendered-alert rows
-     * @param processedEvents       store of the duplicate-delivery markers
      * @param properties            the bound {@code carddemo} block
      * @param transactionTemplate   opens one transaction per delete
      * @throws NullPointerException if any argument is {@code null}
@@ -124,10 +122,10 @@ public class RetentionSweep {
     // context load rather than naming the ambiguity.
     @Autowired
     public RetentionSweep(StatementTransactionRepository statementTransactions,
-            NotificationLogRepository notificationLog, ProcessedEventRepository processedEvents,
-            NotificationProperties properties, TransactionTemplate transactionTemplate) {
-        this(statementTransactions, notificationLog, processedEvents, properties,
-                transactionTemplate, MAX_TABLE_DURATION);
+            NotificationLogRepository notificationLog, NotificationProperties properties,
+            TransactionTemplate transactionTemplate) {
+        this(statementTransactions, notificationLog, properties, transactionTemplate,
+                MAX_TABLE_DURATION);
     }
 
     /**
@@ -139,41 +137,37 @@ public class RetentionSweep {
      *
      * @param statementTransactions store of the card-keyed read model
      * @param notificationLog       store of the rendered-alert rows
-     * @param processedEvents       store of the duplicate-delivery markers
      * @param properties            the bound {@code carddemo} block
      * @param transactionTemplate   opens one transaction per delete
      * @param maxTableDuration      the drain ceiling for one table
      * @throws NullPointerException if any argument is {@code null}
      */
     RetentionSweep(StatementTransactionRepository statementTransactions,
-            NotificationLogRepository notificationLog, ProcessedEventRepository processedEvents,
-            NotificationProperties properties, TransactionTemplate transactionTemplate,
-            Duration maxTableDuration) {
+            NotificationLogRepository notificationLog, NotificationProperties properties,
+            TransactionTemplate transactionTemplate, Duration maxTableDuration) {
         this.maxTableDuration =
                 Objects.requireNonNull(maxTableDuration, "maxTableDuration is required");
         this.statementTransactions =
                 Objects.requireNonNull(statementTransactions, "statementTransactions is required");
         this.notificationLog =
                 Objects.requireNonNull(notificationLog, "notificationLog is required");
-        this.processedEvents =
-                Objects.requireNonNull(processedEvents, "processedEvents is required");
         this.properties = Objects.requireNonNull(properties, "properties is required");
         this.transactionTemplate =
                 Objects.requireNonNull(transactionTemplate, "transactionTemplate is required");
     }
 
     /**
-     * Runs one pass over the three tables, oldest concern first.
+     * Runs one pass over the two swept tables, oldest concern first.
      *
      * <p>The interval comes from {@code carddemo.history.sweep-interval-ms}. It is far shorter than
-     * any of the three horizons, which is deliberate: the sweep is cheap, each delete is bounded by
-     * an index, and running often keeps one pass from having a day of rows to remove.
+     * either horizon, which is deliberate: the sweep is cheap, each delete is bounded by an index,
+     * and running often keeps one pass from having a day of rows to remove.
      *
-     * <p>No failure leaves this method. Each of the three deletes reports its own outcome, so a
-     * permission problem on one table does not hide the other two.
+     * <p>No failure leaves this method. Each of the two deletes reports its own outcome, so a
+     * permission problem on one table does not hide the other.
      *
      * <p>Each delete opens its transaction through {@link TransactionTemplate} rather than through
-     * {@code @Transactional} on the three methods below. The reason is mechanical: a scheduled method
+     * {@code @Transactional} on the two methods below. The reason is mechanical: a scheduled method
      * reaching its neighbours calls them on {@code this}, which does not pass through the proxy that
      * would start a transaction, and a modifying query outside a transaction fails. That failure
      * arrives as a {@link DataAccessException}, which {@link #drain} logs and swallows, so an
@@ -182,19 +176,8 @@ public class RetentionSweep {
      */
     @Scheduled(fixedDelayString = "${carddemo.history.sweep-interval-ms}")
     public void sweepExpiredRows() {
-        sweepMarkers();
         sweepReadModelRows();
         sweepRenderedAlertRows();
-    }
-
-    /**
-     * Deletes markers past {@code carddemo.processed-event.marker-retention-hours}.
-     */
-    public void sweepMarkers() {
-        Instant horizon = clock.instant()
-                .minus(Duration.ofHours(properties.processedEvent().markerRetentionHours()));
-        drain("processed_event",
-                limit -> processedEvents.deleteMarkersProcessedBefore(horizon, limit));
     }
 
     /**

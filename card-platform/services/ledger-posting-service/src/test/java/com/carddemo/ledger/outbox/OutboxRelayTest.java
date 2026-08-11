@@ -189,7 +189,7 @@ class OutboxRelayTest {
         });
 
         JsonMapper mapper = JsonMapper.builder().build();
-        writer = new OutboxWriter(outboxEvents, mapper);
+        writer = new OutboxWriter(outboxEvents);
         relay = new OutboxRelay(outboxEvents, kafkaTemplate, mapper, transactionTemplate,
                 properties(), meters);
     }
@@ -687,7 +687,6 @@ class OutboxRelayTest {
                         "ledger-relay",
                         Duration.ofMinutes(2L),
                         5_000L), 168L),
-                new LedgerProperties.ProcessedEvent(720L, 168L),
                 new LedgerProperties.Retention(3_600_000L, 90));
     }
 

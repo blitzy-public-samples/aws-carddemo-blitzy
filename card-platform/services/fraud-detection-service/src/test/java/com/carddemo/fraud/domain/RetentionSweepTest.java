@@ -19,10 +19,12 @@ import com.carddemo.fraud.repository.OutboxEventRepository;
 import com.carddemo.fraud.repository.ProcessedEventRepository;
 import com.carddemo.fraud.repository.VelocityWindowRepository;
 import java.math.BigDecimal;
+import java.lang.reflect.Constructor;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -50,23 +52,22 @@ import org.springframework.transaction.support.TransactionTemplate;
  * per span accumulated for the life of the schema while the method that would have removed them sat
  * unreferenced.
  *
+ * <p>{@code processed_event} is absent from every assertion below, and one test asserts that absence
+ * directly. A security review found the marker horizon expiring claims while the assessment and the
+ * velocity buckets they guard stayed, so a claim is now permanent and this sweep holds no store over
+ * that table.
+ *
  * <p>Nothing here opens a database connection. Each repository is a stand-in that answers with a row
  * count, and the transaction template runs its callback directly so the number of transactions is
  * exactly the number of statements.
  *
  * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
-@DisplayName("RetentionSweep, its four tables, its bounded batches and its finite drain")
+@DisplayName("RetentionSweep, its three tables, its bounded batches and its finite drain")
 class RetentionSweepTest {
 
     /** Hours a published outbox row stays, matching the shipped default. */
     private static final long PUBLISHED_RETENTION_HOURS = 168L;
-
-    /** Hours a processed-event marker stays, matching the shipped default. */
-    private static final long MARKER_RETENTION_HOURS = 720L;
-
-    /** Hours the broker keeps a topic log, which the marker horizon has to outlast. */
-    private static final long BROKER_RETENTION_HOURS = 168L;
 
     /** Days a risk assessment stays, matching the horizon COMMENT ON TABLE declares. */
     private static final int ASSESSMENT_RETENTION_DAYS = 90;
@@ -79,9 +80,6 @@ class RetentionSweepTest {
 
     /** Store of the published rows, stubbed here. */
     private OutboxEventRepository outboxEvents;
-
-    /** Store of the duplicate-delivery markers, stubbed here. */
-    private ProcessedEventRepository processedEvents;
 
     /** Store of the risk assessments, stubbed here. */
     private FraudAssessmentRepository assessments;
@@ -98,24 +96,21 @@ class RetentionSweepTest {
     @BeforeEach
     void buildSweep() {
         outboxEvents = mock(OutboxEventRepository.class);
-        processedEvents = mock(ProcessedEventRepository.class);
         assessments = mock(FraudAssessmentRepository.class);
         velocityWindows = mock(VelocityWindowRepository.class);
         transactions = new ArrayList<>();
-        sweep = new RetentionSweep(outboxEvents, processedEvents, assessments, velocityWindows,
+        sweep = new RetentionSweep(outboxEvents, assessments, velocityWindows,
                 countingTransactions(transactions), properties());
     }
 
     /** Stubs every delete to report an empty table, which is one statement each. */
     private void everyTableIsEmpty() {
         when(outboxEvents.deletePublishedBefore(any(Instant.class), anyInt())).thenReturn(0);
-        when(processedEvents.deleteMarkersProcessedBefore(any(Instant.class), anyInt()))
-                .thenReturn(0);
         when(assessments.deleteAssessedBefore(any(Instant.class), anyInt())).thenReturn(0);
         when(velocityWindows.deleteWindowsStartedBefore(any(Instant.class), anyInt())).thenReturn(0);
     }
 
-    /** Settings carrying the four shipped horizons and the shipped sweep interval. */
+    /** Settings carrying the three shipped horizons and the shipped sweep interval. */
     private static FraudProperties properties() {
         return properties(VELOCITY_RETENTION_DAYS, VELOCITY_WINDOW_MINUTES);
     }
@@ -137,8 +132,6 @@ class RetentionSweepTest {
                 new FraudProperties.Outbox(new FraudProperties.Outbox.Relay(
                         500L, 100, "retention-test", Duration.ofMinutes(2L), 5_000L),
                         PUBLISHED_RETENTION_HOURS),
-                new FraudProperties.ProcessedEvent(MARKER_RETENTION_HOURS,
-                        BROKER_RETENTION_HOURS),
                 new FraudProperties.Retention(3_600_000L, ASSESSMENT_RETENTION_DAYS,
                         velocityRetentionDays),
                 new FraudProperties.Fraud(new FraudProperties.Fraud.Risk(
@@ -177,13 +170,31 @@ class RetentionSweepTest {
 
             verify(outboxEvents).deletePublishedBefore(any(Instant.class),
                     eq(RetentionSweep.PURGE_BATCH_SIZE));
-            verify(processedEvents).deleteMarkersProcessedBefore(any(Instant.class),
-                    eq(RetentionSweep.PURGE_BATCH_SIZE));
             verify(assessments).deleteAssessedBefore(any(Instant.class),
                     eq(RetentionSweep.PURGE_BATCH_SIZE));
             verify(velocityWindows).deleteWindowsStartedBefore(any(Instant.class),
                     eq(RetentionSweep.PURGE_BATCH_SIZE));
-            assertEquals(4, transactions.size(), "one transaction per statement, and no more");
+            assertEquals(3, transactions.size(), "one transaction per statement, and no more");
+        }
+
+        /**
+         * Asserts nothing in this class can expire a duplicate-delivery claim.
+         *
+         * <p>Stated structurally, because a sweep holding no store over {@code processed_event}
+         * cannot delete from it however it is scheduled or configured.
+         */
+        @Test
+        @DisplayName("no constructor takes a store over processed_event, so no claim expires")
+        void noConstructorTakesAStoreOverProcessedEvent() {
+            assertTrue(Arrays.stream(RetentionSweep.class.getDeclaredFields())
+                            .map(field -> field.getType())
+                            .noneMatch(ProcessedEventRepository.class::equals),
+                    "a field over processed_event is a delete waiting to be reintroduced");
+            assertTrue(Arrays.stream(RetentionSweep.class.getDeclaredConstructors())
+                            .map(Constructor::getParameterTypes)
+                            .flatMap(Arrays::stream)
+                            .noneMatch(ProcessedEventRepository.class::equals),
+                    "no constructor may take a store over processed_event");
         }
 
         @Test
@@ -196,8 +207,6 @@ class RetentionSweepTest {
 
             ArgumentCaptor<Instant> published = ArgumentCaptor.forClass(Instant.class);
             verify(outboxEvents).deletePublishedBefore(published.capture(), anyInt());
-            ArgumentCaptor<Instant> markers = ArgumentCaptor.forClass(Instant.class);
-            verify(processedEvents).deleteMarkersProcessedBefore(markers.capture(), anyInt());
             ArgumentCaptor<Instant> assessed = ArgumentCaptor.forClass(Instant.class);
             verify(assessments).deleteAssessedBefore(assessed.capture(), anyInt());
             ArgumentCaptor<Instant> windows = ArgumentCaptor.forClass(Instant.class);
@@ -208,10 +217,6 @@ class RetentionSweepTest {
                                     .plusSeconds(1L)),
                     "the published horizon is not the configured week back: "
                             + published.getValue());
-            assertTrue(markers.getValue()
-                            .isBefore(before.minus(Duration.ofHours(MARKER_RETENTION_HOURS))
-                                    .plusSeconds(1L)),
-                    "the marker horizon is not the configured month back: " + markers.getValue());
             assertTrue(assessed.getValue()
                             .isBefore(before.minus(Duration.ofDays(ASSESSMENT_RETENTION_DAYS))
                                     .plusSeconds(1L)),
@@ -260,8 +265,8 @@ class RetentionSweepTest {
 
             verify(velocityWindows, times(3))
                     .deleteWindowsStartedBefore(any(Instant.class), anyInt());
-            assertEquals(6, transactions.size(),
-                    "one outbox statement, one marker statement, one assessment statement and"
+            assertEquals(5, transactions.size(),
+                    "one outbox statement, one assessment statement and"
                             + " three velocity statements, each in its own transaction");
         }
 
@@ -281,7 +286,7 @@ class RetentionSweepTest {
         @Test
         @DisplayName("an endless backlog stops at the table ceiling rather than holding the thread")
         void anEndlessBacklogStopsAtTheTableCeiling() {
-            RetentionSweep bounded = new RetentionSweep(outboxEvents, processedEvents, assessments,
+            RetentionSweep bounded = new RetentionSweep(outboxEvents, assessments,
                     velocityWindows, countingTransactions(transactions), properties(),
                     Duration.ofMillis(50L));
             everyTableIsEmpty();
@@ -290,8 +295,6 @@ class RetentionSweepTest {
 
             assertTimeout(Duration.ofSeconds(10L), bounded::purgeExpiredRows);
 
-            verify(processedEvents, times(1))
-                    .deleteMarkersProcessedBefore(any(Instant.class), anyInt());
             verify(assessments, times(1)).deleteAssessedBefore(any(Instant.class), anyInt());
             verify(velocityWindows, times(1))
                     .deleteWindowsStartedBefore(any(Instant.class), anyInt());
@@ -309,8 +312,6 @@ class RetentionSweepTest {
             assertDoesNotThrow(() -> sweep.purgeExpiredRows(),
                     "a scheduled method that raises stops the schedule for the rest of the run");
 
-            verify(processedEvents, times(1))
-                    .deleteMarkersProcessedBefore(any(Instant.class), anyInt());
             verify(assessments, times(1)).deleteAssessedBefore(any(Instant.class), anyInt());
             verify(velocityWindows, times(1))
                     .deleteWindowsStartedBefore(any(Instant.class), anyInt());

@@ -527,7 +527,6 @@ public class OutboxRelayTest {
                 new FraudProperties.Outbox(new FraudProperties.Outbox.Relay(
                         FIXED_DELAY_MS, batchSize, RELAY_INSTANCE,
                         Duration.ofSeconds(30L), 5000L), 168L),
-                new FraudProperties.ProcessedEvent(720L, 168L),
                 new FraudProperties.Retention(3_600_000L, 90, 7),
                 new FraudProperties.Fraud(new FraudProperties.Fraud.Risk(
                         50, 60, 5, new BigDecimal("500.00"))));
@@ -2277,6 +2276,6 @@ public class OutboxRelayTest {
                 new FraudProperties.Outbox(new FraudProperties.Outbox.Relay(relay.fixedDelayMs(),
                         relay.batchSize(), relay.instanceId(), relay.claimTimeout(), passBudgetMs),
                         shipped.outbox().publishedRetentionHours()),
-                shipped.processedEvent(), shipped.retention(), shipped.fraud());
+                shipped.retention(), shipped.fraud());
     }
 }

@@ -76,6 +76,12 @@ on:
   pull_request:
   push:
   workflow_dispatch:
+  # Monday 03:17 UTC. The whole-history secret scan of stage 2 runs on this trigger and on
+  # a manual run, and on neither a push nor a pull request: reading 2,580 commits on every
+  # push is what made that gate unpassable. The minute is off the hour because every runner
+  # queue is busiest there.
+  schedule:
+    - cron: "17 3 * * 1"
 
 permissions:
   contents: read
@@ -168,14 +174,33 @@ jobs:
           # may produce. A second value here means a module compiled at another release.
           test "${releases}" = "69"
 
-  # Stage 2. Reads the working tree and the branch history for committed secrets.
-  # A finding fails the run. The rule pack is the scanner's own default set, and
-  # card-platform/.gitleaks.toml names the known-safe values this repository ships
+  # Stage 2. Reads the working tree and the commit range under review for committed
+  # secrets. A finding fails the run. The rule pack is the scanner's own default set,
+  # and card-platform/.gitleaks.toml names the known-safe values this repository ships
   # on purpose, each with the reason it is safe. That file is the allowlist: a value
   # not matching one of its shapes fails this stage wherever it appears. It sits
   # under card-platform/ because that directory and .github/ are the only paths this
   # engagement adds to, so the scope of the change stays mechanically auditable. The
   # scan target is still the whole repository: only the configuration path is scoped.
+  #
+  # What a security review found. This stage read the whole history of every ref on
+  # every event, with no baseline. That scan reports 113 findings on 39 commits dated
+  # from 2025-10-25 to 2026-08-08, none of them reachable from this branch's HEAD and
+  # none inside the range this engagement authored: they belong to unrelated branches
+  # of a shared sample repository. Every push therefore failed before an image was
+  # built, which is a gate that can never pass and so a gate nobody reads.
+  #
+  # What replaced it. Three scans with three different jobs.
+  #   1. The working tree, unchanged. Every file as it stands has to be clean.
+  #   2. The commit range under review rather than the whole history, so a secret this
+  #      change introduces fails the change that introduced it.
+  #   3. The whole history on a schedule and on a manual run, against the reviewed
+  #      baseline card-platform/.gitleaks-baseline.json. The baseline records the 113
+  #      findings by fingerprint with every value redacted, so a new finding anywhere
+  #      in the history still fails while the reviewed ones stay quiet.
+  # The triage behind that baseline, finding by finding:
+  # card-platform/docs/decision-log.md, under "A secret scan reads the change under
+  # review, and the whole history on a schedule".
   secret-scan:
     name: Scan for committed secrets
     needs: compile
@@ -214,14 +239,89 @@ jobs:
             --report-path card-platform/target/security-reports/gitleaks-working-tree.sarif \
             --exit-code 1
 
-      - name: Read the branch history
+      - name: Read the commit range under review
         working-directory: .
         run: |
           mkdir -p card-platform/target/security-reports
-          gitleaks git . --config card-platform/.gitleaks.toml --no-banner --redact \
+
+          # The range is what this event proposes and nothing earlier. A pull request
+          # carries its base; a push carries the commit the branch pointed at before it,
+          # which is all zeroes for the first push of a new branch and empty for an event
+          # that carries none. Where no range can be established the scan reads the whole
+          # history against the baseline, which is stricter than reading nothing.
+          base="${{ github.event.pull_request.base.sha || github.event.before }}"
+          head="${{ github.event.pull_request.head.sha || github.sha }}"
+          if [ -z "${base}" ] || [ "${base}" = "0000000000000000000000000000000000000000" ] \
+             || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            echo "no usable base for this event; reading the whole history against the baseline"
+            gitleaks git . --config card-platform/.gitleaks.toml \
+              --baseline-path card-platform/.gitleaks-baseline.json --no-banner --redact \
+              --report-format sarif \
+              --report-path card-platform/target/security-reports/gitleaks-history.sarif \
+              --exit-code 1
+          else
+            merge_base="$(git merge-base "${base}" "${head}")"
+            echo "reading ${merge_base}..${head}"
+            gitleaks git . --config card-platform/.gitleaks.toml --no-banner --redact \
+              --log-opts "${merge_base}..${head}" \
+              --report-format sarif \
+              --report-path card-platform/target/security-reports/gitleaks-range.sarif \
+              --exit-code 1
+          fi
+
+      - name: Read the whole history against the reviewed baseline
+        # A schedule and a manual run read every commit of every ref. The baseline holds
+        # the 113 findings this repository's history already carried, by fingerprint, so a
+        # finding this baseline does not name fails this step wherever in the history it
+        # sits. A push and a pull request skip it: the range step above is the gate they
+        # answer to, and reading 2,580 commits on every push is what made this stage
+        # unpassable.
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        working-directory: .
+        run: |
+          mkdir -p card-platform/target/security-reports
+          gitleaks git . --config card-platform/.gitleaks.toml \
+            --baseline-path card-platform/.gitleaks-baseline.json --no-banner --redact \
             --report-format sarif \
             --report-path card-platform/target/security-reports/gitleaks-history.sarif \
             --exit-code 1
+
+      - name: Prove the baseline hides nothing it does not name
+        # The step above passes because the baseline names every finding the history holds,
+        # and a clean result there says nothing about whether an unnamed finding would fail.
+        # This step withholds one entry from a copy of the baseline and requires the scan to
+        # report exactly that finding, which proves the comparison is per fingerprint rather
+        # than per file, per rule or per run.
+        working-directory: .
+        run: |
+          jq '.[1:]' card-platform/.gitleaks-baseline.json > /tmp/gitleaks-baseline-short.json
+          withheld="$(jq -r '.[0].Fingerprint' card-platform/.gitleaks-baseline.json)"
+          echo "withholding ${withheld}"
+
+          if gitleaks git . --config card-platform/.gitleaks.toml \
+               --baseline-path /tmp/gitleaks-baseline-short.json --no-banner --redact \
+               --report-format json --report-path /tmp/gitleaks-baseline-canary.json \
+               --exit-code 1; then
+            echo "::error::the history scan reported clean with one baseline entry withheld, so card-platform/.gitleaks-baseline.json suppresses more than the findings it names"
+            exit 1
+          fi
+          reported="$(jq -r 'length' /tmp/gitleaks-baseline-canary.json)"
+          test "${reported}" -eq 1
+          test "$(jq -r '.[0].Fingerprint' /tmp/gitleaks-baseline-canary.json)" = "${withheld}"
+          echo "the withheld entry was the one finding reported"
+
+      - name: Prove every baseline entry is redacted
+        # The baseline is committed, so it is a file a repository reader can read. It records
+        # which finding was reviewed and must never record what the finding held.
+        working-directory: .
+        run: |
+          unredacted="$(jq -r '[.[] | select(.Secret != "REDACTED")] | length' \
+            card-platform/.gitleaks-baseline.json)"
+          echo "${unredacted} entries carry a value"
+          if [ "${unredacted}" -ne 0 ]; then
+            echo "::error::card-platform/.gitleaks-baseline.json carries ${unredacted} unredacted values; regenerate it with gitleaks --redact"
+            exit 1
+          fi
 
       # The canary. This step plants a secret and requires the scanner to find it, because a
       # clean scan says the repository holds no secret and does not say the scanner would still
@@ -813,6 +913,93 @@ jobs:
           done
           echo "totals: ${fixable_total} fixable, ${unfixed_total} with no fix available"
           test "${fixable_total}" -eq 0
+
+      - name: Scan the two infrastructure images this platform deploys
+        # A security review found this stage scanning the six images this project builds and
+        # none of the two it consumes, so a green stage said nothing about the broker or the
+        # database. Both are scanned here at the exact reference each deployment carries.
+        #
+        # The reference is read out of the shipped files rather than written again here. A
+        # digest copied into this workflow would be a third copy of a value that already
+        # appears in docker-compose.yml and in deploy/k8s, and the copy that goes stale is
+        # the one nothing deploys. The step also requires the two deployment paths to name
+        # the same digest, because a scan of one of them proves nothing about the other.
+        #
+        # The threshold is the one the six service images answer to: a high or critical
+        # finding with a fix available fails the stage, and one without a fix is counted and
+        # reported. What differs is card-platform/.trivyignore.yaml, which carries a dated
+        # exception per package for the findings section 0.5.1 of the plan leaves no route to
+        # fix. Every entry names its owner, its justification and the day it stops being
+        # honoured, and trivy stops honouring it on that day: the finding returns and this
+        # step fails. Rationale, alternatives considered and accepted risks:
+        # card-platform/docs/decision-log.md.
+        run: |
+          mkdir -p target/image-scans
+
+          compose_reference() {
+            grep -oE "$1@sha256:[0-9a-f]{64}" docker-compose.yml | head -1
+          }
+          cluster_reference() {
+            grep -oE "$1@sha256:[0-9a-f]{64}" "deploy/k8s/$2" | head -1
+          }
+
+          declare -A manifest=(
+            [kafka]=10-kafka.yaml
+            [postgres]=20-postgres.yaml
+          )
+          declare -A tag=(
+            [kafka]="apache/kafka:4.2.1"
+            [postgres]="postgres:18.4"
+          )
+
+          fixable_total=0
+          unfixed_total=0
+          for image in kafka postgres; do
+            composed="$(compose_reference "${tag[$image]}")"
+            clustered="$(cluster_reference "${tag[$image]}" "${manifest[$image]}")"
+            test -n "${composed}"
+            test -n "${clustered}"
+            if [ "${composed}" != "${clustered}" ]; then
+              echo "::error::docker-compose.yml runs ${composed} while deploy/k8s/${manifest[$image]} runs ${clustered}, so one of the two deploys an image this stage did not scan"
+              exit 1
+            fi
+            echo "scanning ${composed}"
+
+            report="target/image-scans/infrastructure-${image}.json"
+            trivy image --scanners vuln --severity HIGH,CRITICAL --quiet \
+              --ignorefile .trivyignore.yaml \
+              --format json --output "${report}" "${composed}"
+            counts="$(jq -r '[.Results[]?.Vulnerabilities[]?]
+              | [(map(select(.FixedVersion != null and .FixedVersion != "")) | length),
+                 (map(select(.FixedVersion == null or .FixedVersion == "")) | length)]
+              | @tsv' "${report}")"
+            fixable="$(echo "${counts}" | cut -f1)"
+            unfixed="$(echo "${counts}" | cut -f2)"
+            echo "${image}: ${fixable} fixable after exceptions, ${unfixed} with no fix available"
+            fixable_total=$((fixable_total + fixable))
+            unfixed_total=$((unfixed_total + unfixed))
+          done
+          echo "infrastructure totals: ${fixable_total} fixable after exceptions, ${unfixed_total} with no fix available"
+          test "${fixable_total}" -eq 0
+
+      - name: Prove the infrastructure gate still fires
+        # The exception file is the only reason the step above passes, so a clean result there
+        # says the exceptions hold and does not say the gate would still fail without them.
+        # This step runs the same scan of the broker image with no exception file and requires
+        # a fixable finding, which is the canary the secret scan has and this one lacked.
+        run: |
+          report="/tmp/infrastructure-gate-canary.json"
+          reference="$(grep -oE "apache/kafka:4.2.1@sha256:[0-9a-f]{64}" docker-compose.yml | head -1)"
+          trivy image --scanners vuln --severity HIGH,CRITICAL --quiet \
+            --format json --output "${report}" "${reference}"
+          fixable="$(jq -r '[.Results[]?.Vulnerabilities[]?
+            | select(.FixedVersion != null and .FixedVersion != "")] | length' "${report}")"
+          echo "the unexcused scan reports ${fixable} fixable findings"
+          if [ "${fixable}" -eq 0 ]; then
+            echo "::error::the broker image reports no fixable finding without card-platform/.trivyignore.yaml, so the exceptions in that file excuse nothing and the gate above cannot fail"
+            exit 1
+          fi
+          echo "the infrastructure gate fires without its exception file"
 
       - name: Keep the image-scan reports
         if: always()

@@ -35,7 +35,6 @@ class StreamNameReportTest {
                     Duration.ofMinutes(2L),
                     5_000L,
                     Duration.ofSeconds(10L)), 168L),
-            new CardProperties.ProcessedEvent(720L, 168L),
             new CardProperties.Retention(3_600_000L),
                 new CardProperties.Write(3_000L));
 
@@ -57,7 +56,6 @@ class StreamNameReportTest {
                 new CardProperties.Kafka(new CardProperties.Kafka.Topics("card.updated.v2",
                         "carddemo.dead-letter.v2")),
                 SHIPPED.outbox(),
-                SHIPPED.processedEvent(),
                 SHIPPED.retention(),
                 SHIPPED.write());
 

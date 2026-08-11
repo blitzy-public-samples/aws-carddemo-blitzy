@@ -35,9 +35,14 @@ import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 /**
- * Asserts {@link RetentionSweep} enforces the three horizons {@code application.yml} declares, and
+ * Asserts {@link RetentionSweep} enforces the two horizons {@code application.yml} declares, and
  * that it enforces them through an explicit transaction rather than through an annotation a
  * self-invocation would bypass.
+ *
+ * <p>{@code processed_event} is not among them. A security review found the marker horizon expiring
+ * duplicate-delivery claims while the read-model row and the rendered alert they guard outlived them,
+ * so a claim is permanent now and one test below asserts this sweep holds no store over that
+ * table.
  *
  * <p>The horizons are additive in full. No program under {@code app/cbl/} expires a record: a Virtual
  * Storage Access Method dataset was reorganised by an operator and a Generation Data Group aged its
@@ -48,14 +53,8 @@ import static org.mockito.Mockito.when;
  * <p>Every test runs against mocked repositories and a counting {@link TransactionTemplate}, so
  * {@code mvn test} needs no database and no container.
  */
-@DisplayName("RetentionSweep, the three retention horizons of the notification service")
+@DisplayName("RetentionSweep, the two retention horizons of the notification service")
 class RetentionSweepTest {
-
-    /** Marker horizon the shipped configuration names, in hours. */
-    private static final int MARKER_RETENTION_HOURS = 720;
-
-    /** Broker log retention the shipped configuration names, which the marker horizon outlasts. */
-    private static final int BROKER_RETENTION_HOURS = 168;
 
     /** Read-model horizon the shipped configuration names, in days. */
     private static final int STATEMENT_RETENTION_DAYS = 400;
@@ -73,23 +72,18 @@ class RetentionSweepTest {
             Mockito.mock(StatementTransactionRepository.class);
     private final NotificationLogRepository notificationLog =
             Mockito.mock(NotificationLogRepository.class);
-    private final ProcessedEventRepository processedEvents =
-            Mockito.mock(ProcessedEventRepository.class);
-
     private final CountingTransactionTemplate transactions = new CountingTransactionTemplate();
 
     private final RetentionSweep sweep = new RetentionSweep(statementTransactions, notificationLog,
-            processedEvents, shippedProperties(), transactions);
+            shippedProperties(), transactions);
 
     @Nested
-    @DisplayName("One pass over the three tables")
+    @DisplayName("One pass over the two swept tables")
     class OnePass {
 
         @Test
-        @DisplayName("reaches all three stores, each in a transaction of its own")
-        void reachesAllThreeStoresEachInItsOwnTransaction() {
-            when(processedEvents.deleteMarkersProcessedBefore(Mockito.any(), Mockito.anyInt()))
-                    .thenReturn(4);
+        @DisplayName("reaches both stores, each in a transaction of its own")
+        void reachesBothStoresEachInItsOwnTransaction() {
             when(statementTransactions.deleteProcessedBefore(Mockito.anyString(), Mockito.anyInt()))
                     .thenReturn(11);
             when(notificationLog.deleteRenderedBefore(Mockito.any(), Mockito.anyInt()))
@@ -97,12 +91,11 @@ class RetentionSweepTest {
 
             sweep.sweepExpiredRows();
 
-            verify(processedEvents).deleteMarkersProcessedBefore(Mockito.any(), Mockito.anyInt());
             verify(statementTransactions).deleteProcessedBefore(Mockito.anyString(), Mockito.anyInt());
             verify(notificationLog).deleteRenderedBefore(Mockito.any(), Mockito.anyInt());
             assertThat(transactions.opened())
                     .as("transactions opened, one per delete")
-                    .isEqualTo(3);
+                    .isEqualTo(2);
         }
 
         /**
@@ -118,10 +111,7 @@ class RetentionSweepTest {
         void opensItsOwnTransactionRatherThanRelyingOnAnAnnotation() {
             sweep.sweepExpiredRows();
 
-            assertThat(transactions.opened()).isEqualTo(3);
-            assertThat(annotationNamesOn("sweepMarkers"))
-                    .as("annotations on sweepMarkers")
-                    .doesNotContain("Transactional");
+            assertThat(transactions.opened()).isEqualTo(2);
             assertThat(annotationNamesOn("sweepReadModelRows"))
                     .as("annotations on sweepReadModelRows")
                     .doesNotContain("Transactional");
@@ -146,20 +136,6 @@ class RetentionSweepTest {
     @Nested
     @DisplayName("Each horizon")
     class EachHorizon {
-
-        @Test
-        @DisplayName("measures the marker horizon back by the configured hours")
-        void measuresTheMarkerHorizonBackByTheConfiguredHours() {
-            ArgumentCaptor<Instant> horizon = ArgumentCaptor.forClass(Instant.class);
-
-            sweep.sweepMarkers();
-
-            verify(processedEvents).deleteMarkersProcessedBefore(horizon.capture(), Mockito.anyInt());
-            assertThat(horizon.getValue())
-                    .as("the marker horizon, %d hours back", MARKER_RETENTION_HOURS)
-                    .isCloseTo(Instant.now().minus(Duration.ofHours(MARKER_RETENTION_HOURS)),
-                            within(CLOCK_TOLERANCE.toMillis(), ChronoUnit.MILLIS));
-        }
 
         @Test
         @DisplayName("measures the attempt horizon back by the configured days")
@@ -235,9 +211,9 @@ class RetentionSweepTest {
     class OneTableFailing {
 
         @Test
-        @DisplayName("leaves the other two swept and never reaches the caller")
-        void leavesTheOtherTwoSweptAndNeverReachesTheCaller() {
-            when(processedEvents.deleteMarkersProcessedBefore(Mockito.any(), Mockito.anyInt()))
+        @DisplayName("leaves the other swept and never reaches the caller")
+        void leavesTheOtherSweptAndNeverReachesTheCaller() {
+            when(statementTransactions.deleteProcessedBefore(Mockito.anyString(), Mockito.anyInt()))
                     .thenThrow(new InvalidDataAccessApiUsageException("no permission"));
 
             assertThatCode(sweep::sweepExpiredRows)
@@ -268,14 +244,43 @@ class RetentionSweepTest {
     class StoresReached {
 
         @Test
-        @DisplayName("are the three that grow by one row per consumed event, and no other")
-        void areTheThreeThatGrowPerConsumedEventAndNoOther() {
+        @DisplayName("are the two that grow by one row per consumed event, and no other")
+        void areTheTwoThatGrowPerConsumedEventAndNoOther() {
             sweep.sweepExpiredRows();
 
-            verify(processedEvents).deleteMarkersProcessedBefore(Mockito.any(), Mockito.anyInt());
             verify(statementTransactions).deleteProcessedBefore(Mockito.anyString(), Mockito.anyInt());
             verify(notificationLog).deleteRenderedBefore(Mockito.any(), Mockito.anyInt());
-            verifyNoMoreInteractions(processedEvents, statementTransactions, notificationLog);
+            verifyNoMoreInteractions(statementTransactions, notificationLog);
+        }
+
+        /**
+         * Asserts nothing in this class can expire a duplicate-delivery claim.
+         *
+         * <p>Stated structurally, because a sweep holding no store over {@code processed_event}
+         * cannot delete from it however it is scheduled or configured. The effects a claim guards are
+         * a read-model row kept for four hundred days and a rendered alert kept for ninety, and both
+         * outlived the 720-hour marker horizon this replaced.
+         */
+        @Test
+        @DisplayName("do not include the marker store, so no pass expires a claim")
+        void doNotIncludeTheMarkerStore() {
+            List<String> fields = java.util.Arrays.stream(RetentionSweep.class
+                            .getDeclaredFields())
+                    .map(field -> field.getType().getName())
+                    .toList();
+            List<String> accepted = java.util.Arrays.stream(RetentionSweep.class
+                            .getDeclaredConstructors())
+                    .map(java.lang.reflect.Constructor::getParameterTypes)
+                    .flatMap(java.util.Arrays::stream)
+                    .map(Class::getName)
+                    .toList();
+
+            assertThat(fields)
+                    .as("the collaborators this sweep holds")
+                    .doesNotContain(ProcessedEventRepository.class.getName());
+            assertThat(accepted)
+                    .as("the collaborators any constructor of this sweep accepts")
+                    .doesNotContain(ProcessedEventRepository.class.getName());
         }
     }
 
@@ -286,19 +291,15 @@ class RetentionSweepTest {
         @Test
         @DisplayName("asks for no more than the batch ceiling in one statement")
         void asksForNoMoreThanTheBatchCeilingInOneStatement() {
-            ArgumentCaptor<Integer> markerLimit = ArgumentCaptor.forClass(Integer.class);
             ArgumentCaptor<Integer> rowLimit = ArgumentCaptor.forClass(Integer.class);
             ArgumentCaptor<Integer> attemptLimit = ArgumentCaptor.forClass(Integer.class);
 
             sweep.sweepExpiredRows();
 
-            verify(processedEvents)
-                    .deleteMarkersProcessedBefore(Mockito.any(), markerLimit.capture());
             verify(statementTransactions)
                     .deleteProcessedBefore(Mockito.anyString(), rowLimit.capture());
             verify(notificationLog).deleteRenderedBefore(Mockito.any(), attemptLimit.capture());
 
-            assertThat(markerLimit.getValue()).isEqualTo(RetentionSweep.PURGE_BATCH_SIZE);
             assertThat(rowLimit.getValue()).isEqualTo(RetentionSweep.PURGE_BATCH_SIZE);
             assertThat(attemptLimit.getValue()).isEqualTo(RetentionSweep.PURGE_BATCH_SIZE);
         }
@@ -338,7 +339,7 @@ class RetentionSweepTest {
 
         /**
          * A backlog no drain can clear must not hold the scheduled thread for as long as the backlog
-         * takes to remove, because the two tables swept after this one would then never be reached.
+         * takes to remove, because a table swept after this one would then never be reached.
          * An exhausted ceiling is a deliberate return, not a failure: the remainder is removed on the
          * next pass.
          */
@@ -346,7 +347,7 @@ class RetentionSweepTest {
         @DisplayName("returns at its wall-clock ceiling when a table never answers a short batch")
         void returnsAtItsWallClockCeilingWhenATableNeverAnswersAShortBatch() {
             RetentionSweep ceilinged = new RetentionSweep(statementTransactions, notificationLog,
-                    processedEvents, shippedProperties(), transactions, Duration.ZERO);
+                    shippedProperties(), transactions, Duration.ZERO);
             when(notificationLog.deleteRenderedBefore(Mockito.any(), Mockito.anyInt()))
                     .thenReturn(RetentionSweep.PURGE_BATCH_SIZE);
 
@@ -361,7 +362,7 @@ class RetentionSweepTest {
         @Test
         @DisplayName("keeps what earlier batches removed when a later one fails, and sweeps on")
         void keepsWhatEarlierBatchesRemovedWhenALaterOneFailsAndSweepsOn() {
-            when(processedEvents.deleteMarkersProcessedBefore(Mockito.any(), Mockito.anyInt()))
+            when(statementTransactions.deleteProcessedBefore(Mockito.anyString(), Mockito.anyInt()))
                     .thenReturn(RetentionSweep.PURGE_BATCH_SIZE)
                     .thenThrow(new InvalidDataAccessApiUsageException("no permission"));
 
@@ -369,9 +370,7 @@ class RetentionSweepTest {
                     .as("a pass whose first table fails on its second batch")
                     .doesNotThrowAnyException();
 
-            verify(processedEvents, Mockito.times(2))
-                    .deleteMarkersProcessedBefore(Mockito.any(), Mockito.anyInt());
-            verify(statementTransactions)
+            verify(statementTransactions, Mockito.times(2))
                     .deleteProcessedBefore(Mockito.anyString(), Mockito.anyInt());
             verify(notificationLog).deleteRenderedBefore(Mockito.any(), Mockito.anyInt());
         }
@@ -398,8 +397,6 @@ class RetentionSweepTest {
                                 "customer.context-changed", "carddemo.dead-letter", ".DLT")),
                 new NotificationProperties.Consumer(
                         new NotificationProperties.Consumer.Retry(3, 1000L)),
-                new NotificationProperties.ProcessedEvent(MARKER_RETENTION_HOURS,
-                        BROKER_RETENTION_HOURS),
                 new NotificationProperties.History(STATEMENT_RETENTION_DAYS, LOG_RETENTION_DAYS,
                         3_600_000L));
     }

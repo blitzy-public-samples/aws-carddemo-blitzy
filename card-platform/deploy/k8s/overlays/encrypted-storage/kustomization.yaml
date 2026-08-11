@@ -1,0 +1,60 @@
+# The platform, with both persistent claims bound to an encrypted storage class.
+#
+# What a security review found. The base folder holds two PersistentVolumeClaims and neither names a
+# storage class, so a cluster binds each with whatever class it has. That is what makes the
+# documented local demo work on kind, minikube and Docker Desktop alike with no edit, and it is not
+# good enough for a deployment holding anything other than the synthetic fixtures. One volume holds
+# all six schemas, including fifty full card numbers, fifty card verification values and the only
+# table on this platform describing an identifiable person. The other holds every event the platform
+# published, including the ten cardholder fields CustomerContextChanged carries. A copied volume, an
+# unprotected snapshot or a lost disk bypasses every control above them.
+#
+# What this file declares. It applies the whole base and patches both claims to name the class below. The
+# resource list is the base folder rather than a second copy of the eleven manifests, so this file
+# cannot go stale when a manifest is added or renamed.
+#
+# What an operator does with it. Two steps, in this order, and the first is not optional.
+#
+#   1. Provide a StorageClass named below whose provisioner encrypts at rest, or change the name
+#      below to a class your cluster already has. On Amazon Elastic Kubernetes Service that is an
+#      ebs.csi.aws.com class with parameters.encrypted: "true" and a customer-managed key in
+#      parameters.kmsKeyId. On Google Kubernetes Engine and Azure Kubernetes Service the equivalent
+#      classes encrypt by default; naming one of them here is the whole edit.
+#
+#   2. Apply this overlay instead of the base:
+#
+#        kubectl apply -f card-platform/deploy/k8s/00-namespace.yaml
+#        kubectl apply -f <your filled-in copy of 31-secret.example.yaml>
+#        kubectl apply -k card-platform/deploy/k8s/overlays/encrypted-storage
+#
+# A claim's storage class cannot change after it is bound, so this has to happen before the first
+# apply of the base. A cluster that already bound the claims has to have them deleted, which deletes
+# the data, and card-platform/deploy/k8s/README.md carries that sequence under "Encryption at rest".
+#
+# What it does not do. It does not encrypt a backup, own a key, or rotate one. Volume encryption
+# protects a volume at rest and nothing else: a logical dump taken with pg_dump is plaintext wherever
+# it is written. card-platform/deploy/k8s/README.md states the backup and restore obligations, and
+# card-platform/docs/suggested-next-tasks.md carries the work this platform does not do.
+#
+# Rationale, alternatives considered and accepted risks: card-platform/docs/decision-log.md, under
+# "Encryption at rest is a declared requirement and a one-command overlay".
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: carddemo
+
+# The base folder, which carries its own kustomization: the eleven manifests minus the Secret
+# template, and the six platform image references.
+resources:
+  - ../..
+
+# Both claims, patched by kind rather than by name, so a third claim added to the base is encrypted
+# by this overlay without an edit here.
+patches:
+  - target:
+      kind: PersistentVolumeClaim
+    patch: |-
+      - op: add
+        path: /spec/storageClassName
+        value: carddemo-encrypted

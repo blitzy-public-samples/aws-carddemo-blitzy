@@ -10,6 +10,7 @@ import jakarta.servlet.FilterChain;
 import java.io.IOException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.mock.web.MockFilterChain;
 import org.springframework.mock.web.MockHttpServletRequest;
@@ -28,6 +29,14 @@ class RequestBodyCeilingFilterTest {
 
     /** A small ceiling, so a test body can exceed it without being large. */
     private static final long CEILING = 512;
+
+    /**
+     * A credential of the form HTTP Basic sends. Its content is never inspected here.
+     *
+     * <p>The filter runs ahead of the security chain and stands aside for a request carrying
+     * no {@code Authorization} header, so a test measuring a refusal has to present one.
+     */
+    private static final String BASIC_CREDENTIAL = "Basic dXNlcjA6cGFzc3dvcmQ=";
 
     /** The class under test, holding the small ceiling. */
     private final RequestBodyCeilingFilter filter = new RequestBodyCeilingFilter(CEILING);
@@ -93,6 +102,30 @@ class RequestBodyCeilingFilterTest {
     }
 
     /**
+     * Asserts an oversized body carrying no credential reaches the chain rather than being refused.
+     *
+     * <p>This is the property that makes the rung safe. Such a request is refused by the security
+     * chain with 401 and no password to verify, so nothing is spent and the answer a caller sees is
+     * the one this route gave while the filter ran after the chain. Answering 413 here would tell an
+     * unauthenticated caller the size this route accepts.
+     */
+    @Test
+    @DisplayName("an oversized body with no credential reaches the chain, which answers 401")
+    void anOversizedBodyWithNoCredentialReachesTheChain() throws Exception {
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        MockFilterChain chain = new MockFilterChain();
+        MockHttpServletRequest request = new MockHttpServletRequest("POST", "/authorizations");
+        request.setContent(new byte[(int) CEILING + 1]);
+
+        filter.doFilter(request, response, chain);
+
+        assertEquals(HttpStatus.OK.value(), response.getStatus(),
+                "the chain answers an unauthenticated request, not this filter");
+        assertEquals(request, chain.getRequest(),
+                "the request has to reach the chain so the chain can answer 401");
+    }
+
+    /**
      * Builds one request declaring a body of the length given.
      *
      * @param length the value of {@code Content-Length}
@@ -101,6 +134,7 @@ class RequestBodyCeilingFilterTest {
     private static MockHttpServletRequest requestOfLength(int length) {
         MockHttpServletRequest request = new MockHttpServletRequest("POST", "/authorizations");
         request.setContent(new byte[length]);
+        request.addHeader(HttpHeaders.AUTHORIZATION, BASIC_CREDENTIAL);
         return request;
     }
 }

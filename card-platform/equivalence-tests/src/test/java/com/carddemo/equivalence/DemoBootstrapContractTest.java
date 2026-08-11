@@ -318,13 +318,14 @@ class DemoBootstrapContractTest {
          * A published key is replaced, and a tightened default is named rather than changed.
          *
          * <p>Reconciling names closed one half of the upgrade problem. This is the other half, and
-         * both halves were found the same way: the delivered workspace would not start. Two values
-         * that were usable when they were written had stopped being usable. {@code
+         * both halves were found the same way: the delivered workspace would not start. {@code
          * CARD_TOKEN_SECRET} held the demo key this repository publishes, which the authorization
-         * and card services now refuse outright, and {@code PROCESSED_EVENT_RETENTION_HOURS} held a
-         * week, which is no longer twice the broker window the marker has to outlive. Neither is a
-         * missing key and neither is a placeholder, so every check the script had passed while four
-         * of six services could not start.
+         * and card services now refuse outright. It is not a missing key and not a placeholder, so
+         * every check the script had passed while four of six services could not start.
+         *
+         * <p>The overridden-setting half is exercised with {@code OUTBOX_PUBLISHED_RETENTION_HOURS},
+         * a plain numeric override no service refuses. It stands for any tightened default: the
+         * report names both values, and the file keeps the one this machine set.
          *
          * <p>The two are handled differently on purpose. A published key is nobody's secret and no
          * running deployment can hold it, so it is regenerated. An overridden setting may be a
@@ -340,8 +341,8 @@ class DemoBootstrapContractTest {
             String prior = priorVersionOf(example, Set.of())
                     .replaceAll("(?m)^CARD_TOKEN_SECRET=.*$",
                             "CARD_TOKEN_SECRET=" + publishedKey)
-                    .replaceAll("(?m)^PROCESSED_EVENT_RETENTION_HOURS=.*$",
-                            "PROCESSED_EVENT_RETENTION_HOURS=168");
+                    .replaceAll("(?m)^OUTBOX_PUBLISHED_RETENTION_HOURS=.*$",
+                            "OUTBOX_PUBLISHED_RETENTION_HOURS=336");
 
             Files.createDirectory(workspace.resolve("scripts"));
             Files.copy(platformDirectory().resolve(GENERATE_ENV), workspace.resolve(GENERATE_ENV));
@@ -378,10 +379,10 @@ class DemoBootstrapContractTest {
                                 + " is a workspace that reports success and cannot start.");
             }
 
-            assertEquals("168", after.get("PROCESSED_EVENT_RETENTION_HOURS"),
+            assertEquals("336", after.get("OUTBOX_PUBLISHED_RETENTION_HOURS"),
                     "an overridden setting stays as this machine set it");
             assertTrue(output.contains(
-                            "PROCESSED_EVENT_RETENTION_HOURS is 168 here and 720 in the example"),
+                            "OUTBOX_PUBLISHED_RETENTION_HOURS is 336 here and 168 in the example"),
                     "and is reported with both values, which is what turns a start-up refusal into"
                             + " one actionable line:\n" + output);
         }

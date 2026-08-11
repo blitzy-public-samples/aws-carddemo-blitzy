@@ -14,9 +14,9 @@ Every event carries one flat envelope beside its payload. A consumer can route, 
 | `occurredAt` | Producer timestamp |
 | `aggregateId` | Kafka message key, the 11-digit account identifier on every event a producer writes |
 
-A reason-0100 decline follows a cross-reference read that resolved no account, and it still names one. Which read resolved an identifier is not which subject a decision applies to. A synchronous caller declares its own account identifier at `app/cbl/COTRN02C.cbl:L196-L209`, and that is the subject where the card resolves no row.
+The key always comes from a stored row. A reason-0100 decline follows a cross-reference read that resolved no account, so it resolves no subject either, and an account a caller declared in the request body is not one. Such a call is refused before a decision with the text of `app/cbl/COTRN02C.cbl:L625-L626`, drawing no identifier and publishing nothing. A security review found the earlier behaviour, and `docs/decision-log.md` records what it found.
 
-The decline publishes one event under `transaction-declined-v3`, keyed on that account, beside one `unresolved_card_attempt` row and one `authorization_decision` row naming the event, all in one transaction. A call that establishes neither a resolvable card nor an account is refused before a decision with the text of `app/cbl/COTRN02C.cbl:L625-L626`, so it publishes nothing. Every event a producer writes therefore carries the 11-digit account identifier as its `aggregateId` and its Kafka key. `ck_outbox_event_aggregate_id` still admits the 16-character transaction identifier, because rows written before `V19__unresolved_decline_names_its_account.sql` carry it.
+Reasons 0101, 0102 and 0103 each publish one event under `transaction-declined-v3`, keyed on the account the cross-reference resolved, beside one `authorization_decision` row naming the event, both in one transaction. Every event a producer writes therefore carries the 11-digit account identifier as its `aggregateId` and its Kafka key. `ck_outbox_event_aggregate_id` still admits the 16-character transaction identifier, because rows written before `V19__unresolved_decline_names_its_account.sql` carry it.
 
 ## Payload conventions
 
@@ -28,7 +28,15 @@ Each consuming service reads those three partitions on three threads, from `spri
 
 Card-number masking is an addition, because no masking exists anywhere in the source. The order matters. The full 16-character card number performs the cross-reference lookup first, exactly as the source does, and masking happens only at the serialization boundary. Masking before that lookup would break every authorization. Events, responses, logs, and notification keys therefore carry only the masked display form or the irreversible 64-character card token.
 
+A card token travels in two events and is stored by three services, and only the card service holds a card number. `TransactionAuthorized` and `TransactionPosted` carry `cardToken`, and the notification read model is keyed on it. A card-token key change therefore renames every card in a store that cannot re-derive its own rows. The card service refuses to rewrite a token it derived unless an operator states the rotation, and each rewrite leaves a mapping row the other stores are re-keyed from. `card-platform/services/card-service/README.md` carries that procedure and its rollback.
+
 The card verification value at `app/cpy/CVACT02Y.cpy:L7` is three numeric digits, and only the card service stores it. No event, no log entry, and no application programming interface response carries it. `CardholderDataExposureTest` asserts that, so the guarantee is tested rather than merely claimed.
+
+An event is bounded at 8,192 bytes, from `EventWireBounds.MAX_EVENT_BYTES`. A payload above that is refused before its outbox row is written, so the whole publish rolls back and nothing reaches a topic.
+
+Four transport ceilings sit above that envelope, each above the one below. A producer request is bounded at 16,384 bytes and a broker record at 32,768. A partition fetch is bounded at 65,536 bytes and a whole fetch at 262,144.
+
+The gaps carry record overhead, compression and batching, so an event inside the envelope always fits and one far outside it is refused twice. `KafkaDeliveryGuaranteeContractTest` reads all five figures out of the shipped files and holds the ladder in order.
 
 ## Topics and consumer groups
 
@@ -87,11 +95,11 @@ A declined request is expected traffic, not an infrastructure error. `app/cbl/CB
 | `0102` | `OVERLIMIT TRANSACTION` | `app/cbl/CBTRN02C.cbl:L410-L412` |
 | `0103` | `TRANSACTION RECEIVED AFTER ACCT EXPIRATION` | `app/cbl/CBTRN02C.cbl:L417-L419` |
 
-Version 1 carries the account identifier and the reason. Version 2 was released for reason 0100 alone, omitting the account the cross-reference read had not resolved, and no producer writes it any more. Version 3 carries version 1's properties plus the nine descriptive values of the daily transaction record, at the same widths `transaction-posted-v2` uses, so one parser reads both. Every decline publishes under it.
+Version 1 carries the account identifier and the reason. Version 2 was released for reason 0100 alone, omitting the account the cross-reference read had not resolved, and no producer writes it any more. Version 3 carries version 1's properties plus the nine descriptive values of the daily transaction record, at the same widths `transaction-posted-v2` uses, so one parser reads both. Every published decline carries reason 0101, 0102 or 0103 under it, because reason 0100 resolves no subject and refuses the call instead.
 
 Version 3 exists because of what the source writes on this path. `2500-WRITE-REJECT-REC` at `app/cbl/CBTRN02C.cbl:L446-L465` writes 430 bytes: `REJECT-TRAN-DATA PIC X(350)`, which is the whole daily record, followed by an 80-byte trailer holding the reason code and its text. A consumer reading only the reason code cannot reproduce those 350 bytes, and the values are not recoverable from any table, because a refused transaction posted nowhere.
 
-`ledger-reject` is the consumer group that turns each refusal into one row of `rejected_transaction`. That row and the marker recording the event commit in one local transaction, so neither can exist without the other. The ledger publishes nothing on this topic: the authorization service is the sole writer of the decision, and a second decline for one refusal would put two differently shaped events for it on a topic the ledger reads.
+`ledger-reject` is the consumer group that turns each published decline into one row of `rejected_transaction`. That row and the marker recording the event commit in one local transaction, so neither can exist without the other. The ledger publishes nothing on this topic: the authorization service is the sole writer of the decision, and a second decline for one refusal would put two differently shaped events for it on a topic the ledger reads.
 
 A decline arriving at version 1 or 2 is acknowledged with no row written, because neither version carries the nine values the 350 bytes need and inventing them would break equivalence. Only a record published before version 3 can arrive that way. All 38 reject records the fixture `app/data/ASCII/dailytran.txt` produces carry reason `0102`, and every one of the four reasons travels at version 3 and earns its row.
 
@@ -248,6 +256,7 @@ sequenceDiagram
 - Arrows through Kafka are asynchronous and occur after the authorization response.
 - Each database response marked `Commit` closes one local transaction.
 - A declined authorization publishes only `TransactionDeclined`; no consumer receives an authorized event. The ledger consumes that decline under `ledger-reject` and writes one reject row.
+- A card resolving no cross-reference row is refused before a decision, so it reaches neither the database nor Kafka.
 - Ledger, fraud, notification, and account share no direct call edge.
 - Three arrows carry `TransactionAuthorized` out of Kafka, one per independent consumer group.
 - Two arrows carry `TransactionPosted` out of Kafka, to notification and to account.
@@ -335,7 +344,9 @@ Every claim query returns the due head row of each account, so recording results
 
 One duplicate path is not a platform choice. A broker that has already appended a record can lose the acknowledgement. The producer then reports a failure the log does not share, and the next attempt appends a second copy. No producer setting removes that, and `enable.idempotence` does not either, because the two copies come from two `send` calls carrying their own sequence numbers. Both copies carry the same `eventId`, so every consumer's `processed_event` marker suppresses the second one.
 
-A test asserts the timing relationship, so moving one value without the other fails the build. The [decision log](decision-log.md) records the choice with its measurements, and [suggested next tasks](suggested-next-tasks.md) carries the same relationship for the account service.
+Nothing expires a claim. A horizon once deleted one 720 hours after it was written, checked at start-up against twice the broker's own log retention. A security review found that the relationship bounds only how long the broker can redeliver. An archived, restored or deliberately replayed record arrives from further away, and every effect a claim guards outlives that window. A claim and the effect it guards commit in one local transaction in one database, so a consistent backup and a consistent restore carry both or neither.
+
+Each service proves it. A claim stamped two thousand days back still refuses its redelivery, and no store on this platform exposes a way to remove one. The [decision log](decision-log.md) records what was weighed, and [suggested next tasks](suggested-next-tasks.md) carries the work of bounding what a permanent claim costs.
 
 Each consumer claims `processed_event` by the pair `(event_id, consumed_topic)`, performs its work, and commits the marker with the effect. A second delivery of that event on the same topic finds the marker and changes nothing.
 
@@ -437,9 +448,22 @@ Notification tags by what failed, because it validates, persists, and renders. T
 
 Publishing validates the exact pair of `eventType` and `schemaVersion`, so malformed output never reaches a business topic. Consumption validates before domain code changes a table.
 
+One boundary applies the publish-side check. `PublishGate.checkedJsonOf` writes the payload, measures it, and returns the text every producer then stores. Eight things are measured:
+
+- the argument is a record whose name is a registered event type;
+- that type belongs on the topic it is checked against;
+- no property of the written document is forbidden;
+- no screened value carries a card number, a government identifier or a verification code;
+- the document carries no `extensions` object, which only a consumer reads;
+- the schema its contract version selects accepts it;
+- the bytes fit the platform ceiling, which is the width of the outbox column;
+- the version it declares is one a producer may still write.
+
+A refusal arrives inside the caller's transaction, so the business change rolls back with it. Before this gate each writer measured the schema alone. A card number typed into a description therefore committed, reached its topic, and was refused there by the consume side, which approved a transaction that could never post.
+
 The contract library governs eight business event types and the dead-letter envelope across fourteen schema documents. `TransactionAuthorized`, `TransactionPosted` and `CardUpdated` each retain versions 1 and 2, and `TransactionDeclined` retains versions 1, 2 and 3. Every schema is a JSON Schema Draft 2020-12 document whose version sits in its filename, as in `transaction-authorized-v2.json`. `SchemaBackwardCompatibilityTest` measures every adjacent pair of versions and fails the build where a later version drops, retypes or narrows a property its predecessor required, so a rising version number cannot break a consumer holding the earlier one.
 
-One caution about that numbering. For `TransactionDeclined` the version axis carries two orthogonal facts rather than one: version 2 is the account-less variant released for reason 0100 and is not a superset of version 1, while version 3 is version 1 plus the nine descriptive values. Version 2 is retained rather than published, so it is a version a consumer may still receive from the topic and no producer writes. A reader who assumes each version enriches the last will be wrong about version 2, and each document's own `$comment` says which fact it carries.
+One caution about that numbering. For `TransactionDeclined` the version axis carries two orthogonal facts rather than one: version 2 is the account-less variant once released for reason 0100 and is not a superset of version 1, while version 3 is version 1 plus the nine descriptive values. Version 2 is retained rather than published, so it is a version a consumer may still receive from the topic and no producer writes. A reader who assumes each version enriches the last will be wrong about version 2, and each document's own `$comment` says which fact it carries.
 
 Compatibility tests enforce additive evolution, and they fail the build rather than warn. An older payload stays valid under the document that first governed it, so a new consumer can be added without breaking an existing one.
 

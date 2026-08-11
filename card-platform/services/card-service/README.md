@@ -100,7 +100,7 @@ A request body is read strictly. `config/RequestJsonStrictnessConfig` refuses a 
 
 A refusal answers 429 with `Retry-After` and counts `carddemo.card.requests.throttled`, tagged with the stage that refused: `authentication`, `source`, `identity`, `write` or `concurrency`. The five ceilings read `API_RATE_WINDOW_SECONDS`, `API_RATE_REQUESTS_PER_WINDOW`, `API_RATE_WRITE_REQUESTS_PER_WINDOW`, `API_RATE_AUTHENTICATION_FAILURES_PER_WINDOW` and `API_RATE_CONCURRENT_REQUESTS` from [`.env.example`](../../.env.example). The management base path is exempt, because a throttled probe reads as a failed container.
 
-Both filters count in this process, so several replicas bound each replica rather than the service as a whole, and the source address is the one the container resolves rather than a forwarding header a caller could write. A deployment behind a proxy sets `SERVER_FORWARD_HEADERS_STRATEGY=framework` so the container resolves the client address and the client-facing host. Both residual limits are recorded in [suggested next tasks](../../docs/suggested-next-tasks.md), and the reasoning behind the two controls is in the [Decision Log](../../docs/decision-log.md).
+Both filters count in this process, so several replicas bound each replica rather than the service as a whole, and the source address is the one the container resolves rather than a forwarding header a caller could write. A deployment behind a proxy activates the `trusted-proxy` profile, which trusts those headers from the proxy's own addresses alone. Both residual limits are recorded in [suggested next tasks](../../docs/suggested-next-tasks.md), and the reasoning behind the two controls is in the [Decision Log](../../docs/decision-log.md).
 
 <br/>
 
@@ -145,6 +145,7 @@ The private schema is `card_service`, inside this service's own database `cardde
 | :--- | :--- |
 | `card` | `app/cpy/CVACT02Y.cpy` L5-L10: `CARD-NUM X(16)`, `CARD-ACCT-ID 9(11)`, `CARD-CVV-CD 9(03)`, `CARD-EMBOSSED-NAME X(50)`, `CARD-EXPIRAION-DATE X(10)`, `CARD-ACTIVE-STATUS X(01)`. The 59-byte `FILLER` at L11 is dropped. Primary key from `app/jcl/CARDFILE.jcl:L54`; non-unique secondary index on `account_id` from `:L85-L87` |
 | `card_xref` copy | `app/cpy/CVACT03Y.cpy` L5-L7: `XREF-CARD-NUM X(16)`, `XREF-CUST-ID 9(09)`, `XREF-ACCT-ID 9(11)`. The 14-byte `FILLER` at L8 is dropped. **Seeded from the fixture and reconciled on update**: this module registers no listener, and `CardCrossReferenceReconciler` reads and corrects the row of every card an update commits |
+| `card_token_rotation`, `card_token_rotation_mapping` | New abstractions, with no source ancestor. `V10__card_token_version_and_rotation.sql` creates both: one audit row per run that moved a card token, and one row per re-keyed card carrying the token it held beside the token it holds now. Neither holds a card number, a card verification value or key material |
 | `outbox_event`, `processed_event` | New abstractions, with no source ancestor |
 
 `card.card_token` is additive and derived rather than stored from a source field. `CardEntity` applies `PanMasker.cardToken` in its constructor to every row this service writes, and `CardTokenReconciler` brings a row loaded by the seed onto the configured key at start-up. There is no setter for the column: a row this service builds is correct by construction, and a row it did not build is corrected by a statement.
@@ -221,13 +222,117 @@ One citation in the plan needs correcting, and Rule 1 treats a silent deviation 
 
 **The card-token key is required and this repository ships no deployable runtime key**. `CARD_TOKEN_SECRET` is a `REPLACE` placeholder in `card-platform/.env.example` and in `deploy/k8s/31-secret.example.yaml`. This service refuses to start while it is absent, blank, still a placeholder, shorter than 32 characters, or equal to either card-token key this repository has published. Generate one with `openssl rand -base64 48 | tr -d '/+='`. Only this service and the authorization service read it, so the Kubernetes Secret that carries it is pulled by those two Deployments alone.
 
-**The fifty seeded card tokens are a bootstrap, not a live identity**. `V2__seed.sql` carries a literal token on each of its fifty rows, derived under the build-scope key in `card-platform/pom.xml`. That is what lets a test compare a checked-in literal against the derivation. `CardTokenReconciler` re-derives every row under the configured key before this service accepts traffic, in pages of 500 and capped at 200,000 rows, and rewrites nothing on a later start. Raising `CARD_TOKEN_VERSION` and restarting applies a rollover the same way. A token something else already stored — a `statement_transaction` row, an `authorization_decision` row, a granted `SCOPE_CARD` authority — does not move with it.
+**The fifty seeded card tokens are a bootstrap, not a live identity**. `V2__seed.sql` carries a literal token on each of its fifty rows, derived under the build-scope key in `card-platform/pom.xml`. That is what lets a test compare a checked-in literal against the derivation. Those rows carry `card_token_provenance = 'SEED'`, and `CardTokenReconciler` re-derives every one under the configured key before this service accepts traffic, in pages of 500 and capped at 200,000 rows. It rewrites nothing on a later start, and it sets the provenance to `DERIVED` on every row it touches.
+
+**Rewriting a token this deployment derived is a rotation, and it refuses to happen by accident.** A row of `DERIVED` provenance whose token no longer matches the derivation means the key or the version moved under it. Three other places hold the same token and hold no card number, so none can derive its own replacement. They are `statement_transaction` and `notification_log` in the notification service, `authorization_decision` in the authorization service, and a granted `SCOPE_CARD` authority. `CardTokenReconciler` therefore refuses to start unless `CARD_TOKEN_ROTATION_ENABLED` says an operator asked for it. The section below is the procedure.
 
 **A state-changing call needs one extra header.** A `curl` that worked before this control answers 403 until it adds `-H 'X-CardDemo-Request: 1'`. `config/CrossSiteRequestFilter` requires the header on every `POST`, `PUT`, `PATCH` and `DELETE`, because HTTP Basic is a credential a browser attaches without being asked and an HTML form cannot set a header. Reads need nothing. The name is configurable through `API_CROSS_SITE_HEADER` and it is not a secret: the value is never checked, only its presence.
 
 **A burst answers 429 rather than being served.** A load generator, a retry loop, or a test that hammers one address reaches `config/RequestRateCeilingFilter` and answers 429 with `Retry-After`. The blanket ceiling is 600 requests a minute per address and per identity, writes are 120, and 20 failed authentications from one address close the rest of that minute. Raise `API_RATE_*` for a load run rather than removing the filter, and read the `stage` tag on `carddemo.card.requests.throttled` to see which ceiling refused.
 
 <br/>
+
+## Rotating the card-token key
+
+A card token is the platform identity of one card, and four places hold one. This service holds `card.card_token`. The notification service holds `statement_transaction.card_token` and `notification_log.card_token`. The authorization service holds `authorization_decision.card_token`. An operator holds one inside every granted `SCOPE_CARD` authority.
+
+Only this service holds a card number, so only this service can derive a replacement token. The other three are re-keyed from a mapping this service writes while it rotates. That mapping is the whole of what makes a rotation possible, and reading it in the other direction is the rollback.
+
+**What a rotation needs before it starts.** The key the stored tokens were taken under, the key they are moving to, and the operator's statement that the move is intended. `CARD_TOKEN_PREVIOUS_SECRET` carries the first, `CARD_TOKEN_SECRET` the second, and `CARD_TOKEN_ROTATION_ENABLED` the third. Raising `CARD_TOKEN_VERSION` is optional; where it is raised, `CARD_TOKEN_PREVIOUS_VERSION` carries the earlier value. Nothing else changes, and no other service is restarted at this step.
+
+```bash
+# 1. Generate the key this deployment is moving to, and keep the one it is leaving.
+NEW_KEY="$(openssl rand -base64 48 | tr -d '/+=')"
+
+# 2. Point the card service at both, and say that the move is intended. In Compose these
+#    three go into .env; in Kubernetes the first goes into carddemo-card-token-secret and
+#    the other two into carddemo-config.
+CARD_TOKEN_PREVIOUS_SECRET="<the key in force now>"
+CARD_TOKEN_SECRET="$NEW_KEY"
+CARD_TOKEN_ROTATION_ENABLED=true
+
+# 3. Restart this service alone. It reads every card row in pages of 500, rewrites each
+#    token, records one card_token_rotation row and one card_token_rotation_mapping row
+#    per card, and logs the rotation identifier at WARN.
+docker compose up -d --build --no-deps --wait card-service
+docker compose logs card-service | grep 'Rotated'
+```
+
+**What the run leaves behind.** One row in `card_token_rotation` naming the window, the two versions, the counts and the process identity. One row in `card_token_rotation_mapping` per card, carrying the token the card carried and the token it carries now. Neither table holds a card number, a card verification value or key material. A run that only brought seeded rows onto the deployment key writes neither, because that is a bootstrap and moves nothing another store holds.
+
+**The three re-key statements.** Export the mapping of that run, then apply it to each store that holds a token. Each statement is idempotent: it matches only rows still carrying a previous token, so running it twice changes nothing the second time.
+
+```bash
+# Export one run's mapping. ROTATION is the identifier the WARN line reported.
+docker compose exec -T postgres psql -U postgres -d carddemo_card -c \
+  "\\copy (SELECT previous_card_token, card_token FROM card_service.card_token_rotation_mapping \
+            WHERE rotation_id = '$ROTATION' ORDER BY previous_card_token) \
+   TO STDOUT WITH CSV HEADER" > /tmp/card-token-rotation.csv
+```
+
+```sql
+-- Load the export into a temporary table in each target database, then:
+
+-- 1. The notification read model. card_token is part of the primary key, so this moves the key.
+UPDATE statement_transaction s SET card_token = m.card_token
+  FROM rotation_mapping m WHERE s.card_token = m.previous_card_token;
+
+-- 2. The notification render log.
+UPDATE notification_log l SET card_token = m.card_token
+  FROM rotation_mapping m WHERE l.card_token = m.previous_card_token;
+
+-- 3. The authorization decision diagnostic, and the version beside it.
+UPDATE authorization_decision d SET card_token = m.card_token, card_token_version = '<new version>'
+  FROM rotation_mapping m WHERE d.card_token = m.previous_card_token;
+```
+
+**Reissuing the authorities.** A `SCOPE_CARD_<token>` entry in `USER_SCOPES` names a token rather than a card, so it is replaced from the same mapping. Find the previous token in the export, take the current token beside it, and rewrite the entry. `.env.example` carries the command that derives a token from a card number if the card is at hand instead.
+
+**Closing the rotation.** Unset `CARD_TOKEN_ROTATION_ENABLED` and `CARD_TOKEN_PREVIOUS_SECRET`, then restart this service. It finds every stored token equal to the derivation, rewrites nothing, and logs at debug. Leaving the previous key configured leaves a key in the environment that nothing needs, and leaving the statement set means the next unexplained drift is rewritten without a refusal.
+
+**Rolling back.** Put the key that was in force back as `CARD_TOKEN_SECRET`, set the key you rotated to as `CARD_TOKEN_PREVIOUS_SECRET`, and restart with `CARD_TOKEN_ROTATION_ENABLED=true`. This service writes a second rotation whose mapping is the first one reversed. Apply that mapping the same way, and every store returns to the value it held. The audit table keeps both runs, so the sequence stays readable.
+
+**What is not automated, deliberately.** The three statements and the authority reissue are operator steps rather than a cross-service job. This platform gives no service a write path into another service's schema, and a rotation job that had one would be the first. `card-platform/docs/suggested-next-tasks.md` carries the automation. It also names the alternative the notification read model already permits: discard the rows and replay `transaction.posted`, which rebuilds them under whatever key is in force.
+
+<br/>
+
+## Stored card verification value
+
+`CARD-CVV-CD` is `PIC 9(03)` at `app/cpy/CVACT02Y.cpy:L7`, and the source stores it in the clear. Column `card_verification_value` on `card` holds it, in `CHAR(3)`, seeded into all fifty rows by `V2__seed.sql`. No delivered business rule reads it.
+
+A security review asked for the column, its mapping, its seed values and the test that preserves them to be removed by a forward migration. Removal is not available to this engagement. Agent Action Plan section 0.4.1 requires this service to store the value. Section 0.6.4 states that it is persisted because the card record defines it and is never emitted. Section 0.2.2 places payment-card industry controls beyond the one documented masking deviation outside the scope.
+
+The review's second route is the one taken: the column stays under a formal exception, and `V11__card_verification_value_exception.sql` is that exception on the record.
+
+**The four controls the exception carries.** Each one is verified by something rather than promised.
+
+| Control | What it is | What holds it |
+| :--- | :--- | :--- |
+| Encryption at rest | The volume holding this schema is encrypted, so a copied disk or an unprotected snapshot discloses nothing | Both claims in `card-platform/deploy/k8s` declare the requirement, `deploy/k8s/overlays/encrypted-storage` binds an encrypted class in one command, and `deploy/k8s/README.md` carries key ownership and the restore obligation |
+| Minimal access | Nothing reads the value. `entity/CardEntity` declares no accessor, carries `@JsonIgnore` on the field, and prints a withheld marker in `toString`. No query, request body, response body, event schema or configuration file names the column | `CardholderDataExposureTest` reads every exit reflectively, so an accessor added later fails the build |
+| Audit | Both statements above are asserted rather than described, on each side of the service boundary | `CardholderDataExposureTest` inside this service, `SubjectDataGovernanceContractTest` in `equivalence-tests` for the published exception, the reader inventory and the procedure below |
+| Destruction | A published procedure a deployment runs when it answers the open question yes | The procedure below, held to the delivered tree by `SubjectDataGovernanceContractTest` |
+
+**The open question.** `card-platform/docs/business-rule-flags.md` entry D4 carries it: whether this platform keeps a value the source keeps and nothing here uses. The exception is open until a project owner answers it, and it carries no expiry date, because a date this engagement invented would be a date nobody agreed to.
+
+**The destruction procedure.** One migration and four edits. Run them in one change, because the build holds them to each other.
+
+```sql
+-- 1. The migration. services/card-service/src/main/resources/db/migration/
+--    V12__card_verification_value_dropped.sql
+ALTER TABLE card DROP CONSTRAINT ck_card_verification_value_digits;
+ALTER TABLE card DROP COLUMN card_verification_value;
+-- Then restate COMMENT ON TABLE card without the exception paragraph, and state that the value
+-- was dropped on a named date by a named decision. Do not edit V1, V2 or V11: Flyway compares a
+-- checksum on every start, so an edit to an applied file refuses to start against an existing volume.
+```
+
+1. **`entity/CardEntity`.** Remove the field, its `@JsonIgnore`, its `@Column`, the constructor parameter, the width and digit guards over it, and its `toString` component. `applyUpdate` never touched it, so no update path changes.
+2. **The three card-service tests that read it.** `entity/CardholderDataExposureTest` loses the four accessor and rendering tests and keeps the schema and contract tests. `entity/CardEntityMappingTest` drops the column from its mapped set and lowers its two counts. `domain/CardChangeDetectionTest` drops it from its column list.
+3. **The four equivalence contracts that name it.** `EntitySchemaMappingContractTest` lowers `MAPPED_COLUMN_COUNT` by one. `CardSeedEquivalenceTest` stops comparing the column against `app/data/ASCII/carddata.txt`, which is the one parity assertion this removal gives up. `SubjectDataGovernanceContractTest` moves from holding the exception to holding the removal. `ApiSurfaceSecurityContractTest` keeps its assertion that no response names the value, which stays true.
+4. **The documents.** `docs/data-model.md` loses the column from the card table and the exception from the subject-data section. `docs/business-rule-flags.md` entry D4 records the answer. `docs/suggested-next-tasks.md` drops the task. This section becomes the record of a value that used to be stored, and `openapi.yaml` loses the comment at line 37.
+
+**What the procedure does not reach.** The fifty literals in `V2__seed.sql` stay in the source tree, because editing an applied migration stops Flyway. They are the fixture values `app/data/ASCII/carddata.txt` already carries in the clear in the read-only source repository, so they are nobody's live authentication data. A deployment that needs them gone from its own history rewrites that history, which is a repository decision rather than a platform one.
 
 ## Deliberate non-additions
 
@@ -372,7 +477,7 @@ the card file at all.
 
 The Compose file sets these properties, and each one is overridable: `SPRING_DATASOURCE_URL`, `SPRING_DATASOURCE_USERNAME`, `SPRING_DATASOURCE_PASSWORD`, `SPRING_JPA_PROPERTIES_HIBERNATE_DEFAULT_SCHEMA`, `SPRING_FLYWAY_SCHEMAS`, and `SPRING_KAFKA_BOOTSTRAP_SERVERS`.
 
-Flyway owns schema creation and runs eight migrations on every start, in this order:
+Flyway owns schema creation and runs eleven migrations on every start, in this order:
 
 | Migration | What it does |
 | :--- | :--- |
@@ -384,6 +489,9 @@ Flyway owns schema creation and runs eight migrations on every start, in this or
 | `V6__outbox_correlation.sql` | Adds `outbox_event.correlation_id` and `outbox_event.causation_id`, so the card update the relay publishes names the request behind it |
 | `V7__outbox_aggregate_head_index.sql` | Adds `ix_outbox_event_aggregate_head`, the partial index the relay's aggregate-head claim reads. That claim answers with the due head row of each account, so two events of one account are never in flight at once and every consumer of the account's partition reads them in the order this service wrote them. Without the index the correlated check re-read an account's backlog for every candidate row |
 | `V8__card_status_locator.sql` | Restates the `ck_card_active_status` comment with the locator the status test actually occupies, `app/cbl/COCRDUPC.cbl:L861-L871`. `V5` cited a range past the end of that file, and a database that applied `V5` and then had its checksums repaired still holds the earlier text |
+| `V9__processed_event_claims_are_permanent.sql` | Withdraws the retention horizon of `processed_event` and drops `ix_processed_event_processed_at` with it. The 720-hour horizon bounded how long the broker could redeliver a record and said nothing about how long the cross-reference replica row a claim guards stand, so a record archived, restored or deliberately replayed after it was new to the guard and applied twice. Nothing removes a claim now, and nothing bounds the table's growth either — the partitioning work a deployment measuring real volumes would want is in `card-platform/docs/suggested-next-tasks.md` |
+| `V10__card_token_version_and_rotation.sql` | Records the card-token version and the provenance of every stored token, and adds the audit and mapping tables a rotation writes. `card_token_version` names the version the token was taken under, and `card_token_provenance` separates a seeded literal from a token this deployment derived, which is what lets `CardTokenReconciler` re-derive the first without being asked and refuse the second. `card_token_rotation` records one run and `card_token_rotation_mapping` records one previous-to-current token pair per card, which is what the notification read model, the authorization decision diagnostics and every granted `SCOPE_CARD` authority are re-keyed from. Neither table holds a card number or key material. |
+| `V11__card_verification_value_exception.sql` | Records the formal exception under which this schema keeps `card.card_verification_value`, and points the `card` and `card_xref` comments at the procedure that now exists. A security review asked for the column, its mapping and its fifty seeded values to be dropped; Agent Action Plan sections 0.4.1 and 0.6.4 require this service to store the value and never emit it, and 0.2.2 excludes the controls that would remove it, so the review's second route is taken. The four compensating controls are encryption at rest, no reader anywhere, build-enforced audit of both, and the destruction procedure in this README under "Stored card verification value". Declares no table, column, index or row |
 
 This module ships no `db/demo` overlay — the demo expiry extension exists only for the account and authorization schemas, because reason 0103 reads an account expiry and nothing reads a card expiry.
 

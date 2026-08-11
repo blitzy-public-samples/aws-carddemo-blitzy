@@ -21,9 +21,13 @@
 
 `authorization-service` owns `POST /authorizations`, the one synchronous Representational State Transfer (REST) endpoint a client calls in this platform. It resolves a card to an account, applies four decline rules in source order, and writes the outcome event through a transactional outbox. No other service writes the authorization decision.
 
-**Exactly one event per decision, and never more than one.** A request refused before the decision service is entered writes nothing at all. An unauthenticated or unauthorized call, a body the JSON reader cannot bind, and a field the bean constraints reject are answered from the web layer, and the outbox stays untouched. A request that reaches the rule chain writes one `TransactionAuthorized` on an approval, and one `TransactionDeclined` on a decline — reasons 0100, 0101, 0102 and 0103, every one of them keyed on the eleven-digit account the decision applies to.
+**Exactly one event per decision, and never more than one.** A request refused before the decision service is entered writes nothing at all. An unauthenticated or unauthorized call, a body the JSON reader cannot bind, and a field the bean constraints reject are answered from the web layer, and the outbox stays untouched. A request that reaches the rule chain writes one `TransactionAuthorized` on an approval, and one `TransactionDeclined` on a decline — reasons 0101, 0102 and 0103, every one of them keyed on the eleven-digit account the decision applies to. A card that resolves no cross-reference row is refused rather than decided, so it writes nothing either.
 
-Reason 0100 fires where the cross-reference read missed, so that read resolved no account identifier. It still names one: a synchronous caller declares its own account at `app/cbl/COTRN02C.cbl:L196-L209`, and that is the subject the decision applies to. All four reasons therefore travel under `schemas/transaction-declined-v3.json`, keyed on the eleven-digit account, carrying the nine descriptive values `app/cbl/CBTRN02C.cbl:L446-L465` copies into `REJECT-TRAN-DATA` so the ledger writes the 430-byte reject record for 0100 exactly as for 0101, 0102 and 0103. A call that establishes neither a resolvable card nor an account is refused before a decision with the text of `app/cbl/COTRN02C.cbl:L625-L626`, allocating no identifier and publishing nothing. The 0100 outcome is durable three times over, in one transaction: a row in `unresolved_card_attempt` carrying the masked card number, the reject code and the account, a row in `authorization_decision` naming its event, and the outbox row itself. The source writes no reject record on its own synchronous path, returning the screen message at `app/cbl/COTRN02C.cbl:L620-L636`, so the rows and the event are what this service adds, and the [decision log](../../docs/decision-log.md) records the alternatives weighed.
+Reason 0100 fires where the cross-reference read missed, and that read is the only thing that resolves the subject of a decision. A card resolving no row therefore resolves no subject, so the call is refused instead of decided. Every caller receives the source text of `app/cbl/COTRN02C.cbl:L625-L626`, after the entitlement check and before an identifier is drawn.
+
+The refused call allocates no sequence value, writes no row and publishes no event. An account named in the request body selects a card on the account branch of `app/cbl/COTRN02C.cbl:L196-L209` and takes no further part, because a value a caller supplies is not a resolved subject. `config/ObservabilityConfig.UNRESOLVED_CARD_STAGE` counts each refusal, which is the whole of what this service records about it. A security review found the earlier behaviour, and the [decision log](../../docs/decision-log.md) carries what it found and the alternatives weighed.
+
+Reasons 0101, 0102 and 0103 travel under `schemas/transaction-declined-v3.json`, keyed on the eleven-digit account the cross-reference resolved. Each carries the nine descriptive values `app/cbl/CBTRN02C.cbl:L446-L465` copies into `REJECT-TRAN-DATA`, so the ledger writes the 430-byte reject record. Each is durable twice over in one transaction: a row in `authorization_decision` naming its event, and the outbox row itself. The source writes no reject record on its own synchronous path, returning the screen message at `app/cbl/COTRN02C.cbl:L620-L636`, so the row and the event are what this service adds.
 
 A decision also refuses when this instance cannot show that its two replica tables hold what their owners published. That is a property of the replica *streams* rather than of the age of a row, so a card nobody has updated stays authorizable indefinitely; the [replica currency](#replica-currency) section below is the whole rule.
 
@@ -86,7 +90,7 @@ The status codes are the source's own outcome model, restated over HTTP. `app/cb
 
 A decline answers 422. No decline answers 500 and none answers 503.
 
-A 403 is not a decline. It carries the phrase the filter chain already writes for a route refusal, so the two read alike, and it names nothing about the subject. Nothing is decided: no transaction identifier is drawn, no decision row is written, no unresolved-attempt row is written, and no event is produced. A card that resolved no account is refused the same way, which keeps reject code `0100` from answering whether a card exists.
+A 403 is not a decline. It carries the phrase the filter chain already writes for a route refusal, so the two read alike, and it names nothing about the subject. Nothing is decided: no transaction identifier is drawn, no decision row is written, and no event is produced. A card that resolved no account is refused as well, and the entitlement check runs first, so neither answer tells a caller whether a card exists.
 > **Synthetic data only.** `DEMO_SYNTHETIC_CARD_NUMBER` below is row one of the repository fixture `app/data/ASCII/carddata.txt`. It is a made-up number in a public sample dataset and it identifies no real card. Never substitute real cardholder data into this command, or into any other command in this repository: the Compose ports are bound to loopback for a demonstration and this platform carries none of the controls real card data requires.
 
 Read the password from a prompt rather than putting it in a shell variable, so it reaches neither the environment nor the shell history. `.env` holds only the bcrypt hash of each password, so supply the plaintext you chose when you generated that hash.
@@ -151,7 +155,7 @@ The three replica series report the two streams that keep `card_xref` and `accou
 
 A refusal answers 429 with `Retry-After` and counts `carddemo.authorization.requests.throttled`, tagged with the stage that refused: `authentication`, `source`, `identity`, `write` or `concurrency`. The five ceilings read `API_RATE_WINDOW_SECONDS`, `API_RATE_REQUESTS_PER_WINDOW`, `API_RATE_WRITE_REQUESTS_PER_WINDOW`, `API_RATE_AUTHENTICATION_FAILURES_PER_WINDOW` and `API_RATE_CONCURRENT_REQUESTS` from [`.env.example`](../../.env.example). The management base path is exempt, because a throttled probe reads as a failed container.
 
-Both filters count in this process, so several replicas bound each replica rather than the service as a whole, and the source address is the one the container resolves rather than a forwarding header a caller could write. A deployment behind a proxy sets `SERVER_FORWARD_HEADERS_STRATEGY=framework` so the container resolves the client address and the client-facing host. Both residual limits are recorded in [suggested next tasks](../../docs/suggested-next-tasks.md), and the reasoning behind the two controls is in the [Decision Log](../../docs/decision-log.md).
+Both filters count in this process, so several replicas bound each replica rather than the service as a whole, and the source address is the one the container resolves rather than a forwarding header a caller could write. A deployment behind a proxy activates the `trusted-proxy` profile, which trusts those headers from the proxy's own addresses alone. Both residual limits are recorded in [suggested next tasks](../../docs/suggested-next-tasks.md), and the reasoning behind the two controls is in the [Decision Log](../../docs/decision-log.md).
 
 <br/>
 
@@ -184,7 +188,7 @@ The wire code carries four digits because `WS-VALIDATION-FAIL-REASON` is `PIC 9(
 
 **Two rules short-circuit and two do not, and the difference decides the answer.**
 
-- Reason 100 short-circuits. The gate at line 372 performs the account lookup only while the reason is still zero, so a card that misses reports 100 and never reaches 101, 102, or 103.
+- Reason 100 short-circuits. The gate at line 372 performs the account lookup only while the reason is still zero, so a card that misses reports 100 and never reaches 101, 102, or 103. It also resolves no subject, so this service refuses the call rather than deciding it.
 - Reason 101 short-circuits as well. Reasons 102 and 103 sit in the `NOT INVALID KEY` limb of the account read, so a missing account skips both.
 - **Reasons 102 and 103 do not short-circuit against each other.** Lines 407 to 413 and lines 414 to 420 are two sequential `IF` statements in that same limb, and neither returns. A transaction that is both overlimit and past expiry ends with **103 overwriting 102**. A test covers this, because returning on the first failing rule gives the wrong code.
 - Equality approves at both comparisons.
@@ -244,7 +248,7 @@ A refusal answers 503 and counts a failure at the replica stage. It is deliberat
 | Consumes | `CardUpdated` | `card.updated` | `authorization-card-updated` |
 | Routes on a spent record | `DeadLetterEnvelope` | `carddemo.dead-letter` | — |
 
-A decided authorization call publishes exactly one outcome event, keyed on the account it applies to, reject reason 0100 included. **This service consumes none of the three fan-out events**, and the two streams it does read only maintain its replica tables. `AccountStateChanged` replaces every value column of `account_credit_snapshot`. `CardUpdated` refreshes the observation columns of `card_xref` and no mapping value, because it carries a masked card number while that table is keyed on the full sixteen characters. Neither listener sits on the response path.
+A decided authorization call publishes exactly one outcome event, keyed on the account it applies to. **This service consumes none of the three fan-out events**, and the two streams it does read only maintain its replica tables. `AccountStateChanged` replaces every value column of `account_credit_snapshot`. `CardUpdated` refreshes the observation columns of `card_xref` and no mapping value, because it carries a masked card number while that table is keyed on the full sixteen characters. Neither listener sits on the response path.
 
 Ledger posting, fraud detection, and notification read `transaction.authorized` under the groups `ledger-posting`, `fraud-detection`, and `notification-authorized`. Ledger posting also reads `transaction.declined` under `ledger-reject`, where it writes the 430-byte reject row of `app/cbl/CBTRN02C.cbl:L446`–`L465`. This service knows none of those consumers by name or address.
 
@@ -262,7 +266,7 @@ Every governed event carries the shared envelope from `com.carddemo.events.Event
 
 Two conventions carry correctness, and changing either breaks it:
 
-- **The account identifier is the message key** on every event this service writes, so every event for one account lands on one partition and stays ordered. Version 2 of `TransactionDeclined` keyed a reason-0100 decline on the sixteen-character transaction identifier; it is retained so a record already on the topic stays readable, and no producer writes it.
+- **The account identifier is the message key** on every event this service writes, so every event for one account lands on one partition and stays ordered. Version 2 of `TransactionDeclined` keyed a reason-0100 decline on the sixteen-character transaction identifier; it is retained so a record already on the topic stays readable, and no producer writes it or any other reason-0100 decline.
 - **Money travels as a decimal string, never as a JavaScript Object Notation (JSON) number.** `TRAN-AMT` is `PIC S9(09)V99` at `app/cpy/CVTRA05Y.cpy:L10`, giving eleven digits at scale two and the column type `NUMERIC(11,2)`. `ACCT-CURR-BAL` is `PIC S9(10)V99` at `app/cpy/CVACT01Y.cpy:L7`, giving `NUMERIC(12,2)`.
 
 The decision row and the outbox row commit in one local transaction. The relay publishes afterwards, and one relay pass is three kinds of transaction rather than one: a claim transaction that commits before any send, no transaction at all while the sends are outstanding, and one short transaction per result. That division is why a claim survives the process death it was written for, and why a hundred rows waiting on a broker no longer hold a connection and a hundred row locks. Every send is awaited against one monotonic deadline shared by the pass, from `carddemo.outbox.relay.max-duration-ms`, and the producer window resolves one send well inside it.
@@ -283,7 +287,6 @@ The private database is `carddemo_authorization` and the schema is `authorizatio
 | :--- | :--- |
 | `card_xref` | `app/cpy/CVACT03Y.cpy`: `XREF-CARD-NUM PIC X(16)` L5, `XREF-CUST-ID PIC 9(09)` L6, `XREF-ACCT-ID PIC 9(11)` L7. Primary key from `app/jcl/XREFFILE.jcl:L43` `KEYS(16 0)`, record size from `:L44` `RECORDSIZE(50 50)`, and the non-unique secondary index on the account identifier from the alternate index at `:L74` `KEYS(11,25)` with `NONUNIQUEKEY` at `:L75` and `UPGRADE` at `:L76` |
 | `account_credit_snapshot` | Projection of `app/cpy/CVACT01Y.cpy`: credit limit L8, expiry L11, cycle credit L13, cycle debit L14, kept current by `AccountStateChanged`. Three further columns are this service's own: `pending_cycle_credit`, `pending_cycle_debit`, and `pending_expires_at` hold the exposure of approvals whose posting has not been reported back yet |
-| `unresolved_card_attempt` | Reason 100 attempts, which resolve no account to attribute |
 | `authorization_decision` | The attribution record of each decision and the identity that asked for it |
 | `outbox_event` | Event identifier, type, payload, aggregate identifier, relay state, and the dead-letter obligation an abandoned row carries |
 | `processed_event` | Event identifier primary key and processed timestamp, the duplicate guard for both listeners |
@@ -387,16 +390,18 @@ graph TB
     FRAUD["fraud detection. Group fraud-detection"]
     NOTIFY["notification. Group notification-authorized"]
     SPENT["Row abandoned. Unpublished, and named on no topic"]
+    REFUSED["422 refused. No identifier, no row, no event"]
 
     CLIENT -->|"synchronous HTTP"| API
     API --> R100
     R100 -->|"resolved"| R101
-    R100 -.->|"miss. Short-circuits"| TX
+    R100 -.->|"miss. No subject resolves"| REFUSED
     R101 -->|"found"| R102
     R101 -.->|"miss. Short-circuits"| TX
     R102 -->|"both evaluate. 103 overwrites 102"| R103
     R103 --> TX
     TX -->|"200 approved or 422 declined"| CLIENT
+    REFUSED -->|"422 with the source text"| CLIENT
     TX --> RELAY
     RELAY ==> TA
     RELAY ==> TD
@@ -410,7 +415,7 @@ Legend for Figure 1:
 
 - **Plain arrow** — a synchronous step, either the client's HTTP call or in-process control flow inside one request.
 - **Thick arrow** — an asynchronous Kafka publish or consume, which happens after the response has returned.
-- **Dotted arrow** — a short-circuit that skips the remaining rules, or the terminal state of an outbox row this relay gave up on.
+- **Dotted arrow** — a short-circuit that skips the remaining rules, or the terminal state of an outbox row this relay gave up on. The card rule's short-circuit reaches a refusal rather than a decision, because no subject resolved.
 - **Diamond** — one decline rule, labelled with the wire code it assigns.
 - **Cylinder** — a database write. The decision row and the outbox row commit together, and that single transaction is the whole guarantee.
 - **Hexagon** — a Kafka topic.
@@ -536,13 +541,13 @@ curl -fsS http://localhost:9081/actuator/health
 
 `.env.example` carries 19 `REPLACE` markers: fourteen passwords, one card-token key and four `{bcrypt}` identity hashes. Compose reads them with `${VAR:?}` and refuses to start while any is unset. All nineteen therefore have to hold a value before the first `docker compose up`, not only the three this service uses, which is what `scripts/generate-env.sh` in step 1 is for. [Onboarding](../../docs/onboarding.md) holds the full platform walkthrough. Read it once before the first run.
 
-Flyway owns this schema. Nineteen migrations run on every start, in this order:
+Flyway owns this schema. Twenty-three migrations run on every start, in this order:
 
 | Migration | What it creates |
 | :--- | :--- |
 | `V1__schema.sql` | `card_xref`, `account_credit_snapshot`, `outbox_event`, `processed_event` |
 | `V2__seed.sql` | The 50 cross-reference rows and 50 credit snapshots from `app/data/ASCII/cardxref.txt` and `app/data/ASCII/acctdata.txt` |
-| `V3__unresolved_card_attempt.sql` | `unresolved_card_attempt`, the record of an attempt whose card resolved no account |
+| `V3__unresolved_card_attempt.sql` | `unresolved_card_attempt`, the record of an attempt whose card resolved no account. Withdrawn by `V20` |
 | `V4__outbox_transaction_key.sql` | The widening of `outbox_event.aggregate_id` to sixteen characters, and the check admitting either an eleven-digit account key or a sixteen-character transaction key. `V15` records which contract writes the second form |
 | `V5__authorization_decision.sql` | `authorization_decision`, one row per decision, with its actor and outcome constraints |
 | `V6__processed_event_topic_key.sql` | The topic component of the duplicate-delivery marker key |
@@ -558,9 +563,13 @@ Flyway owns this schema. Nineteen migrations run on every start, in this order:
 | `V16__outbox_correlation.sql` | `outbox_event.correlation_id` and `outbox_event.causation_id`, the two identifiers the relay attaches to the record it publishes so a reader can follow one authorization into the services that consume its event |
 | `V17__outbox_aggregate_head_index.sql` | Adds `ix_outbox_event_aggregate_head`, the partial index the relay's aggregate-head claim reads. That claim answers with the due head row of each account, so two events of one account are never in flight at once and every consumer of the account's partition reads them in the order this service wrote them. Without the index the correlated check re-read an account's backlog for every candidate row |
 | `V18__authorization_decision_index_pruning.sql` | Drops `ix_authorization_decision_account_decided` and `ix_authorization_decision_actor`. Neither index had a reader: the four decision-read methods that would have used them had no production caller, so every authorization paid to maintain two index entries nothing ever read. `ix_authorization_decision_decided_at` stays, because the bounded retention delete reads it. An operator query over this table is a real requirement and is recorded in `card-platform/docs/suggested-next-tasks.md`; the index it needs belongs with the endpoint that reads it |
-| `V19__unresolved_decline_names_its_account.sql` | Adds `unresolved_card_attempt.account_id` and its index, so the audit row of an unresolved-card decline names the same account its event does. Nullable with a `NOT VALID` check, because a row written while that outcome resolved no subject honestly holds none. Four catalogue comments restated: the outbox key, the attempt column, the attempt table and the decision event column, each now describing the one behaviour reject code 0100 has — the account the caller declared is the subject, the decline publishes `schemas/transaction-declined-v3.json` keyed on it, and a call that can name no subject is refused before a decision |
+| `V19__unresolved_decline_names_its_account.sql` | Added `unresolved_card_attempt.account_id` and its index, so the audit row of an unresolved-card decline named the same account its event did. Nullable with a `NOT VALID` check, because a row written while that outcome resolved no subject held none. Four catalogue comments restated: the outbox key, the attempt column, the attempt table and the decision event column. Superseded by `V20`, which withdrew both the column and the table |
+| `V20__unresolved_card_attempt_withdrawn.sql` | Drops `unresolved_card_attempt` and its two indexes, because a card that resolves no cross-reference row is now refused rather than decided against an account a caller declared. A security review found that any entitled caller could pair an unknown card with any account and leave a durable row and a published decline against it. Restates the `outbox_event.aggregate_id` and `authorization_decision` comments, and `config/ObservabilityConfig.UNRESOLVED_CARD_STAGE` carries the observation the table used to |
+| `V21__processed_event_claims_are_permanent.sql` | Withdraws the retention horizon of `processed_event` and drops `ix_processed_event_processed_at` with it. The 720-hour horizon bounded how long the broker could redeliver a record and said nothing about how long the effects a claim guards stand: a decision row is kept for audit and the two replica tables are kept for as long as the service runs. A record archived, restored or deliberately replayed after the horizon was new to the guard and applied twice. Nothing removes a claim now, and nothing bounds the table's growth either — the partitioning work a deployment measuring real volumes would want is in `card-platform/docs/suggested-next-tasks.md` |
+| `V22__authorization_decision_card_token_version.sql` | Records the card-token version `authorization_decision.card_token` was taken under, with a default of `1` because that is the only version this platform has published. This table holds no card number and cannot re-derive its own rows, so the version is what makes a token a rotation has not reached identifiable. The card service holds the previous-to-current mapping the column is re-keyed from; its README carries the statement. |
+| `V23__subject_request_procedure.sql` | Points the `card_xref` comment at the subject-request procedure `card-platform/docs/data-model.md` now carries, under "Subject data: purpose, retention, export and erasure". `V11` had replaced a comment promising an erasure route with one stating that none existed, which was true then and is no longer the whole truth: a documented operator procedure reaches every store a request touches, this replica among them. No endpoint, event or scheduled task erases or exports a subject, and the comment says so. Declares no table, column, index or row |
 
-A twentieth file, `src/main/resources/db/demo/V900__demo_expiry_extension.sql`, is **not** applied by default. It lifts every seeded account expiry to `2099-12-31` so a live call carrying today's date is not declined with reason 0103 by a fixture whose latest expiry is in 2025. It runs only when `spring.flyway.locations` names `classpath:db/demo` alongside `classpath:db/migration`, which both deployment paths do and nothing else does: `card-platform/docker-compose.yml` through `AUTHORIZATION_FLYWAY_LOCATIONS`, and `card-platform/deploy/k8s/30-configmap.yaml` through the key of the same name, read by `40-authorization-service.yaml`. Both paths are demo profiles by design, and both expose the same opt-out — set that key to `classpath:db/migration`, together with `ACCOUNT_FLYWAY_LOCATIONS`, for a fixture-faithful run. This module's own `application.yml` ships `${SPRING_FLYWAY_LOCATIONS:classpath:db/migration}`, so `mvn verify` measures the untouched fixture and the demonstration gets the extension.
+A twenty-fourth file, `src/main/resources/db/demo/V900__demo_expiry_extension.sql`, is **not** applied by default. It lifts every seeded account expiry to `2099-12-31` so a live call carrying today's date is not declined with reason 0103 by a fixture whose latest expiry is in 2025. It runs only when `spring.flyway.locations` names `classpath:db/demo` alongside `classpath:db/migration`, which both deployment paths do and nothing else does: `card-platform/docker-compose.yml` through `AUTHORIZATION_FLYWAY_LOCATIONS`, and `card-platform/deploy/k8s/30-configmap.yaml` through the key of the same name, read by `40-authorization-service.yaml`. Both paths are demo profiles by design, and both expose the same opt-out — set that key to `classpath:db/migration`, together with `ACCOUNT_FLYWAY_LOCATIONS`, for a fixture-faithful run. This module's own `application.yml` ships `${SPRING_FLYWAY_LOCATIONS:classpath:db/migration}`, so `mvn verify` measures the untouched fixture and the demonstration gets the extension.
 
 Run this module's tests alone, which builds both libraries first:
 

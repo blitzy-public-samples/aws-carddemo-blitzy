@@ -50,8 +50,15 @@ import javax.crypto.spec.SecretKeySpec;
  * Raising the version therefore rolls every token over under the same key, and turning the key
  * over rolls every token over under the same version. Either is a deliberate act with one
  * consequence: a stored token, a granted ownership authority and a cursor already issued name the
- * card they named under the previous key and version, so both are migrated together.
- * {@code card-platform/docs/suggested-next-tasks.md} carries the procedure.
+ * card they named under the previous key and version.
+ *
+ * <p>A rotation therefore reads under two pairs. {@link #CARD_TOKEN_PREVIOUS_SECRET_PROPERTY} and
+ * {@link #CARD_TOKEN_PREVIOUS_VERSION_PROPERTY} carry the pair a stored token was taken under, and
+ * {@link #previousCardToken(String)} derives that value beside the current one. A caller holding
+ * both can map one stored token onto its replacement, which is what makes a rotation reversible and
+ * what lets a store holding a token and no card number be re-keyed at all.
+ * {@code card-platform/services/card-service/README.md} is the procedure, and
+ * {@code com.carddemo.card.domain.CardTokenReconciler} is what applies it.
  *
  * <p>Card number validation in the source is a numeric class test only, at
  * {@code app/cbl/COCRDUPC.cbl:L782-784}. This class adds no further card-number validation.
@@ -113,6 +120,48 @@ public final class PanMasker {
 
     /** The version every token carries where a deployment names none. */
     public static final String DEFAULT_CARD_TOKEN_VERSION = "1";
+
+    /**
+     * System property that supplies the card-token key a stored token was taken under.
+     *
+     * <p>Set only while a rotation is in progress. It is what makes the previous token of a card
+     * derivable beside the current one, so a store holding a token and no card number can be
+     * re-keyed by mapping one value onto the other.
+     */
+    public static final String CARD_TOKEN_PREVIOUS_SECRET_PROPERTY =
+            "carddemo.card-token.previous-secret";
+
+    /** Environment variable that supplies the previous key where the property is unset. */
+    public static final String CARD_TOKEN_PREVIOUS_SECRET_VARIABLE = "CARD_TOKEN_PREVIOUS_SECRET";
+
+    /**
+     * System property that supplies the version a stored token was taken under.
+     *
+     * <p>Where a rotation turns the key over and leaves the version alone, this carries the same
+     * value as {@link #CARD_TOKEN_VERSION_PROPERTY}. Where it raises the version, this carries the
+     * earlier one. Absent, it falls back to the current version, so turning only the key over needs
+     * one setting rather than two.
+     */
+    public static final String CARD_TOKEN_PREVIOUS_VERSION_PROPERTY =
+            "carddemo.card-token.previous-version";
+
+    /** Environment variable that supplies the previous version where the property is unset. */
+    public static final String CARD_TOKEN_PREVIOUS_VERSION_VARIABLE =
+            "CARD_TOKEN_PREVIOUS_VERSION";
+
+    /**
+     * System property by which a deployment states that it means to re-derive stored tokens.
+     *
+     * <p>A rotation rewrites a value other stores and granted authorities already name, so it is an
+     * act an operator performs rather than a consequence of a restart. Without this statement the
+     * card service refuses to start rather than rewriting a token silently, which is the behaviour a
+     * security review found.
+     */
+    public static final String CARD_TOKEN_ROTATION_PROPERTY =
+            "carddemo.card-token.rotation-enabled";
+
+    /** Environment variable that carries the same statement where the property is unset. */
+    public static final String CARD_TOKEN_ROTATION_VARIABLE = "CARD_TOKEN_ROTATION_ENABLED";
 
     /**
      * The card-token key this repository publishes for its demonstration stack.
@@ -394,11 +443,140 @@ public final class PanMasker {
     public static String cardTokenVersion() {
         String configured = configured(CARD_TOKEN_VERSION_PROPERTY, CARD_TOKEN_VERSION_VARIABLE);
         String version = configured == null ? DEFAULT_CARD_TOKEN_VERSION : configured;
+        return requireVersionShape(version, CARD_TOKEN_VERSION_PROPERTY,
+                CARD_TOKEN_VERSION_VARIABLE);
+    }
+
+    /**
+     * Reports whether a previous card-token pair is configured, which is what a rotation reads under.
+     *
+     * <p>A deployment that is not rotating configures neither setting and this answers {@code false}.
+     * A deployment mid-rotation configures at least the previous key; the previous version falls back
+     * to the current one, because turning the key over without raising the version is the common case.
+     *
+     * @return {@code true} where {@link #CARD_TOKEN_PREVIOUS_SECRET_PROPERTY} or
+     *         {@link #CARD_TOKEN_PREVIOUS_SECRET_VARIABLE} carries a value
+     */
+    public static boolean previousCardTokenConfigured() {
+        return configured(CARD_TOKEN_PREVIOUS_SECRET_PROPERTY,
+                CARD_TOKEN_PREVIOUS_SECRET_VARIABLE) != null;
+    }
+
+    /**
+     * Returns the version a stored token was taken under.
+     *
+     * <p>The previous version where one is configured, and otherwise the current version, so a
+     * rotation that turns the key over and leaves the version alone needs one setting.
+     *
+     * @return the previous version, or the current version where none is configured
+     * @throws IllegalStateException if either configured version is not one to three digits
+     */
+    public static String previousCardTokenVersion() {
+        String configured = configured(CARD_TOKEN_PREVIOUS_VERSION_PROPERTY,
+                CARD_TOKEN_PREVIOUS_VERSION_VARIABLE);
+        if (configured == null) {
+            return cardTokenVersion();
+        }
+        return requireVersionShape(configured, CARD_TOKEN_PREVIOUS_VERSION_PROPERTY,
+                CARD_TOKEN_PREVIOUS_VERSION_VARIABLE);
+    }
+
+    /**
+     * Derives the token one card number carried under the previous key and version.
+     *
+     * <p>This is the read half of a rotation. {@link #cardToken(String)} answers what a card is
+     * called now; this answers what it was called before, and the pair is the mapping a store holding
+     * a token and no card number needs. Applying the mapping in reverse is the rollback.
+     *
+     * <p>The previous key is not held to the published-key refusal that
+     * {@link #requireCardTokenSecretFitForUse()} applies to the current one. Rotating away from a
+     * published key is exactly the case that refusal exists to force, and it cannot be performed
+     * without deriving under the key being left behind.
+     *
+     * <p>A previous pair equal to the current pair is refused. It would derive the current token and
+     * report a rotation that moved nothing, which is worse than an error because a mapping built from
+     * it maps every value onto itself.
+     *
+     * @param cardNumber the full card number, as stored in {@code CARD-NUM}
+     * @return {@value #CARD_TOKEN_LENGTH} lower-case hexadecimal characters
+     * @throws NullPointerException     if {@code cardNumber} is {@code null}
+     * @throws IllegalArgumentException if {@code cardNumber} holds no non-whitespace character
+     * @throws IllegalStateException    if no previous key is configured, if it is under
+     *                                  {@value #CARD_TOKEN_SECRET_MIN_LENGTH} characters, if a
+     *                                  configured version is not one to three digits, or if the
+     *                                  previous pair equals the current pair
+     */
+    public static String previousCardToken(String cardNumber) {
+        if (cardNumber == null) {
+            throw new NullPointerException("cardNumber is required to derive a card token");
+        }
+        String value = cardNumber.strip();
+        if (value.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "cardNumber holds no character and names no card to tokenize");
+        }
+
+        String secret = configured(CARD_TOKEN_PREVIOUS_SECRET_PROPERTY,
+                CARD_TOKEN_PREVIOUS_SECRET_VARIABLE);
+        if (secret == null) {
+            throw new IllegalStateException("no previous card-token key is configured, so the token"
+                    + " a stored row carries cannot be derived. Set "
+                    + CARD_TOKEN_PREVIOUS_SECRET_PROPERTY + " or "
+                    + CARD_TOKEN_PREVIOUS_SECRET_VARIABLE + " to the key the stored tokens were"
+                    + " taken under. card-platform/services/card-service/README.md is the procedure.");
+        }
+        if (secret.length() < CARD_TOKEN_SECRET_MIN_LENGTH) {
+            throw new IllegalStateException("the configured previous card-token key holds "
+                    + secret.length() + " characters and at least " + CARD_TOKEN_SECRET_MIN_LENGTH
+                    + " are required, so it cannot be a key this platform ever derived under.");
+        }
+
+        String version = previousCardTokenVersion();
+        if (version.equals(cardTokenVersion()) && secret.equals(configuredSecret())) {
+            throw new IllegalStateException("the previous card-token key and version equal the"
+                    + " current pair, so every token they derive is the current token and a mapping"
+                    + " built from them maps every value onto itself. Set "
+                    + CARD_TOKEN_PREVIOUS_SECRET_PROPERTY + " to the key being left behind, or"
+                    + " unset it where no rotation is in progress.");
+        }
+
+        TokenKey key = new TokenKey(version, secret,
+                new SecretKeySpec(secret.getBytes(StandardCharsets.UTF_8), CARD_TOKEN_ALGORITHM));
+        byte[] covered = (CARD_TOKEN_LABEL_PREFIX + version + CARD_TOKEN_LABEL_TERMINATOR + value)
+                .getBytes(StandardCharsets.UTF_8);
+        return HEX.formatHex(key.code(covered));
+    }
+
+    /**
+     * Reports whether the deployment stated that it means to re-derive stored tokens.
+     *
+     * <p>Read the same way the key and the version are read, so one class owns the resolution of
+     * every card-token setting. A caller that finds a stored token belonging to another key uses this
+     * to tell a rotation an operator asked for from one nobody asked for.
+     *
+     * @return {@code true} where {@link #CARD_TOKEN_ROTATION_PROPERTY} or
+     *         {@link #CARD_TOKEN_ROTATION_VARIABLE} carries {@code true}
+     */
+    public static boolean cardTokenRotationRequested() {
+        return Boolean.parseBoolean(
+                configured(CARD_TOKEN_ROTATION_PROPERTY, CARD_TOKEN_ROTATION_VARIABLE));
+    }
+
+    /**
+     * Holds one configured version to the shape a version marker takes.
+     *
+     * @param version  the configured value
+     * @param property the system property it may have arrived from, named in a refusal
+     * @param variable the environment variable it may have arrived from, named in a refusal
+     * @return the value unchanged where it takes the shape
+     * @throws IllegalStateException where it does not
+     */
+    private static String requireVersionShape(String version, String property, String variable) {
         if (!CARD_TOKEN_VERSION.matcher(version).matches()) {
             throw new IllegalStateException("the configured card-token version must be one to"
                     + " three digits opening with a non-zero digit, and the configured value holds"
-                    + " " + version.length() + " characters. Set " + CARD_TOKEN_VERSION_PROPERTY
-                    + " or " + CARD_TOKEN_VERSION_VARIABLE + " to a value of that shape.");
+                    + " " + version.length() + " characters. Set " + property + " or " + variable
+                    + " to a value of that shape.");
         }
         return version;
     }

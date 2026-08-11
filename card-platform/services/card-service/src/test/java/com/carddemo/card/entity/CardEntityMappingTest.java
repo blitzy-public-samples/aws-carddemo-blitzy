@@ -707,7 +707,7 @@ class CardEntityMappingTest {
     class MappedAttributes {
 
         @Test
-        @DisplayName("CardEntity maps CVACT02Y.cpy:L5-L10 and one additive column")
+        @DisplayName("CardEntity maps CVACT02Y.cpy:L5-L10 and three additive columns")
         void cardEntityMapsTheSixCopybookFieldsAndOneAdditiveColumn() {
             List<String> columns = columnNames(CardEntity.class);
             assertAll(
@@ -716,12 +716,18 @@ class CardEntityMappingTest {
                                     "embossed_name", "expiration_date", "active_status"),
                             columns.subList(0, 6),
                             "the six mapped columns of card, in copybook order"),
-                    () -> assertEquals(List.of("card_token"), columns.subList(6, columns.size()),
-                            "the additive card-token column, no COBOL ancestor. It carries the "
-                                    + "paging cursor of the card list, which AAP section 0.6.4 "
-                                    + "forbids carrying a card number"),
-                    () -> assertEquals(7, columns.size(),
-                            "six copybook columns plus one additive column"));
+                    () -> assertEquals(
+                            List.of("card_token", "card_token_version", "card_token_provenance"),
+                            columns.subList(6, columns.size()),
+                            "the three additive card-token columns, no COBOL ancestor. The first "
+                                    + "carries the paging cursor of the card list, which AAP "
+                                    + "section 0.6.4 forbids carrying a card number. The other two "
+                                    + "V10__card_token_version_and_rotation.sql adds say which key "
+                                    + "the stored token belongs to and whether this deployment "
+                                    + "derived it, which is what makes moving one an audited act "
+                                    + "rather than a start-up rewrite"),
+                    () -> assertEquals(9, columns.size(),
+                            "six copybook columns plus three additive columns"));
         }
 
         @Test
@@ -1182,8 +1188,10 @@ class CardEntityMappingTest {
                             List.of(String.class, String.class, String.class, String.class,
                                     LocalDate.class, String.class),
                             List.of(publicConstructors.get(0).getParameterTypes()),
-                            "the six copybook fields in copybook order. The seventh mapped "
-                                    + "column, card_token, is derived and not accepted"));
+                            "the six copybook fields in copybook order. The three mapped "
+                                    + "card-token columns are derived or defaulted and none is "
+                                    + "accepted, because a caller naming a token version would be "
+                                    + "naming a key it does not hold"));
         }
 
         @Test
@@ -1202,11 +1210,14 @@ class CardEntityMappingTest {
                                     .containsAll(List.of("applyUpdate", "getCardNumber",
                                             "getAccountId", "getEmbossedName",
                                             "getExpirationDate", "getActiveStatus",
-                                            "getCardToken")),
-                            "one mutator beside the six accessors"),
-                    () -> assertEquals(7, declaredPublicMethodNames(CardEntity.class).size(),
-                            "no eighth public method on CardEntity. getCardToken is the sixth "
-                                    + "accessor and card_verification_value still has none"));
+                                            "getCardToken", "getCardTokenVersion",
+                                            "getCardTokenProvenance")),
+                            "one mutator beside the eight accessors"),
+                    () -> assertEquals(9, declaredPublicMethodNames(CardEntity.class).size(),
+                            "no tenth public method on CardEntity. The two accessors "
+                                    + "V10__card_token_version_and_rotation.sql added report which "
+                                    + "key a stored token belongs to and whether this deployment "
+                                    + "derived it, and card_verification_value still has none"));
         }
 
         @Test

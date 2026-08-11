@@ -444,6 +444,120 @@ class SecurityConfigTest {
                     () -> assertFalse(thrown.getMessage().contains("user0001"),
                             "the message names no identity: " + thrown.getMessage()));
         }
+        /**
+         * Asserts a role this service grants nothing for stops start-up.
+         *
+         * <p>A security review found the configured role reaching the authority list unchecked, so a
+         * typed role authenticated an identity that could reach nothing and reported no reason. The
+         * message names the configured word because an operator correcting a typo needs to know which
+         * word to correct, and a role is not a credential.
+         */
+        @Test
+        @DisplayName("a role this service grants nothing for stops start-up")
+        void anUnknownRoleStopsStartUp() {
+            IllegalStateException refused = assertThrows(IllegalStateException.class,
+                    () -> SecurityConfig.toUserDetails(new SecurityIdentities(List.of(
+                            new Identity("user0001", ENCODED_PASSWORD, "OPERATOR", null)))));
+
+            assertAll(
+                    () -> assertTrue(refused.getMessage().contains("OPERATOR"),
+                            "the message names the configured word: " + refused.getMessage()),
+                    () -> assertTrue(refused.getMessage().contains("USER"),
+                            "the message lists the roles this service reads: "
+                                    + refused.getMessage()),
+                    () -> assertFalse(refused.getMessage().contains(ENCODED_PASSWORD),
+                            "the message carries no credential: " + refused.getMessage()));
+        }
+
+        /**
+         * Asserts a role written into the scope list stops start-up.
+         *
+         * <p>This is the one refusal here that closes a privilege escalation rather than a
+         * configuration mistake. Every authority reaches one list, so a role granted through the
+         * scope list would pass a route rule naming that role. The scopes an operator writes are
+         * therefore read before they become authorities, not after.
+         */
+        @Test
+        @DisplayName("a role written into the scope list stops start-up")
+        void aRoleInTheScopeListStopsStartUp() {
+            IllegalStateException refused = assertThrows(IllegalStateException.class,
+                    () -> SecurityConfig.toUserDetails(new SecurityIdentities(List.of(
+                            new Identity("user0001", ENCODED_PASSWORD, "USER",
+                                    List.of("ROLE_ADMIN"))))));
+
+            assertAll(
+                    () -> assertTrue(refused.getMessage().contains("ROLE_ADMIN"),
+                            "the message names the entry: " + refused.getMessage()),
+                    () -> assertTrue(refused.getMessage().contains("role"),
+                            "the message says what the entry is: " + refused.getMessage()));
+        }
+
+        /**
+         * Asserts a scope that cannot grant what it names stops start-up.
+         *
+         * <p>Three shapes are read. An entry with no {@code SCOPE_} prefix is not an ownership
+         * authority. An entry naming a kind no route rule reads reaches nothing. An entry whose value
+         * misses its kind's shape reaches no row, which is the quietest of the three: it reads as an
+         * ownership claim and grants nothing.
+         */
+        @Test
+        @DisplayName("a scope of an unknown kind, an unknown shape or no prefix stops start-up")
+        void aScopeThatGrantsNothingStopsStartUp() {
+            assertAll(
+                    () -> assertThrows(IllegalStateException.class,
+                            () -> withScopes("ACCOUNT_" + OWNED_ACCOUNT),
+                            "an entry with no SCOPE_ prefix is not an ownership authority"),
+                    () -> assertThrows(IllegalStateException.class,
+                            () -> withScopes("SCOPE_LEDGER_00000000001"),
+                            "no route rule reads a kind outside the three"),
+                    () -> assertThrows(IllegalStateException.class,
+                            () -> withScopes("SCOPE_ACCOUNT_1"),
+                            "an account identifier is eleven digits, leading zeros included"),
+                    () -> assertThrows(IllegalStateException.class,
+                            () -> withScopes("SCOPE_CUSTOMER_" + OWNED_ACCOUNT),
+                            "a customer identifier is nine digits, so an eleven-digit value is not "
+                                    + "one"),
+                    () -> assertThrows(IllegalStateException.class,
+                            () -> withScopes("SCOPE_CARD_0500024453765740"),
+                            "a card is owned by its derived token, never by a card number"),
+                    () -> assertThrows(IllegalStateException.class,
+                            () -> withScopes("SCOPE_ACCOUNT"),
+                            "a kind with no value names no row"));
+        }
+
+        /**
+         * Asserts the three shipped kinds are accepted, and a blank entry is dropped rather than
+         * refused.
+         *
+         * <p>The blank case is the shipped deployment: both the composition and the ConfigMap pass an
+         * empty {@code USER_SCOPES} to a container, and an empty authority is not a claim. Refusing
+         * it would stop a start-up the shipped artifacts ask for.
+         */
+        @Test
+        @DisplayName("the three shipped kinds are accepted and a blank entry is dropped")
+        void theShippedScopesAreAcceptedAndABlankEntryIsDropped() {
+            List<UserDetails> accepted = withScopes("SCOPE_ACCOUNT_" + OWNED_ACCOUNT,
+                    "SCOPE_CUSTOMER_000000001", "SCOPE_CARD_" + OWNED_CARD, "", "   ");
+
+            assertAll(
+                    () -> assertEquals(4, accepted.get(0).getAuthorities().size(),
+                            "the role and the three well-formed scopes, and nothing for the two "
+                                    + "blank entries"),
+                    () -> assertTrue(accepted.get(0).getAuthorities().stream()
+                                    .allMatch(granted -> !granted.getAuthority().isBlank()),
+                            "a blank authority would read as a claim while naming nothing"));
+        }
+
+        /**
+         * Builds one identity carrying the given scopes.
+         *
+         * @param scopes the scopes to configure
+         * @return the mapped users
+         */
+        private List<UserDetails> withScopes(String... scopes) {
+            return SecurityConfig.toUserDetails(new SecurityIdentities(List.of(
+                    new Identity("user0001", ENCODED_PASSWORD, "USER", List.of(scopes)))));
+        }
     }
 
     @Nested

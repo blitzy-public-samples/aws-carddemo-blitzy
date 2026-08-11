@@ -29,10 +29,6 @@ class ConfigurationInventoryContractTest {
 
     private static final Map<String, String> EXPECTED_DEFAULTS = Map.ofEntries(
             Map.entry("OUTBOX_PUBLISHED_RETENTION_HOURS", "168"),
-            // 720 rather than 168 since a security review found the marker horizon equal to broker
-            // log retention. A record still readable after its marker was swept is applied twice, so
-            // every service now refuses a horizon under twice KAFKA_LOG_RETENTION_HOURS at start-up.
-            Map.entry("PROCESSED_EVENT_RETENTION_HOURS", "720"),
             Map.entry("STATEMENT_RETENTION_DAYS", "400"),
             Map.entry("NOTIFICATION_LOG_RETENTION_DAYS", "90"),
             // The four below were bindable in application.yml and named by no deployment artifact,
@@ -50,7 +46,6 @@ class ConfigurationInventoryContractTest {
 
     private static final Map<String, Integer> APPLICATION_REFERENCE_COUNTS = Map.ofEntries(
             Map.entry("OUTBOX_PUBLISHED_RETENTION_HOURS", 5),
-            Map.entry("PROCESSED_EVENT_RETENTION_HOURS", 6),
             Map.entry("STATEMENT_RETENTION_DAYS", 1),
             Map.entry("NOTIFICATION_LOG_RETENTION_DAYS", 1),
             Map.entry("API_MAX_REQUEST_BODY_BYTES", 3),
@@ -61,7 +56,6 @@ class ConfigurationInventoryContractTest {
 
     private static final Map<String, Integer> COMPOSE_ENVIRONMENT_COUNTS = Map.ofEntries(
             Map.entry("OUTBOX_PUBLISHED_RETENTION_HOURS", 5),
-            Map.entry("PROCESSED_EVENT_RETENTION_HOURS", 6),
             Map.entry("STATEMENT_RETENTION_DAYS", 1),
             Map.entry("NOTIFICATION_LOG_RETENTION_DAYS", 1),
             Map.entry("API_MAX_REQUEST_BODY_BYTES", 3),
@@ -83,7 +77,6 @@ class ConfigurationInventoryContractTest {
      */
     private static final List<String> CUSTOM_OVERRIDES = List.of(
             "OUTBOX_PUBLISHED_RETENTION_HOURS",
-            "PROCESSED_EVENT_RETENTION_HOURS",
             "STATEMENT_RETENTION_DAYS",
             "NOTIFICATION_LOG_RETENTION_DAYS",
             "API_MAX_REQUEST_BODY_BYTES",
@@ -102,23 +95,23 @@ class ConfigurationInventoryContractTest {
      * override, and it has to stay unset in a container so each relay falls back to its own hostname.
      * Declaring it in the example invited an operator to give every replica one identity, which is
      * what turns stranded-claim recovery into a second publish.
+     *
+     * <p>{@code PROCESSED_EVENT_RETENTION_HOURS} is the third, and it is retired rather than renamed.
+     * It set a horizon after which a duplicate-delivery claim was deleted, and a security review found
+     * every effect a claim guards outliving that horizon: a posted balance, a category balance, a
+     * cycle accumulator, a read-model row. A claim is permanent now, so the key would name a
+     * behaviour no service has. Retiring it is what stops a deployment reintroducing the horizon by
+     * setting a variable.
      */
     private static final List<String> RETIRED_KEYS = List.of(
             "GROUP_AUTHORIZATION",
-            "OUTBOX_RELAY_INSTANCE_ID");
+            "OUTBOX_RELAY_INSTANCE_ID",
+            "PROCESSED_EVENT_RETENTION_HOURS");
 
     private static final Set<String> OUTBOX_RETENTION_SERVICES = Set.of(
             "authorization-service",
             "ledger-posting-service",
             "fraud-detection-service",
-            "account-service",
-            "card-service");
-
-    private static final Set<String> MARKER_RETENTION_SERVICES = Set.of(
-            "authorization-service",
-            "ledger-posting-service",
-            "fraud-detection-service",
-            "notification-service",
             "account-service",
             "card-service");
 
@@ -182,9 +175,9 @@ class ConfigurationInventoryContractTest {
             assertEquals(OUTBOX_RETENTION_SERVICES.contains(service),
                     block.contains("OUTBOX_PUBLISHED_RETENTION_HOURS:"),
                     service + " outbox-retention mapping must match application.yml");
-            assertEquals(MARKER_RETENTION_SERVICES.contains(service),
-                    block.contains("PROCESSED_EVENT_RETENTION_HOURS:"),
-                    service + " marker-retention mapping must match application.yml");
+            assertFalse(block.contains("PROCESSED_EVENT_RETENTION_HOURS:"),
+                    service + " must receive no marker horizon: a claim is permanent, so the key "
+                            + "would name a behaviour the service does not have");
         }
 
         String notification = serviceBlock(compose, "notification-service");
@@ -433,8 +426,9 @@ class ConfigurationInventoryContractTest {
      * <p>{@code scripts/generate-env.sh} ends a run by reporting how many assignments the file
      * declares, and two documents quote that number to tell a reader what a complete file looks like.
      * The number is what a reader compares their own output against, so a stale one reads as a failed
-     * reconciliation on a file that is in fact complete. Both quoted the count from before three keys
-     * were added and two retired.
+     * reconciliation on a file that is in fact complete. Both have quoted a stale count twice: once
+     * from before three keys were added and two retired, and once from before the three card-token
+     * rotation settings arrived.
      */
     @Test
     @DisplayName("the documented assignment count is the count .env.example declares")
@@ -442,7 +436,7 @@ class ConfigurationInventoryContractTest {
         Path platform = platformDirectory();
         int declared = dotenvValues(platform.resolve(".env.example")).size();
 
-        assertEquals(134, declared,
+        assertEquals(136, declared,
                 "the example file's assignment count changed; raise it here and in both documents "
                         + "that quote it, or the reader compares their run against a stale number");
         assertTrue(read(platform.resolve("docs/onboarding.md"))

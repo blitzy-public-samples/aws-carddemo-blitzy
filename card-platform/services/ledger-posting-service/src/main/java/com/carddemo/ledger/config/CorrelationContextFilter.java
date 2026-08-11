@@ -40,7 +40,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
  * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
 @Component
-@Order(SecurityFilterProperties.DEFAULT_FILTER_ORDER - 2)
+@Order(SecurityFilterProperties.DEFAULT_FILTER_ORDER - 4)
 public class CorrelationContextFilter extends OncePerRequestFilter {
 
     /**

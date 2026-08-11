@@ -36,7 +36,6 @@ import org.springframework.validation.annotation.Validated;
  * @param kafka    the topic and group names this service uses
  * @param consumer the delivery-attempt policy of the one listener this service runs
  * @param outbox   the relay sweep settings
- * @param processedEvent how long a duplicate-delivery marker is kept
  * @param retention the retention windows the sweep applies, and its interval
  * @param write    the bound on how long one locked read waits
  */
@@ -51,8 +50,6 @@ public record AccountProperties(
         @NotNull @Valid Consumer consumer,
 
         @NotNull @Valid Outbox outbox,
-
-        @NotNull @Valid ProcessedEvent processedEvent,
 
         @NotNull @Valid Retention retention,
 
@@ -212,56 +209,6 @@ public record AccountProperties(
                     throw new IllegalArgumentException(
                             "carddemo.outbox.relay.publish-timeout must be positive");
                 }
-            }
-        }
-    }
-
-    /**
-     * The duplicate-marker horizon, and the broker retention it has to outlast.
-     *
-     * <p>A marker matters only while a redelivery of its event is still possible, and past that
-     * point it is dead weight on a table every message passes through. That makes the horizon a
-     * relationship rather than a number: the marker has to outlast every window through which the
-     * record itself can come back. Broker log retention is the shortest of those windows and the
-     * only one this platform configures, so it is the one the relationship is stated against.
-     *
-     * <p>{@link #MINIMUM_RETENTION_MARGIN} is enforced here rather than documented,
-     * and at start-up rather than later, because the two values arrive from configuration and a
-     * mismatch is invisible until the day a replay happens. The shipped pair is 720 hours of
-     * markers against 168 hours of broker log, which is a margin above four.
-     *
-     * @param markerRetentionHours hours a processed-event marker remains
-     * @param brokerRetentionHours hours the broker is configured to retain a topic log, which
-     *                             {@code KAFKA_LOG_RETENTION_HOURS} sets for the broker and for
-     *                             every service that has to outlast it
-     */
-    public record ProcessedEvent(@Positive long markerRetentionHours,
-            @Positive long brokerRetentionHours) {
-
-        /**
-         * The smallest multiple of broker retention a marker horizon may be.
-         *
-         * <p>Two rather than one, because equality is what the review found: it leaves no room for
-         * segment cleanup lag, a restored backup, or a manually replayed window. Two rather than a
-         * larger figure, because the floor has to be one a deployment can meet by configuration
-         * alone, and the shipped pair clears it four times over.
-         */
-        public static final long MINIMUM_RETENTION_MARGIN = 2L;
-
-        /**
-         * Refuses a marker horizon that does not outlast broker retention by the required margin.
-         *
-         * @throws IllegalArgumentException when the marker horizon is under the margin
-         */
-        public ProcessedEvent {
-            if (markerRetentionHours > 0 && brokerRetentionHours > 0
-                    && markerRetentionHours < brokerRetentionHours * MINIMUM_RETENTION_MARGIN) {
-                throw new IllegalArgumentException(
-                        "processed-event.markerRetentionHours must be at least "
-                                + MINIMUM_RETENTION_MARGIN + " times"
-                                + " processed-event.brokerRetentionHours, so a replayed record"
-                                + " cannot outlive the marker that suppresses it. Found "
-                                + markerRetentionHours + " against " + brokerRetentionHours);
             }
         }
     }

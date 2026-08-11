@@ -202,6 +202,9 @@ final class ShippedConfigurationContractTest {
     /** File name prefix a Spring profile variant takes. */
     private static final String PROFILE_VARIANT_PREFIX = "application-";
 
+    /** The one profile variant this module ships, for a deployment behind a terminating proxy. */
+    private static final String TRUSTED_PROXY_VARIANT = "application-trusted-proxy.yml";
+
     /** Spellings of the Kafka admin fail-fast property. */
     private static final List<String> FAIL_FAST_SPELLINGS = List.of("fail-fast", "failfast", "fail_fast");
 
@@ -283,6 +286,9 @@ final class ShippedConfigurationContractTest {
     /** The shipped configuration file folded to lower case. */
     private static String foldedYaml;
 
+    /** The shipped configuration file folded to lower case, with every comment line removed. */
+    private static String foldedDeclarations;
+
     /** The shipped configuration file parsed into nested maps. */
     private static Map<String, Object> yamlTree;
 
@@ -296,6 +302,9 @@ final class ShippedConfigurationContractTest {
     static void readShippedConfiguration() {
         rawYaml = readClasspathResource(APPLICATION_YAML);
         foldedYaml = rawYaml.toLowerCase(Locale.ROOT);
+        foldedDeclarations = foldedYaml.lines()
+                .filter(line -> !line.strip().startsWith("#"))
+                .collect(java.util.stream.Collectors.joining("\n"));
         yamlTree = parseYaml(rawYaml);
         rawMigration = readClasspathResource(SCHEMA_MIGRATION);
         moduleBase = resolveModuleBase();
@@ -318,16 +327,51 @@ final class ShippedConfigurationContractTest {
         assertEquals(List.of(), found, () -> "Logback configuration files present: " + found);
     }
 
+    /**
+     * Asserts the one permitted profile variant is present and no other exists.
+     *
+     * <p>A profile variant is a second place a setting can come from, and a reader of
+     * {@code application.yml} cannot tell that it exists. One is permitted, and it is the one a
+     * security review asked for: a deployment behind a terminating proxy needs forwarded headers
+     * honoured, and honouring them in the shipped file would trust a header any caller can write.
+     * The variant is inert until a deployment names it, so nothing this test measures elsewhere is
+     * reached by it.
+     *
+     * <p>The variant is held to two conditions here. It configures forwarding and nothing else, so
+     * it cannot quietly restate a setting {@code application.yml} declares. And it gives its proxy
+     * expression no default, so an activated profile with no value stops start-up rather than
+     * trusting nothing.
+     */
     @Test
-    @DisplayName("no application-* profile variant exists under src/main/resources")
-    void mainResourcesDeclareNoProfileVariantFile() {
+    @DisplayName("the trusted-proxy variant is the only one under src/main/resources")
+    void mainResourcesDeclareOnlyTheTrustedProxyVariant() {
         List<Path> found = filesUnder(moduleBase.resolve(MAIN_RESOURCES)).stream()
                 .filter(path -> fileName(path).startsWith(PROFILE_VARIANT_PREFIX))
                 .filter(path -> PROFILE_VARIANT_SUFFIXES.stream().anyMatch(fileName(path)::endsWith))
                 .toList();
-        assertEquals(List.of(), found, () -> "profile variant files present: " + found);
+        assertEquals(List.of(TRUSTED_PROXY_VARIANT), found.stream().map(ShippedConfigurationContractTest::fileName).toList(),
+                () -> "profile variant files present: " + found);
+
+        String variant = readFile(moduleBase.resolve(MAIN_RESOURCES).resolve(TRUSTED_PROXY_VARIANT));
+        assertAll(
+                () -> assertTrue(variant.contains("forward-headers-strategy: native"),
+                        "the variant exists to honour forwarded headers behind a named proxy"),
+                () -> assertTrue(variant.contains("internal-proxies: \"${TRUSTED_PROXY_ADDRESSES}\""),
+                        "the valve trusts an expression a deployment supplies"),
+                () -> assertFalse(variant.contains("${TRUSTED_PROXY_ADDRESSES:"),
+                        "a default here would trust a range nobody chose"),
+                () -> assertEquals(List.of("server"), topLevelKeysOf(variant),
+                        "the variant configures forwarding alone"));
     }
 
+    /**
+     * Asserts the shipped file is one document and selects no profile of its own.
+     *
+     * <p>The fragment scan reads declarations rather than the whole file. A comment naming the
+     * trusted-proxy profile is how a reader of this file learns the variant exists, and a scan that
+     * counted the word would make documenting the variant impossible. What the scan is for is a key
+     * such as {@code spring.config.activate.on-profile}, which is a declaration.
+     */
     @Test
     @DisplayName("application.yml is one document and names no profile")
     void shippedYamlIsOneDocumentWithNoProfileKey() {
@@ -335,11 +379,14 @@ final class ShippedConfigurationContractTest {
                 .map(String::strip)
                 .filter(line -> line.equals("---") || line.startsWith("--- "))
                 .toList();
+        List<String> declaredProfileText = PROFILE_TEXT_FRAGMENTS.stream()
+                .filter(foldedDeclarations::contains)
+                .toList();
         assertAll(
                 () -> assertEquals(List.of(), separators,
                         () -> "document separators present: " + separators),
-                () -> assertEquals(List.of(), fragmentsPresent(PROFILE_TEXT_FRAGMENTS),
-                        () -> "profile text present: " + fragmentsPresent(PROFILE_TEXT_FRAGMENTS)),
+                () -> assertEquals(List.of(), declaredProfileText,
+                        () -> "profile text present: " + declaredProfileText),
                 () -> assertNull(valueAt("spring", "profiles"), "spring.profiles is set"),
                 () -> assertNull(valueAt("spring", "config"), "spring.config is set"));
     }
@@ -943,6 +990,34 @@ final class ShippedConfigurationContractTest {
         } catch (IOException failure) {
             throw new AssertionError("cannot read directory " + root.toAbsolutePath(), failure);
         }
+    }
+
+    /**
+     * Reads one file of this module from disk.
+     *
+     * @param file the file to read
+     * @return the text, character for character
+     */
+    private static String readFile(Path file) {
+        try {
+            return Files.readString(file, StandardCharsets.UTF_8);
+        } catch (IOException failure) {
+            throw new AssertionError("cannot read " + file.toAbsolutePath(), failure);
+        }
+    }
+
+    /**
+     * Reads the top-level keys one YAML document declares, in the order it declares them.
+     *
+     * @param text the YAML text
+     * @return the top-level key names
+     */
+    private static List<String> topLevelKeysOf(String text) {
+        Object loaded = new Yaml(new SafeConstructor(new LoaderOptions())).load(text);
+        if (!(loaded instanceof Map<?, ?> mapping)) {
+            throw new AssertionError("the text does not parse to a mapping");
+        }
+        return mapping.keySet().stream().map(String::valueOf).toList();
     }
 
     private static String fileName(Path path) {

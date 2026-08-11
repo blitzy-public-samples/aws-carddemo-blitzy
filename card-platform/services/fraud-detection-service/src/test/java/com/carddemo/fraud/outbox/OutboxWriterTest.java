@@ -614,6 +614,97 @@ public class OutboxWriterTest {
     private record InventoryAdjusted() {
     }
 
+    /**
+     * The governed document is applied before the row exists, not after it commits.
+     *
+     * <p>A record checks its own components and a document checks more than the record does, so an
+     * event this service accepts can still break the contract a consumer reads it under. This service
+     * has no COBOL ancestor and therefore no reject file to fall back on: a payload that committed
+     * here would sit in {@code outbox_event} beside the assessment that produced it, and the relay
+     * would meet it on every sweep until it abandoned the row.
+     *
+     * <p>The lever is the year bound. {@link FraudFlagged} accepts any {@link Instant}, while
+     * {@code schemas/fraud-flagged-v1.json} bounds the year to four digits, so a five-digit year is a
+     * payload the record admits and the document refuses.
+     *
+     * <p>Neither event of this service carries a free-text field, which is why no test here writes a
+     * cardholder number into one. {@code triggeredRules} is closed to
+     * {@link FraudFlagged#RULE_IDENTIFIERS} at the record and to the same three values at the
+     * document, {@code riskScore} is a bounded integer, and every remaining component is an
+     * identifier or a timestamp. The screens still run on the way past, and have nothing to catch.
+     */
+    @Nested
+    @DisplayName("Document validation before the row")
+    @ExtendWith(MockitoExtension.class)
+    class DocumentValidationBeforeTheRow {
+
+        /** A year the document's four-digit bound refuses, and the record accepts. */
+        private static final Instant OUTSIDE_YEAR_BOUND = Instant.parse("+12026-06-10T19:27:53Z");
+
+        @Mock
+        private OutboxEventRepository repository;
+
+        private OutboxWriter writer;
+
+        @BeforeEach
+        void setUp() {
+            writer = new OutboxWriter(repository, Clock.fixed(ROW_CREATED_AT, ZoneOffset.UTC));
+        }
+
+        @Test
+        @DisplayName("a flagged assessment outside the document's year bound stores nothing")
+        void aFlaggedAssessmentOutsideTheYearBoundStoresNothing() {
+            FraudFlagged refused = new FraudFlagged(FLAGGED_EVENT_IDENTIFIER,
+                    FraudFlagged.EVENT_TYPE, EventEnvelope.SCHEMA_VERSION, OUTSIDE_YEAR_BOUND,
+                    ACCOUNT_IDENTIFIER, TRANSACTION_IDENTIFIER, RISK_SCORE, TRIGGERED_RULES,
+                    ASSESSMENT_INSTANT, ACCOUNT_IDENTIFIER);
+
+            assertThatThrownBy(() -> writer.write(refused))
+                    .as("the document was applied after the row, or not at all")
+                    .isInstanceOf(IllegalArgumentException.class);
+            verify(repository, never()).save(any(OutboxEventEntity.class));
+        }
+
+        @Test
+        @DisplayName("a cleared assessment outside the document's year bound stores nothing")
+        void aClearedAssessmentOutsideTheYearBoundStoresNothing() {
+            FraudCleared refused = new FraudCleared(CLEARED_EVENT_IDENTIFIER,
+                    FraudCleared.EVENT_TYPE, EventEnvelope.SCHEMA_VERSION, OUTSIDE_YEAR_BOUND,
+                    ACCOUNT_IDENTIFIER, TRANSACTION_IDENTIFIER, ACCOUNT_IDENTIFIER,
+                    ASSESSMENT_INSTANT);
+
+            assertThatThrownBy(() -> writer.write(refused))
+                    .isInstanceOf(IllegalArgumentException.class);
+            verify(repository, never()).save(any(OutboxEventEntity.class));
+        }
+
+        @Test
+        @DisplayName("no component of either event is free text")
+        void noComponentOfEitherEventIsFreeText() {
+            assertThatThrownBy(() -> new FraudFlagged(FLAGGED_EVENT_IDENTIFIER,
+                    FraudFlagged.EVENT_TYPE, EventEnvelope.SCHEMA_VERSION,
+                    FLAGGED_ENVELOPE_INSTANT, ACCOUNT_IDENTIFIER, TRANSACTION_IDENTIFIER,
+                    RISK_SCORE, List.of("Card 4111111111111111"), ASSESSMENT_INSTANT,
+                    ACCOUNT_IDENTIFIER))
+                    .as("triggeredRules is the only repeated component, and it is closed")
+                    .isInstanceOf(IllegalArgumentException.class);
+            assertThat(FraudFlagged.RULE_IDENTIFIERS)
+                    .as("the closed set is what leaves this service no free-text field")
+                    .containsExactlyInAnyOrder(FraudFlagged.VELOCITY_RULE,
+                            FraudFlagged.AMOUNT_ANOMALY_RULE, FraudFlagged.MERCHANT_CATEGORY_RULE);
+        }
+
+        @Test
+        @DisplayName("an accepted assessment still reaches the table")
+        void anAcceptedAssessmentStillReachesTheTable() {
+            returnSavedArgument(repository);
+
+            assertThat(writer.write(flaggedEvent()).getEventType())
+                    .isEqualTo(FraudFlagged.EVENT_TYPE);
+            verify(repository, times(1)).save(any(OutboxEventEntity.class));
+        }
+    }
+
     @Nested
     @DisplayName("Row construction")
     @ExtendWith(MockitoExtension.class)

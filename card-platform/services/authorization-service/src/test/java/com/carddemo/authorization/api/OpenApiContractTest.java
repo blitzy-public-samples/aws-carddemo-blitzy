@@ -402,26 +402,43 @@ final class OpenApiContractTest {
     }
 
     /**
-     * Asserts the response contract names the contract every decline publishes under, the account it
-     * keys on, and the extra table the unresolved-card outcome records.
+     * Asserts the response contract says which account a decline names, and that reject code 0100 is
+     * not one of the outcomes a caller can be handed.
+     *
+     * <p>A security review found the earlier document describing reject code {@code 0100} as a decline
+     * naming the account the caller declared. That is the behaviour that was removed, so the document
+     * has to have stopped describing it: a reader who implements against a decline branch this service
+     * cannot answer with has been misled by the contract rather than by the code.
      */
     @Test
-    void theDocumentDescribesTheUnresolvedCardOutcome() {
+    void theDocumentDescribesWhichAccountADeclineNames() {
         String declined = String.valueOf(schemaOf("DeclinedAuthorization").get("description"));
         assertTrue(declined.contains("INVALID KEY"),
-                "the 0100 branch follows a keyed read that resolved no account");
+                "the document has to say where reject code 0100 is assigned");
         assertTrue(declined.contains("schemas/transaction-declined-v3.json"),
                 "every decline has to name the contract it publishes under, or a reader validates it"
                         + " against the wrong document");
-        assertTrue(declined.contains("the account the caller declared"),
-                "and it has to say whose account the 0100 branch names, because that account is the"
-                        + " message key and the subject a consumer attributes the reject row to");
+        assertTrue(declined.contains("app/cbl/CBTRN02C.cbl:L383-L384"),
+                "and it has to say which read resolves the account every branch names");
         assertTrue(declined.replaceAll("\\s+", " ").contains("refused before a decision"),
-                "and it has to say that a request naming no subject is refused rather than decided,"
-                        + " so no 0100 body reaches a caller without an account");
-        assertTrue(declined.contains("unresolved_card_attempt"),
-                "and it has to name the extra row that outcome records, which holds the one fact the"
-                        + " other three declines do not carry");
+                "and that a card resolving no row is refused rather than decided");
+        assertFalse(declined.contains("the account the caller declared"),
+                "no branch may describe a decision keyed on an account the request declared, which"
+                        + " is the finding this document was corrected for");
+        assertFalse(declined.contains("unresolved_card_attempt"),
+                "and no branch may name the withdrawn table, which migration V20 drops");
+
+        List<String> titles = asList(schemaOf("DeclinedAuthorization").get("allOf")).stream()
+                .map(OpenApiContractTest::asMap)
+                .filter(member -> member.containsKey("oneOf"))
+                .flatMap(member -> asList(member.get("oneOf")).stream())
+                .map(branch -> String.valueOf(asMap(branch).get("title")))
+                .toList();
+        assertEquals(3, titles.size(),
+                "three reject codes reach a caller as a decline, and 0100 is not one of them: "
+                        + titles);
+        assertTrue(titles.stream().noneMatch(title -> title.contains("0100")),
+                "no decline branch may describe reject code 0100: " + titles);
     }
 
     /**

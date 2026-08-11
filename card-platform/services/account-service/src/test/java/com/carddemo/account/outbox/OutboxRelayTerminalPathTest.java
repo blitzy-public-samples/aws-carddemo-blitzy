@@ -355,7 +355,6 @@ class OutboxRelayTerminalPathTest {
                 new AccountProperties.Outbox(
                         new AccountProperties.Outbox.Relay(500L, 4, "terminal-path-test",
                                 Duration.ofSeconds(30L), 5_000L, Duration.ofSeconds(10L)), 168L),
-                new AccountProperties.ProcessedEvent(720L, 168L),
                 new AccountProperties.Retention(3_600_000L),
                 new AccountProperties.Write(3_000L));
     }

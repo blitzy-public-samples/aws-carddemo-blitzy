@@ -212,8 +212,7 @@ public class GlobalExceptionHandler {
     }
 
     /**
-     * Answers {@code 422} for a card number that resolves no cross-reference row on a request that
-     * declared no account either.
+     * Answers {@code 422} for a card number that resolves no cross-reference row.
      *
      * <p>The card branch of {@code VALIDATE-INPUT-KEY-FIELDS} reads the cross-reference by the card
      * number the caller supplied, at {@code app/cbl/COTRN02C.cbl:L214-L223}. The {@code NOTFND} limb
@@ -221,26 +220,25 @@ public class GlobalExceptionHandler {
      * {@code WS-MESSAGE} at {@code app/cbl/COTRN02C.cbl:L625-L626} and re-sends the screen, so no
      * transaction is captured. The body carries that text verbatim.
      *
-     * <p>This is not reject reason {@code 0100}, which is a decision and reaches a caller as a
-     * decline body carrying that code. A request declaring an account is decided that way even when
-     * its card resolves nothing; a request declaring none establishes no subject to decide against,
-     * and this arm refuses it.
+     * <p>Every caller reaches this arm, whatever the request body declared. Reject reason
+     * {@code 0100} is a batch outcome: the feed record of {@code app/cpy/CVTRA06Y.cpy} carries no
+     * account, so {@code app/cbl/CBTRN02C.cbl:L394} has to take the subject out of the resolved
+     * cross-reference row. A card resolving no row therefore resolves no subject, and an account a
+     * caller merely named is not one, so nothing is decided and nothing is published.
      *
      * <p>The text is a fixed constant of {@link AuthorizationRequest} and holds no value read from
      * the request, so the refused card number reaches no caller and no log line. This arm precedes
      * {@link #onRefusedRequest(IllegalArgumentException)}, whose fixed text would otherwise replace
      * a source text with a sanitized one.
      *
-     * @param failure the refusal the decision path raised for a card with no cross-reference row on a
-     *                request that declared no account
+     * @param failure the refusal the decision path raised for a card with no cross-reference row
      * @return {@code 422} carrying the one source text
      */
     @ExceptionHandler(AuthorizationService.CardNumberNotFoundInCrossReferenceException.class)
     public ResponseEntity<ApiErrorResponse> onCardNumberNotFoundInCrossReference(
             AuthorizationService.CardNumberNotFoundInCrossReferenceException failure) {
 
-        log.info("Refusing an authorization request whose card holds no cross-reference row and "
-                + "which declared no account");
+        log.info("Refusing an authorization request whose card holds no cross-reference row");
         return unprocessable(ApiErrorResponse.UNPROCESSABLE,
                 List.of(AuthorizationRequest.CARD_NUMBER_NOT_FOUND_MESSAGE));
     }

@@ -30,7 +30,7 @@ Both source values use year-month-day order, so lexical and calendar ordering no
 
 **Figure 1 — Authorization credit and cross-reference projections with outcome infrastructure**
 
-Figure 1 shows all seven tables of the schema: the two source-derived projections, the unresolved-card record, the decision record, the replica-gap register, and the two additive messaging tables.
+Figure 1 shows all six tables of the schema: the two source-derived projections, the decision record, the replica-gap register, and the two additive messaging tables.
 
 ```mermaid
 erDiagram
@@ -54,14 +54,6 @@ erDiagram
         uuid source_event_id
         timestamptz source_occurred_at
         timestamptz observed_at
-    }
-    UNRESOLVED_CARD_ATTEMPT {
-        varchar16 transaction_id PK
-        varchar16 masked_card_number
-        numeric_11_2 amount
-        varchar4 decline_reason_code
-        varchar76 decline_reason_description
-        timestamptz attempted_at
     }
     AUTHORIZATION_DECISION {
         varchar16 transaction_id PK
@@ -111,10 +103,10 @@ erDiagram
 
 **Legend**
 
-- Entity boxes are tables in `carddemo_authorization.authorization_service`. All seven are shown.
-- **The diagram draws no relationship, because the schema declares none.** `V1` through `V14`, the whole of this schema's migration history, contain zero `REFERENCES` clauses, so there is no foreign key anywhere in this schema. A decision resolves a card in two independent repository calls: read `card_xref` by card number, then read `account_credit_snapshot` by the `account_id` that row returned. Nothing in the database joins the two or constrains one to the other, and a missing second row is reject reason 0101 rather than an integrity error.
+- Entity boxes are tables in `carddemo_authorization.authorization_service`. All six are shown.
+- **The diagram draws no relationship, because the schema declares none.** `V1` through `V20`, the whole of this schema's migration history, contain zero `REFERENCES` clauses, so there is no foreign key anywhere in this schema. A decision resolves a card in two independent repository calls: read `card_xref` by card number, then read `account_credit_snapshot` by the `account_id` that row returned. Nothing in the database joins the two or constrains one to the other, and a missing second row is reject reason 0101 rather than an integrity error.
 - `CARD_XREF` and `ACCOUNT_CREDIT_SNAPSHOT` derive from source layouts and hold event freshness metadata.
-- `AUTHORIZATION_DECISION`, `UNRESOLVED_CARD_ATTEMPT`, `REPLICA_GAP`, `OUTBOX_EVENT`, and `PROCESSED_EVENT` are additive.
+- `AUTHORIZATION_DECISION`, `REPLICA_GAP`, `OUTBOX_EVENT`, and `PROCESSED_EVENT` are additive. `UNRESOLVED_CARD_ATTEMPT` was a seventh, and `V20__unresolved_card_attempt_withdrawn.sql` drops it: a card that resolves no cross-reference row is refused rather than decided, so there is no attempt to record.
 - `REPLICA_GAP`, added by `V12__replica_gap.sql`, holds one row per account per replica stream whose record this service could not apply. `domain/AuthorizationService` refuses a decision that would read either replica row of an account named here, and the two replica listeners delete the row when a later record for that account applies. No time window expires it.
 - `AUTHORIZATION_DECISION.actor` is `VARCHAR(64)`, widened from `VARCHAR(8)` by `V7__cycle_exposure_reservation.sql`, which redefined `ck_authorization_decision_actor` to match.
 - `PROCESSED_EVENT` carries a two-column primary key. `V6` replaced the single-column key so the same event identifier consumed from two topics records two markers.
@@ -165,7 +157,9 @@ Migration `V5` adds the table. It is the row a caller's decision leaves behind. 
 | `decided_at` | `TIMESTAMP(6) WITH TIME ZONE` | Additive |
 | `event_id` | `UUID` | Additive. Nullable at the column since migration V13 and required of every new row by `ck_authorization_decision_event` since migration V15, which is `NOT VALID` so rows written while one outcome published nothing stay the record they are. Ties the row to the event the call published, and every decided call publishes one: `transaction-authorized-v2` on an approval and `transaction-declined-v3` on any of the four reject reasons, each keyed on the eleven-digit account the decision applies to |
 
-Nine named constraints hold the shape the columns alone cannot. `pk_authorization_decision` keys the table on the transaction. `ck_authorization_decision_outcome` is the important one. An approved row must carry neither reason column, and a declined row must carry both. No row can claim an outcome it does not explain. `ck_authorization_decision_approved_account` requires an account on every approval, because an approval without a resolved account is not reachable. `ck_authorization_decision_actor` bounds the actor to one to sixty-four printable characters, the width `V7` widened it to, `ck_authorization_decision_account_digits` to eleven digits, and `ck_authorization_decision_reason_digits` to four. `ck_authorization_decision_card_token` requires 64 lower-case hexadecimal characters, and `ck_authorization_decision_masked_card` accepts only the two forms masking produces: twelve asterisks and four digits, or sixteen asterisks when no digits are known. The ninth is `ck_authorization_decision_event`, which holds `event_id` and `account_id` present or absent together. Every decided outcome now names both, so the rows that name neither are the ones written before migration V15, which the `NOT VALID` clause leaves as the record they are.
+Ten named constraints hold the shape the columns alone cannot. `pk_authorization_decision` keys the table on the transaction. `ck_authorization_decision_outcome` is the important one. An approved row must carry neither reason column, and a declined row must carry both. No row can claim an outcome it does not explain. `ck_authorization_decision_approved_account` requires an account on every approval, because an approval without a resolved account is not reachable. `ck_authorization_decision_actor` bounds the actor to one to sixty-four printable characters, the width `V7` widened it to, `ck_authorization_decision_account_digits` to eleven digits, and `ck_authorization_decision_reason_digits` to four. `ck_authorization_decision_card_token` requires 64 lower-case hexadecimal characters, and `ck_authorization_decision_masked_card` accepts only the two forms masking produces: twelve asterisks and four digits, or sixteen asterisks when no digits are known. The ninth is `ck_authorization_decision_event`, which holds `event_id` and `account_id` present or absent together. Every decided outcome now names both, so the rows that name neither are the ones written before migration V15, which the `NOT VALID` clause leaves as the record they are.
+
+The tenth is `ck_authorization_decision_card_token_version`, added by `V22`. It holds `card_token_version` to one to three digits opening with a non-zero digit, the shape a card-token version takes. That column says which card-token key the stored token belongs to. This table holds no card number, so it cannot re-derive its own rows, and a diagnostic a key rotation has passed by is otherwise indistinguishable from a current one.
 
 One index serves the one question the table is actually asked. `ix_authorization_decision_decided_at` answers a time window, which is what the bounded retention delete reads. Two composites once stood beside it — `ix_authorization_decision_account_decided` on `(account_id, decided_at DESC)` for one account's recent decisions, and `ix_authorization_decision_actor` on `(actor, decided_at DESC)` for one operator's — and `V18__authorization_decision_index_pruning.sql` drops both. They were written for questions no code asked: the four repository read methods that would have used them had no production caller, so every authorization on the hot write path maintained two index entries nothing ever read. Both questions remain worth answering, and the answer is an endpoint with a bound on it rather than an index waiting for one; `suggested-next-tasks.md` carries the task, and the index belongs in the same change as the query that reads it.
 
@@ -175,7 +169,6 @@ The three columns with no source field close the gap those hops open. `app/cbl/C
 
 | Table | Provenance | Key point |
 | --- | --- | --- |
-| `unresolved_card_attempt` | Reason 0100 path in `CBTRN02C` plus additive capture | Keyed on the transaction identifier, because the row records one attempt. `account_id`, added by migration V19, names the subject the decision applied to, which the caller declared where the cross-reference read resolved none. It commits with the `authorization_decision` row and the `outbox_event` row of the same call, so the durable record and the published `transaction-declined-v3` event agree or neither exists |
 | `authorization_decision` | Additive audit state; no source program records who asked | `actor` is `VARCHAR(64)` and holds the whole authenticated principal, because `SEC-USR-ID PIC X(08)` bounds a signon identity and not an HTTP principal |
 | `outbox_event` | Additive; source ancestor is `CORPT00C:L517-L519` | Every row written from migration V19 forward carries the 11-digit account key, and `outbox/OutboxWriter` refuses any other form before a row is built. `ck_outbox_event_aggregate_id` still admits the 16-character transaction key that migration V4 permitted, because rows written before V19 carry it and the relay writes a column on every row it claims. Migration V19 records that division. Migration V8 adds `dead_letter_state` and `dead_letter_published_at` |
 | `processed_event` | Additive | Guards `AccountStateChanged` application |
@@ -388,7 +381,7 @@ An abandoned row is never marked published. That distinction is the whole reason
 
 A row reaches `ABANDONED` by either of two routes, and both are recorded the same way. One is a row whose ten attempts ran out. The other is a row whose failure is permanent: a payload the schema document refuses, or one no record type reads. `OutboxEventEntity.abandon` closes it outright rather than after ten identical refusals, because the tenth refusal would reach a conclusion the first already reached. That method writes the terminal state and the `REQUIRED` obligation in one write, before any diagnostic is attempted, so a broker that refuses the diagnostic leaves the obligation standing and a later pass offers it again.
 
-All four growing tables of this schema are swept on one hourly schedule, in bounded ordered batches of at most five hundred rows, each repeated until it comes back short or a thirty-second per-table ceiling stops it. `velocity_window` is the table that needed this: nothing reads a bucket once its span elapses, so every authorization otherwise left a row behind for ever. Its horizon comes from `FRAUD_VELOCITY_RETENTION_DAYS` and must exceed `carddemo.fraud.risk.velocity-window-minutes`, because a shorter horizon would delete the bucket a live authorization is counting into, and the service refuses to start when it does not. `fraud_assessment` is swept on the same schedule under `FRAUD_ASSESSMENT_RETENTION_DAYS`, the horizon its own `COMMENT ON TABLE` declares.
+Three of the four growing tables of this schema are swept on one hourly schedule, in bounded ordered batches of at most five hundred rows, each repeated until it comes back short or a thirty-second per-table ceiling stops it. `velocity_window` is the table that needed this: nothing reads a bucket once its span elapses, so every authorization otherwise left a row behind for ever. Its horizon comes from `FRAUD_VELOCITY_RETENTION_DAYS` and must exceed `carddemo.fraud.risk.velocity-window-minutes`, because a shorter horizon would delete the bucket a live authorization is counting into, and the service refuses to start when it does not. `fraud_assessment` is swept on the same schedule under `FRAUD_ASSESSMENT_RETENTION_DAYS`, the horizon its own `COMMENT ON TABLE` declares. `processed_event` is the fourth, and it is not swept: a duplicate-delivery claim is permanent, so no horizon can expire the row that makes a redelivery harmless.
 
 ### Notification database
 
@@ -669,11 +662,30 @@ erDiagram
     CARD {
         char16 card_number PK
         char64 card_token UK
+        varchar3 card_token_version
+        varchar7 card_token_provenance
         char11 account_id
         char3 card_verification_value
         char50 embossed_name
         date expiration_date
         char1 active_status
+    }
+    CARD_TOKEN_ROTATION {
+        uuid rotation_id PK
+        timestamptz started_at
+        timestamptz finished_at
+        varchar3 from_version
+        varchar3 to_version
+        integer rows_read
+        integer rows_rewritten
+        varchar64 actor
+    }
+    CARD_TOKEN_ROTATION_MAPPING {
+        uuid rotation_id PK
+        char64 previous_card_token PK
+        char64 card_token
+        varchar3 previous_version
+        varchar3 version
     }
     CARD_XREF {
         char16 card_number PK
@@ -713,6 +725,8 @@ erDiagram
 - **The diagram draws no relationship, because the schema declares no foreign key.** `domain/CardCrossReferenceReconciler` is the one path that reads both: on every card update that commits it reads the replica row by card number and compares its `account_id` against the card row's. Each table is reached by its own primary key, so there is no join to draw.
 - `OUTBOX_EVENT` publishes `CardUpdated`; `PROCESSED_EVENT` is reserved consumer infrastructure, unused because this service registers no listener.
 - `card_token` is derived, not stored from a source field. `V2__seed.sql` loads fifty literals computed under the build-scope key in `pom.xml`, and `CardTokenReconciler` re-derives every row under the deployment's own `CARD_TOKEN_SECRET` when the service starts, so no stored token belongs to a key this repository publishes.
+- `card_token_version` and `card_token_provenance`, added by `V10__card_token_version_and_rotation.sql`, say which card-token key a stored token belongs to and whether this deployment derived it. A seeded literal is a bootstrap and is corrected without being asked. A row this deployment derived is an identity three other stores hold, and moving it is a rotation an operator states.
+- `CARD_TOKEN_ROTATION` and `CARD_TOKEN_ROTATION_MAPPING` are what a rotation leaves behind. One audit row per run, and one row per re-keyed card carrying the token it held beside the token it holds now. **Neither draws a relationship line, on the same terms as the two tables above: the schema declares no foreign key.** One code path writes both, opening the audit row before the first mapping row of the run.
 
 #### `card`
 
@@ -720,6 +734,8 @@ erDiagram
 | --- | --- | --- | --- | --- |
 | `CARD-NUM` | `PIC X(16)`, `app/cpy/CVACT02Y.cpy:L5` | `card_number` | `CHAR(16)` | Primary key |
 | No source field | Keyed `HMAC-SHA-256` of `CARD-NUM` under `CARD_TOKEN_SECRET` | `card_token` | `CHAR(64)` | Additive. Unique, constrained to 64 lower-case hexadecimal characters, and the only card identifier any external surface accepts |
+| No source field | Version of the key `card_token` was taken under | `card_token_version` | `VARCHAR(3)` | Additive, `V10`. One to three digits, defaulting to `1`, which is the version the seeded literals carry |
+| No source field | Whether this deployment derived `card_token` | `card_token_provenance` | `VARCHAR(7)` | Additive, `V10`. `SEED` or `DERIVED`. The distinction separates correcting a checked-in literal from moving an identity |
 | `CARD-ACCT-ID` | `PIC 9(11)`, line 6 | `account_id` | `CHAR(11)` | Indexed, leading zeros retained |
 | `CARD-CVV-CD` | `PIC 9(03)`, line 7 | `card_verification_value` | `CHAR(3)` | Never serialized |
 | `CARD-EMBOSSED-NAME` | `PIC X(50)`, line 8 | `embossed_name` | `CHAR(50)` | Updated by card service |
@@ -734,6 +750,14 @@ The three source fields map exactly as they do in authorization, and the same th
 **This replica is seeded, then reconciled on the path this service owns.** `V1__schema.sql` creates it and `V2__seed.sql` loads the fifty fixture rows from `app/data/ASCII/cardxref.txt`. `domain/CardCrossReferenceReconciler` then reads the row of every card an update commits, inside that update's transaction under `MANDATORY` propagation. It brings the row's `account_id` into step with the card row that owns the mapping, and no event refreshes it, because this service registers no listener. `source_event_id` and `source_occurred_at` therefore stay null, while `observed_at` is rewritten by each reconciliation, because the column records when this service last confirmed the row.
 
 Two consequences follow, and both matter for what a reader should expect. Card update cannot repair a missing cross-reference row, because the card record carries no customer identifier to repair it with. That outcome is counted rather than repaired, and a card nobody updates is never compared at all. The reconciliation therefore closes divergence on this one path, and its three outcomes are metered as `carddemo.card.xref.agreed`, `carddemo.card.xref.corrected` and `carddemo.card.xref.missing`. [The decision log](decision-log.md) records both, and [next tasks](suggested-next-tasks.md) carries the divergence that remains.
+
+#### `card_token_rotation` and `card_token_rotation_mapping`
+
+Both tables are additive in full. `app/cpy/CVACT02Y.cpy` declares no token, so it declares nothing a rotation could move, and `app/bms/COCRDSL.bms:L99` shows a card in full on the screen the source drew.
+
+They exist because a card token is a keyed code and four places hold one. Only `card` holds a card number, so only this service can derive a replacement. `statement_transaction.card_token` and `notification_log.card_token` in the notification service, `authorization_decision.card_token` in the authorization service, and any granted `SCOPE_CARD` authority hold a value they cannot recompute. A security review found this service re-deriving its own column at start-up and leaving all four naming a card nobody could reach.
+
+`card_token_rotation` records one run that moved something: the window, the version it moved from and to, the rows it read and rewrote, and the identity the process ran under. A run that only corrected seeded literals writes no row, because that is a bootstrap. `card_token_rotation_mapping` records one re-keyed card, keyed on the token another store is still holding, because that is the column a re-key statement joins on. Neither table holds a card number, a card verification value or key material. Read in the other direction the mapping is the rollback, and `services/card-service/README.md` carries the procedure both directions use.
 
 ## Key derivations from dataset definitions
 
@@ -777,15 +801,17 @@ The [traceability matrix](traceability-matrix.md) records each omission above, s
 
 The figures above name tables and columns, which is what a reader needs to follow the data. What an operator needs is the rest of the schema: the indexes a query plan can use and the named constraints that refuse a bad row. Both are enumerated here in full, one table per service, so no index and no named constraint is left to be discovered by reading a migration.
 
-**How these tables were produced, so a reader can reproduce them**. Every migration under `services/*/src/main/resources/db/migration/` was applied to an empty `postgres:18.4` database in version order, one schema per service. The tables below were then read out of `pg_indexes` and `pg_constraint`. That is the whole method, and it is why the appendix reflects `ALTER`, `DROP` and `RENAME`. An index on a table a later migration drops is absent here, and a constraint a later migration redefines appears once, in its final form. The totals are **49 indexes and 133 named constraints**.
+**How these tables were produced, so a reader can reproduce them**. Every migration under `services/*/src/main/resources/db/migration/` was applied to an empty `postgres:18.4` database in version order, one schema per service. The tables below were then read out of `pg_indexes` and `pg_constraint`. That is the whole method, and it is why the appendix reflects `ALTER`, `DROP` and `RENAME`. An index on a table a later migration drops is absent here, and a constraint a later migration redefines appears once, in its final form. The totals are **42 indexes and 146 named constraints**.
 
-Three consequences of reading the catalog rather than the statements are worth naming, because each is a place a hand-kept appendix drifts. The migrations contain 48 `CREATE INDEX` statements and the database holds 46 indexes: `V7__account_customer_link.sql` drops the account service's `card_xref` replica, and the two indexes on it go with the table. Notification's `V5__rendered_not_delivered.sql` renames `ix_notification_log_attempted_at` to `ix_notification_log_rendered_at`, so the appendix lists the new name once rather than both. And a plain `grep -c 'CONSTRAINT '` over the same files reports more than 131, because it also counts the `DROP CONSTRAINT` and `COMMENT ON CONSTRAINT` lines that reference a constraint rather than declaring one.
+Three consequences of reading the catalog rather than the statements are worth naming, because each is a place a hand-kept appendix drifts. The migrations carry 56 `CREATE INDEX` statements naming 55 indexes, and the database holds 41. Fifteen of those names are gone and one arrived under another name.
 
-Eight primary keys are declared inline without a `CONSTRAINT` clause, so PostgreSQL generates the name. They are listed under their own schema below rather than left out, because an operator reading a constraint violation needs to recognise a generated name too. Three services replaced the generated `processed_event_pkey` with the named `pk_processed_event` on `(event_id, consumed_topic)`: `V6` in the authorization service, and the matching migrations in the ledger and notification services. That is why the generated name appears in a migration and not in this appendix.
+`V7__account_customer_link.sql` drops the account service's `card_xref` replica, and the two indexes on it go with the table. Authorization `V18` prunes two decision indexes and `V20` withdraws two more with the table they served, and two fraud indexes were superseded. Six more names go together, one per schema: every service drops `ix_processed_event_processed_at`, because a duplicate-delivery claim is now permanent and nothing scans that column for a horizon to delete by. Notification's `V5__rendered_not_delivered.sql` renames `ix_notification_log_attempted_at` to `ix_notification_log_rendered_at`, so the appendix lists the new name once rather than both. And a plain `grep -c 'CONSTRAINT '` over the same files reports more than 132, because it also counts the `DROP CONSTRAINT` and `COMMENT ON CONSTRAINT` lines that reference a constraint rather than declaring one.
+
+Seven primary keys are declared inline without a `CONSTRAINT` clause, so PostgreSQL generates the name. They are listed under their own schema below rather than left out, because an operator reading a constraint violation needs to recognise a generated name too. Three services replaced the generated `processed_event_pkey` with the named `pk_processed_event` on `(event_id, consumed_topic)`: `V6` in the authorization service, and the matching migrations in the ledger and notification services. That is why the generated name appears in a migration and not in this appendix.
 
 The Migration column names the migration that put the object into its final form, which for a redefined constraint is the migration that redefined it rather than the one that first declared it.
 
-### Authorization schema — 12 indexes, 37 named constraints
+### Authorization schema — 9 indexes, 37 named constraints
 
 | Index | Table | Columns | Unique | Partial predicate | Migration |
 | --- | --- | --- | --- | --- | --- |
@@ -797,9 +823,6 @@ The Migration column names the migration that put the object into its final form
 | `ix_outbox_event_dead_letter_required` | `outbox_event` | `last_attempt_at` | No | `dead_letter_state = 'REQUIRED'` | `V8__outbox_dead_letter_state.sql` |
 | `ix_outbox_event_pending` | `outbox_event` | `created_at, event_id` | No | `published = false` | `V1__schema.sql` |
 | `ix_outbox_event_published_at` | `outbox_event` | `published_at` | No | `published = true` | `V1__schema.sql` |
-| `ix_processed_event_processed_at` | `processed_event` | `processed_at` | No | — | `V1__schema.sql` |
-| `idx_unresolved_card_attempt_attempted_at` | `unresolved_card_attempt` | `attempted_at` | No | — | `V3__unresolved_card_attempt.sql` |
-| `idx_unresolved_card_attempt_account_id` | `unresolved_card_attempt` | `account_id` | No | — | `V19__unresolved_decline_names_its_account.sql` |
 | `ix_outbox_event_aggregate_head` | `outbox_event` | `aggregate_id, created_at, event_id` | No | `WHERE relay_state IN ('PENDING', 'CLAIMED')` | `V17__outbox_aggregate_head_index.sql` |
 
 | Named constraint | Table | Kind | Migration |
@@ -812,6 +835,7 @@ The Migration column names the migration that put the object into its final form
 | `ck_authorization_decision_actor` | `authorization_decision` | Check | `V7__cycle_exposure_reservation.sql` |
 | `ck_authorization_decision_approved_account` | `authorization_decision` | Check | `V5__authorization_decision.sql` |
 | `ck_authorization_decision_card_token` | `authorization_decision` | Check | `V5__authorization_decision.sql` |
+| `ck_authorization_decision_card_token_version` | `authorization_decision` | Check | `V22__authorization_decision_card_token_version.sql` |
 | `ck_authorization_decision_event` | `authorization_decision` | Check | `V13__decision_without_event.sql` |
 | `ck_authorization_decision_masked_card` | `authorization_decision` | Check | `V5__authorization_decision.sql` |
 | `ck_authorization_decision_outcome` | `authorization_decision` | Check | `V5__authorization_decision.sql` |
@@ -840,18 +864,16 @@ The Migration column names the migration that put the object into its final form
 | `ck_replica_gap_order` | `replica_gap` | Check | `V12__replica_gap.sql` |
 | `ck_replica_gap_stream` | `replica_gap` | Check | `V12__replica_gap.sql` |
 | `pk_replica_gap` | `replica_gap` | Primary Key | `V12__replica_gap.sql` |
-| `ck_unresolved_card_attempt_account_id` | `unresolved_card_attempt` | Check, `NOT VALID` | `V19__unresolved_decline_names_its_account.sql` |
 
-Generated primary-key names in this schema, declared inline without a `CONSTRAINT` clause: `account_credit_snapshot_pkey`, `card_xref_pkey`, `unresolved_card_attempt_pkey`.
+Generated primary-key names in this schema, declared inline without a `CONSTRAINT` clause: `account_credit_snapshot_pkey` and `card_xref_pkey`.
 
-### Ledger posting schema — 8 indexes, 18 named constraints
+### Ledger posting schema — 7 indexes, 18 named constraints
 
 | Index | Table | Columns | Unique | Partial predicate | Migration |
 | --- | --- | --- | --- | --- | --- |
 | `ix_outbox_event_claimable` | `outbox_event` | `relay_state, next_attempt_at` | No | — | `V1__schema.sql` |
 | `ix_outbox_event_pending` | `outbox_event` | `created_at, event_id` | No | `published = false` | `V1__schema.sql` |
 | `ix_outbox_event_published_at` | `outbox_event` | `published_at` | No | `published = true` | `V1__schema.sql` |
-| `ix_processed_event_processed_at` | `processed_event` | `processed_at` | No | — | `V1__schema.sql` |
 | `idx_rejected_transaction_transaction_id` | `rejected_transaction` | `transaction_id` | No | — | `V1__schema.sql` |
 | `ix_rejected_transaction_rejected_at` | `rejected_transaction` | `rejected_at` | No | — | `V1__schema.sql` |
 | `ix_outbox_event_aggregate_head` | `outbox_event` | `aggregate_id, created_at, event_id` | No | `WHERE relay_state IN ('PENDING', 'CLAIMED')` | `V9__outbox_aggregate_head_index.sql` |
@@ -882,7 +904,7 @@ Generated primary-key names in this schema, declared inline without a `CONSTRAIN
 | --- | --- | --- | --- |
 | Generated by PostgreSQL | `transaction_category_balance` | `account_id, type_code, category_code` | `V1__…sql` |
 
-### Fraud detection schema — 9 indexes, 21 named constraints
+### Fraud detection schema — 8 indexes, 21 named constraints
 
 | Index | Table | Columns | Unique | Partial predicate | Migration |
 | --- | --- | --- | --- | --- | --- |
@@ -892,7 +914,6 @@ Generated primary-key names in this schema, declared inline without a `CONSTRAIN
 | `ix_outbox_event_published_at` | `outbox_event` | `published_at` | No | `WHERE published = TRUE` | `V1__schema.sql` |
 | `ix_fraud_assessment_assessed_at` | `fraud_assessment` | `assessed_at` | No | — | `V1__schema.sql` |
 | `ix_outbox_event_dead_letter_required` | `outbox_event` | `last_attempt_at` | No | `dead_letter_state = 'REQUIRED'` | `V5__outbox_dead_letter_state.sql` |
-| `ix_processed_event_processed_at` | `processed_event` | `processed_at` | No | — | `V1__schema.sql` |
 | `ix_outbox_event_aggregate_head` | `outbox_event` | `aggregate_id, created_at, event_id` | No | `WHERE relay_state IN ('PENDING', 'CLAIMED')` | `V8__outbox_aggregate_head_index.sql` |
 | `ix_velocity_window_start` | `velocity_window` | `window_start` | No | — | `V1__schema.sql` |
 
@@ -920,14 +941,13 @@ Generated primary-key names in this schema, declared inline without a `CONSTRAIN
 | `ck_velocity_window_total_nonnegative` | `velocity_window` | Check | `V1__schema.sql` |
 | `pk_velocity_window` | `velocity_window` | Primary Key | `V1__schema.sql` |
 
-### Notification schema — 5 indexes, 14 named constraints
+### Notification schema — 4 indexes, 14 named constraints
 
 | Index | Table | Columns | Unique | Partial predicate | Migration |
 | --- | --- | --- | --- | --- | --- |
 | `ix_cardholder_context_observed_at` | `cardholder_context` | `observed_at` | No | — | `V1__schema.sql` |
 | `ix_notification_log_card_token` | `notification_log` | `card_token, rendered_at DESC` | No | — | `V1__schema.sql` |
 | `ix_notification_log_rendered_at` | `notification_log` | `rendered_at` | No | — | `V5__rendered_not_delivered.sql` |
-| `ix_processed_event_processed_at` | `processed_event` | `processed_at` | No | — | `V1__schema.sql` |
 | `ix_statement_transaction_processing_timestamp` | `statement_transaction` | `processing_timestamp` | No | — | `V1__schema.sql` |
 
 | Named constraint | Table | Kind | Migration |
@@ -947,7 +967,7 @@ Generated primary-key names in this schema, declared inline without a `CONSTRAIN
 | `ck_statement_transaction_merchant_digits` | `statement_transaction` | Check | `V1__schema.sql` |
 | `pk_statement_transaction` | `statement_transaction` | Primary Key | `V1__schema.sql` |
 
-### Account schema — 7 indexes, 23 named constraints
+### Account schema — 6 indexes, 23 named constraints
 
 | Index | Table | Columns | Unique | Partial predicate | Migration |
 | --- | --- | --- | --- | --- | --- |
@@ -956,7 +976,6 @@ Generated primary-key names in this schema, declared inline without a `CONSTRAIN
 | `ix_outbox_event_dead_letter_required` | `outbox_event` | `last_attempt_at` | No | `dead_letter_state = 'REQUIRED'` | `V5__outbox_dead_letter_state.sql` |
 | `ix_outbox_event_pending` | `outbox_event` | `created_at, event_id` | No | `published = false` | `V1__schema.sql` |
 | `ix_outbox_event_published_at` | `outbox_event` | `published_at` | No | `published = true` | `V1__schema.sql` |
-| `ix_processed_event_processed_at` | `processed_event` | `processed_at` | No | — | `V1__schema.sql` |
 | `ix_outbox_event_aggregate_head` | `outbox_event` | `aggregate_id, created_at, event_id` | No | `WHERE relay_state IN ('PENDING', 'CLAIMED')` | `V10__outbox_aggregate_head_index.sql` |
 
 | Named constraint | Table | Kind | Migration |
@@ -987,7 +1006,7 @@ Generated primary-key names in this schema, declared inline without a `CONSTRAIN
 
 Generated primary-key names in this schema, declared inline without a `CONSTRAINT` clause: `account_pkey`, `customer_pkey`, `us_phone_area_code_pkey`, `us_state_code_pkey`, `us_state_zip_prefix_pkey`.
 
-### Card schema — 8 indexes, 20 named constraints
+### Card schema — 8 indexes, 33 named constraints
 
 | Index | Table | Columns | Unique | Partial predicate | Migration |
 | --- | --- | --- | --- | --- | --- |
@@ -997,17 +1016,30 @@ Generated primary-key names in this schema, declared inline without a `CONSTRAIN
 | `ix_outbox_event_claimable` | `outbox_event` | `relay_state, next_attempt_at` | No | — | `V1__schema.sql` |
 | `ix_outbox_event_pending` | `outbox_event` | `created_at, event_id` | No | `published = false` | `V1__schema.sql` |
 | `ix_outbox_event_published_at` | `outbox_event` | `published_at` | No | `published = true` | `V1__schema.sql` |
-| `ix_processed_event_processed_at` | `processed_event` | `processed_at` | No | — | `V1__schema.sql` |
 | `ix_outbox_event_aggregate_head` | `outbox_event` | `aggregate_id, created_at, event_id` | No | `WHERE relay_state IN ('PENDING', 'CLAIMED')` | `V7__outbox_aggregate_head_index.sql` |
+| `ix_card_token_rotation_mapping_previous` | `card_token_rotation_mapping` | `previous_card_token` | No | — | `V10__card_token_version_and_rotation.sql` |
 
 | Named constraint | Table | Kind | Migration |
 | --- | --- | --- | --- |
 | `ck_card_account_id_digits` | `card` | Check | `V1__schema.sql` |
 | `ck_card_active_status` | `card` | Check | `V5__xref_reconciliation_and_status_domain.sql` |
 | `ck_card_card_token_hex` | `card` | Check | `V1__schema.sql` |
+| `ck_card_card_token_provenance` | `card` | Check | `V10__card_token_version_and_rotation.sql` |
+| `ck_card_card_token_version` | `card` | Check | `V10__card_token_version_and_rotation.sql` |
 | `ck_card_verification_value_digits` | `card` | Check | `V1__schema.sql` |
 | `pk_card` | `card` | Primary Key | `V1__schema.sql` |
 | `uq_card_card_token` | `card` | Unique | `V1__schema.sql` |
+| `ck_card_token_rotation_counts` | `card_token_rotation` | Check | `V10__card_token_version_and_rotation.sql` |
+| `ck_card_token_rotation_from_version` | `card_token_rotation` | Check | `V10__card_token_version_and_rotation.sql` |
+| `ck_card_token_rotation_to_version` | `card_token_rotation` | Check | `V10__card_token_version_and_rotation.sql` |
+| `ck_card_token_rotation_window` | `card_token_rotation` | Check | `V10__card_token_version_and_rotation.sql` |
+| `pk_card_token_rotation` | `card_token_rotation` | Primary Key | `V10__card_token_version_and_rotation.sql` |
+| `ck_card_token_rotation_mapping_current_hex` | `card_token_rotation_mapping` | Check | `V10__card_token_version_and_rotation.sql` |
+| `ck_card_token_rotation_mapping_moved` | `card_token_rotation_mapping` | Check | `V10__card_token_version_and_rotation.sql` |
+| `ck_card_token_rotation_mapping_previous_hex` | `card_token_rotation_mapping` | Check | `V10__card_token_version_and_rotation.sql` |
+| `ck_card_token_rotation_mapping_previous_version` | `card_token_rotation_mapping` | Check | `V10__card_token_version_and_rotation.sql` |
+| `ck_card_token_rotation_mapping_version` | `card_token_rotation_mapping` | Check | `V10__card_token_version_and_rotation.sql` |
+| `pk_card_token_rotation_mapping` | `card_token_rotation_mapping` | Primary Key | `V10__card_token_version_and_rotation.sql` |
 | `ck_card_xref_account_id_digits` | `card_xref` | Check | `V1__schema.sql` |
 | `ck_card_xref_customer_id_digits` | `card_xref` | Check | `V1__schema.sql` |
 | `ck_card_xref_source_pairing` | `card_xref` | Check | `V1__schema.sql` |
@@ -1029,13 +1061,187 @@ Read from the catalog after every migration was applied, so this table is the me
 
 | Service | Indexes | Named constraints | Generated primary-key names |
 | --- | ---: | ---: | ---: |
-| Authorization | 12 | 37 | 3 |
-| Ledger posting | 8 | 18 | 0 |
-| Fraud detection | 9 | 21 | 0 |
-| Notification | 5 | 14 | 0 |
-| Account | 7 | 23 | 5 |
-| Card | 8 | 20 | 0 |
-| **Total** | **49** | **133** | **8** |
+| Authorization | 9 | 37 | 2 |
+| Ledger posting | 7 | 18 | 0 |
+| Fraud detection | 8 | 21 | 0 |
+| Notification | 4 | 14 | 0 |
+| Account | 6 | 23 | 5 |
+| Card | 8 | 33 | 0 |
+| **Total** | **42** | **146** | **7** |
+
+## Subject data: purpose, retention, export and erasure
+
+A security review found that this platform could not reliably discover or fulfil a subject-access,
+portability or erasure request. Every store held a classification in its catalogue comment, and no
+document put them together. No procedure reached them in order. Nothing said what a retained broker
+record or a backup meant for a request. This section is that answer.
+
+Read what it is and what it is not before using it. It is a complete inventory and an executable
+operator procedure. It is not an orchestration: no endpoint, event, command or scheduled task on this
+platform erases or exports a subject. The four schemas a request reaches are four separate databases,
+and no service may read into another. [Suggested next tasks](suggested-next-tasks.md) carries the
+orchestration, and [the decision log](decision-log.md) records why a procedure came first.
+
+### The policy, and the two things a deployment decides
+
+Purpose is fixed by the source system and stated per store below. Retention falls into four classes,
+and every table on this platform is in one of them.
+
+| Class | Meaning | What ends a row |
+| :--- | :--- | :--- |
+| `relationship` | The row lives as long as the relationship it describes | A deliberate act on a named subject, never a timer |
+| A window | A span in configuration, applied by a sweep | The sweep, on its own schedule |
+| `reference` | Lookup data describing no person | Nothing |
+| `permanent` | A claim or an audit record | Nothing |
+
+Two decisions are the deployment's. The first is **the jurisdiction's limits**, which fix the windows.
+Each window is one setting, listed in [onboarding](onboarding.md).
+
+This platform ships 400 days for the statement read model and 365 days for the authorization
+decisions. It ships 90 days for the render log, the fraud assessments and the ledger rejects, and 7
+days for the velocity windows. It ships 168 hours for a published outbox row and for the broker log.
+
+The second decision is **whether a stored card verification value is kept**. [Business rule
+flags](business-rule-flags.md) entry D4 carries that question, and the card service holds the value
+under a formal exception until it is answered.
+
+### Every store that holds subject data
+
+Twenty-three of the platform's thirty-seven tables hold something about a subject. The other fourteen
+are reference data, duplicate-delivery claims and rotation audit rows, and they are listed nowhere
+below because a request does not reach them.
+
+| Schema | Table | Class | What it holds about the subject | Reached by |
+| :--- | :--- | :--- | :--- | :--- |
+| `account_service` | `customer` | yes | Name, postal address, two telephone numbers, Social Security Number, government-issued identifier, date of birth, electronic funds transfer account, credit score | `customer_id` |
+| `account_service` | `account` | pseudonymous | Balances, credit limit, cycle accumulators, open and expiry dates | `account_id` |
+| `account_service` | `account_customer_link` | pseudonymous | The account-to-customer pairing | either identifier |
+| `account_service` | `outbox_event` | pseudonymous | Published account and customer events, payload included | `aggregate_id` |
+| `card_service` | `card` | yes | Full card number, embossed name, card verification value, expiry, status, card token | `account_id` |
+| `card_service` | `card_xref` | pseudonymous | Card-to-account-to-customer identifiers | `account_id` or `customer_id` |
+| `card_service` | `outbox_event` | pseudonymous | Published card events, payload included | `aggregate_id` |
+| `authorization_service` | `card_xref` | pseudonymous | Card-to-account-to-customer identifiers | `account_id` or `customer_id` |
+| `authorization_service` | `account_credit_snapshot` | pseudonymous | Credit limit, cycle accumulators, reservations | `account_id` |
+| `authorization_service` | `authorization_decision` | pseudonymous | One decision: masked card, card token, amount, outcome | `account_id` |
+| `authorization_service` | `replica_gap` | pseudonymous | Accounts whose replica refresh failed | `account_id` |
+| `authorization_service` | `outbox_event` | pseudonymous | Published decision events, payload included | `aggregate_id` |
+| `ledger_service` | `transaction` | pseudonymous | One posted transaction: card number, amount, merchant, description | `account_id` |
+| `ledger_service` | `transaction_category_balance` | pseudonymous | Category balances per account | `account_id` |
+| `ledger_service` | `account_balance_projection` | pseudonymous | Balance and cycle accumulators | `account_id` |
+| `ledger_service` | `rejected_transaction` | pseudonymous | A refused record, held whole | `account_id` inside the block |
+| `ledger_service` | `outbox_event` | pseudonymous | Published posting events, payload included | `aggregate_id` |
+| `fraud_service` | `fraud_assessment` | pseudonymous | Risk score and triggered rules per transaction | `account_id` |
+| `fraud_service` | `velocity_window` | pseudonymous | Counts and sums per account per window | `account_id` |
+| `fraud_service` | `outbox_event` | pseudonymous | Published assessment events, payload included | `aggregate_id` |
+| `notification_service` | `cardholder_context` | yes | Name, postal address, credit score, the ten fields one alert reports | `account_id` |
+| `notification_service` | `statement_transaction` | pseudonymous | Card-token-keyed history: masked card, amounts, merchant | `card_token` |
+| `notification_service` | `notification_log` | pseudonymous | One render attempt: card token, masked card | `card_token` |
+
+### Finding one subject
+
+Every store above is reached from a named customer through four hops, and the order is forced by what
+each row carries. The customer row is the only one holding a name. Account rows carry no customer
+identifier at all, so `account_customer_link` is the hop from `customer_id` to `account_id`. The card
+service is the only store holding a card number, so it is the hop from `account_id` to a card token.
+`notification_service` is keyed by that token and holds no card number.
+
+```bash
+# 1. The customer, by name, in the account database. This is the only lookup by name on the platform.
+psql -d carddemo_account -c \
+  "SELECT customer_id FROM account_service.customer
+     WHERE upper(btrim(last_name)) = upper('$LAST_NAME')"
+
+# 2. Every account of that customer.
+psql -d carddemo_account -c \
+  "SELECT account_id FROM account_service.account_customer_link WHERE customer_id = '$CUSTOMER_ID'"
+
+# 3. Every card and card token of those accounts, in the card database.
+psql -d carddemo_card -c \
+  "SELECT card_number, card_token FROM card_service.card WHERE account_id = ANY('{$ACCOUNT_IDS}')"
+
+# 4. A rotated card token names the same card under an earlier key, and another store may still hold
+#    it. Include both, or a history row survives an erasure keyed on the current token.
+psql -d carddemo_card -c \
+  "SELECT previous_card_token FROM card_service.card_token_rotation_mapping
+     WHERE card_token = ANY('{$CARD_TOKENS}')"
+```
+
+### Export
+
+An export answers with every row the inventory names, keyed by the identifiers step 1 through 4
+produced. Four databases means four connections, and the exports are independent of each other.
+
+```bash
+# The account database: the person, the accounts, the pairing.
+psql -d carddemo_account -c "\copy (SELECT * FROM account_service.customer WHERE customer_id = '$CUSTOMER_ID') TO 'customer.csv' CSV HEADER"
+# The card database, the authorization database, the ledger database, the fraud database and the
+# notification database follow the same shape, each filtered by account_id or by card token.
+```
+
+Two rules govern what an export may contain. **A card number and a card verification value are not
+exported.** The subject may be told a card exists and be shown its masked form, which is what every
+response body on this platform already carries. **A card token is exported as itself.** It is the key
+the subject's own history rows are keyed by, and it names no card without the key that derived it.
+
+### Erasure
+
+Order is forced, and getting it wrong rebuilds what was just erased. Clear an upstream row before its
+projections, because a `CustomerContextChanged` published afterwards would restore the projection.
+Erase the projections before the pairing that finds them, because the pairing is how the next store is
+reached.
+
+1. **Notification.** Delete the `statement_transaction` and `notification_log` rows of every card
+   token, current and previous, then the `cardholder_context` row of every account.
+2. **Fraud.** Delete the `fraud_assessment` and `velocity_window` rows of every account.
+3. **Ledger.** Decide first: a posted transaction is a financial record, and a jurisdiction that
+   requires its retention outranks an erasure request for it. Where erasure applies, delete the
+   `transaction`, `transaction_category_balance`, `account_balance_projection` and
+   `rejected_transaction` rows of every account.
+4. **Authorization.** Delete the `authorization_decision`, `account_credit_snapshot`, `replica_gap`
+   and `card_xref` rows of every account.
+5. **Card.** Delete the `card` and `card_xref` rows of every account. This is the step that removes
+   the full card numbers and the card verification values.
+6. **Account.** Delete the `account` rows, then `account_customer_link`, then the `customer` row. The
+   customer row is last, because the pairing above it is how every earlier step was found.
+7. **Outboxes.** Delete the rows of all five `outbox_event` tables whose `aggregate_id` is one of the
+   accounts. A published row is already gone if it is older than the window; an unpublished one is an
+   event that has not been sent and must not be.
+
+Nothing on this platform deletes a row of `card`, `card_xref`, `customer` or `account` by itself, so
+every statement above is an operator's. A duplicate-delivery claim in `processed_event` is deliberately
+left alone. It holds an event identifier and a topic name, and describes no person. Deleting one would
+let a redelivery re-apply an effect that has just been erased.
+
+### What a retained broker record and a backup mean
+
+Neither is reachable by a statement, and both age out rather than being erased. The broker keeps a
+published record for `KAFKA_LOG_RETENTION_HOURS`, 168 hours as shipped, after which the segment is
+deleted whether anything read it or not. Until then a record of `CustomerContextChanged` holds the ten
+cardholder fields, and a replay of it would rebuild the projection step 1 erased. An erasure therefore
+either waits out that window before it is called complete, or the deployment shortens the window and
+says so.
+
+A backup is a point in time and holds whatever the platform held then. A restore undoes an erasure by
+definition. The obligation is to record which backups predate a completed erasure. Any of those
+backups that is restored has the erasure re-applied to it.
+[deploy/k8s/README.md](../deploy/k8s/README.md) carries the encryption those backups need under
+"Encryption at rest".
+
+### The completion record
+
+A request that leaves no record cannot be shown to have been fulfilled. One run writes down six
+things.
+
+- The request identifier and the date it was received.
+- The subject, and the identifiers resolved at each of the four hops.
+- The row count each statement reported, per store.
+- The identity that ran the statements.
+- The moment the broker window covering the last published event expires.
+- The backups that predate that moment.
+
+This platform ships no table for that record, because a table inside a service would be the one store
+an erasure could not erase. It belongs in the deployment's own case management, and [suggested next
+tasks](suggested-next-tasks.md) carries the audited orchestration that would write it.
 
 ## Reference data
 

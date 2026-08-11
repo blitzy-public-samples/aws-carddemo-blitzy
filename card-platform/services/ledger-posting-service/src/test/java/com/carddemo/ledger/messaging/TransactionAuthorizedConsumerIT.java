@@ -27,6 +27,9 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
@@ -394,6 +397,61 @@ public class TransactionAuthorizedConsumerIT {
                 assertNoWarningOrError(output, eventId);
             }
         }
+
+        /**
+         * Asserts a claim written long ago still refuses its redelivery, because nothing expires one.
+         *
+         * <p>This service once deleted a claim 720 hours after it was written, checked at start-up
+         * against twice the broker's own log retention. That relationship bounds how long the broker
+         * can redeliver a record and nothing else. A record archived, restored from a backup or
+         * deliberately replayed after the horizon reached a guard that had forgotten it, and the
+         * posting applied a second time: a transaction row, a category balance and the account
+         * balance projection all moved again.
+         *
+         * <p>The claim below is stamped two thousand days back, which is further past that horizon
+         * than any demo volume would ever reach. The redelivery still finds it and still changes
+         * nothing, which is the property {@code V11__processed_event_claims_are_permanent.sql} states
+         * in the catalogue.
+         */
+        @Test
+        @DisplayName("a claim written two thousand days ago still refuses its redelivery")
+        void anAncientClaimStillRefusesItsRedelivery() {
+            UUID eventId = UUID.randomUUID();
+            Instant longBefore = Instant.now().minus(Duration.ofDays(2000))
+                    .truncatedTo(ChronoUnit.MILLIS);
+            jdbc.update("INSERT INTO " + PROCESSED_EVENT_TABLE
+                            + " (event_id, processed_at, consumed_topic) VALUES (?, ?, ?)",
+                    eventId, OffsetDateTime.ofInstant(longBefore, ZoneOffset.UTC),
+                    authorizedTopic());
+
+            BalanceSnapshot balanceBefore = balanceSnapshot(ACCOUNT_ID);
+            BigDecimal categoryBefore = categoryBalance(ACCOUNT_ID);
+            long duplicatesBefore = counterValue(
+                    counter(TRANSACTION_OUTCOME_METER, OUTCOME_TAG, DUPLICATE_OUTCOME));
+
+            try (KafkaProducer<String, String> producer = newProducer()) {
+                publish(producer, authorizedTopic(), ACCOUNT_ID,
+                        authorizedEvent(eventId, ACCOUNT_ID));
+                Awaitility.await("the ancient claim suppresses the delivery")
+                        .atMost(ARRIVAL_TIMEOUT)
+                        .pollInterval(POLL_INTERVAL)
+                        .until(() -> counterValue(counter(
+                                TRANSACTION_OUTCOME_METER, OUTCOME_TAG, DUPLICATE_OUTCOME))
+                                == duplicatesBefore + 1L);
+            }
+
+            assertAll("a claim outlives every horizon this service ever carried",
+                    () -> assertEquals(0L, transactionCount(FIXTURE.transactionId()),
+                            "no transaction row is written"),
+                    () -> assertEquals(balanceBefore, balanceSnapshot(ACCOUNT_ID),
+                            "the balance projection stays fixed"),
+                    () -> assertEquals(categoryBefore, categoryBalance(ACCOUNT_ID),
+                            "the category balance stays fixed"),
+                    () -> assertEquals(ONE_ROW, markerCount(eventId),
+                            "the ancient claim is still the only claim for the event"),
+                    () -> assertEquals(longBefore, claimedAt(eventId),
+                            "nothing rewrote the claim, so its own stamp is untouched"));
+        }
     }
 
     /**
@@ -708,6 +766,18 @@ public class TransactionAuthorizedConsumerIT {
 
     private long markerCount(UUID eventId) {
         return rowCount(PROCESSED_EVENT_TABLE + " WHERE event_id = ?", eventId);
+    }
+
+    /**
+     * Reads back the instant a claim records, so a test can prove nothing rewrote it.
+     *
+     * @param eventId the claimed event identifier
+     * @return the stamp the claim row carries
+     */
+    private Instant claimedAt(UUID eventId) {
+        OffsetDateTime stamp = jdbc.queryForObject("SELECT processed_at FROM "
+                + PROCESSED_EVENT_TABLE + " WHERE event_id = ?", OffsetDateTime.class, eventId);
+        return Objects.requireNonNull(stamp, "claim stamp").toInstant();
     }
 
     private long categoryCount(String accountId) {

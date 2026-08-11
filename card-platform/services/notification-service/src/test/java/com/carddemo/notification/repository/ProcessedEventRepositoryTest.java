@@ -30,11 +30,13 @@ import org.springframework.data.repository.ListCrudRepository;
  * writes one. Four tests drive both over a live database, and three read the declared surface of
  * the interface through reflection.
  *
- * <p>The two declared native statements, {@code claimEvent} and
- * {@code deleteMarkersProcessedBefore}, are exercised in
+ * <p>The one declared native statement, {@code claimEvent}, is exercised in
  * {@code entity/NotificationEntityPersistenceTest} instead. A native statement names its table
  * unqualified, and only a context that has applied the migration into the named schema resolves
- * that name; this Jakarta Persistence slice resolves mapped entities and not raw SQL.
+ * that name; this Jakarta Persistence slice resolves mapped entities and not raw SQL. A second
+ * statement stood beside it, {@code deleteMarkersProcessedBefore}, which removed a claim 720 hours
+ * after it was written; {@code V8__processed_event_claims_are_permanent.sql} withdrew the horizon it
+ * applied, and the method went with it.
  *
  * <p>A marker holds a universally unique identifier (UUID), the topic the delivery arrived on, and
  * the instant a listener finished with the event. The identifier and the topic together are the key:

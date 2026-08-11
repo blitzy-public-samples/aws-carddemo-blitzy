@@ -60,8 +60,9 @@ import org.springframework.web.filter.OncePerRequestFilter;
  * <p>Concurrency is bounded as well: past the configured number of requests in flight the next one
  * is refused rather than queued behind a connection pool that would then time out.
  *
- * <p>The filter runs at {@link SecurityFilterProperties#DEFAULT_FILTER_ORDER} minus one, which
- * places it ahead of the security chain. That ordering is the point of the control: a refusal has
+ * <p>The filter runs at {@link SecurityFilterProperties#DEFAULT_FILTER_ORDER} minus three, which
+ * places it ahead of the security chain and behind {@code config/CorrelationContextFilter} alone, so
+ * a refusal still carries the correlation identity of the request it refused. That ordering is the point of the control: a refusal has
  * to cost less than the attempt it refuses, and an attempt that reached the chain would already
  * have paid for a bcrypt verification.
  *
@@ -85,7 +86,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
  * <p>Decisions: {@code card-platform/docs/decision-log.md}.
  */
 @Component
-@Order(SecurityFilterProperties.DEFAULT_FILTER_ORDER - 1)
+@Order(SecurityFilterProperties.DEFAULT_FILTER_ORDER - 3)
 public class RequestRateCeilingFilter extends OncePerRequestFilter {
 
     /** Name of the meter counting refusals, tagged by the ceiling that refused. */

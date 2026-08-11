@@ -202,12 +202,12 @@ public interface DeclineRule {
          * did rather than what the decision applies to. Reject reason
          * {@link DeclineReason#INVALID_CARD_NUMBER} is assigned at
          * {@code app/cbl/CBTRN02C.cbl:L385-L387} when that keyed read misses, so no account
-         * identifier was read. {@code domain/AuthorizationService} then takes the subject from the
-         * account the caller declared at {@code app/cbl/COTRN02C.cbl:L196-L209}, records the attempt
-         * in {@code unresolved_card_attempt} and publishes
-         * {@code schemas/transaction-declined-v3.json} keyed on that account, exactly as it does for
-         * the other three reasons. Every other reason runs after the cross-reference resolved, so
-         * this accessor answers with a value for each of them.
+         * identifier was read. {@code domain/AuthorizationService} refuses such a call rather than
+         * deciding it: with no account this platform resolved, there is no subject a decision could
+         * apply to, and the account a caller named in the request body is not one. The refusal carries
+         * the text of {@code app/cbl/COTRN02C.cbl:L625-L626}, allocates no identifier and writes
+         * nothing. Every other reason runs after the cross-reference resolved, so this accessor
+         * answers with a value for each of them.
          *
          * @return the eleven-digit account identifier the cross-reference row held, or {@code null}
          *         when the cross-reference has not resolved

@@ -2,6 +2,7 @@ package com.carddemo.equivalence;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.carddemo.events.serde.EventWireBounds;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
@@ -112,14 +113,11 @@ class KafkaDeliveryGuaranteeContractTest {
     /** The partial index every outbox-owning module ships for the account-head claim. */
     private static final String AGGREGATE_HEAD_INDEX = "ix_outbox_event_aggregate_head";
 
-    /** Marker horizon every shipped file carries, in hours. */
-    private static final long MARKER_RETENTION_HOURS = 720L;
-
-    /** Broker log retention every shipped file carries, in hours. */
+    /** Broker log retention the shipped files carry, in hours. */
     private static final long BROKER_RETENTION_HOURS = 168L;
 
-    /** The smallest multiple of broker retention a marker horizon may be. */
-    private static final long MINIMUM_RETENTION_MARGIN = 2L;
+    /** The setting that carried the withdrawn marker horizon, asserted absent below. */
+    private static final String WITHDRAWN_MARKER_SETTING = "PROCESSED_EVENT_RETENTION_HOURS";
 
     /** A dead-lettered record has to have its offset committed, or it is read again. */
     @Nested
@@ -320,102 +318,111 @@ class KafkaDeliveryGuaranteeContractTest {
         }
     }
 
-    /** A marker has to outlast every window its record can return through. */
+    /**
+     * A duplicate-suppression claim outlasts every window its record can return through, by never
+     * being removed.
+     *
+     * <p>The horizon these assertions used to hold was 720 hours, checked at start-up against twice
+     * the 168-hour broker log retention. That relationship bounds only how long the broker can
+     * redeliver a record, and a security review found every effect a claim guards outliving it: a
+     * posted transaction, a category balance, a cycle accumulator, a read-model row. An archived,
+     * restored or deliberately replayed record arriving after the horizon was new to the guard.
+     *
+     * <p>The assertions below therefore hold the absence rather than the margin. No service reads a
+     * marker horizon, no properties record binds one, and no deployment artifact carries the setting
+     * that named it.
+     */
     @Nested
-    @DisplayName("A duplicate-suppression marker outlasts broker retention")
+    @DisplayName("A duplicate-suppression claim is permanent")
     class MarkerHorizon {
 
-        /**
-         * Asserts the shipped pair clears the margin the properties records enforce.
-         *
-         * <p>The two were equal, which made the guarantee an equality rather than a margin: segment
-         * cleanup is not instant, a restored backup can carry an older record, and an operator
-         * resetting a group replays whatever the log holds. Any one left a record readable after
-         * its
-         * marker was swept, and for {@code account-posted} that applies one transaction amount to a
-         * balance and a cycle accumulator twice.
-         */
+        /** Asserts no service reads a marker horizon, because none exists to read. */
         @Test
-        @DisplayName("the shipped marker horizon is at least twice the shipped broker retention")
-        void theShippedMarkerHorizonClearsTheMargin() {
-            assertThat(MARKER_RETENTION_HOURS)
-                    .as("the shipped pair has to satisfy the rule the services enforce")
-                    .isGreaterThanOrEqualTo(BROKER_RETENTION_HOURS * MINIMUM_RETENTION_MARGIN);
-        }
-
-        /** Asserts every service reads both halves of the relationship it enforces. */
-        @Test
-        @DisplayName("every service reads both retention values with the shipped defaults")
-        void everyServiceReadsBothRetentionValues() {
+        @DisplayName("no service reads a marker horizon from its configuration")
+        void noServiceReadsAMarkerHorizon() {
             for (String module : SERVICES) {
-                String application = applicationConfigurationOf(module);
-                assertThat(application)
-                        .as("%s must read the marker horizon", module)
-                        .contains("${PROCESSED_EVENT_RETENTION_HOURS:" + MARKER_RETENTION_HOURS
-                                + "}");
-                assertThat(application)
-                        .as("%s must read the broker retention it has to outlast", module)
-                        .contains("${KAFKA_LOG_RETENTION_HOURS:" + BROKER_RETENTION_HOURS + "}");
+                assertThat(applicationConfigurationOf(module))
+                        .as("%s must bind no marker horizon", module)
+                        .doesNotContain("${" + WITHDRAWN_MARKER_SETTING + ":")
+                        .doesNotContain("marker-retention-hours");
             }
         }
 
-        /** Asserts every properties record enforces the relationship rather than documenting it. */
+        /** Asserts no properties record binds the withdrawn pair or the margin between them. */
         @Test
-        @DisplayName("every properties record refuses a horizon under the margin at start-up")
-        void everyPropertiesRecordRefusesAHorizonUnderTheMargin() {
+        @DisplayName("no properties record binds a marker horizon or the margin it was checked by")
+        void noPropertiesRecordBindsAMarkerHorizon() {
             for (String module : SERVICES) {
                 String properties = propertiesSourceOf(module);
                 assertThat(properties)
-                        .as("%s must declare the margin as a constant rather than a literal",
-                                module)
-                        .contains("MINIMUM_RETENTION_MARGIN = " + MINIMUM_RETENTION_MARGIN + "L");
-                assertThat(properties)
-                        .as("%s must refuse a marker horizon under the margin", module)
-                        .contains("throw new IllegalArgumentException(");
-                assertThat(properties)
-                        .as("%s must compare the marker horizon against broker retention", module)
-                        .contains("brokerRetentionHours * MINIMUM_RETENTION_MARGIN");
+                        .as("%s must declare no marker horizon component", module)
+                        .doesNotContain("markerRetentionHours")
+                        .doesNotContain("brokerRetentionHours")
+                        .doesNotContain("MINIMUM_RETENTION_MARGIN");
             }
         }
 
-        /** Asserts the three shipped files carry one pair of values rather than three. */
+        /**
+         * Asserts every service's own migration states the claim is permanent, in the catalogue.
+         *
+         * <p>An operator reads the catalogue rather than the Java source, so the property has to be
+         * stated where they read. The comment says {@code purge_key=none}, which is what
+         * {@link RetentionSweepContractTest} reads to tell a table nothing expires from one something
+         * does.
+         */
         @Test
-        @DisplayName("the dotenv example, the composition and the ConfigMap carry the same pair")
-        void theShippedFilesCarryTheSamePair() {
+        @DisplayName("every schema declares the claim permanent in its catalogue comment")
+        void everySchemaDeclaresTheClaimPermanent() {
+            for (String module : SERVICES) {
+                assertThat(migrationTextOf(module))
+                        .as("%s must declare processed_event permanent in its catalogue", module)
+                        .contains("retention=permanent; purge_key=none");
+            }
+        }
+
+        /** Asserts no deployment artifact carries the withdrawn setting. */
+        @Test
+        @DisplayName("no shipped file carries the withdrawn marker setting")
+        void noShippedFileCarriesTheWithdrawnMarkerSetting() {
             String example = read(platformDirectory().resolve(".env.example"));
             String compose = read(platformDirectory().resolve("docker-compose.yml"));
             String configMap = read(platformDirectory().resolve("deploy/k8s/30-configmap.yaml"));
 
             assertThat(example.lines().toList())
-                    .contains("PROCESSED_EVENT_RETENTION_HOURS=" + MARKER_RETENTION_HOURS,
-                            "KAFKA_LOG_RETENTION_HOURS=" + BROKER_RETENTION_HOURS);
+                    .as("the example may not offer a horizon to set")
+                    .noneMatch(line -> line.startsWith(WITHDRAWN_MARKER_SETTING + "="));
             assertThat(compose)
-                    .contains("PROCESSED_EVENT_RETENTION_HOURS:"
-                            + " ${PROCESSED_EVENT_RETENTION_HOURS:-" + MARKER_RETENTION_HOURS + "}")
-                    .contains("KAFKA_LOG_RETENTION_HOURS: ${KAFKA_LOG_RETENTION_HOURS:-"
-                            + BROKER_RETENTION_HOURS + "}");
+                    .as("no container may receive a horizon")
+                    .doesNotContain(WITHDRAWN_MARKER_SETTING + ":");
             assertThat(configMap)
-                    .contains("PROCESSED_EVENT_RETENTION_HOURS: \"" + MARKER_RETENTION_HOURS + "\"")
+                    .as("the ConfigMap may not declare a horizon")
+                    .doesNotContain(WITHDRAWN_MARKER_SETTING + ":");
+            assertThat(example.lines().toList())
+                    .as("broker retention stays, because the broker still applies it")
+                    .contains("KAFKA_LOG_RETENTION_HOURS=" + BROKER_RETENTION_HOURS);
+            assertThat(configMap)
                     .contains("KAFKA_LOG_RETENTION_HOURS: \"" + BROKER_RETENTION_HOURS + "\"");
         }
 
         /**
-         * Asserts the composition hands the broker figure to every service, not to the broker
-         * alone.
+         * Asserts the broker figure reaches the broker and no service.
          *
-         * <p>One value describes the broker, so two copies of it can disagree and the disagreement
-         * is exactly what the start-up check exists to catch. It therefore lives in the shared
-         * service block, where all six containers inherit it.
+         * <p>It reached all six services while each of them compared its marker horizon against it.
+         * No service reads it now, and a value handed to a container that binds nothing is a value a
+         * reader can set with no effect.
          */
         @Test
-        @DisplayName("the broker retention reaches every service through the shared block")
-        void theBrokerRetentionReachesEveryServiceThroughTheSharedBlock() {
+        @DisplayName("the broker retention reaches the broker alone")
+        void theBrokerRetentionReachesTheBrokerAlone() {
             String compose = read(platformDirectory().resolve("docker-compose.yml"));
             String shared = compose.substring(compose.indexOf("x-service-environment:"),
                     compose.indexOf("services:"));
 
             assertThat(shared)
-                    .as("one value reaches all six services, so no two can disagree")
+                    .as("no service binds broker retention, so the shared block may not carry it")
+                    .doesNotContain("KAFKA_LOG_RETENTION_HOURS");
+            assertThat(compose)
+                    .as("the broker itself still applies the figure")
                     .contains("KAFKA_LOG_RETENTION_HOURS: ${KAFKA_LOG_RETENTION_HOURS:-"
                             + BROKER_RETENTION_HOURS + "}");
         }
@@ -591,6 +598,155 @@ class KafkaDeliveryGuaranteeContractTest {
     }
 
     /**
+     * Every wire ceiling of the transport sits above the envelope the application governs.
+     *
+     * <p>A security review found no ceiling stated anywhere. The application refuses an event above
+     * {@link EventWireBounds#MAX_EVENT_BYTES} before its outbox row is written, and every ceiling
+     * the transport applies was left at a client default orders of magnitude above that, so a record
+     * this platform would never publish was one the transport would happily carry. The same review
+     * found hostname verification relying on a client default, which a future release could change
+     * without any deployment noticing.
+     *
+     * <p>The five figures form a ladder, each above the one below it. The envelope leaves room for
+     * record overhead in the producer request, the producer request leaves room for compression and
+     * batching at the broker, the broker record fits inside a partition fetch, and a partition fetch
+     * fits inside a whole fetch. The assertions below read all five out of the shipped files and
+     * hold the ladder monotonic, so moving one figure without the others fails this phase.
+     */
+    @Nested
+    @DisplayName("Every wire ceiling is a rung above the governed envelope")
+    class WireCeilings {
+
+        /** The producer ceiling every publishing service ships, in bytes. */
+        private static final int PRODUCER_REQUEST_BYTES = 16384;
+
+        /** The broker ceiling both deployment descriptions ship, in bytes. */
+        private static final int BROKER_MESSAGE_BYTES = 32768;
+
+        /** The per-partition fetch ceiling every service ships, in bytes. */
+        private static final int PARTITION_FETCH_BYTES = 65536;
+
+        /** The whole-fetch ceiling every service ships, in bytes. */
+        private static final int FETCH_BYTES = 262144;
+
+        /** The property that keeps hostname verification on when the transport is SASL_SSL. */
+        private static final String HOSTNAME_VERIFICATION =
+                "ssl.endpoint.identification.algorithm: https";
+
+        /** The broker setting both deployment descriptions carry as a literal. */
+        private static final String BROKER_SETTING = "KAFKA_MESSAGE_MAX_BYTES";
+
+        /**
+         * Asserts the five figures are strictly increasing, starting at the governed envelope.
+         *
+         * <p>Read as one assertion rather than five constants compared by eye. A rung equal to the
+         * one below it leaves no room for the overhead that layer adds, and a rung below it refuses
+         * a message the layer beneath already accepted, which is a failure arriving one hop later
+         * than the check that could have explained it.
+         */
+        @Test
+        @DisplayName("the five figures increase from the envelope outward")
+        void theFiveFiguresIncreaseFromTheEnvelopeOutward() {
+            assertThat(List.of(EventWireBounds.MAX_EVENT_BYTES, PRODUCER_REQUEST_BYTES,
+                            BROKER_MESSAGE_BYTES, PARTITION_FETCH_BYTES, FETCH_BYTES))
+                    .as("the ladder from the governed envelope to the whole fetch")
+                    .isSorted()
+                    .doesNotHaveDuplicates();
+        }
+
+        /**
+         * Asserts each publishing service declares the producer ceiling, and the sixth declares none.
+         *
+         * <p>The notification service publishes nothing, so it builds no producer configuration and
+         * a ceiling in its file would be a setting nothing reads.
+         */
+        @Test
+        @DisplayName("every publishing service bounds its producer request")
+        void everyPublishingServiceBoundsItsProducerRequest() {
+            for (String module : SERVICES) {
+                String declaration = "max.request.size: " + PRODUCER_REQUEST_BYTES;
+
+                if (OUTBOX_SERVICES.contains(module)) {
+                    assertThat(applicationConfigurationOf(module))
+                            .as("%s publishes, so it bounds the request it sends", module)
+                            .contains(declaration);
+                } else {
+                    assertThat(applicationConfigurationOf(module))
+                            .as("%s publishes nothing, so a producer ceiling would bound nothing",
+                                    module)
+                            .doesNotContain("max.request.size");
+                }
+            }
+        }
+
+        /**
+         * Asserts every service bounds both fetch sizes, including the one that consumes nothing.
+         *
+         * <p>The card service registers no listener and still ships the pair, because its file
+         * already carries the acknowledgement mode a listener added later would need and a ceiling
+         * absent from one file of six is the drift this class exists to refuse.
+         */
+        @Test
+        @DisplayName("every service bounds a partition fetch and a whole fetch")
+        void everyServiceBoundsAPartitionFetchAndAWholeFetch() {
+            for (String module : SERVICES) {
+                assertThat(applicationConfigurationOf(module))
+                        .as("the shipped consumer ceilings of %s", module)
+                        .contains("max.partition.fetch.bytes: " + PARTITION_FETCH_BYTES)
+                        .contains("fetch.max.bytes: " + FETCH_BYTES);
+            }
+        }
+
+        /**
+         * Asserts hostname verification is stated in all six files rather than inherited.
+         *
+         * <p>The value equals the client default today. Stating it is what stops a future client
+         * release changing that default from silently dropping the check from a deployment using
+         * SASL_SSL, and it puts the property where this test can read it.
+         */
+        @Test
+        @DisplayName("every service states hostname verification rather than inheriting it")
+        void everyServiceStatesHostnameVerification() {
+            for (String module : SERVICES) {
+                assertThat(applicationConfigurationOf(module))
+                        .as("%s must state hostname verification, because a default that changes "
+                                + "beneath a deployment changes it silently", module)
+                        .contains(HOSTNAME_VERIFICATION);
+            }
+        }
+
+        /**
+         * Asserts both deployment descriptions carry the broker ceiling as a literal.
+         *
+         * <p>A ConfigMap key would let one deployment raise the broker ceiling while the four
+         * application ceilings stayed where they are, which is the disagreement the ladder exists to
+         * prevent. The figure belongs to the ladder, so it is written where the broker is declared.
+         */
+        @Test
+        @DisplayName("both deployment descriptions carry the broker ceiling as a literal")
+        void bothDeploymentDescriptionsCarryTheBrokerCeilingAsALiteral() {
+            String compose = read(platformDirectory().resolve("docker-compose.yml"));
+            String broker = read(platformDirectory().resolve("deploy/k8s/10-kafka.yaml"));
+
+            assertThat(compose)
+                    .as("the composition broker ceiling")
+                    .contains(BROKER_SETTING + ": " + BROKER_MESSAGE_BYTES)
+                    .doesNotContain(BROKER_SETTING + ": ${");
+            assertThat(broker)
+                    .as("the cluster broker ceiling")
+                    .contains("- name: " + BROKER_SETTING)
+                    .contains("value: \"" + BROKER_MESSAGE_BYTES + "\"");
+            assertThat(read(platformDirectory().resolve("deploy/k8s/30-configmap.yaml")))
+                    .as("the broker ceiling is derived from a constant in the code, so it is not a "
+                            + "value a deployment chooses")
+                    .doesNotContain(BROKER_SETTING);
+            assertThat(read(platformDirectory().resolve(".env.example")))
+                    .as("the broker ceiling is not an environment setting either")
+                    .doesNotContain(BROKER_SETTING);
+        }
+    }
+
+    /**
      * Reads the outbox repository of one module.
      *
      * @param module the service module directory name
@@ -663,6 +819,26 @@ class KafkaDeliveryGuaranteeContractTest {
         return read(platformDirectory().resolve("services").resolve(module)
                 .resolve("src/main/java/com/carddemo").resolve(owner)
                 .resolve("config").resolve(type + ".java"));
+    }
+
+    /**
+     * Reads every migration of one module as one text, so a later comment is visible with the first.
+     *
+     * @param module the service module directory name
+     * @return the concatenated migration text of that module
+     */
+    private static String migrationTextOf(String module) {
+        Path migrations = platformDirectory().resolve("services").resolve(module)
+                .resolve("src/main/resources/db/migration");
+        StringBuilder joined = new StringBuilder();
+        try (var files = Files.list(migrations)) {
+            for (Path file : files.sorted().toList()) {
+                joined.append(read(file)).append('\n');
+            }
+        } catch (IOException unreadable) {
+            throw new UncheckedIOException("cannot list " + migrations, unreadable);
+        }
+        return joined.toString();
     }
 
     /**

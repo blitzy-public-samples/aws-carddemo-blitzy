@@ -24,7 +24,6 @@ import com.carddemo.authorization.repository.AccountCreditSnapshotRepository;
 import com.carddemo.authorization.repository.AuthorizationDecisionRepository;
 import com.carddemo.authorization.repository.CardCrossReferenceRepository;
 import com.carddemo.authorization.repository.ReplicaGapRepository;
-import com.carddemo.authorization.repository.UnresolvedCardAttemptRepository;
 import com.carddemo.events.DeclineReason;
 import com.carddemo.events.TransactionAuthorized;
 import com.carddemo.events.TransactionDeclined;
@@ -189,8 +188,6 @@ final class AuthorizationChainCompositionTest {
     /** Writer of the one event a resolved call produces. */
     private OutboxWriter outboxWriter;
 
-    /** Store of attempts that name no account. */
-    private UnresolvedCardAttemptRepository unresolvedCardAttempts;
 
     /** Store of each decision and the identity behind it. */
     private AuthorizationDecisionRepository authorizationDecisions;
@@ -207,7 +204,6 @@ final class AuthorizationChainCompositionTest {
         cardCrossReferences = mock(CardCrossReferenceRepository.class);
         identifiers = mock(TransactionIdentifierSource.class);
         outboxWriter = mock(OutboxWriter.class);
-        unresolvedCardAttempts = mock(UnresolvedCardAttemptRepository.class);
         authorizationDecisions = mock(AuthorizationDecisionRepository.class);
 
         when(identifiers.nextIdentifier()).thenReturn(ALLOCATED_ID);
@@ -232,21 +228,31 @@ final class AuthorizationChainCompositionTest {
     @DisplayName("The stopping segment")
     class StoppingSegment {
 
+        /**
+         * Reject reason {@code 0100} ends the chain, and the call is refused rather than decided.
+         *
+         * <p>Two properties are measured together here, because the second depends on the first. The
+         * gate at {@code app/cbl/CBTRN02C.cbl:L372} stops every rule after the first decline, and a
+         * decline that resolved no account leaves this service without a subject: the account the
+         * request declared is not one, so the call is refused with the text of
+         * {@code app/cbl/COTRN02C.cbl:L625-L626} and nothing is decided.
+         */
         @Test
-        @DisplayName("reject reason 0100 ends the chain, and the three rules after it never run")
-        void theFirstRejectReasonEndsTheChain() {
+        @DisplayName("reject reason 0100 ends the chain, and the call is refused with no subject")
+        void theFirstRejectReasonEndsTheChainAndRefusesTheCall() {
             StubRule unresolvedCard = declining(DeclineRule.Segment.STOP_ON_FIRST_DECLINE,
                     DeclineReason.INVALID_CARD_NUMBER);
             StubRule secondStopping = accepting(DeclineRule.Segment.STOP_ON_FIRST_DECLINE);
             StubRule firstOverwriting = accepting(DeclineRule.Segment.LAST_DECLINE_WINS);
             StubRule secondOverwriting = accepting(DeclineRule.Segment.LAST_DECLINE_WINS);
 
-            AuthorizationService.Outcome outcome = serviceOver(
-                    List.of(unresolvedCard, secondStopping, firstOverwriting, secondOverwriting))
-                    .authorize(requestDeclaringItsAccount(FIXTURE_AMOUNT), CALLER);
+            assertThrows(AuthorizationService.CardNumberNotFoundInCrossReferenceException.class,
+                    () -> serviceOver(List.of(unresolvedCard, secondStopping, firstOverwriting,
+                                    secondOverwriting))
+                            .authorize(requestDeclaringItsAccount(FIXTURE_AMOUNT), CALLER),
+                    "a decline that seated no cross-reference row has no account to be decided"
+                            + " against");
 
-            assertEquals(Optional.of(DeclineReason.INVALID_CARD_NUMBER), outcome.declineReason(),
-                    "app/cbl/CBTRN02C.cbl:L385 assigns this reject reason");
             assertTrue(unresolvedCard.wasEvaluated(), "the first rule of the chain runs");
             assertFalse(secondStopping.wasEvaluated(),
                     "the gate at app/cbl/CBTRN02C.cbl:L372 stops the second stopping rule");
@@ -393,16 +399,22 @@ final class AuthorizationChainCompositionTest {
             assertEquals(1, fifth.evaluations(), "the added rule ran once");
         }
 
+        /**
+         * An empty chain is accepted by the service and resolves no account, so the call is refused.
+         *
+         * <p>The service assumes no fixed number of rules, which is what the empty list measures. What
+         * it cannot do is invent a subject: with no rule to seat a cross-reference row, nothing names
+         * the account a decision would apply to, and the account on the request is not that account.
+         */
         @Test
-        @DisplayName("an empty chain is accepted and answers with a value")
-        void anEmptyChainIsAcceptedAndAnswersWithAValue() {
-            AuthorizationService.Outcome outcome = serviceOver(List.of())
-                    .authorize(requestDeclaringItsAccount(FIXTURE_AMOUNT), CALLER);
+        @DisplayName("an empty chain is accepted, resolves no account, and refuses the call")
+        void anEmptyChainIsAcceptedAndRefusesTheCall() {
+            AuthorizationService service = serviceOver(List.of());
 
-            assertNotNull(outcome, "the service assumes no fixed number of rules");
-            assertFalse(outcome.approved(), "no rule seated a cross-reference row");
-            assertEquals(new java.math.BigDecimal(ACCOUNT_ID), outcome.accountId(),
-                    "so the outcome names the account the caller declared");
+            assertNotNull(service, "the service assumes no fixed number of rules");
+            assertThrows(AuthorizationService.CardNumberNotFoundInCrossReferenceException.class,
+                    () -> service.authorize(requestDeclaringItsAccount(FIXTURE_AMOUNT), CALLER),
+                    "no rule seated a cross-reference row, so no subject was resolved");
         }
 
         @Test
@@ -699,7 +711,7 @@ final class AuthorizationChainCompositionTest {
      */
     private AuthorizationService serviceOver(List<DeclineRule> rules) {
         return new AuthorizationService(rules, cardCrossReferences, identifiers, outboxWriter,
-                unresolvedCardAttempts, authorizationDecisions, new SimpleMeterRegistry(),
+                authorizationDecisions, new SimpleMeterRegistry(),
                 immediateTransactions(), replicaPolicy(), cycleExposure(),
                 () -> ReplicaSynchronization.Verdict.synchronizedAt(0L), noReplicaGaps());
     }
@@ -793,10 +805,10 @@ final class AuthorizationChainCompositionTest {
     /**
      * Builds a valid request presenting the fixture card and declaring the account it applies to.
      *
-     * <p>A chain that seats no cross-reference row resolves no account, and the subject is then the one
-     * the caller declared. Without it the service refuses the call with
-     * {@code 'Card Number NOT found...'} of {@code app/cbl/COTRN02C.cbl:L625-L626} instead of running
-     * the chain, which is correct behaviour and measures nothing about chain composition.
+     * <p>A chain that seats no cross-reference row resolves no account, and the service then refuses
+     * the call with {@code 'Card Number NOT found...'} of {@code app/cbl/COTRN02C.cbl:L625-L626}
+     * rather than deciding it. That refusal is correct behaviour and measures nothing about chain
+     * composition, so the account is declared here to keep each test on its own subject.
      *
      * @param amount the amount as text
      * @return the request

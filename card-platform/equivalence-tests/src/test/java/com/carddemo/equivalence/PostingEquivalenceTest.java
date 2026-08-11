@@ -5470,7 +5470,7 @@ class PostingEquivalenceTest {
                 rows.add(row);
                 return row;
             });
-            this.writer = new OutboxWriter(store, JSON_MAPPER);
+            this.writer = new OutboxWriter(store);
         }
 
         /**

@@ -260,9 +260,11 @@ public class KafkaEventPublisher implements EventPublisherPort {
      * Checks that the message key and the aggregate identifier hold one value.
      *
      * <p>Every document declares {@code aggregateId}. A document that also declares a non-null
-     * {@code accountId} must agree with it. The unresolved-card decline is the one governed
-     * exception: schema version 2 declares a transaction-key aggregate and omits
-     * {@code accountId}, because the cross-reference lookup resolved none.
+     * {@code accountId} must agree with it. One released document declares a transaction-key
+     * aggregate and omits {@code accountId}, {@code schemas/transaction-declined-v2.json}, and this
+     * check reads a record of that shape without refusing it. Nothing here publishes one: that
+     * document is retained rather than published, and every event this service writes is keyed on an
+     * account.
      *
      * <p>No message below names a value. The identifier is the value under check, and a caller that
      * logs the failure would otherwise record it.
@@ -285,17 +287,25 @@ public class KafkaEventPublisher implements EventPublisherPort {
     }
 
     /**
-     * Validates the payload against the versioned schema document its event type names.
+     * Applies every publish-side check to the stored payload, as text rather than as a record.
      *
      * <p>{@link EventContracts#publishViolationsOf(String, String)} returns one entry per failure,
-     * and each entry holds a JSON pointer and the broken keyword and nothing else. It reports one
-     * further entry when the version the payload declares is retained rather than published, which
-     * is the posture check every producer path of this platform applies.
+     * and each entry holds a JSON pointer and the broken keyword and nothing else. It applies the
+     * same set of checks to text that {@code PublishGate} applied to the record the row was written
+     * from: the forbidden-property screen, the cardholder-data screen, the closure of the extensions
+     * subtree, the schema document the declared version selects, the platform byte ceiling, and the
+     * contract posture that refuses a version a producer may no longer write.
+     *
+     * <p>Re-checking here is deliberate. The row is read back from the database, so the bytes this
+     * publisher holds are not the bytes the gate returned unless nothing has altered the row, and a
+     * publisher that trusted the column would publish whatever the column happens to hold.
      *
      * @param eventType the registered event type the envelope declares
      * @param payload   the written event, validated as received
-     * @throws IllegalArgumentException when the payload fails the document that type names, or when
-     *                                  the version it declares is retained rather than published
+     * @throws IllegalArgumentException when the payload carries a forbidden property or a screened
+     *                                  value, fails the document that type names, exceeds the
+     *                                  platform ceiling, or declares a version that is retained
+     *                                  rather than published
      */
     private static void requireValidAgainstSchema(String eventType, String payload) {
         List<String> violations = EventContracts.publishViolationsOf(eventType, payload);

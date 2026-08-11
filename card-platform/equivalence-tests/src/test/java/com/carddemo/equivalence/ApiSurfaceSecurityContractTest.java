@@ -48,6 +48,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -2682,6 +2683,93 @@ class ApiSurfaceSecurityContractTest {
             assertEquals(List.of(), policies,
                     "a cross-origin policy now exists, so this contract has to grow assertions for "
                             + "the origins it admits and the ones it refuses: " + policies);
+        }
+    }
+
+    /**
+     * The identity allowlist each service applies to the configuration it is handed.
+     *
+     * <p>A security review found an operator-supplied role and scope reaching the authority list
+     * unchecked. A role outside the platform's four produces an authority no rule of any service
+     * names, and a scope of an unknown kind or a mis-shaped value reaches no row: both authenticate an
+     * identity that can reach nothing while reading as a working one. The refusals live in six copies
+     * of {@code config/SecurityConfig}, so something has to read all six.
+     *
+     * <p>The allowlist is platform-wide rather than per service, and one route rule is the reason.
+     * {@code ROLE_ACQUIRER} reaches {@code POST /authorizations} alone, and an identity list composed
+     * once for every service still carries it. A per-service allowlist would refuse to start five of
+     * the six on a list the sixth accepts, which is a worse failure than the one it would prevent.
+     */
+    @Nested
+    @DisplayName("The allowlist each service applies to a configured identity")
+    class ConfiguredIdentityAllowlist {
+
+        /** The platform's four roles, which every service accepts and each grants its own subset. */
+        private final List<String> platformRoles =
+                List.of("ROLE_ADMIN", "ROLE_USER", "ROLE_MONITORING", "ROLE_ACQUIRER");
+
+        @Test
+        @DisplayName("all six services allow exactly the platform's four roles")
+        void allSixServicesAllowExactlyThePlatformsFourRoles() {
+            for (String module : ALL_MODULES) {
+                String source = securityConfigOf(module);
+                Matcher declared = Pattern
+                        .compile("(?s)KNOWN_ROLES\\s*=\\s*Set\\.of\\((.*?)\\);")
+                        .matcher(source);
+
+                assertTrue(declared.find(), module + " declares no role allowlist");
+                List<String> named = Arrays.stream(declared.group(1).split(","))
+                        .map(String::trim)
+                        .filter(entry -> !entry.isEmpty())
+                        .toList();
+                assertEquals(platformRoles.stream().sorted().toList(), named.stream().sorted().toList(),
+                        module + " has to allow the platform's four roles and no others, because an "
+                                + "identity list is composed once and handed to every service");
+                assertTrue(source.contains("requireKnownRole(identity.role())"),
+                        module + " reads the allowlist where a configured identity becomes a user");
+            }
+        }
+
+        @Test
+        @DisplayName("all six services hold a configured scope to its kind and its shape")
+        void allSixServicesHoldAConfiguredScopeToItsKindAndShape() {
+            for (String module : ALL_MODULES) {
+                String source = securityConfigOf(module);
+
+                assertTrue(source.contains("checkedScopes(identity.scopes())"),
+                        module + " has to read its scopes before they become authorities");
+                assertTrue(source.contains("SCOPE_VALUE_SHAPES"),
+                        module + " declares the shape each ownership kind's value holds");
+                for (String shape : List.of("ACCOUNT_SCOPE, Pattern.compile(\"^[0-9]{11}$\")",
+                        "CUSTOMER_SCOPE, Pattern.compile(\"^[0-9]{9}$\")",
+                        "CARD_SCOPE, Pattern.compile(PanMasker.CARD_TOKEN_PATTERN)")) {
+                    assertTrue(source.contains(shape),
+                            module + " has to hold a scope value to the width its column holds: "
+                                    + shape);
+                }
+            }
+        }
+
+        /**
+         * Asserts every service refuses a role written into the scope list.
+         *
+         * <p>This is the one refusal of the set that closes a privilege escalation rather than a
+         * configuration mistake. Every authority reaches one list, so a role granted through the scope
+         * list would pass a route rule naming that role.
+         */
+        @Test
+        @DisplayName("all six services refuse a role smuggled into the scope list")
+        void allSixServicesRefuseARoleSmuggledIntoTheScopeList() {
+            for (String module : ALL_MODULES) {
+                String source = securityConfigOf(module);
+                int check = source.indexOf("scope.startsWith(ROLE_PREFIX)");
+
+                assertTrue(check > 0,
+                        module + " has to refuse a scope entry opening with the role prefix");
+                assertTrue(source.indexOf("checkedScopes", check) < 0
+                                || source.substring(check).contains("IllegalStateException"),
+                        module + " has to refuse rather than drop such an entry");
+            }
         }
     }
 
