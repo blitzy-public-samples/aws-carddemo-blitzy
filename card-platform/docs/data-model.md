@@ -163,9 +163,9 @@ Migration `V5` adds the table. It is the row a caller's decision leaves behind. 
 | `decline_reason_code` | `VARCHAR(4)` | The four-digit reason of `app/cbl/CBTRN02C.cbl:L380-L420`. Null on approval |
 | `decline_reason_description` | `VARCHAR(76)` | The 76-character description width of the reject trailer at `app/cbl/CBTRN02C.cbl:L446-L465` |
 | `decided_at` | `TIMESTAMP(6) WITH TIME ZONE` | Additive |
-| `event_id` | `UUID` | Additive. Nullable at the column since migration V13 and required of every new row by `ck_authorization_decision_event` since migration V15, which is `NOT VALID` so rows written while reason 0100 published nothing stay the record they are. Ties the row to the event the call published: an account-keyed one where an account resolved, and a transaction-keyed `transaction-declined-v2` one for reason 0100 |
+| `event_id` | `UUID` | Additive. Nullable at the column since migration V13 and required of every new row by `ck_authorization_decision_event` since migration V15, which is `NOT VALID` so rows written while one outcome published nothing stay the record they are. Ties the row to the event the call published, and every decided call publishes one: `transaction-authorized-v2` on an approval and `transaction-declined-v3` on any of the four reject reasons, each keyed on the eleven-digit account the decision applies to |
 
-Nine named constraints hold the shape the columns alone cannot. `pk_authorization_decision` keys the table on the transaction. `ck_authorization_decision_outcome` is the important one. An approved row must carry neither reason column, and a declined row must carry both. No row can claim an outcome it does not explain. `ck_authorization_decision_approved_account` requires an account on every approval, because an approval without a resolved account is not reachable. `ck_authorization_decision_actor` bounds the actor to one to sixty-four printable characters, the width `V7` widened it to, `ck_authorization_decision_account_digits` to eleven digits, and `ck_authorization_decision_reason_digits` to four. `ck_authorization_decision_card_token` requires 64 lower-case hexadecimal characters, and `ck_authorization_decision_masked_card` accepts only the two forms masking produces: twelve asterisks and four digits, or sixteen asterisks when no digits are known. The ninth is `ck_authorization_decision_event`, which holds `event_id` and `account_id` present or absent together, so the one decided outcome that publishes nothing is the one row that names neither.
+Nine named constraints hold the shape the columns alone cannot. `pk_authorization_decision` keys the table on the transaction. `ck_authorization_decision_outcome` is the important one. An approved row must carry neither reason column, and a declined row must carry both. No row can claim an outcome it does not explain. `ck_authorization_decision_approved_account` requires an account on every approval, because an approval without a resolved account is not reachable. `ck_authorization_decision_actor` bounds the actor to one to sixty-four printable characters, the width `V7` widened it to, `ck_authorization_decision_account_digits` to eleven digits, and `ck_authorization_decision_reason_digits` to four. `ck_authorization_decision_card_token` requires 64 lower-case hexadecimal characters, and `ck_authorization_decision_masked_card` accepts only the two forms masking produces: twelve asterisks and four digits, or sixteen asterisks when no digits are known. The ninth is `ck_authorization_decision_event`, which holds `event_id` and `account_id` present or absent together. Every decided outcome now names both, so the rows that name neither are the ones written before migration V15, which the `NOT VALID` clause leaves as the record they are.
 
 One index serves the one question the table is actually asked. `ix_authorization_decision_decided_at` answers a time window, which is what the bounded retention delete reads. Two composites once stood beside it — `ix_authorization_decision_account_decided` on `(account_id, decided_at DESC)` for one account's recent decisions, and `ix_authorization_decision_actor` on `(actor, decided_at DESC)` for one operator's — and `V18__authorization_decision_index_pruning.sql` drops both. They were written for questions no code asked: the four repository read methods that would have used them had no production caller, so every authorization on the hot write path maintained two index entries nothing ever read. Both questions remain worth answering, and the answer is an endpoint with a bound on it rather than an index waiting for one; `suggested-next-tasks.md` carries the task, and the index belongs in the same change as the query that reads it.
 
@@ -175,14 +175,14 @@ The three columns with no source field close the gap those hops open. `app/cbl/C
 
 | Table | Provenance | Key point |
 | --- | --- | --- |
-| `unresolved_card_attempt` | Reason 0100 path in `CBTRN02C` plus additive capture | Keyed on the transaction identifier because no account was resolved. It commits with the `authorization_decision` row and the `outbox_event` row of the same call, so the durable record and the published `transaction-declined-v2` event agree or neither exists |
+| `unresolved_card_attempt` | Reason 0100 path in `CBTRN02C` plus additive capture | Keyed on the transaction identifier, because the row records one attempt. `account_id`, added by migration V19, names the subject the decision applied to, which the caller declared where the cross-reference read resolved none. It commits with the `authorization_decision` row and the `outbox_event` row of the same call, so the durable record and the published `transaction-declined-v3` event agree or neither exists |
 | `authorization_decision` | Additive audit state; no source program records who asked | `actor` is `VARCHAR(64)` and holds the whole authenticated principal, because `SEC-USR-ID PIC X(08)` bounds a signon identity and not an HTTP principal |
-| `outbox_event` | Additive; source ancestor is `CORPT00C:L517-L519` | Every row carries one of the two keys migration V4 permits: the 11-digit account key on every event that resolved an account, and the 16-character transaction key on the `transaction-declined-v2` event of reason 0100, which resolved none. Migration V15 records why. Migration V8 adds `dead_letter_state` and `dead_letter_published_at` |
+| `outbox_event` | Additive; source ancestor is `CORPT00C:L517-L519` | Every row written from migration V19 forward carries the 11-digit account key, and `outbox/OutboxWriter` refuses any other form before a row is built. `ck_outbox_event_aggregate_id` still admits the 16-character transaction key that migration V4 permitted, because rows written before V19 carry it and the relay writes a column on every row it claims. Migration V19 records that division. Migration V8 adds `dead_letter_state` and `dead_letter_published_at` |
 | `processed_event` | Additive | Guards `AccountStateChanged` application |
 
 `dead_letter_state` and `dead_letter_published_at` are the durable half of giving up on a row. A row that spends its attempts reaches `ABANDONED`, and the claim query never returns an abandoned row. The pass that gave up on it would otherwise be the last pass that ever saw it. A diagnostic dispatched at that moment and not awaited makes an unreachable broker indistinguishable from a healthy one. Abandoning the row writes `REQUIRED` in the same transaction, a partial index on `last_attempt_at` holds only the owed rows, and `PUBLISHED` plus a timestamp is written only once the broker has acknowledged the diagnostic. Three `CHECK` constraints pair the two columns: the state is one of the three names, a timestamp appears only with `PUBLISHED`, and `PUBLISHED` never appears without one.
 
-A diagnostic for a row whose `aggregate_id` holds the 16-character transaction key travels under `00000000000` rather than that key, because `schemas/dead-letter-v1.json` accepts eleven digits. The row is still named exactly by `failedEventId`, and `outbox_event.aggregate_id` still holds the transaction identifier for anyone reading the row. No producer writes that key form now, so this substitution applies only to a row stored before that decision.
+A diagnostic for a row whose `aggregate_id` holds the 16-character transaction key travels under `00000000000` rather than that key, because `schemas/dead-letter-v1.json` accepts eleven digits. The row is still named exactly by `failedEventId`, and `outbox_event.aggregate_id` still holds the transaction identifier for anyone reading the row. No producer writes that key form from migration V19 forward, so this substitution applies only to a row stored before it.
 
 ### Ledger database
 
@@ -662,7 +662,7 @@ The three lists total 1,276 literals across the measured 1,318-line copybook, an
 
 **Figure 6 — Card aggregate, seeded cross-reference copy, and mutation outbox**
 
-Figure 6 shows the card record and the seeded cross-reference copy beside it. The two carry no relationship line, because no delivered path in this service reads one against the other.
+Figure 6 shows the card record and the cross-reference copy beside it. The two carry no relationship line, because the schema declares none: the one path that reads them together reads each by its own key.
 
 ```mermaid
 erDiagram
@@ -710,7 +710,7 @@ erDiagram
 
 - Entity boxes are tables in `carddemo_card.card_service`.
 - `CARD_XREF` is a private replica, not a shared table.
-- **The diagram draws no relationship, because nothing in this service relates the two tables at runtime**. The schema declares no foreign key, and no production code reads `CARD_XREF` at all. The entity and repository exist, and only tests call them. Two tables that are never read together have no relationship to draw.
+- **The diagram draws no relationship, because the schema declares no foreign key.** `domain/CardCrossReferenceReconciler` is the one path that reads both: on every card update that commits it reads the replica row by card number and compares its `account_id` against the card row's. Each table is reached by its own primary key, so there is no join to draw.
 - `OUTBOX_EVENT` publishes `CardUpdated`; `PROCESSED_EVENT` is reserved consumer infrastructure, unused because this service registers no listener.
 - `card_token` is derived, not stored from a source field. `V2__seed.sql` loads fifty literals computed under the build-scope key in `pom.xml`, and `CardTokenReconciler` re-derives every row under the deployment's own `CARD_TOKEN_SECRET` when the service starts, so no stored token belongs to a key this repository publishes.
 
@@ -731,9 +731,9 @@ erDiagram
 
 The three source fields map exactly as they do in authorization, and the same three additive provenance columns are present.
 
-**This replica is seeded and then left alone.** `V1__schema.sql` creates it and `V2__seed.sql` loads the fifty fixture rows from `app/data/ASCII/cardxref.txt`. Nothing else touches it: the card service registers no Kafka listener, so no event refreshes it, and no class under `src/main/java` reads `CardCrossReferenceRepository`, so no request path queries it. `source_event_id` and `source_occurred_at` stay null and `observed_at` keeps its seed default, because the columns that record an event observation are only written when an event is observed.
+**This replica is seeded, then reconciled on the path this service owns.** `V1__schema.sql` creates it and `V2__seed.sql` loads the fifty fixture rows from `app/data/ASCII/cardxref.txt`. `domain/CardCrossReferenceReconciler` then reads the row of every card an update commits, inside that update's transaction under `MANDATORY` propagation. It brings the row's `account_id` into step with the card row that owns the mapping, and no event refreshes it, because this service registers no listener. `source_event_id` and `source_occurred_at` therefore stay null, while `observed_at` is rewritten by each reconciliation, because the column records when this service last confirmed the row.
 
-Two consequences follow, and both matter for what a reader should expect. Card update cannot repair a missing cross-reference row, because the card record carries no customer identifier to repair it with. And this service measures no divergence between the replica and the authoritative copy: nothing compares them, nothing counts a difference, and no meter reports one. [The decision log](decision-log.md) records leaving that divergence undetected as a deliberate choice rather than an oversight. The account service is where a cross-reference row is actually read on a write path.
+Two consequences follow, and both matter for what a reader should expect. Card update cannot repair a missing cross-reference row, because the card record carries no customer identifier to repair it with. That outcome is counted rather than repaired, and a card nobody updates is never compared at all. The reconciliation therefore closes divergence on this one path, and its three outcomes are metered as `carddemo.card.xref.agreed`, `carddemo.card.xref.corrected` and `carddemo.card.xref.missing`. [The decision log](decision-log.md) records both, and [next tasks](suggested-next-tasks.md) carries the divergence that remains.
 
 ## Key derivations from dataset definitions
 
@@ -777,7 +777,7 @@ The [traceability matrix](traceability-matrix.md) records each omission above, s
 
 The figures above name tables and columns, which is what a reader needs to follow the data. What an operator needs is the rest of the schema: the indexes a query plan can use and the named constraints that refuse a bad row. Both are enumerated here in full, one table per service, so no index and no named constraint is left to be discovered by reading a migration.
 
-**How these tables were produced, so a reader can reproduce them**. Every migration under `services/*/src/main/resources/db/migration/` was applied to an empty `postgres:18.4` database in version order, one schema per service. The tables below were then read out of `pg_indexes` and `pg_constraint`. That is the whole method, and it is why the appendix reflects `ALTER`, `DROP` and `RENAME`. An index on a table a later migration drops is absent here, and a constraint a later migration redefines appears once, in its final form. The totals are **48 indexes and 132 named constraints**.
+**How these tables were produced, so a reader can reproduce them**. Every migration under `services/*/src/main/resources/db/migration/` was applied to an empty `postgres:18.4` database in version order, one schema per service. The tables below were then read out of `pg_indexes` and `pg_constraint`. That is the whole method, and it is why the appendix reflects `ALTER`, `DROP` and `RENAME`. An index on a table a later migration drops is absent here, and a constraint a later migration redefines appears once, in its final form. The totals are **49 indexes and 133 named constraints**.
 
 Three consequences of reading the catalog rather than the statements are worth naming, because each is a place a hand-kept appendix drifts. The migrations contain 48 `CREATE INDEX` statements and the database holds 46 indexes: `V7__account_customer_link.sql` drops the account service's `card_xref` replica, and the two indexes on it go with the table. Notification's `V5__rendered_not_delivered.sql` renames `ix_notification_log_attempted_at` to `ix_notification_log_rendered_at`, so the appendix lists the new name once rather than both. And a plain `grep -c 'CONSTRAINT '` over the same files reports more than 131, because it also counts the `DROP CONSTRAINT` and `COMMENT ON CONSTRAINT` lines that reference a constraint rather than declaring one.
 
@@ -785,7 +785,7 @@ Eight primary keys are declared inline without a `CONSTRAINT` clause, so Postgre
 
 The Migration column names the migration that put the object into its final form, which for a redefined constraint is the migration that redefined it rather than the one that first declared it.
 
-### Authorization schema — 11 indexes, 36 named constraints
+### Authorization schema — 12 indexes, 37 named constraints
 
 | Index | Table | Columns | Unique | Partial predicate | Migration |
 | --- | --- | --- | --- | --- | --- |
@@ -799,6 +799,7 @@ The Migration column names the migration that put the object into its final form
 | `ix_outbox_event_published_at` | `outbox_event` | `published_at` | No | `published = true` | `V1__schema.sql` |
 | `ix_processed_event_processed_at` | `processed_event` | `processed_at` | No | — | `V1__schema.sql` |
 | `idx_unresolved_card_attempt_attempted_at` | `unresolved_card_attempt` | `attempted_at` | No | — | `V3__unresolved_card_attempt.sql` |
+| `idx_unresolved_card_attempt_account_id` | `unresolved_card_attempt` | `account_id` | No | — | `V19__unresolved_decline_names_its_account.sql` |
 | `ix_outbox_event_aggregate_head` | `outbox_event` | `aggregate_id, created_at, event_id` | No | `WHERE relay_state IN ('PENDING', 'CLAIMED')` | `V17__outbox_aggregate_head_index.sql` |
 
 | Named constraint | Table | Kind | Migration |
@@ -839,6 +840,7 @@ The Migration column names the migration that put the object into its final form
 | `ck_replica_gap_order` | `replica_gap` | Check | `V12__replica_gap.sql` |
 | `ck_replica_gap_stream` | `replica_gap` | Check | `V12__replica_gap.sql` |
 | `pk_replica_gap` | `replica_gap` | Primary Key | `V12__replica_gap.sql` |
+| `ck_unresolved_card_attempt_account_id` | `unresolved_card_attempt` | Check, `NOT VALID` | `V19__unresolved_decline_names_its_account.sql` |
 
 Generated primary-key names in this schema, declared inline without a `CONSTRAINT` clause: `account_credit_snapshot_pkey`, `card_xref_pkey`, `unresolved_card_attempt_pkey`.
 
@@ -1027,13 +1029,13 @@ Read from the catalog after every migration was applied, so this table is the me
 
 | Service | Indexes | Named constraints | Generated primary-key names |
 | --- | ---: | ---: | ---: |
-| Authorization | 11 | 36 | 3 |
+| Authorization | 12 | 37 | 3 |
 | Ledger posting | 8 | 18 | 0 |
 | Fraud detection | 9 | 21 | 0 |
 | Notification | 5 | 14 | 0 |
 | Account | 7 | 23 | 5 |
 | Card | 8 | 20 | 0 |
-| **Total** | **48** | **132** | **8** |
+| **Total** | **49** | **133** | **8** |
 
 ## Reference data
 

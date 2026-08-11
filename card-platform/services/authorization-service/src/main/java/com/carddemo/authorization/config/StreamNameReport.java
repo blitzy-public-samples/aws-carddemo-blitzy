@@ -16,22 +16,9 @@ import org.springframework.stereotype.Component;
  * job stream names the files behind them, so a program could not resolve a name at run time at all.
  * Its nearest relative is the source habit of displaying what a program is about to work on.
  *
- * <h2>The problem this solves</h2>
- *
- * <p>A decided authorization call publishes at most one event, and which stream that event lands
- * on is decided by {@code ${TOPIC_TRANSACTION_AUTHORIZED:transaction.authorized}}. The image carries a
- * default and the platform supplies the real value, which is deliberate: a service has to start on a
- * developer machine with nothing set. It also means a dropped, renamed or mistyped key in
- * {@code card-platform/deploy/k8s/30-configmap.yaml} or {@code card-platform/docker-compose.yml}
- * produces no error at all — this service publishes onto the built-in name, reports itself healthy,
- * and the ledger and fraud services read a stream nothing arrives on. That failure is the whole
- * fan-out going quiet, and nothing in the logs says why.
- *
  * <p>This class makes the choice visible instead of removing it. Each name is logged once as the
  * context finishes starting: at INFO when the platform supplied the value, naming the variable it
  * came from, and at WARN when it did not, naming the variable that is missing.
- *
- * <h2>What is reported, and what is not</h2>
  *
  * <p>Stream names only. The relay sweep, the claim timeout and the replica lag ceiling arrive the
  * same way, and a wrong value there changes throughput or how much backlog a decision tolerates; a
@@ -41,6 +28,8 @@ import org.springframework.stereotype.Component;
  * <p>No credential is reported here, and none can be: a topic name is not a credential, and the
  * class reads nothing else. No card number reaches this class either.
  *
+ * <p>Rationale, alternatives considered and accepted risks:
+ * {@code card-platform/docs/decision-log.md}.
  */
 @Component
 public class StreamNameReport implements ApplicationListener<ApplicationReadyEvent> {

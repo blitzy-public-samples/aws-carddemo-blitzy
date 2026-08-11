@@ -191,9 +191,17 @@ class CardRepositoryIT {
      * {@code outbox_event} and no table. The relay claims the due head row of each account rather
      * than the oldest due rows outright, which is what keeps two events of one account from being in
      * flight at once, and that claim reads the table by aggregate and arrival order.
+     *
+     * <p>Version 8 is {@code V8__card_status_locator.sql}, one {@code COMMENT ON CONSTRAINT} that
+     * restates the {@code ck_card_active_status} comment with the lines the status test occupies,
+     * {@code app/cbl/COCRDUPC.cbl:L861-L871}. Version 5 named a range past the end of that file. The
+     * file carries the corrected range too, and this migration is what corrects a database that
+     * applied the earlier bytes and had its checksums repaired rather than its volume discarded. It
+     * declares no table, column, index or constraint, so {@link ActiveStatusDomain} reads the same
+     * constraint it read at version 7.
      */
     private static final List<String> MIGRATION_VERSIONS =
-            List.of("1", "2", "3", "4", "5", "6", "7");
+            List.of("1", "2", "3", "4", "5", "6", "7", "8");
 
     /**
      * Card number of the row a test inserts to place a second card on one account.
@@ -667,7 +675,7 @@ class CardRepositoryIT {
         }
 
         /**
-         * Asserts the Flyway history carries versions 1 through 5, all successful.
+         * Asserts the Flyway history carries every shipped version, all successful.
          *
          * <p>A schema name is an identifier, so it joins the statement text rather than arriving
          * as a bind value. The value comes from
@@ -913,7 +921,7 @@ class CardRepositoryIT {
      * real writes.
      *
      * <p>The domain is {@code 88 FLG-YES-NO-VALID VALUES 'Y', 'N'.} at
-     * {@code app/cbl/COCRDUPC.cbl:L91}, tested at {@code app/cbl/COCRDUPC.cbl:L1861-L1863}.
+     * {@code app/cbl/COCRDUPC.cbl:L91}, tested at {@code app/cbl/COCRDUPC.cbl:L861-L871}.
      * {@code V1__schema.sql} declared the column {@code CHAR(1) NOT NULL} and constrained nothing,
      * so the width was the only rule a direct load had to satisfy and a row could hold a third
      * value the read contracts said it never would. {@code V5} adds

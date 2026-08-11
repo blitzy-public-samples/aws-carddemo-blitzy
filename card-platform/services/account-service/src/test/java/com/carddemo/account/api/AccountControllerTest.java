@@ -68,8 +68,8 @@ import tools.jackson.databind.ObjectMapper;
  * under {@code outbox/} own those, and {@code repository/SchemaColumnTypeTest} owns every
  * schema-level claim.
  *
- * <p>Rationale for the two-hop resolution asserted here, against the three hops
- * {@code 9000-READ-ACCT} performs at {@code app/cbl/COACTVWC.cbl:L687-L720}:
+ * <p>Three documents carry what this class does not. The two-hop resolution asserted here, against
+ * the three hops {@code 9000-READ-ACCT} performs at {@code app/cbl/COACTVWC.cbl:L687-L720}:
  * {@code card-platform/docs/decision-log.md}. The three guards whose setters are commented out at
  * {@code app/cbl/COACTVWC.cbl:L696}, {@code :L792} and {@code :L842}:
  * {@code card-platform/docs/business-rule-flags.md}. Field mapping, among it the corrected spelling

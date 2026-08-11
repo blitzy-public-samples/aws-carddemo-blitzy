@@ -807,13 +807,15 @@ public class OutboxRelay {
      * <p>{@link OutboxEventEntity#recordFailure} moves a row to
      * {@link OutboxEventEntity.RelayState#ABANDONED} once its attempts are spent, and the claim query
      * stops returning it from that moment. This is therefore the one place an abandoned card event is
-     * named anywhere outside its own database, which is why the send is awaited rather than dispatched:
-     * {@link EventPublisherPort#publish} returns after the broker has acknowledged the record, bounded
-     * by {@code carddemo.outbox.relay.publish-timeout}.
+     * named anywhere outside its own database, which is why the send is awaited rather than left in
+     * flight: {@link EventPublisherPort#publish} answers a {@link java.util.concurrent.CompletionStage}
+     * and {@link #await} holds this thread until the broker acknowledges the record, bounded by the
+     * sweep deadline that {@code carddemo.outbox.relay.publish-timeout} feeds.
      *
-     * <p>A refusal is raised rather than swallowed. The whole sweep runs inside one boundary, so the
-     * raised failure rolls the abandonment back with it and the row returns to the claim query with its
-     * attempt count as it was. A later sweep therefore offers the row and its diagnostic together, and
+     * <p>A refusal is raised rather than swallowed. This send is the one a sweep makes inside a
+     * transaction — {@link #recordFailure} opened it and no other send of the sweep is inside one —
+     * so the raised failure rolls the abandonment back with it, along with the attempt just recorded,
+     * and the row returns to the claim query with its attempt count as it was. A later sweep therefore offers the row and its diagnostic together, and
      * neither is lost. Swallowing the refusal instead would leave the row terminal with its only
      * record nowhere, which is the loss this method exists to prevent.
      *

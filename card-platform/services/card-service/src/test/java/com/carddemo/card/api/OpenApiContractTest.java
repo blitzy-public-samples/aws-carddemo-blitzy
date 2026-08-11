@@ -63,7 +63,7 @@ final class OpenApiContractTest {
             Set.of("get", "put", "post", "delete", "patch", "head", "options", "trace");
 
     /** The four status-specific outcome schemas of the update route. */
-    private static final List<String> OUTCOME_SCHEMAS = List.of("CardUpdated",
+    private static final List<String> OUTCOME_SCHEMAS = List.of("CardUpdateApplied",
             "CardUpdateNotFound", "CardUpdateConflict", "CardUpdateRejected");
 
     /** The parsed document every test below reads. */
@@ -451,7 +451,7 @@ final class OpenApiContractTest {
                 String expected = switch (status) {
                     case "400", "405", "415", "500", "503" -> "ApiError";
                     case "401", "403", "429" -> "Problem";
-                    case "200" -> "CardUpdated";
+                    case "200" -> "CardUpdateApplied";
                     case "404" -> "CardUpdateNotFound";
                     case "409" -> "CardUpdateConflict";
                     default -> "CardUpdateRejected";
@@ -635,7 +635,7 @@ final class OpenApiContractTest {
          * caller could receive without the key, and a caller reading the absence of a key rather
          * than its null value would then treat a rewritten row and a refused one alike.
          *
-         * <p>One schema per status is what makes the null members statable. {@code CardUpdated}
+         * <p>One schema per status is what makes the null members statable. {@code CardUpdateApplied}
          * carries {@code message} and {@code refreshedCard} as null and nothing else, and
          * {@code CardUpdateConflict} is the one schema whose refreshed card may hold a row.
          */
@@ -647,10 +647,10 @@ final class OpenApiContractTest {
                         schema + " calls a serialized member optional");
             }
 
-            assertEquals("null", asMap(propertiesOf("CardUpdated").get("message")).get("type"),
+            assertEquals("null", asMap(propertiesOf("CardUpdateApplied").get("message")).get("type"),
                     "a rewritten row carries no text");
             assertEquals("null",
-                    asMap(propertiesOf("CardUpdated").get("refreshedCard")).get("type"),
+                    asMap(propertiesOf("CardUpdateApplied").get("refreshedCard")).get("type"),
                     "a rewritten row re-reads nothing");
             assertEquals("null",
                     asMap(propertiesOf("CardUpdateNotFound").get("refreshedCard")).get("type"),
@@ -1169,7 +1169,7 @@ final class OpenApiContractTest {
      * Each documented schema paired with the record whose components it describes.
      *
      * <p>{@link CardUpdateResponse} is described four times, once per status the update answers:
-     * {@code CardUpdated} for the rewrite, {@code CardUpdateRejected} for a failed edit,
+     * {@code CardUpdateApplied} for the rewrite, {@code CardUpdateRejected} for a failed edit,
      * {@code CardUpdateConflict} for a row that changed first and {@code CardUpdateNotFound} for a
      * card the schema does not hold. One record, four documented answers, so all four are paired
      * here — a schema left out would be free to describe a member the record does not send.
@@ -1181,7 +1181,7 @@ final class OpenApiContractTest {
             "CardDetail", CardDetailResponse.class,
             "CardUpdateRequest", CardUpdateRequest.class,
             "RefreshedCard", RefreshedCard.class,
-            "CardUpdated", CardUpdateResponse.class,
+            "CardUpdateApplied", CardUpdateResponse.class,
             "CardUpdateRejected", CardUpdateResponse.class,
             "CardUpdateConflict", CardUpdateResponse.class,
             "CardUpdateNotFound", CardUpdateResponse.class);

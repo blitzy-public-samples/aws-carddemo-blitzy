@@ -87,8 +87,10 @@ public final class JsonSchemaValidatingDeserializer<T> implements Deserializer<T
      * contract version, read from {@link EventSchemas#SCHEMA_DOCUMENTS}.
      *
      * <p>This table is the one {@link JsonSchemaValidatingSerializer} reads, so the set of event
-     * types that may be published equals the set that may be consumed.
-     * {@code TransactionDeclined} is the one event type with two documents.
+     * types that may be published equals the set that may be consumed. Which types carry more than
+     * one document is read from the table itself through {@link EventSchemas#governedVersions},
+     * never from a figure written here, because a figure in a comment cannot move when a version
+     * ships.
      */
     private static final Map<EventSchemas.SchemaKey, String> SCHEMA_DOCUMENTS =
             EventSchemas.SCHEMA_DOCUMENTS;
@@ -96,12 +98,14 @@ public final class JsonSchemaValidatingDeserializer<T> implements Deserializer<T
     /**
      * The record each event type builds. Both sides of each pair are literals.
      *
-     * <p>Six of the eight governed event types appear here: the five events above and
-     * {@code DeadLetterEnvelope}. {@code AccountStateChanged} and {@code CardUpdated} are records of
-     * the account service and the card service, so this module carries their documents and validates
-     * against them but names no class for them. A consumer of either passes that record class to
+     * <p>The event types whose records live in this module appear here, together with
+     * {@code DeadLetterEnvelope}. {@code AccountStateChanged}, {@code CustomerContextChanged} and
+     * {@code CardUpdated} are records of the account service and the card service, so this module
+     * carries their documents and validates against them but names no class for them. A consumer of
+     * any of the three passes that record class to
      * {@link #JsonSchemaValidatingDeserializer(Class)}, or asks for {@link JsonNode} and reads the
-     * checked tree.
+     * checked tree. {@link EventSchemas#RECORD_TYPES} is the table itself, so a type added there is
+     * covered here without a figure in this comment moving.
      */
     private static final Map<String, Class<?>> RECORD_TYPES = EventSchemas.RECORD_TYPES;
 

@@ -67,13 +67,8 @@ public class ReadinessHealthConfig {
      * Opens the administrator the Kafka readiness check asks the cluster through, over settings that
      * stay bounded while no broker answers.
      *
-     * <p>The connection settings are pinned rather than inherited. A broker that is unreachable when
-     * this service starts left the client rebootstrapping in a tight loop: it wrote thousands of
-     * {@code Rebootstrapping with Cluster} lines per second at INFO, spent measurable processor time
-     * doing it, and buried the one line that named the degraded dependency. The cause is exact.
-     * {@code metadata.recovery.strategy} defaults to {@code rebootstrap}, and the client logs one
-     * such line every time it looks for a node to send a metadata request to and finds none, with no
-     * interval between attempts of its own.
+ * <p>The connection settings are pinned rather than inherited, so the probe reads the broker
+ * this service publishes to and answers within its own timeout.
      *
      * <p>{@code metadata.recovery.strategy=none} is the setting that removes the loop. Rebootstrap
      * re-reads {@code bootstrap.servers} for a client whose known brokers have all moved, which a
@@ -194,12 +189,7 @@ public class ReadinessHealthConfig {
      * and a probe routed traffic to an instance that consumed nothing. The declared number is what
      * separates "nothing is broken" from "nothing is there".
      *
-     * <p>It is a floor rather than an exact match, deliberately. A count written here can disagree
-     * with the listeners a service declares, and once did, leaving a service permanently unready. A
-     * floor cannot cause that: a listener added here still reports ready once it runs. The exact
-     * agreement is checked where a disagreement is cheap, by {@code equivalence-tests}
-     * {@code ReadinessListenerExpectationContractTest}, which reads this constant and counts the
-     * {@code @KafkaListener} methods of the same module, so drift fails a build and never a probe.
+ * <p>The comparison is a floor rather than an exact match.
      *
      * @param registry the listener registry, or {@code null} before the context supplies one
      * @return up when the declared number of containers registered and every one is running

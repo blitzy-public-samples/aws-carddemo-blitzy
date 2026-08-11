@@ -18,6 +18,7 @@ import com.carddemo.events.serde.EventContracts;
 import com.carddemo.events.serde.EventSchemas;
 import com.carddemo.events.serde.JsonSchemaValidatingDeserializer;
 import com.carddemo.events.serde.JsonSchemaValidatingSerializer;
+import com.carddemo.events.serde.ReleasedContracts;
 import com.carddemo.events.serde.SensitiveEventProperties;
 import com.networknt.schema.Error;
 import com.networknt.schema.InputFormat;
@@ -26,6 +27,7 @@ import com.networknt.schema.SchemaRegistry;
 import com.networknt.schema.SpecificationVersion;
 
 import org.apache.kafka.common.errors.SerializationException;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import tools.jackson.databind.JsonNode;
@@ -35,6 +37,7 @@ import tools.jackson.databind.node.ObjectNode;
 import tools.jackson.databind.cfg.DateTimeFeature;
 import tools.jackson.databind.json.JsonMapper;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
@@ -227,13 +230,16 @@ class SchemaBackwardCompatibilityTest {
     /** The account mutation contract the account service publishes. */
     private static final String ACCOUNT_STATE = "schemas/account-state-changed-v1.json";
 
-    /** The one card mutation contract, which carries no embossed cardholder name. */
-    private static final String CARD_STATE = "schemas/card-updated-v1.json";
+    /** The original card mutation contract, retained so old records remain readable. */
+    private static final String CARD_STATE_V1 = "schemas/card-updated-v1.json";
+
+    /** The current card mutation contract, which carries no embossed cardholder name. */
+    private static final String CARD_STATE = "schemas/card-updated-v2.json";
 
     /** Every document this baseline covers, written as literals and never derived from a name. */
     private static final List<String> DOCUMENTS =
             List.of(AUTHORIZED, DECLINED, POSTED, FLAGGED, CLEARED, ACCOUNT_STATE,
-                    CARD_STATE);
+                    CARD_STATE_V1, CARD_STATE);
 
     /**
      * The five documents whose events pass through the posting path.
@@ -249,7 +255,7 @@ class SchemaBackwardCompatibilityTest {
 
     /** The two documents an account or card mutation publishes. */
     private static final List<String> STATE_CHANGE_DOCUMENTS =
-            List.of(ACCOUNT_STATE, CARD_STATE);
+            List.of(ACCOUNT_STATE, CARD_STATE_V1, CARD_STATE);
 
     /**
      * The five documents whose Java record this module ships, so a record-to-document parity check
@@ -263,7 +269,7 @@ class SchemaBackwardCompatibilityTest {
 
     /** The four documents that declare a masked card number. */
     private static final List<String> MASKED_CARD_DOCUMENTS =
-            List.of(AUTHORIZED, DECLINED, POSTED, CARD_STATE);
+            List.of(AUTHORIZED, DECLINED, POSTED, CARD_STATE_V1, CARD_STATE);
 
     /** The three documents that declare no card number in any form. */
     private static final List<String> CARD_FREE_DOCUMENTS =
@@ -292,6 +298,7 @@ class SchemaBackwardCompatibilityTest {
             FLAGGED, "FraudFlagged",
             CLEARED, "FraudCleared",
             ACCOUNT_STATE, "AccountStateChanged",
+            CARD_STATE_V1, "CardUpdated",
             CARD_STATE, "CardUpdated");
 
     /** The nine keywords every document declares, in the relative order they appear. */
@@ -432,6 +439,8 @@ class SchemaBackwardCompatibilityTest {
                     "maskedcard", "pan", "cvv", "reason", "note"),
             ACCOUNT_STATE, List.of("cardnumber", "maskedcard", "pan", "cvv", "transactionid",
                     "riskscore", "filler", "customerid"),
+            CARD_STATE_V1, List.of("cvv", "verificationvalue", "currentbalance", "creditlimit",
+                    "riskscore", "transactionid", "filler"),
             CARD_STATE, List.of("cvv", "verificationvalue", "currentbalance", "creditlimit",
                     "riskscore", "transactionid", "filler", "embossedname"));
 
@@ -1711,58 +1720,44 @@ class SchemaBackwardCompatibilityTest {
     }
 
     /**
-     * Asserts every publishable reject reason carries the account identifier its source paragraph
-     * resolved, and that the one reason resolving none is refused before publication.
+     * Asserts every one of the four reject reasons carries the account identifier the decision
+     * applies to, in {@code accountId} and in the message key alike.
      *
      * <p>{@code app/cbl/CBTRN02C.cbl:L383-L387} assigns reason 0100 in the {@code INVALID KEY} limb
      * of the cross-reference read, before {@code XREF-ACCT-ID PIC 9(11)} at
      * {@code app/cpy/CVACT03Y.cpy:L7} has been read, and the gate at
-     * {@code app/cbl/CBTRN02C.cbl:L372} then stops the account lookup. The reject record written at
-     * {@code app/cbl/CBTRN02C.cbl:L448-L449} carries the daily transaction record and the validation
-     * trailer, and neither holds an account identifier. The other three reasons follow
-     * {@code MOVE XREF-ACCT-ID TO FD-ACCT-ID} at {@code app/cbl/CBTRN02C.cbl:L394}, so an account
-     * identifier is in hand.</p>
+     * {@code app/cbl/CBTRN02C.cbl:L372} then stops the account lookup. The other three reasons
+     * follow {@code MOVE XREF-ACCT-ID TO FD-ACCT-ID} at {@code app/cbl/CBTRN02C.cbl:L394}.</p>
      *
-     * <p>One contract governs the declined event, and it requires the account identifier in both
-     * {@code aggregateId} and {@code accountId}. Reason 0100 therefore reaches no topic: the
-     * authorization service records that attempt in {@code unresolved_card_attempt} and publishes
-     * nothing.</p>
+     * <p>What that ordering settles is which read resolved an identifier, and not which subject the
+     * decision applies to. A synchronous caller declares its own subject: {@code COTRN02C} takes an
+     * account identifier or a card number at {@code app/cbl/COTRN02C.cbl:L196-L209} and refuses a
+     * call carrying a card the cross-reference does not hold with
+     * {@code 'Card Number NOT found...'} at {@code app/cbl/COTRN02C.cbl:L626}. A decided reason 0100
+     * therefore has an eleven-digit account in hand, declared rather than resolved, and every
+     * declined record this platform publishes carries one in {@code accountId} and in
+     * {@code aggregateId}.</p>
+     *
+     * <p>{@code app/cbl/CBTRN02C.cbl:L448-L465} writes the 430-byte reject record for every record
+     * {@code 1500-VALIDATE-TRAN} refused, reason 0100 included, so a declined record that reaches a
+     * consumer without the account it applies to would cost that reject row.</p>
      */
     @Test
-    void eachDeclineReasonCarriesTheAccountIdentityItsSourceParagraphResolves() {
+    void eachDeclineReasonCarriesTheAccountIdentityItsDecisionAppliesTo() {
         for (DeclineReason reason : DeclineReason.values()) {
             java.math.BigDecimal amount = new java.math.BigDecimal(POSITIVE_AMOUNT);
-
-            if (!reason.resolvesAccount()) {
-                assertThrows(IllegalArgumentException.class,
-                        () -> TransactionDeclined.of(ACCOUNT_IDENTIFIER, TRANSACTION_ID, reason,
-                                amount, MASKED_CARD_NUMBER),
-                        "reason code " + reason.code() + " accepted an account identifier its "
-                                + "source paragraph denies, so a misattributed decline became "
-                                + "constructable");
-                assertThrows(IllegalArgumentException.class,
-                        () -> new TransactionDeclined(java.util.UUID.randomUUID(),
-                                TransactionDeclined.EVENT_TYPE, EventEnvelope.SCHEMA_VERSION,
-                                java.time.Instant.now(), ACCOUNT_IDENTIFIER, TRANSACTION_ID,
-                                ACCOUNT_IDENTIFIER, reason, reason.description(), amount,
-                                MASKED_CARD_NUMBER, null, null, null, null, null, null, null, null,
-                                null),
-                        "the canonical constructor accepted reason code " + reason.code()
-                                + ", so the factory guard can be bypassed");
-                continue;
-            }
 
             TransactionDeclined event = TransactionDeclined.of(ACCOUNT_IDENTIFIER, TRANSACTION_ID,
                     reason, amount, MASKED_CARD_NUMBER);
 
             assertEquals(ACCOUNT_IDENTIFIER, event.accountId(),
                     "reason code " + reason.code() + " stopped carrying the account identifier "
-                            + "its source paragraph resolves");
+                            + "its decision applies to");
             assertEquals(ACCOUNT_IDENTIFIER, event.envelope().aggregateId(),
                     "reason code " + reason.code() + " lost the agreement between its account "
                             + "identifier and the Kafka message key");
             assertEquals(EventEnvelope.SCHEMA_VERSION, event.schemaVersion(),
-                    "a decline stopped travelling under version one");
+                    "the retained first declined contract stopped being version one");
 
             JsonNode wire = MAPPER.readTree(new String(
                     SERIALIZER.serialize(topicFor(event), event), StandardCharsets.UTF_8));
@@ -1780,11 +1775,100 @@ class SchemaBackwardCompatibilityTest {
 
         assertEquals(1, java.util.Arrays.stream(DeclineReason.values())
                         .filter(reason -> !reason.resolvesAccount()).count(),
-                "the count of reject reasons that resolve no account moved away from one, and only "
-                        + "the cross-reference miss at app/cbl/CBTRN02C.cbl:L383-L387 resolves "
-                        + "none");
+                "the count of reject reasons assigned before the cross-reference resolves an "
+                        + "account moved away from one, and only the cross-reference miss at "
+                        + "app/cbl/CBTRN02C.cbl:L383-L387 is assigned that early");
         assertEquals("0100", DeclineReason.INVALID_CARD_NUMBER.code(),
-                "the reason that resolves no account stopped being the cross-reference miss");
+                "the reason assigned before the cross-reference resolves an account stopped being "
+                        + "the cross-reference miss");
+    }
+
+    /**
+     * Asserts the account-less declined document is retained rather than published, and that no
+     * producer path of this platform may write it.
+     *
+     * <p>That document forked off version one for reason 0100 alone: it stopped requiring
+     * {@code accountId} and retyped {@code aggregateId} to the sixteen-character transaction
+     * identifier, which left the ledger consumer a record it could not attribute and no reject row
+     * to write for it. Reason 0100 now publishes under the detail-bearing version keyed on the
+     * account the decision applies to, so the fork has no producer left. It stays on the classpath
+     * and readable, because a record published under it before that change is still on its topic.</p>
+     */
+    @Test
+    void theAccountLessDeclinedDocumentIsRetainedAndNoProducerMayWriteIt() {
+        assertEquals(ReleasedContracts.RETAINED,
+                ReleasedContracts.postureOf(TransactionDeclined.EVENT_TYPE,
+                        TransactionDeclined.UNRESOLVED_ACCOUNT_SCHEMA_VERSION),
+                "the account-less declined document is published again, and a record under it "
+                        + "carries no account for the ledger to attribute a reject row to");
+
+        ObjectNode retained = mutableCopy(DECLINED_UNRESOLVED);
+        assertTrue(retained.has("properties"),
+                DECLINED_UNRESOLVED + " left the classpath, so a record already published under it "
+                        + "became unreadable");
+
+        TransactionDeclined accountLess = TransactionDeclined.ofUnresolvedAccount(TRANSACTION_ID,
+                new BigDecimal(POSITIVE_AMOUNT), MASKED_CARD_NUMBER);
+        String payload = new String(SERIALIZER.serialize(topicFor(accountLess), accountLess),
+                StandardCharsets.UTF_8);
+
+        assertTrue(EventContracts.violationsOf(TransactionDeclined.EVENT_TYPE, payload).isEmpty(),
+                "a record under the retained account-less document stopped being readable, and "
+                        + "retention is what keeps it readable");
+        assertFalse(
+                EventContracts.publishViolationsOf(TransactionDeclined.EVENT_TYPE, payload)
+                        .isEmpty(),
+                "a producer may write the retained account-less document again");
+
+        TransactionDeclined detailed = aDeclinedRecordAtVersionThree();
+        String published = new String(SERIALIZER.serialize(topicFor(detailed), detailed),
+                StandardCharsets.UTF_8);
+
+        assertTrue(
+                EventContracts.publishViolationsOf(TransactionDeclined.EVENT_TYPE, published)
+                        .isEmpty(),
+                "the detail-bearing declined document stopped being publishable, and it is the one "
+                        + "version reason 0100 travels under");
+    }
+
+    /**
+     * Asserts every version each producer of this platform can construct is one the released
+     * baseline publishes, so no producer writes a version a consumer has already moved past.
+     *
+     * <p>{@code TransactionPosted} version 1 is published for one documented reason, which the last
+     * assertion measures rather than assumes:
+     * {@link TransactionPosted#forAuthorized(TransactionAuthorized, java.math.BigDecimal, String)}
+     * writes it for an authorized record carrying no card token, and version 2 requires one. Such a
+     * record is one published under the retained {@code TransactionAuthorized} version 1, so posting it
+     * under version 1 keeps a record already on a topic postable.
+     */
+    @Test
+    void everyVersionAProducerConstructsIsAPublishedVersion() {
+        assertAll(
+                () -> assertTrue(ReleasedContracts.isPublished(TransactionDeclined.EVENT_TYPE,
+                                TransactionDeclined.TRANSACTION_DETAIL_SCHEMA_VERSION),
+                        "the declined version the authorization service writes is not published"),
+                () -> assertTrue(ReleasedContracts.isPublished(TransactionAuthorized.EVENT_TYPE,
+                                TransactionAuthorized.CARD_TOKEN_SCHEMA_VERSION),
+                        "the authorized version the authorization service writes is not published"),
+                () -> assertTrue(ReleasedContracts.isPublished(TransactionPosted.EVENT_TYPE,
+                                TransactionPosted.TRANSACTION_DETAIL_SCHEMA_VERSION),
+                        "the posted version the ledger service writes is not published"),
+                () -> assertEquals(EventEnvelope.SCHEMA_VERSION,
+                        TransactionPosted.forAuthorized(anAuthorizedRecordAtVersionOne(),
+                                new BigDecimal(POSITIVE_BALANCE), POSTED_AT_VALUE).schemaVersion(),
+                        "a tokenless authorized record stopped producing the version its own contract"
+                                + " can carry"),
+                () -> assertTrue(ReleasedContracts.isPublished(TransactionPosted.EVENT_TYPE,
+                                EventEnvelope.SCHEMA_VERSION),
+                        "the posted version a tokenless authorized record produces is not published,"
+                                + " so such a record could no longer be posted at all"),
+                () -> assertTrue(ReleasedContracts.isPublished(FraudFlagged.EVENT_TYPE,
+                                EventEnvelope.SCHEMA_VERSION),
+                        "the flagged version the fraud service writes is not published"),
+                () -> assertTrue(ReleasedContracts.isPublished(FraudCleared.EVENT_TYPE,
+                                EventEnvelope.SCHEMA_VERSION),
+                        "the cleared version the fraud service writes is not published"));
     }
 
     /**
@@ -2109,6 +2193,8 @@ class SchemaBackwardCompatibilityTest {
         sets.put(CLEARED, requiredSet("transactionId", "accountId", "assessedAt"));
         sets.put(ACCOUNT_STATE, requiredSet("accountId", "currentBalance", "creditLimit",
                 "currentCycleCredit", "currentCycleDebit", "expirationDate", "changeKind"));
+        sets.put(CARD_STATE_V1, requiredSet("accountId", "maskedCardNumber", "embossedName",
+                "expirationDate", "activeStatus"));
         sets.put(CARD_STATE, requiredSet("accountId", "maskedCardNumber",
                 "expirationDate", "activeStatus"));
         return Map.copyOf(sets);
@@ -2498,6 +2584,9 @@ class SchemaBackwardCompatibilityTest {
      */
     private static ObjectNode validPayloadFor(String document) {
         ObjectNode payload = envelopeFor(TITLES.get(document));
+        if (CARD_STATE.equals(document)) {
+            payload.put("schemaVersion", 2);
+        }
         if (!STATE_CHANGE_DOCUMENTS.contains(document)) {
             payload.put("transactionId", TRANSACTION_ID);
         }
@@ -2550,8 +2639,11 @@ class SchemaBackwardCompatibilityTest {
                 payload.put("expirationDate", EXPIRATION_DATE);
                 payload.put(CHANGE_KIND_PROPERTY, ACCOUNT_UPDATED);
             }
-            case CARD_STATE -> {
+            case CARD_STATE_V1, CARD_STATE -> {
                 payload.put(MASKED_CARD_PROPERTY, MASKED_CARD_NUMBER);
+                if (CARD_STATE_V1.equals(document)) {
+                    payload.put("embossedName", "PAULA A CHRISTOFFERSEN");
+                }
                 payload.put("expirationDate", EXPIRATION_DATE);
                 payload.put("activeStatus", ACTIVE_STATUS);
             }
@@ -3151,137 +3243,6 @@ class SchemaBackwardCompatibilityTest {
     }
 
     /**
-     * The event types whose successive versions form one additive chain, with the version that
-     * governs a separately keyed subject rather than a successor.
-     *
-     * <p>{@code transaction-declined-v2.json} is the one document that is not a successor of the
-     * version below it. It governs an authorization whose card resolved no account, declares no
-     * {@code accountId} and keys on the transaction identifier, so it is a subject of its own rather
-     * than a step in the declined chain. Every other version of every event type is a successor, and
-     * {@link #everyVersionAcceptsWhatItsPredecessorRequires()} measures it as one.
-     */
-    private static final Map<String, Integer> SEPARATELY_GOVERNED_VERSIONS =
-            Map.of("TransactionDeclined", 2);
-
-    /**
-     * Asserts every governed version accepts every payload its predecessor required.
-     *
-     * <p>This is the check a version number alone does not give. A consumer written against version
-     * <em>n</em> holds that version's {@code required} set, so a producer that moves to version
-     * <em>n plus one</em> may only add to it: a version that drops, renames, retypes or narrows a
-     * property its predecessor required breaks that consumer even though the number went up. AAP
-     * 0.8.6 states the requirement as "new consumers can be added without breaking existing ones",
-     * and AAP 0.3.1 states the mechanic: evolution is additive only.
-     *
-     * <p>The assertion is made two ways for every adjacent pair, so neither can pass alone. First the
-     * {@code required} set of the later version must contain every name the earlier one required.
-     * Second, every property the earlier version declares and the later version also declares must
-     * carry an identical schema, so a retype or a narrowing is caught even where the name survives.
-     *
-     * <p>{@link #SEPARATELY_GOVERNED_VERSIONS} names the one version that is a subject of its own
-     * rather than a successor, and it is skipped as a predecessor and as a successor. Every other
-     * pair is measured, and a new document added to
-     * {@code libs/event-contracts/src/main/resources/schemas} is measured the moment
-     * {@code EventSchemas} governs it, because the pairs are read from the schema table rather than
-     * listed here.
-     */
-    @Test
-    void everyVersionAcceptsWhatItsPredecessorRequires() {
-        int pairsMeasured = 0;
-
-        for (String eventType : EventSchemas.governedEventTypes()) {
-            List<Integer> versions = EventSchemas.governedVersions(eventType);
-            Integer separate = SEPARATELY_GOVERNED_VERSIONS.get(eventType);
-            List<Integer> chain = new ArrayList<>(versions);
-            chain.removeIf(version -> version.equals(separate));
-
-            for (int index = 1; index < chain.size(); index++) {
-                int earlierVersion = chain.get(index - 1);
-                int laterVersion = chain.get(index);
-                String earlier = EventSchemas.resourceFor(eventType, earlierVersion);
-                String later = EventSchemas.resourceFor(eventType, laterVersion);
-                JsonNode earlierDocument = readDocument(earlier);
-                JsonNode laterDocument = readDocument(later);
-
-                Set<String> earlierRequired = requiredNamesOf(earlierDocument);
-                Set<String> laterRequired = requiredNamesOf(laterDocument);
-                for (String name : earlierRequired) {
-                    assertTrue(laterRequired.contains(name),
-                            () -> eventType + " version " + laterVersion + " drops required property"
-                                    + " \"" + name + "\", which version " + earlierVersion
-                                    + " requires. A consumer holding version " + earlierVersion
-                                    + " refuses every record the current producer writes. Add a"
-                                    + " property in a later version, never remove one, or govern the"
-                                    + " narrower payload as a separate subject and name it in"
-                                    + " SEPARATELY_GOVERNED_VERSIONS with its reason.");
-                }
-
-                JsonNode earlierProperties = earlierDocument.path("properties");
-                JsonNode laterProperties = laterDocument.path("properties");
-                for (String name : namesOf(earlierProperties)) {
-                    if ("schemaVersion".equals(name)) {
-                        continue;
-                    }
-                    JsonNode laterProperty = laterProperties.path(name);
-                    if (laterProperty.isMissingNode()) {
-                        continue;
-                    }
-                    assertEquals(assertionKeywordsOf(earlierProperties.path(name)),
-                            assertionKeywordsOf(laterProperty),
-                            () -> eventType + " version " + laterVersion + " changes the assertion"
-                                    + " keywords of property \"" + name + "\", which version "
-                                    + earlierVersion + " also declares. A retype or a narrowing"
-                                    + " refuses a value the earlier contract admits, so it breaks a"
-                                    + " consumer as surely as a removal does.");
-                }
-                pairsMeasured++;
-            }
-        }
-
-        assertEquals(3, pairsMeasured,
-                "three adjacent version pairs exist on this platform: TransactionAuthorized 1 to 2,"
-                        + " TransactionPosted 1 to 2, and TransactionDeclined 1 to 3 with version 2"
-                        + " governed separately. A pair added or removed without this figure moving"
-                        + " means the chain was read from a stale list.");
-    }
-
-    /**
-     * Reads the {@code required} names one document declares.
-     *
-     * @param document the parsed document
-     * @return the required names, in document order
-     */
-    private static Set<String> requiredNamesOf(JsonNode document) {
-        Set<String> names = new LinkedHashSet<>();
-        for (JsonNode name : document.path("required")) {
-            names.add(name.stringValue());
-        }
-        return names;
-    }
-
-    /**
-     * Reads the assertion keywords of one property schema, dropping the annotations that carry no
-     * constraint.
-     *
-     * <p>{@code description}, {@code examples} and {@code $comment} are annotations: an edit to one
-     * of them admits and refuses exactly the same values, so comparing them would report prose as a
-     * compatibility break.
-     *
-     * @param property the property schema
-     * @return the keyword names mapped to their values, with the annotations removed
-     */
-    private static Map<String, JsonNode> assertionKeywordsOf(JsonNode property) {
-        Map<String, JsonNode> keywords = new LinkedHashMap<>();
-        for (String keyword : namesOf(property)) {
-            if (ANNOTATION_KEYWORDS.contains(keyword)) {
-                continue;
-            }
-            keywords.put(keyword, property.path(keyword));
-        }
-        return keywords;
-    }
-
-    /**
      * Asserts the schema table selects a document by event type AND contract version, and that
      * exactly four contracts carry more than one version.
      *
@@ -3317,13 +3278,16 @@ class SchemaBackwardCompatibilityTest {
         assertEquals(POSTED_ENRICHED, EventSchemas.resourceFor("TransactionPosted", 2),
                 "version 2 of the posted contract selects the version-two document");
 
-        assertEquals(List.of(1), EventSchemas.governedVersions("CardUpdated"),
-                "the card-update contract is governed at one version");
-        assertEquals(CARD_STATE, EventSchemas.resourceFor("CardUpdated", 1),
-                "version 1 of the card-update contract selects the one card document");
+        assertEquals(List.of(1, 2), EventSchemas.governedVersions("CardUpdated"),
+                "the card-update contract is governed at both versions");
+        assertEquals(CARD_STATE_V1, EventSchemas.resourceFor("CardUpdated", 1),
+                "version 1 of the card-update contract selects the original document");
+        assertEquals(CARD_STATE, EventSchemas.resourceFor("CardUpdated", 2),
+                "version 2 of the card-update contract selects the redacted document");
 
         Set<String> multiVersionTypes =
-                Set.of("TransactionDeclined", "TransactionAuthorized", "TransactionPosted");
+                Set.of("TransactionDeclined", "TransactionAuthorized", "TransactionPosted",
+                        "CardUpdated");
         for (String eventType : EventSchemas.governedEventTypes()) {
             if (multiVersionTypes.contains(eventType)) {
                 assertNull(EventSchemas.resourceFor(eventType,
@@ -3739,5 +3703,567 @@ class SchemaBackwardCompatibilityTest {
         payload.put(AMOUNT_PROPERTY, POSITIVE_AMOUNT);
         payload.put(MASKED_CARD_PROPERTY, MASKED_CARD_NUMBER);
         return payload;
+    }
+
+    /**
+     * Reads the {@code required} names one document declares.
+     *
+     * @param document the parsed document
+     * @return the required names, in document order
+     */
+    private static Set<String> requiredNamesOf(JsonNode document) {
+        Set<String> names = new LinkedHashSet<>();
+        for (JsonNode name : document.path("required")) {
+            names.add(name.stringValue());
+        }
+        return names;
+    }
+
+    /**
+     * Reads the assertion keywords of one property schema, dropping the annotations that carry no
+     * constraint.
+     *
+     * <p>{@code description}, {@code examples} and {@code $comment} are annotations: an edit to one
+     * of them admits and refuses exactly the same values, so comparing them would report prose as a
+     * compatibility break.
+     *
+     * @param property the property schema
+     * @return the keyword names mapped to their values, with the annotations removed
+     */
+    private static Map<String, JsonNode> assertionKeywordsOf(JsonNode property) {
+        Map<String, JsonNode> keywords = new LinkedHashMap<>();
+        for (String keyword : namesOf(property)) {
+            if (ANNOTATION_KEYWORDS.contains(keyword)) {
+                continue;
+            }
+            keywords.put(keyword, property.path(keyword));
+        }
+        return keywords;
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Released-contract governance. The baseline below is what makes immutability measurable
+    // rather than asserted: it names every pair of event type and contract version this platform
+    // has released, records the wire contract of each as a digest, and states which of them a
+    // producer still writes. Rationale: card-platform/docs/decision-log.md.
+    // -----------------------------------------------------------------------------------------
+
+    /** The classpath resource recording every released contract. */
+    private static final String RELEASED_CONTRACTS = "contracts/released-contracts.json";
+
+    /** Posture of a version a producer still writes. */
+    private static final String POSTURE_PUBLISHED = "PUBLISHED";
+
+    /** Posture of a version no producer writes and every consumer must still be able to read. */
+    private static final String POSTURE_RETAINED = "RETAINED";
+
+    /**
+     * One released contract, as {@link #RELEASED_CONTRACTS} records it.
+     *
+     * @param eventType        the routing discriminator the records of this contract carry
+     * @param schemaVersion    the contract version those records carry
+     * @param resource         the classpath path of the governing document
+     * @param posture          {@link #POSTURE_PUBLISHED} or {@link #POSTURE_RETAINED}
+     * @param contractDigest   the digest the document's wire contract hashed to when it was released
+     * @param nonAdditiveOver  the earlier version this one stopped requiring a property of, or
+     *                         {@code null} where this version is additive over its predecessor
+     * @param stoppedRequiring the property names this version stopped requiring, empty unless
+     *                         {@code nonAdditiveOver} is present
+     * @param retyped          the property names this version declares differently from the version
+     *                         it forked off, empty unless {@code nonAdditiveOver} is present
+     */
+    private record ReleasedContract(String eventType, int schemaVersion, String resource,
+            String posture, String contractDigest, Integer nonAdditiveOver,
+            List<String> stoppedRequiring, List<String> retyped) {
+
+        /** @return the registry key this contract is selected by */
+        EventSchemas.SchemaKey key() {
+            return new EventSchemas.SchemaKey(eventType, schemaVersion);
+        }
+
+        /** @return the event type and version, for a failure message */
+        String describe() {
+            return eventType + " version " + schemaVersion;
+        }
+    }
+
+    /**
+     * Reads the released-contract baseline.
+     *
+     * @return every released contract, in the order the baseline records them
+     */
+    private static List<ReleasedContract> releasedContracts() {
+        JsonNode baseline = readDocument(RELEASED_CONTRACTS);
+        JsonNode contracts = baseline.get("contracts");
+
+        if (contracts == null || !contracts.isArray() || contracts.isEmpty()) {
+            return fail(RELEASED_CONTRACTS + " must carry a non-empty contracts array");
+        }
+        List<ReleasedContract> released = new ArrayList<>();
+        for (JsonNode entry : contracts) {
+            JsonNode nonAdditive = entry.get("nonAdditiveOver");
+            released.add(new ReleasedContract(entry.get("eventType").stringValue(),
+                    entry.get("schemaVersion").intValue(), entry.get("resource").stringValue(),
+                    entry.get("posture").stringValue(), entry.get("contractDigest").stringValue(),
+                    nonAdditive == null ? null : nonAdditive.intValue(),
+                    namesUnder(entry, "stoppedRequiring"), namesUnder(entry, "retyped")));
+        }
+        return List.copyOf(released);
+    }
+
+    /**
+     * Reads one array of names out of a baseline entry.
+     *
+     * @param entry  the baseline entry
+     * @param member the array member to read
+     * @return the names, or an empty list where the entry declares none
+     */
+    private static List<String> namesUnder(JsonNode entry, String member) {
+        List<String> names = new ArrayList<>();
+        JsonNode declared = entry.get(member);
+        if (declared != null) {
+            for (JsonNode name : declared) {
+                names.add(name.stringValue());
+            }
+        }
+        return List.copyOf(names);
+    }
+
+    /**
+     * Hashes the wire contract of one document.
+     *
+     * <p>The annotation keywords {@code description}, {@code $comment}, {@code examples} and
+     * {@code title} are removed recursively and the remainder is serialized with sorted keys and no
+     * whitespace, so a correction to the prose of a released document moves nothing and a change to
+     * what it asserts about an instance moves everything.
+     *
+     * @param resource the classpath path of the document
+     * @return the digest, prefixed {@code sha256:}
+     */
+    private static String contractDigestOf(String resource) {
+        JsonNode normative = withoutAnnotations(readDocument(resource));
+        byte[] canonical = canonicalJson(normative).getBytes(StandardCharsets.UTF_8);
+        try {
+            byte[] hash = java.security.MessageDigest.getInstance("SHA-256").digest(canonical);
+            return "sha256:" + java.util.HexFormat.of().formatHex(hash);
+        } catch (java.security.NoSuchAlgorithmException impossible) {
+            return fail("SHA-256 must be present in the Java runtime: " + impossible.getMessage());
+        }
+    }
+
+    /**
+     * Copies one tree with every annotation keyword removed, at every depth.
+     *
+     * @param node the tree to copy
+     * @return the copy, carrying only keywords that assert something about an instance
+     */
+    private static JsonNode withoutAnnotations(JsonNode node) {
+        if (node.isObject()) {
+            ObjectNode copy = MAPPER.createObjectNode();
+            for (Map.Entry<String, JsonNode> member : node.properties()) {
+                if (!CONTRACT_ANNOTATION_KEYWORDS.contains(member.getKey())) {
+                    copy.set(member.getKey(), withoutAnnotations(member.getValue()));
+                }
+            }
+            return copy;
+        }
+        if (node.isArray()) {
+            ArrayNode copy = MAPPER.createArrayNode();
+            for (JsonNode element : node) {
+                copy.add(withoutAnnotations(element));
+            }
+            return copy;
+        }
+        return node;
+    }
+
+    /**
+     * The keywords {@link #contractDigestOf(String)} removes before hashing.
+     *
+     * <p>Narrower than {@link #ANNOTATION_KEYWORDS} on purpose. {@code default}, {@code deprecated},
+     * {@code readOnly} and {@code writeOnly} annotate nothing this platform writes, and freezing
+     * them costs nothing, so a released document that grew one would be reported.
+     */
+    private static final Set<String> CONTRACT_ANNOTATION_KEYWORDS =
+            Set.of("description", "$comment", "examples", "title");
+
+    /**
+     * Renders one tree with members in sorted order and no whitespace.
+     *
+     * @param node the tree to render
+     * @return the canonical text the digest is taken over
+     */
+    private static String canonicalJson(JsonNode node) {
+        if (node.isObject()) {
+            StringBuilder text = new StringBuilder("{");
+            List<String> names = new ArrayList<>(namesOf(node));
+            java.util.Collections.sort(names);
+            for (int index = 0; index < names.size(); index++) {
+                if (index > 0) {
+                    text.append(',');
+                }
+                text.append(MAPPER.writeValueAsString(names.get(index))).append(':')
+                        .append(canonicalJson(node.get(names.get(index))));
+            }
+            return text.append('}').toString();
+        }
+        if (node.isArray()) {
+            StringBuilder text = new StringBuilder("[");
+            for (int index = 0; index < node.size(); index++) {
+                if (index > 0) {
+                    text.append(',');
+                }
+                text.append(canonicalJson(node.get(index)));
+            }
+            return text.append(']').toString();
+        }
+        return MAPPER.writeValueAsString(node);
+    }
+
+    /**
+     * Builds a payload from the examples each required property of one document declares.
+     *
+     * <p>Reading the values out of the document keeps this usable for every version, including the
+     * ones no record class in this module builds.
+     *
+     * @param document the classpath path of the document
+     * @return a payload carrying every required property of that document and nothing more
+     */
+    private static ObjectNode payloadFromExamples(String document) {
+        JsonNode schema = readDocument(document);
+        JsonNode properties = schema.get("properties");
+        ObjectNode payload = MAPPER.createObjectNode();
+
+        for (JsonNode required : schema.get("required")) {
+            String name = required.stringValue();
+            JsonNode examples = properties.path(name).get("examples");
+            if (examples == null || examples.isEmpty()) {
+                return fail(document + " declares required property \"" + name + "\" with no"
+                        + " examples, so no payload can be built from the document itself");
+            }
+            payload.set(name, examples.get(0).deepCopy());
+        }
+        return payload;
+    }
+
+    @Test
+    @DisplayName("the released baseline is exactly the set the registry governs")
+    void theReleasedBaselineIsExactlyTheSetTheRegistryGoverns() {
+        List<ReleasedContract> released = releasedContracts();
+
+        Set<EventSchemas.SchemaKey> declared = new LinkedHashSet<>();
+        for (ReleasedContract contract : released) {
+            assertTrue(declared.add(contract.key()),
+                    () -> RELEASED_CONTRACTS + " records " + contract.describe() + " twice");
+        }
+
+        assertEquals(EventSchemas.SCHEMA_DOCUMENTS.keySet(), declared,
+                "the baseline and the registry must name the same released contracts. A key the"
+                        + " registry holds and the baseline does not is a version that shipped with"
+                        + " nothing pinning its wire contract; a key the baseline holds and the"
+                        + " registry does not is a released document that was deleted, which is the"
+                        + " change that breaks a consumer holding retained records.");
+
+        for (ReleasedContract contract : released) {
+            assertEquals(EventSchemas.resourceFor(contract.eventType(), contract.schemaVersion()),
+                    contract.resource(),
+                    () -> contract.describe() + " resolves to a different document from the one the"
+                            + " baseline records");
+            assertTrue(POSTURE_PUBLISHED.equals(contract.posture())
+                            || POSTURE_RETAINED.equals(contract.posture()),
+                    () -> contract.describe() + " declares posture \"" + contract.posture()
+                            + "\", which is neither " + POSTURE_PUBLISHED + " nor "
+                            + POSTURE_RETAINED);
+        }
+    }
+
+    @Test
+    @DisplayName("no released document was deleted or had its wire contract rewritten")
+    void noReleasedDocumentWasDeletedOrHadItsWireContractRewritten() {
+        for (ReleasedContract contract : releasedContracts()) {
+            assertNotNull(SchemaBackwardCompatibilityTest.class.getClassLoader()
+                            .getResource(contract.resource()),
+                    () -> contract.resource() + " is missing from the classpath. A released document"
+                            + " is never deleted: a record retained on a topic under "
+                            + contract.describe() + " becomes unreadable the moment it goes.");
+
+            String measured = contractDigestOf(contract.resource());
+            assertEquals(contract.contractDigest(), measured,
+                    () -> contract.describe() + " no longer hashes to the wire contract it was"
+                            + " released with. It hashes to " + measured + " now. Prose may be"
+                            + " corrected in a released document and what it asserts about an"
+                            + " instance may not: publish a new -v<n> document beside this one and"
+                            + " record it in " + RELEASED_CONTRACTS + " instead.");
+        }
+    }
+
+    @Test
+    @DisplayName("every released version stays selectable and validates a record of its own version")
+    void everyReleasedVersionStaysSelectableAndValidatesARecordOfItsOwnVersion() {
+        for (ReleasedContract contract : releasedContracts()) {
+            assertEquals(contract.resource(),
+                    EventSchemas.resourceFor(contract.eventType(), contract.schemaVersion()),
+                    () -> contract.describe() + " is no longer selected by its own version number,"
+                            + " so a retained record declaring that version reaches no document");
+            assertEquals(contract.schemaVersion(),
+                    readDocument(contract.resource()).path("properties").path("schemaVersion")
+                            .path("const").intValue(),
+                    () -> contract.resource() + " pins a schemaVersion other than "
+                            + contract.schemaVersion());
+
+            ObjectNode record = payloadFromExamples(contract.resource());
+            assertValid(contract.resource(), record,
+                    contract.describe() + " no longer validates a record built from its own"
+                            + " declared examples");
+        }
+    }
+
+    /**
+     * Asserts the additive chain of every event type, and that every fork off it is declared.
+     *
+     * <p>A consumer holds the documents its binary shipped with and validates each record against
+     * the one that record's {@code schemaVersion} names. Two properties keep that safe, and this
+     * measures both. A later version may only add to the {@code required} set of the version it
+     * succeeds, and it may not redeclare a property that version already declared, so a consumer
+     * that upgrades still reads every retained record of the earlier version. Where a released
+     * version broke one of those rules it is a fork rather than a successor:
+     * {@code contracts/released-contracts.json} names it, names exactly what it stopped requiring
+     * and exactly what it redeclared, and this test holds the declaration to the documents. A fork
+     * is measured against the version it forked off and is left out of the chain, so the chain of
+     * successors is measured end to end without it.
+     *
+     * <p>The number of pairs to measure is read from the registry, not written here. One version
+     * added or deleted moves it, which is what stops this check from passing over a stale list.
+     */
+    @Test
+    @DisplayName("every version is additive over the version it succeeds, and every fork is declared")
+    void everyVersionIsAdditiveOverTheVersionItSucceedsAndEveryForkIsDeclared() {
+        Map<EventSchemas.SchemaKey, ReleasedContract> baseline = new LinkedHashMap<>();
+        for (ReleasedContract contract : releasedContracts()) {
+            baseline.put(contract.key(), contract);
+        }
+
+        int pairsMeasured = 0;
+        int pairsExpected = 0;
+        for (String eventType : EventSchemas.governedEventTypes()) {
+            List<Integer> versions = EventSchemas.governedVersions(eventType);
+            pairsExpected += versions.size() - 1;
+
+            List<Integer> chain = new ArrayList<>();
+            for (int version : versions) {
+                ReleasedContract contract =
+                        baseline.get(new EventSchemas.SchemaKey(eventType, version));
+                assertNotNull(contract,
+                        () -> eventType + " version " + version + " is governed and the baseline"
+                                + " does not record it");
+                if (contract.nonAdditiveOver() == null) {
+                    chain.add(version);
+                    continue;
+                }
+                assertForkMatchesTheDocuments(eventType, contract);
+                pairsMeasured++;
+            }
+
+            for (int index = 1; index < chain.size(); index++) {
+                assertSuccessorOnlyAdds(eventType, chain.get(index - 1), chain.get(index));
+                pairsMeasured++;
+            }
+        }
+
+        assertEquals(pairsExpected, pairsMeasured,
+                "every version above the first must be measured either as a successor of the"
+                        + " version below it or as a declared fork off an earlier one, and the"
+                        + " expected figure is read from the registry rather than written here, so"
+                        + " a version added or deleted cannot leave this check counting a stale"
+                        + " list");
+        assertTrue(pairsMeasured >= 5,
+                "this platform has released more than one version of several event types, so a run"
+                        + " measuring fewer than five read an empty registry: " + pairsMeasured);
+    }
+
+    /**
+     * Asserts one version only adds to the version it succeeds.
+     *
+     * @param eventType      the event type both versions govern
+     * @param earlierVersion the version being succeeded
+     * @param laterVersion   the successor
+     */
+    private static void assertSuccessorOnlyAdds(String eventType, int earlierVersion,
+            int laterVersion) {
+
+        JsonNode earlierDocument = readDocument(EventSchemas.resourceFor(eventType, earlierVersion));
+        JsonNode laterDocument = readDocument(EventSchemas.resourceFor(eventType, laterVersion));
+
+        Set<String> dropped = new LinkedHashSet<>(requiredNamesOf(earlierDocument));
+        dropped.removeAll(requiredNamesOf(laterDocument));
+        assertEquals(Set.of(), dropped,
+                () -> eventType + " version " + laterVersion + " drops required " + dropped
+                        + ", which version " + earlierVersion + " requires. A consumer that"
+                        + " upgrades to " + laterVersion + " keeps reading retained "
+                        + earlierVersion + " records against the earlier document, so the earlier"
+                        + " required set must stay a subset. Add a property in a later version,"
+                        + " never remove one, and where a removal has genuinely shipped record it"
+                        + " in " + RELEASED_CONTRACTS + " under nonAdditiveOver with its reason.");
+
+        assertEquals(List.of(), redeclaredProperties(earlierDocument, laterDocument),
+                () -> eventType + " version " + laterVersion + " redeclares "
+                        + redeclaredProperties(earlierDocument, laterDocument)
+                        + ", which version " + earlierVersion + " already declares. A retype or a"
+                        + " narrowing refuses a value the earlier contract admits, so it breaks a"
+                        + " consumer as surely as a removal does.");
+    }
+
+    /**
+     * Asserts one forked version differs from the version it forked off in exactly the declared way.
+     *
+     * @param eventType the event type both versions govern
+     * @param fork      the baseline entry of the forked version
+     */
+    private static void assertForkMatchesTheDocuments(String eventType, ReleasedContract fork) {
+        int earlierVersion = fork.nonAdditiveOver();
+        String earlier = EventSchemas.resourceFor(eventType, earlierVersion);
+        assertNotNull(earlier,
+                () -> fork.describe() + " declares it forked off version " + earlierVersion
+                        + ", which this module governs no document for");
+
+        JsonNode earlierDocument = readDocument(earlier);
+        JsonNode forkDocument = readDocument(fork.resource());
+
+        Set<String> dropped = new LinkedHashSet<>(requiredNamesOf(earlierDocument));
+        dropped.removeAll(requiredNamesOf(forkDocument));
+        assertEquals(fork.stoppedRequiring(), List.copyOf(dropped),
+                () -> fork.describe() + " declares it stopped requiring " + fork.stoppedRequiring()
+                        + " and the documents say " + dropped + ". A declaration that does not"
+                        + " match the documents hides a second break behind a recorded one.");
+
+        assertEquals(fork.retyped(), redeclaredProperties(earlierDocument, forkDocument),
+                () -> fork.describe() + " declares it redeclared " + fork.retyped()
+                        + " and the documents say "
+                        + redeclaredProperties(earlierDocument, forkDocument));
+    }
+
+    /**
+     * The properties both documents declare and declare differently.
+     *
+     * <p>{@code schemaVersion} is skipped: every document pins its own version with {@code const},
+     * so it differs by definition.
+     *
+     * @param earlierDocument the document being compared against
+     * @param laterDocument   the document being compared
+     * @return the redeclared property names, in the earlier document's order
+     */
+    private static List<String> redeclaredProperties(JsonNode earlierDocument,
+            JsonNode laterDocument) {
+
+        JsonNode earlierProperties = earlierDocument.path("properties");
+        JsonNode laterProperties = laterDocument.path("properties");
+        List<String> redeclared = new ArrayList<>();
+        for (String name : namesOf(earlierProperties)) {
+            if ("schemaVersion".equals(name) || laterProperties.path(name).isMissingNode()) {
+                continue;
+            }
+            if (!assertionKeywordsOf(earlierProperties.path(name))
+                    .equals(assertionKeywordsOf(laterProperties.path(name)))) {
+                redeclared.add(name);
+            }
+        }
+        return redeclared;
+    }
+
+    @Test
+    @DisplayName("every declared non-additive step is a closed, justified set")
+    void everyDeclaredNonAdditiveStepIsAClosedJustifiedSet() {
+        Map<String, List<String>> declared = new LinkedHashMap<>();
+        for (ReleasedContract contract : releasedContracts()) {
+            if (contract.nonAdditiveOver() == null) {
+                assertEquals(List.of(), contract.stoppedRequiring(),
+                        () -> contract.describe() + " names properties it stopped requiring without"
+                                + " naming the version it stopped requiring them over");
+                assertEquals(List.of(), contract.retyped(),
+                        () -> contract.describe() + " names properties it redeclared without naming"
+                                + " the version it redeclared them from");
+                continue;
+            }
+            assertFalse(contract.stoppedRequiring().isEmpty(),
+                    () -> contract.describe() + " declares a non-additive step over version "
+                            + contract.nonAdditiveOver() + " and names no property it stopped"
+                            + " requiring, so the declaration cannot be checked");
+            List<String> differences = new ArrayList<>(contract.stoppedRequiring());
+            differences.addAll(contract.retyped());
+            declared.put(contract.describe(), List.copyOf(differences));
+        }
+
+        assertEquals(Map.of(
+                        "TransactionDeclined version 2",
+                        List.of("accountId", "aggregateId", "declineReasonCode",
+                                "declineReasonDescription"),
+                        "CardUpdated version 2", List.of("embossedName")),
+                declared,
+                "two released versions stopped requiring a property their predecessor required, and"
+                        + " both are recorded facts rather than a licence to add a third. A new"
+                        + " entry here is a consumer this platform knowingly breaks, so it needs an"
+                        + " owner's decision in card-platform/docs/decision-log.md and a task in"
+                        + " card-platform/docs/suggested-next-tasks.md, not a passing build.");
+    }
+
+    @Test
+    @DisplayName("a record of an older version stays valid under its own document after a later version ships")
+    void aRecordOfAnOlderVersionStaysValidUnderItsOwnDocumentAfterALaterVersionShips() {
+        for (String eventType : EventSchemas.governedEventTypes()) {
+            List<Integer> versions = EventSchemas.governedVersions(eventType);
+            if (versions.size() < 2) {
+                continue;
+            }
+            for (int version : versions) {
+                String document = EventSchemas.resourceFor(eventType, version);
+                assertValid(document, payloadFromExamples(document),
+                        eventType + " version " + version + " must keep validating a record of its"
+                                + " own version, because that is what a consumer holding retained"
+                                + " records depends on");
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("an older document refuses a later record on its version discriminator, never silently")
+    void anOlderDocumentRefusesALaterRecordOnItsVersionDiscriminatorNeverSilently() {
+        int refusalsMeasured = 0;
+
+        for (String eventType : EventSchemas.governedEventTypes()) {
+            List<Integer> versions = EventSchemas.governedVersions(eventType);
+            for (int index = 1; index < versions.size(); index++) {
+                String earlier = EventSchemas.resourceFor(eventType, versions.get(index - 1));
+                String later = EventSchemas.resourceFor(eventType, versions.get(index));
+
+                List<Error> errors = validate(earlier, payloadFromExamples(later));
+                assertFalse(errors.isEmpty(),
+                        () -> earlier + " accepted a record of a later version. Every document pins"
+                                + " its own schemaVersion with const and closes its property set,"
+                                + " so a later record must be refused rather than read under the"
+                                + " wrong contract.");
+                refusalsMeasured++;
+            }
+        }
+
+        assertTrue(refusalsMeasured >= 5,
+                "one refusal per adjacent version pair must be measured: " + refusalsMeasured);
+    }
+
+    @Test
+    @DisplayName("the deserializer selects a document by the version the record declares")
+    void theDeserializerSelectsADocumentByTheVersionTheRecordDeclares() {
+        for (ReleasedContract contract : releasedContracts()) {
+            assertEquals(contract.resource(),
+                    EventSchemas.resourceFor(contract.eventType(), contract.schemaVersion()),
+                    () -> "no document is selected for " + contract.describe());
+        }
+        for (String eventType : EventSchemas.governedEventTypes()) {
+            int unreleased = EventSchemas.governedVersions(eventType)
+                    .get(EventSchemas.governedVersions(eventType).size() - 1) + 1;
+            assertNull(EventSchemas.resourceFor(eventType, unreleased),
+                    () -> eventType + " selects a document for version " + unreleased + ", which"
+                            + " this module ships none for. A gate must refuse an unknown version"
+                            + " rather than check it against a neighbouring contract.");
+        }
     }
 }

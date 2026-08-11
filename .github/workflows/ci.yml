@@ -18,16 +18,12 @@
 #             +--> schema-compatibility -+
 #             +--> supply-chain ---------+
 #
-# WHY PROVENANCE IS A STAGE OF ITS OWN. The attestation needs two write permissions,
-# an OpenID Connect token and the scope that records the statement, and it used to
-# take them inside the image build. A pull request runs that job, and a pull request
-# supplies the local action, the Maven descriptors and the sources the job executes
-# before it reaches the attestation step, so those two permissions were held while
-# content proposed from outside ran. The image build now holds `contents: read` and
-# nothing else on every event, and the provenance stage - which runs on a push, where
-# the content is what was merged - is the only job that holds the two write scopes.
+# Provenance is a stage of its own. It runs on a push only and is the one job holding
+# `id-token: write` and `attestations: write`; the image build holds `contents: read`
+# and nothing else on every event. Rationale, alternatives considered and accepted
+# risks: card-platform/docs/decision-log.md.
 #
-# EVERY STAGE FAILS THE RUN. No step is permitted to continue past an error, to
+# Every stage fails the run. No step is permitted to continue past an error, to
 # discard a status, or to succeed regardless: a finding stops the pipeline, and
 # ContinuousIntegrationWorkflowContractTest asserts that no step here carries either
 # of the two shapes that would let one through. Two stages state a severity threshold
@@ -51,7 +47,7 @@
 #   card-platform/services/card-service
 #   card-platform/equivalence-tests
 #
-# EVERY TEST RUNS ONCE. Asking Maven for a module asks for the modules it depends
+# Every test runs once. Asking Maven for a module asks for the modules it depends
 # on, and building those runs their tests too, so a stage that names a module deep
 # in the reactor will re-run every suite beneath it unless told not to. Each of the
 # three test stages therefore runs exactly the tests it owns: the unit stage every
@@ -227,15 +223,12 @@ jobs:
             --report-path card-platform/target/security-reports/gitleaks-history.sarif \
             --exit-code 1
 
-      # THE CANARY. The two scans above passing says the repository is clean. It does not say
-      # the scanner would still fail on a real credential, and for one file it did not: an
-      # allowlist naming card-platform/deploy/k8s/31-secret.example.yaml by path alone dropped
-      # every finding in the one file this repository fills with credentials, before any
-      # detector ran, and this stage stayed green. Measured on gitleaks 8.30.1, adding
-      # `condition = "AND"` beside that path does not narrow it either, so the allowlist now
-      # names value shapes only.
+      # The canary. This step plants a secret and requires the scanner to find it, because a
+      # clean scan says the repository holds no secret and does not say the scanner would still
+      # fail on one. Rationale, alternatives considered and accepted risks:
+      # card-platform/docs/decision-log.md.
       #
-      # This step plants a secret and requires the scanner to find it. Two cases run
+      # Two cases run
       # separately, so a scanner that catches one and misses the other cannot pass: a private
       # key inside the Secret template, which is the exception that was too wide, and an
       # unrelated 64-character hexadecimal key, which is the shape a second exception used to
@@ -299,7 +292,7 @@ jobs:
   # scanning view, because that needs a write permission this workflow does not
   # take; the SARIF is read here instead and kept as an artifact.
   #
-  # THE THRESHOLD. The run fails on a result whose security severity is 7.0 or
+  # The threshold. The run fails on a result whose security severity is 7.0 or
   # higher, which is CodeQL's high and critical band, and reports every result
   # below that without failing. Failing on all of them would make one style alert
   # indistinguishable from an injection, and the report holds both either way.
@@ -613,11 +606,9 @@ jobs:
   # Stage 8. Describes what this build resolves, then reads that description for
   # known advisories. A finding fails the run.
   #
-  # WHY IT READS A BILL OF MATERIALS RATHER THAN THE DESCRIPTORS. The finding this
-  # stage answers was com.fasterxml.jackson.core:jackson-databind arriving on seven
-  # test classpaths through spring-kafka-test, named by no descriptor in the
-  # repository. A tool reading pom.xml would not have seen it. The aggregate bill of
-  # materials is the resolved graph, test scope included, which is where it lives.
+  # It reads the aggregate bill of materials, which is the resolved graph with test
+  # scope included, rather than the descriptors. Rationale, alternatives considered and
+  # accepted risks: card-platform/docs/decision-log.md.
   #
   # The file has to be named bom.json: the scanner recognises a bill of materials by
   # the file name its specification defines and refuses any other.
@@ -732,12 +723,11 @@ jobs:
       # here is one Maven message, where the same error found inside six image builds is six
       # of them, arriving several minutes later.
       - name: Package the six service Java Archive files
-        # This stage packages rather than reading an archive the compile stage built.
-        # Handing archives between jobs needs a download action, and every `uses` key here
-        # names a full commit rather than a tag, which is a pin this repository has to be
-        # able to verify. Nothing in the run depends on the archives except the six images
-        # built from them a few steps below, so they are produced in the job that consumes
-        # them. card-platform/docs/suggested-next-tasks.md carries the hand-off.
+        # This stage packages rather than reading an archive the compile stage built: the
+        # archives are produced in the job that consumes them, which is the six image builds
+        # a few steps below. Rationale, alternatives considered and accepted risks:
+        # card-platform/docs/decision-log.md. The hand-off this leaves open:
+        # card-platform/docs/suggested-next-tasks.md.
         run: mvn -B -ntp -DskipTests package
 
       - name: Copy the example environment file
@@ -789,7 +779,7 @@ jobs:
           trivy --version
 
       - name: Scan the six images that were just built
-        # THE THRESHOLD. A high or critical vulnerability WITH A FIX AVAILABLE fails
+        # The threshold. A high or critical vulnerability with a fix available fails
         # this stage. One without a fix is counted and reported and does not, because
         # there is nothing a change to this repository could do about it: the runtime
         # base image these six share carries 41 such findings today and none of them
@@ -918,9 +908,15 @@ jobs:
           processing="$(date -u -d '-2 minutes' '+%Y-%m-%d-%H.%M.%S.000000')"
           request="$(printf '{"transactionTypeCode":"01","transactionCategoryCode":"0001","source":"POS TERM","description":"Continuous integration business smoke","amount":"12.34","merchantId":"800000000","merchantName":"CardDemo Smoke","merchantCity":"Dallas","merchantZip":"75201","cardNumber":"%s","originTimestamp":"%s","processingTimestamp":"%s"}' "${smoke_card_number}" "${origin}" "${processing}")"
 
+          # config/CrossSiteRequestFilter refuses any unsafe method that carries no
+          # first-party request header, with 403 and before the controller runs, so a POST
+          # without this header proves nothing about the authorization path. The name comes
+          # from the same variable the containers read, so renaming the header in one place
+          # cannot leave this call sending the old one.
           answer="$(curl --fail --silent --show-error \
             --user "${ADMIN_USERNAME:-admin001}:${SMOKE_ADMIN_PASSWORD}" \
             --header 'Content-Type: application/json' \
+            --header "${API_CROSS_SITE_HEADER:-X-CardDemo-Request}: 1" \
             --data "${request}" \
             "http://127.0.0.1:${AUTHORIZATION_PORT:-8081}/authorizations")"
           echo "the authorization service answered: ${answer}"

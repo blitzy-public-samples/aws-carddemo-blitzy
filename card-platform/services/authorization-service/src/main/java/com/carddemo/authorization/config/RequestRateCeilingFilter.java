@@ -70,12 +70,9 @@ import org.springframework.web.filter.OncePerRequestFilter;
  * container, which is the reasoning {@code config/SecurityConfig} gives for admitting the probe
  * without a credential.
  *
- * <p>Two properties of this implementation are worth stating plainly. The counters live in this
- * process, so a deployment running several replicas bounds each replica rather than the service
- * as a whole; a cluster-wide ceiling needs a shared store, which
- * {@code card-platform/docs/suggested-next-tasks.md} records. And the source is
- * {@code ServletRequest.getRemoteAddr()} rather than a forwarding header, because a forwarding
- * header a caller writes cannot bound that caller; a deployment behind a proxy sets
+ * <p>The counters live in this process, so a deployment running several replicas bounds each
+ * replica rather than the cluster, and the source is {@code ServletRequest.getRemoteAddr()}
+ * rather than a forwarding header. A deployment behind a proxy sets
  * {@code server.forward-headers-strategy} so the container resolves the client address itself.
  *
  * <p>The map of counters is bounded at {@link #MAX_TRACKED_KEYS}. Past it the rolled windows are

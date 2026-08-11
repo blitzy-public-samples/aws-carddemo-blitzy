@@ -3,7 +3,6 @@ package com.carddemo.equivalence;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -934,14 +933,18 @@ class AuthorizationDecisionEquivalenceTest {
         void anAbsentCrossReferenceRowDeclinesWithoutAnAccountRead() {
             DecisionHarness harness = DecisionHarness.overRows(Map.of(), Map.of());
 
-            Outcome outcome =
-                    harness.authorize(request(ABSENT_CARD_NUMBER, ZERO_MONEY, FEED_TIMESTAMP));
+            Outcome outcome = harness.authorize(requestNamingBoth(ABSENT_ACCOUNT_ID,
+                    ABSENT_CARD_NUMBER, ZERO_MONEY, FEED_TIMESTAMP));
 
             assertEquals(Optional.of(DeclineReason.INVALID_CARD_NUMBER), outcome.declineReason(),
                     "CBTRN02C L385-L387 assigns reason "
                             + DeclineReason.INVALID_CARD_NUMBER.code() + " on INVALID KEY");
-            assertNull(outcome.accountId(),
-                    "CBTRN02C L385 assigns this code before L394 reads XREF-ACCT-ID");
+            assertEquals(CardDemoFixtureLoader.accountIdentifier(ABSENT_ACCOUNT_ID),
+                    outcome.accountId(),
+                    "CBTRN02C L385 assigns this code before L394 reads XREF-ACCT-ID, so the read "
+                            + "resolved no identifier. The subject is the account the caller "
+                            + "declared at COTRN02C L196-L209, which the batch loop has no caller "
+                            + "to supply");
             assertEquals(1L, harness.crossReferences().cardLookupCount(),
                     "the miss came from the keyed read of CBTRN02C L383, not from an exception");
             assertEquals(UNREACHABLE_FROM_FIXTURES, harness.accounts().accountLookupCount(),
@@ -952,6 +955,35 @@ class AuthorizationDecisionEquivalenceTest {
             assertEquals(UNREACHABLE_FROM_FIXTURES, fixtureReachCount(
                     DeclineReason.INVALID_CARD_NUMBER),
                     "no record of dailytran.txt reaches this reason");
+        }
+
+        /**
+         * Asserts a call that establishes no subject is refused ahead of any decision.
+         *
+         * <p>The synchronous contract of {@code app/cbl/COTRN02C.cbl:L196-L209} takes an account
+         * identifier or a card number. Where the card resolves no cross-reference row and the caller
+         * declared no account, nothing names the subject a decision would apply to, and
+         * {@code app/cbl/COTRN02C.cbl:L625-L626} answers exactly that case with its own text and
+         * writes nothing. No identifier is allocated, no decision is recorded, and no event is
+         * published, so the reject reason of {@code app/cbl/CBTRN02C.cbl:L385-L387} is never
+         * assigned.
+         */
+        @Test
+        @DisplayName("ADDITIVE: a call that establishes no subject is refused before a decision")
+        void aCallThatEstablishesNoSubjectIsRefusedBeforeADecision() {
+            DecisionHarness harness = DecisionHarness.overRows(Map.of(), Map.of());
+
+            IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
+                    () -> harness.authorize(
+                            request(ABSENT_CARD_NUMBER, ZERO_MONEY, FEED_TIMESTAMP)),
+                    "a call naming neither a resolvable card nor an account establishes no subject");
+
+            assertEquals(AuthorizationRequest.CARD_NUMBER_NOT_FOUND_MESSAGE, refused.getMessage(),
+                    "COTRN02C L625-L626 supplies the text this refusal carries");
+            assertEquals(1L, harness.crossReferences().cardLookupCount(),
+                    "the card was read once, at CBTRN02C L383, before the refusal");
+            assertEquals(UNREACHABLE_FROM_FIXTURES, harness.accounts().accountLookupCount(),
+                    "and no account read followed, because no account was named");
         }
     }
 
@@ -1588,6 +1620,27 @@ class AuthorizationDecisionEquivalenceTest {
                 "SYNTHETIC AUTHORIZATION", amount.toPlainString(), "000000001",
                 "SYNTHETIC MERCHANT", "SYNTHETIC CITY", "00000", cardNumber, originTimestamp,
                 PROCESSING_TIMESTAMP, null);
+    }
+
+    /**
+     * Builds a request naming both identifiers, as a synchronous caller may.
+     *
+     * <p>The card decides, because {@code app/cbl/CBTRN02C.cbl:L383} keys the cross-reference read
+     * on the card the transaction carries. The account names the subject wherever that read resolves
+     * none.
+     *
+     * @param accountId       eleven digits, at {@code XREF-ACCT-ID PIC 9(11)} width
+     * @param cardNumber      the card number, at whatever width the case exercises
+     * @param amount          the transaction amount
+     * @param originTimestamp the twenty-six character capture moment
+     * @return the request body, naming an account and a card
+     */
+    private static AuthorizationRequest requestNamingBoth(String accountId, String cardNumber,
+            BigDecimal amount, String originTimestamp) {
+        return new AuthorizationRequest(null, "01", "0001", "POS TERM",
+                "SYNTHETIC AUTHORIZATION", amount.toPlainString(), "000000001",
+                "SYNTHETIC MERCHANT", "SYNTHETIC CITY", "00000", cardNumber, originTimestamp,
+                PROCESSING_TIMESTAMP, accountId);
     }
 
     /**

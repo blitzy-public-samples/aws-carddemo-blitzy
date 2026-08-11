@@ -1,6 +1,6 @@
 # Event Flow
 
-This document follows every published event from commit through consumption. A decided authorization request persists one decision and publishes exactly one outcome event. Reject reason 0100 is the single decided outcome keyed on the transaction identifier, and the section on [the envelope](#the-envelope) says why. Ledger, fraud, and notification react asynchronously, and no downstream service calls another downstream service. Paired legacy and target views live in [Architecture, Before and After](architecture-before-after.md), while rationale lives in the [decision log](decision-log.md).
+This document follows every published event from commit through consumption. A decided authorization request persists one decision and publishes exactly one outcome event. Every decided outcome is keyed on the eleven-digit account it applies to, and the section on [the envelope](#the-envelope) says how a card resolving nothing still names one. Ledger, fraud, and notification react asynchronously, and no downstream service calls another downstream service. Paired legacy and target views live in [Architecture, Before and After](architecture-before-after.md), while rationale lives in the [decision log](decision-log.md).
 
 ## The envelope
 
@@ -12,9 +12,11 @@ Every event carries one flat envelope beside its payload. A consumer can route, 
 | `eventType` | Routing discriminator and schema selector |
 | `schemaVersion` | Contract version used to select the exact JSON Schema document |
 | `occurredAt` | Producer timestamp |
-| `aggregateId` | Kafka message key, normally the 11-digit account identifier |
+| `aggregateId` | Kafka message key, the 11-digit account identifier on every event a producer writes |
 
-A reason-0100 decline resolves no account, so its event carries none: it travels under `transaction-declined-v2`, which declares no `accountId` and keys on the 16-character transaction identifier. The decline still publishes: one event, one `unresolved_card_attempt` row and one `authorization_decision` row naming that event, all in one transaction. Every other event on this platform carries the 11-digit account identifier as its `aggregateId` and its Kafka key. `outbox_event.aggregate_id` admits both widths for exactly that reason, and migration `V15__unresolved_decline_is_published.sql` records which contract writes which form. The transaction key is deterministic, so a retried publish of one decline lands on the same partition, and it names no cardholder, no account and no card.
+A reason-0100 decline follows a cross-reference read that resolved no account, and it still names one. Which read resolved an identifier is not which subject a decision applies to. A synchronous caller declares its own account identifier at `app/cbl/COTRN02C.cbl:L196-L209`, and that is the subject where the card resolves no row.
+
+The decline publishes one event under `transaction-declined-v3`, keyed on that account, beside one `unresolved_card_attempt` row and one `authorization_decision` row naming the event, all in one transaction. A call that establishes neither a resolvable card nor an account is refused before a decision with the text of `app/cbl/COTRN02C.cbl:L625-L626`, so it publishes nothing. Every event a producer writes therefore carries the 11-digit account identifier as its `aggregateId` and its Kafka key. `ck_outbox_event_aggregate_id` still admits the 16-character transaction identifier, because rows written before `V19__unresolved_decline_names_its_account.sql` carry it.
 
 ## Payload conventions
 
@@ -85,13 +87,13 @@ A declined request is expected traffic, not an infrastructure error. `app/cbl/CB
 | `0102` | `OVERLIMIT TRANSACTION` | `app/cbl/CBTRN02C.cbl:L410-L412` |
 | `0103` | `TRANSACTION RECEIVED AFTER ACCT EXPIRATION` | `app/cbl/CBTRN02C.cbl:L417-L419` |
 
-Version 1 carries the resolved account identifier. Version 2 represents reason 0100 and omits an account that the platform never resolved. Version 3 carries version 1's properties plus the nine descriptive values of the daily transaction record, at the same widths `transaction-posted-v2` uses, so one parser reads both.
+Version 1 carries the account identifier and the reason. Version 2 was released for reason 0100 alone, omitting the account the cross-reference read had not resolved, and no producer writes it any more. Version 3 carries version 1's properties plus the nine descriptive values of the daily transaction record, at the same widths `transaction-posted-v2` uses, so one parser reads both. Every decline publishes under it.
 
 Version 3 exists because of what the source writes on this path. `2500-WRITE-REJECT-REC` at `app/cbl/CBTRN02C.cbl:L446-L465` writes 430 bytes: `REJECT-TRAN-DATA PIC X(350)`, which is the whole daily record, followed by an 80-byte trailer holding the reason code and its text. A consumer reading only the reason code cannot reproduce those 350 bytes, and the values are not recoverable from any table, because a refused transaction posted nowhere.
 
 `ledger-reject` is the consumer group that turns each refusal into one row of `rejected_transaction`. That row and the marker recording the event commit in one local transaction, so neither can exist without the other. The ledger publishes nothing on this topic: the authorization service is the sole writer of the decision, and a second decline for one refusal would put two differently shaped events for it on a topic the ledger reads.
 
-A decline arriving at version 1 or 2 is acknowledged with no row written, because neither version carries the nine values the 350 bytes need and inventing them would break equivalence. All 38 reject records the fixture `app/data/ASCII/dailytran.txt` produces carry reason `0102`, which resolves an account and travels at version 3.
+A decline arriving at version 1 or 2 is acknowledged with no row written, because neither version carries the nine values the 350 bytes need and inventing them would break equivalence. Only a record published before version 3 can arrive that way. All 38 reject records the fixture `app/data/ASCII/dailytran.txt` produces carry reason `0102`, and every one of the four reasons travels at version 3 and earns its row.
 
 Reason 109 at `app/cbl/CBTRN02C.cbl:L556` is not a decline event. The source never checks it, while the target treats the condition as a processing failure; [business-rule flag 9](business-rule-flags.md) records the change.
 
@@ -229,7 +231,7 @@ sequenceDiagram
     NotifyDB-->>Notification: Commit before acknowledge
 
     Kafka-->>Notification: Fraud assessment
-    Notification->>NotifyDB: Render flagged alert and write attempt
+    Notification->>NotifyDB: Render flagged alert and write the marker only
     NotifyDB-->>Notification: Commit before acknowledge
 
     Kafka-->>Account: TransactionPosted
@@ -346,6 +348,19 @@ The acknowledgement mode is `MANUAL_IMMEDIATE` in all five consuming services, a
 
 The demo permits three processing attempts with a one-second backoff. Two terminal routes exist, and which one a failure takes depends on what failed.
 
+### The two dead-letter wire forms
+
+Two wire forms reach a dead-letter topic, and which topic carries which is fixed rather than incidental. `schemas/dead-letter-v1.json` governs the shared fallback topic only, and points here for the other form.
+
+| Form | Topics | Written by | Bytes |
+| --- | --- | --- | --- |
+| `DeadLetterEnvelope` as JSON | `carddemo.dead-letter` | `authorization-service` and `account-service` listener error handlers, and all five relays on abandonment | The governed document, validated before publication |
+| Fixed-width abend diagnostic | `<source>.DLT` | `ledger-posting-service`, `fraud-detection-service` and `notification-service` listener error handlers | Exactly 134 printable ASCII characters |
+
+The fixed-width form concatenates the four fields of `app/cpy/CSMSG02Y.cpy:L21-L29` at their declared widths, space-padded and in source order: `ABEND-CODE PIC X(4)`, `ABEND-CULPRIT PIC X(8)`, `ABEND-REASON PIC X(50)` and `ABEND-MSG PIC X(72)`. Those four widths sum to 134. Every character outside printable ASCII is replaced before padding, so one character is one byte and a component can be shortened without splitting anything. `DeadLetterMetadata.toFixedWidthRecord` in each of those three modules renders it, and `KafkaDeliveryGuaranteeContractTest` holds each module to one form and to that layout.
+
+Tooling reads one parser per topic, not one for the platform. A reader generating a consumer from the JSON Schema gets the shared fallback topic; a reader of a `<source>.DLT` topic reads fixed-width positions.
+
 A spent consumer record takes the listener route, and the five listening services take it in two different forms. Ledger, fraud, and notification send a 134-character fixed-width abend diagnostic to the source topic name plus the `.DLT` suffix, short for dead-letter topic. Each falls back to `carddemo.dead-letter` when the source topic cannot be resolved. Authorization and account each send a governed `DeadLetterEnvelope` to `carddemo.dead-letter` directly.
 
 The account listener is worth naming on its own, because its recovery semantics differ from authorization's. `TransactionPostedConsumer` on group `account-posted` retries a failure under the shared retry policy, then hands the record to a sanitizing recoverer that publishes one `DeadLetterEnvelope` and nothing the record carried. Its error handler sets `commitRecovered(true)`, so the offset advances once the diagnostic is away and the same poison record is not redelivered forever. All five listening services do that: account, authorization, fraud, ledger and notification. What differs is the destination rather than the offset. Account and authorization publish one `DeadLetterEnvelope` to the shared `carddemo.dead-letter` topic, so a refused record's own bytes never travel; ledger, fraud and notification address the source topic plus the configured suffix, so one stream carries one source wire shape.
@@ -358,7 +373,7 @@ An abandoned outbox row takes the relay route. Five relays publish business even
 
 Three of the five relays record that diagnostic as an obligation rather than attempting it once: authorization, account and fraud detection. Abandoning a row writes `dead_letter_state = 'REQUIRED'` in the same transaction that abandons it, and the state moves to `PUBLISHED` only once the broker has acknowledged the diagnostic. The ledger and card relays instead publish inside the transaction that abandons the row, so a refusal rolls the abandonment back and the row returns to the claim query unchanged. Both models are recorded in the [decision log](decision-log.md), and extending the durable form to the remaining two is a [next task](suggested-next-tasks.md). This matters because an abandoned row is terminal: the claim query never returns it again, so a diagnostic dispatched at the moment of abandonment and not awaited leaves an unreachable broker looking exactly like a healthy one. A refused diagnostic is offered again at the head of every later pass, for as long as it takes.
 
-A diagnostic for a row keyed by a transaction identifier travels under the aggregate identifier `00000000000`, because `schemas/dead-letter-v1.json` accepts eleven digits and such a key holds sixteen characters. `failedEventId` still names the row exactly. No producer writes such a row today, and the substitution is retained for records stored before that decision. The same `00000000000` is the key of every diagnostic a deserializer refused, for the same reason: a record that never deserialized names no account.
+A diagnostic for a row keyed by a transaction identifier travels under the aggregate identifier `00000000000`, because `schemas/dead-letter-v1.json` accepts eleven digits and such a key holds sixteen characters. `failedEventId` still names the row exactly. No producer writes such a row from `V19__unresolved_decline_names_its_account.sql` forward, and the substitution is retained for rows stored before it. The same `00000000000` is the key of every diagnostic a deserializer refused, for the same reason: a record that never deserialized names no account.
 
 Each terminal outcome increments a counter distinct from the per-attempt failure counter, so retries and permanently spent work are never summed together.
 
@@ -422,9 +437,9 @@ Notification tags by what failed, because it validates, persists, and renders. T
 
 Publishing validates the exact pair of `eventType` and `schemaVersion`, so malformed output never reaches a business topic. Consumption validates before domain code changes a table.
 
-The contract library governs eight business event types and the dead-letter envelope across thirteen schema documents. `TransactionAuthorized` and `TransactionPosted` each retain versions 1 and 2, and `TransactionDeclined` retains versions 1, 2 and 3. Every schema is a JSON Schema Draft 2020-12 document whose version sits in its filename, as in `transaction-authorized-v2.json`. `SchemaBackwardCompatibilityTest` measures every adjacent pair of versions and fails the build where a later version drops, retypes or narrows a property its predecessor required, so a rising version number cannot break a consumer holding the earlier one.
+The contract library governs eight business event types and the dead-letter envelope across fourteen schema documents. `TransactionAuthorized`, `TransactionPosted` and `CardUpdated` each retain versions 1 and 2, and `TransactionDeclined` retains versions 1, 2 and 3. Every schema is a JSON Schema Draft 2020-12 document whose version sits in its filename, as in `transaction-authorized-v2.json`. `SchemaBackwardCompatibilityTest` measures every adjacent pair of versions and fails the build where a later version drops, retypes or narrows a property its predecessor required, so a rising version number cannot break a consumer holding the earlier one.
 
-One caution about that numbering. For `TransactionDeclined` the version axis carries two orthogonal facts rather than one: version 2 is the unresolved-account variant and is not a superset of version 1, while version 3 is version 1 plus the nine descriptive values. A reader who assumes each version enriches the last will be wrong about version 2, and each document's own `$comment` says which fact it carries.
+One caution about that numbering. For `TransactionDeclined` the version axis carries two orthogonal facts rather than one: version 2 is the account-less variant released for reason 0100 and is not a superset of version 1, while version 3 is version 1 plus the nine descriptive values. Version 2 is retained rather than published, so it is a version a consumer may still receive from the topic and no producer writes. A reader who assumes each version enriches the last will be wrong about version 2, and each document's own `$comment` says which fact it carries.
 
 Compatibility tests enforce additive evolution, and they fail the build rather than warn. An older payload stays valid under the document that first governed it, so a new consumer can be added without breaking an existing one.
 

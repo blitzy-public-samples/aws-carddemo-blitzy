@@ -17,25 +17,12 @@ import org.springframework.stereotype.Component;
  * has no COBOL ancestor. Its nearest relative is the source habit of displaying what a program is
  * about to work on, as {@code app/cbl/CBTRN02C.cbl} does before it posts.
  *
- * <h2>The problem this solves</h2>
- *
- * <p>Every topic name arrives with a default beside its variable, for example
- * {@code ${TOPIC_CARD_UPDATED:card.updated}}, so the image carries a
- * default and the platform supplies the real value. That is deliberate: a service has to start on a
- * developer machine with nothing set. It also means a dropped, renamed or mistyped key in
- * {@code card-platform/deploy/k8s/30-configmap.yaml} or {@code card-platform/docker-compose.yml}
- * produces no error at all — the service silently falls back to the built-in name, reports itself
- * healthy, and publishes onto a stream nobody is reading. The fallback is invisible precisely
- * because it works.
- *
  * <p>This class makes the choice visible instead of removing it. Each name is logged once as the
  * context finishes starting: at INFO when the platform supplied the value, naming the variable it
  * came from, and at WARN when it did not, naming the variable that is missing. An operator reading
  * the first hundred lines of {@code kubectl logs} therefore sees which stream this Pod is really
  * attached to, and a demo that publishes into the wrong topic is one grep away from being
  * explained.
- *
- * <h2>What is reported, and what is not</h2>
  *
  * <p>Stream names only. The relay sweep interval and batch size arrive the same way, and a wrong
  * value there costs throughput and nothing else; a wrong stream name costs the event. Reporting
@@ -44,6 +31,9 @@ import org.springframework.stereotype.Component;
  *
  * <p>No credential is reported here, and none can be: a topic name is not a credential, and the
  * class reads nothing else.
+ *
+ * <p>Rationale, alternatives considered and accepted risks:
+ * {@code card-platform/docs/decision-log.md}.
  */
 @Component
 public class StreamNameReport implements ApplicationListener<ApplicationReadyEvent> {

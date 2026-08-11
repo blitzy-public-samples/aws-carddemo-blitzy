@@ -881,18 +881,19 @@ class NativeStatementIT {
         }
 
         /**
-         * Asserts the one decided outcome that names no account is stored, and still names its event.
+         * Asserts a row of the shape written before {@code V19} stays readable, account column and all.
          *
-         * <p>Reason {@code 0100} fires where the cross-reference read missed, so there is no account
-         * identifier to store. The outcome still publishes one event, because AAP transformation rule
-         * T4 gives one authorization call one event:
-         * {@code schemas/transaction-declined-v2.json}, keyed on the transaction identifier rather
-         * than on an account. {@code V13__decision_without_event.sql} dropped the {@code NOT NULL}
-         * that used to force an identifier here and {@code V15__unresolved_decline_is_published.sql}
-         * requires one of every new row through {@code ck_authorization_decision_event}.
+         * <p>Every decision this service records now names the account it applies to, because a
+         * reason-{@code 0100} call takes that subject from the account the caller declared and a call
+         * declaring none is refused before a decision. A database that ran earlier holds rows written
+         * while that outcome resolved no subject, so the column stays nullable and the mapping has to
+         * read one. {@code V13__decision_without_event.sql} dropped the {@code NOT NULL} that used to
+         * force an event identifier here, and {@code V15__unresolved_decline_is_published.sql}
+         * requires one of every new row through {@code ck_authorization_decision_event}, which is
+         * {@code NOT VALID} for the same reason.
          */
         @Test
-        @DisplayName("a decline resolving no account is stored naming no account and naming its event")
+        @DisplayName("a stored row that names no account stays readable and still names its event")
         void aDeclineResolvingNoAccountIsStored() {
             UUID published = UUID.randomUUID();
             AuthorizationDecisionEntity unresolved = AuthorizationDecisionEntity.declined(
@@ -906,9 +907,9 @@ class NativeStatementIT {
             AuthorizationDecisionEntity stored =
                     decisions.findById("TRAN000000000003").orElseThrow();
             assertNull(stored.getAccountId(),
-                    "reason 0100 resolved no cross-reference row, so it names no account");
+                    "a row written before V19 recorded no subject, and the column still reads one");
             assertEquals(published, stored.getEventId(),
-                    "and it names the transaction-keyed decline event it published through");
+                    "and it names the decline event it published through");
             assertEquals("0100", stored.getDeclineReasonCode(),
                     "the reject code of app/cbl/CBTRN02C.cbl:L385-L387 is stored");
         }

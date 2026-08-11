@@ -59,13 +59,12 @@ import tools.jackson.databind.json.JsonMapper;
  * Carries one replicated state change from the broker into a replica row and then into the next
  * authorization decision.
  *
- * <p>Why this class exists. The two replica listeners were covered by unit tests over mocked
- * repositories, and the two producing services were covered by their own publication tests. Nothing
- * joined the two halves: no test delivered an event, let the listener write the replica, and then
- * asked the decision path what it now decides. The authorization service holds no account and no card
- * of its own — it decides from {@code account_credit_snapshot} and {@code card_xref}, which exist only
- * because these listeners maintain them. A refresh that silently stopped working would leave every
- * decision resting on stale state, and every unit test would still pass.
+ * <p>The two replica listeners are covered elsewhere by unit tests over mocked repositories, and the
+ * two producing services by their own publication tests. This class joins the halves those tests leave
+ * apart: it delivers an event, lets the listener write the replica, and then asks the decision path
+ * what it now decides. The authorization service holds no account and no card of its own — it decides
+ * from {@code account_credit_snapshot} and {@code card_xref}, which exist only because these listeners
+ * maintain them.
  *
  * <p>What is joined here. A real broker, the shipped listeners, a real PostgreSQL schema built by the
  * shipped migrations, and {@link AuthorizationService#authorize} reading the rows the listeners wrote.
@@ -834,14 +833,22 @@ class ReplicaRefreshToDecisionIT {
                 expiration);
     }
 
-    /** Builds one card update in the shape the schema document governs. */
+    /**
+     * Builds one card update in the shape the schema document governs.
+     *
+     * <p>Version 2 is the version the card service publishes, declared by its
+     * {@code messaging/CardUpdated#SCHEMA_VERSION}. Version 1 remains on the classpath and stays
+     * readable, and it requires {@code embossedName}, which version 2 withdrew: a document omitting
+     * that property while declaring version 1 satisfies no schema and reaches the dead-letter topic
+     * instead of the listener.
+     */
     private static String cardUpdateJson(UUID eventId, Instant occurredAt, String accountId,
             String maskedCard) {
         return """
                 {
                   "eventId": "%s",
                   "eventType": "CardUpdated",
-                  "schemaVersion": 1,
+                  "schemaVersion": 2,
                   "occurredAt": "%s",
                   "aggregateId": "%s",
                   "accountId": "%s",

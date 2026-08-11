@@ -143,6 +143,55 @@ class ServiceSchemaResourceContractTest {
                 .containsExactly(COPY_HOLDER + "/" + RESOURCE_ROOT + "/" + ACCOUNT_STATE_RESOURCE);
     }
 
+    @Test
+    @DisplayName("every released contract the baseline records exists in the source tree")
+    void everyReleasedContractTheBaselineRecordsExistsInTheSourceTree() {
+        Path library = platformDirectory().resolve(CONTRACT_LIBRARY).resolve(RESOURCE_ROOT);
+        Path baselineFile = library.resolve("contracts/released-contracts.json");
+        assertThat(baselineFile)
+                .as("the released-contract baseline is what makes the immutability of a shipped"
+                        + " document measurable, so it ships beside the documents it records")
+                .isRegularFile();
+
+        String baseline = read(baselineFile);
+        List<String> recorded = new ArrayList<>();
+        java.util.regex.Matcher resource = java.util.regex.Pattern
+                .compile("\"resource\"\\s*:\\s*\"(schemas/[a-z0-9\\-]+\\.json)\"")
+                .matcher(baseline);
+        while (resource.find()) {
+            recorded.add(resource.group(1));
+        }
+
+        assertThat(recorded)
+                .as("the baseline records no released document, so nothing is pinned")
+                .isNotEmpty();
+        for (String relative : recorded) {
+            assertThat(library.resolve(relative))
+                    .as("%s is recorded as released and is missing from the source tree. A released"
+                            + " document is never deleted: every record retained on a topic under it"
+                            + " becomes unreadable the moment it goes. This check reads the source"
+                            + " tree rather than the classpath, because build output keeps a stale"
+                            + " copy of a deleted resource", relative)
+                    .isRegularFile();
+        }
+
+        List<String> shipped = new ArrayList<>();
+        try (Stream<Path> documents = Files.list(library.resolve(SCHEMA_DIRECTORY))) {
+            documents.filter(Files::isRegularFile)
+                    .map(file -> SCHEMA_DIRECTORY + "/" + file.getFileName())
+                    .sorted(Comparator.naturalOrder())
+                    .forEach(shipped::add);
+        } catch (IOException unreadable) {
+            throw new UncheckedIOException("cannot list " + library.resolve(SCHEMA_DIRECTORY),
+                    unreadable);
+        }
+        assertThat(shipped)
+                .as("every shipped document is a released contract and every released contract"
+                        + " ships, so a document added without a baseline entry is a version with"
+                        + " nothing pinning its wire contract")
+                .containsExactlyInAnyOrderElementsOf(recorded);
+    }
+
     /** Returns the {@code card-platform} directory of this checkout. */
     private static Path platformDirectory() {
         return CardDemoFixtureLoader.fixtureDirectory()

@@ -13,7 +13,9 @@
 #
 # The three identity passwords are stored as bcrypt hashes, and a hash cannot be sent to a
 # service as a password, so the plaintext generated here is written to
-# card-platform/.demo-credentials with owner-only permissions. That file is git-ignored.
+# card-platform/.demo-credentials. That file is git-ignored, and it is owner-only from the
+# moment it exists: this script sets umask 077 before its first write, fills a temporary file
+# mktemp created at mode 600, and renames that onto the name above.
 # To choose a password yourself, set the matching override before running:
 # CARDDEMO_ADMIN_PASSWORD, CARDDEMO_USER_PASSWORD or CARDDEMO_MONITORING_PASSWORD.
 #
@@ -29,6 +31,13 @@
 
 set -euo pipefail
 
+# Every file this script creates carries a working credential, so none of them may exist
+# readable to anyone else for any interval at all. This is set before the first write rather
+# than repaired after it: a redirection creates its file under the umask in force at that
+# moment, and a mode narrowed afterwards leaves whatever was written before the narrowing
+# readable to every local account in between.
+umask 077
+
 platform_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${platform_root}"
 
@@ -43,8 +52,32 @@ fail() {
     exit 1
 }
 
+# Refuses a destination this script would write a credential through rather than to.
+#
+# A symbolic link makes the write land wherever the link points, which is how a file this
+# script creates owner-only ends up appended to something readable. A directory or a device
+# in the same position is the same problem in a different shape. Either is reported and
+# nothing is written.
+refuse_indirect_destination() {
+    [ ! -L "$1" ] || fail "$1 is a symbolic link. This script writes credentials to it, so it
+  has to be a regular file. Remove or rename the link and run this again."
+    [ ! -e "$1" ] || [ -f "$1" ] || fail "$1 exists and is not a regular file. This script
+  writes credentials to it. Remove or rename it and run this again."
+}
+
 [ -f "${example_file}" ] \
     || fail "${example_file} is missing. Run this from a complete checkout."
+
+# Both destinations are checked, and an existing credentials file is brought back to
+# owner-only, before anything is generated. Both run whether or not this run writes a
+# password: a file an earlier run left behind carries the same four logins, and the exposure
+# belongs to the file rather than to the run that created it.
+refuse_indirect_destination "${environment_file}"
+refuse_indirect_destination "${credentials_file}"
+if [ -f "${credentials_file}" ]; then
+    chmod go-rwx "${credentials_file}"
+    note "${credentials_file} already exists; its mode is now owner-only"
+fi
 
 # Each tool is required where it is used rather than here. A re-run with nothing left to
 # generate — the common case, and the reconciliation below is the whole of it — calls neither,
@@ -301,6 +334,15 @@ from ${platform_root} first, which resolves it, then run this script again."
         credential_lines=("${remaining[@]:-}" "${username}=${plaintext}")
     done
 
+    # Written to a temporary file beside the destination and renamed onto it. mktemp creates
+    # at mode 600 and creates rather than truncates, so no other account can hold the file
+    # this script is about to fill; the rename is atomic inside one directory, so a reader
+    # sees either the previous file or the finished one and never a partial write; and the
+    # trap removes the temporary file if any command below fails under set -e.
+    credentials_temp="$(mktemp "${credentials_file}.XXXXXX")"
+    trap 'rm -f -- "${credentials_temp}"' EXIT
+    chmod 600 "${credentials_temp}"
+
     {
         printf '# card-platform demo logins, written by scripts/generate-env.sh.\n'
         printf '#\n'
@@ -313,8 +355,12 @@ from ${platform_root} first, which resolves it, then run this script again."
         for line in "${credential_lines[@]:-}"; do
             [ -n "${line}" ] && printf '%s\n' "${line}"
         done
-    } > "${credentials_file}"
-    chmod 600 "${credentials_file}"
+    } > "${credentials_temp}"
+
+    # The rename carries the temporary file's mode onto the destination, replacing whatever
+    # an earlier run left there, so nothing has to be narrowed afterwards.
+    mv -f -- "${credentials_temp}" "${credentials_file}"
+    trap - EXIT
     note "generated ${#identity_keys[@]} identity hashes; the passwords are in ${credentials_file}"
 fi
 

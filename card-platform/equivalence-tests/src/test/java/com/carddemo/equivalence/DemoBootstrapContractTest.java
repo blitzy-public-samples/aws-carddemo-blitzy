@@ -9,6 +9,7 @@ import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -17,6 +18,7 @@ import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -178,8 +180,35 @@ class DemoBootstrapContractTest {
         void protectsWhatItWritesAndProvesNoPlaceholderSurvived() {
             String script = read(platformDirectory().resolve(GENERATE_ENV));
 
-            assertEquals(2, occurrences(script, "chmod 600"),
-                    "both files it writes hold working credentials: .env and .demo-credentials");
+            int umask = script.indexOf("umask 077");
+            assertTrue(umask >= 0,
+                    "the script has to set umask 077, because a redirection creates its file under"
+                            + " the umask in force at that moment and every file this script writes"
+                            + " carries a working credential");
+            assertTrue(umask < script.indexOf("install -m 600"),
+                    "and set it before the first file it creates, since a mode narrowed afterwards"
+                            + " leaves what was already written readable in between");
+            assertTrue(script.contains("install -m 600 \"${example_file}\" \"${environment_file}\""),
+                    ".env is created at mode 600 rather than copied and narrowed");
+            assertTrue(script.contains("mktemp \"${credentials_file}.XXXXXX\"")
+                            && script.contains("chmod 600 \"${credentials_temp}\"")
+                            && script.contains("mv -f -- \"${credentials_temp}\""
+                                    + " \"${credentials_file}\""),
+                    "the four plaintext logins are written to a temporary file created at mode 600"
+                            + " and renamed onto the destination. Redirecting into the destination"
+                            + " and narrowing it afterwards is the exposure this replaced: all four"
+                            + " were written before the chmod ran");
+            assertTrue(script.contains("trap 'rm -f -- \"${credentials_temp}\"' EXIT"),
+                    "and the temporary file is removed if any command after it fails");
+            assertTrue(script.contains("refuse_indirect_destination \"${credentials_file}\"")
+                            && script.contains("refuse_indirect_destination"
+                                    + " \"${environment_file}\""),
+                    "both destinations are refused when they are a symbolic link or not a regular"
+                            + " file, because a link makes the write land wherever it points");
+            assertTrue(script.contains("chmod go-rwx \"${credentials_file}\""),
+                    "a credentials file an earlier run left behind is brought back to owner-only on"
+                            + " every run, since the exposure belongs to the file rather than to the"
+                            + " run that created it");
             assertTrue(script.contains("grep -c 'REPLACE-WITH\\|REPLACE-THIS'"),
                     "the script has to end by proving the file it produced carries no placeholder,"
                             + " because a placeholder left behind stops the stack later and further"
@@ -421,12 +450,130 @@ class DemoBootstrapContractTest {
                             + " that does not declare it");
         }
 
+        /**
+         * Every file the generator leaves behind is readable by its owner and nobody else.
+         *
+         * <p>The static assertions above read the script; this one runs it and reads the modes it
+         * produced, because the defect they replaced was invisible in the finished state. The
+         * credentials file ended at mode 600 and the review still found it: shell redirection
+         * created it under the ambient umask and wrote all four plaintext logins before the
+         * {@code chmod} narrowed it, so another local account could read them in between.
+         *
+         * <p>Two things make the run adversarial rather than nominal. It starts under
+         * {@code umask 000}, so a file the script does not protect itself comes out world-writable
+         * and this test sees it, and the workspace already holds a {@code .demo-credentials} at mode
+         * 644, which is what an interrupted earlier run leaves. The script generates nothing here —
+         * the fixture answers every placeholder, so neither {@code openssl} nor {@code jshell} is
+         * needed — and it must still bring that file back to owner-only, because the exposure
+         * belongs to the file rather than to the run that made it.
+         *
+         * @param workspace a directory JUnit creates and removes
+         * @throws Exception when the script cannot be run
+         */
+        @Test
+        @DisplayName("leaves every file it touches readable by its owner alone")
+        void leavesEveryFileItTouchesOwnerOnly(@TempDir Path workspace) throws Exception {
+            String example = read(platformDirectory().resolve(".env.example"));
+            Files.createDirectory(workspace.resolve("scripts"));
+            Files.copy(platformDirectory().resolve(GENERATE_ENV), workspace.resolve(GENERATE_ENV));
+            Files.writeString(workspace.resolve(".env.example"), example, StandardCharsets.UTF_8);
+            Files.writeString(workspace.resolve(".env"), priorVersionOf(example, Set.of()),
+                    StandardCharsets.UTF_8);
+
+            Path credentials = workspace.resolve(".demo-credentials");
+            Files.writeString(credentials, "admin001=left-behind-by-an-earlier-run\n",
+                    StandardCharsets.UTF_8);
+            Files.setPosixFilePermissions(credentials,
+                    PosixFilePermissions.fromString("rw-r--r--"));
+
+            Process run = new ProcessBuilder("bash", "-c", "umask 000; exec " + GENERATE_ENV)
+                    .directory(workspace.toFile())
+                    .redirectErrorStream(true)
+                    .start();
+            String output = new String(run.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+            assertTrue(run.waitFor(2, TimeUnit.MINUTES), "the generator did not finish");
+            assertEquals(0, run.exitValue(), "the generator refused the file:\n" + output);
+
+            assertEquals("rw-------",
+                    PosixFilePermissions.toString(
+                            Files.getPosixFilePermissions(workspace.resolve(".env"))),
+                    ".env holds every working credential of one stack, so no other account may read"
+                            + " or write it, whatever umask the caller ran under:\n" + output);
+            assertEquals("rw-------",
+                    PosixFilePermissions.toString(Files.getPosixFilePermissions(credentials)),
+                    "the credentials file was already there at mode 644 and this run had nothing to"
+                            + " generate, so the repair has to happen anyway:\n" + output);
+            assertTrue(output.contains(".demo-credentials already exists; its mode is now"
+                            + " owner-only"),
+                    "and the run has to say it narrowed a file it did not write:\n" + output);
+
+            try (Stream<Path> left = Files.list(workspace)) {
+                List<String> temporaries = left.map(path -> path.getFileName().toString())
+                        .filter(name -> name.startsWith(".demo-credentials."))
+                        .toList();
+                assertEquals(List.of(), temporaries,
+                        "a finished run leaves no temporary credentials file behind: " + temporaries);
+            }
+        }
+
+        /**
+         * A destination that would send the write elsewhere is refused, and nothing is written.
+         *
+         * <p>Creating the file at mode 600 protects it only if the name really is the file. A
+         * symbolic link in the same position makes every line land wherever it points, which is how
+         * four plaintext logins end up appended to something already readable, and the mode this
+         * script sets applies to the link's target rather than to the link.
+         *
+         * <p>The link here points at a file at mode 644 outside the workspace, so a write that
+         * followed it would be both visible and detectable. The run has to stop with a non-zero
+         * status, name the path, and leave that file exactly as it was.
+         *
+         * @param workspace a directory JUnit creates and removes
+         * @throws Exception when the script cannot be run
+         */
+        @Test
+        @DisplayName("refuses a credentials destination that is a symbolic link, writing nothing")
+        void refusesASymbolicLinkDestination(@TempDir Path workspace) throws Exception {
+            String example = read(platformDirectory().resolve(".env.example"));
+            Files.createDirectory(workspace.resolve("scripts"));
+            Files.copy(platformDirectory().resolve(GENERATE_ENV), workspace.resolve(GENERATE_ENV));
+            Files.writeString(workspace.resolve(".env.example"), example, StandardCharsets.UTF_8);
+            Files.writeString(workspace.resolve(".env"), priorVersionOf(example, Set.of()),
+                    StandardCharsets.UTF_8);
+
+            Path elsewhere = Files.createDirectory(workspace.resolve("elsewhere"));
+            Path target = Files.writeString(elsewhere.resolve("victim"), "untouched\n",
+                    StandardCharsets.UTF_8);
+            Files.setPosixFilePermissions(target, PosixFilePermissions.fromString("rw-r--r--"));
+            Files.createSymbolicLink(workspace.resolve(".demo-credentials"), target);
+
+            Process run = new ProcessBuilder("bash", GENERATE_ENV)
+                    .directory(workspace.toFile())
+                    .redirectErrorStream(true)
+                    .start();
+            String output = new String(run.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+            assertTrue(run.waitFor(2, TimeUnit.MINUTES), "the generator did not finish");
+            assertFalse(run.exitValue() == 0,
+                    "a run that would write credentials through a link has to fail:\n" + output);
+            assertTrue(output.contains(".demo-credentials is a symbolic link"),
+                    "and say which path it refused, because the reader has to know what to move"
+                            + " aside:\n" + output);
+            assertEquals("untouched\n", read(target),
+                    "the file the link pointed at may not be written, appended to or truncated");
+            assertEquals("rw-r--r--",
+                    PosixFilePermissions.toString(Files.getPosixFilePermissions(target)),
+                    "and its mode is the target's own business, not this script's to narrow");
+        }
+
         @Test
         @DisplayName("keeps the plaintext it generated out of version control")
         void keepsThePlaintextOutOfVersionControl() {
             String ignores = read(platformDirectory().resolve(".gitignore"));
             assertTrue(ignores.contains("\n/.demo-credentials\n"),
                     "the file holding four working passwords may not enter history");
+            assertTrue(ignores.contains("\n/.demo-credentials.*\n"),
+                    "and neither may the temporary file the script fills before renaming it, which"
+                            + " an interrupted run can leave behind carrying the same passwords");
             assertTrue(ignores.contains("\n/.env\n"), "and neither may the environment file");
             assertTrue(ignores.contains("!/.env.example"),
                     ".env.example is the tracked template and stays tracked");

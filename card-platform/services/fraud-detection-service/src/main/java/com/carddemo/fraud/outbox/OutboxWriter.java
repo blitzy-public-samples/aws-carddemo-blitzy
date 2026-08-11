@@ -4,10 +4,12 @@ import com.carddemo.events.EventEnvelope;
 import com.carddemo.events.FraudCleared;
 import com.carddemo.events.FraudFlagged;
 import com.carddemo.events.correlation.EventCorrelation;
+import com.carddemo.events.serde.EventContracts;
 import com.carddemo.fraud.entity.OutboxEventEntity;
 import com.carddemo.fraud.repository.OutboxEventRepository;
 import java.time.Clock;
 import java.time.Instant;
+import java.util.List;
 import java.util.Objects;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
@@ -92,11 +94,19 @@ public class OutboxWriter {
      * <p>The row stores the serialized text unchanged. Writing the same event twice fails on the
      * primary key and produces no second message.
      *
+     * <p>{@link EventContracts#postureViolationsOf(String, int)} checks the contract version this
+     * row would carry before the row is saved. The document gate lives in the producer serializer
+     * {@code com.carddemo.events.serde.JsonSchemaValidatingSerializer}, which the relay publishes
+     * through; this check answers the other question, which is whether a producer may still write
+     * the version at all. A version the released baseline retains rather than publishes is refused
+     * while the caller's transaction can still roll back.
+     *
      * @param event one {@link FraudFlagged} or one {@link FraudCleared}
      * @return the row saved, unpublished, carrying the event identifier the relay publishes under
      * @throws IllegalArgumentException if {@code event} is null, if its class is neither event type
-     *                                  this service publishes, or if its {@code eventType} does not
-     *                                  fit the {@code event_type} column
+     *                                  this service publishes, if its {@code eventType} does not
+     *                                  fit the {@code event_type} column, or if the contract version
+     *                                  it declares is retained rather than published
      * @throws org.springframework.transaction.IllegalTransactionStateException if the caller has no
      *                                  transaction open
      */
@@ -104,6 +114,13 @@ public class OutboxWriter {
     public OutboxEventEntity write(Object event) {
         EventEnvelope envelope = publishableEnvelope(event);
         String payload = objectMapper.writeValueAsString(event);
+
+        List<String> posture = EventContracts.postureViolationsOf(envelope.eventType(),
+                envelope.schemaVersion());
+        if (!posture.isEmpty()) {
+            throw new IllegalArgumentException(
+                    EventContracts.describeViolations(envelope.eventType(), posture));
+        }
 
         return outboxEvents.save(correlated(new OutboxEventEntity(envelope.eventId(),
                 envelope.eventType(), envelope.aggregateId(), payload, Instant.now(clock))));

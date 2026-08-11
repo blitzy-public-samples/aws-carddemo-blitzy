@@ -143,19 +143,21 @@ class RuleThreeDocumentationContractTest {
             assertFalse(platform.contains(stale), "platform README retains stale text: " + stale);
         }
 
-        assertEquals(13, schemaDocumentCount(),
-                "the platform guide names thirteen schema documents, so thirteen must ship. Adding or"
+        assertEquals(14, schemaDocumentCount(),
+                "the platform guide names fourteen schema documents, so fourteen must ship. Adding or"
                         + " withdrawing one moves the sentence in README.md and the headline metric on"
-                        + " slide 2 with it");
+                        + " slide 2 with it, and withdrawing one also fails the released-contract"
+                        + " baseline in libs/event-contracts, because a released document is never"
+                        + " deleted");
 
         for (String delivered : List.of(
                 "Eleven listeners are present",
-                "Thirteen schema documents cover eight business event types, four additive version"
-                        + " upgrades",
+                "Fourteen schema documents cover eight business event types, five released"
+                        + " versions above version one",
                 "Seven business topics, six source-specific dead-letter topics, and one shared"
                         + " fallback",
                 "8 files, 17 mapsets, 18 programs, and 18 transactions",
-                "228 Failsafe equivalence tests",
+                "229 Failsafe equivalence tests",
                 "Every business route requires HTTP Basic authentication")) {
             assertTrue(platform.contains(delivered), "platform README must name " + delivered);
         }
@@ -176,6 +178,7 @@ class RuleThreeDocumentationContractTest {
         }
         assertEquals(lineFeeds, carriageReturnLineFeeds,
                 "the additive edit preserves the legacy guide's CRLF line endings");
+        assertTrue(carriageReturnLineFeeds > 0, "the legacy guide is carriage-return terminated");
 
         String current = read(repositoryRoot().resolve("README.md"));
         assertEquals(1, count(current, ROOT_TOC_ADDITION));
@@ -193,6 +196,123 @@ class RuleThreeDocumentationContractTest {
                 "legacy root README content must remain byte-for-byte unchanged");
         assertTrue(current.contains("## Installation on the mainframe \n"),
                 "the legacy heading must retain its trailing space");
+    }
+
+    /**
+     * Holds every carriage-return terminated file this repository delivers to a declared policy.
+     *
+     * <p>{@code git diff --check} reads the whitespace attribute of the file it is reporting on.
+     * With none declared, a carriage return before the line feed is trailing whitespace, so every
+     * added line of the root guide was reported as a defect and the command exited 2. The guide
+     * cannot be converted: {@link #theRootReadmeIsTheOriginalGuidePlusOneTocLineAndOneSection()}
+     * requires its legacy bytes unchanged, and those bytes are carriage-return terminated.
+     *
+     * <p>The policy is therefore declared rather than applied. This test finds the files that need
+     * it by reading bytes rather than by trusting a list, and it also refuses a converting attribute:
+     * {@code text}, {@code eol} and {@code working-tree-encoding} would rewrite content that has to
+     * stay byte for byte.
+     */
+    @Test
+    void everyCarriageReturnTerminatedFileCarriesADeclaredWhitespacePolicy() {
+        Path attributes = repositoryRoot().resolve(".gitattributes");
+        assertTrue(Files.isRegularFile(attributes),
+                "a repository whose delivered files are not all line-feed terminated declares the "
+                        + "policy in .gitattributes, or git reports every added line as a defect");
+
+        List<String> declarations = new ArrayList<>();
+        List<String> converting = new ArrayList<>();
+        for (String line : read(attributes).split("\\R")) {
+            String rule = line.trim();
+            if (rule.isEmpty() || rule.startsWith("#")) {
+                continue;
+            }
+            String[] tokens = rule.split("\\s+");
+            for (int index = 1; index < tokens.length; index++) {
+                String name = tokens[index].replaceFirst("^[-!]", "").replaceFirst("=.*$", "");
+                if (List.of("text", "eol", "working-tree-encoding").contains(name)) {
+                    converting.add(rule);
+                    break;
+                }
+            }
+            if (rule.contains("whitespace=cr-at-eol")) {
+                declarations.add(tokens[0]);
+            }
+        }
+        assertEquals(List.of(), converting,
+                "an attribute that rewrites line endings or encoding would change bytes this "
+                        + "repository preserves verbatim: " + converting);
+
+        List<String> uncovered = new ArrayList<>();
+        int carriageReturnFiles = 0;
+        for (Path file : deliveredFilesOutsideTheLegacyApplication()) {
+            if (!contains(readBytes(file), (byte) '\r', (byte) '\n')) {
+                continue;
+            }
+            carriageReturnFiles++;
+            String relative = repositoryRoot().relativize(file).toString();
+            String name = file.getFileName().toString();
+            if (!declarations.contains(relative) && !declarations.contains(name)) {
+                uncovered.add(relative);
+            }
+        }
+
+        assertTrue(carriageReturnFiles > 0,
+                "the scan found no carriage-return terminated file, so its verdict would mean "
+                        + "nothing: the root guide is one");
+        assertEquals(List.of(), uncovered,
+                "these files end their lines with a carriage return and no .gitattributes entry "
+                        + "declares it, so git diff --check reports each added line as trailing "
+                        + "whitespace: " + uncovered);
+    }
+
+    /**
+     * Returns the files this engagement delivers, excluding the legacy mainframe application.
+     *
+     * <p>{@code app}, {@code diagrams} and {@code samples} are read-only inputs this engagement
+     * neither adds to nor edits, so their line endings are not this policy's subject.
+     *
+     * @return every delivered regular file
+     */
+    private static List<Path> deliveredFilesOutsideTheLegacyApplication() {
+        List<String> excluded = List.of("app", "diagrams", "samples", ".git", "blitzy", "target",
+                "node_modules");
+        List<Path> delivered = new ArrayList<>();
+        try (java.util.stream.Stream<Path> tree = Files.walk(repositoryRoot())) {
+            tree.filter(Files::isRegularFile)
+                    .filter(path -> {
+                        for (Path element : repositoryRoot().relativize(path)) {
+                            if (excluded.contains(element.toString())) {
+                                return false;
+                            }
+                        }
+                        return true;
+                    })
+                    .sorted()
+                    .forEach(delivered::add);
+        } catch (IOException unreadable) {
+            throw new UncheckedIOException("unreadable repository", unreadable);
+        }
+        return delivered;
+    }
+
+    /**
+     * Reports whether one byte sequence occurs in another.
+     *
+     * @param haystack the bytes to search
+     * @param needle   the bytes to find
+     * @return {@code true} when the sequence occurs
+     */
+    private static boolean contains(byte[] haystack, byte... needle) {
+        outer:
+        for (int at = 0; at <= haystack.length - needle.length; at++) {
+            for (int index = 0; index < needle.length; index++) {
+                if (haystack[at + index] != needle[index]) {
+                    continue outer;
+                }
+            }
+            return true;
+        }
+        return false;
     }
 
     @Test

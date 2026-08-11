@@ -193,13 +193,14 @@ public class OutboxWriter {
      * @param eventId   the identifier of the event being written, named in a refusal
      * @param event     the event to write
      * @return the event as JSON text, checked against its document and its column width
-     * @throws IllegalArgumentException when the written payload breaks its contract document, or
-     *                                  exceeds {@value #PAYLOAD_MAX_BYTES} octets of UTF-8
+     * @throws IllegalArgumentException when the written payload breaks its contract document, when
+     *                                  the version it declares is retained rather than published, or
+     *                                  when it exceeds {@value #PAYLOAD_MAX_BYTES} octets of UTF-8
      */
     private String writeAndCheck(String eventType, UUID eventId, Object event) {
         String payload = objectMapper.writeValueAsString(event);
 
-        List<String> violations = EventContracts.violationsOf(eventType, payload);
+        List<String> violations = EventContracts.publishViolationsOf(eventType, payload);
         if (!violations.isEmpty()) {
             throw new IllegalArgumentException("event " + eventId + " breaks its contract: "
                     + EventContracts.describeViolations(eventType, violations));

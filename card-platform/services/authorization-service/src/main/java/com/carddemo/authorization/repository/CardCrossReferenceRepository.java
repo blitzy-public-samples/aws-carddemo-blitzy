@@ -209,18 +209,13 @@ public interface CardCrossReferenceRepository
      * Records that a card-update event confirmed the rows of one account whose card number ends in
      * the digits the event left visible, and writes no mapping field.
      *
-     * <p>Why this is a refresh and not an upsert. A {@code CardUpdated} message carries a masked card
-     * number, because no full card number travels on a topic in this platform. This table is keyed by
-     * the full sixteen-character number, so the message cannot name a key and cannot create a row.
-     * What it does carry is the account identifier, so it confirms that the service owning the card
-     * has just written that account's card data, which is exactly the mapping this table holds.
-     *
-     * <p>The {@code SET} list is therefore the three observation columns and nothing else.
-     * {@code card_number}, {@code customer_id} and {@code account_id} are untouched, which is what
-     * makes the statement safe when two cards of one account share their last four digits: both rows
-     * are refreshed, no mapping moves, and no authorization can be misrouted by it. Confirming a
-     * sibling row alongside the one the event named is the cost of the masked contract, and it is
-     * bounded to rows that already name this account.
+     * <p>The {@code SET} list is the three observation columns and nothing else. {@code card_number},
+     * {@code customer_id} and {@code account_id} are untouched, so when two cards of one account share
+     * their last four digits both rows are refreshed, no mapping moves, and no authorization can be
+     * misrouted by it. The statement is an {@code UPDATE} and not an upsert: a {@code CardUpdated}
+     * message carries a masked card number and this table is keyed by the full sixteen characters, so
+     * the message names no key. Rationale, alternatives considered and accepted risks:
+     * {@code card-platform/docs/decision-log.md}.
      *
      * <p>The {@code WHERE} clause carries the same newer-wins guard as
      * {@link #applyStateChange}, so a redelivery arriving behind a newer event changes nothing.

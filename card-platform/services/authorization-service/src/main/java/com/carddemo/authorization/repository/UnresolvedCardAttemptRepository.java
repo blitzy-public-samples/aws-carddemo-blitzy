@@ -11,12 +11,18 @@ import org.springframework.data.repository.query.Param;
 
 /**
  * Stores and reads {@code unresolved_card_attempt}, the record of an attempt whose card resolved to
- * no account.
+ * no cross-reference row.
  *
  * <p>The table has no COBOL ancestor; the behaviour it records does. Reject code {@code 0100} is
  * assigned at {@code app/cbl/CBTRN02C.cbl:L385} and {@code app/cbl/CBTRN02C.cbl:L446-L465} writes a
  * reject record for it. That record is what this table holds, minus the
  * three-hundred-and-fifty-byte transaction payload beside the trailer.
+ *
+ * <p>The reject record itself is not lost: the decline this row accompanies publishes under
+ * {@code schemas/transaction-declined-v3.json} carrying the nine descriptive values that paragraph
+ * copies into {@code REJECT-TRAN-DATA}, so {@code ledger-posting-service} writes the row from the
+ * event. What this table adds is the fact that the card reached this service and no cross-reference
+ * row held it, together with the account the decision applied to.
  *
  * <p>The generic parameter area at {@code app/cbl/CBSTM03B.CBL:L100-L112} is the pattern this
  * interface follows, as the other repositories of this service do. Operation code {@code 'W'}, the

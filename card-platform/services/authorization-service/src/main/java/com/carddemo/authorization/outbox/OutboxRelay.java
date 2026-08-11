@@ -171,13 +171,16 @@ public class OutboxRelay {
     private static final String UNRESOLVED_DESTINATION = "no-configured-topic";
 
     /**
-     * The aggregate identifier a diagnostic declares when the abandoned row carries no account.
+     * The aggregate identifier a diagnostic declares when the abandoned row carries no account key.
      *
      * <p>{@code schemas/dead-letter-v1.json} constrains {@code aggregateId} to eleven decimal
-     * digits, which is narrower than {@link EventEnvelope#AGGREGATE_KEY_PATTERN}. This service
-     * legitimately stores the other permitted form: a decline whose card never resolved has no
-     * account to name, so its outbox row is keyed by the sixteen-character transaction identifier
-     * instead, and migration {@code V4} permits either width in {@code aggregate_id}.
+     * digits, which is narrower than {@link EventEnvelope#AGGREGATE_KEY_PATTERN}. One row of this
+     * service can carry the other permitted form, and only one written before migration {@code V19}:
+     * a decline whose card resolved nothing was keyed by the sixteen-character transaction identifier
+     * that migration {@code V4} widened {@code aggregate_id} to hold. Every row written from
+     * {@code V19} forward carries the account key, because every decision names the account it applies
+     * to, and {@code ck_outbox_event_aggregate_id} admits that one form. The relay still publishes the
+     * older rows, so this substitution still has to exist for them.
      *
      * <p>Handing that sixteen-character key to the diagnostic would fail schema validation inside
      * the serializer on every attempt. The obligation {@link OutboxEventEntity#owesDeadLetter()}
@@ -187,8 +190,9 @@ public class OutboxRelay {
      *
      * <p>Eleven zeros are not an account this platform seeds or issues, so the value states the
      * absence rather than attributing the failure to an account. {@code config/KafkaConsumerConfig}
-     * makes the same substitution for the same reason on the consumer side, and the diagnostic still
-     * names the row exactly through {@code failedEventId}.
+     * makes the same substitution for a different and permanent reason: a record that will not parse
+     * has no trustworthy subject to read at all. The diagnostic still names the row exactly through
+     * {@code failedEventId}.
      */
     private static final String UNRESOLVED_ACCOUNT_KEY = "00000000000";
 
@@ -196,10 +200,10 @@ public class OutboxRelay {
      * The one aggregate form a dead letter can be keyed on, eleven account digits.
      *
      * <p>{@code schemas/dead-letter-v1.json} declares this pattern and
-     * {@link EventEnvelope#AGGREGATE_ID_PATTERN} is the same expression. The other form this service
-     * writes, the sixteen-character transaction identifier of a decline whose card resolved to
-     * nothing, is admitted on a decision topic and not on the dead-letter topic, which is what
-     * {@link #diagnosticKey(String)} exists to answer.
+     * {@link EventEnvelope#AGGREGATE_ID_PATTERN} is the same expression. The other form
+     * {@link EventEnvelope#AGGREGATE_KEY_PATTERN} admits, the sixteen-character transaction
+     * identifier, reaches a decision topic and not the dead-letter topic, which is what
+     * {@link #diagnosticKey(String)} exists to answer for the pre-{@code V19} rows that carry it.
      */
     private static final Pattern ACCOUNT_KEY_MATCHER =
             Pattern.compile(EventEnvelope.AGGREGATE_ID_PATTERN);
@@ -683,9 +687,10 @@ public class OutboxRelay {
      * Narrows an outbox aggregate identifier to the one form a dead letter may declare.
      *
      * <p>An account-shaped key is passed through, so a diagnostic for an account-keyed row still
-     * lands on that account's partition and an operator can find it by account. Anything else is
-     * the transaction-keyed form a decline with an unresolved card carries, and it becomes
-     * {@value #UNRESOLVED_ACCOUNT_KEY}.
+     * lands on that account's partition and an operator can find it by account. Anything else is the
+     * transaction-keyed form a decline with an unresolved card carried before migration {@code V19},
+     * and it becomes {@value #UNRESOLVED_ACCOUNT_KEY}. No row written from that migration forward
+     * takes this branch, and the rows already stored are why it stays.
      *
      * <p>The substitution loses nothing an operator needs. {@code failedEventId} names the abandoned
      * row exactly, and {@code outbox_event.aggregate_id} still holds the transaction identifier for

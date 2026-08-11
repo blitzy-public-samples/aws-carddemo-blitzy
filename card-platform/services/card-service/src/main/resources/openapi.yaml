@@ -847,7 +847,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/CardUpdated'
+                $ref: '#/components/schemas/CardUpdateApplied'
               examples:
                 rewritten:
                   summary: >-
@@ -1632,12 +1632,20 @@ components:
             declares and constraint ck_card_active_status on table card holds
             the column to.
 
-    CardUpdated:
+    CardUpdateApplied:
       type: object
       description: >-
         The answer to an update that rewrote the row, which api/CardController
         answers 200. The rewrite runs at app/cbl/COCRDUPC.cbl:L1477-L1483 and
         app/cbl/COCRDUPC.cbl:L1488 tests it for success.
+
+
+        The name of this component is an HTTP result and names no event. The
+        Kafka contract the same update publishes is CardUpdated, governed by
+        schemas/card-updated-v2.json in libs/event-contracts, and it carries the
+        card state rather than the outcome of one request. The three sibling
+        results are CardUpdateNotFound, CardUpdateConflict and
+        CardUpdateRejected.
 
 
         All three members are serialized and all three are therefore required. The

@@ -287,15 +287,18 @@ public class KafkaEventPublisher implements EventPublisherPort {
     /**
      * Validates the payload against the versioned schema document its event type names.
      *
-     * <p>{@link EventContracts#violationsOf(String, String)} returns one entry per failure, and each
-     * entry holds a JSON pointer and the broken keyword and nothing else.
+     * <p>{@link EventContracts#publishViolationsOf(String, String)} returns one entry per failure,
+     * and each entry holds a JSON pointer and the broken keyword and nothing else. It reports one
+     * further entry when the version the payload declares is retained rather than published, which
+     * is the posture check every producer path of this platform applies.
      *
      * @param eventType the registered event type the envelope declares
      * @param payload   the written event, validated as received
-     * @throws IllegalArgumentException when the payload fails the document that type names
+     * @throws IllegalArgumentException when the payload fails the document that type names, or when
+     *                                  the version it declares is retained rather than published
      */
     private static void requireValidAgainstSchema(String eventType, String payload) {
-        List<String> violations = EventContracts.violationsOf(eventType, payload);
+        List<String> violations = EventContracts.publishViolationsOf(eventType, payload);
         if (!violations.isEmpty()) {
             throw new IllegalArgumentException(
                     EventContracts.describeViolations(eventType, violations));

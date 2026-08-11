@@ -679,6 +679,128 @@ class KafkaDeliveryGuaranteeContractTest {
     }
 
     /**
+     * Holds the two dead-letter wire forms of this platform to the topics that carry them.
+     *
+     * <p>Two forms exist, and a document that claimed one was the shape of every dead-letter topic
+     * sent a reader building tooling for the wrong parser. A consumer that exhausts its delivery
+     * attempts on a named topic writes the fixed-width rendering of {@code app/cpy/CSMSG02Y.cpy} to
+     * {@code <source>.DLT}; a relay that exhausts its publish attempts, and a consumer whose refused
+     * record names no source topic, writes the governed {@code schemas/dead-letter-v1.json} envelope
+     * to the shared fallback topic. Which service writes which is a delivery property rather than a
+     * preference, so it is measured here. The definition a reader needs is in
+     * {@code card-platform/docs/event-flow.md}.
+     */
+    @Nested
+    @DisplayName("dead-letter wire forms")
+    class DeadLetterWireForms {
+
+        /** The modules whose consumer route writes the fixed-width diagnostic. */
+        private static final List<String> FIXED_WIDTH_CONSUMERS = List.of(
+                "ledger-posting-service", "fraud-detection-service", "notification-service");
+
+        /** The modules whose consumer route writes the governed envelope. */
+        private static final List<String> GOVERNED_ENVELOPE_CONSUMERS =
+                List.of("authorization-service", "account-service");
+
+        @Test
+        @DisplayName("each consumer route writes exactly one of the two forms, and the same one every time")
+        void eachConsumerRouteWritesExactlyOneOfTheTwoForms() {
+            for (String module : CONSUMING_SERVICES) {
+                String configuration = read(platformDirectory().resolve("services").resolve(module)
+                        .resolve("src/main/java/com/carddemo").resolve(PACKAGES.get(module))
+                        .resolve("config/KafkaConsumerConfig.java"));
+
+                boolean fixedWidth = configuration.contains(".toFixedWidthRecord()");
+                boolean envelope = configuration.contains(".toEnvelope(");
+
+                assertThat(fixedWidth)
+                        .as(module + " writes the fixed-width diagnostic on its consumer route,"
+                                + " which docs/event-flow.md fixes for "
+                                + FIXED_WIDTH_CONSUMERS)
+                        .isEqualTo(FIXED_WIDTH_CONSUMERS.contains(module));
+                assertThat(envelope)
+                        .as(module + " writes the governed dead-letter envelope on its consumer"
+                                + " route, which docs/event-flow.md fixes for "
+                                + GOVERNED_ENVELOPE_CONSUMERS)
+                        .isEqualTo(GOVERNED_ENVELOPE_CONSUMERS.contains(module));
+                assertThat(fixedWidth ^ envelope)
+                        .as(module + " must write one dead-letter form and not both, so tooling"
+                                + " reading its topic needs one parser")
+                        .isTrue();
+            }
+        }
+
+        @Test
+        @DisplayName("a fixed-width route sends to the source topic plus a suffix and never to the shared topic")
+        void aFixedWidthRouteSendsToTheSourceTopicPlusASuffix() {
+            for (String module : FIXED_WIDTH_CONSUMERS) {
+                String configuration = read(platformDirectory().resolve("services").resolve(module)
+                        .resolve("src/main/java/com/carddemo").resolve(PACKAGES.get(module))
+                        .resolve("config/KafkaConsumerConfig.java"));
+
+                assertThat(configuration)
+                        .as(module + " must resolve its dead-letter destination by appending the"
+                                + " suffix to the source topic, so the diagnostic of one topic"
+                                + " stays on that topic's own dead-letter topic")
+                        .contains("sourceTopic + suffix");
+            }
+        }
+
+        @Test
+        @DisplayName("the governed envelope document declares the shared topic and points at the other form")
+        void theGovernedEnvelopeDocumentDeclaresTheSharedTopicAndPointsAtTheOtherForm() {
+            String document = read(platformDirectory().resolve(
+                    "libs/event-contracts/src/main/resources/schemas/dead-letter-v1.json"));
+
+            assertThat(document)
+                    .as("dead-letter-v1.json must name the topic it governs rather than claiming"
+                            + " every dead-letter topic carries it")
+                    .contains("shared fallback dead-letter topic, carddemo.dead-letter");
+            assertThat(document)
+                    .as("dead-letter-v1.json must name the other form and where it is defined, so a"
+                            + " reader generating tooling from it knows the fixed-width topics exist")
+                    .contains("fixed-width diagnostic to <source>.DLT")
+                    .contains("card-platform/docs/event-flow.md");
+        }
+
+        @Test
+        @DisplayName("the fixed-width form is 134 characters, from the four abend fields")
+        void theFixedWidthFormIsOneHundredAndThirtyFourCharacters() {
+            for (String module : FIXED_WIDTH_CONSUMERS) {
+                String metadata = read(platformDirectory().resolve("services").resolve(module)
+                        .resolve("src/main/java/com/carddemo").resolve(PACKAGES.get(module))
+                        .resolve("messaging/DeadLetterMetadata.java"));
+
+                assertThat(metadata)
+                        .as(module + " must render the four fields of app/cpy/CSMSG02Y.cpy at their"
+                                + " declared widths, which is the layout docs/event-flow.md states")
+                        .contains("ABEND_CODE_MAX_LENGTH = 4")
+                        .contains("CULPRIT_MAX_LENGTH = 8")
+                        .contains("REASON_MAX_LENGTH = 50")
+                        .contains("MESSAGE_MAX_LENGTH = 72");
+            }
+        }
+
+        @Test
+        @DisplayName("docs/event-flow.md defines both dead-letter forms")
+        void theEventFlowGuideDefinesBothDeadLetterForms() {
+            String guide = read(platformDirectory().resolve("docs/event-flow.md"));
+
+            assertThat(guide)
+                    .as("the guide is where dead-letter-v1.json sends a reader for the other form,"
+                            + " so it has to define the fixed-width layout and its widths")
+                    .contains("134")
+                    .contains("<source>.DLT");
+            for (String module : FIXED_WIDTH_CONSUMERS) {
+                assertThat(guide)
+                        .as("the guide must name " + module + " among the services writing the"
+                                + " fixed-width form")
+                        .contains(module);
+            }
+        }
+    }
+
+    /**
      * Reads the shipped application configuration of one module.
      *
      * @param module the service module directory name

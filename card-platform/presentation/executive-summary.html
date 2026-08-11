@@ -621,7 +621,7 @@
           <div class="kpi-card">
             <i class="kpi-icon" data-lucide="package" aria-hidden="true"></i>
             <div class="kpi-value">8</div>
-            <div class="kpi-label">Event types, 13 schemas</div>
+            <div class="kpi-label">Event types, 14 schemas</div>
           </div>
           <div class="kpi-card">
             <i class="kpi-icon" data-lucide="shield-alert" aria-hidden="true"></i>
@@ -694,11 +694,10 @@ graph LR
           <pre class="mermaid">
 graph LR
   accTitle: Figure 2, one outcome event starts the work
-  accDescr: A REST client calls authorization-service, which publishes transaction.authorized and transaction.declined. Three consumers read transaction.authorized independently: ledger-posting-service, fraud-detection-service and notification-service. The ledger also reads transaction.declined and records one reject row. The decline whose card resolves no account travels on that topic too, keyed on the transaction identifier. The ledger publishes transaction.posted, which notification-service and account-service both read, and fraud-detection-service publishes fraud.assessed, which notification-service reads. A record the ledger, fraud or notification listener cannot complete travels to its own source topic plus the .DLT suffix, and account-service routes one to the shared carddemo.dead-letter fallback. No consumer calls another consumer.
+  accDescr: A REST client calls authorization-service, which publishes transaction.authorized and transaction.declined. Three consumers read transaction.authorized independently: ledger-posting-service, fraud-detection-service and notification-service. The ledger also reads transaction.declined and records one reject row for every one of the four reject reasons. Each decline is keyed on the account it applies to. The ledger publishes transaction.posted, which notification-service and account-service both read, and fraud-detection-service publishes fraud.assessed, which notification-service reads. A record the ledger, fraud or notification listener cannot complete travels to its own source topic plus the .DLT suffix, and account-service routes one to the shared carddemo.dead-letter fallback. No consumer calls another consumer.
   C["REST client"] --> A["authorization-service"]
   A ==>|approved| TA{{"transaction.authorized account key"}}
-  A ==>|"declined with an account"| TD{{"transaction.declined"}}
-  A --- U["reason 0100: no account key, transaction key instead"]
+  A ==>|declined| TD{{"transaction.declined"}}
   TA ==> L["ledger-posting-service"]
   TA ==> F["fraud-detection-service"]
   TA ==> N["notification-service"]
@@ -723,34 +722,30 @@ graph LR
         <h2>Business value</h2>
       </section>
 
-      <section aria-label="Slide 7 of 16, the architecture creates room to change safely">
+      <section aria-label="Slide 7 of 16, room to change safely">
         <span class="slide-number" aria-hidden="true">07</span>
         <div class="eyebrow">What changed</div>
-        <h2>The architecture creates room to change safely</h2>
+        <h2>Room to change safely</h2>
         <table>
-          <caption>Business value of the modernization</caption>
+          <caption>Value</caption>
           <thead>
             <tr>
-              <th scope="col">What changed</th>
-              <th scope="col">What it makes possible</th>
+              <th scope="col">Change</th>
+              <th scope="col">Enables</th>
             </tr>
           </thead>
           <tbody>
             <tr>
-              <th scope="row">Balance updates begin at authorization instead of a nightly batch window.</th>
-              <td>Account state can reflect accepted transactions without waiting for the scheduled chain.</td>
+              <th scope="row">Posting at authorization</th>
+              <td>No nightly window</td>
             </tr>
             <tr>
-              <th scope="row">Fraud detection reads an event that already existed and had no counterpart in the original system.</th>
-              <td>A new capability can arrive without changing the authorization service.</td>
-            </tr>
-            <tr>
-              <th scope="row">Each service owns its datastore.</th>
-              <td>Deployments and schema changes stay inside an explicit boundary.</td>
+              <th scope="row">Fraud reads an existing event</th>
+              <td>Authorization untouched</td>
             </tr>
             <tr>
               <th scope="row">All 66 flagged source rules carry file and line citations.</th>
-              <td>Owners can approve behavior changes without guessing at source intent.</td>
+              <td>Owner decisions</td>
             </tr>
           </tbody>
         </table>
@@ -766,19 +761,19 @@ graph LR
         <span class="slide-number" aria-hidden="true">09</span>
         <div class="eyebrow">Highest-risk finding</div>
         <h2>Money truncates; it never rounds</h2>
-        <p><code>ROUNDED</code> appears zero times across all 28 source programs. Every service pins <code>RoundingMode.DOWN</code>.</p>
+        <p><code>ROUNDED</code> appears zero times in 28 source programs. Every service pins <code>RoundingMode.DOWN</code>.</p>
         <div class="split-correctness">
           <div class="kpi-card">
             <i class="kpi-icon" data-lucide="scale" aria-hidden="true"></i>
             <div class="kpi-value">0</div>
-            <div class="kpi-label">Occurrences across 28 source programs</div>
+            <div class="kpi-label">Uses of <code>ROUNDED</code></div>
           </div>
           <table>
-            <caption>Truncation compared with half-up rounding</caption>
+            <caption>Truncation versus half-up</caption>
             <thead>
               <tr>
                 <th scope="col">Mode</th>
-                <th scope="col">Value stored from 10.005 at scale two</th>
+                <th scope="col">10.005 at scale two</th>
               </tr>
             </thead>
             <tbody>
@@ -799,35 +794,22 @@ graph LR
         <span class="slide-number" aria-hidden="true">10</span>
         <div class="eyebrow">Coverage</div>
         <h2>Every source class has a disposition</h2>
-        <p>The complete bidirectional inventory is in <code>docs/traceability-matrix.md</code>.</p>
         <table>
-          <caption>Source coverage and mapping summary</caption>
+          <caption>Coverage</caption>
           <thead>
             <tr>
-              <th scope="col">Source inventory</th>
-              <th scope="col">Measured disposition</th>
+              <th scope="col">Source</th>
+              <th scope="col">Disposition</th>
             </tr>
           </thead>
           <tbody>
             <tr>
-              <th scope="row">28 COBOL programs</th>
+              <th scope="row">28 programs</th>
               <td>12 primary migration sources, 8 reference-only, 2 partial, 6 excluded</td>
             </tr>
             <tr>
               <th scope="row">28 copybooks</th>
               <td>12 record layouts, 9 reference or semantics inputs, 1 divergent fork, 5 excluded, 1 dead</td>
-            </tr>
-            <tr>
-              <th scope="row">29 job members</th>
-              <td>Read for keys and record sizes; none becomes a scheduled job</td>
-            </tr>
-            <tr>
-              <th scope="row">Resource definitions</th>
-              <td>8 files, 17 mapsets, 18 programs, 18 transactions</td>
-            </tr>
-            <tr>
-              <th scope="row">9 sample data files</th>
-              <td>Reused by 9 required equivalence test classes</td>
             </tr>
           </tbody>
         </table>
@@ -844,7 +826,7 @@ graph LR
         <div class="eyebrow">Known risk</div>
         <h2>Risk is visible and testable</h2>
         <table>
-          <caption>Modernization risks and mitigations</caption>
+          <caption>Risk register</caption>
           <thead>
             <tr>
               <th scope="col">Risk</th>
@@ -853,20 +835,20 @@ graph LR
           </thead>
           <tbody>
             <tr>
-              <th scope="row">Parity uses documented behavior and checked-in sample data, not a live original run.</th>
-              <td>The equivalence suite is a required build stage, and its results are published.</td>
+              <th scope="row">Parity from documented rules</th>
+              <td>Required build stage</td>
             </tr>
             <tr>
-              <th scope="row">Source defects are reproduced for parity, never corrected quietly.</th>
-              <td>Each one is cited in the flag register and held for an owner decision.</td>
+              <th scope="row">Source defects reproduced</th>
+              <td>Cited for owner decision</td>
             </tr>
             <tr>
-              <th scope="row">The sample data cannot reach the narrowed-precision boundary.</th>
-              <td>A synthetic boundary test now covers the source behavior directly.</td>
+              <th scope="row">Fixtures miss one boundary</th>
+              <td>Synthetic boundary test</td>
             </tr>
             <tr>
-              <th scope="row">A later edit could change monetary rounding.</th>
-              <td>A dedicated test fails when truncation changes.</td>
+              <th scope="row">Rounding could change</th>
+              <td>One test guards it</td>
             </tr>
           </tbody>
         </table>
@@ -936,6 +918,7 @@ graph LR
           <li>Run the platform from <code>docs/onboarding.md</code>.</li>
           <li>Review owner decisions in <code>docs/suggested-next-tasks.md</code>.</li>
           <li>Audit every non-trivial choice in <code>docs/decision-log.md</code>.</li>
+          <li>Trace every source member in <code>docs/traceability-matrix.md</code>.</li>
         </ul>
         <div class="brand-lockup">Blitzy · AWS CardDemo modernization</div>
         <div class="accent-bar" aria-hidden="true"></div>

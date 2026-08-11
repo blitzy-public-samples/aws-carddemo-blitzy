@@ -44,8 +44,8 @@ import tools.jackson.databind.JsonNode;
  * <p>A status flag is not on the list. {@code CARD-ACTIVE-STATUS PIC X(01)} at
  * {@code app/cpy/CVACT02Y.cpy:L10} and {@code ACCT-ACTIVE-STATUS PIC X(01)} at
  * {@code app/cpy/CVACT01Y.cpy:L6} reach no transaction event, and
- * {@code schemas/account-state-changed-v1.json} and the two governed card-update schemas
- * declare {@code activeStatus} as a property of their own. The five transaction and fraud documents
+ * {@code schemas/account-state-changed-v1.json} and the governed card-update schemas
+ * declare {@code activeStatus} as a property of their own. The transaction and fraud documents
  * are held clear of it by {@code SchemaBackwardCompatibilityTest}, which reads their declared and
  * undeclared field names document by document.
  *
@@ -99,11 +99,11 @@ public final class SensitiveEventProperties {
     /**
      * The one card-number property an event may name, in the folded form the scan compares.
      *
-     * <p>{@code maskedCardNumber} is declared by
-     * {@code schemas/transaction-authorized-v1.json}, {@code schemas/transaction-declined-v1.json},
-     * {@code schemas/transaction-posted-v1.json}, {@code schemas/card-updated-v1.json} and
-     * {@code schemas/card-updated-v1.json}. Its
-     * separator spellings fold to the same entry and are spared with it.
+     * <p>{@code maskedCardNumber} is declared by every governed version of
+     * {@code TransactionAuthorized}, {@code TransactionDeclined}, {@code TransactionPosted} and
+     * {@code CardUpdated}; {@code SchemaBackwardCompatibilityTest} reads that set out of the schema
+     * table rather than from a list here. Its separator spellings fold to the same entry and are
+     * spared with it.
      */
     public static final Set<String> APPROVED_CARD_PROPERTIES = Set.of("maskedcardnumber");
 
@@ -118,9 +118,13 @@ public final class SensitiveEventProperties {
             "cvv",
             "cardverification",
             "verificationvalue",
+            "verificationcode",
             "securitycode",
+            "cardsecurity",
             "password",
             "passwd",
+            "passphrase",
+            "passcode",
             "socialsecurity",
             "ssn");
 
@@ -131,6 +135,16 @@ public final class SensitiveEventProperties {
      * {@code pin} sits inside {@code shipping}, and the word {@code pan} sits inside
      * {@code expanded}, so both are compared whole. A separator spelling such as {@code p_a_n}
      * folds to an entry and is refused with it.
+     *
+     * <p>The card-scheme abbreviations for a verification value are here rather than in
+     * {@link #FORBIDDEN_NAME_FRAGMENTS} for the same reason: {@code cid} sits inside
+     * {@code incidentId} and {@code csc} inside {@code cscReference}, so each is compared whole. A
+     * producer that means a correlation identifier writes {@code correlationId}, which no entry
+     * matches. The set covers the abbreviations the four card schemes use — {@code CVV} and
+     * {@code CVV2}, {@code CVC} and {@code CVC2}, {@code CV2}, {@code CID}, {@code CSC},
+     * {@code CVN}, {@code CVD}, {@code CAV2} and {@code CAVV} — because a name none of them
+     * anticipated is exactly how three digits reach a topic. {@code cvv} and {@code cvv2} are
+     * additionally caught as fragments.
      */
     public static final Set<String> FORBIDDEN_WHOLE_NAMES = Set.of(
             "pan",
@@ -138,7 +152,16 @@ public final class SensitiveEventProperties {
             "panvalue",
             "pin",
             "pinblock",
-            "pinoffset");
+            "pinoffset",
+            "cvc",
+            "cvc2",
+            "cv2",
+            "cid",
+            "csc",
+            "cvn",
+            "cvd",
+            "cav2",
+            "cavv");
 
     /**
      * Name fragments that refuse a property unless its whole name sits in
@@ -179,6 +202,42 @@ public final class SensitiveEventProperties {
 
     /** The one property whose whole subtree is caller-supplied, in folded form. */
     public static final String EXTENSION_PROPERTY = "extensions";
+
+    /**
+     * Extension names that put a value in a card-code context, in the folded form the scan compares.
+     *
+     * <p>A verification value is three or four digits, and three or four digits carry no shape a
+     * screen can recognise on their own: a merchant category code holds four and a transaction
+     * category code holds four. {@link #LABELLED_SECURITY_CODE} therefore needs a label beside the
+     * digits, and a property <em>name</em> is a label the value itself does not carry. Inside the
+     * extensions object, where a caller chooses the names, a name carrying {@code code} is that
+     * label: {@code authCode}, {@code cardCode} and {@code secCode} all fold to a name holding it,
+     * and each refuses a bare three- or four-digit value.
+     *
+     * <p>This applies to extension members only, and it must. {@code declineReasonCode},
+     * {@code merchantCategoryCode} and {@code transactionTypeCode} are declared properties whose
+     * documents pin them to exactly that width, so a rule reading every property this way would
+     * refuse every declined and every authorized event.
+     */
+    public static final List<String> CODE_CONTEXT_EXTENSION_FRAGMENTS = List.of("code");
+
+    /**
+     * Extension names that say the value is a credential, in the folded form the scan compares.
+     *
+     * <p>Any non-blank value under one of these is refused, whatever its shape, because the name
+     * has already declared what it carries and no event on this platform carries a credential. A
+     * password and a passphrase are refused by {@link #FORBIDDEN_NAME_FRAGMENTS} wherever they
+     * appear; these names are refused inside the extensions object, where a caller invents them.
+     */
+    public static final List<String> CREDENTIAL_CONTEXT_EXTENSION_FRAGMENTS = List.of(
+            "secret",
+            "credential",
+            "apikey",
+            "accesskey",
+            "privatekey",
+            "sessionkey",
+            "bearer",
+            "token");
 
     /**
      * Shortest run of digits a screened value may not hold: twelve.
@@ -283,6 +342,17 @@ public final class SensitiveEventProperties {
                     + "|card[ \\-_]?verification(?:[ \\-_]?(?:value|code|number))?"
                     + "|security[ \\-_]?code|card[ \\-_]?security[ \\-_]?code)"
                     + "[ \\-_:=.#]{0,4}[0-9]{3,4}(?![0-9])");
+
+    /**
+     * A run of exactly three or four digits, with no digit on either side of it.
+     *
+     * <p>The width of a card verification value: {@code CARD-CVV-CD PIC 9(03)} at
+     * {@code app/cpy/CVACT02Y.cpy:L7} holds three, and four-digit schemes exist. The run carries no
+     * meaning on its own, so it is only refused where the property name supplies the label —
+     * {@link #namesWhatTheValueCarries(String, JsonNode)} is the one caller.
+     */
+    private static final Pattern SHORT_CODE_RUN =
+            Pattern.compile("(?<![0-9])[0-9]{3,4}(?![0-9])");
 
     /**
      * Shape of a United States government identifier: three digits, two digits, then four, in
@@ -414,19 +484,24 @@ public final class SensitiveEventProperties {
      *         return, so a caller may put the name in a message
      */
     public static String firstSensitiveValue(JsonNode event) {
-        return firstSensitiveValue(event, false);
+        return firstSensitiveValue(event, false, false);
     }
 
     /**
-     * Walks one node, screening a value when the node itself is screened or the property that
-     * carries it is.
+     * Walks one node, screening a value when the node itself is screened, when the property that
+     * carries it is, or when the property is an extension member whose own name says what it holds.
      *
-     * @param node     the node to walk; a {@code null} node carries nothing
-     * @param screened whether every value below this node is screened, which
-     *                 {@link #EXTENSION_PROPERTY} sets for its whole subtree
+     * @param node         the node to walk; a {@code null} node carries nothing
+     * @param screened     whether every value below this node is screened, which
+     *                     {@link #EXTENSION_PROPERTY} sets for its whole subtree
+     * @param inExtensions whether this node is the extensions object or a node inside it, which is
+     *                     where the property names are the caller's and the name screens apply to
+     *                     the value
      * @return the offending property name, or {@code null}
      */
-    private static String firstSensitiveValue(JsonNode node, boolean screened) {
+    private static String firstSensitiveValue(JsonNode node, boolean screened,
+            boolean inExtensions) {
+
         if (node == null) {
             return null;
         }
@@ -434,12 +509,17 @@ public final class SensitiveEventProperties {
         if (node.isObject()) {
             for (Map.Entry<String, JsonNode> property : node.properties()) {
                 String folded = fold(property.getKey());
-                boolean screenBelow = screened || EXTENSION_PROPERTY.equals(folded)
+                boolean extensionsBelow = inExtensions || EXTENSION_PROPERTY.equals(folded);
+                boolean screenBelow = screened || extensionsBelow
                         || FREE_TEXT_PROPERTIES.contains(folded);
                 if (screenBelow && carriesSensitiveText(property.getValue())) {
                     return property.getKey();
                 }
-                String nested = firstSensitiveValue(property.getValue(), screenBelow);
+                if (inExtensions && namesWhatTheValueCarries(folded, property.getValue())) {
+                    return property.getKey();
+                }
+                String nested =
+                        firstSensitiveValue(property.getValue(), screenBelow, extensionsBelow);
                 if (nested != null) {
                     return nested;
                 }
@@ -452,13 +532,53 @@ public final class SensitiveEventProperties {
                 if (screened && carriesSensitiveText(element)) {
                     return EXTENSION_PROPERTY;
                 }
-                String nested = firstSensitiveValue(element, screened);
+                String nested = firstSensitiveValue(element, screened, inExtensions);
                 if (nested != null) {
                     return nested;
                 }
             }
         }
         return null;
+    }
+
+    /**
+     * Whether one extension member's own name says what its value carries.
+     *
+     * <p>Two screens, and the property name selects which one applies. A name in a card-code
+     * context refuses a bare three- or four-digit value, which is the width of
+     * {@code CARD-CVV-CD PIC 9(03)} at {@code app/cpy/CVACT02Y.cpy:L7} and of the four-digit
+     * schemes. A name in a credential context refuses any non-blank value.
+     *
+     * <p>Neither screen reads the value into a message, and neither runs outside the extensions
+     * object: {@link #CODE_CONTEXT_EXTENSION_FRAGMENTS} records why.
+     *
+     * @param foldedName the extension member's name, folded
+     * @param value      the value that member carries
+     * @return {@code true} when the name and the value together are refused
+     */
+    private static boolean namesWhatTheValueCarries(String foldedName, JsonNode value) {
+        if (value == null || !value.isString()) {
+            return false;
+        }
+        String text = value.stringValue();
+        if (text == null || text.isBlank()) {
+            return false;
+        }
+
+        for (String fragment : CREDENTIAL_CONTEXT_EXTENSION_FRAGMENTS) {
+            if (foldedName.contains(fragment)) {
+                return true;
+            }
+        }
+        for (String fragment : CODE_CONTEXT_EXTENSION_FRAGMENTS) {
+            if (foldedName.contains(fragment)
+                    && (SHORT_CODE_RUN.matcher(text).find()
+                            || SHORT_CODE_RUN.matcher(
+                                    Normalizer.normalize(text, Normalizer.Form.NFKC)).find())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

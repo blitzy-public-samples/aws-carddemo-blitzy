@@ -1,11 +1,9 @@
 # The one place the six platform image references live.
 #
-# WHY THIS FILE EXISTS. A security review found the six Deployments naming
-# carddemo/<service>:1.0.0-SNAPSHOT, a tag that can be moved over different bytes, and
-# concluded that different nodes or a later retag can execute unreviewed bytes under the
-# same manifest. That is true of a tag, and it stays true however many manifests carry it.
-# This file makes the six references editable in one place, so pinning them by digest is
-# one edit rather than six, and records the exact procedure beside the values it changes.
+# What it holds. The six platform image references, so pinning them by digest is one edit
+# here rather than six spread across six Deployments, with the procedure below beside the
+# values it changes. The tag they carry today, 1.0.0-SNAPSHOT, is mutable. Rationale,
+# alternatives considered and accepted risks: card-platform/docs/decision-log.md.
 #
 # TWO KINDS OF IMAGE LIVE IN THIS FOLDER, AND ONLY ONE OF THEM CAN CARRY A DIGEST TODAY.
 #
@@ -17,15 +15,11 @@
 #             RepoDigests list until the image is pushed to a registry, so a digest
 #             reference for these six names nothing a node could resolve.
 #
-# WHAT THE DEMO PATH DOES INSTEAD. The six Deployments set imagePullPolicy: Never, and
-# that setting is deliberate rather than left over. This project publishes no image
-# anywhere: no workflow, script or document pushes to a registry. `carddemo/<service>` is
-# therefore a Docker Hub name this project does not own, and a policy that allowed a pull
-# would let a node fetch bytes from whoever does own it, under a name that reads like ours.
-# Never removes that path: the kubelet runs the image an operator loaded, or it refuses the
-# Pod and says so.
+# What the demo path does. The six Deployments set imagePullPolicy: Never, so the kubelet
+# runs the image an operator loaded with deploy/k8s/load-images.sh or refuses the Pod and
+# says so. This project pushes no image to any registry.
 #
-# HOW A REAL DEPLOYMENT PINS THESE. Publish the six images to a registry the deployment
+# How a real deployment pins these. Publish the six images to a registry the deployment
 # owns, then set each entry below to that registry and to the digest the push reported.
 # `newTag` and `digest` are mutually exclusive; replacing one with the other is the whole
 # edit:
@@ -38,13 +32,9 @@
 # reference is content-addressed: a node that resolves it either gets those exact bytes or
 # fails.
 #
-# WHAT THIS FILE DOES NOT DO. It does not publish an image, sign one, or verify a
-# signature. Signing and admission-time verification need a registry, a key and an
-# admission controller, none of which this platform ships: section 0.2.2 of the plan places
-# production hardening out of scope and section 0.8.5 records the instruction to keep
-# infrastructure configuration minimal and swappable. card-platform/deploy/k8s/README.md
-# states what is verified and what is not, and
-# card-platform/docs/suggested-next-tasks.md carries the publish-sign-verify task.
+# What this file does not do. It does not publish an image, sign one, or verify a
+# signature. card-platform/deploy/k8s/README.md states what is verified and what is not,
+# and card-platform/docs/suggested-next-tasks.md carries the publish-sign-verify task.
 
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization

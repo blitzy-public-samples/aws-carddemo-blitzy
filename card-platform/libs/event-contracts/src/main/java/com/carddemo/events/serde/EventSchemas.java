@@ -85,28 +85,33 @@ public final class EventSchemas {
      * sides of each entry are literals, so renaming either side breaks the build instead of the wire
      * form.
      *
-     * <p>The five core events travel between the authorization, ledger, fraud and notification
-     * services. The two mutation events travel from the account and card services, whose records
-     * live in those modules and whose contracts are governed here.
+     * <p>The core events travel between the authorization, ledger, fraud and notification services.
+     * The mutation events travel from the account and card services, whose records live in those
+     * modules and whose contracts are governed here.
      *
-     * <p>Three event types carry two versions each, and in every case version 1 stays compiled and
-     * readable so an existing consumer carries on unchanged.
+     * <p>Every version an event type has ever been released under stays in this table and stays on
+     * the classpath, so a record retained on a topic under an earlier document remains readable
+     * under that document. A version is never deleted and a released document is never rewritten;
+     * {@code SchemaBackwardCompatibilityTest} measures both against the released-contract baseline
+     * in {@code schemas/released-contracts.json}. Read the table for the versions each type carries
+     * rather than a figure in this comment: {@link #governedEventTypes()} and
+     * {@link #governedVersions(String)} answer from the entries below.
      *
      * <p>{@code TransactionDeclined} version 1 governs a decline whose account the cross-reference
-     * resolved. Version 2 governs reject reason {@code 0100}, which
-     * {@code app/cbl/CBTRN02C.cbl:L385-L387} assigns when the keyed read of the cross-reference file
-     * misses; that document declares no account identifier, because none exists that the platform
-     * established itself.
-     *
-     * <p>{@code TransactionDeclined} version 2 is the one contract that is not keyed on an account:
-     * a card that resolves to no account has no account identifier to key on, so that decline is keyed
-     * on its transaction identifier and carries no {@code accountId}. Version 1 is unchanged, so a
-     * consumer reading only version 1 keeps working.
+     * resolved. Version 2 governs reject reason {@code 0100} at
+     * {@code app/cbl/CBTRN02C.cbl:L385-L387} in the shape it was released under, declaring no
+     * account identifier; it is retained rather than published, so a record already on a topic stays
+     * readable and no producer writes it. Version 3 carries the same four reject codes as version 1
+     * together with the nine descriptive values {@code app/cbl/CBTRN02C.cbl:L446-L465} copies into
+     * its reject record, which is what lets a consumer persist that record, and every decline
+     * publishes under it.
      *
      * <p>{@code TransactionAuthorized} version 2 adds the card token, the card identity a masked
-     * card number cannot supply. {@code TransactionPosted} version 2 adds that token and the nine
+     * card number cannot supply. {@code TransactionPosted} version 2 adds that token and the
      * remaining fields of the posted transaction record, so a card-keyed consumer stores facts
-     * rather than blanks. A producer publishes version 2 of both.
+     * rather than blanks. {@code CardUpdated} version 2 drops nothing from version 1's wire form
+     * for a reader: version 1 stays governed and readable for every record published under it, and
+     * version 2 is the shape a current producer writes.
      */
     public static final Map<SchemaKey, String> SCHEMA_DOCUMENTS = Map.ofEntries(
             Map.entry(new SchemaKey("TransactionAuthorized", 1),
@@ -130,6 +135,7 @@ public final class EventSchemas {
             Map.entry(new SchemaKey("CustomerContextChanged", 1),
                     "schemas/customer-context-changed-v1.json"),
             Map.entry(new SchemaKey("CardUpdated", 1), "schemas/card-updated-v1.json"),
+            Map.entry(new SchemaKey("CardUpdated", 2), "schemas/card-updated-v2.json"),
             Map.entry(new SchemaKey(DeadLetterEnvelope.EVENT_TYPE, 1),
                     DeadLetterEnvelope.SCHEMA_RESOURCE));
 

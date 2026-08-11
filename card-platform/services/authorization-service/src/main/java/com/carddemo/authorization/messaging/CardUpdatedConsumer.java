@@ -238,7 +238,7 @@ public class CardUpdatedConsumer {
      * <p>A refresh that matches no row is reported and is not a failure. The cross-reference is loaded
      * from {@code app/data/ASCII/cardxref.txt} and holds a row per card the demo knows about, so a
      * card update naming an account with no such row describes a card this replica has never held. The
-     * request path already treats an absent row as reject reason
+     * request path already decides an absent row as reject reason
      * {@code 0100} per {@code app/cbl/CBTRN02C.cbl:L385-L387}, so there is nothing for this listener to
      * repair and nothing to retry.
      *

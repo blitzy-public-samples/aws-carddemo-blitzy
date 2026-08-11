@@ -79,15 +79,16 @@ public class OutboxWriter {
      * @return the row saved, carrying the event identifier the relay publishes under
      * @throws NullPointerException     if {@code event} is {@code null}
      * @throws IllegalArgumentException if {@code event} is not the event type this service
-     *                                  publishes, if that type has no contract, or if the written
-     *                                  payload breaks the contract its type names
+     *                                  publishes, if that type has no contract, if the written
+     *                                  payload breaks the contract its type names, or if the version
+     *                                  it declares is retained rather than published
      */
     @Transactional(propagation = Propagation.MANDATORY)
     public OutboxEventEntity write(Object event) {
         EventEnvelope envelope = envelopeOf(event);
         String eventType = envelope.eventType();
         String payload = jsonMapper.writeValueAsString(event);
-        List<String> violations = EventContracts.violationsOf(eventType, payload);
+        List<String> violations = EventContracts.publishViolationsOf(eventType, payload);
 
         if (!violations.isEmpty()) {
             throw new IllegalArgumentException(

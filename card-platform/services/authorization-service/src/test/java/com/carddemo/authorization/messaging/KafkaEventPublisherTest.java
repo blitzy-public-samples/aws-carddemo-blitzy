@@ -53,9 +53,15 @@ class KafkaEventPublisherTest {
 
     private static final String ACCOUNT_ID = "00000000007";
 
+    /** A second account, so a key naming another aggregate can be refused without inventing a width. */
+    private static final String OTHER_ACCOUNT_ID = "00000000050";
+
     private static final String TRANSACTION_ID = "0000001000000001";
 
     private static final String MASKED_CARD_NUMBER = "************7065";
+
+    /** The capture moment a detail-bearing decline carries, twenty-six characters. */
+    private static final String ORIGIN_TIMESTAMP = "2022-06-10 19:27:53.412000";
 
     private KafkaTemplate<String, String> template;
 
@@ -79,31 +85,37 @@ class KafkaEventPublisherTest {
     }
 
     /**
-     * The unresolved-card contract has no account identifier and uses its transaction identifier
-     * as both aggregate and Kafka key.
+     * A payload declaring a retained contract version reaches no topic.
+     *
+     * <p>{@code contracts/released-contracts.json} records
+     * {@code schemas/transaction-declined-v2.json} as retained: a record published under it before
+     * every decline named its account is still readable, and no producer writes it. The publisher is a
+     * producer path, so it refuses one rather than putting a second key form back on a topic.
      */
     @Test
-    void unresolvedCardDeclinePublishesUnderItsTransactionKey() {
-        TransactionDeclined event = TransactionDeclined.ofUnresolvedAccount(
+    void aRetainedContractVersionReachesNoTopic() {
+        TransactionDeclined retained = TransactionDeclined.ofUnresolvedAccount(
                 TRANSACTION_ID, new BigDecimal("1.00"), MASKED_CARD_NUMBER);
-        String payload = jsonMapper.writeValueAsString(event);
+        String payload = jsonMapper.writeValueAsString(retained);
 
-        assertDoesNotThrow(
-                () -> publisher.publish(DECLINED_TOPIC, event.aggregateId(), payload));
+        IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
+                () -> publisher.publish(DECLINED_TOPIC, retained.aggregateId(), payload));
 
-        ProducerRecord<String, String> sent = captureSend();
-        assertEquals(DECLINED_TOPIC, sent.topic(), "the record is addressed to the declined topic");
-        assertEquals(TRANSACTION_ID, sent.key(), "the transaction identifier is the message key");
-        assertEquals(payload, sent.value(), "the payload travels unchanged");
+        assertTrue(refused.getMessage().contains("RETAINED"),
+                "the refusal names the posture that stopped the publish: " + refused.getMessage());
+        verify(template, never())
+                .send(org.mockito.ArgumentMatchers.<ProducerRecord<String, String>>any());
     }
 
     /**
-     * The original decline contract keeps the account identifier as aggregate and message key.
+     * Every published decline keys on the account identifier its decision applies to.
      */
     @Test
-    void resolvedCardDeclineStillPublishesUnderItsAccountKey() {
-        TransactionDeclined event = TransactionDeclined.of(ACCOUNT_ID, TRANSACTION_ID,
-                DeclineReason.OVER_CREDIT_LIMIT, new BigDecimal("1.00"), MASKED_CARD_NUMBER);
+    void aDeclinePublishesUnderItsAccountKey() {
+        TransactionDeclined event = TransactionDeclined.withTransactionDetail(ACCOUNT_ID,
+                TRANSACTION_ID, DeclineReason.OVER_CREDIT_LIMIT, "01", "0001", "POS TERM",
+                "Purchase at Abshire-Lowe", new BigDecimal("1.00"), "800000000", "Abshire-Lowe",
+                "North Enoshaven", "72112", MASKED_CARD_NUMBER, ORIGIN_TIMESTAMP);
         String payload = jsonMapper.writeValueAsString(event);
 
         assertDoesNotThrow(
@@ -116,19 +128,22 @@ class KafkaEventPublisherTest {
     }
 
     /**
-     * A transaction-keyed payload must not be published under an account partition.
+     * A payload must not be published under a message key naming another aggregate.
      */
     @Test
-    void unresolvedCardDeclineRefusesADifferentMessageKeyWithoutEchoingEitherValue() {
-        TransactionDeclined event = TransactionDeclined.ofUnresolvedAccount(
-                TRANSACTION_ID, new BigDecimal("1.00"), MASKED_CARD_NUMBER);
+    void aDeclineRefusesADifferentMessageKeyWithoutEchoingEitherValue() {
+        TransactionDeclined event = TransactionDeclined.withTransactionDetail(ACCOUNT_ID,
+                TRANSACTION_ID, DeclineReason.OVER_CREDIT_LIMIT, "01", "0001", "POS TERM",
+                "Purchase at Abshire-Lowe", new BigDecimal("1.00"), "800000000", "Abshire-Lowe",
+                "North Enoshaven", "72112", MASKED_CARD_NUMBER, ORIGIN_TIMESTAMP);
         String payload = jsonMapper.writeValueAsString(event);
 
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
-                () -> publisher.publish(DECLINED_TOPIC, ACCOUNT_ID, payload));
+                () -> publisher.publish(DECLINED_TOPIC, OTHER_ACCOUNT_ID, payload));
 
         assertTrue(failure.getMessage().contains("aggregate identifier"));
         assertFalse(failure.getMessage().contains(ACCOUNT_ID));
+        assertFalse(failure.getMessage().contains(OTHER_ACCOUNT_ID));
         assertFalse(failure.getMessage().contains(TRANSACTION_ID));
         verify(template, never())
                 .send(org.mockito.ArgumentMatchers.<ProducerRecord<String, String>>any());
@@ -139,8 +154,10 @@ class KafkaEventPublisherTest {
      */
     @Test
     void anUnknownAggregateKeyFormReachesNoTopic() {
-        TransactionDeclined event = TransactionDeclined.ofUnresolvedAccount(
-                TRANSACTION_ID, new BigDecimal("1.00"), MASKED_CARD_NUMBER);
+        TransactionDeclined event = TransactionDeclined.withTransactionDetail(ACCOUNT_ID,
+                TRANSACTION_ID, DeclineReason.OVER_CREDIT_LIMIT, "01", "0001", "POS TERM",
+                "Purchase at Abshire-Lowe", new BigDecimal("1.00"), "800000000", "Abshire-Lowe",
+                "North Enoshaven", "72112", MASKED_CARD_NUMBER, ORIGIN_TIMESTAMP);
         String payload = jsonMapper.writeValueAsString(event);
 
         IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
@@ -163,8 +180,10 @@ class KafkaEventPublisherTest {
     void aPublishInsideAScopeCarriesBothCorrelationHeaders() {
         UUID correlationId = UUID.fromString("11111111-2222-3333-4444-555555555555");
         UUID causationId = UUID.fromString("66666666-7777-8888-9999-aaaaaaaaaaaa");
-        TransactionDeclined event = TransactionDeclined.of(ACCOUNT_ID, TRANSACTION_ID,
-                DeclineReason.OVER_CREDIT_LIMIT, new BigDecimal("1.00"), MASKED_CARD_NUMBER);
+        TransactionDeclined event = TransactionDeclined.withTransactionDetail(ACCOUNT_ID,
+                TRANSACTION_ID, DeclineReason.OVER_CREDIT_LIMIT, "01", "0001", "POS TERM",
+                "Purchase at Abshire-Lowe", new BigDecimal("1.00"), "800000000", "Abshire-Lowe",
+                "North Enoshaven", "72112", MASKED_CARD_NUMBER, ORIGIN_TIMESTAMP);
         String payload = jsonMapper.writeValueAsString(event);
 
         try (CorrelationScope scope = CorrelationScope.open()
@@ -194,8 +213,10 @@ class KafkaEventPublisherTest {
      */
     @Test
     void aPublishOutsideAScopeCarriesNoCorrelationHeader() {
-        TransactionDeclined event = TransactionDeclined.of(ACCOUNT_ID, TRANSACTION_ID,
-                DeclineReason.OVER_CREDIT_LIMIT, new BigDecimal("1.00"), MASKED_CARD_NUMBER);
+        TransactionDeclined event = TransactionDeclined.withTransactionDetail(ACCOUNT_ID,
+                TRANSACTION_ID, DeclineReason.OVER_CREDIT_LIMIT, "01", "0001", "POS TERM",
+                "Purchase at Abshire-Lowe", new BigDecimal("1.00"), "800000000", "Abshire-Lowe",
+                "North Enoshaven", "72112", MASKED_CARD_NUMBER, ORIGIN_TIMESTAMP);
         String payload = jsonMapper.writeValueAsString(event);
 
         assertDoesNotThrow(() -> publisher.publish(DECLINED_TOPIC, event.aggregateId(), payload));

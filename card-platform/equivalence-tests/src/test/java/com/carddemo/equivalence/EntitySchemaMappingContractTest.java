@@ -149,8 +149,15 @@ class EntitySchemaMappingContractTest {
      * back to attach the two record headers a consumer joins a published record on. They are
      * additive and have no COBOL ancestor: the source carries no identifier that spans two
      * programs.</p>
+     *
+     * <p>The most recent is the authorization service's {@code unresolved_card_attempt.account_id},
+     * added by {@code V19__unresolved_decline_names_its_account.sql}. It holds the eleven-digit
+     * account a decline for reject code 0100 was decided against, at the width of
+     * {@code XREF-ACCT-ID PIC 9(11)}, and it is the value the published decline keys on. The column
+     * is nullable and its check carries {@code NOT VALID}, because a row written before that
+     * migration recorded no subject.</p>
      */
-    private static final int MAPPED_COLUMN_COUNT = 271;
+    private static final int MAPPED_COLUMN_COUNT = 272;
 
     /** Dialect the mapping model renders SQL types for, matching the shipped database. */
     private static final String POSTGRES_DIALECT = "org.hibernate.dialect.PostgreSQLDialect";

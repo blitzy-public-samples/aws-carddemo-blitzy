@@ -24,28 +24,18 @@ import org.springframework.transaction.support.TransactionTemplate;
 /**
  * Renders a cardholder alert the moment a transaction is authorized.
  *
- * <p>WHY THIS LISTENER EXISTS. AAP 0.1.1 and 0.8.3 require that authorizing a transaction produces
- * one event which at least three independent services then consume. The ledger and the fraud detector
- * read {@code transaction.authorized} directly; this service read only events those two derive from
- * it, so the authorization event had two direct consumers and not three. Reading it here makes the
- * third, and it makes the alert immediate: a cardholder learns of a transaction when it is authorized
- * rather than when the ledger has finished posting it.
+ * <p>This listener is the third independent consumer of {@code transaction.authorized}, beside the
+ * ledger and the fraud detector. It reads that topic and nothing else, calls no other service, and
+ * cannot delay the authorization response, which was returned before the relay published the event.
  *
- * <p>WHAT INDEPENDENCE MEANS HERE. This listener reads the topic the authorization service publishes
- * and nothing else. It calls no other service, and no module of this service depends on the ledger or
- * the fraud detector, which AAP 0.4.2 makes a property of the build rather than of review: no service
- * module lists another service module as a dependency, so an import of one would not compile. It also
- * cannot delay the authorization response, because the response was returned before the outbox relay
- * published the event this listener reads.
- *
- * <p>WHY THIS ALERT AND THE POSTED ALERT ARE BOTH RENDERED. They report different facts. An
- * authorization is a decision about whether a transaction may proceed, and it establishes no balance.
- * A posting is the balance changing. {@code messaging/TransactionPostedConsumer} reports the second,
- * and the two alerts carry different event identifiers, so neither suppresses nor duplicates the
- * other. Neither is sent: this service reaches no mail, message, webhook or push gateway, so it
- * renders each alert and records that it rendered it, and every
- * {@code notification_log} row carries
+ * <p>{@code messaging/TransactionPostedConsumer} renders a second alert for the balance change. The
+ * two carry different event identifiers, so neither suppresses nor duplicates the other. Neither is
+ * sent: this service reaches no mail, message, webhook or push gateway, so it renders each alert and
+ * records that it rendered it, and every {@code notification_log} row carries
  * {@link com.carddemo.notification.entity.NotificationLogEntity#RENDERED_NOT_SENT}.
+ *
+ * <p>Rationale, alternatives considered and accepted risks:
+ * {@code card-platform/docs/decision-log.md}.
  *
  * <p>Idempotency is ADDITIVE, as it is for every listener here. The source has no duplicate detection
  * at all: a replayed feed drives the posting program at {@code app/cbl/CBTRN02C.cbl:L562-L579} into a

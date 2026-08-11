@@ -698,6 +698,28 @@ class OutboxRelayTest {
     }
 
     /**
+     * Stores one row carrying the transaction key form, as a database that ran before migration
+     * {@code V19} holds.
+     *
+     * <p>No producer writes that form any more: every decision names the account it applies to, and
+     * {@code outbox/OutboxWriter} refuses anything else before a row is built. The column still admits
+     * it, because the rows already stored carry it and the relay writes a column on every row it
+     * claims, retries or abandons -- a CHECK narrowed to the account form would refuse those updates
+     * and strand real events. This method writes past the application-level rule to reproduce one of
+     * those rows, which is what these assertions are about.
+     *
+     * @param transactionKey the sixteen-character key the row carries
+     * @param payload        the stored event text
+     * @param createdAt      the moment the row records
+     * @return the stored row
+     */
+    private OutboxEventEntity storePreMigrationTransactionKeyedRow(String transactionKey,
+            String payload, Instant createdAt) {
+        return outboxEvents.save(new OutboxEventEntity(UUID.randomUUID(),
+                TransactionDeclined.EVENT_TYPE, transactionKey, payload, createdAt));
+    }
+
+    /**
      * @param aggregateId the message key to filter on
      * @return the one row that key holds
      */
@@ -1271,10 +1293,10 @@ class OutboxRelayTest {
          * Asserts a diagnostic for a transaction-keyed row travels under the unresolved-account
          * sentinel.
          *
-         * <p>A decline whose card resolved no account has no account to name, so its row is keyed by
-         * the sixteen-character transaction identifier that
-         * {@code EventEnvelope.UNRESOLVED_AGGREGATE_KEY_PATTERN} admits and migration {@code V4}
-         * stores. {@code schemas/dead-letter-v1.json} accepts eleven digits and nothing else, so
+         * <p>A row written before migration {@code V19} can carry the sixteen-character transaction
+         * identifier that {@code EventEnvelope.UNRESOLVED_AGGREGATE_KEY_PATTERN} still admits on the
+         * read side and migration {@code V4} stored. {@code schemas/dead-letter-v1.json} accepts eleven
+         * digits and nothing else, so
          * handing that key to the diagnostic would fail the serialize gate on every pass and leave an
          * obligation that could never clear. The sentinel is what keeps it dischargeable, and the row
          * still names itself through {@code failedEventId}.
@@ -1283,9 +1305,8 @@ class OutboxRelayTest {
         @DisplayName("a transaction-keyed row names the unresolved-account sentinel on its"
                 + " diagnostic")
         void aTransactionKeyedRowNamesTheSentinelOnItsDiagnostic() {
-            OutboxEventEntity row = outboxEvents.save(new OutboxEventEntity(UUID.randomUUID(),
-                    TransactionDeclined.EVENT_TYPE, UNRESOLVED_TRANSACTION_KEY, REFUSED_PAYLOAD,
-                    minutesAgo(1L)));
+            OutboxEventEntity row = storePreMigrationTransactionKeyedRow(
+                    UNRESOLVED_TRANSACTION_KEY, REFUSED_PAYLOAD, minutesAgo(1L));
             publisher.refuse(REFUSED_PAYLOAD);
 
             spendEveryAttempt(row);
@@ -1473,11 +1494,11 @@ class OutboxRelayTest {
         /**
          * Proves a row with no account to name still reaches the dead-letter topic.
          *
-         * <p>A decline whose card resolved to nothing has no account, so its outbox row is keyed by
-         * the sixteen-character transaction identifier instead, and {@code V4} permits either width
-         * in {@code aggregate_id}. {@code schemas/dead-letter-v1.json} keys a diagnostic on eleven
-         * account digits only, so handing that key to the diagnostic would fail the serialize gate
-         * on every pass and the obligation would never clear.
+         * <p>A row written before migration {@code V19} can carry the sixteen-character transaction
+         * identifier, which {@code V4} widened {@code aggregate_id} to hold and which no producer
+         * writes any more. {@code schemas/dead-letter-v1.json} keys a diagnostic on
+         * eleven account digits only, so handing that key to the diagnostic would fail the serialize
+         * gate on every pass and the obligation would never clear.
          *
          * <p>The relay substitutes the eleven-zero sentinel, which is an account this platform
          * neither seeds nor issues, so the diagnostic states the absence rather than attributing the
@@ -1490,9 +1511,8 @@ class OutboxRelayTest {
         @DisplayName("a row keyed on a transaction is abandoned under the eleven-zero sentinel")
         void aRowKeyedOnATransactionIsAbandonedWithNoDiagnostic() {
             String transactionKey = "TRN0000000000001";
-            OutboxEventEntity unresolved = outboxEvents.save(new OutboxEventEntity(UUID.randomUUID(),
-                    TransactionDeclined.EVENT_TYPE, transactionKey, REFUSED_PAYLOAD,
-                    minutesAgo(1L)));
+            OutboxEventEntity unresolved = storePreMigrationTransactionKeyedRow(transactionKey,
+                    REFUSED_PAYLOAD, minutesAgo(1L));
             jdbcTemplate.update("UPDATE outbox_event SET attempt_count = ? WHERE event_id = ?",
                     ONE_ATTEMPT_LEFT, unresolved.getEventId());
             publisher.refuse(REFUSED_PAYLOAD);

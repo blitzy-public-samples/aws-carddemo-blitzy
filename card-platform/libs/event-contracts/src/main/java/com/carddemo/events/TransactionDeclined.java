@@ -44,37 +44,35 @@ import tools.jackson.databind.ser.std.ToStringSerializer;
  * at {@code schemas/transaction-declined-v1.json} validates the result on serialize and on
  * deserialize.
  *
- * <p>TWO CONTRACTS, ONE RECORD, AND ONE PUBLISHER.
+ * <p>THREE CONTRACTS, ONE RECORD, AND ONE PUBLISHED VERSION.
  *
- * <p>Version 1, at {@code schemas/transaction-declined-v1.json}, governs the three declines that
- * resolved an account: reasons {@code 0101}, {@code 0102} and {@code 0103}. It requires an
- * eleven-digit {@code accountId} and keys the event on it, which is what every event on this
- * platform is keyed on. {@link #of(EventEnvelope, String, DeclineReason, BigDecimal, String)} builds
- * it, and the authorization service publishes it.
+ * <p>Version 3, at {@code schemas/transaction-declined-v3.json}, is the one version a producer
+ * writes. It requires an eleven-digit {@code accountId}, keys the event on it, and admits all four
+ * reject codes, which is what {@code schemas/transaction-declined-v1.json} already admitted before
+ * it. The authorization service publishes it for every decline it decides, and the ledger posting
+ * service reads the nine descriptive values off it to write the 430-byte reject record of
+ * {@code app/cbl/CBTRN02C.cbl:L446-L465}.
  *
- * <p>Version 2, at {@code schemas/transaction-declined-v2.json}, governs the fourth. Reject reason
- * {@code 0100} fires precisely when the keyed read of the cross-reference file misses at
- * {@code app/cbl/CBTRN02C.cbl:L382-L387}, so at that moment the platform holds no account identifier
- * it established itself. {@link DeclineReason#resolvesAccount()} answers {@code false} for it and
- * the canonical constructor refuses it, so version 2 declares no {@code accountId} and keys on
- * {@code transactionId} instead.
+ * <p>Versions 1 and 2 are retained, readable and unpublished. A record written under either stays
+ * valid under its own document for as long as the topic holds it, so
+ * {@link #of(EventEnvelope, String, DeclineReason, BigDecimal, String)} and
+ * {@link #ofUnresolvedAccount(String, BigDecimal, String)} still build one and the deserializer
+ * still selects its document by the version the record declares.
+ * {@code contracts/released-contracts.json} records the posture of each, and
+ * {@code com.carddemo.events.EventContracts#publishViolationsOf(String, String)} refuses to let a
+ * producer write one.
  *
- * <p>VERSION 2 IS PUBLISHED, KEYED ON THE TRANSACTION IDENTIFIER. An unresolved card is recorded by
- * the authorization service in its own {@code unresolved_card_attempt} and
- * {@code authorization_decision} tables, answered to the caller as a decline carrying reason
- * {@code 0100}, and published as one outbox row in the same local transaction, so every decided
- * authorization call publishes exactly one event. The key is the transaction identifier rather than an
- * account identifier: an {@code accountId} taken from the request would attribute one caller's
- * declined attempt to an account the platform never resolved, and an invented one would collide with
- * the real key space of {@code XREF-ACCT-ID PIC 9(11)}. A consumer therefore reads two sanctioned key
- * widths on this topic and tells them apart by width. Rationale:
- * {@code card-platform/docs/decision-log.md}.
- *
- * <p>Version 2 is kept rather than removed, because a record written under it stays readable for as
- * long as the topic retains it and a consumer that meets one has to be able to read it.
- * {@link #ofUnresolvedAccount(String, BigDecimal, String)} is the only way to build one and is
- * reached only by the contract tests that hold this document and this record in step. Putting a
- * producer back means changing this paragraph, not this record.
+ * <p>EVERY VERSION CARRIES THE ACCOUNT THE DECISION APPLIES TO, EXCEPT THE RETAINED VERSION 2.
+ * Reject code {@code 0100} is assigned inside the {@code INVALID KEY} branch of the cross-reference
+ * read at {@code app/cbl/CBTRN02C.cbl:L382-L387}, so the read resolved no account and the
+ * short-circuit at {@code :L376-L378} stopped the account read from running.
+ * {@link DeclineReason#resolvesAccount()} reports that, and it reports only that. It does not follow
+ * that the decision names no account: the caller of a synchronous authorization declares one, at the
+ * eleven digits {@code XREF-ACCT-ID PIC 9(11)} holds, and the authorization service refuses at
+ * ingress with {@code 'Card Number NOT found...'} from {@code app/cbl/COTRN02C.cbl:L626} when a card
+ * resolves nothing and no account was declared. Every decided call therefore has an account subject,
+ * and every event this record publishes is keyed on one, which is what AAP 0.3.1 requires of every
+ * event on this platform. Rationale: {@code card-platform/docs/decision-log.md}.
  *
  * <p>{@code maskedCardNumber} has no source ancestor. No CardDemo program masks a Primary Account
  * Number (PAN), and {@code app/bms/COCRDSL.bms:L96-L99} defines the card detail field at the full
@@ -86,10 +84,12 @@ import tools.jackson.databind.ser.std.ToStringSerializer;
  * source marks the same extension point with the comment {@code * ADD MORE VALIDATIONS HERE} at
  * {@code app/cbl/CBTRN02C.cbl:L377}.
  *
- * <p>The authorization service publishes version 1 of this event to the {@code transaction.declined}
+ * <p>The authorization service publishes version 3 of this event to the {@code transaction.declined}
  * topic. The ledger posting service consumes that topic under consumer group {@code ledger-reject}
  * and records each decline as a rejected transaction, which is where the 430-byte reject record of
- * {@code app/cbl/CBTRN02C.cbl:L446-L465} lands in the target.
+ * {@code app/cbl/CBTRN02C.cbl:L446-L465} lands in the target. All four reject codes reach that row,
+ * because {@code 2500-WRITE-REJECT-REC} writes one for every record {@code 1500-VALIDATE-TRAN}
+ * refused.
  *
  * @param eventId                  the idempotency key each consumer commits alongside the side
  *                                 effects it guards, a Universally Unique Identifier (UUID)
@@ -101,12 +101,12 @@ import tools.jackson.databind.ser.std.ToStringSerializer;
  *                                 the refused transaction record
  * @param occurredAt               the moment the producer wrote the event, in Coordinated
  *                                 Universal Time
- * @param aggregateId              the Kafka message key. Under every version but
- *                                 {@link #UNRESOLVED_ACCOUNT_SCHEMA_VERSION} this is the
+ * @param aggregateId              the Kafka message key. Under every published version this is the
  *                                 eleven-digit account identifier, from
  *                                 {@code XREF-ACCT-ID PIC 9(11)} at
- *                                 {@code app/cpy/CVACT03Y.cpy:L7}; under that one version it is the
- *                                 transaction identifier, because no account was resolved
+ *                                 {@code app/cpy/CVACT03Y.cpy:L7}; under the retained
+ *                                 {@link #UNRESOLVED_ACCOUNT_SCHEMA_VERSION} it is the transaction
+ *                                 identifier, which no producer writes any more
  * @param transactionId            the transaction identifier, exactly
  *                                 {@link #TRANSACTION_ID_LENGTH} characters. From
  *                                 {@code TRAN-ID PIC X(16)} at {@code app/cpy/CVTRA05Y.cpy:L5} and
@@ -248,13 +248,15 @@ public record TransactionDeclined(
      * The contract version a decline carries when the card cross-reference resolved no account: 2.
      *
      * <p>{@code schemas/transaction-declined-v2.json} governs it. That document declares no
-     * {@code accountId} at all and keys the event on {@code transactionId}. A producer with no
-     * authoritative account identifier therefore neither trusts a supplied one nor invents one.
+     * {@code accountId} at all and keys the event on {@code transactionId}.
      *
-     * <p>Version 1 is unchanged and remains the contract for every other decline, so a consumer
-     * reading resolved declines sees the same bytes it always saw. A consumer that wants the
-     * unresolved decline opts in by reading version 2, which is the additive evolution the platform
-     * promises rather than a break of the existing contract.
+     * <p>RETAINED, AND NO PRODUCER WRITES IT. {@code contracts/released-contracts.json} records the
+     * posture and {@code EventContracts#publishViolationsOf(String, String)} enforces it. The
+     * document and this constant stay because a record written under either is readable for as long
+     * as the topic holds it, and because a released contract on this platform is never deleted.
+     * A decline that resolves no account now publishes
+     * {@link #TRANSACTION_DETAIL_SCHEMA_VERSION} keyed on the account the caller declared, so the
+     * one topic carries one key width again.
      */
     public static final int UNRESOLVED_ACCOUNT_SCHEMA_VERSION = 2;
 
@@ -267,16 +269,21 @@ public record TransactionDeclined(
      * account only while the reason code is still zero, so every later reason has already resolved
      * an account identifier from the cross-reference row. This reason therefore is the whole set of
      * declines that {@link #UNRESOLVED_ACCOUNT_SCHEMA_VERSION} covers.
+     *
+     * <p>The reason is published under {@link #TRANSACTION_DETAIL_SCHEMA_VERSION} beside the other
+     * three, keyed on the account identifier the caller of the synchronous call declared. What this
+     * constant marks is which read resolved nothing, not which subject the decision applies to.
      */
     public static final DeclineReason UNRESOLVED_ACCOUNT_REASON = DeclineReason.INVALID_CARD_NUMBER;
 
     /**
      * The contract version a decline carries when it also carries the refused transaction record: 3.
      *
-     * <p>{@code schemas/transaction-declined-v3.json} governs it. It adds the nine descriptive fields
-     * of {@code app/cpy/CVTRA06Y.cpy} to the version 1 set and changes nothing in it, so a consumer
-     * reading version 1 is unaffected and a consumer that needs the record opts in by reading this
-     * version.
+     * <p>{@code schemas/transaction-declined-v3.json} governs it, and it is the one version this
+     * platform publishes. It adds the nine descriptive fields of {@code app/cpy/CVTRA06Y.cpy} to the
+     * version 1 set and changes nothing in it, so a consumer reading version 1 is unaffected and a
+     * consumer that needs the record opts in by reading this version. All four reject codes reach
+     * it, exactly as they reach version 1.
      *
      * <p>The nine exist for one reader. {@code app/cbl/CBTRN02C.cbl:L447} copies the arriving
      * 350-byte record into {@code REJECT-TRAN-DATA PIC X(350)} before appending the validation
@@ -286,9 +293,8 @@ public record TransactionDeclined(
      *
      * <p>The widths and patterns below are the same ones
      * {@code schemas/transaction-posted-v2.json} declares for the same nine fields, so one parser
-     * reads a posted event and a declined one. Version 2 stays the contract for a decline whose card
-     * resolved no account, and carries none of the nine: no account was resolved, so there is no
-     * reject row to attribute the record to.
+     * reads a posted event and a declined one. Version 2 carries none of the nine and is retained
+     * rather than published, so a reject row exists for every decline this platform decides.
      */
     public static final int TRANSACTION_DETAIL_SCHEMA_VERSION = 3;
 
@@ -438,8 +444,8 @@ public record TransactionDeclined(
      *                                  {@code transactionId} must hold
      *                                  {@link #TRANSACTION_ID_LENGTH} characters. Both account
      *                                  identifiers must be eleven digits and must hold the same
-     *                                  value, and {@link DeclineReason#resolvesAccount()} must
-     *                                  answer {@code true} for {@code declineReasonCode}.
+     *                                  value, whichever of the four reject codes
+     *                                  {@code declineReasonCode} holds.
      *                                  {@code declineReasonDescription} must be the
      *                                  {@link DeclineReason#description()} of
      *                                  {@code declineReasonCode}, within
@@ -516,13 +522,6 @@ public record TransactionDeclined(
             if (!accountId.equals(aggregateId)) {
                 throw new IllegalArgumentException("accountId must equal aggregateId, which is"
                         + " the Kafka message key, and the two supplied values differ");
-            }
-            if (declineReasonCode == UNRESOLVED_ACCOUNT_REASON) {
-                throw new IllegalArgumentException("reason code "
-                        + UNRESOLVED_ACCOUNT_REASON.code() + " follows a cross-reference read that"
-                        + " resolved no account, so it cannot carry one. Build it with"
-                        + " ofUnresolvedAccount, which publishes it under schemaVersion "
-                        + UNRESOLVED_ACCOUNT_SCHEMA_VERSION + ".");
             }
         }
         if (!declineReasonCode.description().equals(declineReasonDescription)) {
@@ -715,12 +714,20 @@ public record TransactionDeclined(
     }
 
     /**
-     * Builds a declined event and stamps a fresh envelope, which is the path the authorization
-     * service takes.
+     * Builds a declined event under the retained version 1 contract and stamps a fresh envelope.
      *
      * <p>{@link EventEnvelope#of(String, String)} supplies a new event identifier, the schema
      * version, and the current moment truncated to milliseconds. The two derived components behave
      * as they do in {@link #of(EventEnvelope, String, DeclineReason, BigDecimal, String)}.
+     *
+     * <p>RETAINED. {@code contracts/released-contracts.json} records version 1 as retained rather
+     * than published, and {@code EventContracts#publishViolationsOf(String, String)} refuses a
+     * payload built here on the publish path. The authorization service builds
+     * {@link #TRANSACTION_DETAIL_SCHEMA_VERSION} through
+     * {@link #withTransactionDetail(String, String, DeclineReason, String, String, String, String,
+     * BigDecimal, String, String, String, String, String, String)} instead, because a consumer that
+     * owns the reject row cannot render {@code REJECT-TRAN-DATA PIC X(350)} without the nine values
+     * version 1 omits.
      *
      * @param accountId         the eleven-digit account identifier, which becomes both the
      *                          {@code aggregateId} of the new envelope and the Kafka message key
@@ -747,17 +754,22 @@ public record TransactionDeclined(
      * Builds the declined event for a card the cross-reference resolved no account for.
      *
      * <p>This is the only path that builds {@link #UNRESOLVED_ACCOUNT_SCHEMA_VERSION}, and the
-     * authorization service calls it for reject code {@code 0100}. It takes no account identifier,
-     * because at this point none exists that the platform itself established:
-     * {@code app/cbl/CBTRN02C.cbl:L382-L387} has just missed on the keyed read of the
-     * cross-reference file. An identifier a caller supplied alongside the card number is not
-     * evidence of ownership, and publishing it here would attribute one caller's declined attempt to
-     * another caller's account. A synthetic identifier would be worse, because it would occupy the
-     * same key space as a real account.
+     * authorization service calls it for no outcome. It takes no account identifier, because the
+     * document it builds declares none: {@code app/cbl/CBTRN02C.cbl:L382-L387} has just missed on the
+     * keyed read of the cross-reference file, so that read resolved nothing.
      *
-     * <p>The event is keyed on {@code transactionId} instead. That key is deterministic, so a
-     * retried publish of the same decline lands on the same partition, and it names no cardholder,
-     * no account and no card.
+     * <p>RETAINED, AND NOT A PUBLISH PATH. {@code contracts/released-contracts.json} records version
+     * 2 as retained and {@code EventContracts#publishViolationsOf(String, String)} refuses a payload
+     * built here on the publish path. What reaches this method is a consumer test and a contract
+     * test, which need to build a record of the shape a topic may still hold. A decline whose card
+     * resolved nothing is published under {@link #TRANSACTION_DETAIL_SCHEMA_VERSION}, keyed on the
+     * eleven-digit account the caller declared, and a call that declared none is refused at ingress
+     * with {@code 'Card Number NOT found...'} from {@code app/cbl/COTRN02C.cbl:L626} rather than
+     * decided.
+     *
+     * <p>The event is keyed on {@code transactionId}, which is the key form the retained document
+     * declares. That key is deterministic, so a retried publish of one record lands on one partition,
+     * and it names no cardholder, no account and no card.
      *
      * <p>The reason code is fixed to {@link #UNRESOLVED_ACCOUNT_REASON} and the description to its
      * text, so a caller can pair neither with anything else.
@@ -806,12 +818,13 @@ public record TransactionDeclined(
      * String, String, String, String, String, String, String)}, so the approve and the decline call
      * sites of one producer read alike.
      *
-     * @param accountId             the eleven-digit account identifier the cross-reference resolved,
+     * @param accountId             the eleven-digit account identifier this decision applies to,
+     *                              which the cross-reference resolved or the caller declared, and
      *                              which becomes both the {@code aggregateId} of the new envelope and
      *                              the Kafka message key
      * @param transactionId         the transaction identifier, {@link #TRANSACTION_ID_LENGTH}
      *                              characters
-     * @param declineReasonCode     the reason that stands, which must resolve an account
+     * @param declineReasonCode     the reason that stands, any of the four
      * @param transactionTypeCode   the transaction type code
      * @param merchantCategoryCode  the merchant category code, four digits
      * @param source                the capture channel
@@ -829,8 +842,7 @@ public record TransactionDeclined(
      *         stamped envelope
      * @throws NullPointerException     when {@code declineReasonCode} or {@code amount} is
      *                                  {@code null}
-     * @throws IllegalArgumentException when {@code accountId} is not eleven digits, when
-     *                                  {@code declineReasonCode} resolves no account, or when a
+     * @throws IllegalArgumentException when {@code accountId} is not eleven digits, or when a
      *                                  component fails a check of the canonical constructor
      */
     public static TransactionDeclined withTransactionDetail(String accountId, String transactionId,

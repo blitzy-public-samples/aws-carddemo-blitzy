@@ -34,9 +34,9 @@ import org.springframework.context.annotation.Configuration;
  *
  * <p>{@link #EVENTS_WRITTEN_COUNTER} is the produce-side events family. Its ancestor is the
  * transaction count of {@code app/cbl/CBTRN02C.cbl:L206}, printed at
- * {@code app/cbl/CBTRN02C.cbl:L227}. A decided authorization call writes at most one event, and the
- * two series separate an approval from a decline. Reject reason 0100 writes none, so it raises
- * neither series.
+ * {@code app/cbl/CBTRN02C.cbl:L227}. A decided authorization call writes exactly one event, and the
+ * two series separate an approval from a decline. All four reject reasons raise the decline series,
+ * reason 0100 included, because every decided outcome publishes one event.
  *
  * <p>{@link #EVENTS_CONSUMED_COUNTER}, {@link #DUPLICATES_SKIPPED_COUNTER} and
  * {@link #REPLICA_PROCESSING_TIMER} are the consume side, one series each per replica stream.

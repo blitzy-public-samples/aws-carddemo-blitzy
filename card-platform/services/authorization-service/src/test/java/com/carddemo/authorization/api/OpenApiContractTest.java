@@ -332,29 +332,35 @@ final class OpenApiContractTest {
     }
 
     /**
-     * Asserts the document describes the precedence the source applies to the two identifiers.
+     * Asserts the document describes which value decides the call and which names its subject.
      *
-     * <p>The {@code EVALUATE TRUE} at {@code app/cbl/COTRN02C.cbl:L195} tests the account field
-     * first, and {@code app/cbl/COTRN02C.cbl:L209} moves the card number of the row it read over
-     * whatever the card field held. A document describing the account identifier as a cross-check
-     * that has to agree with the card would tell a caller the opposite of what the service does.
+     * <p>{@code app/cbl/CBTRN02C.cbl:L383} keys the cross-reference read on the card of the
+     * transaction being authorized, so a supplied card number is the card the rules run on. The
+     * account identifier names the subject the decision applies to, and it resolves a card only where
+     * no card arrived, which is the {@code MOVE XREF-CARD-NUM} of {@code app/cbl/COTRN02C.cbl:L209}. A
+     * document telling a caller that its account replaces its card would describe a decision run
+     * against a card nobody presented.
      */
     @Test
-    void theDocumentDescribesTheAccountFirstPrecedence() {
+    void theDocumentDescribesWhichValueDecidesAndWhichNamesTheSubject() {
         String accountId = String.valueOf(
                 propertyOf("AuthorizationRequest", "accountId").get("description"));
-        assertTrue(accountId.contains("A value here decides the call, whether or not cardNumber "
-                        + "also arrives"),
-                "the account identifier decides the call wherever it arrives");
+        assertTrue(accountId.contains("A value here names the subject the decision applies to"),
+                "the account identifier names the subject the decision applies to");
         assertTrue(accountId.contains("app/cbl/COTRN02C.cbl:L209"),
-                "the document cites the MOVE that overwrites the card field");
+                "the document cites the MOVE that resolves a card from an account");
+        assertTrue(accountId.contains("Where cardNumber does not arrive"),
+                "the document says the account resolves a card only where no card arrived");
         assertFalse(accountId.contains("must equal the account"),
                 "the document must not describe the account identifier as a cross-check");
 
         String cardNumber = String.valueOf(
                 propertyOf("AuthorizationRequest", "cardNumber").get("description"));
-        assertTrue(cardNumber.contains("used only where accountId names none"),
-                "the card number is read only on the branch that has no account identifier");
+        assertTrue(cardNumber.contains("A value here is the card the rules run on, whether or not "
+                        + "accountId also arrives"),
+                "the supplied card is the card the decision runs on");
+        assertTrue(cardNumber.contains("app/cbl/CBTRN02C.cbl:L383"),
+                "the document cites the read that keys on the card of the transaction");
     }
 
     /**
@@ -396,25 +402,26 @@ final class OpenApiContractTest {
     }
 
     /**
-     * Asserts the response contract names the contract and the key an unresolved-card decline
-     * publishes under, and the two tables that record it.
+     * Asserts the response contract names the contract every decline publishes under, the account it
+     * keys on, and the extra table the unresolved-card outcome records.
      */
     @Test
     void theDocumentDescribesTheUnresolvedCardOutcome() {
         String declined = String.valueOf(schemaOf("DeclinedAuthorization").get("description"));
         assertTrue(declined.contains("INVALID KEY"),
                 "the 0100 branch follows a keyed read that resolved no account");
-        assertTrue(declined.contains("schemas/transaction-declined-v2.json"),
-                "the one decided outcome whose event names no account has to name the contract it"
-                        + " publishes under, or a reader validates it against the wrong document");
-        assertTrue(declined.contains("transaction identifier"),
-                "and it has to say the event is keyed on the transaction identifier, because a"
-                        + " consumer partitioning by account would look for it on the wrong"
-                        + " partition");
-        assertTrue(declined.contains("unresolved_card_attempt")
-                        && declined.contains("authorization_decision"),
-                "and it has to name where the outcome is recorded beside the event, so the two rows"
-                        + " and the event read as one committed outcome");
+        assertTrue(declined.contains("schemas/transaction-declined-v3.json"),
+                "every decline has to name the contract it publishes under, or a reader validates it"
+                        + " against the wrong document");
+        assertTrue(declined.contains("the account the caller declared"),
+                "and it has to say whose account the 0100 branch names, because that account is the"
+                        + " message key and the subject a consumer attributes the reject row to");
+        assertTrue(declined.replaceAll("\\s+", " ").contains("refused before a decision"),
+                "and it has to say that a request naming no subject is refused rather than decided,"
+                        + " so no 0100 body reaches a caller without an account");
+        assertTrue(declined.contains("unresolved_card_attempt"),
+                "and it has to name the extra row that outcome records, which holds the one fact the"
+                        + " other three declines do not carry");
     }
 
     /**

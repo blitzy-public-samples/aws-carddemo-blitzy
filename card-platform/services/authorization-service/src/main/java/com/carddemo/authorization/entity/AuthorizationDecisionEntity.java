@@ -301,9 +301,11 @@ public class AuthorizationDecisionEntity implements Persistable<String> {
     /**
      * Builds the row of a call one rule declined.
      *
-     * <p>{@code accountId} is {@code null} for exactly one outcome. Reject code {@code 0100} at
-     * {@code app/cbl/CBTRN02C.cbl:L385-L387} follows the {@code INVALID KEY} branch of the
-     * cross-reference read at {@code :L383}, where no account exists to record.
+     * <p>{@code accountId} names the account the decision applied to on every outcome this service
+     * records. Reject code {@code 0100} at {@code app/cbl/CBTRN02C.cbl:L385-L387} follows the
+     * {@code INVALID KEY} branch of the cross-reference read at {@code :L383}, so its value is the
+     * account the caller declared rather than the one that read resolved. The parameter stays nullable
+     * because a row written before migration {@code V19} honestly holds none.
      *
      * @param transactionId            identifier of the decided transaction
      * @param actor                    the request identity this decision is recorded against
@@ -314,10 +316,10 @@ public class AuthorizationDecisionEntity implements Persistable<String> {
      * @param declineReasonCode        the four-character reject code that stands
      * @param declineReasonDescription the text that reject code carries
      * @param decidedAt                the moment the decision was taken
-     * @param eventId                  the outbox row this decision published through. The reject
-     *                                 code {@code 0100} row above names a transaction-keyed
-     *                                 {@code schemas/transaction-declined-v2.json} event; every
-     *                                 other decline names an account-keyed one
+     * @param eventId                  the outbox row this decision published through. Every decline
+     *                                 names one account-keyed
+     *                                 {@code schemas/transaction-declined-v3.json} event, whichever
+     *                                 of the four reject codes stands
      * @param declaredProcessingTimestamp the processing moment the caller declared, at the record
      *                                    width, or {@code null}
      * @return the declined row

@@ -212,12 +212,47 @@ public class GlobalExceptionHandler {
     }
 
     /**
+     * Answers {@code 422} for a card number that resolves no cross-reference row on a request that
+     * declared no account either.
+     *
+     * <p>The card branch of {@code VALIDATE-INPUT-KEY-FIELDS} reads the cross-reference by the card
+     * number the caller supplied, at {@code app/cbl/COTRN02C.cbl:L214-L223}. The {@code NOTFND} limb
+     * of that read moves {@link AuthorizationRequest#CARD_NUMBER_NOT_FOUND_MESSAGE} into
+     * {@code WS-MESSAGE} at {@code app/cbl/COTRN02C.cbl:L625-L626} and re-sends the screen, so no
+     * transaction is captured. The body carries that text verbatim.
+     *
+     * <p>This is not reject reason {@code 0100}, which is a decision and reaches a caller as a
+     * decline body carrying that code. A request declaring an account is decided that way even when
+     * its card resolves nothing; a request declaring none establishes no subject to decide against,
+     * and this arm refuses it.
+     *
+     * <p>The text is a fixed constant of {@link AuthorizationRequest} and holds no value read from
+     * the request, so the refused card number reaches no caller and no log line. This arm precedes
+     * {@link #onRefusedRequest(IllegalArgumentException)}, whose fixed text would otherwise replace
+     * a source text with a sanitized one.
+     *
+     * @param failure the refusal the decision path raised for a card with no cross-reference row on a
+     *                request that declared no account
+     * @return {@code 422} carrying the one source text
+     */
+    @ExceptionHandler(AuthorizationService.CardNumberNotFoundInCrossReferenceException.class)
+    public ResponseEntity<ApiErrorResponse> onCardNumberNotFoundInCrossReference(
+            AuthorizationService.CardNumberNotFoundInCrossReferenceException failure) {
+
+        log.info("Refusing an authorization request whose card holds no cross-reference row and "
+                + "which declared no account");
+        return unprocessable(ApiErrorResponse.UNPROCESSABLE,
+                List.of(AuthorizationRequest.CARD_NUMBER_NOT_FOUND_MESSAGE));
+    }
+
+    /**
      * Answers {@code 422} for a request this service refused after binding and before deciding.
      *
      * <p>One refusal reaches here. A request naming neither identifier reproduces the
      * {@code WHEN OTHER} branch at {@code app/cbl/COTRN02C.cbl:L224-L229}, and it needs no stored row
      * to detect. The account identifier that resolves no cross-reference row is answered by
-     * {@link #onAccountNotFoundInCrossReference} above, which carries the source text.
+     * {@link #onAccountNotFoundInCrossReference} above and the card number that resolves none by
+     * {@link #onCardNumberNotFoundInCrossReference}, each carrying its own source text.
      *
      * <p>The body carries {@link #REFUSED_REQUEST_MESSAGE}. A refusal raised inside a library can
      * quote the value it refused, so this arm puts no message from the failure in a response or in a

@@ -10,6 +10,7 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -20,6 +21,8 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.yaml.snakeyaml.Yaml;
+
+import com.carddemo.authorization.config.CrossSiteRequestFilter;
 
 /** Protects the continuous-integration stages required by the platform specification. */
 class ContinuousIntegrationWorkflowContractTest {
@@ -230,6 +233,22 @@ class ContinuousIntegrationWorkflowContractTest {
     private static final int TOOLCHAIN_ACTION_USES = 9;
 
     private static Path platformRoot;
+    /**
+     * A {@code curl} call that changes state, and is therefore tested by the request filter.
+     *
+     * <p>A body or an unsafe method is what makes it unsafe. {@code --fail} and the reads around it
+     * are {@code GET} calls the filter lets through untouched.
+     */
+    private static final Pattern STATE_CHANGING_CURL = Pattern.compile(
+            "--data\\b|--data-raw\\b|--data-binary\\b|--upload-file\\b|\\s-d\\s|"
+                    + "(?:-X|--request)\\s+\"?(?:POST|PUT|PATCH|DELETE)");
+
+    /** The variable every container reads the required header name from. */
+    private static final String CROSS_SITE_HEADER_VARIABLE = "API_CROSS_SITE_HEADER";
+
+    /** Fewest curl calls the scan must find before its verdict means anything. */
+    private static final int CURL_FLOOR = 4;
+
     private static String workflow;
     private static String toolchainAction;
     private static Map<?, ?> document;
@@ -1029,6 +1048,74 @@ class ContinuousIntegrationWorkflowContractTest {
                 "the credentials this step reads are masked before anything else runs");
         assertTrue(script.contains("for attempt in $(seq 1 30)"),
                 "every wait is bounded, so a consumer that never reads cannot hang the job");
+    }
+
+    /**
+     * Every state-changing request the workflow issues carries the first-party request header.
+     *
+     * <p>{@code config/CrossSiteRequestFilter} answers 403 to any unsafe method that carries no
+     * value in the header {@code API_CROSS_SITE_HEADER} names, and it answers before the controller
+     * runs. The business smoke sent Basic authentication and {@code Content-Type} and nothing else,
+     * so it was refused at the filter and the stage could not establish the one thing it exists to
+     * establish: that one authorization produces one event three consumers read.
+     *
+     * <p>The check is on every state-changing call rather than on that one step, because the next
+     * such call would be written from the same template. A {@code curl} counts as state-changing
+     * when it carries a body or names an unsafe method; the header may be spelled as the variable or
+     * as the literal, since the variable is what the containers read and a caller may pin either.
+     * Safe calls are left alone: the health and artifact reads are {@code GET}, and the filter lets
+     * every safe method through untested.
+     */
+    @Test
+    @DisplayName("every state-changing request in the workflow carries the first-party header")
+    void everyStateChangingRequestCarriesTheFirstPartyHeader() {
+        List<String> invocations = curlInvocationsOf(workflow);
+        assertTrue(invocations.size() >= CURL_FLOOR,
+                "the scan found " + invocations.size() + " curl calls in the workflow, fewer than"
+                        + " the " + CURL_FLOOR + " it issues, so its verdict would mean nothing");
+
+        List<String> stateChanging = invocations.stream()
+                .filter(invocation -> STATE_CHANGING_CURL.matcher(invocation).find())
+                .toList();
+        assertFalse(stateChanging.isEmpty(),
+                "the workflow has to issue at least one state-changing request, or nothing in it"
+                        + " exercises the authorization path a consumer reads from");
+
+        List<String> unheaded = stateChanging.stream()
+                .filter(invocation -> !invocation.contains(CROSS_SITE_HEADER_VARIABLE)
+                        && !invocation.contains(CrossSiteRequestFilter.DEFAULT_REQUIRED_HEADER))
+                .toList();
+        assertEquals(List.of(), unheaded,
+                "a state-changing call without the first-party header is refused with 403 before the"
+                        + " controller runs, so it proves nothing: " + unheaded);
+    }
+
+    /**
+     * Splits one shell script into the {@code curl} invocations it issues.
+     *
+     * <p>A line ending in a backslash continues the invocation, which is how every call in this
+     * workflow is written, so reading one line at a time would separate a call from its own headers.
+     *
+     * @param script the workflow text
+     * @return one string per invocation, headers and body included
+     */
+    private static List<String> curlInvocationsOf(String script) {
+        List<String> invocations = new ArrayList<>();
+        String[] lines = script.split("\\R", -1);
+        for (int at = 0; at < lines.length; at++) {
+            if (!lines[at].contains("curl ")) {
+                continue;
+            }
+            StringBuilder invocation = new StringBuilder(lines[at].strip());
+            int cursor = at;
+            while (lines[cursor].stripTrailing().endsWith("\\") && cursor + 1 < lines.length) {
+                cursor++;
+                invocation.append(' ').append(lines[cursor].strip());
+            }
+            invocations.add(invocation.toString());
+            at = cursor;
+        }
+        return invocations;
     }
 
     /**

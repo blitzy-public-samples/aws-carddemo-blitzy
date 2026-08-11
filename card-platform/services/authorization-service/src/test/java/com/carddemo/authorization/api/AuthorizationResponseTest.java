@@ -36,10 +36,10 @@ final class AuthorizationResponseTest {
     /** The eleven-digit account identifier a resolved card yields. */
     private static final String ACCOUNT_ID = "00000000077";
 
-    /** The one reject code that names no account. */
+    /** The one reject code assigned before the cross-reference read resolves an account. */
     private static final DeclineReason UNRESOLVED_CARD = DeclineReason.INVALID_CARD_NUMBER;
 
-    /** The three reject codes that follow a resolved account. */
+    /** The three reject codes assigned after that read resolved one. */
     private static final List<DeclineReason> RESOLVED_ACCOUNT_REASONS =
             List.of(DeclineReason.ACCOUNT_NOT_FOUND, DeclineReason.OVER_CREDIT_LIMIT,
                     DeclineReason.ACCOUNT_EXPIRED);
@@ -83,29 +83,29 @@ final class AuthorizationResponseTest {
                 "spaces name no account");
     }
 
-    /** Asserts each of the three declines that follow a resolved account carries that account. */
+    /** Asserts each of the four declines carries the account its decision applies to. */
     @Test
-    void eachDeclineThatFollowsAResolvedAccountCarriesThatAccount() {
-        for (DeclineReason reason : RESOLVED_ACCOUNT_REASONS) {
+    void eachDeclineCarriesTheAccountItsDecisionAppliesTo() {
+        for (DeclineReason reason : DeclineReason.values()) {
             AuthorizationResponse response =
                     AuthorizationResponse.decline(TRANSACTION_ID, ACCOUNT_ID, reason);
 
             assertFalse(response.approved(), "the response reports a decline");
             assertEquals(ACCOUNT_ID, response.accountId(),
-                    reason.code() + " follows the account read, so it names the account");
+                    reason.code() + " names the account its decision applies to");
             assertEquals(reason, response.declineReasonCode(), "the reject code travels unchanged");
             assertEquals(reason.description(), response.declineReasonDescription(),
                     "the text comes from the reject code and is not restated");
         }
     }
 
-    /** Asserts each of the three declines that follow a resolved account requires that account. */
+    /** Asserts each of the four declines requires the account its decision applies to. */
     @Test
-    void eachDeclineThatFollowsAResolvedAccountRequiresThatAccount() {
-        for (DeclineReason reason : RESOLVED_ACCOUNT_REASONS) {
+    void eachDeclineRequiresTheAccountItsDecisionAppliesTo() {
+        for (DeclineReason reason : DeclineReason.values()) {
             IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class,
                     () -> AuthorizationResponse.decline(TRANSACTION_ID, null, reason),
-                    reason.code() + " is reached only after an account resolved");
+                    reason.code() + " names the account its decision applies to");
 
             assertTrue(thrown.getMessage().contains(reason.code()),
                     "the rejection names the reject code that requires an account");
@@ -113,71 +113,74 @@ final class AuthorizationResponseTest {
     }
 
     /**
-     * Asserts the unresolved-card factory is the only path to a response naming no account, and that
-     * it fixes the reject code at {@code 0100}.
+     * Asserts reject code {@code 0100} reaches a caller through the one decline factory, carrying the
+     * account its decision applied to.
+     *
+     * <p>{@code app/cbl/CBTRN02C.cbl:L383-L387} assigns that code where the cross-reference read
+     * missed, so the account it names is the one the caller declared rather than the one that read
+     * would have resolved. A request declaring none establishes no subject and is refused before a
+     * decision by {@code domain/AuthorizationService}, so no response of this shape exists without an
+     * account and no factory here has to invent one.
      */
     @Test
-    void theUnresolvedCardFactoryIsTheOnlyPathToAResponseNamingNoAccount() {
+    void theUnresolvedCardCodeTravelsThroughTheOneDeclineFactory() {
         AuthorizationResponse response =
-                AuthorizationResponse.declineUnresolvedCard(TRANSACTION_ID);
+                AuthorizationResponse.decline(TRANSACTION_ID, ACCOUNT_ID, UNRESOLVED_CARD);
 
         assertFalse(response.approved(), "the response reports a decline");
-        assertNull(response.accountId(), "no cross-reference row resolved an account");
+        assertEquals(ACCOUNT_ID, response.accountId(),
+                "reject code 0100 names the account its decision applied to");
         assertEquals(UNRESOLVED_CARD, response.declineReasonCode(),
-                "the factory fixes the reject code the source assigns");
+                "the reject code travels unchanged");
         assertEquals(UNRESOLVED_CARD.description(), response.declineReasonDescription(),
                 "the text comes from the reject code");
     }
 
     /**
-     * Asserts the general decline factory refuses reject code {@code 0100}, so one outcome has one
-     * factory and a caller cannot pair that code with an invented account.
-     */
-    @Test
-    void theGeneralDeclineFactoryRefusesTheUnresolvedCardCode() {
-        IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class,
-                () -> AuthorizationResponse.decline(TRANSACTION_ID, ACCOUNT_ID, UNRESOLVED_CARD),
-                "the reject code that names no account has its own factory");
-
-        assertTrue(thrown.getMessage().contains(UNRESOLVED_CARD.code()),
-                "the rejection names the reject code that was misrouted");
-        assertTrue(thrown.getMessage().contains("declineUnresolvedCard"),
-                "the rejection names the factory that builds the outcome");
-    }
-
-    /**
-     * Asserts a response carrying reject code {@code 0100} and an account identifier is refused.
+     * Asserts a response carrying reject code {@code 0100} and no account identifier is refused.
      *
-     * <p>The cross-reference read failed, so an identifier arriving beside that code was not read
-     * from a row. Accepting it would let a substitute reach an event as though it had resolved.
+     * <p>Every decided outcome names the account it applies to, and the event contract requires those
+     * eleven digits in {@code accountId} and in the message key. A response reaching the outbox without
+     * one would fail that contract after the decision had already been taken, and the ledger would
+     * have no account to write its reject row against.
      */
     @Test
-    void aResponseCarryingTheUnresolvedCardCodeAndAnAccountIsRefused() {
+    void aResponseCarryingTheUnresolvedCardCodeAndNoAccountIsRefused() {
         IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class,
-                () -> new AuthorizationResponse(TRANSACTION_ID, ACCOUNT_ID, false, UNRESOLVED_CARD,
+                () -> new AuthorizationResponse(TRANSACTION_ID, null, false, UNRESOLVED_CARD,
                         UNRESOLVED_CARD.description()),
-                "reject code 0100 names no account");
+                "reject code 0100 names the account its decision applies to");
 
         assertTrue(thrown.getMessage().contains("accountId"),
-                "the rejection names the component that must be absent");
-        assertFalse(thrown.getMessage().contains(ACCOUNT_ID),
-                "the rejection carries no account identifier");
+                "the rejection names the component that is absent");
     }
 
     /**
-     * Asserts the two factories cover every reject code the platform defines, and cover none twice.
+     * Asserts the one decline factory covers every reject code the platform defines.
      *
-     * <p>A fifth reject code added to the enum without a factory to build it fails here.
+     * <p>A fifth reject code added to the enum reaches the same factory, so the assertion is that one
+     * shape covers the set rather than that two factories partition it.
      */
     @Test
-    void theTwoFactoriesCoverEveryRejectCodeAndCoverNoneTwice() {
-        EnumSet<DeclineReason> covered = EnumSet.copyOf(RESOLVED_ACCOUNT_REASONS);
+    void theOneDeclineFactoryCoversEveryRejectCode() {
+        EnumSet<DeclineReason> covered = EnumSet.noneOf(DeclineReason.class);
 
-        assertFalse(covered.contains(UNRESOLVED_CARD),
-                "the unresolved-card code sits outside the three the general factory builds");
-        covered.add(UNRESOLVED_CARD);
+        for (DeclineReason reason : DeclineReason.values()) {
+            AuthorizationResponse response =
+                    AuthorizationResponse.decline(TRANSACTION_ID, ACCOUNT_ID, reason);
+
+            assertEquals(reason, response.declineReasonCode(),
+                    "the factory changed the reject code it was given");
+            covered.add(response.declineReasonCode());
+        }
+
         assertEquals(EnumSet.allOf(DeclineReason.class), covered,
-                "the two factories together build every reject code app/cbl/CBTRN02C.cbl assigns");
+                "one factory builds every reject code app/cbl/CBTRN02C.cbl assigns");
+        assertTrue(covered.contains(UNRESOLVED_CARD),
+                "reject code 0100 stopped reaching a caller through that factory");
+        assertEquals(DeclineReason.values().length, RESOLVED_ACCOUNT_REASONS.size() + 1,
+                "the three reasons following a resolved account and the one preceding it stopped "
+                        + "accounting for every reject code");
     }
 
     /**

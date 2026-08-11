@@ -29,6 +29,8 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 
 /**
  * Asserts the two ends of the wire agree, and that each end refuses what it must refuse.
@@ -46,6 +48,9 @@ import tools.jackson.databind.JsonNode;
  */
 @DisplayName("event serde, publish side and consume side")
 class EventSerdeSecurityTest {
+
+    /** Reads a serialized event back into a tree, so a publish-side case can send one. */
+    private static final ObjectMapper MAPPER_TREE = JsonMapper.builder().build();
 
     /** The account identifier every event in this suite belongs to. */
     private static final String ACCOUNT_ID = "00000000007";
@@ -648,40 +653,51 @@ class EventSerdeSecurityTest {
     }
 
     @Test
-    @DisplayName("reject reason 0100 uses the unresolved-account contract rather than an account")
-    void rejectReasonOneHundredUsesTheUnresolvedAccountContract() {
+    @DisplayName("reject reason 0100 carries the account its decision applies to, and keys on it")
+    void rejectReasonOneHundredCarriesTheAccountItsDecisionAppliesTo() {
         assertFalse(DeclineReason.INVALID_CARD_NUMBER.resolvesAccount(),
                 "app/cbl/CBTRN02C.cbl:L383-L387 assigns reason 0100 inside the INVALID KEY limb of "
-                        + "the cross-reference read, so no account identifier has been read");
+                        + "the cross-reference read, so no account identifier has been read by then");
 
-        IllegalArgumentException refusedByFactory = assertThrows(IllegalArgumentException.class,
-                () -> TransactionDeclined.of(ACCOUNT_ID, TRANSACTION_ID,
-                        DeclineReason.INVALID_CARD_NUMBER, new BigDecimal("50.47"),
-                        MASKED_CARD_NUMBER),
-                "reason 0100 was published carrying an account identifier the platform never "
-                        + "resolved");
+        TransactionDeclined declared = TransactionDeclined.of(ACCOUNT_ID, TRANSACTION_ID,
+                DeclineReason.INVALID_CARD_NUMBER, new BigDecimal("50.47"), MASKED_CARD_NUMBER);
 
-        assertTrue(refusedByFactory.getMessage().contains("ofUnresolvedAccount"),
-                "the refusal does not name the factory for the account-free contract: "
-                        + refusedByFactory.getMessage());
-        assertFalse(refusedByFactory.getMessage().contains(ACCOUNT_ID),
-                "the refusal echoed the rejected account identifier: "
-                        + refusedByFactory.getMessage());
+        assertEquals(ACCOUNT_ID, declared.accountId(),
+                "reason 0100 stopped carrying the account its decision applies to, which a "
+                        + "synchronous caller declares at app/cbl/COTRN02C.cbl:L196-L209 even when "
+                        + "the cross-reference read resolved none");
+        assertEquals(ACCOUNT_ID, declared.aggregateId(),
+                "reason 0100 stopped keying on the account, so its records left the partition "
+                        + "every other event of that account is ordered on");
 
-        assertThrows(IllegalArgumentException.class,
-                () -> declined(EventEnvelope.of("TransactionDeclined", ACCOUNT_ID), TRANSACTION_ID,
-                        ACCOUNT_ID, DeclineReason.INVALID_CARD_NUMBER, new BigDecimal("50.47")),
-                "the canonical constructor accepted reason 0100, so the factory guard is the only "
-                        + "one and a caller can bypass it");
+        TransactionDeclined detailed = TransactionDeclined.withTransactionDetail(ACCOUNT_ID,
+                TRANSACTION_ID, DeclineReason.INVALID_CARD_NUMBER, "01", "0001", "POS TERM",
+                "Purchase at Abshire-Lowe", new BigDecimal("50.47"), "800000000", "Abshire-Lowe",
+                "North Enoshaven", "72112", MASKED_CARD_NUMBER, AUTHORIZED_AT);
 
-        TransactionDeclined unresolved = TransactionDeclined.ofUnresolvedAccount(
+        assertEquals(TransactionDeclined.TRANSACTION_DETAIL_SCHEMA_VERSION,
+                detailed.schemaVersion(),
+                "reason 0100 stopped publishing under the detail-bearing version, and "
+                        + "app/cbl/CBTRN02C.cbl:L446-L465 writes a reject record for it that needs "
+                        + "those values");
+        assertTrue(detailed.carriesTransactionDetail(),
+                "the reason 0100 decline stopped carrying the reject detail the ledger persists");
+
+        TransactionDeclined retained = TransactionDeclined.ofUnresolvedAccount(
                 TRANSACTION_ID, new BigDecimal("50.47"), MASKED_CARD_NUMBER);
+
         assertEquals(TransactionDeclined.UNRESOLVED_ACCOUNT_SCHEMA_VERSION,
-                unresolved.schemaVersion(), "reason 0100 must publish under version two");
-        assertEquals(TRANSACTION_ID, unresolved.aggregateId(),
-                "the transaction identifier is the message key when no account exists");
-        assertNull(unresolved.accountId(),
-                "the unresolved-account contract must carry no account identifier");
+                retained.schemaVersion(),
+                "the retained account-less contract moved off version two, and a record already "
+                        + "published under it selects its document by that version");
+        assertNull(retained.accountId(),
+                "the retained account-less contract started carrying an account identifier");
+        assertFalse(EventContracts.publishViolationsOf(TransactionDeclined.EVENT_TYPE,
+                        serialized(retained)).isEmpty(),
+                "a producer may write the retained account-less contract again");
+        assertTrue(EventContracts.violationsOf(TransactionDeclined.EVENT_TYPE,
+                        serialized(retained)).isEmpty(),
+                "a record already published under the retained contract stopped being readable");
     }
 
     @Test
@@ -743,6 +759,112 @@ class EventSerdeSecurityTest {
         assertTrue(refused.getMessage().contains("[1, 2, 3]"),
                 "the refusal must name the versions this module does govern: "
                         + refused.getMessage());
+    }
+
+    /**
+     * The property names a caller might reach for when it means a value no event may carry.
+     *
+     * <p>Every card scheme abbreviates the verification value differently, and a screen that knew
+     * only {@code cvv} let {@code cvc}, {@code cvc2}, {@code cv2}, {@code cid} and {@code csc}
+     * through as extension keys: the name was unrecognised and three digits are too short for the
+     * long-digit-run screen, so {@code {"extensions":{"cvc":"123"}}} reached a topic with an
+     * allowed key and an allowed value. Each name below is measured on both ends of the wire.
+     *
+     * @return one name per case
+     */
+    private static java.util.stream.Stream<String> sensitivePropertyAliases() {
+        return java.util.stream.Stream.of("cvv", "cvv2", "cvc", "cvc2", "cv2", "cid", "csc", "cvn",
+                "cvd", "cav2", "cavv", "cardVerificationValue", "card_verification_code",
+                "securityCode", "cardSecurityCode", "verificationCode", "pin", "PIN", "pin_block",
+                "pinOffset", "password", "passwd", "passPhrase", "passcode", "ssn",
+                "social_security_number", "pan", "fullPan", "cardNumber");
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.MethodSource("sensitivePropertyAliases")
+    @DisplayName("a sensitive property alias is refused on publish, whatever value it carries")
+    void aSensitivePropertyAliasIsRefusedOnPublish(String alias) {
+        assertTrue(SensitiveEventProperties.isForbidden(alias),
+                "the property name " + alias + " names a value no event on this platform carries,"
+                        + " and the name screen admits it");
+
+        for (Object event : coreEvents()) {
+            String smuggled = withProperty(serialized(event),
+                    quoted("extensions") + ":{" + quoted(alias) + ":" + quoted("123") + "}");
+            SerializationException refused = assertThrows(SerializationException.class,
+                    () -> serializer.serialize(topicFor(event), MAPPER_TREE.readTree(smuggled)),
+                    "the publish gate accepted an extension named " + alias + " on "
+                            + event.getClass().getSimpleName());
+            assertFalse(refused.getMessage().contains("123"),
+                    "the refusal quoted the value it refused: " + refused.getMessage());
+        }
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.MethodSource("sensitivePropertyAliases")
+    @DisplayName("a sensitive property alias is refused on consume, whatever value it carries")
+    void aSensitivePropertyAliasIsRefusedOnConsume(String alias) {
+        for (Object event : coreEvents()) {
+            String smuggled = withProperty(serialized(event),
+                    quoted("extensions") + ":{" + quoted(alias) + ":" + quoted("1234") + "}");
+            SerializationException refused = assertThrows(SerializationException.class,
+                    () -> deserializer.deserialize("topic",
+                            smuggled.getBytes(StandardCharsets.UTF_8)),
+                    "the consume gate accepted an extension named " + alias + " on "
+                            + event.getClass().getSimpleName());
+            assertFalse(refused.getMessage().contains("1234"),
+                    "the refusal quoted the value it refused: " + refused.getMessage());
+        }
+    }
+
+    @Test
+    @DisplayName("an extension name in a card-code context refuses a bare three or four digit value")
+    void anExtensionNameInACardCodeContextRefusesAShortDigitRun() {
+        for (String name : List.of("authCode", "cardCode", "secCode", "code", "entry_code")) {
+            String smuggled = withProperty(serialized(authorized()),
+                    quoted("extensions") + ":{" + quoted(name) + ":" + quoted("123") + "}");
+            SerializationException refused = assertThrows(SerializationException.class,
+                    () -> deserializer.deserialize("topic",
+                            smuggled.getBytes(StandardCharsets.UTF_8)),
+                    "the consume gate accepted three digits under the extension name " + name
+                            + ", where the name is the label the value does not carry");
+            assertTrue(refused.getMessage().contains(name),
+                    "the refusal does not name the property that carried it: "
+                            + refused.getMessage());
+        }
+    }
+
+    @Test
+    @DisplayName("an extension name in a credential context refuses any value")
+    void anExtensionNameInACredentialContextRefusesAnyValue() {
+        for (String name : List.of("clientSecret", "credential", "apiKey", "accessKey",
+                "privateKey", "sessionKey", "bearer", "cardToken")) {
+            String smuggled = withProperty(serialized(authorized()),
+                    quoted("extensions") + ":{" + quoted(name) + ":" + quoted("anything") + "}");
+            assertThrows(SerializationException.class,
+                    () -> deserializer.deserialize("topic",
+                            smuggled.getBytes(StandardCharsets.UTF_8)),
+                    "the consume gate accepted a value under the extension name " + name
+                            + ", which says what it carries");
+        }
+    }
+
+    @Test
+    @DisplayName("an ordinary extension name and value still passes both ends")
+    void anOrdinaryExtensionStillPassesBothEnds() {
+        for (String pair : List.of(
+                quoted("replayOf") + ":" + quoted("3f1d9c62-8b4e-4a17-9f0c-2d6a5e73b418"),
+                quoted("posEntryMode") + ":" + quoted("chip"),
+                quoted("retryCount") + ":" + quoted("2"),
+                quoted("settlementBatch") + ":" + quoted("0007"))) {
+
+            String enriched = withProperty(serialized(authorized()),
+                    quoted("extensions") + ":{" + pair + "}");
+            assertDoesNotThrow(() -> deserializer.deserialize("topic",
+                            enriched.getBytes(StandardCharsets.UTF_8)),
+                    "a screen that refuses " + pair + " refuses ordinary additive traffic, and a"
+                            + " control that fires on everything gets switched off");
+        }
     }
 
     private List<Object> coreEvents() {

@@ -4,7 +4,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -735,18 +734,16 @@ class PostingEquivalenceTest {
                 path = new AuthorizedPath(accountId, event);
             } else {
                 rejects.save(sourceRejectRow(record, reason, ordinal));
-                if (reason.resolvesAccount()) {
-                    String accountId = Objects.requireNonNull(crossReference,
-                            "an account-resolving decline must carry "
-                                    + "a cross-reference").accountId();
-                    TransactionDeclined event = declineEventFor(record, accountId, reason);
-                    declinedEvents.add(event);
-                    path = new DeclinedPath(accountId, event);
-                } else {
-                    path = new UnresolvedCardPath(TransactionDeclined.ofUnresolvedAccount(
-                            record.transactionId(), record.amount(),
-                            PanMasker.maskCardNumber(record.cardNumber())));
-                }
+                String accountId = Objects.requireNonNull(crossReference,
+                        "every card in app/data/ASCII/dailytran.txt resolves a row of"
+                                + " app/data/ASCII/cardxref.txt, so a decline here names the"
+                                + " account that read resolved. A feed record whose card resolved"
+                                + " none would need the account a synchronous caller declares, and"
+                                + " app/cpy/CVTRA06Y.cpy carries no account field to declare it"
+                                + " with").accountId();
+                TransactionDeclined event = declineEventFor(record, accountId, reason);
+                declinedEvents.add(event);
+                path = new DeclinedPath(accountId, event);
             }
             outcomes.add(new FeedOutcome(ordinal, record, reason, path, decision));
             ordinal++;
@@ -1006,21 +1003,6 @@ class PostingEquivalenceTest {
                             where(outcome.ordinal(), "1500-B-LOOKUP-ACCT",
                                     "app/cbl/CBTRN02C.cbl:L394")
                                     + ": the declined event carries one account value");
-                } else if (outcome.path() instanceof UnresolvedCardPath unresolved) {
-                    assertEquals(DeclineReason.INVALID_CARD_NUMBER, outcome.declineReason(),
-                            where(outcome.ordinal(), "1500-A-LOOKUP-XREF",
-                                    "app/cbl/CBTRN02C.cbl:L385-L387")
-                                    + ": the unresolved path carries reason 0100 alone");
-                    assertEquals(unresolved.event().transactionId(),
-                            unresolved.event().aggregateId(),
-                            where(outcome.ordinal(), "1500-A-LOOKUP-XREF",
-                                    "app/cbl/CBTRN02C.cbl:L385-L387")
-                                    + ": the unresolved path resolved no account, so its event is"
-                                    + " keyed on the transaction identifier");
-                    assertNull(unresolved.event().accountId(),
-                            where(outcome.ordinal(), "1500-A-LOOKUP-XREF",
-                                    "app/cbl/CBTRN02C.cbl:L385-L387")
-                                    + ": and it names no account, because none was resolved");
                 }
             }
         }
@@ -2018,17 +2000,15 @@ class PostingEquivalenceTest {
         void oneDeclinedEventFollowsEachReject() {
             PostingRun run = fixtureRun();
 
-            long publishableDeclines =
-                    run.rejectedCount() - run.unresolvedCardAttemptCount();
-
-            assertEquals(publishableDeclines, run.declinedEvents().size(),
-                    "each resolved-account decline publishes one account-keyed "
-                            + TransactionDeclined.EVENT_TYPE);
-            assertEquals(run.rejectedCount(),
-                    run.declinedEvents().size() + run.unresolvedCardAttemptCount(),
-                    "and every reject publishes one event: an account-keyed one where an account"
-                            + " resolved, and a transaction-keyed one where none did, which is one"
-                            + " event per decided call");
+            assertEquals(run.rejectedCount(), run.declinedEvents().size(),
+                    "each decline publishes one account-keyed " + TransactionDeclined.EVENT_TYPE
+                            + ", which is one event per decided call");
+            for (TransactionDeclined declined : run.declinedEvents()) {
+                assertEquals(declined.accountId(), declined.aggregateId(),
+                        "and the account the decision applies to is its message key, for every"
+                                + " reject reason including "
+                                + DeclineReason.INVALID_CARD_NUMBER.code());
+            }
         }
 
         @Test
@@ -2043,27 +2023,31 @@ class PostingEquivalenceTest {
 
             assertEquals(ONE_ROW_PER_CALL, reasonsWithoutAnAccount,
                     "CBTRN02C L385 assigns its reason inside 1500-A-LOOKUP-XREF, ahead of the "
-                            + "account read at L394, so exactly one of the four reasons names no "
-                            + "account");
+                            + "account read at L394, so exactly one of the four reasons follows a "
+                            + "cross-reference read that resolved nothing");
             assertFalse(DeclineReason.INVALID_CARD_NUMBER.resolvesAccount(),
-                    "the reason CBTRN02C L385 assigns names no account");
-            assertThrows(IllegalArgumentException.class,
-                    () -> TransactionDeclined.of(firstFeedAccountId(),
-                            syntheticTransactionId(FIRST_RECORD_ORDINAL),
-                            DeclineReason.INVALID_CARD_NUMBER, firstFeedRecord().amount(),
-                            PanMasker.maskCardNumber(firstFeedRecord().cardNumber())),
-                    "reason 0100 must not publish an account-keyed decline event");
+                    "the reason CBTRN02C L385 assigns follows no successful cross-reference read");
+
+            TransactionDeclined unresolvedCard = TransactionDeclined.of(firstFeedAccountId(),
+                    syntheticTransactionId(FIRST_RECORD_ORDINAL),
+                    DeclineReason.INVALID_CARD_NUMBER, firstFeedRecord().amount(),
+                    PanMasker.maskCardNumber(firstFeedRecord().cardNumber()));
+
+            assertEquals(firstFeedAccountId(), unresolvedCard.accountId(),
+                    "which read resolved an identifier is not which subject the decision applies"
+                            + " to: a synchronous call declares its own account, so reason "
+                            + DeclineReason.INVALID_CARD_NUMBER.code()
+                            + " publishes an account-keyed decline like the other three");
+            assertEquals(firstFeedAccountId(), unresolvedCard.aggregateId(),
+                    "and that account is its message key");
         }
 
         @Test
-        @DisplayName("each reason that names an account writes one row, L397 L410 and L417")
-        void eachReasonThatNamesAnAccountWritesOneRow() {
+        @DisplayName("every reject reason writes one row, L385 L397 L410 and L417")
+        void everyRejectReasonWritesOneRow() {
             String accountId = firstFeedAccountId();
 
             for (DeclineReason reason : DeclineReason.values()) {
-                if (!reason.resolvesAccount()) {
-                    continue;
-                }
                 Probe probe = new Probe(accountId, zeroAmount());
                 FeedTransaction refused = feedRecordCarrying(accountId,
                         syntheticTransactionId(FIRST_RECORD_ORDINAL), firstFeedRecord().amount());
@@ -4752,8 +4736,7 @@ class PostingEquivalenceTest {
     }
 
     /** Event path selected after the source validation chain runs. */
-    private sealed interface AuthorizationPath
-            permits AuthorizedPath, DeclinedPath, UnresolvedCardPath {
+    private sealed interface AuthorizationPath permits AuthorizedPath, DeclinedPath {
     }
 
     /**
@@ -4782,22 +4765,6 @@ class PostingEquivalenceTest {
 
         DeclinedPath {
             Objects.requireNonNull(accountId, "accountId is required");
-            Objects.requireNonNull(event, "event is required");
-        }
-    }
-
-    /**
-     * Path for reason 0100, which resolved no account and publishes a transaction-keyed decline.
-     *
-     * <p>The event is {@code schemas/transaction-declined-v2.json}. AAP transformation rule T4 gives
-     * one authorization call one event, and this outcome has no account identifier to key on, so it
-     * keys on the transaction identifier and declares no {@code accountId}.
-     *
-     * @param event event the authorization service publishes for this outcome
-     */
-    private record UnresolvedCardPath(TransactionDeclined event) implements AuthorizationPath {
-
-        UnresolvedCardPath {
             Objects.requireNonNull(event, "event is required");
         }
     }
@@ -4834,11 +4801,6 @@ class PostingEquivalenceTest {
                 throw new IllegalArgumentException(
                         "the declined event must carry the outcome reason");
             }
-            if (path instanceof UnresolvedCardPath
-                    && declineReason != DeclineReason.INVALID_CARD_NUMBER) {
-                throw new IllegalArgumentException(
-                        "the unresolved-card path carries reason 0100 only");
-            }
         }
 
         /**
@@ -4852,17 +4814,13 @@ class PostingEquivalenceTest {
         }
 
         /**
-         * @return the resolved account identifier
-         * @throws IllegalStateException for the unresolved-card path
+         * @return the account identifier this outcome names, which every outcome carries
          */
         String resolvedAccountId() {
             if (path instanceof AuthorizedPath authorized) {
                 return authorized.accountId();
             }
-            if (path instanceof DeclinedPath declined) {
-                return declined.accountId();
-            }
-            throw new IllegalStateException("reason 0100 resolves no account identifier");
+            return ((DeclinedPath) path).accountId();
         }
 
         /**
@@ -4877,17 +4835,13 @@ class PostingEquivalenceTest {
         }
 
         /**
-         * @return the event, or empty for an approval and reason 0100
+         * @return the event, or empty for an approval
          */
         Optional<TransactionDeclined> declinedEvent() {
             if (path instanceof DeclinedPath declined) {
                 return Optional.of(declined.event());
             }
             return Optional.empty();
-        }
-
-        boolean unresolvedCardAttempt() {
-            return path instanceof UnresolvedCardPath;
         }
     }
 
@@ -4938,11 +4892,6 @@ class PostingEquivalenceTest {
          */
         long rejectedCount() {
             return outcomes.size() - postedCount();
-        }
-
-        /** Counts reason-0100 outcomes, whose decline is keyed on the transaction identifier. */
-        long unresolvedCardAttemptCount() {
-            return outcomes.stream().filter(FeedOutcome::unresolvedCardAttempt).count();
         }
 
         /**

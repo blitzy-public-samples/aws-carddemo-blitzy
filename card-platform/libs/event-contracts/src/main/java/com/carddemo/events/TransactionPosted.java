@@ -700,6 +700,13 @@ public record TransactionPosted(
      * @param newBalance the account balance after the posting, at up to ten integer digits
      * @param postedAt   the twenty-six-character posting timestamp, shaped
      *                   {@code YYYY-MM-DD-HH.MM.SS.NN0000}
+     * <p>Both versions are published postures in {@code contracts/released-contracts.json}, and this
+     * method is why. {@code schemas/transaction-posted-v2.json} requires {@code cardToken}, and an
+     * authorized record that carries none is a record published under the retained
+     * {@code TransactionAuthorized} version 1. Posting it under version 1 keeps it postable; refusing
+     * it would dead-letter a record that is on its topic through no fault of the consumer, and
+     * inventing a token for it would put a value on the wire that identifies no card.
+     *
      * @return the event at {@link #TRANSACTION_DETAIL_SCHEMA_VERSION} when the authorized event
      *         carries a card token and at {@link EventEnvelope#SCHEMA_VERSION} when it does not,
      *         with both money components at scale {@link #MONEY_SCALE}

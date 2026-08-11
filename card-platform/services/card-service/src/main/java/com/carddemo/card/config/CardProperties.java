@@ -200,14 +200,7 @@ public record CardProperties(
      * record itself can come back. Broker log retention is the shortest of those windows and the
      * only one this platform configures, so it is the one the relationship is stated against.
      *
-     * <p>The two shipped values were equal, which made the relationship an equality rather than a
-     * margin. Segment cleanup is not instant, a restored backup can carry a record older than the
-     * broker would still hold, and an operator resetting a consumer group replays whatever the log
-     * still has. Any one of those leaves a record readable after its marker has been swept, and the
-     * consumer then applies it a second time: for {@code account-posted} that means one transaction
-     * amount reaching a balance and a cycle accumulator twice.
-     *
-     * <p>{@link #MINIMUM_RETENTION_MARGIN} is therefore enforced here rather than documented,
+     * <p>{@link #MINIMUM_RETENTION_MARGIN} is enforced here rather than documented,
      * and at start-up rather than later, because the two values arrive from configuration and a
      * mismatch is invisible until the day a replay happens. The shipped pair is 720 hours of
      * markers against 168 hours of broker log, which is a margin above four.

@@ -19,6 +19,10 @@
 # local container stack, and none of them may enter history.
 /.demo-credentials
 
+# The temporary file that script writes the same passwords into before renaming it onto the
+# name above. A completed run leaves none behind; a run interrupted mid-write can.
+/.demo-credentials.*
+
 # A rendered Kubernetes Secret. 31-secret.example.yaml is the template and stays
 # tracked; a copy edited with a real value must not follow it into history.
 /deploy/k8s/31-secret.yaml

@@ -19,10 +19,17 @@ import java.util.regex.Pattern;
  * {@code src/main/resources/db/migration/V3__unresolved_card_attempt.sql}.
  *
  * <p>Reject code {@code 0100} is assigned at {@code app/cbl/CBTRN02C.cbl:L385} when the keyed read
- * of the cross-reference dataset takes its {@code INVALID KEY} branch. No account exists at that
- * point, so the attempt can key no event and is recorded here. The source records the same condition
- * in its own terms: {@code app/cbl/CBTRN02C.cbl:L446-L465} writes a reject record whose eighty-byte
- * trailer at {@code app/cbl/CBTRN02C.cbl:L180-L182} carries the reject code and its text.
+ * of the cross-reference dataset takes its {@code INVALID KEY} branch. The read resolved no account
+ * at that point, and that is the fact this row records: the card number reached this service and no
+ * cross-reference row held it. The source records the same condition in its own terms:
+ * {@code app/cbl/CBTRN02C.cbl:L446-L465} writes a reject record whose eighty-byte trailer at
+ * {@code app/cbl/CBTRN02C.cbl:L180-L182} carries the reject code and its text.
+ *
+ * <p>{@code account_id} carries the subject the decision applied to, which is the account the caller
+ * declared because the cross-reference read resolved none. The decline is published and keyed on that
+ * account like every other, so this row and the event agree on the subject. The column is nullable
+ * because a row written before this service resolved a subject for reject code {@code 0100} honestly
+ * has none, and migration {@code V19} adds the column without inventing a value for those rows.
  *
  * <p>The card number is stored masked. No COBOL ancestor: no source program masks a Primary Account
  * Number (PAN), and {@code app/bms/COCRDSL.bms:L96-L99} renders the card field at its full sixteen
@@ -35,8 +42,11 @@ import java.util.regex.Pattern;
  */
 @Entity
 @Table(name = "unresolved_card_attempt",
-        indexes = @Index(name = "idx_unresolved_card_attempt_attempted_at",
-                columnList = "attempted_at"))
+        indexes = {
+                @Index(name = "idx_unresolved_card_attempt_attempted_at",
+                        columnList = "attempted_at"),
+                @Index(name = "idx_unresolved_card_attempt_account_id",
+                        columnList = "account_id")})
 public class UnresolvedCardAttemptEntity {
 
     /** Widest {@code transactionId} this row holds, from {@code TRAN-ID PIC X(16)}. */
@@ -54,9 +64,15 @@ public class UnresolvedCardAttemptEntity {
      */
     public static final int DECLINE_REASON_DESCRIPTION_MAX_LENGTH = 76;
 
+    /** Characters {@code accountId} holds, from {@code XREF-ACCT-ID PIC 9(11)}. */
+    public static final int ACCOUNT_ID_LENGTH = PicClause.ACCT_ID_WIDTH;
+
     /** The form {@code maskedCardNumber} takes: twelve mask characters then four digits. */
     private static final Pattern MASKED_CARD_NUMBER_MATCHER =
             Pattern.compile("^\\*{12}[0-9]{4}$");
+
+    /** The form {@code accountId} takes, from {@code XREF-ACCT-ID PIC 9(11)}. */
+    private static final Pattern ACCOUNT_ID_MATCHER = Pattern.compile("^[0-9]{11}$");
 
     @Id
     @Column(name = "transaction_id", nullable = false, length = TRANSACTION_ID_MAX_LENGTH)
@@ -79,6 +95,9 @@ public class UnresolvedCardAttemptEntity {
     @Column(name = "attempted_at", nullable = false)
     private Instant attemptedAt;
 
+    @Column(name = "account_id", length = ACCOUNT_ID_LENGTH)
+    private String accountId;
+
     /** Jakarta Persistence requires a no-argument constructor, and no caller uses this one. */
     protected UnresolvedCardAttemptEntity() {
     }
@@ -92,13 +111,15 @@ public class UnresolvedCardAttemptEntity {
      * @param declineReasonCode        four characters, the reject code the source assigns
      * @param declineReasonDescription the text that reject code carries
      * @param attemptedAt              the moment the attempt was decided
+     * @param accountId                the eleven-digit account the decision applied to
      * @throws NullPointerException     when any argument is {@code null}
-     * @throws IllegalArgumentException when a value misses its width, or when
-     *                                  {@code maskedCardNumber} is not masked
+     * @throws IllegalArgumentException when a value misses its width, when
+     *                                  {@code maskedCardNumber} is not masked, or when
+     *                                  {@code accountId} is not eleven digits
      */
     public UnresolvedCardAttemptEntity(String transactionId, String maskedCardNumber,
             BigDecimal amount, String declineReasonCode, String declineReasonDescription,
-            Instant attemptedAt) {
+            Instant attemptedAt, String accountId) {
         Objects.requireNonNull(transactionId, "transactionId must be present");
         if (transactionId.isBlank() || transactionId.length() > TRANSACTION_ID_MAX_LENGTH) {
             throw new IllegalArgumentException("transactionId holds one to "
@@ -132,7 +153,15 @@ public class UnresolvedCardAttemptEntity {
         this.amount = Objects.requireNonNull(amount, "amount must be present");
         this.declineReasonCode = declineReasonCode;
         this.declineReasonDescription = declineReasonDescription;
+        Objects.requireNonNull(accountId, "accountId must be present");
+        if (!ACCOUNT_ID_MATCHER.matcher(accountId).matches()) {
+            throw new IllegalArgumentException("accountId holds " + ACCOUNT_ID_LENGTH
+                    + " decimal digits and the supplied value holds " + accountId.length()
+                    + " characters");
+        }
+
         this.attemptedAt = Objects.requireNonNull(attemptedAt, "attemptedAt must be present");
+        this.accountId = accountId;
     }
 
     /**
@@ -187,6 +216,16 @@ public class UnresolvedCardAttemptEntity {
      */
     public Instant getAttemptedAt() {
         return attemptedAt;
+    }
+
+    /**
+     * Returns the account the decision applied to.
+     *
+     * @return the eleven-digit account identifier, or {@code null} on a row written before this
+     *         service resolved a subject for reject code {@code 0100}
+     */
+    public String getAccountId() {
+        return accountId;
     }
 
     /**

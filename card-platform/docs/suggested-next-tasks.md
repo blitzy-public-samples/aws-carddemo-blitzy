@@ -337,12 +337,14 @@ What remains is the second half, and it is an addition rather than a correction.
 - **Check:** A delivered entry point produces one reject row and one declined event for a source-invalid feed record.
 - **Behavior change:** Adding an ingestion path adds a capability. It changes nothing that exists today.
 
-### Revisit card's dead-letter durability if its publisher port becomes asynchronous
+### Hold the two rollback-model relays to the await that makes them durable
 
-- **Change:** If `EventPublisherPort.publish` in the card service ever returns a future rather than blocking, replace the rollback-based durability with the explicit `dead_letter_state` column the account service uses.
-- **Where:** Card's relay publishes its abandonment diagnostic inside the same `TransactionTemplate` as the abandonment itself, and its port blocks, so a broker refusal propagates and rolls the abandonment back with it. The row then returns to the claim query with its attempt count unchanged, which is why card needed no migration. Account's port returns a `CompletionStage` and its sweep catches and continues, so it needs the column. Both models are recorded in the [decision log](decision-log.md).
+**This section previously asked what to do if card's publisher port stopped blocking.** It never blocked: `EventPublisherPort.publish` answers `CompletionStage<Void>` in all four services that declare the seam, card's at `messaging/EventPublisherPort.java:L66`. The durability rests on the relay rather than on the port, and the item below is what that leaves open. Extending the durable column to these two relays is the [task above](#extend-the-durable-dead-letter-obligation-to-the-remaining-two-relays).
+
+- **Change:** Keep a test on each rollback-model relay that fails if its abandonment diagnostic is ever dispatched without being awaited inside the transaction that abandoned the row.
+- **Where:** `services/card-service` and `services/ledger-posting-service`. Each awaits its diagnostic inside the one transaction of a sweep that spans a send, so a refusal rolls back both the abandonment and the attempt just recorded and the row returns to the claim query with its attempt count unchanged. Remove the await and the row goes terminal with its only record nowhere, which no counter and no column would show. The other three relays cannot lose it that way, because `dead_letter_state` holds `REQUIRED` until an acknowledgement arrives.
 - **Check:** Refuse the dead-letter publication and assert the row is claimable again with its attempt count unchanged.
-- **Behavior change:** None today. The note exists because the guarantee depends on a property of the port, not on the relay.
+- **Behavior change:** None. It pins a property both relays already have.
 
 ## Work the runtime QA pass surfaced
 
@@ -546,3 +548,29 @@ Some register entries explain the source without suggesting a change. Items 18 t
 - **Where:** `ReadinessHealthConfig` in the five relaying services reports `due`, `oldestDueAgeSeconds` and a `state` of `clear` or `behind`, against `BACKLOG_DUE_THRESHOLD` and `BACKLOG_AGE_THRESHOLD_SECONDS`. An abandoned row is the only condition that answers DOWN.
 - **Check:** If the answer is yes, review the compose health check and both Kubernetes probes together. A backlog is usually the broker rather than the pod, so every replica would fail at once.
 - **Behavior change:** Yes. It would let a broker outage remove every service instance, including the ones still recording what happened.
+
+## Work the final integration review surfaced
+
+### Close the one non-additive step in the released contract chain
+
+- **Change:** Migrate `card.updated` consumers off the version-1 contract. Then either publish a version 3 that is additive over version 1, or declare version 1 unsupported once no retained record carries it.
+- **Where:** `libs/event-contracts/src/main/resources/schemas/card-updated-v1.json` requires `embossedName`; `card-updated-v2.json` does not, and a producer publishes version 2. `contracts/released-contracts.json` records that step under `nonAdditiveOver`, and `SchemaBackwardCompatibilityTest.everyDeclaredNonAdditiveStepIsAClosedJustifiedSet` holds the declaration to exactly those two names.
+- **Check:** The declared non-additive set holds one entry rather than two. No deployed consumer holds a document that a current producer's record would fail.
+- **Behavior change:** No, for a consumer already on version 2. Yes for one still on version 1, which is the point of the task.
+
+### Allowlist the extension keys an event may carry
+
+- **Change:** Replace the name-based screen on the `extensions` object with a declared allowlist of permitted keys, published in the contract library beside the schemas.
+- **Where:** `SensitiveEventProperties.FORBIDDEN_NAME_FRAGMENTS`, `FORBIDDEN_WHOLE_NAMES`, `CODE_CONTEXT_EXTENSION_FRAGMENTS` and `CREDENTIAL_CONTEXT_EXTENSION_FRAGMENTS` refuse every sensitive name this platform can enumerate, and every card-scheme alias for a verification value. A name nothing anticipated can still carry three digits, which no name-based rule can catch.
+- **Check:** An extension key absent from the allowlist is refused on both ends of the wire. The schemas name the allowlist as the place a new key is declared.
+- **Behavior change:** Yes, for a producer using an extension key nobody has declared. That is the intent.
+
+## Work the walkthrough-weight review surfaced
+
+### Extract the uniform cross-cutting plumbing into a shared runtime library
+
+- **Change:** Move the seven classes every service repeats into one library beside `libs/event-contracts` and `libs/cobol-compat`. They are `config/SecurityConfig`, `CrossSiteRequestFilter`, `RequestRateCeilingFilter`, `CorrelationContextFilter`, `SafeProducerListener`, `ReadinessHealthConfig` and `StreamNameReport`. Each service keeps its own routes in its own `apiSecurity` method.
+- **Where:** The `config` package of all six services. `card-platform/pom.xml` for the new module and its banned-dependency rule. The five contract tests that assert one property across six services.
+- **Why it is a task rather than a change:** AAP 0.3.1 enumerates a `config` package inside each service and names these classes there. AAP 0.4.2 fixes the module graph at two libraries and six services. AAP 0.3.3 abstracts one seam and says no other is abstracted. Amending the plan is a human decision, and `docs/decision-log.md` records why the copies stand until then.
+- **Check:** Six services start. The ban on a service depending on another still fails a violating build. The five contract tests read the shared classes rather than six copies.
+- **Behavior change:** No. The classes are identical today, which is what makes the move mechanical.

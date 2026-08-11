@@ -125,12 +125,12 @@ public class AuthorizationController {
     /**
      * Builds the body carrying one decision.
      *
-     * <p>An approval names the account it authorized against. A decline that resolved an account
-     * names that account and its reject code. {@link DeclineReason#INVALID_CARD_NUMBER} resolves
-     * no account, so {@link AuthorizationResponse#declineUnresolvedCard(String)} builds that one
-     * shape.
-     * {@code app/cbl/CBTRN02C.cbl:L383-L384} reads the cross-reference dataset on the card number
-     * and takes its {@code INVALID KEY} limb, which leaves no identifier to name.
+     * <p>Every decided outcome names the account it applies to, so one shape covers both bodies. An
+     * approval names the account it authorized against. A decline names that account and its reject
+     * code, and {@link DeclineReason#INVALID_CARD_NUMBER} is no exception: the cross-reference read at
+     * {@code app/cbl/CBTRN02C.cbl:L383-L384} took its {@code INVALID KEY} limb and resolved none, so
+     * the account named is the one the caller declared. A request that declared none is refused before
+     * a decision and never reaches this method.
      *
      * @param outcome the decision the service took
      * @return the body this endpoint returns for that decision
@@ -141,9 +141,6 @@ public class AuthorizationController {
 
         if (declineReason == null) {
             return AuthorizationResponse.approve(outcome.transactionId(), accountId);
-        }
-        if (accountId == null) {
-            return AuthorizationResponse.declineUnresolvedCard(outcome.transactionId());
         }
         return AuthorizationResponse.decline(outcome.transactionId(), accountId, declineReason);
     }

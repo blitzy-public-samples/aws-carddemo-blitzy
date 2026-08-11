@@ -372,7 +372,7 @@ the card file at all.
 
 The Compose file sets these properties, and each one is overridable: `SPRING_DATASOURCE_URL`, `SPRING_DATASOURCE_USERNAME`, `SPRING_DATASOURCE_PASSWORD`, `SPRING_JPA_PROPERTIES_HIBERNATE_DEFAULT_SCHEMA`, `SPRING_FLYWAY_SCHEMAS`, and `SPRING_KAFKA_BOOTSTRAP_SERVERS`.
 
-Flyway owns schema creation and runs seven migrations on every start, in this order:
+Flyway owns schema creation and runs eight migrations on every start, in this order:
 
 | Migration | What it does |
 | :--- | :--- |
@@ -383,8 +383,9 @@ Flyway owns schema creation and runs seven migrations on every start, in this or
 | `V5__xref_reconciliation_and_status_domain.sql` | Adds `ck_card_active_status`, the `Y`/`N` check `CARD-ACTIVE-STATUS PIC X(01)` at `app/cpy/CVACT02Y.cpy:L10` always implied, and restates the `card_xref` comment: the replica is reconciled by `CardCrossReferenceReconciler` on the update path, not by an event |
 | `V6__outbox_correlation.sql` | Adds `outbox_event.correlation_id` and `outbox_event.causation_id`, so the card update the relay publishes names the request behind it |
 | `V7__outbox_aggregate_head_index.sql` | Adds `ix_outbox_event_aggregate_head`, the partial index the relay's aggregate-head claim reads. That claim answers with the due head row of each account, so two events of one account are never in flight at once and every consumer of the account's partition reads them in the order this service wrote them. Without the index the correlated check re-read an account's backlog for every candidate row |
+| `V8__card_status_locator.sql` | Restates the `ck_card_active_status` comment with the locator the status test actually occupies, `app/cbl/COCRDUPC.cbl:L861-L871`. `V5` cited a range past the end of that file, and a database that applied `V5` and then had its checksums repaired still holds the earlier text |
 
-There is no sixth, and this module ships no `db/demo` overlay — the demo expiry extension exists only for the account and authorization schemas, because reason 0103 reads an account expiry and nothing reads a card expiry.
+This module ships no `db/demo` overlay — the demo expiry extension exists only for the account and authorization schemas, because reason 0103 reads an account expiry and nothing reads a card expiry.
 
 Hibernate runs with `ddl-auto: validate`, never `update` and never `create`, so the `DATE` expiry column and the non-unique index on `account_id` survive every restart. A mapping that disagrees with the migration stops start-up instead of quietly altering a table.
 

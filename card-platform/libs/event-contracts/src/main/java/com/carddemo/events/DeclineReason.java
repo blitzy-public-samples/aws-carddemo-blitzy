@@ -133,7 +133,8 @@ public enum DeclineReason {
     }
 
     /**
-     * Whether an account identifier is known by the time this reason is assigned.
+     * Whether the cross-reference read had resolved an account identifier by the time this reason
+     * was assigned.
      *
      * <p>{@link #INVALID_CARD_NUMBER} is assigned inside the {@code INVALID KEY} limb of
      * {@code READ XREF-FILE INTO CARD-XREF-RECORD} at {@code app/cbl/CBTRN02C.cbl:L383-L387}, so
@@ -144,9 +145,16 @@ public enum DeclineReason {
      *
      * <p>The other three reasons are assigned after
      * {@code MOVE XREF-ACCT-ID TO FD-ACCT-ID} at {@code app/cbl/CBTRN02C.cbl:L394}, so an account
-     * identifier is in hand. The canonical constructor of {@link TransactionDeclined} consults this
-     * predicate and refuses the reason that answers {@code false}, so no published event names an
-     * account the platform never resolved.
+     * identifier is in hand.
+     *
+     * <p>What this predicate does not say. It reports which read resolved an identifier, not which
+     * subject a decision applies to. A synchronous authorization call declares its own account
+     * identifier at the eleven digits {@code XREF-ACCT-ID} holds, so a decision carrying
+     * {@link #INVALID_CARD_NUMBER} still names an account, and every published
+     * {@link TransactionDeclined} is keyed on one. A caller that declared none is refused before a
+     * decision is recorded. {@code contracts/released-contracts.json} records the one version that
+     * took a second key form as retained; the rationale for that posture is in
+     * {@code card-platform/docs/decision-log.md}.
      *
      * @return {@code true} for the three reasons that follow a successful cross-reference read,
      *         {@code false} for {@link #INVALID_CARD_NUMBER}

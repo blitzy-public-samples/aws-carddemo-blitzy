@@ -598,11 +598,8 @@ final class AuthorizationControllerTest {
         }
 
         @Test
-        void eachResolvedDeclineAnswersFourTwentyTwo() throws Exception {
+        void eachDeclineAnswersFourTwentyTwo() throws Exception {
             for (DeclineReason reason : DeclineReason.values()) {
-                if (!reason.resolvesAccount()) {
-                    continue;
-                }
                 stubDecline(reason);
 
                 mockMvc.perform(post(ROUTE).contentType(MediaType.APPLICATION_JSON)
@@ -618,18 +615,17 @@ final class AuthorizationControllerTest {
         }
 
         /**
-         * The one decline that names no account answers 422 with an absent account
-         * identifier.
+         * The decline whose cross-reference read resolved nothing answers 422 naming the account it
+         * was decided against.
          *
          * <p>{@code app/cbl/CBTRN02C.cbl:L385} assigns that reject code inside the invalid-key limb
-         * of the cross-reference read, where no account has been resolved.
+         * of the cross-reference read, so the account the body carries is the one the caller declared.
+         * A call that declares none is refused before a decision and never reaches this body, which
+         * {@code domain/AuthorizationServiceTest} measures.
          */
         @Test
-        void theDeclineNamingNoAccountAnswersFourTwentyTwoWithNoAccountIdentifier()
-                throws Exception {
-
-            when(authorizations.authorize(any(), any())).thenReturn(AuthorizationService.Outcome
-                    .declined(DeclineReason.INVALID_CARD_NUMBER, null, ALLOCATED_ID));
+        void theUnresolvedCardDeclineAnswersFourTwentyTwoNamingItsAccount() throws Exception {
+            stubDecline(DeclineReason.INVALID_CARD_NUMBER);
 
             mockMvc.perform(post(ROUTE).contentType(MediaType.APPLICATION_JSON)
                             .content(json(completeBody())))
@@ -639,7 +635,30 @@ final class AuthorizationControllerTest {
                             .value(DeclineReason.INVALID_CARD_NUMBER.code()))
                     .andExpect(jsonPath("$.declineReasonDescription")
                             .value(DeclineReason.INVALID_CARD_NUMBER.description()))
-                    .andExpect(jsonPath("$.accountId").value(Matchers.nullValue()));
+                    .andExpect(jsonPath("$.accountId").value(WORKED_EXAMPLE_ACCOUNT));
+        }
+
+        /**
+         * A card resolving no cross-reference row on a request declaring no account answers 422 with
+         * the text the source writes for it.
+         *
+         * <p>{@code READ-CCXREF-FILE} answers its {@code NOTFND} limb with
+         * {@value AuthorizationRequest#CARD_NUMBER_NOT_FOUND_MESSAGE} at
+         * {@code app/cbl/COTRN02C.cbl:L625-L626} and re-sends the screen. No decision was taken, so
+         * the body carries the refusal shape and no reject code.
+         */
+        @Test
+        void aCardResolvingNoRowWithNoDeclaredAccountAnswersItsOwnText() throws Exception {
+            when(authorizations.authorize(any(), any())).thenThrow(
+                    new AuthorizationService.CardNumberNotFoundInCrossReferenceException());
+
+            mockMvc.perform(post(ROUTE).contentType(MediaType.APPLICATION_JSON)
+                            .content(json(completeBody())))
+                    .andExpect(status().isUnprocessableContent())
+                    .andExpect(jsonPath("$.messages[0]")
+                            .value(AuthorizationRequest.CARD_NUMBER_NOT_FOUND_MESSAGE))
+                    .andExpect(jsonPath("$.approved").doesNotExist())
+                    .andExpect(jsonPath("$.declineReasonCode").doesNotExist());
         }
 
         @Test
@@ -647,9 +666,7 @@ final class AuthorizationControllerTest {
             for (DeclineReason reason : DeclineReason.values()) {
                 when(authorizations.authorize(any(), any())).thenReturn(
                         AuthorizationService.Outcome.declined(reason,
-                                reason.resolvesAccount() ? new BigDecimal(WORKED_EXAMPLE_ACCOUNT)
-                                        : null,
-                                ALLOCATED_ID));
+                                new BigDecimal(WORKED_EXAMPLE_ACCOUNT), ALLOCATED_ID));
 
                 int answered = postBody(json(completeBody())).getResponse().getStatus();
 
@@ -696,9 +713,7 @@ final class AuthorizationControllerTest {
             for (DeclineReason reason : DeclineReason.values()) {
                 when(authorizations.authorize(any(), any())).thenReturn(
                         AuthorizationService.Outcome.declined(reason,
-                                reason.resolvesAccount() ? new BigDecimal(WORKED_EXAMPLE_ACCOUNT)
-                                        : null,
-                                ALLOCATED_ID));
+                                new BigDecimal(WORKED_EXAMPLE_ACCOUNT), ALLOCATED_ID));
 
                 String body = postBody(json(completeBody())).getResponse().getContentAsString();
 
@@ -2114,16 +2129,17 @@ final class AuthorizationControllerTest {
         }
 
         /**
-         * A card no row carries declines with the cross-reference code and names no account.
+         * A card no row carries declines with the cross-reference code, naming the account declared.
          *
          * <p>{@code app/cbl/CBTRN02C.cbl:L385-L387} assigns that code inside the invalid-key limb of
-         * the keyed read. The value is constructed, since the code is reached zero times over the
-         * fixtures.
+         * the keyed read, so the account named is the one the request declared. The card number is
+         * constructed, since the code is reached zero times over the fixtures.
          */
         @Test
         void aCardNoRowCarriesDeclinesWithTheCrossReferenceCode() throws Exception {
             Map<String, String> body = completeBody();
             body.put(CARD_NUMBER_FIELD, UNKNOWN_CARD);
+            body.put(ACCOUNT_ID_FIELD, WORKED_EXAMPLE_ACCOUNT);
 
             decisionPath.perform(post(ROUTE).contentType(MediaType.APPLICATION_JSON)
                             .content(json(body)))
@@ -2131,7 +2147,28 @@ final class AuthorizationControllerTest {
                     .andExpect(jsonPath("$.approved").value(false))
                     .andExpect(jsonPath("$.declineReasonCode")
                             .value(DeclineReason.INVALID_CARD_NUMBER.code()))
-                    .andExpect(jsonPath("$.accountId").value(Matchers.nullValue()));
+                    .andExpect(jsonPath("$.accountId").value(WORKED_EXAMPLE_ACCOUNT));
+        }
+
+        /**
+         * A card no row carries, on a request declaring no account, is refused before a decision.
+         *
+         * <p>{@code READ-CCXREF-FILE} answers its {@code NOTFND} limb with
+         * {@value AuthorizationRequest#CARD_NUMBER_NOT_FOUND_MESSAGE} at
+         * {@code app/cbl/COTRN02C.cbl:L625-L626} and captures nothing. Nothing names a subject here, so
+         * the call is refused rather than decided and the body carries no reject code.
+         */
+        @Test
+        void aCardNoRowCarriesWithNoDeclaredAccountIsRefusedBeforeADecision() throws Exception {
+            Map<String, String> body = completeBody();
+            body.put(CARD_NUMBER_FIELD, UNKNOWN_CARD);
+
+            decisionPath.perform(post(ROUTE).contentType(MediaType.APPLICATION_JSON)
+                            .content(json(body)))
+                    .andExpect(status().isUnprocessableContent())
+                    .andExpect(jsonPath("$.messages[0]")
+                            .value(AuthorizationRequest.CARD_NUMBER_NOT_FOUND_MESSAGE))
+                    .andExpect(jsonPath("$.declineReasonCode").doesNotExist());
         }
 
         /**
@@ -2166,6 +2203,7 @@ final class AuthorizationControllerTest {
         void theCrossReferenceCodeStopsTheChainAheadOfTheAccountCode() throws Exception {
             Map<String, String> body = completeBody();
             body.put(CARD_NUMBER_FIELD, UNKNOWN_CARD);
+            body.put(ACCOUNT_ID_FIELD, WORKED_EXAMPLE_ACCOUNT);
 
             decisionPath.perform(post(ROUTE).contentType(MediaType.APPLICATION_JSON)
                             .content(json(body)))

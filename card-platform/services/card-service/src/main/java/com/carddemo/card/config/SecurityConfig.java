@@ -77,36 +77,23 @@ import org.springframework.security.web.access.intercept.RequestAuthorizationCon
  * <h2>The five properties this class holds</h2>
  *
  * <ol>
- * <li><b>Default deny.</b> The last rule of the API chain is {@code denyAll()}, not
- * {@code authenticated()}. A route that no rule below names is refused, so adding an endpoint
- * without deciding who may reach it fails closed. Adding a route means adding a line to
- * {@link #apiSecurity(HttpSecurity)} that states its rule; weakening the final rule instead
- * defeats the whole arrangement. The one exception is the container's own error and asynchronous
- * dispatch, which the first rule permits: neither is a request a caller made, and refusing them
- * would answer 403 to every request that was going to be a 404.</li>
- * <li><b>Ownership, not merely authentication.</b> An authenticated caller is not thereby entitled
- * to another subject's data. {@link #ownsPathVariable(String, String)} compares the identifier in
- * the request path against the authorities the identity carries, so a caller reaches its own rows
- * and receives 403 for anyone else's. The check runs in the filter chain, ahead of every handler,
- * so no handler can forget it.</li>
- * <li><b>No session, no forgery token, and a compensating cross-site check.</b> The session policy
- * is {@code STATELESS}, so no cookie carries authentication and a forgery token has no session to
- * live in. The token protection is therefore off, and that on its own is not a defence: a browser
- * attaches a cached HTTP Basic credential to a request a foreign page caused, without asking the
- * person reading that page. {@link CrossSiteRequestFilter} is the control that closes it. Every
- * state-changing request has to declare a first-party {@code Sec-Fetch-Site}, name this origin if
- * it names an origin at all, and carry a non-simple request header no HTML form can set.</li>
- * <li><b>No caching of a response.</b> Spring Security writes
- * {@code Cache-Control: no-cache, no-store, max-age=0, must-revalidate} together with
- * {@code Pragma: no-cache} and {@code Expires: 0} on every response, and
- * {@link #apiSecurity(HttpSecurity)} names that writer rather than relying on the default, so a
- * reader can see it. Financial and personal data therefore reach no shared cache and no browser
- * store.</li>
- * <li><b>A bounded request rate.</b> {@link RequestRateCeilingFilter} runs ahead of this chain and
- * bounds requests from one source, requests presenting one identity, state-changing requests from
- * one source, failed authentications from one source, and requests in flight. It runs ahead rather
- * than behind because the expensive part of a refused credential is the bcrypt verification, so a
- * caller nobody bounded would otherwise spend this service's processor on guesses.</li>
+ * <li><b>Default deny.</b> The API chain ends in {@code denyAll()}, so a route no rule names
+ * is refused. Adding a route means adding its rule to {@link #apiSecurity(HttpSecurity)}. The
+ * container's own error and asynchronous dispatch are the one exception the first rule permits.</li>
+ * <li><b>Ownership, not merely authentication.</b> {@link #ownsPathVariable(String, String)}
+ * compares the identifier in the path against the authorities the identity carries, inside the
+ * filter chain and ahead of every handler, so a caller reaches its own rows and receives 403
+ * for anyone else's.</li>
+ * <li><b>No session, no forgery token, and a compensating cross-site check.</b> The session
+ * policy is {@code STATELESS} and token protection is off; {@link CrossSiteRequestFilter}
+ * requires every state-changing request to declare a first-party {@code Sec-Fetch-Site}, name
+ * this origin if it names one, and carry a request header no HTML form can set.</li>
+ * <li><b>No caching of a response.</b> {@link #apiSecurity(HttpSecurity)} names the writer of
+ * {@code Cache-Control: no-cache, no-store, max-age=0, must-revalidate}, {@code Pragma} and
+ * {@code Expires} rather than relying on the default.</li>
+ * <li><b>A bounded request rate.</b> {@link RequestRateCeilingFilter} runs ahead of this chain
+ * and bounds requests from one source, requests presenting one identity, state-changing
+ * requests from one source, failed authentications from one source, and requests in flight.</li>
  * </ol>
  *
  * <h2>The management port</h2>
@@ -126,12 +113,9 @@ import org.springframework.security.web.access.intercept.RequestAuthorizationCon
  *
  * <h2>This file is repeated in each service</h2>
  *
- * <p>{@code card-platform/pom.xml} bans a dependency from one service on another, which is the
- * property that keeps the consumers independent, and neither shared library is a place for this
- * code: {@code libs/cobol-compat} carries no framework annotation by design and
- * {@code libs/event-contracts} carries the event contracts. Six small copies that each state
- * their own routes are the intended shape, and each copy differs only in
- * {@link #apiSecurity(HttpSecurity)}.
+ * <p>Each service ships its own copy, and each differs only in
+ * {@link #apiSecurity(HttpSecurity)}. Rationale, alternatives considered and accepted risks:
+ * {@code card-platform/docs/decision-log.md}.
  */
 @Configuration
 @EnableWebSecurity
@@ -202,12 +186,8 @@ public class SecurityConfig {
     /**
      * Every encoding a configured password may declare, in the order the encoder tries them.
      *
-     * <p>This is an allowlist rather than a preference, and the encodings it leaves out are the
-     * point of it. Spring Security's stock delegating encoder also maps {@code noop},
-     * {@code MD4}, {@code MD5}, {@code SHA-1}, {@code SHA-256}, {@code sha256} and {@code ldap}.
-     * Those mappings exist so that a deployment holding legacy hashes can migrate off them. This
-     * platform holds none, so mapping them would only mean that a plaintext or unsalted-digest
-     * password verifies successfully.
+ * <p>The encoder is an allowlist: an identity whose stored password names an encoding outside
+ * it fails to authenticate rather than authenticating weakly.
      *
      * <p>{@code argon2} and {@code scrypt} are left out for a different reason. Both
      * implementations call Bouncy Castle, which is not a dependency of this platform, so a password

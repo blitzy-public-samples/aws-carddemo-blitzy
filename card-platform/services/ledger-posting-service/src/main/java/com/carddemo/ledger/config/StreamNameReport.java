@@ -11,6 +11,7 @@ import org.springframework.stereotype.Component;
 
 /**
  * Writes the stream names and dead-letter suffix this service resolved, and says where each came
+ *
  * from.
  *
  * <p>No COBOL ancestor. {@code app/jcl/POSTTRAN.jcl} names the daily transaction file this
@@ -18,22 +19,9 @@ import org.springframework.stereotype.Component;
  * app/cbl/CBTRN02C.cbl} could not resolve a name at run time at all. Its nearest relative is the
  * source habit of displaying what a program is about to work on.
  *
- * <h2>The problem this solves</h2>
- *
- * <p>Which stream this consumer reads is decided by
- * {@code ${TOPIC_TRANSACTION_AUTHORIZED:transaction.authorized}}. The image carries a default and
- * the platform supplies the real value, which is deliberate: a service has to start on a developer
- * machine with nothing set. It also means a dropped, renamed or mistyped key in
- * {@code card-platform/deploy/k8s/30-configmap.yaml} or {@code card-platform/docker-compose.yml}
- * produces no error at all — this service subscribes to the built-in name, reports itself healthy,
- * and posts nothing because nothing arrives. A consumer that is quiet because it is idle and a
- * consumer that is quiet because it is listening to the wrong stream look identical.
- *
  * <p>This class makes the choice visible instead of removing it. Each name is logged once as the
  * context finishes starting: at INFO when the platform supplied the value, naming the variable it
  * came from, and at WARN when it did not, naming the variable that is missing.
- *
- * <h2>What is reported, and what is not</h2>
  *
  * <p>Stream names only. The retry attempts, the backoff and the relay sweep arrive the same way, and
  * a wrong value there changes how quickly work is retried; a wrong stream name costs every event.
@@ -42,6 +30,9 @@ import org.springframework.stereotype.Component;
  *
  * <p>No credential is reported here, and none can be: a topic name is not a credential, and the
  * class reads nothing else.
+ *
+ * <p>Rationale, alternatives considered and accepted risks:
+ * {@code card-platform/docs/decision-log.md}.
  */
 @Component
 public class StreamNameReport implements ApplicationListener<ApplicationReadyEvent> {

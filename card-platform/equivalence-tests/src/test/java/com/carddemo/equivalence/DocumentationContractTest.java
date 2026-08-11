@@ -82,7 +82,9 @@ class DocumentationContractTest {
             Map.entry(15, "fifteen"),
             Map.entry(16, "sixteen"),
             Map.entry(17, "seventeen"),
-            Map.entry(18, "eighteen"));
+            Map.entry(18, "eighteen"),
+            Map.entry(19, "nineteen"),
+            Map.entry(20, "twenty"));
 
     /** A listener declaration, anchored so a Javadoc mention of the annotation is not one. */
     private static final Pattern LISTENER_ANNOTATION =
@@ -207,6 +209,14 @@ class DocumentationContractTest {
     private static final Map<Path, String> FILE_CONTENT = new HashMap<>();
 
     /**
+     * Line count of each cited source member, remembered across locators.
+     *
+     * <p>The shipped tree cites more than eleven thousand locators over a few dozen members, so
+     * counting a member's lines once rather than once per locator is what keeps that scan quick.
+     */
+    private static final Map<Path, Long> SOURCE_LINE_COUNTS = new HashMap<>();
+
+    /**
      * The Java sources under each service's main tree, by service directory name.
      *
      * <p>{@link Files#walk} was called on every question asked about a service's sources. The tree
@@ -235,6 +245,44 @@ class DocumentationContractTest {
     private static final Pattern LINK = Pattern.compile("\\[[^]]+\\]\\(([^)]+)\\)");
     private static final Pattern CITATION =
             Pattern.compile("(app/[A-Za-z0-9_./-]+):L(\\d+)(?:-L?(\\d+))?");
+
+    /**
+     * A locator whose range is cut off at the end of a line.
+     *
+     * <p>{@link #CITATION} reads one line at a time, so a locator wrapped after its dash matches
+     * nothing and would leave the range unchecked. The shape is reported rather than tolerated: a
+     * locator belongs on one line, wherever wrapping the sentence around it takes.
+     */
+    private static final Pattern DANGLING_CITATION =
+            Pattern.compile("app/[A-Za-z0-9_./-]+:L\\d+-[ \\t]*$");
+
+    /** File name suffixes the shipped-locator scan reads. */
+    private static final List<String> SHIPPED_TEXT_SUFFIXES = List.of(
+            ".java", ".sql", ".json", ".yaml", ".yml", ".md", ".sh", ".html", ".xml", ".example",
+            ".properties", ".txt", ".csv");
+
+    /** Shipped files the same scan reads that carry no suffix of their own. */
+    private static final List<String> SHIPPED_TEXT_NAMES = List.of("Dockerfile");
+
+    /**
+     * Directory names the shipped-locator scan does not descend into.
+     *
+     * <p>{@code target} is build output, so a stale copy of a corrected file lives there until the
+     * next clean. {@code blitzy} is run evidence rather than delivered code, which is how
+     * {@code traceability-matrix.md} classifies it.
+     *
+     * <p>Each name is compared against a path made relative to the repository root, never against an
+     * absolute one. The checkout itself sits below a directory named {@code blitzy}, so matching
+     * absolute path elements rejected every file in the tree and left the scan reading one.
+     */
+    private static final List<String> UNSHIPPED_DIRECTORIES =
+            List.of("target", "node_modules", ".git", "blitzy");
+
+    /** Floor on the files the shipped-locator scan reaches before its verdict means anything. */
+    private static final int SHIPPED_FILE_FLOOR = 500;
+
+    /** Floor on the locators the same scan reads. */
+    private static final int SHIPPED_LOCATOR_FLOOR = 8_000;
 
     /** The module this test runs inside, whose own reports are still being written. */
     private static final String THIS_MODULE = "equivalence-tests";
@@ -663,14 +711,14 @@ class DocumentationContractTest {
         // DROP TABLE, so an index a later migration withdraws, and one whose table it drops, is not
         // counted.
         int migratedIndexes = migratedIndexCount();
-        assertTrue(model.contains("**" + migratedIndexes + " indexes and 132 named constraints**"),
+        assertTrue(model.contains("**" + migratedIndexes + " indexes and 133 named constraints**"),
                 "the appendix must publish the " + migratedIndexes + " indexes the migrations leave"
                         + " behind, so a schema change restates it");
         // Each service row is asserted as well as the total, because a total that agrees with itself
         // while a row is wrong is the drift a review already found. The index column of each row is
         // measured from that service's own migrations; the constraint column and the generated
         // primary-key column are read from the catalogue and restated here.
-        int[] namedConstraints = {36, 18, 21, 14, 23, 20};
+        int[] namedConstraints = {37, 18, 21, 14, 23, 20};
         int[] generatedKeys = {3, 0, 0, 0, 5, 0};
         String[] schemaNames = {"Authorization", "Ledger posting", "Fraud detection", "Notification",
                 "Account", "Card"};
@@ -687,7 +735,7 @@ class DocumentationContractTest {
         }
         assertEquals(migratedIndexes, rowIndexTotal,
                 "the per-service index counts must sum to the total the appendix publishes");
-        assertTrue(model.contains("| **Total** | **" + migratedIndexes + "** | **132** | **8** |"),
+        assertTrue(model.contains("| **Total** | **" + migratedIndexes + "** | **133** | **8** |"),
                 "the closure total must be the sum of its rows");
         // V7 drops the account card_xref replica, so no figure and no section may present it as live.
         assertFalse(model.contains("The ninth table of this schema"));
@@ -718,6 +766,78 @@ class DocumentationContractTest {
                         document + " cites " + citations.group() + " outside 1-" + lineCount);
             }
         }
+    }
+
+    /**
+     * Every source locator anywhere in the shipped tree names a range the cited file contains.
+     *
+     * <p>The check above reads six documents, and it was the rest of the tree that carried the
+     * defect. Card {@code V5} cited the card status test as lines 1861 to 1863 of
+     * {@code app/cbl/COCRDUPC.cbl}, a file of 1560 lines, and a published API comment, a repository
+     * integration test and two unit tests repeated the same range. A reader following any of the
+     * five reached nothing. The band the source really tests is
+     * {@code app/cbl/COCRDUPC.cbl:L861-L871}, inside {@code 1240-EDIT-CARDSTATUS} at
+     * {@code app/cbl/COCRDUPC.cbl:L845-L874}.
+     *
+     * <p>So the scan is the whole delivered tree rather than the documents: every java, sql, json,
+     * yaml, markdown, shell, html, xml, csv, text and property file under the platform root, the
+     * environment template, the container definitions, the workflow directory, and the repository
+     * guide this engagement updates. Build output and run evidence are skipped, and both floors
+     * below are asserted first, so a walk that silently reached nothing fails instead of passing.
+     *
+     * <p>Two shapes fail. A range outside {@code 1} to the cited file's line count fails, and so
+     * does a locator whose range is cut off at a line end, because a wrapped locator matches no
+     * pattern and would go unread. Pointing at the wrong line of the right file is not detectable
+     * here and is not claimed to be: ledger {@code V4} cited two cycle columns one line above their
+     * fields, ledger {@code V6} corrected them, and only a reader comparing the copybook could tell.
+     */
+    @Test
+    @DisplayName("every source locator in the shipped tree resolves inside the file it names")
+    void everyShippedCitationResolvesWithinTheNamedSourceFile() {
+        List<Path> shipped = shippedTextFiles();
+        assertTrue(shipped.size() >= SHIPPED_FILE_FLOOR,
+                "the scan reached " + shipped.size() + " shipped text files, fewer than the "
+                        + SHIPPED_FILE_FLOOR + " this platform delivers, so its verdict would mean"
+                        + " nothing");
+
+        List<String> offending = new ArrayList<>();
+        int locators = 0;
+        for (Path file : shipped) {
+            String relative = repositoryRoot().relativize(file).toString();
+            int number = 0;
+            for (String line : read(file).split("\\R", -1)) {
+                number++;
+                if (DANGLING_CITATION.matcher(line).find()) {
+                    offending.add(relative + ":" + number + " breaks a locator across two lines");
+                }
+                Matcher citation = CITATION.matcher(line);
+                while (citation.find()) {
+                    locators++;
+                    Path source = repositoryRoot().resolve(citation.group(1)).normalize();
+                    if (!Files.isRegularFile(source)) {
+                        offending.add(relative + ":" + number + " cites missing "
+                                + citation.group(1));
+                        continue;
+                    }
+                    int start = Integer.parseInt(citation.group(2));
+                    int end = citation.group(3) == null
+                            ? start : Integer.parseInt(citation.group(3));
+                    long lineCount = lineCountOf(source);
+                    if (start < 1 || end < start || end > lineCount) {
+                        offending.add(relative + ":" + number + " cites " + citation.group()
+                                + " outside 1-" + lineCount);
+                    }
+                }
+            }
+        }
+
+        assertTrue(locators >= SHIPPED_LOCATOR_FLOOR,
+                "the scan read " + locators + " source locators, fewer than the "
+                        + SHIPPED_LOCATOR_FLOOR + " this platform cites, so its verdict would mean"
+                        + " nothing");
+        assertEquals(List.of(), offending,
+                "a source locator names the lines a reader is sent to, so every one has to resolve"
+                        + " in the file it names: " + offending);
     }
 
     @Test
@@ -1771,6 +1891,74 @@ class DocumentationContractTest {
             twins.add(twin.group());
         }
         return twins.size();
+    }
+
+    /**
+     * Every shipped text file a source locator can appear in.
+     *
+     * <p>Three roots are read: the platform tree, the workflow directory beside it, and the
+     * repository guide this engagement updates. A path holding any {@link #UNSHIPPED_DIRECTORIES}
+     * element is skipped wherever that element sits, so build output under any module drops out
+     * without naming each module here.
+     */
+    private static List<Path> shippedTextFiles() {
+        List<Path> files = new ArrayList<>();
+        for (Path root : List.of(platformDirectory(), repositoryRoot().resolve(".github"))) {
+            if (!Files.isDirectory(root)) {
+                continue;
+            }
+            try (Stream<Path> walk = Files.walk(root)) {
+                walk.filter(Files::isRegularFile)
+                        .filter(DocumentationContractTest::isShippedTextFile)
+                        .sorted()
+                        .forEach(files::add);
+            } catch (IOException unreadable) {
+                throw new UncheckedIOException("cannot walk " + root, unreadable);
+            }
+        }
+        files.add(repositoryRoot().resolve("README.md"));
+        return files;
+    }
+
+    /**
+     * Whether one file is shipped text the locator scan reads.
+     *
+     * @param file a regular file under one of the scanned roots
+     * @return true when no path element is unshipped and the name carries a text suffix or is one of
+     *         the extensionless names this platform ships
+     */
+    private static boolean isShippedTextFile(Path file) {
+        for (Path element : repositoryRoot().relativize(file)) {
+            if (UNSHIPPED_DIRECTORIES.contains(element.toString())) {
+                return false;
+            }
+        }
+        String name = file.getFileName().toString();
+        if (SHIPPED_TEXT_NAMES.contains(name)) {
+            return true;
+        }
+        for (String suffix : SHIPPED_TEXT_SUFFIXES) {
+            if (name.endsWith(suffix)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Lines in one cited source member.
+     *
+     * @param file a member under {@code app/} a locator names
+     * @return its line count, counted once and remembered
+     */
+    private static long lineCountOf(Path file) {
+        return SOURCE_LINE_COUNTS.computeIfAbsent(file, path -> {
+            try (Stream<String> lines = Files.lines(path, StandardCharsets.UTF_8)) {
+                return lines.count();
+            } catch (IOException unreadable) {
+                throw new UncheckedIOException("cannot read " + path, unreadable);
+            }
+        });
     }
 
     private static Path docsDirectory() {

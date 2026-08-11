@@ -353,7 +353,7 @@ final class CardSummaryTest {
      * Asserts the active-status domain is a rule of this record and not only of the update path.
      *
      * <p>The domain is {@code 88 FLG-YES-NO-VALID VALUES 'Y', 'N'.} at
-     * {@code app/cbl/COCRDUPC.cbl:L91}, tested at {@code app/cbl/COCRDUPC.cbl:L1861-L1863}. Before
+     * {@code app/cbl/COCRDUPC.cbl:L91}, tested at {@code app/cbl/COCRDUPC.cbl:L861-L871}. Before
      * this check, {@code api/dto/CardUpdateRequest} held an inbound status to the pair and nothing
      * held an outbound one, so a row loaded by any other writer was answered as it stood inside a
      * contract that enumerates two values. {@code ck_card_active_status} in
@@ -377,7 +377,7 @@ final class CardSummaryTest {
      * Asserts a status outside the domain is refused, in every form a stored row could carry it.
      *
      * <p>Lower case is refused rather than folded: {@code 1240-EDIT-CARDSTATUS} at
-     * {@code app/cbl/COCRDUPC.cbl:L1855-L1866} folds no case, so accepting {@code y} would answer a
+     * {@code app/cbl/COCRDUPC.cbl:L845-L874} folds no case, so accepting {@code y} would answer a
      * value the source never stores.
      */
     @Test

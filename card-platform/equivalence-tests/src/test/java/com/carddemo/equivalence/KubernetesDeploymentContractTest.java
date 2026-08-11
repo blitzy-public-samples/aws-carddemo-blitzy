@@ -545,4 +545,92 @@ class KubernetesDeploymentContractTest {
             throw new UncheckedIOException("cannot read " + path, unreadable);
         }
     }
+
+    /** A commented command line inside one of the recipes {@code 31-secret.example.yaml} carries. */
+    private static final Pattern RECIPE_COMMAND = Pattern.compile("^\\s*#\\s{3,}\\S");
+
+    /**
+     * Whether one recipe line continues onto the next, so the two belong to the same command.
+     *
+     * <p>One recipe carries a subject-alternative-name list too long to indent, and its continuation
+     * sits at the left margin. Indentation alone would end the recipe there and leave the commands
+     * after it looking like a recipe of their own, which is how a mode set once at the top would
+     * appear to be missing from half of it.
+     *
+     * @param line the line already inside the recipe
+     * @param next the line after it
+     * @return true when the first ends in a shell continuation and the second is still a comment
+     */
+    private static boolean continues(String line, String next) {
+        return line.endsWith("\\") && next.stripLeading().startsWith("#");
+    }
+
+    /** A command that creates a file holding a private key, a keystore or a password. */
+    private static final Pattern SECRET_FILE_WRITE = Pattern.compile(
+            "-keyout\\s|>\\s*\\.?/?\"?\\$?\\{?[A-Za-z0-9_${}./-]*\\.(?:pass|key|p12)|"
+                    + "-keystore\\s+truststore\\.p12|-out\\s+\"\\$\\{service}\\.p12\"");
+
+    /** A mode a recipe may set, either ahead of the write or as part of it. */
+    private static final Pattern RECIPE_MODE = Pattern.compile("umask 077|install -m 600");
+
+    /** Fewest secret-writing recipes the scan must find before its verdict means anything. */
+    private static final int SECRET_RECIPE_FLOOR = 4;
+
+    /**
+     * Every recipe that writes a secret to a file sets the mode as the file is created.
+     *
+     * <p>{@code openssl req -keyout server.key} and
+     * {@code openssl rand … > "${service}.pass"} create their files under the umask in force,
+     * 0644 on a default account, and a private key or a keystore password readable by every local
+     * account is the same exposure the environment generator carried until it set
+     * {@code umask 077}. These are commands a reader copies, so the recipe is where the mode has to
+     * appear: a reader who follows the steps exactly must not have to know to add it.
+     *
+     * <p>A recipe is a run of commented command lines. Each run that creates a {@code .key},
+     * {@code .pass} or {@code .p12} file, or imports one into a truststore, has to carry either
+     * {@code umask 077} or an {@code install -m 600} that sets the mode itself. The floor below is
+     * asserted first, so a parser that stopped recognising recipes fails rather than passing.
+     */
+    @Test
+    @DisplayName("every documented recipe that writes a secret file sets the mode as it creates it")
+    void everySecretWritingRecipeSetsTheModeAsItCreatesTheFile() {
+        List<String> lines = List.of(read(repositoryRoot()
+                .resolve("card-platform/deploy/k8s/31-secret.example.yaml")).split("\\R", -1));
+
+        List<String> unprotected = new ArrayList<>();
+        int recipes = 0;
+        int from = 0;
+        while (from < lines.size()) {
+            if (!RECIPE_COMMAND.matcher(lines.get(from)).find()) {
+                from++;
+                continue;
+            }
+            int to = from;
+            while (to + 1 < lines.size()
+                    && (RECIPE_COMMAND.matcher(lines.get(to + 1)).find()
+                            || continues(lines.get(to), lines.get(to + 1)))) {
+                to++;
+            }
+            String recipe = String.join("\n", lines.subList(from, to + 1));
+            if (SECRET_FILE_WRITE.matcher(recipe).find()) {
+                recipes++;
+                if (!RECIPE_MODE.matcher(recipe).find()) {
+                    unprotected.add("lines " + (from + 1) + "-" + (to + 1) + ": "
+                            + lines.get(from).trim());
+                }
+            }
+            from = to + 1;
+        }
+
+        assertThat(recipes)
+                .as("31-secret.example.yaml documents the certificate and password recipes, so a "
+                        + "scan finding fewer than %d of them is reading the file wrongly",
+                        SECRET_RECIPE_FLOOR)
+                .isGreaterThanOrEqualTo(SECRET_RECIPE_FLOOR);
+        assertThat(unprotected)
+                .as("a recipe that creates a private key, a keystore or a password file has to set "
+                        + "the mode as it creates it, because a mode corrected afterwards leaves the "
+                        + "secret readable in between")
+                .isEmpty();
+    }
 }

@@ -513,7 +513,7 @@ data:
   # manifests exist so the same demonstration runs on a standard cluster, and a cluster that
   # declined every authorization would demonstrate nothing.
   #
-  # Why the overlay is needed. db/migration reproduces app/data/ASCII/acctdata.txt value for
+  # What the overlay changes. db/migration reproduces app/data/ASCII/acctdata.txt value for
   # value, and all 50 account expiries fall in 2023 to 2025, so reason code 103 at
   # app/cbl/CBTRN02C.cbl:L414-L420 declines a request carrying today's date. db/demo holds one
   # migration, V900__demo_expiry_extension.sql, that lifts those expiries to 2099-12-31 and

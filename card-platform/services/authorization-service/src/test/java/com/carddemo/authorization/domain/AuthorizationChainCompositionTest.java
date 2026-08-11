@@ -243,7 +243,7 @@ final class AuthorizationChainCompositionTest {
 
             AuthorizationService.Outcome outcome = serviceOver(
                     List.of(unresolvedCard, secondStopping, firstOverwriting, secondOverwriting))
-                    .authorize(request(FIXTURE_AMOUNT), CALLER);
+                    .authorize(requestDeclaringItsAccount(FIXTURE_AMOUNT), CALLER);
 
             assertEquals(Optional.of(DeclineReason.INVALID_CARD_NUMBER), outcome.declineReason(),
                     "app/cbl/CBTRN02C.cbl:L385 assigns this reject reason");
@@ -396,12 +396,13 @@ final class AuthorizationChainCompositionTest {
         @Test
         @DisplayName("an empty chain is accepted and answers with a value")
         void anEmptyChainIsAcceptedAndAnswersWithAValue() {
-            AuthorizationService.Outcome outcome =
-                    serviceOver(List.of()).authorize(request(FIXTURE_AMOUNT), CALLER);
+            AuthorizationService.Outcome outcome = serviceOver(List.of())
+                    .authorize(requestDeclaringItsAccount(FIXTURE_AMOUNT), CALLER);
 
             assertNotNull(outcome, "the service assumes no fixed number of rules");
             assertFalse(outcome.approved(), "no rule seated a cross-reference row");
-            assertNull(outcome.accountId(), "so the outcome names no account");
+            assertEquals(new java.math.BigDecimal(ACCOUNT_ID), outcome.accountId(),
+                    "so the outcome names the account the caller declared");
         }
 
         @Test
@@ -787,6 +788,23 @@ final class AuthorizationChainCompositionTest {
         return new AuthorizationRequest(null, "01", "0001", "POS TERM",
                 "Purchase at Abshire-Lowe", amount, "800000000", "Abshire-Lowe", "North Enoshaven",
                 "72112", cardNumber, ORIGIN_TIMESTAMP, "2022-06-10-19.27.53.410000", null);
+    }
+
+    /**
+     * Builds a valid request presenting the fixture card and declaring the account it applies to.
+     *
+     * <p>A chain that seats no cross-reference row resolves no account, and the subject is then the one
+     * the caller declared. Without it the service refuses the call with
+     * {@code 'Card Number NOT found...'} of {@code app/cbl/COTRN02C.cbl:L625-L626} instead of running
+     * the chain, which is correct behaviour and measures nothing about chain composition.
+     *
+     * @param amount the amount as text
+     * @return the request
+     */
+    private static AuthorizationRequest requestDeclaringItsAccount(String amount) {
+        return new AuthorizationRequest(null, "01", "0001", "POS TERM",
+                "Purchase at Abshire-Lowe", amount, "800000000", "Abshire-Lowe", "North Enoshaven",
+                "72112", CARD_NUMBER, ORIGIN_TIMESTAMP, "2022-06-10-19.27.53.410000", ACCOUNT_ID);
     }
 
     /**

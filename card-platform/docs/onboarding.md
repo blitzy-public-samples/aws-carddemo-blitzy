@@ -47,7 +47,7 @@ Three things a clean clone cannot skip, which is why `docker compose up -d --bui
 - `docker-compose.yml` reads nineteen credentials that nothing in this repository supplies, because a credential published here would be a credential everyone holds;
 - `.env`, where those credentials live, does not exist until it is copied.
 
-The four demo passwords the script generates are written to `card-platform/.demo-credentials` with owner-only permissions, and git ignores that file. `.env` keeps only their `{bcrypt}` hashes, and a hash cannot be sent to a service as a password. To choose the passwords yourself, set `CARDDEMO_ADMIN_PASSWORD`, `CARDDEMO_ACQUIRER_PASSWORD`, `CARDDEMO_USER_PASSWORD` or `CARDDEMO_MONITORING_PASSWORD` before running the script.
+The four demo passwords the script generates are written to `card-platform/.demo-credentials`, and git ignores that file. It is owner-only from the moment it exists: the script sets `umask 077`, fills a temporary file created at mode 600, then renames that onto the name above. `.env` keeps only their `{bcrypt}` hashes, and a hash cannot be sent to a service as a password. To choose the passwords yourself, set `CARDDEMO_ADMIN_PASSWORD`, `CARDDEMO_ACQUIRER_PASSWORD`, `CARDDEMO_USER_PASSWORD` or `CARDDEMO_MONITORING_PASSWORD` before running the script.
 
 To prepare `.env` without starting anything, run `scripts/generate-env.sh` on its own. It reads the credential names out of `.env.example`, so adding a credential there extends it with no edit.
 
@@ -502,6 +502,24 @@ Look under these paths when changing a service:
 
 Several things a reader might look for are absent by decision, and the enforcer refuses most of them as dependencies. There is no boilerplate generator and no object-mapping library, and no API documentation generator, because every service carries a hand-written `openapi.yaml`. There is no cache and no key-value store, because the fraud velocity window is a PostgreSQL table. The stack runs no schema registry, no ZooKeeper, no broker or database administration container, no metrics dashboard, no tracing backend, and no service mesh. There is no COBOL compiler, no mainframe connector, and no application front-end, and the [decision log](decision-log.md) carries a row for each absence.
 
+### Walk one service in five minutes
+
+Read a service in the order a request moves through it. The path is the same in all six, so the second service takes less time than the first.
+
+| Step | Where to look | What it tells you |
+| :--- | :--- | :--- |
+| 1 | `README.md` | What the service owns, its source provenance, and the events it reads and writes |
+| 2 | `src/main/resources/openapi.yaml` | Every route, status and body, without opening a controller |
+| 3 | `api/` | Request validation, and the answer each refusal carries |
+| 4 | `domain/` | The behaviour, and the COBOL paragraph each part reproduces |
+| 5 | `messaging/` | Which topic arrives, and what a listener does before it acknowledges |
+| 6 | `outbox/` | How a state change and its event commit together |
+| 7 | `src/main/resources/db/migration/V1__schema.sql` | The private schema, with a source locator on each column |
+
+Leave `config/` for a second pass. Seven of its classes are the same seven in every service: `SecurityConfig`, `CrossSiteRequestFilter`, `RequestRateCeilingFilter`, `CorrelationContextFilter`, `SafeProducerListener`, `ReadinessHealthConfig` and `StreamNameReport`. They carry wiring rather than domain behaviour, and the [decision log](decision-log.md) records why they stay one copy per service.
+
+Start with `services/ledger-posting-service` for the COBOL comparison, and with `services/fraud-detection-service` for the extension story. The first reproduces the batch posting arithmetic of `app/cbl/CBTRN02C.cbl`. The second has no source ancestor at all.
+
 ## How to extend
 
 ### Add an independent consumer
@@ -652,9 +670,9 @@ Setting both location keys to `classpath:db/migration` is the base-profile opt-o
 
 **Symptom:** a service that started fine yesterday now exits at start-up, and the log names a Flyway checksum mismatch for a migration version it had already applied.
 
-**Cause:** the comment headers of twenty-four migrations were reduced to mechanics and source locators, so this log rather than an executable file carries every decision behind them. Flyway computes a migration's checksum over the whole file, comments included, and `spring.flyway.validate-on-migrate` is `true` in all six services, so a database holding the earlier files refuses the newer ones. No statement changed: nothing about a table, a column, a constraint, an index or a row is different.
+**Cause:** the comment headers of twenty-four migrations were reduced to mechanics and source locators, so this log rather than an executable file carries every decision behind them. A COBOL line range that named no line of the file it cited was later corrected in card `V5` the same way. Flyway computes a migration's checksum over the whole file, comments included, and `spring.flyway.validate-on-migrate` is `true` in all six services, so a database holding the earlier files refuses the newer ones. No statement changed: nothing about a table, a column, a constraint, an index or a row is different.
 
-**Fix:** discard the demo database and let the stack rebuild it, `docker compose down -v` followed by `docker compose up -d --build --wait`. A database whose rows matter instead needs `flyway repair` against each service schema, which rewrites the stored checksums and leaves the data alone. A fresh clone and every test run are unaffected, because each creates an empty database and applies the whole history in one pass.
+**Fix:** discard the demo database and let the stack rebuild it, `docker compose down -v` followed by `docker compose up -d --build --wait`. A database whose rows matter instead needs `flyway repair` against each service schema, which rewrites the stored checksums and leaves the data alone. A repaired database still holds the comment text an applied migration executed, which is why card `V8` restates the one constraint comment whose locator was wrong. A fresh clone and every test run are unaffected, because each creates an empty database and applies the whole history in one pass.
 
 ### 14. Changing the partition count does not change how many threads read it
 

@@ -45,6 +45,12 @@ import tools.jackson.databind.json.JsonMapper;
  * a value from the payload, so a full Primary Account Number (PAN), a card verification value or an
  * account identifier cannot reach a log through a validation failure.
  *
+ * <p>{@link #publishViolationsOf(String, String)} is the form every producer path calls. It reports
+ * what {@link #violationsOf(String, String)} reports and one further entry when the version the
+ * payload declares is retained rather than published, which {@link ReleasedContracts} decides from
+ * {@code contracts/released-contracts.json}. The consume path applies no posture gate, so a record
+ * written under a retained document stays readable.
+ *
  * <p>{@link #violationsOf(String, JsonNode)} takes the payload already parsed and checks the same
  * documents against it. A caller that has read the envelope, or screened the payload for a property
  * no event may carry, holds that tree already, and the two serde classes of this module both do.
@@ -145,11 +151,12 @@ public final class EventContracts {
      * The event types this module holds a contract for.
      *
      * <p>The set is read from the registry rather than restated here, so it grows with the schema
-     * documents on the classpath. It currently holds nine types — the five transaction and fraud
-     * events, the three state-change events and the dead-letter envelope — drawn from thirteen
-     * versioned documents, because a type with more than one governed version contributes one
-     * entry and {@code FraudFlagged} and {@code FraudCleared} contribute one entry each while
-     * sharing a topic.
+     * documents on the classpath. It holds the transaction and fraud events, the state-change events
+     * and the dead-letter envelope. A type with more than one governed version contributes one entry,
+     * and {@code FraudFlagged} and {@code FraudCleared} contribute one entry each while sharing a
+     * topic, so the size of this set is smaller than the number of documents behind it. Read the
+     * figures from {@link EventSchemas#governedEventTypes()} and
+     * {@link EventSchemas#governedVersions(String)} rather than from this comment.
      *
      * @return every registered event type
      */
@@ -291,11 +298,82 @@ public final class EventContracts {
     }
 
     /**
+     * Validates one outgoing payload against its document and against the posture of that document.
+     *
+     * <p>This is the gate every producer path of this platform applies: the outbox writer of each
+     * service, and the direct publisher of the authorization service. It reports what
+     * {@link #violationsOf(String, String)} reports, and one further entry when the version the
+     * payload declares is released but retained, which {@link ReleasedContracts} decides.
+     *
+     * <p>A retained document stays readable on the consume side, and
+     * {@code serde/JsonSchemaValidatingDeserializer} applies no posture gate for that reason. What
+     * this gate refuses is a producer writing under a document a consumer has already moved past,
+     * which is how one event type was downgraded to a version whose successor was already on a
+     * topic.
+     *
+     * @param eventType the routing discriminator naming the document
+     * @param json      the serialized payload about to be published, validated exactly as supplied
+     * @return one entry per failure, empty when the payload validates and its version is published
+     * @throws IllegalArgumentException when {@code eventType} is not registered
+     * @throws IllegalStateException    when the classpath holds no such document
+     */
+    public static List<String> publishViolationsOf(String eventType, String json) {
+        List<String> violations = new ArrayList<>(violationsOf(eventType, json));
+        violations.addAll(postureViolationsOf(eventType, declaredVersionOf(json)));
+        return List.copyOf(violations);
+    }
+
+    /**
+     * Checks one outgoing contract version against the posture the released baseline records for it.
+     *
+     * <p>This is the posture half of {@link #publishViolationsOf(String, String)} on its own, for a
+     * producer path that has already validated its payload against the document and would otherwise
+     * validate it twice. The card service writer is in that position, because
+     * {@code CardUpdated#toValidatedJson()} serializes through the validating serializer.
+     *
+     * @param eventType     the routing discriminator naming the document
+     * @param schemaVersion the contract version the outgoing payload declares
+     * @return one entry when that version is released but retained, empty when it is published
+     * @throws IllegalArgumentException when {@code eventType} is not registered
+     */
+    public static List<String> postureViolationsOf(String eventType, int schemaVersion) {
+        requireRegistered(eventType);
+        if (ReleasedContracts.isPublished(eventType, schemaVersion)) {
+            return List.of();
+        }
+        return List.of(EventSchemas.SCHEMA_VERSION_PROPERTY + " " + schemaVersion + ": posture "
+                + ReleasedContracts.postureOf(eventType, schemaVersion) + " in "
+                + ReleasedContracts.RESOURCE + ", so no producer may write it. Published"
+                + (ReleasedContracts.publishedVersions(eventType).size() == 1
+                        ? " version is " : " versions are ")
+                + ReleasedContracts.publishedVersions(eventType));
+    }
+
+    /**
+     * The contract version one serialized payload declares.
+     *
+     * <p>Text that is not JSON, or JSON carrying no readable version, reads as
+     * {@link EventEnvelope#SCHEMA_VERSION}. {@link #violationsOf(String, String)} has already
+     * reported that payload against its document, so this method reports no failure of its own.
+     *
+     * @param json the serialized payload
+     * @return the version the payload declares, or {@link EventEnvelope#SCHEMA_VERSION}
+     */
+    private static int declaredVersionOf(String json) {
+        try {
+            return versionOf(MAPPER.readTree(json));
+        } catch (RuntimeException unreadable) {
+            return EventEnvelope.SCHEMA_VERSION;
+        }
+    }
+
+    /**
      * The contract version one parsed payload carries.
      *
-     * <p>{@code TransactionDeclined} ships two documents, so the version is part of what selects
+     * <p>Several event types ship more than one document, which
+     * {@link EventSchemas#governedVersions(String)} reports, so the version is part of what selects
      * one. A payload that carries no readable version reads as
-     * {@link EventEnvelope#SCHEMA_VERSION}, which is the version every other event type ships, and
+     * {@link EventEnvelope#SCHEMA_VERSION}, which is the first version every event type ships, and
      * the schema then reports the missing property itself rather than this method guessing at it.
      *
      * @param document the parsed payload

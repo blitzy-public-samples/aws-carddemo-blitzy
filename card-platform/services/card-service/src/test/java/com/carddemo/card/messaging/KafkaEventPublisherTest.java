@@ -644,10 +644,10 @@ class KafkaEventPublisherTest {
     }
 
     /**
-     * Builds one serialized {@code CardUpdated} event, at the one version the platform governs.
+     * Builds one serialized {@code CardUpdated} event, at the version a producer publishes.
      *
-     * <p>The envelope declares {@code schemaVersion} 1 and the document is
-     * {@code schemas/card-updated-v1.json}. Both account identifiers hold {@code accountKey}, so the
+     * <p>The envelope declares {@code schemaVersion} 2 and the document is
+     * {@code schemas/card-updated-v2.json}. Both account identifiers hold {@code accountKey}, so the
      * publisher's key check and its schema check both pass. The card number is a masked form, so no
      * test of this class holds a Primary Account Number (PAN).</p>
      *
@@ -657,7 +657,7 @@ class KafkaEventPublisherTest {
      */
     private static String cardUpdated(String accountKey, String eventId) {
         return "{\"eventId\":\"" + eventId + "\",\"eventType\":\"CardUpdated\","
-                + "\"schemaVersion\":1,\"occurredAt\":\"2022-06-10T19:27:53.412Z\","
+                + "\"schemaVersion\":2,\"occurredAt\":\"2022-06-10T19:27:53.412Z\","
                 + "\"aggregateId\":\"" + accountKey + "\","
                 + "\"maskedCardNumber\":\"************7065\",\"accountId\":\"" + accountKey
                 + "\",\"expirationDate\":\"2024-12-31\","

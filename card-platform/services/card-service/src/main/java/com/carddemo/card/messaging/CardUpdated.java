@@ -19,7 +19,7 @@ import com.carddemo.events.serde.JsonSchemaValidatingSerializer;
  *
  * <p>Plan alignment. The plan names this contract {@code CardUpdated}. This record carries four
  * payload components under that name, and it validates every payload against the shared versioned document
- * {@code schemas/card-updated-v1.json} before publishing rather than writing it unchecked. It
+ * {@code schemas/card-updated-v2.json} before publishing rather than writing it unchecked. It
  * declares no mutation-kind component: the card service publishes on an update and on nothing
  * else, so a consumer needs no discriminator to tell one kind from another. The decision log this
  * platform records in {@code card-platform/docs/decision-log.md}.
@@ -33,7 +33,7 @@ import com.carddemo.events.serde.JsonSchemaValidatingSerializer;
  * JavaScript Object Notation (JSON) object and no nesting key reaches a topic.
  *
  * <p>Those nine properties are the nine {@code required} properties of
- * {@code schemas/card-updated-v1.json}, the document {@link #toValidatedJson()} checks every
+ * {@code schemas/card-updated-v2.json}, the document {@link #toValidatedJson()} checks every
  * payload against before it reaches a topic. That document closes its property set and declares
  * one bounded {@code extensions} object no record writes, so a field this record does not carry
  * cannot travel under this event type.
@@ -52,6 +52,10 @@ import com.carddemo.events.serde.JsonSchemaValidatingSerializer;
  * <p>The card service outbox writer turns this record into text through {@link #toValidatedJson()}
  * and stores that text in an {@code outbox_event} row, inside the one transaction that writes the
  * card row.
+ *
+ * <p>This name belongs to the event and to nothing else. The synchronous answer the same update
+ * returns is {@code CardUpdateApplied} in {@code src/main/resources/openapi.yaml}, which carries the
+ * outcome of one request rather than the state of a card, and which used to carry this name too.
  *
  * @param eventId          the identifier every consumer records to detect a duplicate delivery
  * @param eventType        the routing discriminator, always {@link #EVENT_TYPE}
@@ -100,12 +104,18 @@ public record CardUpdated(
     public static final String EVENT_TYPE = CardUpdated.class.getSimpleName();
 
     /**
-     * The one governed contract version. {@code schemas/card-updated-v1.json} is the only
-     * {@code CardUpdated} document, so no earlier version exists for this payload to be measured
-     * against, and a later version may only add fields to the nine declared there.
-     * {@code SchemaBackwardCompatibilityTest} holds that rule for every event type on this platform.
+     * The contract version a producer publishes.
+     *
+     * <p>{@code schemas/card-updated-v1.json} stays governed and stays on the classpath, so every
+     * record published under it remains readable under the document it was published with, and
+     * {@code schemas/card-updated-v2.json} is the shape this record writes. Version 2 declares the
+     * nine properties below and no embossed cardholder name;
+     * {@code libs/event-contracts/src/main/resources/contracts/released-contracts.json} records the
+     * released set, the posture of each version and the one property version 2 stopped requiring,
+     * and {@code SchemaBackwardCompatibilityTest} refuses a document that is deleted or whose wire
+     * contract is rewritten.
      */
-    public static final int SCHEMA_VERSION = 1;
+    public static final int SCHEMA_VERSION = 2;
 
     /**
      * The form {@link #maskedCardNumber()} takes: twelve mask characters then four decimal digits.
@@ -313,7 +323,7 @@ public record CardUpdated(
      * Serializes this event through the one publish-side gate every event of this platform passes.
      *
      * <p>{@link JsonSchemaValidatingSerializer} does the work: it writes the flat wire form, checks
-     * the result against {@code schemas/card-updated-v1.json} in
+     * the result against {@code schemas/card-updated-v2.json} in
      * {@code com.carddemo:event-contracts}, and refuses a document wider than the platform ceiling.
      * The returned text is what a caller stores in the {@code payload} column of
      * {@code outbox_event} and what the relay later hands to the broker unchanged.

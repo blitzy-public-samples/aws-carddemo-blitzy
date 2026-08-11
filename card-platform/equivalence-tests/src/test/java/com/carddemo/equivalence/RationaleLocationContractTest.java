@@ -9,7 +9,9 @@ import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
@@ -108,6 +110,100 @@ class RationaleLocationContractTest {
     /** Floor on the migration files a scan must reach before its verdict means anything. */
     private static final int MIGRATION_FLOOR = 40;
 
+    /**
+     * A rationale banner in capitals, in any shipped text format.
+     *
+     * <p>Every comment marker this platform ships is read: {@code *}, {@code //}, {@code --} and
+     * {@code #}. A banner word alone is not enough, because {@code # What it does} is a mechanics
+     * heading and stays; the capitals after it are the essay form the review named.
+     *
+     * <p>Any opening tag may stand between the marker and the word. An earlier revision of this
+     * pattern named {@code <h1>} through {@code <h6>} and {@code <b>}, which are the shapes a page
+     * heading takes, and missed {@code <p>} — the shape a javadoc paragraph takes, and the one the
+     * finding's own example used at {@code notification/messaging/TransactionAuthorizedConsumer}.
+     */
+    private static final Pattern SHIPPED_BANNER_HEADING = Pattern.compile(
+            "^\\s*(?:\\*|//|--|#)\\s*(?:<[a-zA-Z][^>]*>\\s*)?"
+                    + "(?:WHY|WHAT|HOW|ALTERNATIVES?|RISKS?)\\b[ \\t]+[A-Z]{2,}");
+
+    /**
+     * A sentence-case rationale heading, in any shipped text format.
+     *
+     * <p>{@code Rationale} and {@code Why} are included because both open an argument. A heading that
+     * names the log on its own line or on the next is a pointer rather than an essay, which is the
+     * shape this platform uses to ask the question in the file and answer it in one place. The tag
+     * alternation is the wide one {@link #SHIPPED_BANNER_HEADING} explains, so {@code <p>Why this is
+     * a refresh and not an upsert.} is read as the paragraph opener it is.
+     */
+    private static final Pattern SHIPPED_RATIONALE_HEADING = Pattern.compile(
+            "^\\s*(?:\\*|//|--|#)\\s*(?:<[a-zA-Z][^>]*>\\s*)?"
+                    + "(?:Why\\b|Alternatives considered|Risks? accepted|Rationale\\b|"
+                    + "Trade-?offs?\\b|The problem this solves)");
+
+    /** One HTML comment, which is the only part of a page this scan reads. */
+    private static final Pattern HTML_COMMENT = Pattern.compile("(?s)<!--(.*?)-->");
+
+    /** The spelling that turns a heading into a pointer. */
+    private static final String POINTER_TOKEN = "decision-log.md";
+
+    /**
+     * Shipped text formats the essay scan reads, each with the fewest files it must reach.
+     *
+     * <p>The floors are per format on purpose. A single total would stay satisfied by the seven
+     * hundred java files while the scan quietly stopped seeing shell scripts, which is how the
+     * previous guard came to cover two formats and report on all of them.
+     *
+     * <p>A key is a suffix, or the whole file name where a format has none, which is how the six
+     * container definitions are reached. Every format this platform ships a comment in is a key:
+     * java, migrations, shell, the two yaml spellings, the deck, the module descriptors, the
+     * environment template and the container definitions.
+     */
+    private static final Map<String, Integer> SHIPPED_TEXT_FLOORS = Map.ofEntries(
+            Map.entry(".java", 400),
+            Map.entry(".sql", 40),
+            Map.entry(".sh", 3),
+            Map.entry(".yml", 5),
+            Map.entry(".yaml", 10),
+            Map.entry(".html", 1),
+            Map.entry(".xml", 8),
+            Map.entry(".example", 1),
+            Map.entry("Dockerfile", 6),
+            Map.entry(".toml", 1),
+            Map.entry(".gitignore", 1),
+            Map.entry(".dockerignore", 5));
+
+    /**
+     * Formats no comment scan reads, each with the reason it carries no rationale comment.
+     *
+     * <p>This map is the other half of {@link #SHIPPED_TEXT_FLOORS}, and
+     * {@link #everyShippedFormatIsEitherScannedOrClassified()} holds every format of the tree to one
+     * of the two. A format added to the platform is therefore either scanned or classified here, and
+     * cannot arrive unread: the guard this replaced read two formats and reported on all of them,
+     * which is the defect the review named.
+     */
+    private static final Map<String, String> UNSCANNED_FORMATS = Map.of(
+            ".md", "documentation, which is where Rule 1 puts rationale and Rule 5 scores its prose",
+            ".json", "JSON admits no comment, and a schema document carries none",
+            ".csv", "expected-result data read by the equivalence suites",
+            ".env", "a local generated file, git-ignored, whose template .env.example is scanned",
+            ".demo-credentials", "a local generated file, git-ignored, carrying no comment");
+
+    /**
+     * Formats whose comments are delimited blocks rather than marked lines.
+     *
+     * <p>Both spellings carry {@code <!--} and {@code -->}, so one extractor reads both.
+     */
+    private static final List<String> DELIMITED_COMMENT_FORMATS = List.of(".html", ".xml");
+
+    /**
+     * Directories the essay scan does not descend into.
+     *
+     * <p>{@code docs} is where rationale belongs, so scanning it would fail the log itself.
+     * {@code target} is build output and {@code blitzy} is run evidence.
+     */
+    private static final List<String> UNSCANNED_DIRECTORIES =
+            List.of("target", "node_modules", ".git", "blitzy", "docs");
+
     @Test
     @DisplayName("no migration or demo header opens a rationale essay")
     void noMigrationHeaderOpensARationaleEssay() {
@@ -157,6 +253,180 @@ class RationaleLocationContractTest {
                 "a heading that opens with \"Why\" frames the block below it as a decision essay, "
                         + "which belongs in " + DECISION_LOG_POINTER + "; name what the block "
                         + "describes instead: " + offending);
+    }
+
+    /**
+     * No shipped file of any format opens a rationale essay in a comment.
+     *
+     * <p>The two scans above read java heading shapes and migration headers. Everything else this
+     * platform ships was unread, and that is where the essays were: {@code WHY THIS SCRIPT EXISTS,
+     * AND WHY IT IS NOT A TEST} in {@code scripts/check-published-test-counts.sh}, {@code WHY THIS
+     * EXISTS} in {@code scripts/redact-report-artifacts.sh}, {@code WHY PROVENANCE IS A STAGE OF ITS
+     * OWN} and {@code WHY IT READS A BILL OF MATERIALS RATHER THAN THE DESCRIPTORS} in the workflow,
+     * four banners in {@code deploy/k8s/kustomization.yaml}, and {@code <h2>The problem this
+     * solves</h2>} in six copies of {@code config/StreamNameReport}. Each argued a choice the
+     * decision log already carried, which is the drift Rule 1 exists to prevent.
+     *
+     * <p>Two shapes fail. A banner in capitals fails outright. A sentence-case heading that opens an
+     * argument fails unless the log is named on the same line or the next, which is the pointer form:
+     * the file asks the question and one place answers it. A mechanics heading such as {@code # What
+     * it measures} or {@code -- What the rule reads.} is neither and stays.
+     *
+     * <p>The deck and the module descriptors are read as their comments only. A slide heading is
+     * content Rule 4 governs and Rule 5 scores, and a descriptor element is configuration, so
+     * neither is a comment carrying rationale and both are left to the rules that own them.
+     */
+    @Test
+    @DisplayName("no shipped file of any format opens a rationale essay in a comment")
+    void noShippedTextOpensARationaleEssay() {
+        Map<String, List<Path>> byFormat = shippedTextSources();
+        SHIPPED_TEXT_FLOORS.forEach((format, floor) -> {
+            int reached = byFormat.getOrDefault(format, List.of()).size();
+            assertTrue(reached >= floor,
+                    "the scan reached " + reached + " " + format + " files, fewer than the " + floor
+                            + " this platform ships, so its verdict for that format would mean"
+                            + " nothing");
+        });
+
+        List<String> offending = new ArrayList<>();
+        byFormat.forEach((format, sources) -> {
+            for (Path source : sources) {
+                String text = readText(source);
+                if (DELIMITED_COMMENT_FORMATS.contains(format)) {
+                    Matcher comment = HTML_COMMENT.matcher(text);
+                    while (comment.find()) {
+                        collectEssayOpeners(relative(source), asCommentLines(comment.group(1)),
+                                lineOf(text, comment.start()) - 1, offending);
+                    }
+                } else {
+                    collectEssayOpeners(relative(source), text, 0, offending);
+                }
+            }
+        });
+
+        assertEquals(List.of(), offending,
+                "Rule 1 makes " + DECISION_LOG_POINTER + " the single source of \"why\" in every "
+                        + "format, not only in java and sql: state what the file declares, its source "
+                        + "locators and a pointer to the log instead: " + offending);
+    }
+
+    /**
+     * Holds every format the platform ships to one of the two maps above.
+     *
+     * <p>A scan is only as wide as the list of formats it reads, and a format nobody added to that
+     * list is a format whose comments are never read. This test removes the silence: a file of a
+     * format that is neither scanned nor classified fails the build, naming the format and the file.
+     *
+     * <p>Every key of {@link #SHIPPED_TEXT_FLOORS} is also required to exist in the tree, so a format
+     * that stops being shipped is noticed rather than leaving a floor that can never be reached.
+     */
+    @Test
+    @DisplayName("every format the platform ships is either scanned for essays or classified")
+    void everyShippedFormatIsEitherScannedOrClassified() {
+        Map<String, String> firstFileOfFormat = new LinkedHashMap<>();
+        for (Path root : List.of(platformRoot(), repositoryRoot().resolve(".github"))) {
+            if (!Files.isDirectory(root)) {
+                continue;
+            }
+            try (Stream<Path> tree = Files.walk(root)) {
+                tree.filter(Files::isRegularFile)
+                        .filter(RationaleLocationContractTest::isDeliveredFile)
+                        .sorted()
+                        .forEach(path -> firstFileOfFormat.putIfAbsent(
+                                formatKeyOf(path.getFileName().toString()), relative(path)));
+            } catch (IOException unreadable) {
+                throw new UncheckedIOException("unreadable directory " + root, unreadable);
+            }
+        }
+
+        List<String> unclassified = firstFileOfFormat.entrySet().stream()
+                .filter(entry -> !SHIPPED_TEXT_FLOORS.containsKey(entry.getKey()))
+                .filter(entry -> !UNSCANNED_FORMATS.containsKey(entry.getKey()))
+                .map(entry -> entry.getKey() + " first seen at " + entry.getValue())
+                .toList();
+        assertEquals(List.of(), unclassified,
+                "a format arrived that no comment scan reads: give it a floor in SHIPPED_TEXT_FLOORS "
+                        + "or a reason in UNSCANNED_FORMATS, because a format nobody listed is a "
+                        + "format whose comments are never read: " + unclassified);
+
+        List<String> bothWays = SHIPPED_TEXT_FLOORS.keySet().stream()
+                .filter(UNSCANNED_FORMATS::containsKey)
+                .sorted()
+                .toList();
+        assertEquals(List.of(), bothWays,
+                "a format cannot be both scanned and classified as unread: " + bothWays);
+
+        List<String> vanished = SHIPPED_TEXT_FLOORS.keySet().stream()
+                .filter(format -> !firstFileOfFormat.containsKey(format))
+                .sorted()
+                .toList();
+        assertEquals(List.of(), vanished,
+                "a floor names a format the platform no longer ships, so it can never be reached "
+                        + "and no longer proves anything: " + vanished);
+    }
+
+    /**
+     * Reports whether one file is delivered content rather than build output or run evidence.
+     *
+     * <p>{@code docs} is descended into here, unlike in the essay scan, because this test classifies
+     * formats rather than reading comments: a format shipped only under {@code docs} still has to be
+     * accounted for.
+     *
+     * @param file the file to judge
+     * @return {@code true} when it is delivered content
+     */
+    private static boolean isDeliveredFile(Path file) {
+        for (Path element : repositoryRoot().relativize(file)) {
+            if (List.of("target", "node_modules", ".git", "blitzy").contains(element.toString())) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Marks every line of an HTML comment body as a comment line.
+     *
+     * <p>The detectors anchor on a comment marker, and the body of an HTML comment carries none: the
+     * marker opened the block. Prefixing each line reads the whole block as the comment it is,
+     * without a second pair of patterns that could drift from the first.
+     *
+     * @param body the text between the comment delimiters
+     * @return the same text with each line marked
+     */
+    private static String asCommentLines(String body) {
+        StringBuilder marked = new StringBuilder();
+        for (String line : body.split("\\R", -1)) {
+            marked.append("# ").append(line).append('\n');
+        }
+        return marked.toString();
+    }
+
+    /**
+     * Adds every essay opener in one body of text to {@code offending}.
+     *
+     * @param where      the file, as a reader would name it
+     * @param text       the text to read, which is a whole file or one delimited comment
+     * @param lineOffset the file line the text begins on, less one, so a defect inside a delimited
+     *                   comment is reported at the line a reader opens the file at
+     * @param offending  the list defects are added to
+     */
+    private static void collectEssayOpeners(String where, String text, int lineOffset,
+            List<String> offending) {
+        String[] lines = text.split("\\R", -1);
+        for (int at = 0; at < lines.length; at++) {
+            boolean banner = SHIPPED_BANNER_HEADING.matcher(lines[at]).find();
+            boolean heading = SHIPPED_RATIONALE_HEADING.matcher(lines[at]).find();
+            if (!banner && !heading) {
+                continue;
+            }
+            String next = at + 1 < lines.length ? lines[at + 1] : "";
+            boolean pointsAtTheLog = lines[at].contains(POINTER_TOKEN) || next.contains(POINTER_TOKEN);
+            if (heading && !banner && pointsAtTheLog) {
+                continue;
+            }
+            offending.add(where + ":" + (lineOffset + at + 1) + " " + lines[at].trim());
+        }
     }
 
     @Test
@@ -243,6 +513,64 @@ class RationaleLocationContractTest {
                 "the attachment detector missed a javadoc block followed by another");
         assertFalse(CONSECUTIVE_JAVADOC.matcher("    /** One. */\n    private int one;\n").find(),
                 "a javadoc block followed by its declaration was read as unattached");
+
+        assertTrue(SHIPPED_BANNER_HEADING.matcher("# WHY THIS SCRIPT EXISTS").find(),
+                "the cross-format banner detector missed a shell banner");
+        assertTrue(SHIPPED_BANNER_HEADING.matcher("# WHY PROVENANCE IS A STAGE OF ITS OWN.").find(),
+                "and missed a workflow banner");
+        assertFalse(SHIPPED_BANNER_HEADING.matcher("# What it measures").find(),
+                "a sentence-case mechanics heading was read as a banner");
+        assertFalse(SHIPPED_BANNER_HEADING.matcher("# TWO KINDS OF IMAGE LIVE IN THIS FOLDER").find(),
+                "a capitalised mechanics heading opening on another word is not a rationale banner");
+
+        assertTrue(SHIPPED_RATIONALE_HEADING.matcher("  # Why the overlay is needed.").find(),
+                "the cross-format heading detector missed a yaml rationale heading");
+        assertTrue(SHIPPED_RATIONALE_HEADING.matcher(" * <h2>The problem this solves</h2>").find(),
+                "and missed the section heading six copies of one class carried");
+        assertFalse(SHIPPED_RATIONALE_HEADING.matcher("  # What the overlay changes.").find(),
+                "a mechanics heading was read as a rationale heading");
+
+        assertTrue(SHIPPED_BANNER_HEADING.matcher(" * <p>WHY THIS LISTENER EXISTS. AAP 0.1.1 and 0.8.3").find(),
+                "the cross-format banner detector missed a javadoc paragraph banner, which is the"
+                        + " shape the finding's own example carried");
+        assertTrue(SHIPPED_RATIONALE_HEADING.matcher(" * <p>Why this is a refresh and not an upsert.").find(),
+                "the cross-format heading detector missed a javadoc paragraph heading");
+        assertTrue(SHIPPED_RATIONALE_HEADING.matcher(" * <p>Rationale for the two-hop resolution").find(),
+                "and missed a paragraph opening on the word the log is named for");
+        assertFalse(SHIPPED_RATIONALE_HEADING.matcher(" * <p>What this predicate does not say.").find(),
+                "a javadoc mechanics paragraph was read as a rationale heading");
+        assertFalse(SHIPPED_RATIONALE_HEADING.matcher(" * <p>Three documents carry what this class does not.").find(),
+                "a paragraph naming its pointers was read as a rationale heading");
+
+        List<String> flagged = new ArrayList<>();
+        collectEssayOpeners("sample", "# Why a reservation rather than an aggregate:\n"
+                + "# card-platform/docs/decision-log.md.\n", 0, flagged);
+        assertEquals(List.of(), flagged,
+                "a heading answered by the log on the next line is a pointer, which is the shape this"
+                        + " platform uses to ask in the file and answer in one place");
+
+        collectEssayOpeners("sample", "# Why one pass is several transactions. Because a claim that\n"
+                + "# spans a send holds a row open.\n", 0, flagged);
+        assertEquals(1, flagged.size(),
+                "a heading answered in the file rather than by the log is an essay: " + flagged);
+
+        flagged.clear();
+        collectEssayOpeners("sample", "# WHY IT EXISTS: card-platform/docs/decision-log.md\n", 0, flagged);
+        assertEquals(1, flagged.size(),
+                "a banner in capitals fails even when it names the log, because the banner form is"
+                        + " what opens an essay: " + flagged);
+
+        flagged.clear();
+        collectEssayOpeners("sample", " * <p>WHY THIS LISTENER EXISTS. The ledger and the fraud\n"
+                + " * detector read the topic directly, and this service read neither.\n", 0, flagged);
+        assertEquals(1, flagged.size(),
+                "a javadoc paragraph opening on a banner in capitals is an essay: " + flagged);
+
+        flagged.clear();
+        collectEssayOpeners("sample", " * <p>Rationale, alternatives considered and accepted risks:\n"
+                + " * {@code card-platform/docs/decision-log.md}.\n", 0, flagged);
+        assertEquals(List.of(), flagged,
+                "the pointer paragraph this platform ships in place of an essay is not an essay");
     }
 
     /** Returns every java file of the platform, build output and this file excluded. */
@@ -271,6 +599,66 @@ class RationaleLocationContractTest {
                     ".sql"));
         }
         return migrations;
+    }
+
+    /**
+     * Returns every shipped text file the essay scan reads, keyed by its format.
+     *
+     * <p>Two roots are walked: the platform tree and the workflow directory beside it. A path holding
+     * any {@link #UNSCANNED_DIRECTORIES} element drops out wherever that element sits, and this file
+     * drops out because it carries the samples the detectors are run over.
+     *
+     * @return the files of each scanned format, in a stable order
+     */
+    private static Map<String, List<Path>> shippedTextSources() {
+        Map<String, List<Path>> byFormat = new LinkedHashMap<>();
+        for (Path root : List.of(platformRoot(), repositoryRoot().resolve(".github"))) {
+            if (!Files.isDirectory(root)) {
+                continue;
+            }
+            try (Stream<Path> tree = Files.walk(root)) {
+                tree.filter(Files::isRegularFile)
+                        .filter(RationaleLocationContractTest::isScannedText)
+                        .sorted()
+                        .forEach(path -> {
+                            String key = formatKeyOf(path.getFileName().toString());
+                            byFormat.computeIfAbsent(key, any -> new ArrayList<>()).add(path);
+                        });
+            } catch (IOException unreadable) {
+                throw new UncheckedIOException("unreadable directory " + root, unreadable);
+            }
+        }
+        return byFormat;
+    }
+
+    /**
+     * Reports whether one file is shipped text of a scanned format.
+     *
+     * @param file a regular file under one of the scanned roots
+     * @return true when no path element is unscanned and the suffix is one the scan reads
+     */
+    private static boolean isScannedText(Path file) {
+        for (Path element : repositoryRoot().relativize(file)) {
+            if (UNSCANNED_DIRECTORIES.contains(element.toString())) {
+                return false;
+            }
+        }
+        String name = file.getFileName().toString();
+        if (THIS_FILE.equals(name)) {
+            return false;
+        }
+        return SHIPPED_TEXT_FLOORS.containsKey(formatKeyOf(name));
+    }
+
+    /**
+     * Returns the format key of one file name.
+     *
+     * @param name the file name
+     * @return its suffix, or the whole name where it carries none
+     */
+    private static String formatKeyOf(String name) {
+        int dot = name.lastIndexOf('.');
+        return dot > 0 ? name.substring(dot) : name;
     }
 
     /** Walks one directory, returning the files with the given extension in a stable order. */

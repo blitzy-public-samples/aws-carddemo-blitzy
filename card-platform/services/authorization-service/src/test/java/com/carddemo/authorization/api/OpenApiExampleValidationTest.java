@@ -197,7 +197,9 @@ class OpenApiExampleValidationTest {
      * an approval carrying a code is not an outcome the source can produce. The four pairings come
      * from {@code app/cbl/CBTRN02C.cbl:L385-L419}, one {@code MOVE} of a code beside one
      * {@code MOVE} of its text. Reject code {@code 0100} follows the {@code INVALID KEY} branch at
-     * {@code app/cbl/CBTRN02C.cbl:L383-L384}, which resolved no account to name.
+     * {@code app/cbl/CBTRN02C.cbl:L383-L384}, which resolved no account of its own, so the account it
+     * names is the one the caller declared; a body carrying that code and no account is a decision
+     * nobody can attribute and the schema refuses it.
      */
     @Test
     @DisplayName("each decision schema enforces the invariants of its status")
@@ -222,9 +224,9 @@ class OpenApiExampleValidationTest {
         assertInvalid(declined,
                 decision(false, "00000000030", "0102", "TRANSACTION RECEIVED AFTER ACCT EXPIRATION"),
                 "a decline pairing one reject code with the text of another");
-        assertInvalid(declined, decision(false, "00000000030", "0100", "INVALID CARD NUMBER FOUND"),
-                "a decline carrying 0100 and naming an account");
-        assertValid(declined, decision(false, null, "0100", "INVALID CARD NUMBER FOUND"),
+        assertValid(declined, decision(false, "00000000030", "0100", "INVALID CARD NUMBER FOUND"),
+                "a decline carrying 0100 and naming the account it was decided against");
+        assertInvalid(declined, decision(false, null, "0100", "INVALID CARD NUMBER FOUND"),
                 "a decline carrying 0100 and naming no account");
         assertInvalid(declined, decision(false, null, "0102", "OVERLIMIT TRANSACTION"),
                 "a decline carrying 0102 and naming no account");

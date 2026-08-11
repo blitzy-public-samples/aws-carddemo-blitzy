@@ -40,26 +40,29 @@ import org.springframework.transaction.support.TransactionTemplate;
  *
  * <p>Consumer group {@code ledger-reject} reads the topic, separately from the group the posting
  * listener uses, so the two streams lag, rebalance and reset independently. The account identifier is
- * the message key of a declined event that resolved an account, so one account's refusals keep their
- * order.
+ * the message key of every declined event, so one account's refusals keep their order.
+ *
+ * <p>Every decline this platform publishes writes one reject row here, whichever of the four reject
+ * reasons stands. {@code app/cbl/CBTRN02C.cbl:L446-L465} writes one reject record for every record
+ * {@code 1500-VALIDATE-TRAN} refused, so a reason that produced no row would be a reject the source
+ * has and this platform does not. Reject reason {@code 0100} used to be that reason, and it is one no
+ * longer: the authorization service names the account the caller declared where the cross-reference
+ * read resolves none, and publishes the same detail-bearing contract as the other three.
  *
  * <h2>What this listener acknowledges without recording</h2>
  *
- * <p>A declined event at contract version 1 or 2 carries the reason and the amount and none of the
- * nine descriptive values of {@code app/cpy/CVTRA06Y.cpy:L5-L18}. Neither can produce the 350-byte
- * {@code REJECT-TRAN-DATA} the source copies, and inventing the values that were not sent is the one
- * outcome equivalence forbids. Such a delivery is therefore acknowledged with no row written, and the
- * fact is logged once. The 38 reject records the fixture {@code app/data/ASCII/dailytran.txt} produces
- * are all reject reason {@code 0102}, which resolves an account, so this boundary costs the parity
- * evidence nothing.
+ * <p>A declined event at a retained contract version carries the reason and the amount and none of the
+ * nine descriptive values of {@code app/cpy/CVTRA06Y.cpy:L5-L18}. Such a version cannot produce the
+ * 350-byte {@code REJECT-TRAN-DATA} the source copies, and inventing the values that were not sent is
+ * the one outcome equivalence forbids. Such a delivery is therefore acknowledged with no row written,
+ * and the fact is logged once.
  *
- * <p>Version 2 is the unresolved-account variant of reject reason {@code 0100}, and <b>no producer
- * publishes it</b>. The authorization service records that outcome in its own
- * {@code unresolved_card_attempt} and {@code authorization_decision} tables and writes no outbox row,
- * because the contract names an account and is keyed on one and that outcome resolved none. This
- * listener keeps reading the shape anyway, for the same reason the contract is retained: a record
- * published under it before that decision stays on the topic for as long as its retention holds, and
- * a consumer that meets one must account for it rather than dead-letter it.
+ * <p>No producer writes a retained version, so that arm is reached only by a record published before
+ * every decline carried those nine values. It stays because such a record is on the topic for as long
+ * as its retention holds, and a consumer that meets one must account for it rather than dead-letter
+ * it. The 38 reject records the fixture {@code app/data/ASCII/dailytran.txt} produces are all reject
+ * reason {@code 0102} and reach this listener with their detail, so the parity evidence is unaffected
+ * either way.
  *
  * <p>Design decisions: {@code card-platform/docs/decision-log.md}.
  */
@@ -211,7 +214,11 @@ public class TransactionDeclinedConsumer {
      *
      * <p>A delivery carrying no descriptive detail writes no row and still takes its marker, because
      * it has been handled: replaying it would reach the same conclusion, and leaving it unmarked
-     * would make every rebalance read it again.
+     * would make every rebalance read it again. That arm is reached only by a record published under
+     * a retained declined contract before every decline carried the nine values
+     * {@code REJECT-TRAN-DATA} needs. No producer writes those contracts any more, so every decline
+     * arriving from here on writes its reject row, reject code {@code 0100} included, and the arm
+     * exists for the records already on the topic.
      *
      * @param event         the validated event to record
      * @param consumedTopic the topic the record arrived on, half of the marker key

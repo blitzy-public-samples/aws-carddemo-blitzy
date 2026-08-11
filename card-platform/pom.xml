@@ -628,18 +628,16 @@
       Lets a stage run the integration suites without repeating the unit suites another
       stage already ran.
 
-      WHY IT IS A PROFILE AND NOT A PLUGIN SETTING. Surefire and Failsafe read the same
-      skipTests property, so no command-line flag skips one and leaves the other. Binding
-      Surefire's skip to a property of its own would work, and it would also mean the
-      configuration always carries that binding: -DskipTests would then stop skipping
-      Surefire, and `mvn -DskipTests package` - which the compile stage, the container
-      stage, scripts/start-demo.sh and every service README run - would execute the whole
-      unit suite instead of none of it. A profile changes nothing until its property is
-      named, so the default build and every documented command behave exactly as before.
+      It is keyed on a property of its own, skipUnitTests, and not on Surefire's skipTests
+      parameter, so it is inert until that property is named and the default build and every
+      documented command behave exactly as before.
 
       Nothing in this repository passes it except .github/workflows/ci.yml, where the
       service integration stage and the equivalence stage both name it because the unit
       stage has already run every Surefire test in the reactor and kept its reports.
+
+      Rationale, alternatives considered and accepted risks:
+      card-platform/docs/decision-log.md.
     -->
     <profile>
       <id>skip-unit-tests</id>

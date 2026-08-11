@@ -3,34 +3,21 @@
 # Redacts cardholder data out of the test reports this build produces, then refuses to finish
 # while any of it survives.
 #
-# WHY THIS EXISTS
+# Where it runs. .github/workflows/ci.yml uploads every Surefire and Failsafe report and keeps it
+# for REPORT_RETENTION_DAYS, so this runs before the upload and the stage fails while any seeded
+# value survives. Rationale, alternatives considered and accepted risks:
+# card-platform/docs/decision-log.md.
 #
-# A test report is an artifact. .github/workflows/ci.yml uploads every Surefire and Failsafe
-# report and keeps it for REPORT_RETENTION_DAYS, so whatever a test wrote to standard output
-# during a run is readable by everyone who can read the run for the next fortnight. That is the
-# whole of CWE-532: nobody chose to publish the value, and it is published.
-#
-# A review found one instance and the shape of the problem behind it. A test that provokes a
-# check-constraint violation on the card table produced a log line carrying the server's own
-# DETAIL, and PostgreSQL puts the entire failing row in that detail — card number, verification
-# value and token together. The platform closes that at its source now, by turning the
-# framework's failed-statement logger off in all six services, and this script closes it at the
-# artifact: a leak from a source nobody has thought of yet is still caught before the upload.
-#
-# WHAT COUNTS AS CARDHOLDER DATA HERE
+# What counts as cardholder data here
 #
 # The seeded values themselves, read out of the fixtures at scan time rather than written down.
 # app/data/ASCII/carddata.txt and app/data/ASCII/cardxref.txt supply fifty card numbers,
 # carddata.txt supplies fifty verification values and app/data/ASCII/custdata.txt supplies fifty
 # social security numbers. No value appears in this file, which is the point: a script that
-# carried the list would be the leak it looks for.
+# carried the list would be the leak it looks for. Card numbers are matched as those values rather
+# than by shape; the one shape rule applied is PostgreSQL's failing-row detail.
 #
-# A shape-based rule is deliberately not used for card numbers. A transaction identifier on this
-# platform is sixteen digits, so "any sixteen-digit run" fires on ordinary traffic and a check
-# that fires on everything gets switched off. The one shape rule that is applied is the failing-row
-# detail, because that phrase is never legitimate in a report.
-#
-# WHAT IT DOES
+# What it does
 #
 #   1. Rewrites every matching report in place. A card number becomes its masked form, the twelve
 #      leading digits replaced by asterisks, which is the form every external surface of this
@@ -39,7 +26,7 @@
 #   2. Reads every report again and fails when any seeded value survived, naming the file and the
 #      kind of value rather than the value.
 #
-# USAGE
+# Usage
 #
 #   scripts/redact-report-artifacts.sh              # redact, then verify. Run before an upload.
 #   scripts/redact-report-artifacts.sh --check      # verify only, change nothing.

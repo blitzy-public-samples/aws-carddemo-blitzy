@@ -88,10 +88,14 @@ public record EventEnvelope(UUID eventId, String eventType, int schemaVersion, I
      * printable characters, none of them a space.
      *
      * <p>Width from {@code TRAN-ID PIC X(16)} at {@code app/cpy/CVTRA05Y.cpy:L5} and
-     * {@code DALYTRAN-ID} at {@code app/cpy/CVTRA06Y.cpy:L5}. A transaction identifier is the one
-     * key available before the cross-reference resolves, and it is deterministic. It names no
-     * cardholder, no account and no card, so it discloses nothing a masked event does not already
-     * carry.
+     * {@code DALYTRAN-ID} at {@code app/cpy/CVTRA06Y.cpy:L5}. It names no cardholder, no account and
+     * no card, so it discloses nothing a masked event does not already carry.
+     *
+     * <p>RETAINED, AND NO PRODUCER WRITES IT. One released document declares this form,
+     * {@code schemas/transaction-declined-v2.json}, and
+     * {@code contracts/released-contracts.json} records it as retained rather than published. The
+     * pattern stays because a record already on a topic has to stay readable, and because every
+     * event this platform publishes is keyed on an account, which is what AAP 0.3.1 requires.
      *
      * <p>The two forms cannot be confused: eleven characters against sixteen, and this one admits
      * no value the account form admits.
@@ -130,7 +134,8 @@ public record EventEnvelope(UUID eventId, String eventType, int schemaVersion, I
      *
      * <p>Accepting either key form here does not let an event type choose one. A record checks the
      * form its own contract allows, and its schema document constrains the same form on the wire.
-     * Only the declined event of version 2 reaches a topic keyed on a transaction identifier.
+     * Only the retained declined document of version 2 declares the transaction form, and no
+     * producer writes it, so every record this platform publishes carries an account key.
      *
      * <p>This constructor changes no value it accepts. A component therefore survives a serialize
      * and deserialize round trip unchanged, down to the fractional digits of {@code occurredAt}.
@@ -180,8 +185,9 @@ public record EventEnvelope(UUID eventId, String eventType, int schemaVersion, I
      *
      * <p>This is the companion of {@link #carriesAccountKey()}, and exactly one of the two answers
      * {@code true} for any envelope the canonical constructor accepted: the two patterns admit
-     * different widths and share no value. A producer uses this to check that the key form matches
-     * the contract it publishes under, and a store uses it to check the key against its column.
+     * different widths and share no value. A store uses this to check the key against its column,
+     * and a reader of a retained record uses it to tell which document governs. No producer writes
+     * this form.
      *
      * @return {@code true} when {@code aggregateId} is sixteen printable characters
      */

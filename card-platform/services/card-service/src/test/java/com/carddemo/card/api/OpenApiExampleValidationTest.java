@@ -210,7 +210,7 @@ class OpenApiExampleValidationTest {
     @DisplayName("every outcome schema requires all three members")
     void everyOutcomeSchemaRequiresAllThreeMembers() {
         Map<String, Map<String, Object>> baselines = Map.of(
-                "CardUpdated", updated(),
+                "CardUpdateApplied", updated(),
                 "CardUpdateNotFound", notFound(),
                 "CardUpdateConflict", conflict(),
                 "CardUpdateRejected", rejected());
@@ -245,12 +245,12 @@ class OpenApiExampleValidationTest {
     void eachOutcomeSchemaAdmitsOnlyWhatItsStatusCarries() {
         Map<String, Object> rewrittenWithText = updated();
         rewrittenWithText.put("message", "Changes committed to database");
-        assertInvalid(schemaFor("CardUpdated"), rewrittenWithText,
+        assertInvalid(schemaFor("CardUpdateApplied"), rewrittenWithText,
                 "a rewritten row carrying a text");
 
         Map<String, Object> rewrittenWithRow = updated();
         rewrittenWithRow.put("refreshedCard", refreshedCard());
-        assertInvalid(schemaFor("CardUpdated"), rewrittenWithRow,
+        assertInvalid(schemaFor("CardUpdateApplied"), rewrittenWithRow,
                 "a rewritten row carrying a refreshed card");
 
         Map<String, Object> refusedWithRow = rejected();
@@ -272,7 +272,7 @@ class OpenApiExampleValidationTest {
 
         Map<String, Object> retryableWrite = updated();
         retryableWrite.put("outcome", "UPDATE_FAILED_AFTER_LOCK");
-        for (String name : List.of("CardUpdated", "CardUpdateNotFound", "CardUpdateConflict",
+        for (String name : List.of("CardUpdateApplied", "CardUpdateNotFound", "CardUpdateConflict",
                 "CardUpdateRejected")) {
             assertInvalid(schemaFor(name), retryableWrite,
                     name + " naming the outcome that answers the failure shape at 503");

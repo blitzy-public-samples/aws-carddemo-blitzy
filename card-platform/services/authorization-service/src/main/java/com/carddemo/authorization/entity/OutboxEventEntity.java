@@ -90,12 +90,15 @@ public class OutboxEventEntity {
      * Length of a transaction-keyed {@code aggregateId}, from {@code TRAN-ID PIC X(16)} at
      * {@code app/cpy/CVTRA05Y.cpy:L5}.
      *
-     * <p>One contract uses this form. A decline whose card the cross-reference resolved no account
-     * for has no account identifier to key on: reject code {@code 0100} is assigned at
-     * {@code app/cbl/CBTRN02C.cbl:L385} inside the {@code INVALID KEY} branch of the cross-reference
-     * read at {@code :L383}, and the short-circuit at {@code :L376-L378} stops the account read from
-     * running. {@code schemas/transaction-declined-v2.json} declares no {@code accountId} and keys
-     * that event on its transaction identifier.
+     * <p>No row written from migration {@code V19} forward carries this form, and the column keeps room
+     * for it because rows written before it do. One retained contract used it:
+     * {@code schemas/transaction-declined-v2.json}, the decline whose card resolved no cross-reference
+     * row, which declared no {@code accountId} and keyed on the transaction identifier instead. Reject
+     * code {@code 0100} now names the account the caller declared and keys on it like every other
+     * decline. {@code ck_outbox_event_aggregate_id} still admits this width, because a
+     * {@code CHECK} narrowed after those rows exist is enforced on every {@code UPDATE} of them and
+     * the relay writes a column on every row it claims; {@code outbox/OutboxWriter} holds the one
+     * form a new row may carry, and the relay publishes the older rows unchanged.
      */
     public static final int TRANSACTION_KEY_LENGTH = 16;
 

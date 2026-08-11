@@ -15,12 +15,6 @@ import org.springframework.stereotype.Component;
  * <p>No Common Business Oriented Language (COBOL) ancestor: the source carries no fraud program,
  * no risk score and no rules engine.
  *
- * <p>Which stream the consumer reads is decided by
- * {@code ${TOPIC_TRANSACTION_AUTHORIZED:transaction.authorized}}. The image carries a default, so a
- * dropped, renamed or mistyped key in {@code card-platform/deploy/k8s/30-configmap.yaml} or
- * {@code card-platform/docker-compose.yml} raises no error: the service subscribes to the built-in
- * name, reports itself healthy, and scores nothing at all.
- *
  * <p>Each name is therefore logged once as the context finishes starting: at INFO when the platform
  * supplied the value, naming the variable it came from, and at WARN when it did not, naming the
  * variable that is missing.
@@ -30,6 +24,9 @@ import org.springframework.stereotype.Component;
  *
  * <p>No credential is reported here, and none can be: a topic name is not a credential, and the
  * class reads nothing else.
+ *
+ * <p>Rationale, alternatives considered and accepted risks:
+ * {@code card-platform/docs/decision-log.md}.
  */
 @Component
 public class StreamNameReport implements ApplicationListener<ApplicationReadyEvent> {

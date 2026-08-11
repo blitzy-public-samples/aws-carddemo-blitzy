@@ -3,26 +3,19 @@
 # Holds the executed-test figures this repository publishes against the reports a completed build
 # wrote. Run it after `mvn verify`, from anywhere.
 #
-# WHY THIS SCRIPT EXISTS, AND WHY IT IS NOT A TEST
+# What it holds. docs/equivalence-results.md and README.md publish per-module and reactor test
+# counts, and this compares each published figure against the reports of a completed build. It runs
+# after the build rather than inside it, because a test cannot read the reports of the run it is
+# part of. Rationale, alternatives considered and accepted risks:
+# card-platform/docs/decision-log.md.
 #
-# docs/equivalence-results.md and README.md publish per-module and reactor test counts. A count is
-# evidence, so a count nobody measures is a claim. The obvious place to check it is a test, and a
-# test cannot: a test runs inside the build whose reports it would have to read, so the report for
-# its own class does not exist yet and the integration phase of its own module has not started.
-# Every in-build attempt at this ends up subtracting one published figure from another, which passes
-# whenever both move together.
-#
-# This script runs after the build instead. Every report is complete by then, including the
-# equivalence module's own, so each published figure is compared against a measured one and nothing
-# is derived from anything else this repository wrote.
-#
-# WHAT IT MEASURES
+# What it measures
 #
 # Reports are counted by their `testcase` elements, which is the number Maven prints in its
 # per-module summary. Summing the `tests` attribute of `testsuite` instead under-reports, because the
 # report for a class holding @Nested classes lists every nested case and counts only its own.
 #
-# WHAT IT REFUSES
+# What it refuses
 #
 #   * A module that declares the Failsafe plugin and holds a class the plugin selects, and wrote no
 #     Failsafe report. That is the fail-open case: the plugin selected nothing, or was never bound,
@@ -30,13 +23,13 @@
 #   * A module that wrote no Surefire report at all.
 #   * A published figure that disagrees with the measured one, naming both.
 #
-# EXIT STATUS
+# Exit status
 #
 #   0  every required report is present and every published figure matches
 #   1  a report is missing, or a published figure disagrees
 #   2  the script was given arguments it does not understand, or cannot find the tree
 #
-# USAGE
+# Usage
 #
 #   scripts/check-published-test-counts.sh            check the published figures (default)
 #   scripts/check-published-test-counts.sh --print    print the measured figures and check nothing

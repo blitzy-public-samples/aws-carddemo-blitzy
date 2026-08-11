@@ -437,20 +437,18 @@ class RejectRecorderTest {
         }
 
         /**
-         * Asserts each reachable reason reaches the row and the event as its typed constant.
+         * Asserts each of the four reasons reaches the row and the event as its typed constant.
          *
-         * <p>The source drives only the three reasons that follow a resolved cross-reference read.
-         * {@code app/cbl/CBTRN02C.cbl:L383-L387} assigns reason {@code 0100} inside the
-         * {@code INVALID KEY} limb and the gate at {@code :L372} then stops the account
-         * lookup, so a transaction that reached this recorder already carries the account
-         * identifier that read resolved. {@link #reasonThatResolvesNoAccountIsRefused()}
-         * covers the fourth.
+         * <p>{@code app/cbl/CBTRN02C.cbl:L446-L465} writes one reject record for every record
+         * {@code 1500-VALIDATE-TRAN} refused, so all four codes reach a row.
+         * {@code app/cbl/CBTRN02C.cbl:L383-L387} assigns reason {@code 0100} earlier than the other
+         * three, inside the {@code INVALID KEY} limb, which settles which read resolved an account and
+         * not whether the row exists.
          *
-         * @param reason one reject reason that resolves an account identifier
+         * @param reason one of the four reject reasons
          */
         @ParameterizedTest
-        @EnumSource(value = DeclineReason.class, names = "INVALID_CARD_NUMBER",
-                mode = EnumSource.Mode.EXCLUDE)
+        @EnumSource(DeclineReason.class)
         @DisplayName("stores four zero-padded digits and the text off the same constant")
         void storesFourZeroPaddedDigitsAndItsSourceText(DeclineReason reason) {
             subject.recordReject(constructedRefusal(reason), reason);
@@ -475,30 +473,26 @@ class RejectRecorderTest {
         }
 
         /**
-         * Asserts the one reason that resolves no account identifier is refused, and that neither
-         * store is touched.
+         * Asserts the reason assigned before the account move stores the same row as the other three.
          *
          * <p>{@code app/cbl/CBTRN02C.cbl:L383-L387} assigns reason {@code 0100} before
-         * {@code MOVE XREF-ACCT-ID TO FD-ACCT-ID} at {@code :L394} has run. Every
-         * {@link TransactionAuthorized} carries the identifier that move copies, so the two states
-         * cannot both hold. The guard refuses the call, and no account identity is derived for it.
+         * {@code MOVE XREF-ACCT-ID TO FD-ACCT-ID} at {@code :L394} has run, and
+         * {@code app/cbl/CBTRN02C.cbl:L446-L465} writes its reject record all the same. Nothing this
+         * recorder renders needs an account identifier: {@code REJECT-TRAN-DATA} is the 350-byte daily
+         * record of {@code app/cpy/CVTRA06Y.cpy}, which carries none, and the trailer carries the code
+         * and its text.
          */
         @Test
-        @DisplayName(
-                "the reason that resolves no account identifier is refused, and nothing stores")
-        void reasonThatResolvesNoAccountIsRefused() {
-            FeedTransaction event = refusal(AMOUNT);
+        @DisplayName("the reason assigned before the account move stores its row too")
+        void theReasonAssignedBeforeTheAccountMoveStoresItsRow() {
+            subject.recordReject(refusal(AMOUNT), DeclineReason.INVALID_CARD_NUMBER);
 
-            IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
-                    () -> subject.recordReject(event, DeclineReason.INVALID_CARD_NUMBER),
-                    "reason 0100 was recorded for an event that already carries an account"
-                            + " identifier, so the two mutually exclusive states were both held");
-
-            assertTrue(refused.getMessage().contains(DeclineReason.INVALID_CARD_NUMBER.code()),
-                    "the refusal does not name the reason it refused: " + refused.getMessage());
-            assertFalse(refused.getMessage().contains(ACCOUNT_ID),
-                    "the refusal echoed the account identifier: " + refused.getMessage());
-            verifyNoInteractions(rejectedTransactions);
+            RejectedTransactionEntity row = storedRow();
+            assertEquals(DeclineReason.INVALID_CARD_NUMBER.code(), row.getRejectReasonCode(),
+                    "the row records the code app/cbl/CBTRN02C.cbl:L385 assigns");
+            assertEquals(DeclineReason.INVALID_CARD_NUMBER.description(),
+                    row.getRejectReasonDescription(),
+                    "paired with the text app/cbl/CBTRN02C.cbl:L386-L387 writes");
         }
 
         @Test
@@ -512,18 +506,18 @@ class RejectRecorderTest {
     }
 
     /**
-     * The reject model this recorder admits, and the one it refuses.
+     * The reject model this recorder admits, which is every reject reason the source assigns.
      *
      * <p>Reason {@code 0100} is assigned inside the {@code INVALID KEY} limb of the cross-reference
      * read at {@code app/cbl/CBTRN02C.cbl:L383-L387}, before
-     * {@code MOVE XREF-ACCT-ID TO FD-ACCT-ID} at {@code :L394} has run, and the gate at
-     * {@code :L372} then stops the account read. The three other reasons are assigned after
-     * that move. Every {@link TransactionAuthorized} carries the identifier that move copies,
-     * so a transaction reaching this recorder and reason {@code 0100} are mutually exclusive.
+     * {@code MOVE XREF-ACCT-ID TO FD-ACCT-ID} at {@code :L394} has run, and the gate at {@code :L372}
+     * then stops the account read. The three other reasons are assigned after that move. What that
+     * ordering settles is which read resolved an identifier, and not whether a reject record exists:
+     * {@code app/cbl/CBTRN02C.cbl:L446-L465} writes one for every record {@code 1500-VALIDATE-TRAN}
+     * refused, and {@code REJECT-TRAN-DATA} carries no account field for this recorder to derive.
      *
-     * <p>Both layers refuse the combination. {@link RejectRecorder#recordReject} refuses it before
-     * any write, and {@link TransactionDeclined} refuses it in its canonical constructor, so
-     * no path derives an account identity for a read that resolved none.
+     * <p>A recorder that refused reason {@code 0100} was one reject row short of the source for every
+     * decline of an unknown card, which is what these assertions now hold it to.
      */
     @Nested
     @DisplayName("The reject model, and the account identity no path fabricates")
@@ -533,8 +527,8 @@ class RejectRecorderTest {
         private static final String OTHER_ACCOUNT_ID = "00000000042";
 
         @Test
-        @DisplayName("three of the four reasons resolve an account, and reason 0100 resolves none")
-        void threeReasonsResolveAnAccountAndOneResolvesNone() {
+        @DisplayName("three of the four reasons follow the account move, and reason 0100 precedes it")
+        void threeReasonsFollowTheAccountMoveAndOnePrecedesIt() {
             assertEquals(4, DeclineReason.values().length, "four codes and no fifth");
             assertFalse(DeclineReason.INVALID_CARD_NUMBER.resolvesAccount(),
                     "reason 0100 follows a read that resolved no account, at :L383-L387");
@@ -555,11 +549,10 @@ class RejectRecorderTest {
          * {@code app/cpy/CVTRA06Y.cpy:L5-L18} holds no account field. The transaction identifier is
          * what ties the row back to the decline, and it is copied rather than derived.
          *
-         * @param reason one reject reason that resolves an account identifier
+         * @param reason one of the four reject reasons
          */
         @ParameterizedTest
-        @EnumSource(value = DeclineReason.class, names = "INVALID_CARD_NUMBER",
-                mode = EnumSource.Mode.EXCLUDE)
+        @EnumSource(DeclineReason.class)
         @DisplayName("the row names the refused transaction, copied and never derived")
         void theRowNamesTheRefusedTransaction(DeclineReason reason) {
             FeedTransaction refused = feedRecord(OTHER_ACCOUNT_ID,
@@ -579,31 +572,31 @@ class RejectRecorderTest {
         }
 
         @Test
-        @DisplayName(
-                "the declined contract itself refuses reason 0100, whatever the caller supplies")
-        void theDeclinedContractRefusesReasonZeroOneHundred() {
-            IllegalArgumentException refused =
-                    assertThrows(IllegalArgumentException.class,
-                            () -> TransactionDeclined.of(ACCOUNT_ID, TRANSACTION_ID,
-                                    DeclineReason.INVALID_CARD_NUMBER, AMOUNT, MASKED_CARD_NUMBER),
-                            "the contract admitted a decline for a read that resolved no account,"
-                                    + " so the impossible model is open again");
+        @DisplayName("the declined contract carries reason 0100 with the account it applies to")
+        void theDeclinedContractCarriesReasonZeroOneHundred() {
+            TransactionDeclined declined = TransactionDeclined.of(ACCOUNT_ID, TRANSACTION_ID,
+                    DeclineReason.INVALID_CARD_NUMBER, AMOUNT, MASKED_CARD_NUMBER);
 
-            assertTrue(refused.getMessage().contains(DeclineReason.INVALID_CARD_NUMBER.code()),
-                    "the refusal does not name the reason it refused: " + refused.getMessage());
-            assertFalse(refused.getMessage().contains(ACCOUNT_ID),
-                    "the refusal echoed the account identifier: " + refused.getMessage());
-            assertFalse(LONG_DIGIT_RUN.matcher(refused.getMessage()).find(),
-                    "the refusal carried a long digit run: " + refused.getMessage());
+            assertEquals(ACCOUNT_ID, declined.accountId(),
+                    "reason 0100 names the account its decision applies to, which the caller declared"
+                            + " when the cross-reference read resolved none");
+            assertEquals(ACCOUNT_ID, declined.aggregateId(),
+                    "and it keys on that account, so the decline stays ordered with every other event"
+                            + " of it");
         }
 
         @Test
-        @DisplayName("an unresolved card attempt stores nothing at all")
-        void anUnresolvedCardAttemptStoresNothing() {
-            assertThrows(IllegalArgumentException.class,
-                    () -> subject.recordReject(refusal(AMOUNT), DeclineReason.INVALID_CARD_NUMBER));
+        @DisplayName("an unresolved-card decline stores its reject row like every other")
+        void anUnresolvedCardDeclineStoresItsRejectRow() {
+            subject.recordReject(refusal(AMOUNT), DeclineReason.INVALID_CARD_NUMBER);
 
-            verifyNoInteractions(rejectedTransactions);
+            RejectedTransactionEntity row = storedRow();
+            assertEquals(DeclineReason.INVALID_CARD_NUMBER.code(), row.getRejectReasonCode(),
+                    "the row records the reject code app/cbl/CBTRN02C.cbl:L385 assigns");
+            assertEquals(PicClause.REJECT_TRAN_DATA_WIDTH,
+                    row.getRejectedTransactionData().length(),
+                    "and the whole 350-byte data half app/cbl/CBTRN02C.cbl:L447 assembles, so this"
+                            + " reject row is the row the source writes for the same refusal");
         }
     }
 

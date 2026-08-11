@@ -26,16 +26,16 @@ One row per target. `Paragraphs` counts the prose blocks scoring reads and `Sent
 | # | Target | Paragraphs | Sentences | Over thirty words | Paragraphs over five | Buzzwords |
 |---:|---|---:|---:|---:|---:|---:|
 | 1 | `docs/decision-log.md` | 39 | 118 | 11 | 1 | 0 |
-| 2 | `docs/traceability-matrix.md` | 34 | 92 | 2 | 2 | 0 |
-| 3 | `docs/architecture-before-after.md` | 49 | 133 | 0 | 2 | 0 |
-| 4 | `docs/event-flow.md` | 113 | 309 | 15 | 4 | 0 |
-| 5 | `docs/data-model.md` | 104 | 260 | 17 | 7 | 0 |
-| 6 | `docs/onboarding.md` | 161 | 403 | 8 | 2 | 0 |
-| 7 | `docs/suggested-next-tasks.md` | 286 | 622 | 52 | 3 | 0 |
+| 2 | `docs/traceability-matrix.md` | 34 | 93 | 2 | 2 | 0 |
+| 3 | `docs/architecture-before-after.md` | 49 | 135 | 0 | 2 | 0 |
+| 4 | `docs/event-flow.md` | 117 | 322 | 15 | 4 | 0 |
+| 5 | `docs/data-model.md` | 104 | 261 | 17 | 7 | 0 |
+| 6 | `docs/onboarding.md` | 164 | 414 | 8 | 2 | 0 |
+| 7 | `docs/suggested-next-tasks.md` | 300 | 655 | 52 | 3 | 0 |
 | 8 | `docs/business-rule-flags.md` | 40 | 125 | 9 | 2 | 0 |
 | 9 | `docs/equivalence-results.md` | 83 | 232 | 12 | 2 | 0 |
 | 10 | `docs/prose-validation.md` | 182 | 239 | 0 | 0 | 0 |
-| 11 | `README.md` | 121 | 222 | 11 | 6 | 0 |
+| 11 | `README.md` | 121 | 225 | 10 | 6 | 0 |
 | 12 | `services/authorization-service/README.md` | 175 | 397 | 29 | 6 | 0 |
 | 13 | `services/ledger-posting-service/README.md` | 139 | 305 | 6 | 6 | 0 |
 | 14 | `services/fraud-detection-service/README.md` | 111 | 272 | 15 | 3 | 0 |
@@ -43,7 +43,7 @@ One row per target. `Paragraphs` counts the prose blocks scoring reads and `Sent
 | 16 | `services/account-service/README.md` | 149 | 356 | 20 | 6 | 0 |
 | 17 | `services/card-service/README.md` | 127 | 324 | 16 | 10 | 0 |
 | 18 | `../README.md` | 24 | 44 | 2 | 1 | 0 |
-| 19 | `presentation/executive-summary.html` | 117 | 123 | 0 | 0 | 0 |
+| 19 | `presentation/executive-summary.html` | 109 | 115 | 0 | 0 | 0 |
 
 ## Summary
 
@@ -59,7 +59,7 @@ One row per target. `Paragraphs` counts the prose blocks scoring reads and `Sent
 | 8 | `docs/business-rule-flags.md` | NEEDS WORK | 0 | 11 |
 | 9 | `docs/equivalence-results.md` | NEEDS WORK | 0 | 14 |
 | 10 | `docs/prose-validation.md` | CLEAN | 0 | 0 |
-| 11 | `README.md` | NEEDS WORK | 0 | 17 |
+| 11 | `README.md` | NEEDS WORK | 0 | 16 |
 | 12 | `services/authorization-service/README.md` | NEEDS WORK | 0 | 35 |
 | 13 | `services/ledger-posting-service/README.md` | NEEDS WORK | 0 | 12 |
 | 14 | `services/fraud-detection-service/README.md` | NEEDS WORK | 0 | 18 |
@@ -69,7 +69,7 @@ One row per target. `Paragraphs` counts the prose blocks scoring reads and `Sent
 | 18 | `../README.md` | CLEAN | 0 | 3 |
 | 19 | `presentation/executive-summary.html` | CLEAN | 0 | 0 |
 
-Across the nineteen targets the measurement finds 249 sentences over thirty words, 70 paragraphs over five sentences and 0 buzzword uses. That is 4 CLEAN, 15 NEEDS WORK and 0 ROUGH DRAFT.
+Across the nineteen targets the measurement finds 248 sentences over thirty words, 70 paragraphs over five sentences and 0 buzzword uses. That is 4 CLEAN, 15 NEEDS WORK and 0 ROUGH DRAFT.
 
 ## Content binding
 
@@ -77,25 +77,25 @@ Each digest is the SHA-256 of one target's bytes, in lower-case hexadecimal. It 
 
 | # | Target | SHA-256 of the text scored |
 |---:|---|---|
-| 1 | `docs/decision-log.md` | `1183344370ff3390983ccaca7957dac8f4f494034d5ed300f170fa1eb1596251` |
-| 2 | `docs/traceability-matrix.md` | `eb48b293a29a0ce28f515d9351fa8c5d377116328939c8ec74823e26517498f2` |
-| 3 | `docs/architecture-before-after.md` | `c6f81e2e14e4dd2c0f0ea88e08beb9e3e4a50dfef228e5529952ff460bc7d6e4` |
-| 4 | `docs/event-flow.md` | `9875030f9ace4d78440ff18951f39db219ea91ec21db0204474caeacb7252469` |
-| 5 | `docs/data-model.md` | `4d5380938bd5544b99b2769df94197348e462a35462b2edde8f064b90486ef28` |
-| 6 | `docs/onboarding.md` | `2bf30eb26e4c4291c839e53d8c37be42a3ac7ea19529afa6d8cdc175047d4e02` |
-| 7 | `docs/suggested-next-tasks.md` | `a84b2ede8455bca4c5c4a119613721d474c6b66dc1930cd5987ba57cef625cac` |
+| 1 | `docs/decision-log.md` | `821ed0c910870b240c4df3e442194827ce79f870f3597b0b70482d97afeb6585` |
+| 2 | `docs/traceability-matrix.md` | `ba7823302046d71940d3ef9c947d4d3e20daabf6aea5a4c14a20119dd217e1c3` |
+| 3 | `docs/architecture-before-after.md` | `24a53c76626bc3aca88b643b1116210a266431655544693efe623d5307374511` |
+| 4 | `docs/event-flow.md` | `6aac0bc27ddc6cf60a0bb02e207db293f23e88a21c5ca32ad87bc0979550d748` |
+| 5 | `docs/data-model.md` | `a5b9edc15606bffefea041a8053777acb737f769eccd5a46472a4b3c54fff0f7` |
+| 6 | `docs/onboarding.md` | `4f02908e458dc43bb66faa6f9864500801110814908b52260b14ae81eec398c4` |
+| 7 | `docs/suggested-next-tasks.md` | `0af8483eee5f56fbfbcd1350fecb9f9ddfe9974fcc8d9cdc8bbf38d91a81617c` |
 | 8 | `docs/business-rule-flags.md` | `a843dd76753670d7bcac28feb154849db7261755ec3adc6e91676af5132c376e` |
-| 9 | `docs/equivalence-results.md` | `f4f78fab04aa0a21ec548e875db8f5e736014cf3e3846e8a84a7afa188bb5df8` |
+| 9 | `docs/equivalence-results.md` | `e0070d63ace9fc07b701d140f093ba3444c78b4d7458273aaec68bf35d59582d` |
 | 10 | `docs/prose-validation.md` | This report carries no digest: a file cannot publish the digest of its own bytes |
-| 11 | `README.md` | `562677613d0dde245c507a4b1ebfbed10e20f0685b14102262d67737ab53b87a` |
-| 12 | `services/authorization-service/README.md` | `e8dedc218209ced98963ff10d6457e8dd81ce44744df758c1051a898f794b3da` |
+| 11 | `README.md` | `37d457645f588665da620f2c5b2898cecaa94f53f57dfec94918b5f346f39fb8` |
+| 12 | `services/authorization-service/README.md` | `5fcb1d62a6279cd7892303072f5defc7d34b298787f6c59a9d21c681c24cf720` |
 | 13 | `services/ledger-posting-service/README.md` | `a6f95a9bfd8522bcbbf93dadc32b4df8052fbfabae1718c1c5cf83ea8545b577` |
 | 14 | `services/fraud-detection-service/README.md` | `716a794b46ab4f632d1093e823acfdc9e0a608aa376bdae62bd45d7d1a122c7d` |
 | 15 | `services/notification-service/README.md` | `804903c84f7e13c39ba1a812078bd9242b2036e6e4430ecbc14b2354a190fbc6` |
 | 16 | `services/account-service/README.md` | `0ec21d399d2f8e1b99d0300ef2aed298fe1f5effee2878bcc685ec0ec51b30f1` |
-| 17 | `services/card-service/README.md` | `a7b8bf02e28ccb371c72944665ff8d387bc6902c1a230bbbc150498f81b35974` |
+| 17 | `services/card-service/README.md` | `5891d4a857dfc3653e1e0fa84eca69474c5793f07cf4673d6319ed79f5158243` |
 | 18 | `../README.md` | `2e865216acdd11b326b2c08cc0dfbef1fc585e940e7ef95cc67102bf2b9b7dc6` |
-| 19 | `presentation/executive-summary.html` | `b660e371076e96121571503a4595a2c5b37cc8bcc01fa64fcc795c0302722699` |
+| 19 | `presentation/executive-summary.html` | `6c431562ee756df50ee167de2376c07af0a437fb1ae4e1cb8506166e038569c1` |
 
 ## Per-document reports
 
@@ -603,15 +603,15 @@ None. This target has no measured violation.
 
 ### 11. `README.md`
 
-**Overall verdict:** **NEEDS WORK** — 0 hard violations, 17 soft violations.
+**Overall verdict:** **NEEDS WORK** — 0 hard violations, 16 soft violations.
 
-**Measured:** 11 sentences over thirty words, 6 paragraphs over five sentences, 0 buzzword uses.
+**Measured:** 10 sentences over thirty words, 6 paragraphs over five sentences, 0 buzzword uses.
 
 | Principle number and name | Weight | Result | Worst offender quoted |
 |---|---|---|---|
 | V1: Find a subject you care about | Reduced | Not measured | — |
 | V2: Do not ramble | Raised | Soft violation | one paragraph of 12 sentences (entry 11.2) |
-| V3: Keep it simple | Raised | Soft violation | An authorization whose card resolves none publishes its decline keyed… (47 words, entry 11.1) |
+| V3: Keep it simple | Raised | Soft violation | No clock bound relates the capture moment to the clock of the authorization service… (40 words, entry 11.1) |
 | V4: Have the guts to cut | Standard | Not measured | — |
 | V5: Sound like yourself | Reduced | Pass | — |
 | V6: Say what you mean | Raised | Not measured | — |
@@ -622,7 +622,7 @@ None. This target has no measured violation.
 | V11: The Indianapolis Test | Standard | Not measured | — |
 | V12: Humor as Trust Signal | Standard | Not measured | — |
 | A1: Plate Glass Clarity | Standard | Not measured | — |
-| A2: Short Words, Simple Structures | Standard | Soft violation | An authorization whose card resolves none publishes its decline keyed… (47 words, entry 11.1) |
+| A2: Short Words, Simple Structures | Standard | Soft violation | No clock bound relates the capture moment to the clock of the authorization service… (40 words, entry 11.1) |
 | A3: Logical Sequence | Standard | Not measured | — |
 | A4: Ideas Carry the Weight | Standard | Not measured | — |
 | A5: Conversational Informality | Standard | Not measured | — |
@@ -634,15 +634,15 @@ None. This target has no measured violation.
 
 **Per-violation entries:**
 
-**11.1 — V3: Keep it simple** and **A2: Short Words, Simple Structures** — soft violation, 47 words.
+**11.1 — V3: Keep it simple** and **A2: Short Words, Simple Structures** — soft violation, 40 words.
 
-> An authorization whose card resolves none publishes its decline keyed on the 16-character transaction identifier instead, under `transaction-declined-v2`, which declares no `accountId`: reject code 0100 is answered to the caller and recorded in `unresolved_card_attempt` and `authorization_decision` beside that event, so one decided call produces exactly one event.
+> No clock bound relates the capture moment to the clock of the authorization service: reject code 0103, which compares the account expiry against the first ten characters of the capture moment, is the whole of the test applied to it.
 
-**Rewrite** — 38 words, 19% shorter:
+**Rewrite** — 31 words, 23% shorter:
 
-> An authorization whose card resolves none publishes under `transaction-declined-v2`, keyed on the transaction identifier and declaring no `accountId`. Reject code 0100 is answered to the caller and recorded beside that event, so one decided call produces one event.
+> No clock bound relates the capture moment to the clock of this service. Reject code 0103 compares the account expiry against its first ten characters, and that is the whole test.
 
-**Why the rewrite is better:** The contract the decline travels under and the record it leaves are two facts, and each now gets a sentence.
+**Why the rewrite is better:** The original nests the one test inside the statement of the absence. Two sentences carry one fact each.
 
 **11.2 — V2: Do not ramble** — soft violation, 12 sentences in one paragraph.
 
@@ -664,7 +664,7 @@ None. This target has no measured violation.
 |---|---|---|---|
 | V1: Find a subject you care about | Reduced | Not measured | — |
 | V2: Do not ramble | Raised | Soft violation | one paragraph of 7 sentences (entry 12.2) |
-| V3: Keep it simple | Raised | Soft violation | A request that reaches the rule chain writes one `TransactionAuthorized`… (45 words, entry 12.1) |
+| V3: Keep it simple | Raised | Soft violation | `domain/CallerEntitlement` compares the caller against the resolved account… (40 words, entry 12.1) |
 | V4: Have the guts to cut | Standard | Not measured | — |
 | V5: Sound like yourself | Reduced | Pass | — |
 | V6: Say what you mean | Raised | Not measured | — |
@@ -675,7 +675,7 @@ None. This target has no measured violation.
 | V11: The Indianapolis Test | Standard | Not measured | — |
 | V12: Humor as Trust Signal | Standard | Not measured | — |
 | A1: Plate Glass Clarity | Standard | Not measured | — |
-| A2: Short Words, Simple Structures | Standard | Soft violation | A request that reaches the rule chain writes one `TransactionAuthorized`… (45 words, entry 12.1) |
+| A2: Short Words, Simple Structures | Standard | Soft violation | `domain/CallerEntitlement` compares the caller against the resolved account… (40 words, entry 12.1) |
 | A3: Logical Sequence | Standard | Not measured | — |
 | A4: Ideas Carry the Weight | Standard | Not measured | — |
 | A5: Conversational Informality | Standard | Not measured | — |
@@ -687,15 +687,15 @@ None. This target has no measured violation.
 
 **Per-violation entries:**
 
-**12.1 — V3: Keep it simple** and **A2: Short Words, Simple Structures** — soft violation, 45 words.
+**12.1 — V3: Keep it simple** and **A2: Short Words, Simple Structures** — soft violation, 40 words.
 
-> A request that reaches the rule chain writes one `TransactionAuthorized` on an approval, and one `TransactionDeclined` on a decline — reasons 0100, 0101, 0102 and 0103, with 0100 travelling under the version of that contract keyed on the transaction identifier because it resolved no account.
+> `domain/CallerEntitlement` compares the caller against the resolved account immediately after the cross-reference read and before a transaction identifier is allocated, which is where the comparison has to happen because an account-only request has no card until that read has run.
 
-**Rewrite** — 35 words, 22% shorter:
+**Rewrite** — 29 words, 28% shorter:
 
-> A request that reaches the rule chain writes one `TransactionAuthorized` on an approval, and one `TransactionDeclined` on a decline. The reasons are 0100, 0101, 0102 and 0103, and 0100 travels keyed on the transaction identifier.
+> `domain/CallerEntitlement` compares the caller against the resolved account after the cross-reference read and before an identifier is allocated. An account-only request has no card until that read has run.
 
-**Why the rewrite is better:** The dash carried a second thought about the reason codes, which reads better as its own sentence.
+**Why the rewrite is better:** Where the comparison happens and why are two facts. The second reads better as its own sentence.
 
 **12.2 — V2: Do not ramble** — soft violation, 7 sentences in one paragraph.
 
@@ -1030,6 +1030,8 @@ None. This target has no measured violation.
 **Overall verdict:** **CLEAN** — 0 hard violations, 0 soft violations.
 
 **Measured:** 0 sentences over thirty words, 0 paragraphs over five sentences, 0 buzzword uses.
+
+**Rule 4 body words:** every one of the sixteen slides is inside the ceiling of forty, the heaviest at thirty-nine. The count is every visible word of a slide. A heading, an eyebrow, a table caption, a header cell, a body cell, a metric card and an icon label all count against it. Only the source a diagram is generated from and the decorative slide number are left out. Four slides stood at 103, 94, 88 and 43 words while the count excluded tables, headings and metric grids, and `PresentationAndProseContractTest.bodyWordCount` counts them now.
 
 | Principle number and name | Weight | Result | Worst offender quoted |
 |---|---|---|---|

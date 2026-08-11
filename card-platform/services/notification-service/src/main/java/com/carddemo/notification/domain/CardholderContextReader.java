@@ -22,13 +22,12 @@ import org.springframework.stereotype.Component;
  * path: the alert went out looking like a rendering with nothing to say rather than like an error.
  * Reporting the gap is the only way it can be noticed.
  *
- * <p>WHY RETRYABLE AND NOT PERMANENT. A missing row is a legitimate transient state. The account
- * service owns the customer record and publishes {@code CustomerContextChanged}, and the two events
- * race: a transaction can be authorized and posted before the context for a newly opened account has
- * arrived. The exception below is therefore left under the retryable default of
- * {@code config/KafkaConsumerConfig}, which registers only a refused deserialization as permanent. A
- * delivery that finds no context is taken again, and only a record whose attempts run out reaches the
- * dead-letter topic, where the absence is visible instead of rendered as spaces.
+ * <p>A missing row is a transient state: the account service owns the customer record and publishes
+ * {@code CustomerContextChanged}, so a transaction can be authorized before that context arrives. The
+ * exception below stays under the retryable default of {@code config/KafkaConsumerConfig}, which
+ * registers only a refused deserialization as permanent, so a delivery that finds no context is taken
+ * again and only a record whose attempts run out reaches the dead-letter topic. Rationale,
+ * alternatives considered and accepted risks: {@code card-platform/docs/decision-log.md}.
  *
  * <p>{@code db/migration/V2__seed.sql} bootstraps the projection for the fifty accounts of
  * {@code app/data/ASCII/custdata.txt}, so the shipped demo renders complete alerts from its first

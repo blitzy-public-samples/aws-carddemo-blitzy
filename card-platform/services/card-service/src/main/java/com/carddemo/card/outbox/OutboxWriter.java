@@ -6,9 +6,11 @@ import com.carddemo.card.messaging.CardUpdated;
 import com.carddemo.card.repository.OutboxEventRepository;
 import com.carddemo.cobol.PicClause;
 import com.carddemo.events.correlation.EventCorrelation;
+import com.carddemo.events.serde.EventContracts;
 import java.time.Clock;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
+import java.util.List;
 import java.util.Objects;
 import java.util.regex.Pattern;
 import org.apache.kafka.common.errors.SerializationException;
@@ -239,13 +241,17 @@ public class OutboxWriter {
      * <p>{@link CardUpdated#toValidatedJson()} does the work. It serializes through
      * {@code com.carddemo.events.serde.JsonSchemaValidatingSerializer}, which screens the document
      * for a forbidden property and for a card number or government identifier in free text, checks
-     * it against {@code card-updated-v1.json}, and refuses one past the platform byte ceiling. The
-     * check runs before the row is saved, so a payload the contract refuses leaves the caller's
-     * transaction able to roll back with nothing stored.
+     * it against the document {@link CardUpdated#SCHEMA_VERSION} selects, and refuses one past the
+     * platform byte ceiling. The check runs before the row is saved, so a payload the contract
+     * refuses leaves the caller's transaction able to roll back with nothing stored.
      *
-     * <p>The document is flat. Five envelope properties sit beside four payload properties, and
-     * {@code card-updated-v1.json} names all nine in one {@code required} array. That document
-     * closes its property set, so an undeclared property fails this check.
+     * <p>{@link EventContracts#postureViolationsOf(String, int)} runs after it, because the document
+     * gate answers whether the payload fits its contract and not whether a producer may still write
+     * that contract. A version the released baseline retains rather than publishes is refused here.
+     *
+     * <p>The document is flat. Five envelope properties sit beside the payload properties, and the
+     * document names all of them in one {@code required} array. It closes its property set, so an
+     * undeclared property fails this check.
      *
      * <p>The gate reports a refusal as a {@code SerializationException}, which names a Kafka
      * concern this transaction has not reached: nothing is published here, and the caller is a
@@ -257,13 +263,23 @@ public class OutboxWriter {
      *
      * @param event the event to write
      * @return the event as JSON text, validated
-     * @throws IllegalArgumentException when the written payload breaks its contract document
+     * @throws IllegalArgumentException when the written payload breaks its contract document, or when
+     *                                  the version it declares is retained rather than published
      */
     private String writeAndCheck(CardUpdated event) {
+        String payload;
         try {
-            return event.toValidatedJson();
+            payload = event.toValidatedJson();
         } catch (SerializationException refused) {
             throw new IllegalArgumentException(refused.getMessage(), refused);
         }
+
+        List<String> posture = EventContracts.postureViolationsOf(event.eventType(),
+                event.schemaVersion());
+        if (!posture.isEmpty()) {
+            throw new IllegalArgumentException(
+                    EventContracts.describeViolations(event.eventType(), posture));
+        }
+        return payload;
     }
 }

@@ -43,7 +43,7 @@ import static org.junit.jupiter.api.Assertions.fail;
  * cross-reference read on all sixteen characters, and masking happens at the serialization boundary
  * afterwards, so the wire form carries twelve mask characters and the last four digits.
  *
- * <p>{@code schemas/card-updated-v1.json} ships in the event-contracts module and is the
+ * <p>{@code schemas/card-updated-v2.json} ships in the event-contracts module and is the
  * contract this service publishes against. The serializer validates the bytes before returning them,
  * so a call that returns bytes is a call whose payload satisfied that document.
  *
@@ -54,7 +54,7 @@ import static org.junit.jupiter.api.Assertions.fail;
 class CardUpdatedPublishPathTest {
 
     /** The contract this service publishes against, on the classpath from event-contracts. */
-    private static final String DOCUMENT = "schemas/card-updated-v1.json";
+    private static final String DOCUMENT = "schemas/card-updated-v2.json";
 
     /** The topic the card service publishes a card mutation to. */
     private static final String TOPIC = "card.updated";

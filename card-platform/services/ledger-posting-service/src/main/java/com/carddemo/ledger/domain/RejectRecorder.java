@@ -112,30 +112,29 @@ public class RejectRecorder {
      * committed. Counting beside the row put a durable increment behind a write a rollback could
      * still undo, so a reject the store never kept was reported as one it did.
      *
-     * <p>{@link DeclineReason#INVALID_CARD_NUMBER} cannot reach this method. That reason is
-     * assigned inside the {@code INVALID KEY} limb of the cross-reference read at
-     * {@code app/cbl/CBTRN02C.cbl:L383-L387}, and the gate at {@code :L372} then keeps the account
-     * read from running. Every {@link TransactionAuthorized} carries the eleven-digit account
-     * identifier that same read resolved, so the two states are mutually exclusive. The guard below
-     * refuses that reason, and derives no account identity for it.
+     * <p>All four reject reasons reach this method, {@link DeclineReason#INVALID_CARD_NUMBER}
+     * included. {@code app/cbl/CBTRN02C.cbl:L446-L465} writes one reject record for every record
+     * {@code 1500-VALIDATE-TRAN} refused, and the gate at {@code :L221-L224} sends every one of them
+     * here regardless of which reason stands. Reason {@code 0100} is assigned earlier than the other
+     * three, inside the {@code INVALID KEY} limb of the cross-reference read at
+     * {@code app/cbl/CBTRN02C.cbl:L383-L387}, and that changes which read resolved an account and not
+     * whether a reject record exists.
+     *
+     * <p>Nothing rendered here needs an account identifier. {@code REJECT-TRAN-DATA} is the
+     * three-hundred-and-fifty-byte daily record of {@code app/cpy/CVTRA06Y.cpy}, which carries none,
+     * and the eighty-byte trailer carries the reject code and its text. The account the decline
+     * applies to reaches this service on the event and is what the caller's marker and its meters are
+     * keyed on.
      *
      * @param refused the feed record {@code 1500-VALIDATE-TRAN} refused
      * @param reason  the validation failure the caller established
      * @throws NullPointerException     when {@code refused} or {@code reason} is {@code null}
-     * @throws IllegalArgumentException when {@code reason} answers {@code false} to
-     *                                  {@link DeclineReason#resolvesAccount()}
      * @throws IllegalStateException    when a rendered half misses its declared width
      */
     @Transactional
     public void recordReject(FeedTransaction refused, DeclineReason reason) {
         FeedTransaction event = Objects.requireNonNull(refused, "refused is required");
         Objects.requireNonNull(reason, "reason is required");
-        if (!reason.resolvesAccount()) {
-            throw new IllegalArgumentException("reason " + reason.code()
-                    + " is assigned before the cross-reference resolves an account identifier at"
-                    + " app/cbl/CBTRN02C.cbl:L383-L387, and every authorized event already carries"
-                    + " one, so it cannot arise on this path");
-        }
 
         String rejectTranData = rejectTranData(event);
         String validationTrailer = validationTrailer(reason);

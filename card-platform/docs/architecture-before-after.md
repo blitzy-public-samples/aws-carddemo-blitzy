@@ -317,7 +317,7 @@ Each service owns one database, one schema, and the tables below. Column types, 
 
 | Service | Database and schema | Owned tables |
 | --- | --- | --- |
-| authorization | `carddemo_authorization`, `authorization_service` | `card_xref`, `account_credit_snapshot`, `authorization_decision`, `unresolved_card_attempt`, `outbox_event`, `processed_event` |
+| authorization | `carddemo_authorization`, `authorization_service` | `card_xref`, `account_credit_snapshot`, `authorization_decision`, `unresolved_card_attempt`, `replica_gap`, `outbox_event`, `processed_event` |
 | ledger posting | `carddemo_ledger`, `ledger_service` | `transaction`, `transaction_category_balance`, `account_balance_projection`, `transaction_type`, `transaction_category`, `rejected_transaction`, `outbox_event`, `processed_event` |
 | fraud detection | `carddemo_fraud`, `fraud_service` | `fraud_assessment`, `velocity_window`, `outbox_event`, `processed_event` |
 | notification | `carddemo_notification`, `notification_service` | `statement_transaction`, `cardholder_context`, `notification_log`, `processed_event` |
@@ -330,9 +330,9 @@ Three services hold a copy of the cross-reference relationship, which is the del
 | --- | --- | --- | --- |
 | authorization `card_xref` | `V1` schema, `V2` seed | `CardUpdatedConsumer` on `authorization-card-updated`, which refreshes the observation metadata only. It never remaps a card to a different account | The decline rules, on every authorization call |
 | account `account_customer_link` | `V7` migration, which seeds the pairs and drops the card-keyed `V4` replica | Nothing. No event refreshes it | `AccountUpdateService`, which reads one row under a lock to confirm the submitted account and customer are the stored pair |
-| card `card_xref` | `V1` schema, `V2` seed | Nothing. This service registers no listener | Nothing under `src/main/java`. The entity and repository exist and only tests call them |
+| card `card_xref` | `V1` schema, `V2` seed | `CardCrossReferenceReconciler`, on every card update that commits. This service registers no listener, so a card it never updates is never compared | `CardUpdateService`, inside the transaction that writes the card row and its outbox row |
 
-Two consequences are worth stating plainly. A card that moves to another account is not re-pointed in either card-keyed copy, and no service measures the divergence. [The decision log](decision-log.md) records that as a deliberate deferral.
+Two consequences are worth stating plainly. The card copy is corrected only on the path this service owns: an update that commits reconciles that card's replica row against the card row holding the mapping. The outcome lands on `carddemo.card.xref.agreed`, `carddemo.card.xref.corrected` or `carddemo.card.xref.missing`, and a card nobody updates is never compared. The authorization copy is never re-pointed at all, because a `CardUpdated` event carries a masked card number and cannot name a row keyed on sixteen characters. [The decision log](decision-log.md) records both, and [next tasks](suggested-next-tasks.md) carries the divergence that remains.
 
 ## Component-by-component correspondence
 

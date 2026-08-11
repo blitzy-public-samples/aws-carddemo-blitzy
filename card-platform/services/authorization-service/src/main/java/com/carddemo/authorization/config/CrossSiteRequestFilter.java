@@ -35,16 +35,11 @@ import org.springframework.web.filter.OncePerRequestFilter;
  * <p>Three conditions are tested, and any one of them refuses the request.
  *
  * <ul>
- * <li><b>Fetch metadata.</b> A browser states where a request came from in {@code Sec-Fetch-Site},
- * and page script cannot set that header. Anything other than {@code same-origin} or
- * {@code same-site} is refused, {@code cross-site} and {@code none} among them.</li>
- * <li><b>Origin.</b> When {@code Origin} is present it has to name this service's own origin. A
- * browser sends it on every state-changing request, so a foreign value is a forged call and the
- * literal {@code null} an opaque origin sends is foreign too.</li>
- * <li><b>A non-simple request header.</b> An HTML form can set none: the three content types a
- * form may declare are the only ones it reaches, and it cannot add a header at all. A cross-origin
- * {@code fetch} that added one would turn the call into a preflighted request, and no chain of this
- * platform grants a cross-origin policy, so the browser refuses it before it is sent.</li>
+ * <li><b>Fetch metadata.</b> A request declaring a {@code Sec-Fetch-Site} that is neither
+ * {@code same-origin} nor {@code same-site} is refused.</li>
+ * <li><b>Origin.</b> An {@code Origin} naming another origin is refused.</li>
+ * <li><b>A request header no form can set.</b> An unsafe method carrying no value in the
+ * header {@code carddemo.api.cross-site.required-header} names is refused.</li>
  * </ul>
  *
  * <p>Safe methods pass untouched. {@code GET}, {@code HEAD}, {@code OPTIONS} and {@code TRACE}

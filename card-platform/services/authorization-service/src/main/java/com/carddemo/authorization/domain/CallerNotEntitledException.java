@@ -8,18 +8,14 @@ package com.carddemo.authorization.domain;
  * typed. Neither compares the identity that asked against the account or card the request names, so
  * this refusal has no ancestor and is stated as an addition.
  *
- * <p>Why it cannot be a fifth reject reason. The four reject reasons at
- * {@code app/cbl/CBTRN02C.cbl:L385-L420} are outcomes of the transaction, and each one is published
- * as a {@code TransactionDeclined} event that downstream consumers act on. This refusal is an outcome
- * of the caller: no decision was taken, nothing was recorded and no event was written. Publishing it
- * as a decline would tell every consumer that a transaction was declined when no transaction was ever
- * decided, and it would put an account identifier the caller does not own onto a topic.
+ * <p>It is not one of the four reject reasons at {@code app/cbl/CBTRN02C.cbl:L385-L420}, and no
+ * {@code TransactionDeclined} event is published for it: no decision was taken, nothing was recorded
+ * and no event was written.
  *
- * <p>Why the message discloses nothing. {@link #DETAIL} is fixed text. A detail naming the account,
- * the card or the reason the check failed would confirm to an unentitled caller that the subject
- * exists, which is how a caller holding one credential enumerates the identifiers it does not hold.
- * {@code config/SecurityConfig} answers a route-level denial with the same text for the same reason,
- * so the two refusals read alike.
+ * <p>{@link #DETAIL} is fixed text naming neither the account, the card nor the check that failed,
+ * and {@code config/SecurityConfig} answers a route-level denial with the same text, so the two
+ * refusals read alike. Rationale, alternatives considered and accepted risks:
+ * {@code card-platform/docs/decision-log.md}.
  *
  * <p>{@code api/GlobalExceptionHandler} answers {@code 403} and
  * {@code domain/AuthorizationService} counts the refusal under the

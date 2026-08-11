@@ -16,34 +16,15 @@ import org.springframework.stereotype.Component;
  * replace, and it names it in the job rather than in {@code app/cbl/CBSTM03A.CBL}, so the program
  * could not resolve a name at run time at all.
  *
- * <h2>The problem this solves</h2>
- *
- * <p>This module registers four listeners, and each is decided by two configured names: the topic
- * it reads and the consumer group it reads under. All eight names are reported here, beside
- * the shared dead-letter topic and the per-source suffix. Both arrive with an in-image default,
- * for example
- * {@code ${TOPIC_TRANSACTION_POSTED:transaction.posted}} and
- * {@code ${GROUP_NOTIFICATION_POSTED:notification-posted}}. That is deliberate: a service has to
- * start on a developer machine with nothing set. It also means a dropped, renamed or mistyped key in
- * {@code card-platform/deploy/k8s/30-configmap.yaml} or {@code card-platform/docker-compose.yml}
- * produces no error at all. A wrong topic leaves this service waiting for events that arrive
- * elsewhere; a wrong group is worse, because two listeners sharing one group split the partitions
- * between them and each sees half the events, which looks like intermittent loss rather than like
- * misconfiguration.
- *
  * <p>This class makes both choices visible instead of removing them. Each name is logged once as the
  * context finishes starting: at INFO when the platform supplied the value, naming the variable it
  * came from, and at WARN when it did not, naming the variable that is missing.
  *
- * <h2>What is reported, and what is not</h2>
- *
- * <p>Stream and group names only. The retry settings and the history page sizes arrive the same way,
- * and a wrong value there changes a retry or a page; a wrong stream or group name costs events. Those
- * numbers stay in the bound {@link NotificationProperties} record, which fails start-up when one of
- * them is invalid.
- *
  * <p>No credential is reported here, and no card number: a topic name and a group name are neither,
  * and the class reads nothing else.
+ *
+ * <p>Rationale, alternatives considered and accepted risks:
+ * {@code card-platform/docs/decision-log.md}.
  */
 @Component
 public class StreamNameReport implements ApplicationListener<ApplicationReadyEvent> {

@@ -76,9 +76,9 @@ The counts below describe the delivered tree rather than one moment, and the mec
 
 | Measure | Observed result |
 |---|---:|
-| Failsafe equivalence tests | 228 passed across the nine `*EquivalenceTest` classes |
-| Failsafe end-to-end flow test in the same module | 6 passed in `ThreeConsumerAuthorizationFlowIT`, giving 234 for this module's whole Failsafe run |
-| Surefire unit and contract tests in the same module | 492 passed |
+| Failsafe equivalence tests | 229 passed across the nine `*EquivalenceTest` classes |
+| Failsafe end-to-end flow test in the same module | 6 passed in `ThreeConsumerAuthorizationFlowIT`, giving 235 for this module's whole Failsafe run |
+| Surefire unit and contract tests in the same module | 506 passed |
 | `*EquivalenceTest` classes executed | 9 |
 | Required named equivalence classes | 6 present and passing |
 | Checked-in expected-output files | 14, every one read by its declared consumer |
@@ -87,7 +87,7 @@ The counts below describe the delivered tree rather than one moment, and the mec
 | Errors | 0 |
 | Skipped tests | 0 |
 
-The module holds nine classes matching `**/*EquivalenceTest.java`: the six the specification names, plus three added during implementation. The three added contribute 34 tests and the six named contribute the remaining 194, which is the 228 above. Failsafe here also selects `**/*IT.java`, and the one class that pattern matches contributes the remaining 6.
+The module holds nine classes matching `**/*EquivalenceTest.java`: the six the specification names, plus three added during implementation. The three added contribute 34 tests and the six named contribute the remaining 195, which is the 229 above. Failsafe here also selects `**/*IT.java`, and the one class that pattern matches contributes the remaining 6.
 
 Every one of the fourteen files under `src/test/resources/expected/` is read row by row by the tests its comment line declares, and thirteen of them refuse to finish while any row is left unconsumed. The fourteenth holds itself to the row count it declares instead, which catches the same addition. `ExpectedOutputBindingContractTest` lists that directory from disk, so a new file is covered the moment it lands. It resolves each reader call's argument to the file that call opens, and requires the declaration and the call sites to agree in both directions.
 
@@ -120,27 +120,27 @@ The reject record itself is compared as bytes. `renderRejectRecord` copies the f
 | `InterestCalculationEquivalenceTest` | 23 |
 | `BillPaymentEquivalenceTest` | 22 |
 | `FixtureCoverageEquivalenceTest` | 18 |
-| `AuthorizationDecisionEquivalenceTest` | 17 |
+| `AuthorizationDecisionEquivalenceTest` | 18 |
 | `IdentifierFidelityEquivalenceTest` | 9 |
 | `CardSeedEquivalenceTest` | 7 |
 | `ThreeConsumerAuthorizationFlowIT` | 6 |
 
-The whole reactor ran 6,243 Surefire and 591 Failsafe tests in the same run, with zero failures, zero errors and zero skips. Those two figures belong here rather than in a service guide, because one run identity is easier to keep true than seven.
+The whole reactor ran 6,335 Surefire and 592 Failsafe tests in the same run, with zero failures, zero errors and zero skips. Those two figures belong here rather than in a service guide, because one run identity is easier to keep true than seven.
 
 Here is where they came from, module by module. `scripts/check-published-test-counts.sh` compares every cell below against the reports of a completed build, so a figure in this table is measured rather than asserted.
 
 | Reactor module | Surefire | Failsafe |
 |---|---:|---:|
-| `libs/event-contracts` | 246 | 0 |
+| `libs/event-contracts` | 316 | 0 |
 | `libs/cobol-compat` | 125 | 0 |
-| `services/authorization-service` | 809 | 52 |
-| `services/ledger-posting-service` | 479 | 22 |
+| `services/authorization-service` | 815 | 52 |
+| `services/ledger-posting-service` | 481 | 22 |
 | `services/fraud-detection-service` | 717 | 74 |
 | `services/notification-service` | 863 | 39 |
 | `services/account-service` | 1,757 | 51 |
 | `services/card-service` | 755 | 119 |
-| `equivalence-tests` | 492 | 234 |
-| **Reactor total** | **6,243** | **591** |
+| `equivalence-tests` | 506 | 235 |
+| **Reactor total** | **6,335** | **592** |
 
 The two library modules carry no Failsafe figure because neither holds a class the integration patterns select: `**/*IT.java` and `**/*EquivalenceTest.java` match nothing under either. Every other module holds at least one, and the script fails when one of them writes no Failsafe report, which is the fail-open case a silently empty selection would otherwise leave green.
 

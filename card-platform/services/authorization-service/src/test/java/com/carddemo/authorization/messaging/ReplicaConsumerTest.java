@@ -634,13 +634,13 @@ class ReplicaConsumerTest {
                 """.formatted(EVENT_ID, OCCURRED_AT, ACCOUNT_ID, ACCOUNT_ID);
     }
 
-    /** One card update, in the shape the schema document governs. */
+    /** One card update, in the shape the schema document the card service publishes governs. */
     private static String cardJson() {
         return """
                 {
                   "eventId": "%s",
                   "eventType": "CardUpdated",
-                  "schemaVersion": 1,
+                  "schemaVersion": 2,
                   "occurredAt": "%s",
                   "aggregateId": "%s",
                   "accountId": "%s",

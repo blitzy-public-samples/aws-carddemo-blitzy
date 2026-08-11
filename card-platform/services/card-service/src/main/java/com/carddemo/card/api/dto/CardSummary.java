@@ -111,7 +111,7 @@ public record CardSummary(String cardNumber, String accountId, String activeStat
      * Refuses an active status outside the two values the column may hold.
      *
      * <p>{@code 88 FLG-YES-NO-VALID VALUES 'Y', 'N'.} at {@code app/cbl/COCRDUPC.cbl:L91} is the
-     * domain, tested at {@code app/cbl/COCRDUPC.cbl:L1861-L1863}. Three places now hold a card row to
+     * domain, tested at {@code app/cbl/COCRDUPC.cbl:L861-L871}. Three places now hold a card row to
      * it: {@code api/dto/CardUpdateRequest} on the way in, {@code ck_card_active_status} in
      * {@code src/main/resources/db/migration/V5__xref_reconciliation_and_status_domain.sql} for every
      * writer including a direct load, and this method on the way out. Before those two additions the

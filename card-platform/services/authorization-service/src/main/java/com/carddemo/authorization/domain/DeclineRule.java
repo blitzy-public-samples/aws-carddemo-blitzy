@@ -198,15 +198,16 @@ public interface DeclineRule {
          * a caller sent cannot reach a rule even by mistake. That is the whole reason the
          * constructor's parameter list is shaped the way it is.
          *
-         * <p>A {@code null} result is meaningful rather than an error. Reject reason
+         * <p>A {@code null} result is meaningful rather than an error, and it reports what the read
+         * did rather than what the decision applies to. Reject reason
          * {@link DeclineReason#INVALID_CARD_NUMBER} is assigned at
-         * {@code app/cbl/CBTRN02C.cbl:L385-L387} when that keyed read misses, so at that point no
-         * account identifier exists. That decline still reaches a topic, under a contract shaped for
-         * it: {@code domain/AuthorizationService} records the attempt in
-         * {@code unresolved_card_attempt} and publishes
-         * {@code schemas/transaction-declined-v2.json}, which carries no {@code accountId} and is
-         * keyed on the transaction identifier. Every other reason runs after the cross-reference
-         * resolved, so this accessor answers with a value for each of them.
+         * {@code app/cbl/CBTRN02C.cbl:L385-L387} when that keyed read misses, so no account
+         * identifier was read. {@code domain/AuthorizationService} then takes the subject from the
+         * account the caller declared at {@code app/cbl/COTRN02C.cbl:L196-L209}, records the attempt
+         * in {@code unresolved_card_attempt} and publishes
+         * {@code schemas/transaction-declined-v3.json} keyed on that account, exactly as it does for
+         * the other three reasons. Every other reason runs after the cross-reference resolved, so
+         * this accessor answers with a value for each of them.
          *
          * @return the eleven-digit account identifier the cross-reference row held, or {@code null}
          *         when the cross-reference has not resolved

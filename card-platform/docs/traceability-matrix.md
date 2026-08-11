@@ -1,6 +1,6 @@
 # Traceability Matrix
 
-Rule 1 requires every source construct to reach a target or a documented exclusion. The matrix also reads backward, from every one of the 871 delivered target paths to source provenance or a net-new marker. Coverage arithmetic closes each source inventory before any mapping detail. Design rationale lives in the [decision log](decision-log.md), flagged source ambiguities in [business-rule flags](business-rule-flags.md), and the paired architecture views in [architecture before and after](architecture-before-after.md).
+Rule 1 requires every source construct to reach a target or a documented exclusion. The matrix also reads backward, from every one of the 876 delivered target paths to source provenance or a net-new marker. Coverage arithmetic closes each source inventory before any mapping detail. Design rationale lives in the [decision log](decision-log.md), flagged source ambiguities in [business-rule flags](business-rule-flags.md), and the paired architecture views in [architecture before and after](architecture-before-after.md).
 
 ## Coverage summary
 
@@ -16,9 +16,9 @@ Every count in this document was measured in the repository. Where a measurement
 | `app/cpy-bms/` | 17 source copybooks | All excluded for the same reason; `.gitkeep` is not a source member | 17 |
 | `app/data/ASCII/` | 9 | All reused as fixtures or seed sources | 9 |
 | `app/data/EBCDIC/` | 12 data artifacts | All retained as binary or width references; `.gitkeep` is excluded from the count | 12 |
-| Delivered target tree | 871 tracked files | 295 source-derived, 245 verification source-derived, 154 verification additive, 114 additive, 44 net new platform, 11 Rule-mandated documents, 8 Rule 3 documents | 871 |
+| Delivered target tree | 876 tracked files | 298 source-derived, 246 verification source-derived, 153 verification additive, 116 additive, 44 net new platform, 11 Rule-mandated documents, 8 Rule 3 documents | 876 |
 
-The backward direction closes on its own count. The delivered tree holds 871 tracked target paths. The two module-level tables below resolve them in 52 rows, each naming a module or a uniform group rather than a file. Every one of the 871 then appears once in [backward: every target path](#backward-every-target-path), so the target side is enumerated rather than summarised.
+The backward direction closes on its own count. The delivered tree holds 876 tracked target paths. The two module-level tables below resolve them in 52 rows, each naming a module or a uniform group rather than a file. Every one of the 876 then appears once in [backward: every target path](#backward-every-target-path), so the target side is enumerated rather than summarised.
 
 ## Forward: COBOL programs
 
@@ -361,6 +361,7 @@ The build, container, deployment, and document deliverables trace to a rule or a
 | `card-platform/README.md` | Mono-repo map and delivered platform inventory | Rule 3 addition |
 | `card-platform/services/*/README.md` | Per-service purpose, provenance, APIs, events, and local operation | Six Rule 3 additions |
 | Root `README.md` modernization section | Existing onboarding entry point plus Rule 3 | Update to an existing document |
+| Root `.gitattributes` | The carriage-return line endings the legacy root guide already had, which `git diff --check` reports as defects unless the policy is declared | Net new repository-hygiene declaration |
 | `docs/decision-log.md` | Rule 1 | Rule-mandated addition |
 | `docs/traceability-matrix.md` | Rule 1 | Rule-mandated addition |
 | `docs/business-rule-flags.md` | User directive and AAP register | Rule-mandated addition |
@@ -375,19 +376,19 @@ The build, container, deployment, and document deliverables trace to a rule or a
 
 ## Backward: every target path
 
-Rule 1 closes in both directions, so the forward inventories above are matched by a row for every target path this engagement delivers. The list is complete rather than representative: `git ls-files --cached --others --exclude-standard card-platform .github | wc -l` reports 871 delivered paths, and the tables below carry 871 rows. The two flags are not decoration. A plain `git ls-files` lists tracked paths only, so it reports fewer in any session that added a file, because a file is untracked until it is committed. The closure table at the end sums the rows per group, so that figure can be checked without counting by hand.
+Rule 1 closes in both directions, so the forward inventories above are matched by a row for every target path this engagement delivers. The list is complete rather than representative: `git ls-files --cached --others --exclude-standard card-platform .github | wc -l` reports 876 delivered paths, and the tables below carry 876 rows. The two flags are not decoration. A plain `git ls-files` lists tracked paths only, so it reports fewer in any session that added a file, because a file is untracked until it is committed. The closure table at the end sums the rows per group, so that figure can be checked without counting by hand.
 
-That command is the whole basis, and two delivered paths sit outside it on purpose. The root `README.md` is an update to a pre-existing document rather than a delivered path, and it is recorded as such in [rule-mandated and platform artifacts](#rule-mandated-and-platform-artifacts). Everything under `blitzy/` is run evidence — screenshots and screen recordings taken while verifying the platform — not platform code, so it carries no source provenance to state.
+That command is the whole basis, and three delivered paths sit outside it on purpose. The root `README.md` is an update to a pre-existing document rather than a delivered path, and the root `.gitattributes` declares the line endings that document already had. Both are recorded in [rule-mandated and platform artifacts](#rule-mandated-and-platform-artifacts). Everything under `blitzy/` is run evidence — screenshots and screen recordings taken while verifying the platform — not platform code, so it carries no source provenance to state.
 
-The Source provenance column names what the file itself records. Every delivered file that derives from a source member cites that member in its own comments, so the column is read out of the code rather than asserted over it. **633 of the 871 paths name at least one member under `app/`, and the remaining 238 name none.** Every one of those 238 cells opens with `None cited`, and what follows says why: 166 read `None cited in the file`, and the other 72 name the absence itself, such as `None cited; the source scores no risk and runs no rules engine`. Where a file cites more than four members the cell names four and counts the rest, because the point of a row is provenance rather than a citation list.
+The Source provenance column names what the file itself records. Every delivered file that derives from a source member cites that member in its own comments, so the column is read out of the code rather than asserted over it. **638 of the 876 paths name at least one member under `app/`, and the remaining 238 name none.** Every one of those 238 cells opens with `None cited`, and what follows says why: 166 read `None cited in the file`, and the other 72 name the absence itself, such as `None cited; the source scores no risk and runs no rules engine`. Where a file cites more than four members the cell names four and counts the rest, because the point of a row is provenance rather than a citation list.
 
-A cell that names no member says so in one of five wordings rather than one. The plain wording `None cited in the file` accounts for 166 rows, the fraud wording for 44, and the build wording for 25. Two further wordings cover the remaining 3. All 238 mean the same measured thing — the file carries no reference to any member under `app/` — and the wording records only why. `DocumentationContractTest` recomputes all 871 sets from disk and fails on any cell that disagrees, so this column cannot drift from the files again.
+A cell that names no member says so in one of five wordings rather than one. The plain wording `None cited in the file` accounts for 166 rows, the fraud wording for 44, and the build wording for 25. Two further wordings cover the remaining 3. All 238 mean the same measured thing — the file carries no reference to any member under `app/` — and the wording records only why. `DocumentationContractTest` recomputes all 876 sets from disk and fails on any cell that disagrees, so this column cannot drift from the files again.
 
 **A citation is not automatically provenance, and two groups of rows say so in the cell itself**. Build, container and deployment artifacts name the members whose behaviour the artifact runs. The repository carries no build manifest of any kind, so those citations are context. Every path under `services/fraud-detection-service` names members too, and none of them is an ancestor. The source scores no risk, checks no velocity and runs no rules engine, so what those files take is field widths and the rule-object shape the authorization decline chain uses. The plan records both borrowings as borrowings, so every fraud path is classified additive however many members it cites.
 
 Seven labels are used. **Source-derived** is main code, a schema, a migration or a resource that names at least one source member. **Additive** is a file with no ancestor, whether or not it cites one. **Verification, source-derived** and **Verification, additive** are the two test cases, split the same way. **Rule-mandated document** covers the documents Rules 1 to 5 require and **Rule 3 document** the per-module readme Rule 3 requires; a document’s authority is a rule, and the members in its cell are the evidence it cites. **Net new platform** covers build, container, pipeline and deployment artifacts.
 
-### Event contract library — 40 paths
+### Event contract library — 43 paths
 | Target path | Source provenance | Classification |
 | --- | --- | --- |
 | `card-platform/libs/event-contracts/pom.xml` | None cited; no source build, container or deployment manifest exists | Net new platform |
@@ -397,7 +398,7 @@ Seven labels are used. **Source-derived** is main code, a schema, a migration or
 | `card-platform/libs/event-contracts/src/main/java/com/carddemo/events/FraudCleared.java` | `app/cpy/CVACT03Y.cpy`, `app/cpy/CVTRA05Y.cpy` | Source-derived |
 | `card-platform/libs/event-contracts/src/main/java/com/carddemo/events/FraudFlagged.java` | `app/cpy/CVACT03Y.cpy`, `app/cpy/CVTRA05Y.cpy` | Source-derived |
 | `card-platform/libs/event-contracts/src/main/java/com/carddemo/events/TransactionAuthorized.java` | `app/bms/COCRDSL.bms`, `app/cbl/CBSTM03A.CBL`, `app/cbl/CBTRN02C.cbl`, `app/cpy/CVACT03Y.cpy` and 3 more | Source-derived |
-| `card-platform/libs/event-contracts/src/main/java/com/carddemo/events/TransactionDeclined.java` | `app/bms/COCRDSL.bms`, `app/cbl/CBTRN02C.cbl`, `app/cpy/CVACT03Y.cpy`, `app/cpy/CVTRA05Y.cpy` and 4 more | Source-derived |
+| `card-platform/libs/event-contracts/src/main/java/com/carddemo/events/TransactionDeclined.java` | `app/bms/COCRDSL.bms`, `app/cbl/CBTRN02C.cbl`, `app/cbl/COTRN02C.cbl`, `app/cpy/CVACT03Y.cpy` and 5 more | Source-derived |
 | `card-platform/libs/event-contracts/src/main/java/com/carddemo/events/TransactionPosted.java` | `app/bms/COCRDSL.bms`, `app/cbl/CBTRN02C.cbl`, `app/cpy/CVACT01Y.cpy`, `app/cpy/CVACT03Y.cpy` and 4 more | Source-derived |
 | `card-platform/libs/event-contracts/src/main/java/com/carddemo/events/correlation/CorrelatedEvent.java` | None cited in the file | Additive |
 | `card-platform/libs/event-contracts/src/main/java/com/carddemo/events/correlation/CorrelationScope.java` | None cited in the file | Additive |
@@ -408,9 +409,12 @@ Seven labels are used. **Source-derived** is main code, a schema, a migration or
 | `card-platform/libs/event-contracts/src/main/java/com/carddemo/events/serde/EventWireBounds.java` | None cited in the file | Additive |
 | `card-platform/libs/event-contracts/src/main/java/com/carddemo/events/serde/JsonSchemaValidatingDeserializer.java` | `app/cpy/CVACT03Y.cpy`, `app/cpy/CVTRA05Y.cpy` | Source-derived |
 | `card-platform/libs/event-contracts/src/main/java/com/carddemo/events/serde/JsonSchemaValidatingSerializer.java` | `app/cpy/CVACT03Y.cpy`, `app/cpy/CVTRA05Y.cpy` | Source-derived |
+| `card-platform/libs/event-contracts/src/main/java/com/carddemo/events/serde/ReleasedContracts.java` | None cited in the file | Additive |
 | `card-platform/libs/event-contracts/src/main/java/com/carddemo/events/serde/SensitiveEventProperties.java` | `app/cbl/CBTRN02C.cbl`, `app/cbl/COSGN00C.cbl`, `app/cbl/CSUTLDTC.cbl`, `app/cpy/CSUSR01Y.cpy` and 6 more | Source-derived |
+| `card-platform/libs/event-contracts/src/main/resources/contracts/released-contracts.json` | `app/cbl/CBTRN02C.cbl`, `app/cpy/CSMSG02Y.cpy`, `app/cpy/CVTRA05Y.cpy` | Additive |
 | `card-platform/libs/event-contracts/src/main/resources/schemas/account-state-changed-v1.json` | `app/cbl/CBACT04C.cbl`, `app/cbl/CBSTM03A.CBL`, `app/cbl/CBTRN02C.cbl`, `app/cbl/COACTUPC.cbl` and 3 more | Source-derived |
-| `card-platform/libs/event-contracts/src/main/resources/schemas/card-updated-v1.json` | None cited in the file | Source-derived |
+| `card-platform/libs/event-contracts/src/main/resources/schemas/card-updated-v1.json` | `app/bms/COCRDSL.bms`, `app/cbl/COCRDUPC.cbl`, `app/cpy/CVACT02Y.cpy`, `app/jcl/XREFFILE.jcl` | Source-derived |
+| `card-platform/libs/event-contracts/src/main/resources/schemas/card-updated-v2.json` | None cited in the file | Source-derived |
 | `card-platform/libs/event-contracts/src/main/resources/schemas/customer-context-changed-v1.json` | `app/cbl/CBSTM03A.CBL`, `app/cbl/COACTUPC.cbl`, `app/cpy/CSLKPCDY.cpy`, `app/cpy/CVACT01Y.cpy` and 2 more | Source-derived |
 | `card-platform/libs/event-contracts/src/main/resources/schemas/dead-letter-v1.json` | `app/cbl/CBTRN02C.cbl`, `app/cbl/COACTVWC.cbl`, `app/cpy/CSMSG02Y.cpy`, `app/cpy/CVACT03Y.cpy` | Source-derived |
 | `card-platform/libs/event-contracts/src/main/resources/schemas/fraud-cleared-v1.json` | `app/cpy/CVACT03Y.cpy`, `app/cpy/CVTRA05Y.cpy` | Source-derived |
@@ -423,13 +427,13 @@ Seven labels are used. **Source-derived** is main code, a schema, a migration or
 | `card-platform/libs/event-contracts/src/main/resources/schemas/transaction-posted-v1.json` | `app/bms/COCRDSL.bms`, `app/cbl/CBTRN02C.cbl`, `app/cpy/CVACT01Y.cpy`, `app/cpy/CVACT03Y.cpy` and 2 more | Source-derived |
 | `card-platform/libs/event-contracts/src/main/resources/schemas/transaction-posted-v2.json` | `app/bms/COCRDSL.bms`, `app/cbl/CBTRN02C.cbl`, `app/cpy/COSTM01.CPY`, `app/cpy/CVACT01Y.cpy` and 6 more | Source-derived |
 | `card-platform/libs/event-contracts/src/test/java/com/carddemo/events/EventRedactionTest.java` | `app/data/ASCII/carddata.txt` | Verification, source-derived |
-| `card-platform/libs/event-contracts/src/test/java/com/carddemo/events/EventRoundTripTest.java` | `app/cbl/CBTRN02C.cbl`, `app/cpy/CVACT01Y.cpy`, `app/cpy/CVACT02Y.cpy`, `app/cpy/CVACT03Y.cpy` and 4 more | Verification, source-derived |
+| `card-platform/libs/event-contracts/src/test/java/com/carddemo/events/EventRoundTripTest.java` | `app/cbl/CBTRN02C.cbl`, `app/cbl/COTRN02C.cbl`, `app/cpy/CVACT01Y.cpy`, `app/cpy/CVACT02Y.cpy` and 5 more | Verification, source-derived |
 | `card-platform/libs/event-contracts/src/test/java/com/carddemo/events/EventSchemaContractTest.java` | `app/cbl/CBTRN02C.cbl`, `app/cpy/CVACT01Y.cpy`, `app/cpy/CVACT02Y.cpy`, `app/cpy/CVACT03Y.cpy` and 1 more | Verification, source-derived |
-| `card-platform/libs/event-contracts/src/test/java/com/carddemo/events/SchemaBackwardCompatibilityTest.java` | `app/cbl/CBACT04C.cbl`, `app/cbl/CBTRN02C.cbl`, `app/cbl/COACTUPC.cbl`, `app/cbl/COCRDUPC.cbl` and 13 more | Verification, source-derived |
+| `card-platform/libs/event-contracts/src/test/java/com/carddemo/events/SchemaBackwardCompatibilityTest.java` | `app/cbl/CBACT04C.cbl`, `app/cbl/CBTRN02C.cbl`, `app/cbl/COACTUPC.cbl`, `app/cbl/COCRDUPC.cbl` and 14 more | Verification, source-derived |
 | `card-platform/libs/event-contracts/src/test/java/com/carddemo/events/correlation/CorrelationScopeTest.java` | None cited in the file | Verification, additive |
 | `card-platform/libs/event-contracts/src/test/java/com/carddemo/events/correlation/EventCorrelationTest.java` | None cited in the file | Verification, additive |
 | `card-platform/libs/event-contracts/src/test/java/com/carddemo/events/serde/EventPublicationGuardTest.java` | `app/cpy/CVACT03Y.cpy`, `app/data/ASCII/carddata.txt` | Verification, source-derived |
-| `card-platform/libs/event-contracts/src/test/java/com/carddemo/events/serde/EventSerdeSecurityTest.java` | `app/cbl/CBTRN02C.cbl`, `app/cpy/CVTRA05Y.cpy`, `app/data/ASCII/carddata.txt` | Verification, source-derived |
+| `card-platform/libs/event-contracts/src/test/java/com/carddemo/events/serde/EventSerdeSecurityTest.java` | `app/cbl/CBTRN02C.cbl`, `app/cbl/COTRN02C.cbl`, `app/cpy/CVTRA05Y.cpy`, `app/data/ASCII/carddata.txt` | Verification, source-derived |
 ### COBOL compatibility library — 13 paths
 | Target path | Source provenance | Classification |
 | --- | --- | --- |
@@ -446,7 +450,7 @@ Seven labels are used. **Source-derived** is main code, a schema, a migration or
 | `card-platform/libs/cobol-compat/src/test/java/com/carddemo/cobol/CobolDecimalTruncationTest.java` | `app/cbl/CBACT04C.cbl`, `app/cbl/CBTRN02C.cbl`, `app/cbl/COBIL00C.cbl`, `app/cpy/CVACT01Y.cpy` and 4 more | Verification, source-derived |
 | `card-platform/libs/cobol-compat/src/test/java/com/carddemo/cobol/NumvalParserTest.java` | `app/cbl/COACTUPC.cbl`, `app/cbl/CORPT00C.cbl`, `app/cbl/COTRN02C.cbl`, `app/cpy/CSUTLDPY.cpy` and 1 more | Verification, source-derived |
 | `card-platform/libs/cobol-compat/src/test/java/com/carddemo/cobol/PanMaskerTest.java` | `app/bms/COCRDSL.bms`, `app/cbl/COCRDUPC.cbl`, `app/cpy/COSTM01.CPY`, `app/cpy/CVACT02Y.cpy` and 2 more | Verification, source-derived |
-### Authorization service — 140 paths
+### Authorization service — 141 paths
 | Target path | Source provenance | Classification |
 | --- | --- | --- |
 | `card-platform/services/authorization-service/Dockerfile.dockerignore` | None cited; no source build, container or deployment manifest exists | Net new platform |
@@ -456,7 +460,7 @@ Seven labels are used. **Source-derived** is main code, a schema, a migration or
 | `card-platform/services/authorization-service/src/main/java/com/carddemo/authorization/AuthorizationApplication.java` | `app/cbl/CBTRN02C.cbl`, `app/cbl/COSGN00C.cbl`, `app/cbl/COTRN02C.cbl`, `app/csd/CARDDEMO.CSD` | Source-derived |
 | `card-platform/services/authorization-service/src/main/java/com/carddemo/authorization/api/AuthorizationController.java` | `app/cbl/CBTRN02C.cbl`, `app/cbl/COTRN02C.cbl`, `app/cpy/COCOM01Y.cpy`, `app/cpy/CVACT03Y.cpy` and 1 more | Source-derived |
 | `card-platform/services/authorization-service/src/main/java/com/carddemo/authorization/api/AuthorizationRequest.java` | `app/bms/COADM01.bms`, `app/bms/COMEN01.bms`, `app/bms/COTRN02.bms`, `app/cbl/CBTRN02C.cbl` and 8 more | Source-derived |
-| `card-platform/services/authorization-service/src/main/java/com/carddemo/authorization/api/AuthorizationResponse.java` | `app/cbl/CBTRN02C.cbl`, `app/cbl/COTRN02C.cbl`, `app/cpy/CVACT02Y.cpy`, `app/cpy/CVACT03Y.cpy` and 2 more | Source-derived |
+| `card-platform/services/authorization-service/src/main/java/com/carddemo/authorization/api/AuthorizationResponse.java` | `app/cbl/CBTRN02C.cbl`, `app/cpy/CVACT02Y.cpy`, `app/cpy/CVACT03Y.cpy`, `app/cpy/CVTRA05Y.cpy` and 1 more | Source-derived |
 | `card-platform/services/authorization-service/src/main/java/com/carddemo/authorization/api/GlobalExceptionHandler.java` | `app/cbl/CBTRN02C.cbl`, `app/cbl/COTRN02C.cbl` | Source-derived |
 | `card-platform/services/authorization-service/src/main/java/com/carddemo/authorization/config/AuthorizationProperties.java` | `app/cbl/CBTRN02C.cbl` | Source-derived |
 | `card-platform/services/authorization-service/src/main/java/com/carddemo/authorization/config/CorrelationContextFilter.java` | `app/cbl/CBTRN02C.cbl` | Additive |
@@ -479,7 +483,7 @@ Seven labels are used. **Source-derived** is main code, a schema, a migration or
 | `card-platform/services/authorization-service/src/main/java/com/carddemo/authorization/domain/CallerEntitlement.java` | `app/cbl/COSGN00C.cbl` | Source-derived |
 | `card-platform/services/authorization-service/src/main/java/com/carddemo/authorization/domain/CallerNotEntitledException.java` | `app/cbl/CBTRN02C.cbl`, `app/cbl/COTRN02C.cbl` | Source-derived |
 | `card-platform/services/authorization-service/src/main/java/com/carddemo/authorization/domain/CycleExposureReservation.java` | `app/cbl/CBTRN02C.cbl`, `app/cpy/CVACT01Y.cpy` | Source-derived |
-| `card-platform/services/authorization-service/src/main/java/com/carddemo/authorization/domain/DeclineRule.java` | `app/cbl/CBTRN02C.cbl`, `app/cpy/CVACT01Y.cpy`, `app/cpy/CVACT03Y.cpy`, `app/cpy/CVTRA06Y.cpy` | Source-derived |
+| `card-platform/services/authorization-service/src/main/java/com/carddemo/authorization/domain/DeclineRule.java` | `app/cbl/CBTRN02C.cbl`, `app/cbl/COTRN02C.cbl`, `app/cpy/CVACT01Y.cpy`, `app/cpy/CVACT03Y.cpy` and 1 more | Source-derived |
 | `card-platform/services/authorization-service/src/main/java/com/carddemo/authorization/domain/ReplicaGapLog.java` | None cited in the file | Additive |
 | `card-platform/services/authorization-service/src/main/java/com/carddemo/authorization/domain/ReplicaSynchronization.java` | `app/cbl/CBTRN02C.cbl` | Source-derived |
 | `card-platform/services/authorization-service/src/main/java/com/carddemo/authorization/domain/RequestCaller.java` | `app/cbl/COSGN00C.cbl`, `app/cpy/CVACT03Y.cpy` | Source-derived |
@@ -524,6 +528,7 @@ Seven labels are used. **Source-derived** is main code, a schema, a migration or
 | `card-platform/services/authorization-service/src/main/resources/db/migration/V16__outbox_correlation.sql` | None cited in the file | Additive |
 | `card-platform/services/authorization-service/src/main/resources/db/migration/V17__outbox_aggregate_head_index.sql` | None cited in the file | Additive |
 | `card-platform/services/authorization-service/src/main/resources/db/migration/V18__authorization_decision_index_pruning.sql` | None cited in the file | Additive |
+| `card-platform/services/authorization-service/src/main/resources/db/migration/V19__unresolved_decline_names_its_account.sql` | `app/cbl/CBTRN02C.cbl`, `app/cbl/COTRN02C.cbl`, `app/cpy/CVACT03Y.cpy`, `app/cpy/CVTRA05Y.cpy` | Source-derived |
 | `card-platform/services/authorization-service/src/main/resources/db/migration/V1__schema.sql` | `app/cbl/CBTRN02C.cbl`, `app/cbl/COBIL00C.cbl`, `app/cbl/COCRDLIC.cbl`, `app/cbl/COTRN02C.cbl` and 9 more | Source-derived |
 | `card-platform/services/authorization-service/src/main/resources/db/migration/V2__seed.sql` | `app/cbl/CBTRN02C.cbl`, `app/cpy/CVACT01Y.cpy`, `app/cpy/CVACT03Y.cpy`, `app/data/ASCII/acctdata.txt` and 3 more | Source-derived |
 | `card-platform/services/authorization-service/src/main/resources/db/migration/V3__unresolved_card_attempt.sql` | `app/cbl/CBTRN02C.cbl` | Source-derived |
@@ -563,7 +568,7 @@ Seven labels are used. **Source-derived** is main code, a schema, a migration or
 | `card-platform/services/authorization-service/src/test/java/com/carddemo/authorization/config/SecurityConfigTest.java` | `app/cbl/COSGN00C.cbl`, `app/data/ASCII/acctdata.txt`, `app/data/ASCII/carddata.txt`, `app/data/ASCII/cardxref.txt` | Verification, source-derived |
 | `card-platform/services/authorization-service/src/test/java/com/carddemo/authorization/config/StreamNameReportTest.java` | None cited in the file | Verification, additive |
 | `card-platform/services/authorization-service/src/test/java/com/carddemo/authorization/domain/AuthenticatedActorTest.java` | `app/cbl/COMEN01C.cbl`, `app/cbl/COSGN00C.cbl` | Verification, source-derived |
-| `card-platform/services/authorization-service/src/test/java/com/carddemo/authorization/domain/AuthorizationChainCompositionTest.java` | `app/cbl/CBTRN02C.cbl`, `app/cbl/COCRDUPC.cbl`, `app/cpy/CVACT01Y.cpy`, `app/cpy/CVACT03Y.cpy` and 2 more | Verification, source-derived |
+| `card-platform/services/authorization-service/src/test/java/com/carddemo/authorization/domain/AuthorizationChainCompositionTest.java` | `app/cbl/CBTRN02C.cbl`, `app/cbl/COCRDUPC.cbl`, `app/cbl/COTRN02C.cbl`, `app/cpy/CVACT01Y.cpy` and 3 more | Verification, source-derived |
 | `card-platform/services/authorization-service/src/test/java/com/carddemo/authorization/domain/AuthorizationServiceTest.java` | `app/cbl/CBTRN02C.cbl`, `app/cbl/COMEN01C.cbl`, `app/cbl/COTRN02C.cbl`, `app/cpy/CVTRA05Y.cpy` and 5 more | Verification, source-derived |
 | `card-platform/services/authorization-service/src/test/java/com/carddemo/authorization/domain/CallerEntitlementTest.java` | `app/cbl/CBTRN02C.cbl`, `app/cbl/COSGN00C.cbl`, `app/cbl/COTRN02C.cbl` | Verification, source-derived |
 | `card-platform/services/authorization-service/src/test/java/com/carddemo/authorization/domain/CycleExposureReservationTest.java` | `app/cbl/CBTRN02C.cbl` | Verification, source-derived |
@@ -1065,7 +1070,7 @@ Seven labels are used. **Source-derived** is main code, a schema, a migration or
 | `card-platform/services/account-service/src/test/java/com/carddemo/account/repository/SchemaMigrationTest.java` | `app/cpy/CVACT01Y.cpy`, `app/cpy/CVCUS01Y.cpy`, `app/cpy/CVTRA02Y.cpy`, `app/data/ASCII/acctdata.txt` and 6 more | Verification, source-derived |
 | `card-platform/services/account-service/src/test/java/com/carddemo/account/repository/ZonedDecimalFixtureDecodingTest.java` | `app/cbl/CBTRN02C.cbl`, `app/cpy/CVACT01Y.cpy`, `app/cpy/CVCUS01Y.cpy`, `app/cpy/CVTRA02Y.cpy` and 3 more | Verification, source-derived |
 
-### Card service — 108 paths
+### Card service — 109 paths
 | Target path | Source provenance | Classification |
 | --- | --- | --- |
 | `card-platform/services/card-service/Dockerfile.dockerignore` | None cited; no source build, container or deployment manifest exists | Net new platform |
@@ -1124,6 +1129,7 @@ Seven labels are used. **Source-derived** is main code, a schema, a migration or
 | `card-platform/services/card-service/src/main/resources/db/migration/V5__xref_reconciliation_and_status_domain.sql` | `app/cbl/COCRDLIC.cbl`, `app/cbl/COCRDUPC.cbl`, `app/cpy/CVACT02Y.cpy`, `app/cpy/CVACT03Y.cpy` and 1 more | Source-derived |
 | `card-platform/services/card-service/src/main/resources/db/migration/V6__outbox_correlation.sql` | None cited in the file | Additive |
 | `card-platform/services/card-service/src/main/resources/db/migration/V7__outbox_aggregate_head_index.sql` | None cited in the file | Additive |
+| `card-platform/services/card-service/src/main/resources/db/migration/V8__card_status_locator.sql` | `app/cbl/COCRDUPC.cbl` | Source-derived |
 | `card-platform/services/card-service/src/main/resources/openapi.yaml` | `app/bms/COCRDUP.bms`, `app/cbl/CBTRN02C.cbl`, `app/cbl/COCRDLIC.cbl`, `app/cbl/COCRDSLC.cbl` and 7 more | Source-derived |
 | `card-platform/services/card-service/src/test/java/com/carddemo/card/CardServiceDatabase.java` | None cited in the file | Verification, additive |
 | `card-platform/services/card-service/src/test/java/com/carddemo/card/ScheduledWorkShutdown.java` | None cited in the file | Verification, additive |
@@ -1201,7 +1207,7 @@ Seven labels are used. **Source-derived** is main code, a schema, a migration or
 | `card-platform/equivalence-tests/src/test/java/com/carddemo/equivalence/CopybookRecordParserTest.java` | `app/cbl/CBTRN02C.cbl`, `app/cpy/CVACT02Y.cpy`, `app/cpy/CVACT03Y.cpy`, `app/cpy/CVCUS01Y.cpy` and 4 more | Verification, source-derived |
 | `card-platform/equivalence-tests/src/test/java/com/carddemo/equivalence/DecimalTruncationEquivalenceTest.java` | `app/cbl/CBACT04C.cbl`, `app/cbl/CBTRN02C.cbl`, `app/cbl/COBIL00C.cbl`, `app/cpy/CVACT01Y.cpy` and 6 more | Verification, source-derived |
 | `card-platform/equivalence-tests/src/test/java/com/carddemo/equivalence/DemoBootstrapContractTest.java` | None cited in the file | Verification, additive |
-| `card-platform/equivalence-tests/src/test/java/com/carddemo/equivalence/DocumentationContractTest.java` | `app/cpy/CVACT01Y.cpy`, `app/csd/CARDDEMO.CSD` | Verification, source-derived |
+| `card-platform/equivalence-tests/src/test/java/com/carddemo/equivalence/DocumentationContractTest.java` | `app/cbl/COCRDUPC.cbl`, `app/cpy/CVACT01Y.cpy`, `app/csd/CARDDEMO.CSD` | Verification, source-derived |
 | `card-platform/equivalence-tests/src/test/java/com/carddemo/equivalence/EntitySchemaMappingContractTest.java` | `app/cbl/CBTRN02C.cbl`, `app/cbl/COTRN02C.cbl`, `app/cpy/CSLKPCDY.cpy`, `app/cpy/CVACT03Y.cpy` and 2 more | Verification, source-derived |
 | `card-platform/equivalence-tests/src/test/java/com/carddemo/equivalence/EquivalenceDatabase.java` | None cited in the file | Verification, additive |
 | `card-platform/equivalence-tests/src/test/java/com/carddemo/equivalence/EquivalenceSuiteExecutionConfigurationTest.java` | None cited in the file | Verification, additive |
@@ -1214,7 +1220,7 @@ Seven labels are used. **Source-derived** is main code, a schema, a migration or
 | `card-platform/equivalence-tests/src/test/java/com/carddemo/equivalence/FraudAssessmentPersistenceTest.java` | None cited in the file | Verification, additive |
 | `card-platform/equivalence-tests/src/test/java/com/carddemo/equivalence/IdentifierFidelityEquivalenceTest.java` | `app/cpy/CVACT01Y.cpy`, `app/cpy/CVACT02Y.cpy`, `app/cpy/CVACT03Y.cpy`, `app/cpy/CVCUS01Y.cpy` and 5 more | Verification, source-derived |
 | `card-platform/equivalence-tests/src/test/java/com/carddemo/equivalence/InterestCalculationEquivalenceTest.java` | `app/cbl/CBACT04C.cbl`, `app/cbl/CBTRN02C.cbl`, `app/cpy/CVACT01Y.cpy`, `app/cpy/CVTRA01Y.cpy` and 7 more | Verification, source-derived |
-| `card-platform/equivalence-tests/src/test/java/com/carddemo/equivalence/KafkaDeliveryGuaranteeContractTest.java` | None cited in the file | Verification, additive |
+| `card-platform/equivalence-tests/src/test/java/com/carddemo/equivalence/KafkaDeliveryGuaranteeContractTest.java` | `app/cpy/CSMSG02Y.cpy` | Verification, source-derived |
 | `card-platform/equivalence-tests/src/test/java/com/carddemo/equivalence/KubernetesDeploymentContractTest.java` | None cited in the file | Verification, additive |
 | `card-platform/equivalence-tests/src/test/java/com/carddemo/equivalence/LiveMeterInventoryContractTest.java` | None cited in the file | Verification, additive |
 | `card-platform/equivalence-tests/src/test/java/com/carddemo/equivalence/LogHygieneContractTest.java` | None cited in the file | Verification, additive |
@@ -1260,7 +1266,7 @@ Seven labels are used. **Source-derived** is main code, a schema, a migration or
 | `card-platform/docs/data-model.md` | `app/cbl/CBACT04C.cbl`, `app/cbl/CBTRN02C.cbl`, `app/cbl/COACTUPC.cbl`, `app/cbl/COACTVWC.cbl` and 23 more | Rule-mandated document |
 | `card-platform/docs/decision-log.md` | `app/cbl/CBACT04C.cbl`, `app/cbl/CBSTM03A.CBL`, `app/cbl/CBTRN02C.cbl`, `app/cbl/COACTUPC.cbl` and 33 more | Rule-mandated document |
 | `card-platform/docs/equivalence-results.md` | `app/cbl/CBACT04C.cbl`, `app/cbl/CBTRN02C.cbl`, `app/cbl/COACTUPC.cbl`, `app/cbl/COBIL00C.cbl` and 22 more | Rule-mandated document |
-| `card-platform/docs/event-flow.md` | `app/cbl/CBACT04C.cbl`, `app/cbl/CBTRN02C.cbl`, `app/cbl/COACTUPC.cbl`, `app/cbl/CORPT00C.cbl` and 4 more | Rule-mandated document |
+| `card-platform/docs/event-flow.md` | `app/cbl/CBACT04C.cbl`, `app/cbl/CBTRN02C.cbl`, `app/cbl/COACTUPC.cbl`, `app/cbl/CORPT00C.cbl` and 6 more | Rule-mandated document |
 | `card-platform/docs/onboarding.md` | `app/cbl/CBACT04C.cbl`, `app/cbl/CBTRN02C.cbl`, `app/cbl/COTRN02C.cbl`, `app/cpy/CSLKPCDY.cpy` and 5 more | Rule-mandated document |
 | `card-platform/docs/prose-validation.md` | None cited in the file | Rule-mandated document |
 | `card-platform/docs/suggested-next-tasks.md` | `app/cbl/CBACT04C.cbl`, `app/cbl/CBSTM03A.CBL`, `app/cbl/CBTRN02C.cbl`, `app/cbl/COACTUPC.cbl` and 17 more | Rule-mandated document |
@@ -1313,14 +1319,14 @@ Seven labels are used. **Source-derived** is main code, a schema, a migration or
 
 | Group | Rows |
 | --- | ---: |
-| Event contract library | 40 |
+| Event contract library | 43 |
 | COBOL compatibility library | 13 |
-| Authorization service | 140 |
+| Authorization service | 141 |
 | Ledger posting service | 95 |
 | Fraud detection service | 97 |
 | Notification service | 92 |
 | Account service | 176 |
-| Card service | 108 |
+| Card service | 109 |
 | Equivalence test module | 72 |
 | Documents | 10 |
 | Presentation | 1 |
@@ -1328,9 +1334,9 @@ Seven labels are used. **Source-derived** is main code, a schema, a migration or
 | Demo scripts | 4 |
 | Repository-root platform files | 6 |
 | Continuous integration | 3 |
-| **Total** | **871** |
+| **Total** | **876** |
 
-**Backward closure:** 871 rows against 871 tracked paths, so every target path carries a classification and a provenance statement.
+**Backward closure:** 876 rows against 876 tracked paths, so every target path carries a classification and a provenance statement.
 
 ## Deliberate omissions
 

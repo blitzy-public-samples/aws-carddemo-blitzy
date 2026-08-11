@@ -42,6 +42,15 @@ import java.util.Objects;
  * {@code 0100} that confirms the card is unknown and an approval that confirms it is known. Card
  * existence stops being observable to a caller that owns nothing.
  *
+ * <p>The account this check reads is the resolved one and never the declared one, and the difference
+ * matters on exactly that path. A reason-0100 decision does name an account — the one the caller
+ * declared, which is the subject its event is keyed on — and passing that value here would let any
+ * caller owning any account probe card numbers: an unknown card would answer reject code
+ * {@code 0100} and a known card belonging to someone else would answer a refusal.
+ * {@code domain/AuthorizationService} therefore passes {@code null} here for a card that resolved
+ * nothing and uses the declared account only as the subject of a decision this check has already
+ * allowed.
+ *
  * <p>Where this check runs is as important as what it decides. {@code domain/AuthorizationService}
  * applies it after the chain has resolved the card and the account and before it allocates a
  * transaction identifier, so a refused call consumes no sequence value, records no decision, writes no

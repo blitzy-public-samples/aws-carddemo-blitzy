@@ -1263,15 +1263,30 @@ class PresentationAndProseContractTest {
         throw new AssertionError("The deck carries no headline metric labelled " + labelFragment);
     }
 
-    /** Body words of one slide: the eyebrow, paragraphs, bullets and diagram legend. */
+    /**
+     * Every visible word of one slide, which is what the Rule 4 ceiling bounds.
+     *
+     * <p>Only two things are removed. Mermaid source is the text a diagram is generated from and is
+     * never rendered as words, and the slide number is a decorative ordinal. Everything else a reader
+     * sees is counted: the heading, the eyebrow, paragraphs, bullets, table captions, header cells and
+     * body cells, metric cards and icon labels.
+     *
+     * <p>A table caption counts even though this deck's stylesheet paints none of them: a caption is
+     * content the slide carries and assistive technology reads, so counting it keeps the ceiling on the
+     * conservative side of what a reader receives.
+     *
+     * <p>An earlier revision of this method also removed tables, headings, metric grids and icon rows.
+     * Those are where a slide of this deck carries most of its words, so four slides stood at 103, 94,
+     * 88 and 43 visible words against a ceiling of {@value #RULE_FOUR_WORD_LIMIT} while this test
+     * reported every one of them as passing.
+     *
+     * @param slideBody the markup of one slide
+     * @return how many visible words it carries
+     */
     private static int bodyWordCount(String slideBody) {
         String text = slideBody;
         text = text.replaceAll("(?s)<pre class=\"mermaid\">.*?</pre>", " ");
-        text = text.replaceAll("(?s)<table\\b.*?</table>", " ");
-        text = text.replaceAll("(?s)<h[1-3]\\b[^>]*>.*?</h[1-3]>", " ");
         text = text.replaceAll("(?s)<span class=\"slide-number\"[^>]*>.*?</span>", " ");
-        text = stripBalancedDiv(text, "kpi-grid");
-        text = stripBalancedDiv(text, "icon-row");
         text = TAG.matcher(text).replaceAll(" ").replace('\u00b7', ' ');
         int words = 0;
         for (String token : text.split("\\s+")) {
@@ -1280,34 +1295,6 @@ class PresentationAndProseContractTest {
             }
         }
         return words;
-    }
-
-    /** Removes a division and everything nested inside it, honouring nested divisions. */
-    private static String stripBalancedDiv(String source, String className) {
-        Pattern opener = Pattern.compile("<div class=\"" + Pattern.quote(className) + "\"[^>]*>");
-        Pattern anyDivision = Pattern.compile("</?div\\b[^>]*>");
-        String result = source;
-        while (true) {
-            Matcher open = opener.matcher(result);
-            if (!open.find()) {
-                return result;
-            }
-            Matcher scan = anyDivision.matcher(result);
-            scan.region(open.end(), result.length());
-            int depth = 1;
-            int closeEnd = -1;
-            while (scan.find()) {
-                depth += scan.group().startsWith("</") ? -1 : 1;
-                if (depth == 0) {
-                    closeEnd = scan.end();
-                    break;
-                }
-            }
-            if (closeEnd < 0) {
-                return result.substring(0, open.start());
-            }
-            result = result.substring(0, open.start()) + " " + result.substring(closeEnd);
-        }
     }
 
     /** Maps every diagram node identifier to its label. */

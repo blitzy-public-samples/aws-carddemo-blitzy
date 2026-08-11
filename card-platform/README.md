@@ -85,7 +85,7 @@ cd card-platform
 scripts/start-demo.sh
 ```
 
-[`scripts/start-demo.sh`](scripts/start-demo.sh) packages the reactor, creates `.env` from `.env.example`, fills all 19 credentials, builds the six images, starts eight containers, and reads every health endpoint. It asks nothing and is safe to re-run: a credential already set is left alone. The four demo passwords it generates are written to `card-platform/.demo-credentials`, which git ignores, because `.env` keeps only their `{bcrypt}` hashes.
+[`scripts/start-demo.sh`](scripts/start-demo.sh) packages the reactor, creates `.env` from `.env.example`, fills all 19 credentials, builds the six images, starts eight containers, and reads every health endpoint. It asks nothing and is safe to re-run: a credential already set is left alone. The four demo passwords it generates are written to `card-platform/.demo-credentials`, which git ignores, because `.env` keeps only their `{bcrypt}` hashes. That file is created owner-only and is never narrowed afterwards.
 
 To prepare the environment file without starting anything, run [`scripts/generate-env.sh`](scripts/generate-env.sh). It reads the credential names out of `.env.example`, so it needs no second list of them. Run it again after a pull: an existing `.env` is reconciled against the example rather than replaced, keeping every value already chosen, and the run fails if any declared assignment is still absent. Two exceptions earn their keep after an upgrade. A key this repository publishes is regenerated, because every service that reads one refuses to start on it. A setting whose value differs from the example's is reported with both values, so a tightened default is visible before it stops a container.
 
@@ -489,9 +489,9 @@ Seven business topics, six source-specific dead-letter topics, and one shared fa
 
 Every governed event carries `eventId`, `eventType`, `schemaVersion`, `occurredAt`, and an aggregate key. Money travels as a decimal string.
 
-The account identifier is the Kafka key and the ordering unit of every event that resolves an account. An authorization whose card resolves none publishes its decline keyed on the 16-character transaction identifier instead, under `transaction-declined-v2`, which declares no `accountId`: reject code 0100 is answered to the caller and recorded in `unresolved_card_attempt` and `authorization_decision` beside that event, so **one decided call produces exactly one event**.
+The account identifier is the Kafka key and the ordering unit of every event a producer writes. An authorization whose card resolves none names the account the caller declared, and its reject code 0100 publishes under `transaction-declined-v3` keyed on that account. The refusal is recorded in `unresolved_card_attempt` and `authorization_decision` beside the event, so **one decided call produces exactly one event**. A call that establishes neither a resolvable card nor an account is refused before a decision, and publishes nothing.
 
-Thirteen schema documents cover eight business event types, four additive version upgrades, and the dead-letter envelope. Publish and consume paths validate against the registered document.
+Fourteen schema documents cover eight business event types, five released versions above version one, and the dead-letter envelope. Publish and consume paths validate against the registered document. `contracts/released-contracts.json` records every released version with a digest of its wire contract, so no document can be deleted or rewritten in place.
 
 `TransactionPosted` version 2 adds the statement provenance required by notification. Version 1 remains constructible and testable, but notification refuses it as insufficient.
 
@@ -521,7 +521,7 @@ The delivered suite includes:
 - truncation toward zero;
 - fixture census, identifier fidelity, and card seed checks.
 
-The published run reports 228 Failsafe equivalence tests and 492 unit or contract tests, with zero failures. Both figures are measured rather than asserted: run `scripts/check-published-test-counts.sh` after `mvn verify` and it compares every published count against the reports that run wrote. See [Equivalence Results](docs/equivalence-results.md).
+The published run reports 229 Failsafe equivalence tests and 506 unit or contract tests, with zero failures. Both figures are measured rather than asserted: run `scripts/check-published-test-counts.sh` after `mvn verify` and it compares every published count against the reports that run wrote. See [Equivalence Results](docs/equivalence-results.md).
 
 Interest is verified but not migrated. `BillingCycleService` reproduces only the two accumulator resets at `app/cbl/CBACT04C.cbl:L353-L354`.
 

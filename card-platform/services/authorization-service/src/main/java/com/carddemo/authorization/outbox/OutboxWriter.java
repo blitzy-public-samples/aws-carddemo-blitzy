@@ -38,14 +38,14 @@ import tools.jackson.databind.json.JsonMapper;
  *
  * <p>Every decided call writes exactly one row. An approval writes one {@link TransactionAuthorized}
  * and a decline writes one {@link TransactionDeclined}, never both and never two of either. A call
- * whose card resolved to no account writes its decline too, keyed on the transaction identifier
- * because that contract declares no account identifier.
+ * whose card resolved to no account writes its decline too, keyed on the account the caller
+ * declared, which is the subject that decision applies to.
  *
  * <p>Each payload is one flat JavaScript Object Notation (JSON) object. The five envelope
  * properties sit beside the payload properties, so no nested key reaches the row:
- * {@code transaction-authorized-v1.json} names nineteen required properties and
- * the two governed transaction-declined documents name the resolved-account and
- * transaction-keyed forms.
+ * {@code transaction-authorized-v1.json} names nineteen required properties, and the three governed
+ * transaction-declined documents name the account-keyed form, the account-less form released for
+ * reject code {@code 0100}, and the detail-bearing form every decline publishes under.
  *
  * <p>Every payload is measured against the document its event type and contract version select,
  * before the row is saved. A payload the publish gate refuses therefore never reaches the table,
@@ -183,16 +183,16 @@ public class OutboxWriter {
      * @param envelope the five envelope values of the event
      * @param event    the event record to store
      * @return the row saved
-     * @throws IllegalArgumentException when the envelope carries neither key form, or when the
-     *                                  written payload breaks the document its contract version
-     *                                  selects
+     * @throws IllegalArgumentException when the envelope carries neither key form, when the written
+     *                                  payload breaks the document its contract version selects, or
+     *                                  when that version is retained rather than published
      */
     private OutboxEventEntity write(EventEnvelope envelope, Record event) {
         String eventType = envelope.eventType();
         String messageKey = messageKeyOf(envelope);
         String payload = jsonMapper.writeValueAsString(event);
 
-        List<String> violations = EventContracts.violationsOf(eventType, payload);
+        List<String> violations = EventContracts.publishViolationsOf(eventType, payload);
         if (!violations.isEmpty()) {
             throw new IllegalArgumentException(
                     EventContracts.describeViolations(eventType, violations));
@@ -229,37 +229,39 @@ public class OutboxWriter {
     /**
      * Reads the message key the row records, and the relay publishes under.
      *
-     * <p>Two forms exist and both are stored in {@code aggregate_id}. The account form is eleven
-     * decimal digits, from {@code XREF-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT03Y.cpy:L7}. The key
-     * travels as text and neither form pads, so the leading zeros of an identifier belong to the
-     * value and survive: account seven renders as eleven characters ending in seven. Keying every
-     * event of one account on that value keeps the events of that account on one partition and in
-     * publish order.
+     * <p>One form reaches a row this method writes: eleven decimal digits, the account identifier of
+     * {@code XREF-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT03Y.cpy:L7}. The key travels as text and
+     * nothing pads, so the leading zeros of an identifier belong to the value and survive: account
+     * seven renders as eleven characters ending in seven. Keying every event of one account on that
+     * value keeps the events of that account on one partition and in publish order, which is what the
+     * ledger needs to apply them to a balance in the order they were decided.
      *
-     * <p>The transaction form is sixteen printable characters, from {@code TRAN-ID PIC X(16)} at
-     * {@code app/cpy/CVTRA05Y.cpy:L5}. One contract uses it: a decline whose card the cross-reference
-     * resolved no account for, which is reject code {@code 0100} at
-     * {@code app/cbl/CBTRN02C.cbl:L385-L387}, published under
-     * {@code schemas/transaction-declined-v2.json}. That decision has no account identifier to key
-     * on, and inventing one inside the real account key space would put an event about no account on
-     * some real account's partition.
+     * <p>Every decision this service records names an account, reject code {@code 0100} of
+     * {@code app/cbl/CBTRN02C.cbl:L385-L387} included: the cross-reference read resolves the subject
+     * where it can, the caller declares it where that read misses, and a call that establishes
+     * neither is refused before a decision by
+     * {@code domain/AuthorizationService.CardNumberNotFoundInCrossReferenceException}. So there is one
+     * key form to write.
      *
-     * <p>Anything else is refused here rather than published to a partition no consumer expects.
-     * {@link EventEnvelope#AGGREGATE_KEY_PATTERN} and the CHECK constraint
-     * {@code ck_outbox_event_aggregate_id} state the same two forms, so the record, the envelope and
-     * the column cannot disagree.
+     * <p>{@link EventEnvelope#AGGREGATE_KEY_PATTERN} still admits a second form, the sixteen-character
+     * transaction identifier, because a record published under
+     * {@code schemas/transaction-declined-v2.json} before that redesign is still on its topic and a
+     * consumer still reads it. Reading it is what retention buys; writing it is what this method
+     * refuses. The CHECK constraint {@code ck_outbox_event_aggregate_id} was narrowed to the account
+     * form by migration {@code V19} and carries {@code NOT VALID}, so it holds every row written from
+     * that migration forward and leaves the older rows the record they are.
      *
      * @param envelope the five envelope values of the event
-     * @return the message key: eleven decimal digits, or sixteen printable characters
-     * @throws IllegalArgumentException when the envelope carries neither form. The message names the
+     * @return the message key: eleven decimal digits
+     * @throws IllegalArgumentException when the envelope carries another form. The message names the
      *                                  pattern and the length, and never the value
      */
     private static String messageKeyOf(EventEnvelope envelope) {
-        if (!envelope.carriesAccountKey() && !envelope.carriesTransactionKey()) {
+        if (!envelope.carriesAccountKey()) {
             throw new IllegalArgumentException("aggregateId must match "
-                    + EventEnvelope.AGGREGATE_KEY_PATTERN + ", the two key forms column"
-                    + " aggregate_id records, and the supplied envelope holds "
-                    + envelope.aggregateId().length() + " characters");
+                    + EventEnvelope.AGGREGATE_ID_PATTERN + ", the account key form column"
+                    + " aggregate_id records for every row this service writes, and the supplied"
+                    + " envelope holds " + envelope.aggregateId().length() + " characters");
         }
         return envelope.aggregateId();
     }
