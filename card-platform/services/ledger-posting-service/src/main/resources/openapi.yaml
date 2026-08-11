@@ -174,13 +174,13 @@ paths:
         '405':
           description: >-
             The route was called with a method it does not serve. This route
-            serves GET alone, and the Allow header names it.
+            serves GET alone, and the Allow header names it. The handler
             api/LedgerApiExceptionHandler keeps the status and the headers the
             framework named rather than reporting a caller's mistake as a fault
-            of this service.
-            config/SecurityConfig declares one rule per method and path, and a request whose method
-            carries no rule is refused with 403 before the dispatcher runs, so this answer is the
-            one a request the chain admits receives.
+            of this service. The chain in config/SecurityConfig declares one
+            rule per method and path, so a request whose method carries no rule
+            is refused with 403 before the dispatcher runs. This answer is
+            therefore the one a request the chain admits receives.
           headers:
             Allow:
               description: The methods this route serves.
@@ -211,10 +211,11 @@ paths:
             The projection table could not be reached, so the read was never
             attempted. The request was well formed and this service holds no
             defect, so the detail invites a retry rather than reporting a fault.
-            api/LedgerApiExceptionHandler answers this for a connection that
-            cannot be opened, a transaction that cannot be begun and a statement
-            that ran out of time, and for nothing else. A broken query is a fault
-            of this service and answers 500, where a retry would only repeat it.
+            The handler api/LedgerApiExceptionHandler answers this for a
+            connection that cannot be opened, a transaction that cannot be begun
+            and a statement that ran out of time. It answers it for nothing
+            else. A broken query is a fault of this service and answers 500,
+            where a retry would only repeat it.
           content:
             application/problem+json:
               schema:
@@ -228,8 +229,8 @@ paths:
         '500':
           description: >-
             A fault inside this service. The detail is fixed and names no
-            identifier, no route, no table, no column and no exception class, so
-            the log line api/LedgerApiExceptionHandler writes is the only record
+            identifier, no route, no table, no column and no exception class.
+            The log line api/LedgerApiExceptionHandler writes is the only record
             of what failed.
           content:
             application/problem+json:
@@ -242,15 +243,18 @@ paths:
                 detail: 'The balance could not be read.'
         '429':
           description: >-
-            A rate ceiling refused this request. config/RequestRateCeilingFilter runs ahead of the
-            security chain and bounds requests from one source, requests presenting one identity,
-            state-changing requests from one source, failed authentications from one source, and
-            requests in flight. Retry-After names whole seconds until the window rolls.
+            A rate ceiling refused this request. The filter
+            config/RequestRateCeilingFilter runs ahead of the security chain. It
+            bounds requests from one source, requests presenting one identity,
+            state-changing requests from one source, failed authentications from
+            one source, and requests in flight. Retry-After names whole seconds
+            until the window rolls.
 
 
-            ADDITIVE: a CICS transaction arrived from a terminal an operator was sitting at and the
-            nightly feed of app/jcl/POSTTRAN.jcl arrived once a day as a dataset, so the source had
-            no request rate to bound and holds no matching condition. The detail is fixed and names
+            ADDITIVE: a CICS transaction arrived from a terminal an operator was
+            sitting at, and the nightly feed of app/jcl/POSTTRAN.jcl arrived
+            once a day as a dataset. The source therefore had no request rate to
+            bound and holds no matching condition. The detail is fixed and names
             no address, no identity and no route.
           headers:
             Retry-After:
@@ -323,14 +327,19 @@ components:
           description: >-
             A short, fixed phrase naming the class of failure. Never
             caller-supplied text. Four sources produce the seven values below,
-            one value per status carrying a body. api/ApiProblem holds the
-            constants for 400, 500 and 503. config/SecurityConfig writes
-            'Unauthorized' for 401, and config/CrossSiteRequestFilter writes
-            'Forbidden' for 403. config/RequestRateCeilingFilter writes
-            'Too many requests' for 429 in a fixed body. api/LedgerApiExceptionHandler
-            writes the reason phrase of the status the framework named for a
-            protocol refusal, which is 'Method Not Allowed' for the 405 this
-            document publishes.
+            one value per status carrying a body.
+
+
+            The record api/ApiProblem holds the constants for 400, 500 and 503.
+            The chain in config/SecurityConfig writes 'Unauthorized' for 401,
+            and config/CrossSiteRequestFilter writes 'Forbidden' for 403. The
+            filter config/RequestRateCeilingFilter writes 'Too many requests'
+            for 429 in a fixed body.
+
+
+            The handler api/LedgerApiExceptionHandler writes the reason phrase
+            of the status the framework named for a protocol refusal. That
+            phrase is 'Method Not Allowed' for the 405 this document publishes.
           enum: ['Bad Request', 'Unauthorized', 'Forbidden', 'Method Not Allowed',
                  'Too many requests', 'Service Unavailable', 'Internal Server Error']
         status:

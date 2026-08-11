@@ -155,7 +155,7 @@ public interface CardCrossReferenceRepository
     /**
      * Applies one cross-reference state change, unless the row already carries a newer one.
      *
-     * <p>One statement rather than read-then-write, for two reasons. It is idempotent: a duplicate
+     * <p>One statement rather than read-then-write. It is idempotent: a duplicate
      * delivery of the same event finds {@code source_occurred_at} already at or past its own and
      * updates nothing, so replaying the topic converges on the same rows. And it is ordered. The
      * {@code WHERE} clause on the conflict path discards an event that did not occur after the one

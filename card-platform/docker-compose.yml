@@ -5,35 +5,38 @@
 #
 #     scripts/start-demo.sh
 #
-# `docker compose up -d --build` on its own does not, and the reasons are structural.
-# Every services/*/Dockerfile copies the archive its own module left under target/, and a
-# fresh checkout carries none. This file reads nineteen credentials that nothing in the
-# repository supplies. And .env, where they live, does not exist until it is copied. The
-# script performs those steps in order: package, then create and fill .env, then start.
+# `docker compose up -d --build` on its own does not start the stack from a clean clone.
+# This file reads nineteen credentials, and .env, where they live, does not exist until it
+# is copied. scripts/generate-env.sh fills them, and it hashes the four identity passwords
+# with spring-security-crypto read out of the local Maven repository, which a packaging run
+# puts there. The script performs those steps in order: package, then create and fill .env,
+# then start.
 #
 # By hand, in this directory:
 #
 #     install -m 600 .env.example .env    # cp would leave it world-readable
 #     mvn -f pom.xml clean package
 #     scripts/generate-env.sh      # or the per-variable commands in .env.example
-#     docker compose up -d --build
+#     docker compose up -d --build --wait --wait-timeout 300
 #
-# Each build context below is therefore the module directory rather than this one. No
-# compiler, no build tool and no source tree enter an image.
+# Each build context below is this directory. The builder stage of every
+# services/*/Dockerfile compiles its own module from source and needs the aggregator
+# descriptor and both shared libraries in reach, so no host archive under target/ is used or
+# required. The runtime stage carries the layered archive alone: no compiler, no build tool
+# and no source tree reach it.
 #
 # TRANSPORT POSTURE OF THIS STACK. One operator, one machine, synthetic fixtures.
 #
 # Three transports here carry a credential without encrypting it or without authenticating
-# the peer, and each is a deliberate choice for this stack rather than an oversight:
+# the peer:
 #
 #   * The six service ports speak HTTP with HTTP Basic. SERVER_SSL_ENABLED is false.
 #   * The broker speaks SASL_PLAINTEXT, which authenticates a client and encrypts nothing.
 #   * The six database connections ask for sslmode=require, which encrypts the connection
-#     and does not authenticate the server, because a laptop has no certificate authority
-#     and the server generates its own certificate on first start.
+#     and does not authenticate the server. The server generates its own certificate on
+#     first start, so there is nothing here to verify it against.
 #
-# What makes that acceptable is a posture, and the posture has three parts. Every published
-# port binds 127.0.0.1, so nothing off this machine reaches any of them, and
+# Three facts bound that posture. Every published port binds 127.0.0.1, and
 # ComposeEnvironmentIsolationContractTest fails the build on a binding that does not.
 # Everything between containers crosses one Docker bridge on the same machine. And the data
 # is the nine synthetic fixture files under app/data/ASCII: fifty accounts, fifty customers
@@ -43,18 +46,19 @@
 # second person, and it is not a deployment. A host shared with an untrusted account, or a
 # second user on the same bridge, is outside what the posture covers.
 #
-# The deployed answer is elsewhere and it is encrypted throughout: deploy/k8s/30-configmap.yaml
-# sets SASL_SSL, sslmode=verify-full against a mounted authority, and Transport Layer Security
-# on both ports of every service. KAFKA_SECURITY_PROTOCOL, SPRING_DATASOURCE_OPTIONS and the
-# two SSL switches are the values that differ between the two paths.
+# The deployed path encrypts all three transports: deploy/k8s/30-configmap.yaml sets
+# SASL_SSL, sslmode=verify-full against a mounted authority, and Transport Layer Security on
+# both ports of every service. KAFKA_SECURITY_PROTOCOL, SPRING_DATASOURCE_OPTIONS and the
+# two SSL switches are the values that differ between the two paths. Storage there is not
+# encrypted by default: deploy/k8s/overlays/encrypted-storage binds an encrypted class the
+# operator supplies, and deploy/k8s/README.md states what the operator owns.
 #
 # An authenticated Transport Layer Security profile for this file is designed and not
 # delivered: card-platform/docs/suggested-next-tasks.md carries the procedure and the check.
-# The reasoning behind the posture, its alternatives and the risk it accepts:
+#
+# Why each choice above, the alternatives weighed and the risk accepted:
 # card-platform/docs/decision-log.md, under "A local stack states its transport posture and
 # binds it to one machine".
-#
-# Rationale for the choices in this file: card-platform/docs/decision-log.md
 #
 ---
 # CLONE_INDEX suffixes the project name. A second checkout runs its own stack.

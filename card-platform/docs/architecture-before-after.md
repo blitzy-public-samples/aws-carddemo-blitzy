@@ -272,6 +272,7 @@ graph LR
     ACON -.-> DLQ
     CCON -.-> DLQ
     APCON -.-> DLQ
+    ARELAY -.-> DLQ
     LRELAY -.-> DLQ
     FRELAY -.-> DLQ
     ACRELAY -.-> DLQ
@@ -283,7 +284,7 @@ graph LR
 - A subgraph boundary encloses one deployable service together with the database only that service reaches.
 - A plain arrow is a synchronous step. Only the two client edges enter from outside; every other plain arrow is in-process.
 - A thick arrow is an asynchronous Kafka publish or consume, and every thick arrow is a decoupling point.
-- A dotted arrow is dead-letter routing, taken by a spent consumer record or by an outbox row a relay abandoned.
+- A dotted arrow is dead-letter routing, taken by a spent consumer record or by an outbox row a relay abandoned. All five relays take it: each publishes a governed `DeadLetterEnvelope` naming the row it gave up on.
 - A hexagon is a Kafka topic. Seven carry business events. A refused record travels to its source topic plus the `.DLT` suffix, and the shared `carddemo.dead-letter` catches the rest.
 - A cylinder is a private PostgreSQL database and schema created by Flyway. No cylinder is shared, which is the structural difference from Figure 1.
 - Three thick arrows leave `transaction.authorized`, one for each independent consumer group. That fan-out is the point of the target state.
@@ -307,7 +308,9 @@ Fourteen topics are created explicitly: seven business topics, six source-specif
 | `<source>.DLT`, six of them | Fixed-width abend diagnostic derived from `app/cpy/CSMSG02Y.cpy:L21` | Listener error handlers on ledger, fraud and notification. Ledger has three listeners, fraud one and notification four | Operator inspection and replay |
 | `carddemo.dead-letter` | `DeadLetterEnvelope` | The authorization and account listener error handlers, and **all five** outbox relays on an abandoned row: authorization, ledger, fraud, account and card | Operator inspection and replay |
 
-Eleven consumer groups run across five listening services, one per listener. Authorization takes two for its replicas. Ledger takes three: one for the authorization stream, one for the declines it records, and one for its balance replica. Fraud takes one, notification four for four independent inputs, and account one for the posted amount it applies. Card registers no listener. Delivery guarantees, acknowledgement, and the duplicate check belong to [event flow](event-flow.md) and are not repeated here.
+Eleven consumer groups run across five listening services, one per listener. Authorization takes two for its replicas. Ledger takes three: one for the authorization stream, one for the declines it records, and one for its balance replica. Fraud takes one, notification four for four independent inputs, and account one for the posted amount it applies. Card registers no listener.
+
+Delivery guarantees, acknowledgement, and the duplicate check belong to [event flow](event-flow.md) and are not repeated here.
 
 The account identifier is the Kafka message key whenever an account is known. Kafka orders records only within a partition, and the ledger's balance updates for one account must stay in order.
 
@@ -322,7 +325,7 @@ Each service owns one database, one schema, and the tables below. Column types, 
 | fraud detection | `carddemo_fraud`, `fraud_service` | `fraud_assessment`, `velocity_window`, `outbox_event`, `processed_event` |
 | notification | `carddemo_notification`, `notification_service` | `statement_transaction`, `cardholder_context`, `notification_log`, `processed_event` |
 | account | `carddemo_account`, `account_service` | `account`, `customer`, `disclosure_group`, `account_customer_link`, `us_phone_area_code`, `us_state_code`, `us_state_zip_prefix`, `outbox_event`, `processed_event` |
-| card | `carddemo_card`, `card_service` | `card`, `card_xref`, `outbox_event`, `processed_event` |
+| card | `carddemo_card`, `card_service` | `card`, `card_xref`, `card_token_rotation`, `card_token_rotation_mapping`, `outbox_event`, `processed_event` |
 
 Three services hold a copy of the cross-reference relationship, which is the deliberate replacement for one `CCXREF` dataset shared by six programs in Figure 1. Two of the three are keyed on the card, because authorization and card both answer questions asked about a card. The account copy is keyed on the account and holds no card number, because its one query asks which customer an account belongs to. A card number replicated into a schema that reads no card would be a Primary Account Number with no reader. **The three copies do not share a lifecycle, and calling them all event-current would overstate two of them.**
 
@@ -361,7 +364,9 @@ One row deserves its detail, because it is the clearest ancestor in the source. 
 
 The operation codes then map cleanly onto a repository interface. Keyed read becomes find by identifier, sequential read becomes iteration, write becomes insert, and rewrite becomes update. Open and close are dropped, because connection lifecycle is the framework's concern.
 
-One target construct has no row above, because it has no legacy construct to sit beside. **The dead-letter topics are additive reliability, not the migration of anything.** The source's answer to a record it cannot process is the abend paragraph at `app/cbl/CBTRN02C.cbl:L707-L711`. It displays a message, moves 999 into an abend code, and ends the job. There is no cleanup, and no record of the individual message. The platform instead exhausts its retries, routes the one message aside with enough metadata to diagnose and replay it, and leaves the listener consuming. Reading a dead-letter topic as the successor to the reject dataset conflates two different things. A reject is a decision the business asked for. A dead-lettered message is a failure the platform survived.
+One target construct has no row above, because it has no legacy construct to sit beside. **The dead-letter topics are additive reliability, not the migration of anything.** The source's answer to a record it cannot process is the abend paragraph at `app/cbl/CBTRN02C.cbl:L707-L711`. It displays a message, moves 999 into an abend code, and ends the job. There is no cleanup, and no record of the individual message.
+
+The platform instead exhausts its retries, routes the one message aside with enough metadata to diagnose and replay it, and leaves the listener consuming. Reading a dead-letter topic as the successor to the reject dataset conflates two different things. A reject is a decision the business asked for. A dead-lettered message is a failure the platform survived.
 
 ## What changed structurally
 

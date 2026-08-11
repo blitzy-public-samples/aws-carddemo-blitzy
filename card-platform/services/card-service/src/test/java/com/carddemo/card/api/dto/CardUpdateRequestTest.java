@@ -839,8 +839,8 @@ final class CardUpdateRequestTest {
      *
      * <p>{@code app/cbl/COCRDUPC.cbl:L784} reads {@code IF CC-CARD-NUM IS NOT NUMERIC} and nothing
      * more. The source therefore posts a Luhn-failing card, and this platform must too. A rule that
-     * refused it would refuse a card the source accepts, so the absence of a checksum rule is a
-     * deliberate non-addition rather than an oversight.
+     * refused it would refuse a card the source accepts, so no checksum rule exists here. The
+     * register carries it as item 24: {@code card-platform/docs/business-rule-flags.md}
      *
      * <p>The card number arrives in the path, so the shape that reads it is
      * {@code api/CardController#CARD_NUMBER_PATTERN}, which is asserted here.

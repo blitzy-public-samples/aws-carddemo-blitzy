@@ -79,7 +79,7 @@ Legend for Figure 1:
 
 - Thick arrow: an asynchronous Kafka consume or publish, and therefore a decoupling point.
 - Plain arrow: in-process control flow, a database write, or a database read.
-- Dotted arrow: dead-letter routing. There are two, and they are not the same route. A consumed record spent after its retries goes to the source topic's `.DLT`. An outbox row the relay abandons goes to the shared `carddemo.dead-letter` topic, and that row is recorded as `ABANDONED` rather than published, because the only thing published on that route is the diagnostic saying the verdict reached nobody.
+- Dotted arrow: dead-letter routing. There are two, and they are not the same route. A consumed record spent after its retries goes to the source topic's `.DLT`. An outbox row the relay abandons goes to the shared `carddemo.dead-letter` topic, and that row is recorded as `ABANDONED` rather than published. The only thing published on that route is the diagnostic saying the verdict reached nobody.
 - Hexagon: a Kafka topic, always outside the boundary. Cylinder: the private `fraud_service` schema, whose four tables commit inside one local transaction. Diamond: the duplicate-delivery check, keyed on the event identifier together with the topic the delivery arrived on, where a repeat delivery leaves by the branch that writes nothing. Labelled box: the service boundary, inside which no other service's datastore appears.
 
 Figure 2 shows what is absent. Three services read `transaction.authorized` directly, each under a consumer group of its own: this one, the ledger, and the notification service. The notification service reads it in addition to the two topics the other two publish, which is why it appears with three groups below. No arrow joins any two of the three consumers, and none returns to the authorization service. That absence is the architectural claim, and nothing in this service may create such an arrow.
@@ -123,17 +123,21 @@ Two routes answer. Both read, neither writes, and both require the `ADMIN` role 
 | `GET /fraud-assessments/{transactionId}` | One stored assessment, or `404` when the table holds none |
 | `GET /fraud-assessments?accountId=...` | One page of that account's assessments, newest first, over a bounded `size` and a cursor the previous page named |
 
-These routes serve a demonstration and support queries. Neither sits on any authorization path or any posting path. A caller that asks for an unsupported `sort` order receives `400` rather than a differently ordered page and no word about it, and so does one that asks for a `page` number.
+These routes serve a demonstration and support queries. Neither sits on any authorization path or any posting path. A caller that asks for an unsupported `sort` order receives `400`, rather than a differently ordered page and no word about it. So does one that asks for a `page` number.
 
-The collection route pages by position. It answers `nextPageExists` and, while that is true, a `nextCursor`; returning that cursor in the `X-Fraud-Cursor` header asks for the page after it. A page number is refused rather than served because an offset is reached by reading and discarding every row before it, so the work would grow with the page asked for rather than with the page returned: page 1,000,000 at 200 rows would walk 200,000,000 entries to answer with 200. A cursor is a range read of `ix_fraud_assessment_account_cursor`, so the ten-thousandth page costs what the first one does. Every read is bound to the `accountId` of the request, so a cursor issued for one account reads no other account's rows.
+The collection route pages by position. It answers `nextPageExists` and, while that is true, a `nextCursor`; returning that cursor in the `X-Fraud-Cursor` header asks for the page after it.
+
+A page number is refused rather than served, because an offset is reached by reading and discarding every row before it. The work would then grow with the page asked for rather than with the page returned. Page 1,000,000 at 200 rows would walk 200,000,000 entries to answer with 200. A cursor is a range read of `ix_fraud_assessment_account_cursor`, so the ten-thousandth page costs what the first one does. Every read is bound to the `accountId` of the request, so a cursor issued for one account reads no other account's rows.
 
 The management port answers `/actuator` and exposes `health,metrics,prometheus`. Health is open so a container probe can read it, and the metrics and Prometheus routes require the `MONITORING` role. The full request and response contract is [openapi.yaml](src/main/resources/openapi.yaml), and that file is hand-written: the aggregator build bans every documentation-generation library, so no generated description can drift from the code.
 
 ### Two controls in front of every route
 
-`config/CrossSiteRequestFilter` guards state change: a `POST`, `PUT`, `PATCH` or `DELETE` must carry `X-CardDemo-Request`, must not declare a cross-site `Sec-Fetch-Site`, and must not carry a foreign `Origin`. This service answers reads alone, so no state-changing route exists here to forge today. That is the reason the filter is here rather than a reason it is not. The read-only shape becomes an enforced property instead of a fact a reader has to go and check, and the first write added inherits the control rather than needing someone to remember it. A refusal answers 403 and counts `carddemo.fraud.requests.cross.site.refused`. `GET`, `HEAD`, `OPTIONS` and `TRACE` pass untouched, which is why no path is exempted: the liveness probe and the metrics scrape are reads.
+`config/CrossSiteRequestFilter` guards state change: a `POST`, `PUT`, `PATCH` or `DELETE` must carry `X-CardDemo-Request`, must not declare a cross-site `Sec-Fetch-Site`, and must not carry a foreign `Origin`. This service answers reads alone, so no state-changing route exists here to forge today. That is the reason the filter is here rather than a reason it is not. The read-only shape becomes an enforced property instead of a fact a reader has to go and check. The first write added inherits the control rather than needing someone to remember it.
 
-`config/RequestRateCeilingFilter` bounds volume. It runs one place ahead of the security chain, because a refusal has to cost less than the attempt it refuses and an attempt that reached the chain would already have paid for a bcrypt verification.
+A refusal answers 403 and counts `carddemo.fraud.requests.cross.site.refused`. `GET`, `HEAD`, `OPTIONS` and `TRACE` pass untouched, which is why no path is exempted: the liveness probe and the metrics scrape are reads.
+
+`config/RequestRateCeilingFilter` bounds volume. It runs one place ahead of the security chain, because a refusal has to cost less than the attempt it refuses. An attempt that reached the chain would already have paid for a bcrypt verification.
 
 | Ceiling | Default | Counted by |
 | :--- | ---: | :--- |
@@ -145,7 +149,7 @@ The management port answers `/actuator` and exposes `health,metrics,prometheus`.
 
 A refusal answers 429 with `Retry-After` and counts `carddemo.fraud.requests.throttled`, tagged with the stage that refused: `authentication`, `source`, `identity`, `write` or `concurrency`. The five ceilings read `API_RATE_WINDOW_SECONDS`, `API_RATE_REQUESTS_PER_WINDOW`, `API_RATE_WRITE_REQUESTS_PER_WINDOW`, `API_RATE_AUTHENTICATION_FAILURES_PER_WINDOW` and `API_RATE_CONCURRENT_REQUESTS` from [`.env.example`](../../.env.example). The management base path is exempt, because a throttled probe reads as a failed container.
 
-Both filters count in this process, so several replicas bound each replica rather than the service as a whole, and the source address is the one the container resolves rather than a forwarding header a caller could write. A deployment behind a proxy activates the `trusted-proxy` profile, which trusts those headers from the proxy's own addresses alone. Both residual limits are recorded in [suggested next tasks](../../docs/suggested-next-tasks.md), and the reasoning behind the two controls is in the [Decision Log](../../docs/decision-log.md).
+Both filters count in this process, so several replicas bound each replica rather than the service as a whole. The source address is the one the container resolves, rather than a forwarding header a caller could write. A deployment behind a proxy activates the `trusted-proxy` profile, which trusts those headers from the proxy's own addresses alone. Both residual limits are recorded in [suggested next tasks](../../docs/suggested-next-tasks.md), and the reasoning behind the two controls is in the [Decision Log](../../docs/decision-log.md).
 
 <br/>
 
@@ -165,7 +169,7 @@ Two event types share one topic, and a reader routes on the envelope's `eventTyp
 
 The account identifier is always the envelope's `aggregateId` and always the Kafka message key. Every event for one account therefore lands on one partition and stays in order, which is what velocity counting depends on. Money travels as a decimal string in every payload, never as a JSON (JavaScript Object Notation) number, and every amount this service compares runs through `CobolDecimal`, which truncates toward zero.
 
-A record is attempted three times, one second apart: `carddemo.consumer.retry.max-attempts` is 3 and `FixedBackOff` receives `maxAttempts - 1`, so the count is one initial delivery plus two retries rather than three retries after the first. A message that still fails routes to its source topic's dead-letter topic, and `carddemo.dead-letter` catches a failure carrying no source topic. A payload that fails schema validation never reaches the listener and takes that route with no retry at all.
+A record is attempted three times, one second apart. `carddemo.consumer.retry.max-attempts` is 3 and `FixedBackOff` receives `maxAttempts - 1`, so the count is one initial delivery plus two retries rather than three retries after the first. A message that still fails routes to its source topic's dead-letter topic, and `carddemo.dead-letter` catches a failure carrying no source topic. A payload that fails schema validation never reaches the listener and takes that route with no retry at all.
 
 <br/>
 
@@ -188,13 +192,15 @@ described with them: `carddemo.fraud.requests.cross.site.refused` and
 | `carddemo.fraud.duplicates.skipped` | Counter | One delivery whose event already carried a marker, so no assessment ran |
 | `carddemo.fraud.processing.latency` | Timer | Consumer duration to commit |
 
-`duplicates.skipped` shares a denominator with none of them. A replay is acknowledged, writes nothing and raises no failure, so it is the one outcome that is both expected and otherwise invisible: read beside `events.consumed` it separates a quiet service from one working through a redelivered backlog.
+`duplicates.skipped` shares a denominator with none of them. A replay is acknowledged, writes nothing and raises no failure, so it is the one outcome that is both expected and otherwise invisible. Read beside `events.consumed`, it separates a quiet service from one working through a redelivered backlog.
 
 `failures` counts attempts and `dead.letters` counts records, so summing the two is never meaningful. A fourth `stage` value would have overlapped `deserialize`, because a record spent at deserialization is also a terminal record.
 
 `outbox.abandoned` counts rows and answers the one question the other two cannot: whether a row this service gave up on was actually named anywhere. Read beside the `published` series of `dead.letters`, the two agree while every abandonment reaches the topic, and `abandoned` runs ahead while a diagnostic is still owed. A row that owes one is offered again at the head of every later pass, so `abandoned` running ahead means delayed rather than lost.
 
-Two things reach that counter, and both are abandonments. A row whose ten attempts ran out is one. A row whose failure is permanent — a payload the schema document refuses, or one no record type reads — is the other, and it is given up on outright rather than after ten identical refusals. Reading `abandoned` beside `events.published` is what makes the pair meaningful. A permanent failure used to close its row as published, so an assessment that reached nobody was counted and stored as one the broker had accepted, and this counter never moved for it.
+Two things reach that counter, and both are abandonments. A row whose ten attempts ran out is one. A row whose failure is permanent is the other: a payload the schema document refuses, or one no record type reads. It is given up on outright rather than after ten identical refusals.
+
+Reading `abandoned` beside `events.published` is what makes the pair meaningful. A permanent failure used to close its row as published. An assessment that reached nobody was then counted and stored as one the broker had accepted, and this counter never moved for it.
 
 <br/>
 
@@ -225,9 +231,13 @@ The private database is `carddemo_fraud`, and the schema inside it is `fraud_ser
 
 No other service reads this schema, and this service reads no other schema. The login it connects with owns `carddemo_fraud` and can reach none of the other five databases.
 
-All three growing tables are swept. `RetentionSweep` runs hourly and issues a bounded, ordered delete of at most five hundred rows per statement against `outbox_event`, `processed_event` and `velocity_window`, repeating each until it comes back short or a thirty-second per-table ceiling stops it. The ceiling is what keeps one large table from starving the other two; the repeat is what keeps a bounded statement from leaving a permanent backlog behind.
+All three growing tables are swept. `RetentionSweep` runs hourly and issues a bounded, ordered delete of at most five hundred rows per statement against `outbox_event`, `processed_event` and `velocity_window`. Each delete repeats until it comes back short or a thirty-second per-table ceiling stops it. The ceiling is what keeps one large table from starving the other two; the repeat is what keeps a bounded statement from leaving a permanent backlog behind.
 
-`fraud_assessment` and `velocity_window` are the two business tables here, and each declared its horizon in a `COMMENT ON TABLE` before any code applied it. `FRAUD_ASSESSMENT_RETENTION_DAYS` supplies the first and defaults to ninety days, measured from `assessed_at`. `FRAUD_VELOCITY_RETENTION_DAYS` supplies the second and defaults to seven days, measured from `window_start`. It is the one setting here that is not free to be any value. Nothing reads a window once its span elapses, so every authorization otherwise leaves a row behind for ever. A horizon shorter than `carddemo.fraud.risk.velocity-window-minutes` would delete the bucket a live authorization is counting into. The symptom would be a burst that quietly stopped triggering the velocity rule rather than an error anyone could see, so the service refuses to start when it does not, which is the only moment at which refusing costs nothing. Both rows are pseudonymous rather than anonymous, because their account and transaction identifiers resolve to a named customer through the account and ledger services, so both horizons are privacy horizons and not only housekeeping.
+`fraud_assessment` and `velocity_window` are the two business tables here, and each declared its horizon in a `COMMENT ON TABLE` before any code applied it. `FRAUD_ASSESSMENT_RETENTION_DAYS` supplies the first and defaults to ninety days, measured from `assessed_at`. `FRAUD_VELOCITY_RETENTION_DAYS` supplies the second and defaults to seven days, measured from `window_start`.
+
+It is the one setting here that is not free to be any value. Nothing reads a window once its span elapses, so every authorization otherwise leaves a row behind for ever. A horizon shorter than `carddemo.fraud.risk.velocity-window-minutes` would delete the bucket a live authorization is counting into. The symptom would be a burst that quietly stopped triggering the velocity rule, rather than an error anyone could see. The service therefore refuses to start when it does not, which is the only moment at which refusing costs nothing.
+
+Both rows are pseudonymous rather than anonymous, because their account and transaction identifiers resolve to a named customer through the account and ledger services. Both horizons are therefore privacy horizons and not only housekeeping.
 
 Flyway owns schema creation. The entity model is validated against the migrated schema and never generates it, so the column types derived from the source copybooks survive. Why the velocity window is a relational table rather than a cache sits in the [Decision Log](../../docs/decision-log.md). That log carries the reasoning behind every choice this document merely states.
 Flyway owns schema creation and runs nine migrations on every start, in this order:
@@ -244,7 +254,7 @@ Flyway owns schema creation and runs nine migrations on every start, in this ord
 | `V9__fraud_assessment_account_cursor_index.sql` | Adds `ix_fraud_assessment_account_cursor` over the account, the assessment time descending and the transaction identifier descending, and drops the two indexes that carried only a leading part of it. The read of one account's assessments walks that order from a named position rather than counting rows to an offset, so a page costs the same wherever in the history it falls. The primary key is in the index because `assessed_at` is not unique: one consumer batch can record several verdicts on the same microsecond, and a boundary inside such a group would repeat one row and skip another |
 | `V10__processed_event_claims_are_permanent.sql` | Withdraws the retention horizon of `processed_event` and drops `ix_processed_event_processed_at` with it. The 720-hour horizon bounded how long the broker could redeliver a record and said nothing about how long the risk assessment and the velocity buckets a claim guards stand, so a record archived, restored or deliberately replayed after it was new to the guard and applied twice. Nothing removes a claim now, and nothing bounds the table's growth either — the partitioning work a deployment measuring real volumes would want is in `card-platform/docs/suggested-next-tasks.md` |
 
-There is no `V2`. The number was used by a seed migration that was withdrawn: this schema seeds nothing, because every row it holds is derived from events it consumes rather than from a repository fixture. Flyway does not require contiguous versions, and reusing the number later would make an already-migrated database disagree with a fresh one, so the gap stays.
+There is no `V2`. The number was used by a seed migration that was withdrawn. This schema seeds nothing, because every row it holds is derived from events it consumes rather than from a repository fixture. Flyway does not require contiguous versions, and reusing the number later would make an already-migrated database disagree with a fresh one, so the gap stays.
 
 The entity model is validated against the migrated schema and never generates it, so the column types derived from the source copybooks survive. Why the velocity window is a relational table rather than a cache sits in the [Decision Log](../../docs/decision-log.md). That log carries the reasoning behind every choice this document merely states.
 
@@ -266,7 +276,9 @@ For the fuller domain background, including the four decline codes and their sou
 
 **Truncate, never round half-up.** Every amount comparison here runs through `CobolDecimal`, which pins `RoundingMode.DOWN`. The `ROUNDED` phrase appears zero times across all 28 programs under `app/cbl/`, so truncation toward zero is the platform rule. That rule holds here too, even though no COBOL program is this module's ancestor, so no later reader finds two rounding conventions in one codebase.
 
-**A duplicate delivery must not count a velocity entry twice.** Kafka delivers at least once. A redelivery follows a consumer group rebalance, a restart mid-batch, or a crash after the side effects and before the offset commit. The listener claims a `processed_event` marker before it scores anything, keyed on the event identifier together with the topic the delivery arrived on. That claim commits in the same transaction as the assessment and the velocity update. Guard and effect therefore stand or fall together.
+**A duplicate delivery must not count a velocity entry twice.** Kafka delivers at least once. A redelivery follows a consumer group rebalance, a restart mid-batch, or a crash after the side effects and before the offset commit.
+
+The listener claims a `processed_event` marker before it scores anything, keyed on the event identifier together with the topic the delivery arrived on. That claim commits in the same transaction as the assessment and the velocity update. Guard and effect therefore stand or fall together.
 
 **Never publish from the listener.** The assessment row and the outbox row commit in one local transaction, and `OutboxRelay` publishes afterwards on a transaction of its own. A send from inside the listener could leave a published event with no committed assessment behind it. What drives that relay is `@EnableScheduling` on `FraudApplication`: without the annotation the service starts, reports healthy, stores assessments, and publishes nothing at all.
 
@@ -288,7 +300,7 @@ Adding a consumer of `fraud.assessed` needs no change to this service. Subscribe
 
 Swapping the event bus means one new implementation of `messaging/EventPublisherPort` and nothing else. That interface is the platform's single event-bus seam, and `messaging/KafkaEventPublisher` is the shipped implementation of it. `outbox/OutboxRelay` holds the port and no broker type at all, so the relay, the outbox contract, the claim protocol and the abandonment route all survive the substitution. The port takes the event record rather than serialized text, because this service's producer is built with `JsonSchemaValidatingSerializer`. That serializer is where the payload is written, validated against the schema document its event type names, and checked against the topic it is bound to.
 
-Running a second replica needs no change either. Each relay instance records its own identity in `outbox_event.claimed_by`, and the identity defaults to the container hostname — a Pod name under Kubernetes, a container identifier under Compose — so two replicas never claim rows under one name. `OUTBOX_RELAY_INSTANCE_ID` overrides it, and pinning one value across replicas is the one way to reintroduce the collision.
+Running a second replica needs no change either. Each relay instance records its own identity in `outbox_event.claimed_by`, and the identity defaults to the container hostname: a Pod name under Kubernetes, a container identifier under Compose. Two replicas therefore never claim rows under one name. `OUTBOX_RELAY_INSTANCE_ID` overrides it, and pinning one value across replicas is the one way to reintroduce the collision.
 
 Follow-up work found while building this service, including the owner decisions that would change outcomes, is recorded in [Suggested Next Tasks](../../docs/suggested-next-tasks.md).
 
@@ -358,7 +370,12 @@ docker compose exec kafka /opt/kafka/bin/kafka-console-consumer.sh \
 `--max-messages 1` is what makes that command return. The same assessment is readable over the API, where `accountId` is required:
 
 ```bash
-curl -fsS -u "admin001:$ADMIN_PASSWORD" \
+# The administrator identity these calls authenticate as. scripts/generate-env.sh wrote its
+# password to .demo-credentials, which git ignores and creates owner-only. Run from card-platform/.
+ADMIN_USERNAME="$(sed -n 's/^ADMIN_USERNAME=//p' .env | head -1)"
+ADMIN_PASSWORD="$(sed -n "s/^${ADMIN_USERNAME}=//p" .demo-credentials | head -1)"
+
+curl -fsS -u "${ADMIN_USERNAME}:${ADMIN_PASSWORD}" \
   "http://localhost:8083/fraud-assessments?accountId=00000000050"
 ```
 
@@ -367,14 +384,18 @@ One approved authorization of `+00000504.77` against account `00000000050` answe
 Walking a longer history takes two commands. The first asks for a small page and reads the cursor out of it, and the second returns that cursor:
 
 ```bash
-CURSOR=$(curl -fsS -u "admin001:$ADMIN_PASSWORD" \
+CURSOR=$(curl -fsS -u "${ADMIN_USERNAME}:${ADMIN_PASSWORD}" \
   "http://localhost:8083/fraud-assessments?accountId=00000000050&size=1" \
-  | python3 -c "import json,sys; print(json.load(sys.stdin).get('nextCursor',''))")
+  | sed -n 's/.*"nextCursor":"\([^"]*\)".*/\1/p')
 
-curl -fsS -u "admin001:$ADMIN_PASSWORD" \
+curl -fsS -u "${ADMIN_USERNAME}:${ADMIN_PASSWORD}" \
   -H "X-Fraud-Cursor: $CURSOR" \
   "http://localhost:8083/fraud-assessments?accountId=00000000050&size=1"
 ```
+
+`sed` reads the cursor rather than a JSON parser, so the walk needs nothing the prerequisites do not
+already list. An absent `nextCursor` prints nothing, which is the empty value the next paragraph
+describes.
 
 An empty `CURSOR` means the first command already reached the end of that account's history, which is what `nextPageExists` false says.
 

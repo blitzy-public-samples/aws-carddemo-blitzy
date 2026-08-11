@@ -6,7 +6,12 @@ This guide takes a clean machine to a running, modifiable card platform, and ass
 
 ### Prerequisites
 
-Install the versions below. Each one is exact rather than a minimum. The build refuses an older Java and refuses Maven 4, and both container images are pinned by digest as well as by tag.
+Install the versions below. The build refuses an older Java and refuses Maven 4, and both container images are pinned by digest as well as by tag.
+
+Two paths run this platform, and each has its own list. Install the Compose set to reach a running
+stack on one machine; add the cluster set only to apply the Kubernetes manifests.
+
+**The Compose path, which `scripts/start-demo.sh` preflights before it does anything:**
 
 | Tool | Exact version | Use |
 | :--- | :--- | :--- |
@@ -15,16 +20,30 @@ Install the versions below. Each one is exact rather than a minimum. The build r
 | Docker Engine | 29.7.0 or later | Runs the demo stack |
 | Docker Compose | 5.3.1 or later | Starts the broker, the database, and the six services |
 | OpenSSL | 3.5.3 or later | Generates the local passwords and the card-token key |
+| curl | 8.14.1 or later | Reads the health endpoints and sends every request in this guide |
+| git | 2.51.0 or later | Clones the repository and resolves the ignore rules the scripts rely on |
 
-Two of those five rows are exact and three are floors, and the difference is not editorial. The
-enforcer plugin refuses a build outside `[25,26)` for the language level and `[3.9.16,3.10.0)` for
-Maven, so those two versions are requirements: a newer Maven fails the build rather than passing it.
-Nothing in this repository constrains Docker Engine, Docker Compose or OpenSSL, so the versions given
-for them are the ones the delivered stack was exercised on and the floor a later release stands on.
-Read a floor as "this or newer": the demo needs Compose to support `--wait` and profiles, and the
-credential script needs `openssl rand` and `openssl dgst -hmac`, all of which are long-standing.
+**The Kubernetes path, on top of the Compose set:**
 
-`jshell` arrives with the JDK, and the setup script needs it on the path.
+| Tool | Exact version | Use |
+| :--- | :--- | :--- |
+| kubectl | 1.31 or later | Applies the eleven manifests and reads Pod status |
+| kind, minikube or Docker Desktop | kind 0.24 or later; minikube 1.34 or later | Supplies the cluster and the image store `deploy/k8s/load-images.sh` loads into |
+
+Two rows of the Compose set are exact and the rest are floors, and the difference is not editorial.
+The enforcer plugin refuses a build outside `[25,26)` for the language level and `[3.9.16,3.10.0)` for
+Maven, so those two versions are requirements. A newer Maven fails the build rather than passing it.
+Nothing in this repository constrains the others, so each version given is the one the delivered stack
+was exercised on and the floor a later release stands on. Read a floor as "this or newer": the demo
+needs Compose to support `--wait` and profiles, and the credential script needs `openssl rand` and
+`openssl dgst -hmac`, all of which are long-standing.
+
+`jshell` arrives with the JDK, and the setup script needs it on the path. `scripts/start-demo.sh`
+refuses to start when any of `java`, `mvn`, `docker`, `openssl`, `jshell` or `curl` is missing, and
+names the tool it could not find. A missing prerequisite stops at the first command rather than at a
+failed request later. `deploy/k8s/load-images.sh` does the same for `kubectl` and for the runtime it
+detects. Nothing in this guide needs a language runtime beyond the JDK: every response is read with
+`curl` and `sed`.
 
 The stack runs two images, `apache/kafka:4.2.1` and `postgres:18.4`. Neither is ever `:latest`, and each carries a digest beside its tag. The broker version matches the Kafka client version the build resolves, which removes one class of demo-day failure. Kafka runs in Kafka Raft mode, so no ZooKeeper container exists.
 
@@ -120,8 +139,8 @@ sed -i "s|^MONITORING_PASSWORD_HASH=.*|MONITORING_PASSWORD_HASH='$(hash_password
 ```
 
 The single quotes on all four are not optional. A bcrypt value starts `{bcrypt}$2a$10$`, and Compose
-expands `$` in an unquoted dotenv value: written bare, the hash reaches the container truncated to
-`{bcrypt}$2a$10` and every sign-on answers 401 for a reason the value on disk does not show.
+expands `$` in an unquoted dotenv value. Written bare, the hash reaches the container truncated to
+`{bcrypt}$2a$10`, and every sign-on answers 401 for a reason the value on disk does not show.
 `scripts/generate-env.sh` and the pipeline both write these quoted, and the card-token key below is
 quoted for the same reason.
 
@@ -134,7 +153,9 @@ ACQUIRER_PASSWORD="$(sed -n 's/^acquirer1=//p' .demo-credentials)"
 
 ### The card-token key
 
-`CARD_TOKEN_SECRET` ships as a `REPLACE` marker, so generating it is a required step. A card token is a keyed `HMAC-SHA-256` over the full card number, prefixed by `CARD_TOKEN_VERSION` and rendered as 64 lower-case hexadecimal characters. The key is what stops a holder of one token recomputing the token of every sixteen-digit card number, so this repository ships no deployable runtime key. It does publish two: the build-scope key `pom.xml` supplies to the test suites, and the bootstrap key the Kubernetes Secret template carries. Both are refused by name at start-up, so neither can become a deployment's key by accident. Only the authorization service and the card service read it, and both refuse to start without it:
+`CARD_TOKEN_SECRET` ships as a `REPLACE` marker, so generating it is a required step. A card token is a keyed `HMAC-SHA-256` over the full card number, prefixed by `CARD_TOKEN_VERSION` and rendered as 64 lower-case hexadecimal characters.
+
+The key is what stops a holder of one token recomputing the token of every sixteen-digit card number, so this repository ships no deployable runtime key. It does publish two: the build-scope key `pom.xml` supplies to the test suites, and the bootstrap key the Kubernetes Secret template carries. Both are refused by name at start-up, so neither can become a deployment's key by accident. Only the authorization service and the card service read it, and both refuse to start without it:
 
 ```bash
 sed -i "s|^CARD_TOKEN_SECRET=.*|CARD_TOKEN_SECRET='$(openssl rand -base64 48 | tr -d '/+=')'|" .env
@@ -168,13 +189,19 @@ Run the full verification lifecycle before building images:
 ```bash
 mvn -B clean verify
 scripts/check-published-test-counts.sh
-docker compose up -d --build
+docker compose up -d --build --wait --wait-timeout 300
 docker compose ps
 ```
 
+`--wait` holds until every container reports healthy and exits non-zero if one does not. A failed
+start stops at this command rather than at the first request you make afterwards. The timeout bounds
+the one case `--wait` alone does not: a container that stays in `starting` and is never declared
+unhealthy. A cold stack converges in about two minutes, so 300 seconds is a bound rather than a
+target, and `scripts/start-demo.sh` passes the same pair.
+
 `mvn test` does not run the equivalence classes. Surefire excludes `**/*EquivalenceTest.java`, and Failsafe runs those nine classes during `verify`. A green `mvn test` therefore says nothing about source parity.
 
-`scripts/check-published-test-counts.sh` is the second line of that command block, and it belongs there rather than in a documentation task. It counts the `testcase` elements of every report the build wrote and fails when a figure published in [equivalence results](equivalence-results.md) or the [platform guide](../README.md) disagrees, or when a module holding an integration class produced no Failsafe report at all. Run it after adding a test and it tells you which published figure to restate; `--print` shows the measured numbers on their own.
+`scripts/check-published-test-counts.sh` is the second line of that command block, and it belongs there rather than in a documentation task. It counts the `testcase` elements of every report the build wrote. It fails when a figure published in [equivalence results](equivalence-results.md) or the [platform guide](../README.md) disagrees, or when a module holding an integration class produced no Failsafe report at all. Run it after adding a test and it tells you which published figure to restate; `--print` shows the measured numbers on their own.
 
 The image build needs nothing from `target/`. Each `services/*/Dockerfile` compiles its own module in a Java Development Kit 25 builder stage, from the `card-platform` context. `docker compose up --build` therefore works on a clean clone once `.env` holds real credentials. `mvn -B clean verify` above is what proves the suite, not what feeds the images.
 
@@ -345,7 +372,7 @@ curl -sS -u "admin001:${ADMIN_PASSWORD}" \
   'http://localhost:8083/fraud-assessments?accountId=00000000050'
 ```
 
-The ledger's balance has moved and the fraud service holds a new assessment. The assessment sits in the `assessments` array of one page, beside a `nextPageExists` that is false while the account holds only this one; a longer history answers a `nextCursor` as well, and returning it in the `X-Fraud-Cursor` header asks for the page after it. Notification keeps its alerts under `GET /notifications/{cardToken}` and pages the same way, and [the card-token key](#the-card-token-key) gives the command that derives the token that route needs.
+The ledger's balance has moved and the fraud service holds a new assessment. The assessment sits in the `assessments` array of one page, beside a `nextPageExists` that is false while the account holds only this one. A longer history answers a `nextCursor` as well, and returning it in the `X-Fraud-Cursor` header asks for the page after it. Notification keeps its alerts under `GET /notifications/{cardToken}` and pages the same way, and [the card-token key](#the-card-token-key) gives the command that derives the token that route needs.
 
 ### Update an account and a customer
 
@@ -429,7 +456,9 @@ deploy/k8s/load-images.sh              # runtime read from the current kubectl c
 deploy/k8s/load-images.sh kind         # or name it: kind, minikube, docker-desktop
 ```
 
-The script builds all six images from source, then loads them the way the runtime requires. Each `Dockerfile` compiles its module in a Java Development Kit 25 builder stage, so no archive has to exist on this machine first. That is `kind load docker-image` for kind, `minikube image load` for minikube, and nothing at all for Docker Desktop, whose cluster shares this machine's Docker daemon. It then reads the node's image list back and fails if no `carddemo` image arrived. `KIND_CLUSTER_NAME` and `MINIKUBE_PROFILE` select a cluster other than the default. `IMAGE_TAG` names the tag to build, and the script refuses one the manifests do not request. `imagePullPolicy: Never` makes the kubelet run the tag `kustomization.yaml` sets or refuse the Pod, so any other tag fails exactly as loading nothing would. The same check catches `kustomization.yaml` drifting from the version in `pom.xml`.
+The script builds all six images from source, then loads them the way the runtime requires. Each `Dockerfile` compiles its module in a Java Development Kit 25 builder stage, so no archive has to exist on this machine first. That is `kind load docker-image` for kind, `minikube image load` for minikube, and nothing at all for Docker Desktop, whose cluster shares this machine's Docker daemon. It then reads the node's image list back and fails if no `carddemo` image arrived.
+
+`KIND_CLUSTER_NAME` and `MINIKUBE_PROFILE` select a cluster other than the default. `IMAGE_TAG` names the tag to build, and the script refuses one the manifests do not request. `imagePullPolicy: Never` makes the kubelet run the tag `kustomization.yaml` sets or refuse the Pod, so any other tag fails exactly as loading nothing would. The same check catches `kustomization.yaml` drifting from the version in `pom.xml`.
 
 Apply the manifests in the order `deploy/k8s/00-namespace.yaml` documents, which the script prints when it finishes. That order is the namespace, then a filled-in copy of `31-secret.example.yaml` kept **outside** that folder, then `kubectl apply -k deploy/k8s` for everything else. `kustomization.yaml` lists the ten manifests to apply and omits the template, so the third step cannot overwrite the Secrets with the placeholders it publishes. Applying the folder with `kubectl apply -f` instead would overwrite them, and would also fail on `kustomization.yaml` itself, which is not a Kubernetes API object.
 
@@ -678,9 +707,11 @@ Setting both location keys to `classpath:db/migration` is the base-profile opt-o
 
 **Symptom:** `KAFKA_TOPIC_PARTITIONS` is raised to six, every topic is created with six partitions, and consumer lag still clears at the rate three partitions used to clear it. Or the opposite: it is lowered to one, and each service starts three consumers where two of them are assigned nothing and take part in every rebalance.
 
-**Cause:** two settings, on purpose. `KAFKA_TOPIC_PARTITIONS` is read by the container that creates the topics. `spring.kafka.listener.concurrency` is read by each service and ships as `3`, the same number, from `SPRING_KAFKA_LISTENER_CONCURRENCY`. Neither derives from the other, because each service's connection pool is sized against the thread count: the notification service reads four topics, so three threads each is twelve listener threads, and `spring.datasource.hikari.maximum-pool-size` is eighteen for exactly that reason. A concurrency that followed the broker would raise the thread count of every service without raising any pool, and the first symptom of that is a delivery failing on a three-second wait for a connection.
+**Cause:** two settings, on purpose. `KAFKA_TOPIC_PARTITIONS` is read by the container that creates the topics. `spring.kafka.listener.concurrency` is read by each service and ships as `3`, the same number, from `SPRING_KAFKA_LISTENER_CONCURRENCY`.
 
-**Fix:** change both, and check the pool of any service you raise. Set `SPRING_KAFKA_LISTENER_CONCURRENCY` to the new partition count, then `SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE` to that count times the number of topics the service reads, plus its scheduled tasks, plus a margin for request handling. `RetentionSweepContractTest.everyScheduledTaskHasASchedulerThreadOfItsOwn` and `KafkaDeliveryGuaranteeContractTest.ConsumerThroughput` fail the build if the concurrency and the shipped partition count come apart, or if a service schedules more tasks than its scheduler has threads. Ordering is safe in both directions and needs no thought: Kafka assigns one partition to exactly one consumer of a group, and the account identifier is the message key of every event this platform publishes.
+Neither derives from the other, because each service's connection pool is sized against the thread count. The notification service reads four topics, so three threads each is twelve listener threads, and `spring.datasource.hikari.maximum-pool-size` is eighteen for exactly that reason. A concurrency that followed the broker would raise the thread count of every service without raising any pool. The first symptom of that is a delivery failing on a three-second wait for a connection.
+
+**Fix:** change both, and check the pool of any service you raise. Set `SPRING_KAFKA_LISTENER_CONCURRENCY` to the new partition count, then `SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE` to that count times the number of topics the service reads, plus its scheduled tasks, plus a margin for request handling. `RetentionSweepContractTest.everyScheduledTaskHasASchedulerThreadOfItsOwn` and `KafkaDeliveryGuaranteeContractTest.ConsumerThroughput` fail the build if the concurrency and the shipped partition count come apart, or if a service schedules more tasks than its scheduler has threads. Ordering is safe in both directions and needs no thought. Kafka assigns one partition to exactly one consumer of a group, and the account identifier is the message key of every event this platform publishes.
 
 ### 15. Discarding the database volume discards every duplicate-delivery claim with it
 

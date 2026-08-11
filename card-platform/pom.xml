@@ -300,11 +300,9 @@
 
         Each is a format or type adapter over the core pair rather than a
         deserialization surface of its own, so no advisory above names one
-        directly. They are raised anyway for two reasons. A graph holding
-        2.21.4 alongside 2.21.5 makes the claim that the vulnerable version was
-        removed untrue, and a reader auditing the classpath has to re-derive which
-        artifact the advisories actually covered. Holding one train version instead
-        answers both.
+        directly. All of them are raised to one train version regardless, so the
+        graph holds no 2.21.4 artifact beside a 2.21.5 one. Why that, with the
+        alternatives and the risk: card-platform/docs/decision-log.md
       -->
       <dependency>
         <groupId>com.fasterxml.jackson.core</groupId>

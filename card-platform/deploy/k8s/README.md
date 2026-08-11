@@ -4,6 +4,13 @@ Eleven files describe the platform on a cluster: a namespace, Kafka, PostgreSQL,
 ConfigMap, a Secret template, and six Deployment-and-Service pairs.
 [`kustomization.yaml`](kustomization.yaml) lists ten of them and is the entry point.
 
+**What this path needs on the machine, beyond the Compose set in
+[onboarding](../../docs/onboarding.md).** `kubectl` 1.31 or later, and a cluster: `kind` 0.24 or
+later, `minikube` 1.34 or later, or Docker Desktop with Kubernetes enabled. Those are the versions
+this was exercised on and each is a floor. [`load-images.sh`](load-images.sh) refuses to run when
+`kubectl` is absent, or when the runtime it detects has no binary on the path, and names the one it
+could not find. Every command below runs from `card-platform/`, which step 1 changes into.
+
 ```bash
 # 1. Build the six images AND put them inside the cluster. This script is the only
 #    supported way to do step 1: a plain `docker build` leaves the images in this
@@ -16,24 +23,26 @@ deploy/k8s/load-images.sh              # runtime read from the current kubectl c
 #    deliberately not listed in kustomization.yaml; card-platform/docs/onboarding.md
 #    documents generating each value.
 
-# 3. Apply everything else.
-kubectl apply -k card-platform/deploy/k8s
+# 3. Apply everything else. Paths are relative to card-platform/, which step 1 changed into.
+kubectl apply -k deploy/k8s
 ```
 
-Step 1 is a script rather than a loop copied into this page because building an image and
-giving it to a cluster are two different operations, and only one of them is a `docker
-build`. `kind` keeps its own containerd image store per node, `minikube` keeps one per
-profile, and neither reads this machine's Docker daemon; Docker Desktop is the single case
-where they are the same store. The script builds all six from source — each `Dockerfile`
-compiles its module in a Java Development Kit 25 builder stage, so nothing has to be
-packaged on the host first — then loads them the way the detected runtime requires, reads
-the node's image list back, and fails if no `carddemo` image arrived. It finishes by
-printing steps 2 and 3, so the apply order comes from the same place as the load.
+Step 1 is a script rather than a loop copied into this page, because building an image and
+giving it to a cluster are two different operations. Only one of them is a `docker build`.
+`kind` keeps its own containerd image store per node and `minikube` keeps one per profile,
+and neither reads this machine's Docker daemon. Docker Desktop is the single case where they
+are the same store.
+
+The script builds all six from source. Each `Dockerfile` compiles its module in a Java
+Development Kit 25 builder stage, so nothing has to be packaged on the host first. It then
+loads them the way the detected runtime requires, reads the node's image list back, and fails
+if no `carddemo` image arrived. It finishes by printing steps 2 and 3, so the apply order
+comes from the same place as the load.
 
 The script also refuses a tag the manifests do not request. `IMAGE_TAG` is checked against
 the `newTag` values in [`kustomization.yaml`](kustomization.yaml), and the run stops if they
-differ, because `imagePullPolicy: Never` makes the kubelet run the requested tag or refuse
-the Pod: loading some other tag produces the same `ErrImageNeverPull` as loading nothing.
+differ. `imagePullPolicy: Never` makes the kubelet run the requested tag or refuse the Pod,
+so loading some other tag produces the same `ErrImageNeverPull` as loading nothing.
 The same check catches `kustomization.yaml` drifting from the project version in
 `pom.xml`, which is the tag Compose and the pipeline build. Changing the tag therefore means
 changing what the manifests ask for, and the script prints the `kustomize edit set image`
@@ -53,7 +62,7 @@ about six of them.
 | Platform | the six `carddemo/*` services | Tag only, `1.0.0-SNAPSHOT` | Nothing. The kubelet runs the image an operator loaded under that name |
 
 The six platform images cannot carry a digest as this repository ships. A locally built
-image has no manifest digest: `docker inspect` reports an empty `RepoDigests` list until
+image has no manifest digest. `docker inspect` reports an empty `RepoDigests` list until
 the image is pushed somewhere, so a digest reference would name something no node could
 resolve.
 
@@ -66,8 +75,10 @@ runs the image an operator loaded onto the node, or it refuses the Pod and repor
 
 Both upstream digests are also read for known vulnerabilities before anything deploys them.
 The image stage of `.github/workflows/ci.yml` pulls each reference out of this folder and out
-of `docker-compose.yml`, fails when the two disagree, and fails again on a high or critical
-finding that has a fix available. Twenty-eight such findings are excused by
+of `docker-compose.yml`, and fails when the two disagree. It fails again on a high or critical
+finding that has a fix available.
+
+Twenty-eight such findings are excused by
 `card-platform/.trivyignore.yaml`, each one scoped to a package or a path, each one owned and
 each one expiring on the same day. The scanner stops honouring an expired entry, so the stage
 fails rather than drifting. The six platform images are scanned in the same stage with no
@@ -123,11 +134,12 @@ Bind an encrypted class by applying the overlay instead of this folder. It patch
 place and applies the whole base, so nothing else changes.
 
 ```bash
-# Provide a StorageClass named carddemo-encrypted whose provisioner encrypts at rest, or edit
-# the one class name in the overlay to a class the cluster already has.
-kubectl apply -f card-platform/deploy/k8s/00-namespace.yaml
+# From card-platform/, as the apply steps above are. Provide a StorageClass named
+# carddemo-encrypted whose provisioner encrypts at rest, or edit the one class name in the
+# overlay to a class the cluster already has.
+kubectl apply -f deploy/k8s/00-namespace.yaml
 kubectl apply -f /path/to/your-filled-in-secrets.yaml
-kubectl apply -k card-platform/deploy/k8s/overlays/encrypted-storage
+kubectl apply -k deploy/k8s/overlays/encrypted-storage
 ```
 
 A claim's storage class is immutable once bound, so on a cluster that already applied this folder the

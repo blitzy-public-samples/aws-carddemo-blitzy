@@ -18,6 +18,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
@@ -1483,6 +1484,159 @@ class DocumentationContractTest {
             Thread.currentThread().interrupt();
             throw new AssertionError("interrupted while running " + command, interrupted);
         }
+    }
+
+    /**
+     * Holds the published store-ownership table to the tables the migrations actually create.
+     *
+     * <p>Rule 2 asks the paired views to be accurate, and a table naming what a service owns is the
+     * part of them a reader trusts without checking. A review found the card row naming four tables
+     * while its migrations create six: {@code V10__card_token_version_and_rotation.sql} adds
+     * {@code card_token_rotation} and {@code card_token_rotation_mapping}, and neither reached the
+     * document. Nothing detected it, because the row is prose.
+     *
+     * <p>The migrations are the anchor, read as created minus dropped. Authorization creates
+     * {@code unresolved_card_attempt} in {@code V13} and drops it in {@code V20}, and the account
+     * service creates the card-keyed {@code card_xref} replica in {@code V4} and drops it in
+     * {@code V7}, so a withdrawn table must not appear in the table either.
+     */
+    @Test
+    @DisplayName("the published store ownership names the tables each service's migrations create")
+    void thePublishedStoreOwnershipMatchesTheMigrations() {
+        String architecture = read(docsDirectory().resolve("architecture-before-after.md"));
+        Matcher row = Pattern.compile("(?m)^\\| (authorization|ledger posting|fraud detection"
+                        + "|notification|account|card) \\| `carddemo_\\w+`, `(\\w+)` \\| ([^|]+) \\|$")
+                .matcher(architecture);
+        Map<String, Set<String>> published = new LinkedHashMap<>();
+        while (row.find()) {
+            Set<String> named = new TreeSet<>();
+            Matcher table = Pattern.compile("`(\\w+)`").matcher(row.group(3));
+            while (table.find()) {
+                named.add(table.group(1));
+            }
+            published.put(row.group(1), named);
+        }
+        assertEquals(6, published.size(),
+                "the ownership table carries one row per service, and this scan read "
+                        + published.keySet());
+
+        Map<String, String> modules = Map.of(
+                "authorization", "authorization-service",
+                "ledger posting", "ledger-posting-service",
+                "fraud detection", "fraud-detection-service",
+                "notification", "notification-service",
+                "account", "account-service",
+                "card", "card-service");
+        published.forEach((service, named) -> {
+            Path migrations = platformDirectory()
+                    .resolve("services/" + modules.get(service) + "/src/main/resources/db/migration");
+            Set<String> live = new TreeSet<>();
+            List<Path> files;
+            try (Stream<Path> listed = Files.list(migrations)) {
+                files = listed.filter(path -> path.getFileName().toString().endsWith(".sql"))
+                        .sorted(Comparator.comparingInt(DocumentationContractTest::migrationVersion))
+                        .toList();
+            } catch (IOException unreadable) {
+                throw new UncheckedIOException("cannot list " + migrations, unreadable);
+            }
+            for (Path file : files) {
+                String migration = read(file);
+                Matcher created = Pattern.compile(
+                                "(?im)^\\s*CREATE TABLE (?:IF NOT EXISTS )?(?:\\w+\\.)?(\\w+)")
+                        .matcher(migration);
+                while (created.find()) {
+                    live.add(created.group(1));
+                }
+                Matcher dropped = Pattern.compile(
+                                "(?im)^\\s*DROP TABLE (?:IF EXISTS )?(?:\\w+\\.)?(\\w+)")
+                        .matcher(migration);
+                while (dropped.find()) {
+                    live.remove(dropped.group(1));
+                }
+            }
+            assertEquals(live, named,
+                    "the " + service + " row of the store-ownership table must name exactly the"
+                            + " tables its migrations leave in place. Migrations create " + live
+                            + " and the document names " + named);
+        });
+    }
+
+    /**
+     * Holds every backward classification to the provenance cell beside it, and the published
+     * breakdown to the labels it counts.
+     *
+     * <p>The matrix defines its own labels: source-derived names at least one member under
+     * {@code app/}, and additive has no ancestor whether or not it cites one. A row classified
+     * source-derived whose provenance cell names no member therefore contradicts the definition in
+     * the same document, and a review found two such rows — {@code card-updated-v2.json} and the
+     * account {@code V6__processed_event_topic_key.sql} migration, both additive behaviour published
+     * as migrated behaviour. Rule 1's traceability is only worth reading if a label means what the
+     * document says it means, so the two are measured against each other here rather than compared
+     * by eye.
+     *
+     * <p>The published breakdown is measured the same way. Eight labels each carry a count in the
+     * coverage row, and those counts have to be the counts of the rows below and to sum to the
+     * closure total. A reclassified row therefore moves two numbers, and leaving either behind fails
+     * here.
+     */
+    @Test
+    @DisplayName("every backward classification matches its provenance and the published breakdown")
+    void theBackwardClassificationsMatchTheirProvenanceAndTheBreakdown() {
+        String matrix = read(docsDirectory().resolve("traceability-matrix.md"));
+        String backward = section(matrix, "## Backward: every target path",
+                "### Backward closure arithmetic");
+
+        Map<String, Integer> measured = new LinkedHashMap<>();
+        List<String> contradictions = new ArrayList<>();
+        int rows = 0;
+        for (String line : backward.split("\\R")) {
+            Matcher row = BACKWARD_ROW.matcher(line);
+            if (!row.find()) {
+                continue;
+            }
+            String[] columns = line.split("\\|");
+            assertTrue(columns.length > 3,
+                    "a backward row carries a path, a provenance cell and a classification: " + line);
+            String provenance = columns[2].trim();
+            String classification = columns[3].trim();
+            rows++;
+            measured.merge(classification, 1, Integer::sum);
+            if (classification.toLowerCase(Locale.ROOT).contains("source-derived")
+                    && !provenance.contains("app/")) {
+                contradictions.add(row.group(1) + " is classified " + classification
+                        + " while its provenance reads \"" + provenance + "\"");
+            }
+        }
+        assertEquals(List.of(), contradictions,
+                "the matrix defines source-derived as naming at least one member under `app/`, so"
+                        + " these rows claim a provenance they do not have. Classify a file with no"
+                        + " ancestor as additive: " + contradictions);
+
+        Matcher coverage = Pattern.compile("(?m)^\\| Delivered target tree \\| (\\d+) tracked files"
+                        + " \\| ([^|]+) \\| (\\d+) \\|$").matcher(matrix);
+        assertTrue(coverage.find(),
+                "the coverage summary must carry the delivered-tree row that publishes the breakdown");
+        assertEquals(rows, Integer.parseInt(coverage.group(1)),
+                "the delivered-tree row must state the number of backward rows");
+        assertEquals(rows, Integer.parseInt(coverage.group(3)),
+                "the delivered-tree row must sum to the number of backward rows");
+
+        Map<String, Integer> published = new LinkedHashMap<>();
+        for (String entry : coverage.group(2).split(",")) {
+            Matcher tally = Pattern.compile("\\s*(\\d+) (.+?)s?\\s*").matcher(entry);
+            assertTrue(tally.matches(), "each breakdown entry reads \"<count> <label>\": " + entry);
+            published.merge(tally.group(2).trim().toLowerCase(Locale.ROOT),
+                    Integer.valueOf(tally.group(1)), Integer::sum);
+        }
+        Map<String, Integer> expected = new LinkedHashMap<>();
+        measured.forEach((label, count) ->
+                expected.merge(label.toLowerCase(Locale.ROOT).replace(", ", " "), count,
+                        Integer::sum));
+        assertEquals(expected, published,
+                "the published breakdown has to be the count of each label the rows below carry."
+                        + " Measured " + expected + " against published " + published);
+        assertEquals(rows, published.values().stream().mapToInt(Integer::intValue).sum(),
+                "the breakdown must sum to the row count");
     }
 
     /**

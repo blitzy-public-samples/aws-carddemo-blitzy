@@ -9,6 +9,7 @@ import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -140,8 +141,51 @@ class RationaleLocationContractTest {
                     + "(?:Why\\b|Alternatives considered|Risks? accepted|Rationale\\b|"
                     + "Trade-?offs?\\b|The problem this solves)");
 
-    /** One HTML comment, which is the only part of a page this scan reads. */
+    /** One HTML comment, which is the only part of a page the essay scan reads. */
     private static final Pattern HTML_COMMENT = Pattern.compile("(?s)<!--(.*?)-->");
+
+    /**
+     * A comment that argues a choice inside the line rather than announcing it in a heading.
+     *
+     * <p>The heading detectors above read the shape of an opener, so a file that never writes one
+     * carries rationale past them. A review measured that: the composition argued its transport
+     * posture over thirty lines, the namespace manifest argued a pinned admission version, the
+     * workflow justified a stage, the deck's script justified how it loads a library, and the
+     * aggregator justified a raised dependency. None of them opened with "Why".
+     *
+     * <p>Nine shapes are read, and each one is a decision being defended rather than behaviour being
+     * described: a claim that a choice was deliberate or was not an oversight, a statement of what
+     * makes something acceptable, the reasoning behind something, alternatives considered or weighed,
+     * a risk accepted, a first-person choice, an announced count of reasons, and a version or value
+     * named because of something. A comment stating what the file declares, what a value does or
+     * where a source member sits matches none of them, which is why "A parameter is used rather than
+     * string interpolation" and "Named rather than discovered" stay.
+     *
+     * <p>The pointer form is exempt on the same terms the heading rule uses: a line naming the
+     * decision log, or followed by one, asks the question in the file and answers it in one place.
+     * That is what keeps {@code -- Alternatives weighed and the risk accepted:
+     * card-platform/docs/decision-log.md} compliant.
+     */
+    private static final Pattern INLINE_RATIONALE = Pattern.compile(
+            "(?i)\\b(?:(?:deliberate|deliberately|conscious|consciously) (?:choice|decision|trade-?off)"
+                    + "|rather than an oversight"
+                    + "|the reasoning behind"
+                    + "|alternatives? (?:considered|weighed|rejected)"
+                    + "|risks? (?:it accepts|accepted|we accept)"
+                    + "|we (?:chose|decided|picked|rejected)"
+                    + "|what makes (?:that|this|it) acceptable"
+                    + "|for (?:two|three|four) reasons"
+                    + "|(?:is|was) the (?:version|value|name|one|form|shape) "
+                    + "(?:named|chosen|used|pinned) because)\\b");
+
+    /** One delimited block comment, which is how the deck's script and stylesheet comment. */
+    private static final Pattern BLOCK_COMMENT = Pattern.compile("(?s)/\\*(.*?)\\*/");
+
+    /** One line comment of the deck's script. */
+    private static final Pattern SLASH_COMMENT = Pattern.compile("(?m)^[ \\t]*//(.*)$");
+
+    /** One comment line of a shipped file: where it sits and what it says. */
+    private record CommentLine(int number, String text) {}
 
     /** The spelling that turns a heading into a pointer. */
     private static final String POINTER_TOKEN = "decision-log.md";
@@ -309,6 +353,121 @@ class RationaleLocationContractTest {
                         + "format, not only in java and sql: state what the file declares, its source "
                         + "locators and a pointer to the log instead: " + offending);
     }
+
+    /**
+     * No shipped comment of any format argues a choice inside the line.
+     *
+     * <p>This is the other half of {@link #noShippedTextOpensARationaleEssay()}. That test reads the
+     * shape of an opener, and a review found five artifacts carrying rationale past it because none
+     * of them wrote one: {@code docker-compose.yml} argued its transport posture, alternatives and
+     * accepted risk over thirty lines; {@code deploy/k8s/00-namespace.yaml} argued a pinned admission
+     * version; {@code .github/workflows/ci.yml} justified a stage; the deck's script justified how it
+     * loads its renderer; and {@code pom.xml} justified a raised dependency. Each argument was
+     * already in the log, so each was a second copy of a decision Rule 1 keeps in one place.
+     *
+     * <p>Every format is read as its comments. A marked format is read line by line, and the deck is
+     * read as its HTML comments, its block comments and its line comments, which is where a page
+     * keeps the reasoning a script carries.
+     */
+    @Test
+    @DisplayName("no shipped comment of any format argues a choice inside the line")
+    void noShippedCommentArguesAChoiceInline() {
+        Map<String, List<Path>> byFormat = shippedTextSources();
+        SHIPPED_TEXT_FLOORS.forEach((format, floor) -> {
+            int reached = byFormat.getOrDefault(format, List.of()).size();
+            assertTrue(reached >= floor,
+                    "the scan reached " + reached + " " + format + " files, fewer than the " + floor
+                            + " this platform ships, so its verdict for that format would mean"
+                            + " nothing");
+        });
+
+        List<String> offending = new ArrayList<>();
+        byFormat.forEach((format, sources) -> {
+            for (Path source : sources) {
+                collectInlineRationale(relative(source), commentLines(format, readText(source)),
+                        offending);
+            }
+        });
+
+        assertEquals(List.of(), offending,
+                "Rule 1 keeps the decision, the alternatives weighed against it and the risk "
+                        + "accepted in " + DECISION_LOG_POINTER + ", and a comment carries behaviour, "
+                        + "source locators and operational facts. State the fact and name the log "
+                        + "instead: " + offending);
+    }
+
+    /**
+     * Collects every comment line that argues a choice, exempting the pointer form.
+     *
+     * @param where     the file, relative to the repository root
+     * @param comments  the comment lines of that file, in order
+     * @param offending the list each finding is added to
+     */
+    private static void collectInlineRationale(String where, List<CommentLine> comments,
+            List<String> offending) {
+        for (int at = 0; at < comments.size(); at++) {
+            CommentLine comment = comments.get(at);
+            if (!INLINE_RATIONALE.matcher(comment.text()).find()) {
+                continue;
+            }
+            boolean pointsAtTheLog = comment.text().contains(POINTER_TOKEN);
+            if (!pointsAtTheLog && at + 1 < comments.size()) {
+                CommentLine next = comments.get(at + 1);
+                pointsAtTheLog = next.number() == comment.number() + 1
+                        && next.text().contains(POINTER_TOKEN);
+            }
+            if (pointsAtTheLog) {
+                continue;
+            }
+            offending.add(where + ":" + comment.number() + " " + comment.text().trim());
+        }
+    }
+
+    /**
+     * Reads one shipped file as its comment lines.
+     *
+     * @param format the format key, which decides how a comment is delimited
+     * @param text   the whole file
+     * @return each comment line with the line number it sits on, in file order
+     */
+    private static List<CommentLine> commentLines(String format, String text) {
+        List<CommentLine> lines = new ArrayList<>();
+        if (DELIMITED_COMMENT_FORMATS.contains(format)) {
+            List<Pattern> delimited = ".html".equals(format)
+                    ? List.of(HTML_COMMENT, BLOCK_COMMENT)
+                    : List.of(HTML_COMMENT);
+            for (Pattern pattern : delimited) {
+                Matcher comment = pattern.matcher(text);
+                while (comment.find()) {
+                    int first = lineOf(text, comment.start());
+                    String[] body = comment.group(1).split("\\R", -1);
+                    for (int at = 0; at < body.length; at++) {
+                        lines.add(new CommentLine(first + at, body[at]));
+                    }
+                }
+            }
+            if (".html".equals(format)) {
+                Matcher slashed = SLASH_COMMENT.matcher(text);
+                while (slashed.find()) {
+                    lines.add(new CommentLine(lineOf(text, slashed.start()), slashed.group(1)));
+                }
+            }
+            lines.sort(Comparator.comparingInt(CommentLine::number));
+            return lines;
+        }
+        String[] all = text.split("\\R", -1);
+        for (int at = 0; at < all.length; at++) {
+            Matcher marked = MARKED_COMMENT.matcher(all[at]);
+            if (marked.find()) {
+                lines.add(new CommentLine(at + 1, marked.group(1)));
+            }
+        }
+        return lines;
+    }
+
+    /** One comment line of a marked format: java, sql, shell, yaml, dotenv or a container file. */
+    private static final Pattern MARKED_COMMENT =
+            Pattern.compile("^\\s*(?:\\*|//|--|#)\\s?(.*)$");
 
     /**
      * Holds every format the platform ships to one of the two maps above.
@@ -571,6 +730,69 @@ class RationaleLocationContractTest {
                 + " * {@code card-platform/docs/decision-log.md}.\n", 0, flagged);
         assertEquals(List.of(), flagged,
                 "the pointer paragraph this platform ships in place of an essay is not an essay");
+
+        assertTrue(INLINE_RATIONALE.matcher(
+                        "each is a deliberate choice for this stack rather than an oversight:").find(),
+                "the inline detector missed the claim the composition carried");
+        assertTrue(INLINE_RATIONALE.matcher("What makes that acceptable is a posture").find(),
+                "and missed the acceptability argument beside it");
+        assertTrue(INLINE_RATIONALE.matcher(
+                        "v1.25 is the version named because it is where the restricted").find(),
+                "and missed the pinned-version argument of the namespace manifest");
+        assertTrue(INLINE_RATIONALE.matcher(
+                        "written into the document head, for two reasons, and both are measured")
+                        .find(),
+                "and missed the announced count of reasons the deck's script carried");
+        assertTrue(INLINE_RATIONALE.matcher("The reasoning behind the posture").find(),
+                "and missed a reasoning announcement");
+        assertTrue(INLINE_RATIONALE.matcher("we chose the keyed derivation").find(),
+                "and missed a first-person choice");
+        assertFalse(INLINE_RATIONALE.matcher(
+                        "A parameter is used rather than string interpolation, so the value is bound")
+                        .find(),
+                "a comment describing behaviour is not an argument for a choice");
+        assertFalse(INLINE_RATIONALE.matcher(
+                        "Named rather than discovered. The actuator contributor is asked for by name")
+                        .find(),
+                "nor is a comment naming what the code does");
+        assertFalse(INLINE_RATIONALE.matcher(
+                        "RECORDSIZE(300 300) declared by the dataset definition").find(),
+                "nor is a source locator");
+
+        List<CommentLine> arguing = List.of(new CommentLine(9, " each is a deliberate choice here"));
+        flagged.clear();
+        collectInlineRationale("sample", arguing, flagged);
+        assertEquals(1, flagged.size(), "an argument with no pointer is a finding: " + flagged);
+
+        flagged.clear();
+        collectInlineRationale("sample", List.of(
+                new CommentLine(9, " Alternatives weighed and the risk accepted:"),
+                new CommentLine(10, " card-platform/docs/decision-log.md")), flagged);
+        assertEquals(List.of(), flagged,
+                "an argument answered by the log on the next line is the pointer form this platform"
+                        + " ships");
+
+        flagged.clear();
+        collectInlineRationale("sample", List.of(
+                new CommentLine(9, " Alternatives weighed and the risk accepted:"),
+                new CommentLine(40, " card-platform/docs/decision-log.md")), flagged);
+        assertEquals(1, flagged.size(),
+                "a log named thirty lines later answers nothing a reader met: " + flagged);
+
+        assertEquals(List.of(" a block comment", "", " a line one"),
+                commentLines(".html", "<p>x</p>\n/* a block comment\n*/\n// a line one\n").stream()
+                        .map(CommentLine::text)
+                        .toList(),
+                "the deck is read as its block comments and its line comments, which is where a page"
+                        + " keeps the reasoning a script carries");
+        assertEquals(List.of(2, 3, 4),
+                commentLines(".html", "<p>x</p>\n/* a block comment\n*/\n// a line one\n").stream()
+                        .map(CommentLine::number)
+                        .toList(),
+                "and each carries the line it sits on, so a finding names a place");
+        assertEquals(List.of(new CommentLine(2, "a shell comment")),
+                commentLines(".sh", "set -eu\n# a shell comment\n"),
+                "a marked format is read line by line");
     }
 
     /** Returns every java file of the platform, build output and this file excluded. */

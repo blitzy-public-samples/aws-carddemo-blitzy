@@ -71,7 +71,9 @@ Every other answer is a problem document, the same four members `config/Security
 | `503` | The projection table could not be reached, so the read was never attempted | `The balance store is unavailable. Retry shortly.` |
 | `500` | A fault inside this service | `The balance could not be read.` |
 
-No member of that document echoes anything the caller sent — no rejected value, no resolved path, no query string and no header. The framework default body this replaced carried the resolved path, so a caller naming an account identifier read that identifier back and copied it into its own log. That body also answered `500` for a datastore that was merely away, which invites no retry and names no dependency. The `503` arm above names a connection that cannot be opened, a transaction that cannot be begun, and a statement that ran out of time. It names nothing wider. A broken query is a fault of this service and answers `500`, where a retry would only repeat it.
+No member of that document echoes anything the caller sent — no rejected value, no resolved path, no query string and no header. The framework default body this replaced carried the resolved path, so a caller naming an account identifier read that identifier back and copied it into its own log. That body also answered `500` for a datastore that was merely away, which invites no retry and names no dependency.
+
+The `503` arm above names a connection that cannot be opened, a transaction that cannot be begun, and a statement that ran out of time. It names nothing wider. A broken query is a fault of this service and answers `500`, where a retry would only repeat it.
 
 `-u user0001` with no colon makes `curl` prompt for the password, so it reaches neither the process
 environment nor the shell history. `.env` holds only the bcrypt hash of each password, so supply the
@@ -88,9 +90,11 @@ This service calls no other service. It holds no web client, and every route the
 
 ### Two controls in front of every route
 
-`config/CrossSiteRequestFilter` guards state change: a `POST`, `PUT`, `PATCH` or `DELETE` must carry `X-CardDemo-Request`, must not declare a cross-site `Sec-Fetch-Site`, and must not carry a foreign `Origin`. This service maps one `GET` and nothing else, so no state-changing route exists here to forge today. That is the reason the filter is here rather than a reason it is not. The read-only shape becomes an enforced property instead of a fact a reader has to go and check, and the first write added inherits the control rather than needing someone to remember it. A refusal answers 403 and counts `carddemo.ledger.requests.cross.site.refused`. `GET`, `HEAD`, `OPTIONS` and `TRACE` pass untouched, which is why no path is exempted: the liveness probe and the metrics scrape are reads.
+`config/CrossSiteRequestFilter` guards state change: a `POST`, `PUT`, `PATCH` or `DELETE` must carry `X-CardDemo-Request`, must not declare a cross-site `Sec-Fetch-Site`, and must not carry a foreign `Origin`. This service maps one `GET` and nothing else, so no state-changing route exists here to forge today. That is the reason the filter is here rather than a reason it is not. The read-only shape becomes an enforced property instead of a fact a reader has to go and check. The first write added inherits the control rather than needing someone to remember it.
 
-`config/RequestRateCeilingFilter` bounds volume. It runs one place ahead of the security chain, because a refusal has to cost less than the attempt it refuses and an attempt that reached the chain would already have paid for a bcrypt verification.
+A refusal answers 403 and counts `carddemo.ledger.requests.cross.site.refused`. `GET`, `HEAD`, `OPTIONS` and `TRACE` pass untouched, which is why no path is exempted: the liveness probe and the metrics scrape are reads.
+
+`config/RequestRateCeilingFilter` bounds volume. It runs one place ahead of the security chain, because a refusal has to cost less than the attempt it refuses. An attempt that reached the chain would already have paid for a bcrypt verification.
 
 | Ceiling | Default | Counted by |
 | :--- | ---: | :--- |
@@ -102,7 +106,7 @@ This service calls no other service. It holds no web client, and every route the
 
 A refusal answers 429 with `Retry-After` and counts `carddemo.ledger.requests.throttled`, tagged with the stage that refused: `authentication`, `source`, `identity`, `write` or `concurrency`. The five ceilings read `API_RATE_WINDOW_SECONDS`, `API_RATE_REQUESTS_PER_WINDOW`, `API_RATE_WRITE_REQUESTS_PER_WINDOW`, `API_RATE_AUTHENTICATION_FAILURES_PER_WINDOW` and `API_RATE_CONCURRENT_REQUESTS` from [`.env.example`](../../.env.example). The management base path is exempt, because a throttled probe reads as a failed container.
 
-Both filters count in this process, so several replicas bound each replica rather than the service as a whole, and the source address is the one the container resolves rather than a forwarding header a caller could write. A deployment behind a proxy activates the `trusted-proxy` profile, which trusts those headers from the proxy's own addresses alone. Both residual limits are recorded in [suggested next tasks](../../docs/suggested-next-tasks.md), and the reasoning behind the two controls is in the [Decision Log](../../docs/decision-log.md).
+Both filters count in this process, so several replicas bound each replica rather than the service as a whole. The source address is the one the container resolves, rather than a forwarding header a caller could write. A deployment behind a proxy activates the `trusted-proxy` profile, which trusts those headers from the proxy's own addresses alone. Both residual limits are recorded in [suggested next tasks](../../docs/suggested-next-tasks.md), and the reasoning behind the two controls is in the [Decision Log](../../docs/decision-log.md).
 
 <br/>
 
@@ -137,7 +141,9 @@ A decline arriving at contract version 1 or 2 is acknowledged with no row writte
 
 The two failure routes carry two different forms on purpose, and **neither carries the payload that failed**.
 
-A spent consumer record reaches its own source topic plus `.DLT`, and what is published there is not the record. `config/KafkaConsumerConfig.sanitizedDeadLetterRecord` builds a new record. The key becomes the coordinates `topic-partition-offset`, so the producer's key is not retained. The value becomes a 134-character fixed-width diagnostic holding the four components of `01 ABEND-DATA` at `app/cpy/CSMSG02Y.cpy:L21-L29`: `ABEND-CODE PIC X(4)`, `ABEND-CULPRIT PIC X(8)`, `ABEND-REASON PIC X(50)` and `ABEND-MSG PIC X(72)`. The same four travel as the headers `carddemo-dl-code`, `carddemo-dl-culprit`, `carddemo-dl-reason` and `carddemo-dl-message`, and the outgoing header set is rebuilt from an allow-list so a producer cannot smuggle one of those names through. The failed value, the failed key, the exception message and the stack trace are all omitted. That is deliberate: a value that failed may be the very payload a schema control rejected, so republishing it would move unvalidated bytes onto a second topic.
+A spent consumer record reaches its own source topic plus `.DLT`, and what is published there is not the record. `config/KafkaConsumerConfig.sanitizedDeadLetterRecord` builds a new record. The key becomes the coordinates `topic-partition-offset`, so the producer's key is not retained. The value becomes a 134-character fixed-width diagnostic holding the four components of `01 ABEND-DATA` at `app/cpy/CSMSG02Y.cpy:L21-L29`: `ABEND-CODE PIC X(4)`, `ABEND-CULPRIT PIC X(8)`, `ABEND-REASON PIC X(50)` and `ABEND-MSG PIC X(72)`.
+
+The same four travel as the headers `carddemo-dl-code`, `carddemo-dl-culprit`, `carddemo-dl-reason` and `carddemo-dl-message`. The outgoing header set is rebuilt from an allow-list, so a producer cannot smuggle one of those names through. The failed value, the failed key, the exception message and the stack trace are all omitted. That is deliberate: a value that failed may be the very payload a schema control rejected, so republishing it would move unvalidated bytes onto a second topic.
 
 An abandoned outbox row reaches `carddemo.dead-letter` as a governed `DeadLetterEnvelope` instead, because its event type is known and the row was written by this service rather than received from another.
 
@@ -173,7 +179,9 @@ Rejections were ordinary traffic in that job, not errors. `L229` reads `IF WS-RE
 
 ### The four reject reasons
 
-The codes and their text come from `app/cbl/CBTRN02C.cbl` lines 385 to 420. The authorization service applies them; this service records the reject the declined event hands it and stores the reason on the row. Codes 101, 102 and 103 resolve an account and arrive at contract version 3, carrying the nine descriptive values the 350-byte reject area holds. Code 100 resolves no account, arrives at version 2, and is acknowledged without a row.
+The codes and their text come from `app/cbl/CBTRN02C.cbl` lines 385 to 420. The authorization service applies them; this service records the reject the declined event hands it and stores the reason on the row. Codes 101, 102 and 103 resolve an account and arrive at contract version 3, carrying the nine descriptive values the 350-byte reject area holds.
+
+Code 100 resolves no account, and no producer publishes it: the authorization service refuses such a call before it decides anything. This listener still answers a version 1 or version 2 record retained on the topic from before that change. It stores the marker and acknowledges without a row, because neither version carries the nine values a row needs.
 
 | Code | Text, verbatim from the source | Condition | Lines |
 | :--- | :--- | :--- | :--- |
@@ -255,7 +263,7 @@ Passing such a field straight to `new BigDecimal(String)` throws on every moneta
 | | | processing timestamp | 305–330, blank in the feed |
 | | | trailing filler | 331–350 |
 
-**3. A missing language-level override compiles at the wrong level in silence.** `pom.xml` declares `<java.version>25</java.version>`. The Spring Boot parent defaults both the language level and the compiler release to 17. A module that omits the override compiles to release 17 with no warning and no failure. Confirm the class-file major version is 69 rather than 61:
+**3. A missing language-level override compiles at the wrong level in silence.** `pom.xml` declares `<java.version>25</java.version>`, because the Spring Boot parent defaults both the language level and the compiler release to 17. A module that omits the override compiles to release 17 with no warning and no failure. Confirm the class-file major version is 69 rather than 61:
 
 ```bash
 cd card-platform/services/ledger-posting-service
@@ -343,7 +351,8 @@ Legend for Figure 1:
 - **Adding a consumer of `TransactionPosted` changes nothing here.** A new service subscribes to `transaction.posted` under its own group and starts receiving events. The notification service already does exactly that.
 - **Adding a posting step means adding a component**, then placing it explicitly in the ordered chain in `domain/PostingService`. The source marks the seam itself with `* ADD MORE VALIDATIONS HERE` at `app/cbl/CBTRN02C.cbl:L377`, which is why the updaters stay separate classes instead of one method.
 - **Repository methods follow the source operation-code contract** at `app/cbl/CBSTM03B.CBL:L100`–`L112`: `K` becomes find by identifier, `R` becomes stream all, `W` becomes insert and `Z` becomes update. `O` and `C` are dropped, because the framework owns the connection lifecycle.
-- **Swapping the event bus touches two files, and this module ships no publisher port.** The authorization, account, card and fraud detection services each declare a `messaging/EventPublisherPort`. This one does not, and it is the only producing module that does not. The seam is instead `outbox/OutboxRelay`, which reads claimed rows and hands each to the `KafkaTemplate` that `config/KafkaProducerConfig.ledgerEventKafkaTemplate` declares. To publish onto another transport, replace that bean with one wrapping the new client and leave `OutboxRelay` untouched — it depends on the template alone, so the outbox contract, the claim protocol and the abandonment route all survive the substitution. The difference from the other four is recorded rather than defended: the reason once given here, that nothing in this module publishes outside its relay, is equally true of the fraud detection service, which does declare the port. [Suggested next tasks](../../docs/suggested-next-tasks.md) carries the alignment, and the [Decision Log](../../docs/decision-log.md) carries the position.
+- **Swapping the event bus touches two files, and this module ships no publisher port.** The authorization, account, card and fraud detection services each declare a `messaging/EventPublisherPort`. This one does not, and it is the only producing module that does not. The seam is instead `outbox/OutboxRelay`, which reads claimed rows and hands each to the `KafkaTemplate` that `config/KafkaProducerConfig.ledgerEventKafkaTemplate` declares.
+  - To publish onto another transport, replace that bean with one wrapping the new client and leave `OutboxRelay` untouched. It depends on the template alone, so the outbox contract, the claim protocol and the abandonment route all survive the substitution. The difference from the other four is recorded rather than defended. The reason once given here, that nothing in this module publishes outside its relay, is equally true of the fraud detection service, which does declare the port. [Suggested next tasks](../../docs/suggested-next-tasks.md) carries the alignment, and the [Decision Log](../../docs/decision-log.md) carries the position.
 
 [Suggested next tasks](../../docs/suggested-next-tasks.md) lists work found during this build and deliberately left out of scope.
 
@@ -394,7 +403,7 @@ Flyway owns this schema and runs eleven migrations on every start, in this order
 
 Run the four steps in this order. The Dockerfile compiles this module in a Java Development Kit 25 builder stage. Its build context is `card-platform` rather than this directory, because `mvn -pl services/ledger-posting-service -am` needs the aggregator descriptor and both shared libraries in reach. The packaging step below is required for the credential hashes rather than for the image.
 
-1. Prepare configuration and credentials from `card-platform/`. `.env.example` carries 19 `REPLACE` markers: fourteen passwords, one card-token key and four `{bcrypt}` identity hashes. Compose reads them with `${VAR:?}` and refuses to start while any is unset. Nothing below prompts.
+1. Prepare configuration and credentials from `card-platform/`. `.env.example` carries 19 `REPLACE` markers: fourteen passwords, one card-token key and four `{bcrypt}` identity hashes. Compose reads them with `${VAR:?}` and refuses to start while any is unset. Nothing in this step prompts: `scripts/generate-env.sh` generates every value and writes the four demo passwords to `.demo-credentials`, owner-only and git-ignored. Step 3 below does prompt, because it gives `-u` a user name and no password.
 
 ```bash
 # The hash helper inside the script reads spring-security-crypto out of the local Maven
@@ -429,6 +438,9 @@ grep -c '^[A-Za-z_][A-Za-z0-9_]*=.*REPLACE' .env
 3. Query a balance on the business port. The administrator identity passes every ownership check; an ordinary identity needs a matching `SCOPE_ACCOUNT_` entry in `USER_SCOPES`:
 
    ```bash
+   # -u carries the user name alone, so curl prompts for the password and keeps it out of the
+   # process environment and the shell history. The plaintext is the line for this user name in
+   # card-platform/.demo-credentials.
    curl -fsS -u user0001 http://localhost:8082/balances/00000000001
    ```
 
@@ -456,7 +468,9 @@ Run the module's own tests with:
 mvn -B -pl services/ledger-posting-service -am verify
 ```
 
-`verify` rather than `test`, because Surefire and Failsafe each run a different half. Surefire runs the unit and contract classes. They cover the posting arithmetic, the category-balance create and update branches, the reject path across all four reason codes, outbox routing and the meters. Failsafe runs `TransactionAuthorizedConsumerIT`, `ConcurrentDuplicateDeliveryIT` and `BalanceQueryRouteSecurityIT`, which its default `**/*IT.java` pattern matches and Surefire's does not. The duplicate-delivery proof is in that second half: a second delivery of the same `eventId` on the same topic moves no balance. Those three start PostgreSQL and Kafka through Testcontainers, so Docker has to be reachable.
+`verify` rather than `test`, because Surefire and Failsafe each run a different half. Surefire runs the unit and contract classes. They cover the posting arithmetic, the category-balance create and update branches, the reject path across all four reason codes, outbox routing and the meters.
+
+Failsafe runs `TransactionAuthorizedConsumerIT`, `ConcurrentDuplicateDeliveryIT` and `BalanceQueryRouteSecurityIT`, which its default `**/*IT.java` pattern matches and Surefire's does not. The duplicate-delivery proof is in that second half: a second delivery of the same `eventId` on the same topic moves no balance. Those three start PostgreSQL and Kafka through Testcontainers, so Docker has to be reachable.
 
 That case earns its own test because the source has no duplicate detection at all. A replayed feed drives `2900-WRITE-TRANSACTION-FILE` at `app/cbl/CBTRN02C.cbl:L562` into a duplicate-key condition, then straight into `9999-ABEND-PROGRAM` at `L707`–`L711`.
 

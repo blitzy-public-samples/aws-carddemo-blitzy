@@ -59,7 +59,7 @@ paths:
         A page is reached by position, not by number. Omitting X-Fraud-Cursor returns the newest
         page, and returning the nextCursor the previous answer named returns the page after it. A
         caller walks the whole history by repeating the call while nextPageExists is true, and every
-        call costs one page: index ix_fraud_assessment_account_cursor is read as a range, so the
+        call costs one page. Index ix_fraud_assessment_account_cursor is read as a range, so the
         ten-thousandth page costs what the first one does. A page parameter answers 400 rather than
         being served, because reaching a page by number means reading and discarding every row before
         it.
@@ -100,10 +100,10 @@ paths:
 
 
             A caller never composes this value: it returns the one it was given. A value this route
-            cannot read answers 400 naming the shape and never the value, because the cursor holds a
-            transaction identifier and a refusal that echoed it would copy that identifier into the
+            cannot read answers 400 naming the shape and never the value. The cursor holds a
+            transaction identifier, and a refusal that echoed it would copy that identifier into the
             body. It travels as a header rather than a query parameter, matching X-Card-Cursor of the
-            card service and X-Notification-Cursor of the notification service, which keeps it out of
+            card service and X-Notification-Cursor of the notification service. That keeps it out of
             the access logs that record a query string.
           schema:
             type: string
@@ -114,7 +114,7 @@ paths:
           description: >-
             The rows one page carries. Omitting the parameter returns 20 rows. The value travels as
             text, so a parameter that arrives carrying no characters answers 400 rather than taking
-            the default: a caller sending size= asked for something, and a 200 would state nothing
+            the default. A caller sending size= asked for something, and a 200 would state nothing
             about what it received. It is read as a number from 1 through 200, and a value outside
             those bounds answers 400, so the page a caller receives is the page it asked for.
           schema:
@@ -129,8 +129,8 @@ paths:
             answers 400 naming itself and the order this route does apply. The order is fixed at
             assessment time descending and then transaction identifier descending, which
             FraudAssessmentRepository.findByAccountIdOrderByAssessedAtDescTransactionIdDesc states in
-            its own name, so an order a caller supplied could only be ignored while the response
-            claimed success. The one handler of this route reads the parameter and refuses it.
+            its own name. An order a caller supplied could only be ignored while the response claimed
+            success. The one handler of this route reads the parameter and refuses it.
           schema:
             type: string
             examples: ['assessedAt,asc']
@@ -140,7 +140,7 @@ paths:
           description: >-
             A page number, which this route does not accept. Present at any value, the parameter
             answers 400 naming itself and the header that continues a page instead. It carries no
-            numeric shape here because no number is acceptable: reaching a page by number means
+            numeric shape here because no number is acceptable. Reaching a page by number means
             reading and discarding every row before it, so the work would grow with the page asked
             for rather than with the page returned. Serving page one to a request for page five
             thousand would report success for something this route did not do, so it refuses instead.
@@ -164,8 +164,8 @@ paths:
                     transaction identifiers are records of app/data/ASCII/dailytran.txt whose card
                     resolves to that account through app/data/ASCII/cardxref.txt. The first reached
                     the flag threshold and the second stayed below it while keeping the rule that
-                    contributed. nextCursor names the second row, which is the last one served, so
-                    returning it in X-Fraud-Cursor asks for the rows after it.
+                    contributed. The member nextCursor names the second row, which is the last one
+                    served, so returning it in X-Fraud-Cursor asks for the rows after it.
                   value:
                     assessments:
                       - transactionId: '0000000000683580'
@@ -312,26 +312,25 @@ components:
       type: http
       scheme: basic
       description: >-
-        HTTP Basic authentication over the realm carddemo. config/SecurityConfig admits only an
-        identity holding the ADMIN role to the two routes above, and it answers an authenticated
-        identity holding a business role with 403. carddemo.security.users in application.yml
-        configures the identities, and card-platform/.env.example documents the variables each entry
-        reads.
-
+        HTTP Basic authentication over the realm carddemo. The chain in config/SecurityConfig admits
+        only an identity holding the ADMIN role to the two routes above. It answers an authenticated
+        identity holding a business role with 403. The block carddemo.security.users in
+        application.yml configures the identities, and card-platform/.env.example documents the
+        variables each entry reads.
   responses:
 
     TooManyRequests:
       description: >-
-        A rate ceiling refused this request. config/RequestRateCeilingFilter runs ahead of the
-        security chain and bounds requests from one source, requests presenting one identity,
-        state-changing requests from one source, failed authentications from one source, and
-        requests in flight. Retry-After names whole seconds until the window rolls.
+        A rate ceiling refused this request. The filter config/RequestRateCeilingFilter runs ahead of
+        the security chain. It bounds requests from one source, requests presenting one identity,
+        state-changing requests from one source, failed authentications from one source, and requests
+        in flight. Retry-After names whole seconds until the window rolls.
 
 
-        ADDITIVE: a CICS transaction arrived from a terminal an operator was sitting at and the
-        nightly feed of app/jcl/POSTTRAN.jcl arrived once a day as a dataset, so the source had no
-        request rate to bound and holds no matching condition. The detail is fixed and names no
-        address, no identity and no route.
+        ADDITIVE: a CICS transaction arrived from a terminal an operator was sitting at, and the
+        nightly feed of app/jcl/POSTTRAN.jcl arrived once a day as a dataset. The source therefore
+        had no request rate to bound and holds no matching condition. The detail is fixed and names
+        no address, no identity and no route.
       headers:
         Retry-After:
           description: Whole seconds until the window rolls, one or more.
@@ -353,15 +352,17 @@ components:
 
     BadRequest:
       description: >-
-        A path or query value missed the constraint declared for it. One of these: an identifier of the wrong width
-        or shape, a page outside zero through 1000000, a page size outside one through 200, a page or
-        page size that is not a whole number. Or one of these: a page or page size that arrived carrying no characters, or the required account parameter not arriving at all. A sort parameter on the collection route
-        answers this status too, and that route applies assessment-time descending order only.
+        A path or query value missed the constraint declared for it. One of these: an identifier of
+        the wrong width or shape, or a page outside zero through 1000000. Or a page size outside one
+        through 200, or a page or page size that is not a whole number. Or one of these: a page or
+        page size that arrived carrying no characters, or the required account parameter not arriving
+        at all. A sort parameter on the collection route answers this status too, and that route
+        applies assessment-time descending order only.
 
 
         Every one of those is a client error and none of them is a fault of this service, so none
-        answers 5xx. api/FraudApiExceptionHandler writes the document below for all of them, and the
-        detail names no value read from the request.
+        answers 5xx. The handler api/FraudApiExceptionHandler writes the document below for all of
+        them, and the detail names no value read from the request.
       content:
         application/problem+json:
           schema:
@@ -439,11 +440,11 @@ components:
     MethodNotAllowed:
       description: >-
         The route was called with a method it does not serve. Both routes serve GET alone, and the
-        Allow header names it. api/FraudApiExceptionHandler keeps the status and the headers the
-        framework named, so a caller's mistake is not recorded as a fault of this service.
-        config/SecurityConfig declares one rule per method and path, and a request whose method
-        carries no rule is refused with 403 before the dispatcher runs, so this answer is the one a
-        request the chain admits receives.
+        Allow header names it. The handler api/FraudApiExceptionHandler keeps the status and the
+        headers the framework named, so a caller's mistake is not recorded as a fault of this
+        service. The chain in config/SecurityConfig declares one rule per method and path, so a
+        request whose method carries no rule is refused with 403 before the dispatcher runs. This
+        answer is therefore the one a request the chain admits receives.
       headers:
         Allow:
           description: The methods this route serves.
@@ -497,7 +498,7 @@ components:
 
 
         No count of the whole history appears here. Counting an account's rows reads them all, which
-        is the work a page exists to avoid, so a caller learns the history is exhausted from
+        is the work a page exists to avoid. A caller learns the history is exhausted from
         nextPageExists instead of from a total.
       additionalProperties: false
       required:
@@ -550,7 +551,7 @@ components:
             The assessed transaction, sixteen characters of text. Width from DALYTRAN-ID PIC X(16) at
             app/cpy/CVTRA06Y.cpy:L5 and TRAN-ID PIC X(16) at app/cpy/CVTRA05Y.cpy:L5. Both source
             fields hold text, so the value carries no numeric pattern beyond the one character that
-            has to be something other than whitespace, which is the constraint the read route applies
+            has to be something other than whitespace. That is the constraint the read route applies
             to the same value. Column transaction_id holds it.
           examples: ['0000000000683580']
         accountId:

@@ -61,10 +61,10 @@
 # The container stage is the only stage that reads card-platform/docker-compose.yml.
 # It copies card-platform/.env.example to the environment file Compose reads its
 # variables from, generates the fourteen credentials the example file does not carry
-# using the command it documents, and starts the whole stack, because the file
-# running is the thing being checked. The two test stages start no Compose stack:
-# every integration class provisions the PostgreSQL and Kafka containers it needs
-# through Testcontainers, against the Docker daemon the runner already has.
+# using the command it documents, and starts the delivered stack itself. The two test
+# stages start no Compose stack: every integration class provisions the PostgreSQL and
+# Kafka containers it needs through Testcontainers, against the Docker daemon the
+# runner already has.
 #
 # Setup on a developer machine, and the local form of every command below:
 # card-platform/docs/onboarding.md
@@ -1086,11 +1086,21 @@ jobs:
           set +a
           echo "::add-mask::${POSTGRES_PASSWORD}"
 
-          # Card 0500024453765740 and account 00000000050 are record one of
-          # app/data/ASCII/cardxref.txt, seeded by every service that needs them. The request
-          # carries no transaction identifier, because the service assigns one from a sequence,
-          # and both timestamps sit inside the freshness window the request contract fixes.
-          smoke_card_number="0500024453765740"
+          # Record one of app/data/ASCII/cardxref.txt names the card and the account this smoke
+          # runs on, and every service that needs them seeds that record. The number is read out
+          # of the fixture rather than written here, because a sixteen-digit literal in a
+          # delivered file is a card number whatever it is called, and this one is a value that
+          # works against the demo stack. XREF-CARD-NUM PIC X(16) at app/cpy/CVACT03Y.cpy:L5 is
+          # the first field of the 36-character record, so the value is its first sixteen
+          # characters, and the path climbs one level because every step of this workflow runs in
+          # card-platform. The shape is checked rather than assumed: a moved fixture or a changed
+          # layout fails here, with the run masked out of the log, instead of arriving as an
+          # unexplained decline further down. The request carries no transaction identifier,
+          # because the service assigns one from a sequence, and both timestamps sit inside the
+          # freshness window the request contract fixes.
+          smoke_card_number="$(cut -c1-16 ../app/data/ASCII/cardxref.txt | sed -n '1p')"
+          echo "::add-mask::${smoke_card_number}"
+          printf '%s' "${smoke_card_number}" | grep -Eq '^[0-9]{16}$'
           origin="$(date -u -d '-2 minutes' '+%Y-%m-%d %H:%M:%S.000000')"
           processing="$(date -u -d '-2 minutes' '+%Y-%m-%d-%H.%M.%S.000000')"
           request="$(printf '{"transactionTypeCode":"01","transactionCategoryCode":"0001","source":"POS TERM","description":"Continuous integration business smoke","amount":"12.34","merchantId":"800000000","merchantName":"CardDemo Smoke","merchantCity":"Dallas","merchantZip":"75201","cardNumber":"%s","originTimestamp":"%s","processingTimestamp":"%s"}' "${smoke_card_number}" "${origin}" "${processing}")"

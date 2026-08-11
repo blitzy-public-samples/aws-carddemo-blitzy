@@ -43,7 +43,9 @@ Note that the intent of this application is to provide mainframe coding scenario
 
 The `card-platform/` directory reimplements the card-authorization path as six event-driven services, written in Java 25 on Spring Boot 4.1.0 over Apache Kafka and PostgreSQL. Each service deploys on its own and owns a private PostgreSQL schema no other service reads. The services reproduce the documented behaviour of the Common Business Oriented Language (COBOL) programs under `app/`. Nothing under `app/`, `diagrams/` or `samples/` changed, and no service calls the mainframe at runtime.
 
-A client calls one Representational State Transfer (REST) endpoint, `POST /authorizations`, which only `authorization-service` serves. A decided request persists one decision and publishes exactly one outcome event. An approval publishes `TransactionAuthorized` and a decline publishes `TransactionDeclined`, each keyed on the account the cross-reference resolved. A card that resolves no such account is refused before a decision, so it writes nothing and publishes nothing. `authorization-service` is the only service that writes the decision. The `ledger-posting-service`, `fraud-detection-service` and `notification-service` each consume the authorized event in their own consumer group. None of the three calls another, and none of them blocks the authorization response.
+A client calls one Representational State Transfer (REST) endpoint, `POST /authorizations`, which only `authorization-service` serves. A decided request persists one decision and publishes exactly one outcome event. An approval publishes `TransactionAuthorized` and a decline publishes `TransactionDeclined`, each keyed on the account the cross-reference resolved. A card that resolves no such account is refused before a decision, so it writes nothing and publishes nothing.
+
+`authorization-service` is the only service that writes the decision. The `ledger-posting-service`, `fraud-detection-service` and `notification-service` each consume the authorized event in their own consumer group. None of the three calls another, and none of them blocks the authorization response.
 
 Each row below names the source work a service took over. The programs sit under `app/cbl/` and the batch jobs under `app/jcl/`.
 
@@ -69,7 +71,9 @@ Interest calculation and full statement generation stay as scheduled batch work,
 - [card-platform/docs/equivalence-results.md](card-platform/docs/equivalence-results.md) reports parity against the original logic, measured with the nine fixtures under `app/data/ASCII/`.
 - [card-platform/docs/suggested-next-tasks.md](card-platform/docs/suggested-next-tasks.md) collects work found during the migration and left out of scope.
 
-Figure 1 pairs the two states. The BEFORE group shows Customer Information Control System (CICS) programs and Job Control Language (JCL) jobs sharing eight Virtual Storage Access Method (VSAM) datasets. The AFTER group shows all six services, each reading and writing only its own schema. One decision event reaches the three independent consumers. The two supporting services publish only when their own state changes, which keeps the replicas the decision reads current, and no service calls another over HTTP. [card-platform/docs/architecture-before-after.md](card-platform/docs/architecture-before-after.md) holds the same pair at full size, with every consumer group and every outbox relay named.
+Figure 1 pairs the two states. The BEFORE group shows Customer Information Control System (CICS) programs and Job Control Language (JCL) jobs sharing eight Virtual Storage Access Method (VSAM) datasets. The AFTER group shows all six services, each reading and writing only its own schema. One decision event reaches the three independent consumers.
+
+The two supporting services publish only when their own state changes, which keeps the replicas the decision reads current, and no service calls another over HTTP. The full-size pair lives in [card-platform/docs/architecture-before-after.md](card-platform/docs/architecture-before-after.md), with every consumer group and every outbox relay named.
 
 **Figure 1 — CardDemo Before and After: Shared VSAM Datasets and a Nightly Batch Window Become One Decision Event, Three Independent Consumers and Six Private Schemas**
 
@@ -149,7 +153,7 @@ Legend for Figure 1:
 - Dotted arrow: a read or a write of stored data. In the AFTER group every dotted arrow ends at the schema its own service owns, and no service reads another's.
 - Rectangle: a program, a batch job or a service. Cylinder: stored data. Hexagon: a Kafka topic.
 - The three consumers of `transaction.authorized` are joined by no arrow, because none calls another and none blocks the authorization response.
-- `account-service` and `card-service` publish only when their own state changes, and the decision path consumes those events into replicas it owns rather than calling either service. The only synchronous arrow in the AFTER group is the client's.
+- `account-service` and `card-service` publish only when their own state changes, and the decision path consumes those events into replicas it owns rather than calling either service. Every synchronous arrow in the AFTER group runs from a client to a service: the authorization client reaches `authorization-service`, and the management client reaches `account-service` and `card-service`. No service calls another synchronously.
 - No arrow crosses from the BEFORE group to the AFTER group, because no service calls the mainframe.
 
 <br/>

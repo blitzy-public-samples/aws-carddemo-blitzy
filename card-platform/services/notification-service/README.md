@@ -71,11 +71,15 @@ Four listeners hold four groups. Reading `transaction.authorized` under a group 
 
 Both of this module's tables are keyed on the card token, and only schema version 2 of `TransactionAuthorized` and `TransactionPosted` carries one. A delivery at version 1 is therefore **consumed, counted on `carddemo.notification.events.unapplied`, reported once at `WARN` naming the version, and acknowledged**. It writes no read-model row, renders no alert, and writes no duplicate-delivery marker, because a marker guards side effects and there are none to guard.
 
-Nothing is invented in its place. The card token is a digest over the whole card number. The masked number a version 1 event does carry has already discarded twelve of the sixteen digits that derivation reads, and two cards sharing their last four digits mask to one value. A key derived from the masked form, the account identifier or the transaction identifier would name a card that no card resolves to. A history query would then answer with a row belonging to nobody, and for `TransactionPosted` nine of the fourteen columns would be blank as well.
+Nothing is invented in its place. The card token is a digest over the whole card number. The masked number a version 1 event does carry has already discarded twelve of the sixteen digits that derivation reads. Two cards sharing their last four digits mask to one value.
 
-Refusing it was the previous behaviour and it was worse. A version 1 event is governed and valid against its own schema document, and the deserializer accepts it; throwing in the listener spent three delivery attempts and put a valid event on the dead-letter topic as though it were poison. Every consumer group here starts at the earliest offset, because `auto-offset-reset` is `earliest`. A group added to a topic that still retains version 1 records met that route on every one of them, so the backward compatibility this platform's versioning exists to provide did not hold in practice. There is deliberately **no replay boundary and no offset skip**: the records are read, accounted for, and passed over.
+A key derived from the masked form, the account identifier or the transaction identifier would name a card that no card resolves to. A history query would then answer with a row belonging to nobody, and for `TransactionPosted` nine of the fourteen columns would be blank as well.
 
-What a replay of a version 1 record therefore costs is one counter increment and one log line per record, and what it does not cost is a dead-letter record, a retry cycle or a stalled group. What it also does not do is produce an alert: a cardholder history built only from version 1 records is empty, and that is visible in the counter rather than hidden.
+Refusing it was the previous behaviour and it was worse. A version 1 event is governed and valid against its own schema document, and the deserializer accepts it. Throwing in the listener spent three delivery attempts and put a valid event on the dead-letter topic as though it were poison.
+
+Every consumer group here starts at the earliest offset, because `auto-offset-reset` is `earliest`. A group added to a topic that still retains version 1 records met that route on every one of them. The backward compatibility this platform's versioning exists to provide did not hold in practice. There is deliberately **no replay boundary and no offset skip**: the records are read, accounted for, and passed over.
+
+What a replay of a version 1 record therefore costs is one counter increment and one log line per record. What it does not cost is a dead-letter record, a retry cycle or a stalled group. What it also does not do is produce an alert. A cardholder history built only from version 1 records is empty, and that is visible in the counter rather than hidden.
 
 Two keys are in play, and they differ deliberately. The Kafka message key is the account identifier, which keeps one account's events in one partition and in order. The read model key is the card token plus the transaction identifier, and it comes from the sort at `app/jcl/CREASTMT.JCL:L53`.
 
@@ -85,11 +89,17 @@ Two keys are in play, and they differ deliberately. The Kafka message key is the
 
 ## Architecture
 
-Figure 1 shows the four topics reaching four consumer groups, the duplicate claim they all pass through, the private tables behind them, and which of the four ends in a rendered alert. The four arrive for two different purposes. `transaction.posted` and `customer.context-changed` maintain state: the first upserts a row of the card-keyed read model, the second upserts the cardholder context. `transaction.authorized` and `fraud.assessed` maintain nothing — each reads the context and renders an alert. A posted transaction does both: it upserts its row and then renders the balance alert. No arrow leaves the module carrying a business event, and no arrow reaches another service. Those two absences are the design. The paired platform-wide before-and-after views are in [architecture, before and after](../../docs/architecture-before-after.md).
+Figure 1 shows the four topics reaching four consumer groups and the duplicate claim they all pass through. It also shows the private tables behind them, and which of the four ends in a rendered alert. The four arrive for two different purposes.
 
-**Two of the three rendered alerts leave a row in `notification_log`, and the fraud alert leaves none**. `NotificationService.renderAuthorizationAlert` and `renderPostedTransactionAlert` each call `recordRendered`. That writes one row carrying the card token, the masked card number, the transaction identifier and `outcome = RENDERED_NOT_SENT`. `renderFraudAlert` does not: `FraudFlagged` carries no card token and no masked card number, `notification_log` requires both, and neither can be recovered from an event that names only a transaction, an account, a score and the rules that fired. That alert is therefore rendered from the cardholder context and the assessment, counted on `carddemo.notification.notifications.rendered`, logged, and returned to a consumer that discards the string. It reaches no table and no cardholder.
+`transaction.posted` and `customer.context-changed` maintain state: the first upserts a row of the card-keyed read model, the second upserts the cardholder context. `transaction.authorized` and `fraud.assessed` maintain nothing — each reads the context and renders an alert. A posted transaction does both: it upserts its row and then renders the balance alert.
 
-Read that together with the limitation the whole table carries: no row anywhere in `notification_log` is evidence that a cardholder was told anything, because this service reaches no mail, message, webhook or push gateway. For a fraud flag there is not even a row. [Deliver the rendered cardholder alert](../../docs/suggested-next-tasks.md) carries the work that would change either fact.
+No arrow leaves the module carrying a business event, and no arrow reaches another service. Those two absences are the design. The paired platform-wide before-and-after views are in [architecture, before and after](../../docs/architecture-before-after.md).
+
+**Two of the three rendered alerts leave a row in `notification_log`, and the fraud alert leaves none**. `NotificationService.renderAuthorizationAlert` and `renderPostedTransactionAlert` each call `recordRendered`. That writes one row carrying the card token, the masked card number, the transaction identifier and `outcome = RENDERED_NOT_SENT`.
+
+`renderFraudAlert` does not. `FraudFlagged` carries no card token and no masked card number, and `notification_log` requires both. Neither can be recovered from an event that names only a transaction, an account, a score and the rules that fired. That alert is therefore rendered from the cardholder context and the assessment, counted on `carddemo.notification.notifications.rendered`, logged, and returned to a consumer that discards the string. It reaches no table and no cardholder.
+
+Read that together with the limitation the whole table carries. No row anywhere in `notification_log` is evidence that a cardholder was told anything, because this service reaches no mail, message, webhook or push gateway. For a fraud flag there is not even a row. [Deliver the rendered cardholder alert](../../docs/suggested-next-tasks.md) carries the work that would change either fact.
 
 **Figure 1 — Notification Service Data Flow: Four Topics, Four Consumer Groups, One Card-Keyed Read Model**
 ```mermaid
@@ -169,34 +179,48 @@ One endpoint, served by `NotificationHistoryController`.
 
 `cardToken` is the value column `statement_transaction.card_token` already holds: 64 lower-case hexadecimal characters `PanMasker.cardToken` derives from the whole card number under the deployment key. The route reads by it directly and derives nothing, so no digit of `TRNX-CARD-NUM PIC X(16)` at `app/cpy/COSTM01.CPY` line 22 reaches a request line. The response body holds `cardNumber` masked, `transactionCount`, `totalAmount`, a `transactions` array, `nextPageExists` and, where a further page exists, `nextCursor`. Each array item carries twelve fields, one for every field of the layout at `app/cpy/COSTM01.CPY` except the card number, which the envelope names once, and the dropped filler.
 
-**The count and the total cover the whole card; the array carries one page.** `app/cbl/CBSTM03A.CBL` reads every row of one card between two key breaks and line 429 totals all of them, so a count or a total over one page would describe a statement the source never produced. Both are read as one aggregate over the primary-key prefix `card_token`, which costs the same at any history length, and `NotificationService.totalOfCard` turns that aggregate into the value the source would have accumulated.
+**The count and the total cover the whole card; the array carries one page.** `app/cbl/CBSTM03A.CBL` reads every row of one card between two key breaks, and line 429 totals all of them. A count or a total over one page would describe a statement the source never produced. Both are read as one aggregate over the primary-key prefix `card_token`, which costs the same at any history length. `NotificationService.totalOfCard` turns that aggregate into the value the source would have accumulated.
 
-**The entries are paged, and the walk is a keyset cursor rather than an offset.** A card's history grows by one entry per posted transaction until retention removes entries, so a response carrying all of them made the query work, the heap and the response size a function of how long a cardholder had been transacting. The route once passed `Limit.unlimited()` and totalled in memory. Send `pageSize` for a different page size and the `nextCursor` a response hands back in the `X-Notification-Cursor` header for the next page, until `nextPageExists` reads false. Both the page finder and the aggregate walk the primary key `(card_token, transaction_id)`, so no page costs more because of where in a history it sits, and no offset means no page is reachable by reading and discarding the entries before it. `NotificationRenderer.MAXIMUM_STATEMENT_ROWS` bounds one rendered alert and is also the largest page this route serves.
+**The entries are paged, and the walk is a keyset cursor rather than an offset.** A card's history grows by one entry per posted transaction until retention removes entries. A response carrying all of them made the query work, the heap and the response size a function of how long a cardholder had been transacting. The route once passed `Limit.unlimited()` and totalled in memory.
+
+Send `pageSize` for a different page size and the `nextCursor` a response hands back in the `X-Notification-Cursor` header for the next page, until `nextPageExists` reads false. Both the page finder and the aggregate walk the primary key `(card_token, transaction_id)`, so no page costs more because of where in a history it sits. No offset means no page is reachable by reading and discarding the entries before it. `NotificationRenderer.MAXIMUM_STATEMENT_ROWS` bounds one rendered alert and is also the largest page this route serves.
 
 ```bash
-curl -su admin001:"$ADMIN_PASSWORD" \
+# The administrator identity these calls authenticate as. scripts/generate-env.sh wrote its
+# password to .demo-credentials, which git ignores and creates owner-only. Run from card-platform/.
+ADMIN_USERNAME="$(sed -n 's/^ADMIN_USERNAME=//p' .env | head -1)"
+ADMIN_PASSWORD="$(sed -n "s/^${ADMIN_USERNAME}=//p" .demo-credentials | head -1)"
+
+curl -su "${ADMIN_USERNAME}:${ADMIN_PASSWORD}" \
   -D- "http://localhost:8084/notifications/$CARD_TOKEN?pageSize=25"
 # then, while nextPageExists reads true:
-curl -su admin001:"$ADMIN_PASSWORD" \
+curl -su "${ADMIN_USERNAME}:${ADMIN_PASSWORD}" \
   -H "X-Notification-Cursor: $NEXT_CURSOR" \
   "http://localhost:8084/notifications/$CARD_TOKEN?pageSize=25"
 ```
 
 **The full card number reaches no request, no rendered alert, no log and no response**. The path carries a token, and the masked number in the body is read from column `masked_card_number` of the first row rather than derived from the path. `PanMasker` keeps the last four digits and rewrites the other twelve when that column is written.
 
-**A token holding no row answers 404.** The masked number is a stored value here, so a history with no row has none to name and cannot answer the 200 body this route declares. The text is "No statement history is held for that card" and it names no card. A token is a keyed pseudonym rather than a card number, and a caller must already hold one to ask, so the answer distinguishes a card this service has posted nothing for from one it has, and nothing else. An identity holding no matching `SCOPE_CARD_` authority reads 403 first and never reaches either answer.
+**A token holding no row answers 404.** The masked number is a stored value here, so a history with no row has none to name and cannot answer the 200 body this route declares. The text is "No statement history is held for that card" and it names no card.
+
+A token is a keyed pseudonym rather than a card number, and a caller must already hold one to ask. The answer therefore distinguishes a card this service has posted nothing for from one it has, and nothing else. An identity holding no matching `SCOPE_CARD_` authority reads 403 first and never reaches either answer.
 
 The hand-written contract, including the 400, 401, 403, 404, 429 and 500 outcomes and the HTTP basic identity the route requires, is in [openapi.yaml](src/main/resources/openapi.yaml). One call against the compose stack, deriving the token from the fixture number and discarding the number:
 
 ```bash
-# Run from the repository root, where app/ and card-platform/ are.
-CARD_NUMBER="$(cut -c1-16 app/data/ASCII/carddata.txt | sed -n '1p')"
-CARD_TOKEN_SECRET="$(grep '^CARD_TOKEN_SECRET=' card-platform/.env | cut -d= -f2- | tr -d "'\"")"
+# Run from card-platform/. app/ sits beside it in the repository.
+# The administrator identity these calls authenticate as. scripts/generate-env.sh wrote its
+# password to .demo-credentials, which git ignores and creates owner-only. Run from card-platform/.
+ADMIN_USERNAME="$(sed -n 's/^ADMIN_USERNAME=//p' .env | head -1)"
+ADMIN_PASSWORD="$(sed -n "s/^${ADMIN_USERNAME}=//p" .demo-credentials | head -1)"
+
+CARD_NUMBER="$(cut -c1-16 ../app/data/ASCII/carddata.txt | sed -n '1p')"
+CARD_TOKEN_SECRET="$(grep '^CARD_TOKEN_SECRET=' .env | cut -d= -f2- | tr -d "'\"")"
 CARD_TOKEN="$(printf 'CardDemo/card-token/v1:%s' "$CARD_NUMBER" \
   | openssl dgst -sha256 -hmac "$CARD_TOKEN_SECRET" -r | cut -d' ' -f1)"
 unset CARD_NUMBER CARD_TOKEN_SECRET
 
-curl -fsS -u "$ADMIN_USERNAME:the password you chose" \
+curl -fsS -u "${ADMIN_USERNAME}:${ADMIN_PASSWORD}" \
   "http://localhost:8084/notifications/$CARD_TOKEN"
 ```
 
@@ -206,9 +230,11 @@ The administrator identity reaches every card. An ordinary identity reaches one 
 
 ### Two controls in front of every route
 
-`config/CrossSiteRequestFilter` guards state change: a `POST`, `PUT`, `PATCH` or `DELETE` must carry `X-CardDemo-Request`, must not declare a cross-site `Sec-Fetch-Site`, and must not carry a foreign `Origin`. This service answers two reads and nothing else, so no state-changing route exists here to forge today. That is the reason the filter is here rather than a reason it is not. The read-only shape becomes an enforced property instead of a fact a reader has to go and check, and the first write added inherits the control rather than needing someone to remember it. A refusal answers 403 and counts `carddemo.notification.requests.cross.site.refused`. `GET`, `HEAD`, `OPTIONS` and `TRACE` pass untouched, which is why no path is exempted: the liveness probe and the metrics scrape are reads.
+`config/CrossSiteRequestFilter` guards state change: a `POST`, `PUT`, `PATCH` or `DELETE` must carry `X-CardDemo-Request`, must not declare a cross-site `Sec-Fetch-Site`, and must not carry a foreign `Origin`. This service answers two reads and nothing else, so no state-changing route exists here to forge today. That is the reason the filter is here rather than a reason it is not. The read-only shape becomes an enforced property instead of a fact a reader has to go and check. The first write added inherits the control rather than needing someone to remember it.
 
-`config/RequestRateCeilingFilter` bounds volume. It runs one place ahead of the security chain, because a refusal has to cost less than the attempt it refuses and an attempt that reached the chain would already have paid for a bcrypt verification.
+A refusal answers 403 and counts `carddemo.notification.requests.cross.site.refused`. `GET`, `HEAD`, `OPTIONS` and `TRACE` pass untouched, which is why no path is exempted: the liveness probe and the metrics scrape are reads.
+
+`config/RequestRateCeilingFilter` bounds volume. It runs one place ahead of the security chain, because a refusal has to cost less than the attempt it refuses. An attempt that reached the chain would already have paid for a bcrypt verification.
 
 | Ceiling | Default | Counted by |
 | :--- | ---: | :--- |
@@ -220,7 +246,7 @@ The administrator identity reaches every card. An ordinary identity reaches one 
 
 A refusal answers 429 with `Retry-After` and counts `carddemo.notification.requests.throttled`, tagged with the stage that refused: `authentication`, `source`, `identity`, `write` or `concurrency`. The five ceilings read `API_RATE_WINDOW_SECONDS`, `API_RATE_REQUESTS_PER_WINDOW`, `API_RATE_WRITE_REQUESTS_PER_WINDOW`, `API_RATE_AUTHENTICATION_FAILURES_PER_WINDOW` and `API_RATE_CONCURRENT_REQUESTS` from [`.env.example`](../../.env.example). The management base path is exempt, because a throttled probe reads as a failed container.
 
-Both filters count in this process, so several replicas bound each replica rather than the service as a whole, and the source address is the one the container resolves rather than a forwarding header a caller could write. A deployment behind a proxy activates the `trusted-proxy` profile, which trusts those headers from the proxy's own addresses alone. Both residual limits are recorded in [suggested next tasks](../../docs/suggested-next-tasks.md), and the reasoning behind the two controls is in the [Decision Log](../../docs/decision-log.md).
+Both filters count in this process, so several replicas bound each replica rather than the service as a whole. The source address is the one the container resolves, rather than a forwarding header a caller could write. A deployment behind a proxy activates the `trusted-proxy` profile, which trusts those headers from the proxy's own addresses alone. Both residual limits are recorded in [suggested next tasks](../../docs/suggested-next-tasks.md), and the reasoning behind the two controls is in the [Decision Log](../../docs/decision-log.md).
 
 <br/>
 
@@ -239,13 +265,15 @@ The key derivation is arithmetic, not preference. `KEYS(32 0)` names a 32-byte k
 
 `V1__schema.sql` therefore takes its key from `CREASTMT.JCL` line 30 rather than from the transaction file's own key. One substitution applies. The stored key column holds a card token, not the source's full Primary Account Number (PAN). The masked number beside it is display data, and no key or index reads it. The [traceability matrix](../../docs/traceability-matrix.md) records the re-keying, the dropped 20-byte filler, and the key's derivation from a sort step rather than a record layout.
 
-`V2__seed.sql` seeds `cardholder_context` alone, one row per fixture account, each stamped at the Unix epoch so the first real `CustomerContextChanged` supersedes it. No fixture seeds `statement_transaction`: the read model is built by consuming events. `V3__processed_event_topic_key.sql` completes the set, making the consumed topic part of the duplicate-delivery marker's identity so the four listener groups sharing that table can each claim the same event identifier once. Nine migrations run on every start. The three above come first, in that order, and `V4__marker_retention_margin.sql`, `V5__rendered_not_delivered.sql`, `V6__subject_request_posture.sql`, `V7__statement_read_bounds.sql`, `V8__processed_event_claims_are_permanent.sql` and `V9__subject_request_procedure.sql` follow, each described below. There is no tenth.
+`V2__seed.sql` seeds `cardholder_context` alone, one row per fixture account, each stamped at the Unix epoch so the first real `CustomerContextChanged` supersedes it. No fixture seeds `statement_transaction`: the read model is built by consuming events. `V3__processed_event_topic_key.sql` completes the set, making the consumed topic part of the duplicate-delivery marker's identity so the four listener groups sharing that table can each claim the same event identifier once.
+
+Nine migrations run on every start. The three above come first, in that order, and `V4__marker_retention_margin.sql`, `V5__rendered_not_delivered.sql`, `V6__subject_request_posture.sql`, `V7__statement_read_bounds.sql`, `V8__processed_event_claims_are_permanent.sql` and `V9__subject_request_procedure.sql` follow, each described below. There is no tenth.
 
 `V3__processed_event_topic_key.sql` widens the duplicate-delivery key from the event identifier alone to `(event_id, consumed_topic)`. Four listeners read four topics, and two of those topics can carry the same event identifier, so a single-column key let whichever listener claimed first silence the others. The key names the topic because the claim is per delivery path and not per event.
 
 `V4__marker_retention_margin.sql` states the margin the marker window kept over the broker window, so a marker could not be purged while a redelivery of its event was still possible. `V8` withdraws that window altogether.
 
-`V5__rendered_not_delivered.sql` renames `attempted_at` to `rendered_at`, adds the `outcome` column with the check that admits `RENDERED_NOT_SENT` alone, and restates the table comment. This service reaches no mail, message, webhook or push gateway, so a row was never evidence that a cardholder was told anything, and the earlier wording claimed a transport that has never existed.
+`V5__rendered_not_delivered.sql` renames `attempted_at` to `rendered_at`, adds the `outcome` column with the check that admits `RENDERED_NOT_SENT` alone, and restates the table comment. This service reaches no mail, message, webhook or push gateway, so a row was never evidence that a cardholder was told anything. The earlier wording claimed a transport that has never existed.
 
 `V6__subject_request_posture.sql` corrects the `cardholder_context` comment, which described an export and erasure workflow nothing on this platform implements.
 
@@ -268,9 +296,13 @@ purpose, retention, export and erasure*.
 
 The table is keyed on a card token, and a token that links every row of one card is a pseudonym rather than nothing. The earlier value would have let a reader of the catalogue skip the table during a request. No endpoint, event or scheduled task erases or exports a subject, and both comments say so.
 
-`V7__statement_read_bounds.sql` records the read bounds of `statement_transaction` on its primary-key constraint, superseding the `V1__schema.sql` line comment that claimed every read of the table names a limit. Two reads exist and they differ: `GET /notifications/{cardNumber}` scans the key forward with `Limit.unlimited()` and returns every row of the card, which is what `app/cbl/CBSTM03A.CBL:L429` did between two key breaks; one rendered alert scans it backward under `NotificationRenderer.MAXIMUM_STATEMENT_ROWS`, an additive ceiling of 200 that bounds the alert alone. It changes no column, index, constraint or row.
+`V7__statement_read_bounds.sql` records the read bounds of `statement_transaction` on its primary-key constraint, superseding the `V1__schema.sql` line comment that claimed every read of the table names a limit. Two reads exist and they differ. `GET /notifications/{cardNumber}` scans the key forward with `Limit.unlimited()` and returns every row of the card, which is what `app/cbl/CBSTM03A.CBL:L429` did between two key breaks. One rendered alert scans it backward under `NotificationRenderer.MAXIMUM_STATEMENT_ROWS`, an additive ceiling of 200 that bounds the alert alone. It changes no column, index, constraint or row.
 
-Two tables of the four are bounded, and `domain/RetentionSweep` is what bounds them. It runs on `carddemo.history.sweep-interval-ms` and sweeps `statement_transaction` and `notification_log` in that order, each against its own configured horizon: `carddemo.history.statement-retention-days` and `carddemo.history.log-retention-days`. Each delete takes a row ceiling and the sweep repeats it in a transaction per batch until the table is clear or the table's wall-clock ceiling is reached, so no one statement locks a whole table and no backlog outlives the pass that found it. The other two are deliberately unbounded. `cardholder_context` holds a row for as long as the customer relationship lasts. `processed_event` holds a claim for good, because the rows a claim guards outlive any horizon it could carry. `observed_at` is the ordering guard rather than a purge key — `messaging/CustomerContextChangedConsumer` refuses an event older than the row it would overwrite — and `V6__subject_request_posture.sql` removed the earlier claim that it served an erasure request, because no export or erasure workflow exists on this platform, here or upstream. The horizons are a demo baseline, and [suggested next tasks](../../docs/suggested-next-tasks.md) carries the task of replacing them with the periods a deployment's jurisdiction requires.
+Two tables of the four are bounded, and `domain/RetentionSweep` is what bounds them. It runs on `carddemo.history.sweep-interval-ms` and sweeps `statement_transaction` and `notification_log` in that order, each against its own configured horizon: `carddemo.history.statement-retention-days` and `carddemo.history.log-retention-days`. Each delete takes a row ceiling, and the sweep repeats it in a transaction per batch until the table is clear or the table's wall-clock ceiling is reached. No one statement therefore locks a whole table, and no backlog outlives the pass that found it.
+
+The other two are deliberately unbounded. `cardholder_context` holds a row for as long as the customer relationship lasts. `processed_event` holds a claim for good, because the rows a claim guards outlive any horizon it could carry.
+
+`observed_at` is the ordering guard rather than a purge key, and `messaging/CustomerContextChangedConsumer` refuses an event older than the row it would overwrite. `V6__subject_request_posture.sql` removed the earlier claim that it served an erasure request, because no export or erasure workflow exists on this platform, here or upstream. The horizons are a demo baseline, and [suggested next tasks](../../docs/suggested-next-tasks.md) carries the task of replacing them with the periods a deployment's jurisdiction requires.
 
 No table here is shared with another service, and this module reaches no other schema. Flyway owns every table, and Jakarta Persistence (JPA) runs with `ddl-auto: validate`, so a mapping that disagrees with the migrated schema stops start-up.
 
@@ -303,7 +335,11 @@ One rendering detail looks like a defect and is not. `TRNX-DESC` is `PIC X(100)`
 
 ## Patterns
 
-**Idempotent consumer, applied four times.** Each listener claims the envelope event identifier together with the topic the delivery arrived on. It inserts one `processed_event` row that does nothing on conflict, so two deliveries racing on one event cannot both proceed. The topic is part of that key because four producers assign identifiers independently, and `V3__processed_event_topic_key.sql` is the migration that widened it. This module found the defect the narrow key carried: keyed on the identifier alone, a posted transaction and a fraud assessment sharing an identifier would leave one of the two listeners writing nothing. The claim runs inside the transaction that carries the side effects, and the listener acknowledges only after that transaction commits. Kafka delivers at least once, and a redelivery follows a group rebalance, a restart mid-batch, or a crash after the writes but before the offset commit. The concrete consequence: a duplicate `TransactionPosted` must not add its amount to the per-card total twice.
+**Idempotent consumer, applied four times.** Each listener claims the envelope event identifier together with the topic the delivery arrived on. It inserts one `processed_event` row that does nothing on conflict, so two deliveries racing on one event cannot both proceed.
+
+The topic is part of that key because four producers assign identifiers independently, and `V3__processed_event_topic_key.sql` is the migration that widened it. This module found the defect the narrow key carried. Keyed on the identifier alone, a posted transaction and a fraud assessment sharing an identifier would leave one of the two listeners writing nothing.
+
+The claim runs inside the transaction that carries the side effects, and the listener acknowledges only after that transaction commits. Kafka delivers at least once, and a redelivery follows a group rebalance, a restart mid-batch, or a crash after the writes but before the offset commit. The concrete consequence: a duplicate `TransactionPosted` must not add its amount to the per-card total twice.
 
 **No outbox.** A module that publishes nothing needs none, and none is declared. Do not add one speculatively.
 
@@ -325,7 +361,7 @@ One rendering detail looks like a defect and is not. `TRNX-DESC` is `PIC X(100)`
 8. **A state-changing call needs one extra header.** This service answers reads, so nothing a caller can reach today is affected. A state-changing route added later is refused from any client that does not send `X-CardDemo-Request`, because `config/CrossSiteRequestFilter` guards the method rather than a list of routes. Add the header to the client at the same time as the route.
 9. **A burst answers 429 rather than being served.** A load generator, a retry loop, or a test that hammers one address reaches `config/RequestRateCeilingFilter` and answers 429 with `Retry-After`. The blanket ceiling is 600 requests a minute per address and per identity, writes are 120, and 20 failed authentications from one address close the rest of that minute. Raise `API_RATE_*` for a load run rather than removing the filter, and read the `stage` tag on `carddemo.notification.requests.throttled` to see which ceiling refused.
 
-10. **A version 1 replay produces no alert and no row, and says so in a counter.** Both tables here are keyed on the card token, which only schema version 2 carries. A version 1 delivery is consumed, counted on `carddemo.notification.events.unapplied`, reported once and acknowledged. A group replaying a topic that retains version 1 records therefore finishes with an empty history and a non-zero `events.unapplied` reading, which is the thing to check before concluding the listener is broken. [A contract version this service cannot act on](#a-contract-version-this-service-cannot-act-on) states why nothing is invented in its place.
+10. **A version 1 replay produces no alert and no row, and says so in a counter.** Both tables here are keyed on the card token, which only schema version 2 carries, so a version 1 delivery is consumed, counted on `carddemo.notification.events.unapplied`, reported once and acknowledged. A group replaying a topic that retains version 1 records therefore finishes with an empty history and a non-zero `events.unapplied` reading. That reading is the thing to check before concluding the listener is broken. [A contract version this service cannot act on](#a-contract-version-this-service-cannot-act-on) states why nothing is invented in its place.
 
 Platform-wide pitfalls are in [onboarding](../../docs/onboarding.md) and are not repeated here.
 
@@ -356,7 +392,7 @@ The runtime contract:
 | Health check target | `http://localhost:9084/actuator/health` from the host |
 | Actuator endpoints | `health`, `metrics`, `prometheus` |
 
-Seven meters are registered by `config/ObservabilityConfig`, and two more by the request filters, described with them: `carddemo.notification.requests.cross.site.refused` and `carddemo.notification.requests.throttled`. Each carries the common `service` tag, and the tagged ones are pre-registered across every tag value at start-up, so a value reads zero rather than being absent before its first occurrence. A dashboard that has to wait for a failure before the failure series exists cannot show that there have been none.
+Seven meters are registered by `config/ObservabilityConfig`, and two more by the request filters, described with them: `carddemo.notification.requests.cross.site.refused` and `carddemo.notification.requests.throttled`. Each carries the common `service` tag. The tagged ones are pre-registered across every tag value at start-up, so a value reads zero rather than being absent before its first occurrence. A dashboard that has to wait for a failure before the failure series exists cannot show that there have been none.
 
 | Metric | Tag | Meaning |
 | :--- | :--- | :--- |
@@ -368,7 +404,7 @@ Seven meters are registered by `config/ObservabilityConfig`, and two more by the
 | `carddemo.notification.failures` | `failure.kind` | Failed delivery attempts, one per attempt |
 | `carddemo.notification.records.dead.lettered` | `failure.kind` | Records whose delivery attempts ran out, one per record |
 
-`events.unapplied` is the series that separates a delivery this service chose to do nothing for from one that failed. It moves for exactly one case today: a contract version predating the card token both of these tables are keyed on, described under [events consumed](#events-consumed). It is not a failure, because nothing failed; it is not a dead letter, because the record is acknowledged; and it is not a duplicate, because the event was never applied before. Without it, a consumed count rising with no alert rendered and no failure recorded was ambiguous.
+`events.unapplied` is the series that separates a delivery this service chose to do nothing for from one that failed. It moves for exactly one case today: a contract version predating the card token both of these tables are keyed on, described under [events consumed](#events-consumed). It is not a failure, because nothing failed, and not a dead letter, because the record is acknowledged. It is not a duplicate either, because the event was never applied before. Without it, a consumed count rising with no alert rendered and no failure recorded was ambiguous.
 
 The next two are a pair and are not interchangeable. `failures` counts attempts, so one record that fails three times adds three; `records.dead.lettered` counts records, so the same record adds one when its attempts run out. Reading either as the other overstates or understates the incident by the retry count. Both tag on `failure.kind`, whose values are `schema_validation`, `deserialization`, `persistence`, `rendering` and `unknown`, and `event.type` takes the five event types this module consumes plus `unknown`.
 
@@ -423,7 +459,7 @@ CARD_NUMBER=$(sed -n '1s/^\(.\{16\}\).*/\1/p' ../app/data/ASCII/cardxref.txt)
 CAPTURED_AT="$(date -u +'%Y-%m-%d %H:%M:%S').000000"
 PROCESSED_AT="$(date -u +'%Y-%m-%d-%H.%M.%S').000000"
 
-curl -sS -u "admin001:$ADMIN_PASSWORD" -X POST \
+curl -sS -u "${ADMIN_USERNAME}:${ADMIN_PASSWORD}" -X POST \
   -H 'X-CardDemo-Request: notification-guide' \
   -H 'Content-Type: application/json' \
   -d "{\"cardNumber\":\"${CARD_NUMBER}\",
@@ -449,7 +485,7 @@ CARD_TOKEN="$(printf 'CardDemo/card-token/v1:%s' "$CARD_NUMBER" \
       | tr -d "'\"")" -r | cut -d' ' -f1)"
 unset CARD_NUMBER
 
-curl -fsS -u "admin001:$ADMIN_PASSWORD" "http://localhost:8084/notifications/$CARD_TOKEN"
+curl -fsS -u "${ADMIN_USERNAME}:${ADMIN_PASSWORD}" "http://localhost:8084/notifications/$CARD_TOKEN"
 ```
 
 That command takes the same keyed code `PanMasker.cardToken` takes, over the label, the configured version and the number, so it reproduces the token this module stored. It answers one transaction, a masked card number read from that row, and the per-card total. Read the bounded log for the same delivery rather than following the log forever:

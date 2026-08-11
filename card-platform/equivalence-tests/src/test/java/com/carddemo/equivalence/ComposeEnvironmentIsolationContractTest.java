@@ -325,8 +325,8 @@ class ComposeEnvironmentIsolationContractTest {
                         + " fourth added later has no statement standing over it")
                 .contains("SASL_PLAINTEXT", "sslmode=require", "SERVER_SSL_ENABLED");
         assertThat(compose)
-                .as("and names the deployed path that answers the case this one does not, which is"
-                        + " encrypted throughout")
+                .as("and names the deployed path that answers the case this one does not, whose three"
+                        + " transports are encrypted where these three are not")
                 .contains("deploy/k8s/30-configmap.yaml", "SASL_SSL", "sslmode=verify-full");
         assertThat(compose)
                 .as("the profile that would encrypt this path is designed and not delivered, and"

@@ -327,10 +327,9 @@ class DemoBootstrapContractTest {
          * a plain numeric override no service refuses. It stands for any tightened default: the
          * report names both values, and the file keeps the one this machine set.
          *
-         * <p>The two are handled differently on purpose. A published key is nobody's secret and no
-         * running deployment can hold it, so it is regenerated. An overridden setting may be a
-         * deliberate choice, so it is reported with both values and left alone: the operator decides,
-         * and the report is what makes the decision possible.
+         * <p>The two are handled differently. A published key is regenerated, because every reader
+         * of this repository holds it. An overridden setting is reported with both values and left
+         * alone, so the operator decides. Rationale: {@code card-platform/docs/decision-log.md}
          */
         @Test
         @DisplayName("regenerates a published card-token key and names an overridden setting")

@@ -568,10 +568,10 @@ class ReplicaRefreshToDecisionIT {
          * <p>The failure is raised by the column rather than by a stub, so the transaction that rolls
          * back is a real one. {@value #CREDIT_LIMIT_THE_COLUMN_REFUSES} carries eleven integer digits
          * against a {@code NUMERIC(12,2)} column. It is delivered by calling the listener directly
-         * rather than through the broker, for two reasons: the schema document bounds the same value to
-         * ten integer digits, so the boundary would refuse it before any listener saw it, and a
-         * delivery that fails on the broker path is redelivered until it is dead-lettered, which is a
-         * different property with its own coverage.
+         * rather than through the broker. The schema document bounds the same value to ten integer
+         * digits, so the boundary refuses it before any listener sees it, and a delivery that fails on
+         * the broker path is redelivered until it is dead-lettered, which is a different property with
+         * its own coverage.
          *
          * <p>The second half is what makes the first half matter. The same identifier is delivered
          * again carrying a value the column accepts, and it applies and marks, which is only possible

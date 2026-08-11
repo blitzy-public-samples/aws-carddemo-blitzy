@@ -107,7 +107,7 @@ erDiagram
 - **The diagram draws no relationship, because the schema declares none.** `V1` through `V20`, the whole of this schema's migration history, contain zero `REFERENCES` clauses, so there is no foreign key anywhere in this schema. A decision resolves a card in two independent repository calls: read `card_xref` by card number, then read `account_credit_snapshot` by the `account_id` that row returned. Nothing in the database joins the two or constrains one to the other, and a missing second row is reject reason 0101 rather than an integrity error.
 - `CARD_XREF` and `ACCOUNT_CREDIT_SNAPSHOT` derive from source layouts and hold event freshness metadata.
 - `AUTHORIZATION_DECISION`, `REPLICA_GAP`, `OUTBOX_EVENT`, and `PROCESSED_EVENT` are additive. `UNRESOLVED_CARD_ATTEMPT` was a seventh, and `V20__unresolved_card_attempt_withdrawn.sql` drops it: a card that resolves no cross-reference row is refused rather than decided, so there is no attempt to record.
-- `REPLICA_GAP`, added by `V12__replica_gap.sql`, holds one row per account per replica stream whose record this service could not apply. `domain/AuthorizationService` refuses a decision that would read either replica row of an account named here, and the two replica listeners delete the row when a later record for that account applies. No time window expires it.
+- `REPLICA_GAP`, added by `V12__replica_gap.sql`, holds one row per account per replica stream whose record this service could not apply. `domain/AuthorizationService` refuses a decision that would read either replica row of an account named here. The two replica listeners delete the row when a later record for that account applies. No time window expires it.
 - `AUTHORIZATION_DECISION.actor` is `VARCHAR(64)`, widened from `VARCHAR(8)` by `V7__cycle_exposure_reservation.sql`, which redefined `ck_authorization_decision_actor` to match.
 - `PROCESSED_EVENT` carries a two-column primary key. `V6` replaced the single-column key so the same event identifier consumed from two topics records two markers.
 
@@ -155,15 +155,23 @@ Migration `V5` adds the table. It is the row a caller's decision leaves behind. 
 | `decline_reason_code` | `VARCHAR(4)` | The four-digit reason of `app/cbl/CBTRN02C.cbl:L380-L420`. Null on approval |
 | `decline_reason_description` | `VARCHAR(76)` | The 76-character description width of the reject trailer at `app/cbl/CBTRN02C.cbl:L446-L465` |
 | `decided_at` | `TIMESTAMP(6) WITH TIME ZONE` | Additive |
-| `event_id` | `UUID` | Additive. Nullable at the column since migration V13 and required of every new row by `ck_authorization_decision_event` since migration V15, which is `NOT VALID` so rows written while one outcome published nothing stay the record they are. Ties the row to the event the call published, and every decided call publishes one: `transaction-authorized-v2` on an approval and `transaction-declined-v3` on any of the four reject reasons, each keyed on the eleven-digit account the decision applies to |
+| `event_id` | `UUID` | Additive. Nullable at the column since migration V13 and required of every new row by `ck_authorization_decision_event` since migration V15, which is `NOT VALID` so rows written while one outcome published nothing stay the record they are. Ties the row to the event the call published, and every decided call publishes one: `transaction-authorized-v2` on an approval and `transaction-declined-v3` on reject reason 0101, 0102 or 0103, each keyed on the eleven-digit account the decision applies to. Reason 0100 is the fourth reason the source assigns and this platform decides no call under it: a card that resolves no cross-reference row is refused before a decision, so it writes no row here and publishes nothing |
 
-Ten named constraints hold the shape the columns alone cannot. `pk_authorization_decision` keys the table on the transaction. `ck_authorization_decision_outcome` is the important one. An approved row must carry neither reason column, and a declined row must carry both. No row can claim an outcome it does not explain. `ck_authorization_decision_approved_account` requires an account on every approval, because an approval without a resolved account is not reachable. `ck_authorization_decision_actor` bounds the actor to one to sixty-four printable characters, the width `V7` widened it to, `ck_authorization_decision_account_digits` to eleven digits, and `ck_authorization_decision_reason_digits` to four. `ck_authorization_decision_card_token` requires 64 lower-case hexadecimal characters, and `ck_authorization_decision_masked_card` accepts only the two forms masking produces: twelve asterisks and four digits, or sixteen asterisks when no digits are known. The ninth is `ck_authorization_decision_event`, which holds `event_id` and `account_id` present or absent together. Every decided outcome now names both, so the rows that name neither are the ones written before migration V15, which the `NOT VALID` clause leaves as the record they are.
+Ten named constraints hold the shape the columns alone cannot. `pk_authorization_decision` keys the table on the transaction. `ck_authorization_decision_outcome` is the important one. An approved row must carry neither reason column, and a declined row must carry both. No row can claim an outcome it does not explain.
+
+`ck_authorization_decision_approved_account` requires an account on every approval, because an approval without a resolved account is not reachable. `ck_authorization_decision_actor` bounds the actor to one to sixty-four printable characters, the width `V7` widened it to, `ck_authorization_decision_account_digits` to eleven digits, and `ck_authorization_decision_reason_digits` to four. `ck_authorization_decision_card_token` requires 64 lower-case hexadecimal characters, and `ck_authorization_decision_masked_card` accepts only the two forms masking produces: twelve asterisks and four digits, or sixteen asterisks when no digits are known.
+
+The ninth is `ck_authorization_decision_event`, which holds `event_id` and `account_id` present or absent together. Every decided outcome now names both, so the rows that name neither are the ones written before migration V15, which the `NOT VALID` clause leaves as the record they are.
 
 The tenth is `ck_authorization_decision_card_token_version`, added by `V22`. It holds `card_token_version` to one to three digits opening with a non-zero digit, the shape a card-token version takes. That column says which card-token key the stored token belongs to. This table holds no card number, so it cannot re-derive its own rows, and a diagnostic a key rotation has passed by is otherwise indistinguishable from a current one.
 
-One index serves the one question the table is actually asked. `ix_authorization_decision_decided_at` answers a time window, which is what the bounded retention delete reads. Two composites once stood beside it — `ix_authorization_decision_account_decided` on `(account_id, decided_at DESC)` for one account's recent decisions, and `ix_authorization_decision_actor` on `(actor, decided_at DESC)` for one operator's — and `V18__authorization_decision_index_pruning.sql` drops both. They were written for questions no code asked: the four repository read methods that would have used them had no production caller, so every authorization on the hot write path maintained two index entries nothing ever read. Both questions remain worth answering, and the answer is an endpoint with a bound on it rather than an index waiting for one; `suggested-next-tasks.md` carries the task, and the index belongs in the same change as the query that reads it.
+One index serves the one question the table is actually asked. `ix_authorization_decision_decided_at` answers a time window, which is what the bounded retention delete reads. Two composites once stood beside it — `ix_authorization_decision_account_decided` on `(account_id, decided_at DESC)` for one account's recent decisions, and `ix_authorization_decision_actor` on `(actor, decided_at DESC)` for one operator's — and `V18__authorization_decision_index_pruning.sql` drops both.
 
-The three columns with no source field close the gap those hops open. `app/cbl/CBTRN02C.cbl` rewrote the account at `:L545-L560` before it validated the next record, so `:L403-L405` always read every earlier approval. Here an approval reserves its own amount in the two reservation columns, inside the same transaction as the decision and under a write lock on the row. Reason code 102 adds the reserved figures to the authoritative ones before it computes. The statement that applies `AccountStateChanged` releases the reservation by the advance the event reports, and `pending_expires_at` releases one whose event never arrives. The two `CHECK` constraints hold the source sign convention: a reserved credit is never negative and a reserved debit is never positive.
+They were written for questions no code asked. The four repository read methods that would have used them had no production caller, so every authorization on the hot write path maintained two index entries nothing ever read. Both questions remain worth answering, and the answer is an endpoint with a bound on it rather than an index waiting for one. `suggested-next-tasks.md` carries the task, and the index belongs in the same change as the query that reads it.
+
+The three columns with no source field close the gap those hops open. `app/cbl/CBTRN02C.cbl` rewrote the account at `:L545-L560` before it validated the next record, so `:L403-L405` always read every earlier approval. Here an approval reserves its own amount in the two reservation columns, inside the same transaction as the decision and under a write lock on the row.
+
+Reason code 102 adds the reserved figures to the authoritative ones before it computes. The statement that applies `AccountStateChanged` releases the reservation by the advance the event reports, and `pending_expires_at` releases one whose event never arrives. The two `CHECK` constraints hold the source sign convention: a reserved credit is never negative and a reserved debit is never positive.
 
 #### Outcome infrastructure
 
@@ -173,7 +181,9 @@ The three columns with no source field close the gap those hops open. `app/cbl/C
 | `outbox_event` | Additive; source ancestor is `CORPT00C:L517-L519` | Every row written from migration V19 forward carries the 11-digit account key, and `outbox/OutboxWriter` refuses any other form before a row is built. `ck_outbox_event_aggregate_id` still admits the 16-character transaction key that migration V4 permitted, because rows written before V19 carry it and the relay writes a column on every row it claims. Migration V19 records that division. Migration V8 adds `dead_letter_state` and `dead_letter_published_at` |
 | `processed_event` | Additive | Guards `AccountStateChanged` application |
 
-`dead_letter_state` and `dead_letter_published_at` are the durable half of giving up on a row. A row that spends its attempts reaches `ABANDONED`, and the claim query never returns an abandoned row. The pass that gave up on it would otherwise be the last pass that ever saw it. A diagnostic dispatched at that moment and not awaited makes an unreachable broker indistinguishable from a healthy one. Abandoning the row writes `REQUIRED` in the same transaction, a partial index on `last_attempt_at` holds only the owed rows, and `PUBLISHED` plus a timestamp is written only once the broker has acknowledged the diagnostic. Three `CHECK` constraints pair the two columns: the state is one of the three names, a timestamp appears only with `PUBLISHED`, and `PUBLISHED` never appears without one.
+`dead_letter_state` and `dead_letter_published_at` are the durable half of giving up on a row. A row that spends its attempts reaches `ABANDONED`, and the claim query never returns an abandoned row. The pass that gave up on it would otherwise be the last pass that ever saw it. A diagnostic dispatched at that moment and not awaited makes an unreachable broker indistinguishable from a healthy one.
+
+Abandoning the row writes `REQUIRED` in the same transaction, and a partial index on `last_attempt_at` holds only the owed rows. `PUBLISHED` plus a timestamp is written only once the broker has acknowledged the diagnostic. Three `CHECK` constraints pair the two columns: the state is one of the three names, a timestamp appears only with `PUBLISHED`, and `PUBLISHED` never appears without one.
 
 A diagnostic for a row whose `aggregate_id` holds the 16-character transaction key travels under `00000000000` rather than that key, because `schemas/dead-letter-v1.json` accepts eleven digits. The row is still named exactly by `failedEventId`, and `outbox_event.aggregate_id` still holds the transaction identifier for anyone reading the row. No producer writes that key form from migration V19 forward, so this substitution applies only to a row stored before it.
 
@@ -292,7 +302,11 @@ The target stores a masked card value rather than the full source card field.
 | `app/cpy/CVTRA03Y.cpy:L5-L6` | Type and 50-character description | `transaction_type`; 7 seeded rows |
 | `app/cpy/CVTRA04Y.cpy:L6-L8` | Type, category, and description | `transaction_category`; 18 seeded rows |
 
-**What `transaction_category_balance.balance` does with a sum wider than its source field**. `TRAN-CAT-BAL PIC S9(09)V99` at `app/cpy/CVTRA01Y.cpy:L9` holds nine integer digits. Neither `ADD` that stores into it, `app/cbl/CBTRN02C.cbl:L508` and `:L527`, carries an `ON SIZE ERROR` phrase, so the source keeps the low-order nine digits and the sign and continues. Two authorized amounts inside `DALYTRAN-AMT PIC S9(09)V99` can sum past that width, so this is reachable rather than theoretical. The column is `NUMERIC(11,2)`, which is wider than the field: it answered SQLSTATE 22003 and rolled the posting back until the store was reproduced, which sent an approved authorization to the dead-letter topic with no balance moved. `repository/TransactionCategoryBalanceRepository` now performs the store through `MOD` by ten raised to the field's integer digits, so the stored value is the value the COBOL field would hold. `V7__category_balance_ceiling.sql` records that ceiling rather than raising it, because widening the column would hold figures the source field cannot. The same treatment applies to the three `PIC S9(10)V99` account figures through `CobolDecimal.truncateToPictureField`. [Business-rule flag 66](business-rule-flags.md) carries the finding and the reasoning.
+**What `transaction_category_balance.balance` does with a sum wider than its source field**. `TRAN-CAT-BAL PIC S9(09)V99` at `app/cpy/CVTRA01Y.cpy:L9` holds nine integer digits. Neither `ADD` that stores into it, `app/cbl/CBTRN02C.cbl:L508` and `:L527`, carries an `ON SIZE ERROR` phrase, so the source keeps the low-order nine digits and the sign and continues. Two authorized amounts inside `DALYTRAN-AMT PIC S9(09)V99` can sum past that width, so this is reachable rather than theoretical.
+
+The column is `NUMERIC(11,2)`, which is wider than the field. It answered SQLSTATE 22003 and rolled the posting back until the store was reproduced, which sent an approved authorization to the dead-letter topic with no balance moved. `repository/TransactionCategoryBalanceRepository` now performs the store through `MOD` by ten raised to the field's integer digits, so the stored value is the value the COBOL field would hold.
+
+`V7__category_balance_ceiling.sql` records that ceiling rather than raising it, because widening the column would hold figures the source field cannot. The same treatment applies to the three `PIC S9(10)V99` account figures through `CobolDecimal.truncateToPictureField`. [Business-rule flag 66](business-rule-flags.md) carries the finding and the reasoning.
 
 #### `rejected_transaction`
 
@@ -359,14 +373,16 @@ erDiagram
 
 **Legend**
 
-- Entity boxes are tables in `carddemo_fraud.fraud_service`. - No Common Business Oriented Language (COBOL)
-program defines fraud scoring, verdicts, or velocity windows. - Transaction and account widths come from
-`CVTRA05Y.cpy` and `CVACT03Y.cpy`, and so does the two-digit amount scale. `velocity_window.total_amount`
-carries its own width, because it accumulates. - `OUTBOX_EVENT` and `PROCESSED_EVENT` provide additive
-messaging guarantees. - The two `dead_letter_` columns are the durable half of giving up on a row, added by
-`V5__outbox_dead_letter_state.sql`. They matter more here than in any sibling service, for the reason the
-rest of the legend gives. No COBOL program computes a risk score, so a lost assessment has no batch job to
-re-run and no reject dataset holding what was missed.
+- Entity boxes are tables in `carddemo_fraud.fraud_service`.
+- No Common Business Oriented Language (COBOL) program defines fraud scoring, verdicts, or velocity
+  windows.
+- Transaction and account widths come from `CVTRA05Y.cpy` and `CVACT03Y.cpy`, and so does the two-digit
+  amount scale. `velocity_window.total_amount` carries its own width, because it accumulates.
+- `OUTBOX_EVENT` and `PROCESSED_EVENT` provide additive messaging guarantees.
+- The two `dead_letter_` columns are the durable half of giving up on a row, added by
+  `V5__outbox_dead_letter_state.sql`. They matter more here than in any sibling service, for the reason
+  the rest of the legend gives. No COBOL program computes a risk score, so a lost assessment has no batch
+  job to re-run and no reject dataset holding what was missed.
 
 | Table | Columns | Provenance |
 | --- | --- | --- |
@@ -375,13 +391,19 @@ re-run and no reject dataset holding what was missed.
 | `outbox_event` | Event envelope, payload, relay state, dead-letter obligation | Additive. `V5__outbox_dead_letter_state.sql` adds `dead_letter_state` and `dead_letter_published_at` |
 | `processed_event` | Event identifier, processing time, source topic | Additive |
 
-`dead_letter_state` and `dead_letter_published_at` carry the same contract here as on the authorization outbox, and they were added for the same reason. `ABANDONED` records that the relay stopped attempting a row, not that anyone was told. The claim query returns `PENDING` rows only, so the pass that abandoned the row was the last pass to look at it. Abandoning the row writes `REQUIRED` in the same transaction, so neither fact can commit without the other. A partial index on `last_attempt_at` holds only the owed rows, and is empty while the relay is healthy. `PUBLISHED` plus a timestamp is written only once the broker has acknowledged the diagnostic. Three `CHECK` constraints pair the two columns, and a fourth condition inside the third restricts a non-default state to an `ABANDONED` row.
+`dead_letter_state` and `dead_letter_published_at` carry the same contract here as on the authorization outbox, and they were added for the same reason. `ABANDONED` records that the relay stopped attempting a row, not that anyone was told. The claim query returns `PENDING` rows only, so the pass that abandoned the row was the last pass to look at it. Abandoning the row writes `REQUIRED` in the same transaction, so neither fact can commit without the other.
+
+A partial index on `last_attempt_at` holds only the owed rows, and is empty while the relay is healthy. `PUBLISHED` plus a timestamp is written only once the broker has acknowledged the diagnostic. Three `CHECK` constraints pair the two columns, and a fourth condition inside the third restricts a non-default state to an `ABANDONED` row.
 
 An abandoned row is never marked published. That distinction is the whole reason the state is a separate column rather than a reuse of `published`. A reader has to be able to tell an event that reached its consumers from one this service gave up on and merely reported.
 
-A row reaches `ABANDONED` by either of two routes, and both are recorded the same way. One is a row whose ten attempts ran out. The other is a row whose failure is permanent: a payload the schema document refuses, or one no record type reads. `OutboxEventEntity.abandon` closes it outright rather than after ten identical refusals, because the tenth refusal would reach a conclusion the first already reached. That method writes the terminal state and the `REQUIRED` obligation in one write, before any diagnostic is attempted, so a broker that refuses the diagnostic leaves the obligation standing and a later pass offers it again.
+A row reaches `ABANDONED` by either of two routes, and both are recorded the same way. One is a row whose ten attempts ran out. The other is a row whose failure is permanent: a payload the schema document refuses, or one no record type reads.
 
-Three of the four growing tables of this schema are swept on one hourly schedule, in bounded ordered batches of at most five hundred rows, each repeated until it comes back short or a thirty-second per-table ceiling stops it. `velocity_window` is the table that needed this: nothing reads a bucket once its span elapses, so every authorization otherwise left a row behind for ever. Its horizon comes from `FRAUD_VELOCITY_RETENTION_DAYS` and must exceed `carddemo.fraud.risk.velocity-window-minutes`, because a shorter horizon would delete the bucket a live authorization is counting into, and the service refuses to start when it does not. `fraud_assessment` is swept on the same schedule under `FRAUD_ASSESSMENT_RETENTION_DAYS`, the horizon its own `COMMENT ON TABLE` declares. `processed_event` is the fourth, and it is not swept: a duplicate-delivery claim is permanent, so no horizon can expire the row that makes a redelivery harmless.
+`OutboxEventEntity.abandon` closes it outright rather than after ten identical refusals, because the tenth refusal would reach a conclusion the first already reached. That method writes the terminal state and the `REQUIRED` obligation in one write, before any diagnostic is attempted. A broker that refuses the diagnostic leaves the obligation standing, and a later pass offers it again.
+
+Three of the four growing tables of this schema are swept on one hourly schedule, in bounded ordered batches of at most five hundred rows. Each batch repeats until it comes back short or a thirty-second per-table ceiling stops it. `velocity_window` is the table that needed this: nothing reads a bucket once its span elapses, so every authorization otherwise left a row behind for ever. Its horizon comes from `FRAUD_VELOCITY_RETENTION_DAYS` and must exceed `carddemo.fraud.risk.velocity-window-minutes`. A shorter horizon would delete the bucket a live authorization is counting into, and the service refuses to start when it does not.
+
+`fraud_assessment` is swept on the same schedule under `FRAUD_ASSESSMENT_RETENTION_DAYS`, the horizon its own `COMMENT ON TABLE` declares. `processed_event` is the fourth, and it is not swept: a duplicate-delivery claim is permanent, so no horizon can expire the row that makes a redelivery harmless.
 
 ### Notification database
 
@@ -437,7 +459,7 @@ erDiagram
 **Legend**
 
 - Entity boxes are tables in `carddemo_notification.notification_service`.
-- `STATEMENT_TRANSACTION` derives from the re-keyed statement layout, replacing the source Primary Account Number (PAN) key with a keyed card token. The token is a stable pseudonym: it links every row of one card without holding the number, and it stays sensitive, because a holder of the key can recompute it for any candidate number.
+- `STATEMENT_TRANSACTION` derives from the re-keyed statement layout, replacing the source Primary Account Number (PAN) key with a keyed card token. The token is a stable pseudonym, linking every row of one card without holding the number. It stays sensitive, because a holder of the key can recompute it for any candidate number.
 - `CARDHOLDER_CONTEXT` is private, is seeded with fifty rows from `app/data/ASCII/custdata.txt` by `V2__seed.sql`, and is refreshed by `CustomerContextChanged`.
 - Relationship lines are domain associations rather than declared foreign keys.
 
@@ -481,7 +503,7 @@ The source composite key is 32 bytes. `app/jcl/CREASTMT.JCL:L30` defines `KEYS(3
 
 **Figure 5 — Account, customer, disclosure, validation, and state-change infrastructure**
 
-Figure 5 shows the nine tables this schema holds after every migration. It intentionally shows no relationship between `ACCOUNT` and `CUSTOMER`: the account copybook contains no customer identifier, so the pair is held by `ACCOUNT_CUSTOMER_LINK` rather than by a column on either table. The figure carries no `CARD_XREF`, because `V7__account_customer_link.sql` drops the replica `V4__card_cross_reference_replica.sql` had created.
+Figure 5 shows the nine tables this schema holds after every migration. It intentionally shows no relationship between `ACCOUNT` and `CUSTOMER`. The account copybook contains no customer identifier, so the pair is held by `ACCOUNT_CUSTOMER_LINK` rather than by a column on either table. The figure carries no `CARD_XREF`, because `V7__account_customer_link.sql` drops the replica `V4__card_cross_reference_replica.sql` had created.
 
 ```mermaid
 erDiagram
@@ -556,11 +578,11 @@ erDiagram
 
 - Entity boxes are tables in `carddemo_account.account_service`.
 - No direct account-to-customer relationship exists because `CVACT01Y.cpy` carries no customer identifier.
-- `ACCOUNT_CUSTOMER_LINK` supplies the missing pair inside this schema, and the two relationships drawn through it are lookup paths rather than declared foreign keys. It holds no card number: the source cross-reference is keyed on `XREF-CARD-NUM`, and no query in this service reads a card, so replicating the card number here would store a Primary Account Number no reader needs. The authorization and card services keep card-keyed replicas because both answer questions asked about a card.
+- `ACCOUNT_CUSTOMER_LINK` supplies the missing pair inside this schema, and the two relationships drawn through it are lookup paths rather than declared foreign keys. It holds no card number, because no query in this service reads a card. The source cross-reference is keyed on `XREF-CARD-NUM`, so replicating that key here would store a Primary Account Number no reader needs. The authorization and card services keep card-keyed replicas because both answer questions asked about a card.
 - `OUTBOX_EVENT` publishes account state changes; `PROCESSED_EVENT` guards duplicate delivery of the posted-transaction events this service consumes.
 - `ACCOUNT` has two writers, and they write different columns for different reasons. A request writes the submitted values after the field-level comparison passes. `messaging/TransactionPostedConsumer` writes only `current_balance` and one of the two accumulators, adding the amount a `TransactionPosted` event carries. Both queue one outbox row, so both reach the authorization credit snapshot by the same path.
 - `dead_letter_state`, added by `V5__outbox_dead_letter_state.sql`, is the durable record of whether an abandoned row still owes a dead-letter diagnostic. It holds `NOT_REQUIRED`, `REQUIRED`, or `PUBLISHED`, and only a broker acknowledgement moves it to the last value.
-- `dead_letter_published_at`, added by the same migration, is when that acknowledgement arrived. `ck_outbox_event_dead_letter_published_at` holds the two together: the timestamp is present exactly when the state reads `PUBLISHED`, and absent otherwise, so a row cannot claim a published diagnostic it cannot date or carry a date for a diagnostic it never published.
+- `dead_letter_published_at`, added by the same migration, is when that acknowledgement arrived. `ck_outbox_event_dead_letter_published_at` holds the two together: the timestamp is present exactly when the state reads `PUBLISHED`, and absent otherwise. A row therefore cannot claim a published diagnostic it cannot date, or carry a date for a diagnostic it never published.
 - `ix_outbox_event_dead_letter_required` indexes `last_attempt_at` over the rows whose state reads `REQUIRED`, which is the query the sweep issues.
 
 #### `account`
@@ -596,7 +618,7 @@ Two of the three source cross-reference fields map here, and the third is delibe
 | `XREF-CARD-NUM` | `PIC X(16)`, `app/cpy/CVACT03Y.cpy:L5` | — | — | Dropped. It was the source primary key and no query here reads a card |
 | No source field | Additive | `source_event_id`, `source_occurred_at`, `observed_at` | `UUID`, `TIMESTAMP(6) WITH TIME ZONE` | Freshness metadata, null on a row this schema's migration seeded |
 
-`app/jcl/XREFFILE.jcl:L72-L77` defines a non-unique alternate index on the account, so one account reaches every card it holds. Every card of one account names one customer, so collapsing those records onto the account loses no relationship and removes the ordering the previous card-keyed query needed. `V7__account_customer_link.sql` creates and seeds this table and drops the `card_xref` replica `V4__card_cross_reference_replica.sql` had created. That replica is the reason this section exists and the reason no `CARD_XREF` appears in Figure 5: the account service reads no card, so a card-keyed copy stored a Primary Account Number no query here needed.
+`app/jcl/XREFFILE.jcl:L72-L77` defines a non-unique alternate index on the account, so one account reaches every card it holds. Every card of one account names one customer, so collapsing those records onto the account loses no relationship and removes the ordering the previous card-keyed query needed. `V7__account_customer_link.sql` creates and seeds this table and drops the `card_xref` replica `V4__card_cross_reference_replica.sql` had created. That replica is the reason this section exists and the reason no `CARD_XREF` appears in Figure 5. The account service reads no card, so a card-keyed copy stored a Primary Account Number no query here needed.
 
 **How the update path uses it.** `AccountUpdateService` reads this row by account identifier through `AccountCustomerLinkRepository.findByAccountId`, under a pessimistic read lock held for the update transaction. It accepts the submitted account and customer only when the row names the same pair the caller fetched, and refuses the update otherwise. The account is the primary key here, so one read returns one row and the ordering the card-keyed replica needed is gone. The source resolves a customer the same way, reading the cross-reference record at `app/cbl/COACTVWC.cbl:L739` before keying the customer file at `:L708`.
 
@@ -645,7 +667,9 @@ The three validation lists seed one table each. The source literal count and the
 | `CSLKPCDY.cpy` state codes | `us_state_code` | 56 | 56 |
 | `CSLKPCDY.cpy` state-ZIP combinations | `us_state_zip_prefix` | 240 | 240 |
 
-**The area-code figures differ, and the difference is not a discrepancy.** The copybook declares the same 490 codes twice, under three condition names on one three-character field. All 490 appear under `VALID-PHONE-AREA-CODE` at `app/cpy/CSLKPCDY.cpy:L30`. The same codes then appear split: 410 under `VALID-GENERAL-PURP-CODE` at `:L521`, and the remaining 80 under `VALID-EASY-RECOG-AREA-CODE` at `:L931`. The two subsets are disjoint and their union is exactly the first list. `us_phone_area_code` therefore holds 490 rows, each carrying the band it belongs to: 410 `GENERAL_PURPOSE` and 80 `EASILY_RECOGNISABLE`.
+**The area-code figures differ, and the difference is not a discrepancy.** The copybook declares the same 490 codes twice, under three condition names on one three-character field. All 490 appear under `VALID-PHONE-AREA-CODE` at `app/cpy/CSLKPCDY.cpy:L30`.
+
+The same codes then appear split: 410 under `VALID-GENERAL-PURP-CODE` at `:L521`, and the remaining 80 under `VALID-EASY-RECOG-AREA-CODE` at `:L931`. The two subsets are disjoint and their union is exactly the first list. `us_phone_area_code` therefore holds 490 rows, each carrying the band it belongs to: 410 `GENERAL_PURPOSE` and 80 `EASILY_RECOGNISABLE`.
 
 The band column is not decoration. The source edit at `app/cbl/COACTUPC.cbl:L2297-L2298` tests `VALID-GENERAL-PURP-CODE` alone, so 80 declared-valid codes are refused by the only path that validates one, and the validator reproduces that. [Business-rule flag 39](business-rule-flags.md) records the consequence for the shipped customer fixture.
 
@@ -724,7 +748,7 @@ erDiagram
 - `CARD_XREF` is a private replica, not a shared table.
 - **The diagram draws no relationship, because the schema declares no foreign key.** `domain/CardCrossReferenceReconciler` is the one path that reads both: on every card update that commits it reads the replica row by card number and compares its `account_id` against the card row's. Each table is reached by its own primary key, so there is no join to draw.
 - `OUTBOX_EVENT` publishes `CardUpdated`; `PROCESSED_EVENT` is reserved consumer infrastructure, unused because this service registers no listener.
-- `card_token` is derived, not stored from a source field. `V2__seed.sql` loads fifty literals computed under the build-scope key in `pom.xml`, and `CardTokenReconciler` re-derives every row under the deployment's own `CARD_TOKEN_SECRET` when the service starts, so no stored token belongs to a key this repository publishes.
+- `card_token` is derived, not stored from a source field. `V2__seed.sql` loads fifty literals computed under the build-scope key in `pom.xml`. `CardTokenReconciler` re-derives every row under the deployment's own `CARD_TOKEN_SECRET` when the service starts, so no stored token belongs to a key this repository publishes.
 - `card_token_version` and `card_token_provenance`, added by `V10__card_token_version_and_rotation.sql`, say which card-token key a stored token belongs to and whether this deployment derived it. A seeded literal is a bootstrap and is corrected without being asked. A row this deployment derived is an identity three other stores hold, and moving it is a rotation an operator states.
 - `CARD_TOKEN_ROTATION` and `CARD_TOKEN_ROTATION_MAPPING` are what a rotation leaves behind. One audit row per run, and one row per re-keyed card carrying the token it held beside the token it holds now. **Neither draws a relationship line, on the same terms as the two tables above: the schema declares no foreign key.** One code path writes both, opening the audit row before the first mapping row of the run.
 
@@ -801,7 +825,9 @@ The [traceability matrix](traceability-matrix.md) records each omission above, s
 
 The figures above name tables and columns, which is what a reader needs to follow the data. What an operator needs is the rest of the schema: the indexes a query plan can use and the named constraints that refuse a bad row. Both are enumerated here in full, one table per service, so no index and no named constraint is left to be discovered by reading a migration.
 
-**How these tables were produced, so a reader can reproduce them**. Every migration under `services/*/src/main/resources/db/migration/` was applied to an empty `postgres:18.4` database in version order, one schema per service. The tables below were then read out of `pg_indexes` and `pg_constraint`. That is the whole method, and it is why the appendix reflects `ALTER`, `DROP` and `RENAME`. An index on a table a later migration drops is absent here, and a constraint a later migration redefines appears once, in its final form. The totals are **42 indexes and 146 named constraints**.
+**How these tables were produced, so a reader can reproduce them**. Every migration under `services/*/src/main/resources/db/migration/` was applied to an empty `postgres:18.4` database in version order, one schema per service. The tables below were then read out of `pg_indexes` and `pg_constraint`.
+
+That is the whole method, and it is why the appendix reflects `ALTER`, `DROP` and `RENAME`. An index on a table a later migration drops is absent here, and a constraint a later migration redefines appears once, in its final form. The totals are **42 indexes and 146 named constraints**.
 
 Three consequences of reading the catalog rather than the statements are worth naming, because each is a place a hand-kept appendix drifts. The migrations carry 56 `CREATE INDEX` statements naming 55 indexes, and the database holds 41. Fifteen of those names are gone and one arrived under another name.
 
@@ -809,7 +835,7 @@ Three consequences of reading the catalog rather than the statements are worth n
 
 Seven primary keys are declared inline without a `CONSTRAINT` clause, so PostgreSQL generates the name. They are listed under their own schema below rather than left out, because an operator reading a constraint violation needs to recognise a generated name too. Three services replaced the generated `processed_event_pkey` with the named `pk_processed_event` on `(event_id, consumed_topic)`: `V6` in the authorization service, and the matching migrations in the ledger and notification services. That is why the generated name appears in a migration and not in this appendix.
 
-The Migration column names the migration that put the object into its final form, which for a redefined constraint is the migration that redefined it rather than the one that first declared it.
+The Migration column names the migration that put the object into its final form. For a redefined constraint that is the migration that redefined it, rather than the one that first declared it.
 
 ### Authorization schema — 9 indexes, 37 named constraints
 

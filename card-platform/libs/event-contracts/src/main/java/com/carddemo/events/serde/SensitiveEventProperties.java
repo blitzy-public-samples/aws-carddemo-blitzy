@@ -193,7 +193,8 @@ public final class SensitiveEventProperties {
      * and its document constrains the value by pattern.
      *
      * <p>The distinction is not stylistic. A legitimate CardDemo transaction identifier holds
-     * sixteen digits, {@code 0000000000683580} for one, and so does a Primary Account Number (PAN).
+     * sixteen digits, as every record of {@code app/data/ASCII/dailytran.txt} does, and so does a
+     * Primary Account Number (PAN).
      * Screening every property for a long digit run would refuse valid traffic, so the digit screen
      * runs where a caller is free and the pattern is not.
      */

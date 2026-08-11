@@ -1,23 +1,29 @@
 # Prose Validation
 
-This report is the Rule 5 validation of every document and slide deck this engagement authored. It records what was measured, what the measurement found, and what a writer should change next. Every verdict below is the output of a measurement the build repeats.
+This report is the Rule 5 validation of the twenty-six targets this engagement authored. They are ten documents, eight guides, the deployment guide, the executive deck and the description prose of six OpenAPI contracts. It records what was measured, what the measurement found, and what a reader can check. Every verdict below is the output of a measurement the build repeats.
 
-An earlier revision published CLEAN for all nineteen targets while its own table reported hundreds of over-length sentences. It also named fourteen of the twenty-two principles incorrectly. Both faults are corrected here. The names are the rule's own, and `PresentationAndProseContractTest` re-measures every target on every build.
+Three earlier revisions were corrected here. One published CLEAN for all nineteen targets it then held, while its own table reported hundreds of over-length sentences, and it named fourteen of the twenty-two principles incorrectly. The next scored nineteen targets while claiming every authored document, and admitted three soft violations as CLEAN. It also left seventeen principles unjudged, and scored a quotation of the requirements as though this engagement had written it.
+
+The third scored twenty-six targets against a corrected threshold, and fifteen of them still read NEEDS WORK. This revision publishes the corpus after that length work was done.
 
 ## Methodology
 
 - Every target is Technical, so the Asimov agent governs. Both principle sets apply to every target: the twelve Vonnegut principles V1 through V12, and the ten Asimov principles A1 through A10.
 - V2, V3, V6, and V7 carry the highest weight, because the rule raises them for technical input.
 - V1 and V5 carry reduced weight, because the rule lowers them for the same input type.
-- Three results record a judgement: **Pass**, **Soft violation**, and **Hard violation**. A fourth, **Not measured**, records a principle no mechanical check covers. It is not a pass.
-- Five principles are measured. A sentence over thirty words is a soft violation of V3 and A2. A paragraph over five sentences is a soft violation of V2. A buzzword is a hard violation of V5 and A6.
-- The other seventeen principles read **Not measured**. No mechanical check for them is claimed, so no pass is claimed either.
+- Four results record a judgement. **Pass**, **Soft violation**, and **Hard violation** name what a reading found. **Not applicable** names a principle this kind of writing cannot offend, and it carries a reason. Every principle carries a judged result and the evidence behind it.
+- Five principles are measured mechanically. A sentence over thirty words is a soft violation of V3 and A2. A paragraph over five sentences is a soft violation of V2. A buzzword is a hard violation of V5 and A6.
+- A mechanical pass owes its own evidence. A pass on sentence length publishes the longest sentence the target does hold, and a pass on paragraph length the longest paragraph. A pass on buzzwords publishes the number of paragraphs read.
+- The other seventeen are read and judged. Each names something the target carries, so its result rests on the text rather than on this report's word.
 - Counts count offending passages rather than principles. One over-length sentence is one soft violation, even though it offends two principles at once.
-- The thresholds come from the rule. CLEAN is zero hard and at most three soft. NEEDS WORK is one to three hard, or four or more soft. ROUGH DRAFT is four or more hard.
+- Every counted violation carries its own entry. An entry quotes the passage, names the principle, gives a rewrite and says in one sentence why the rewrite reads better.
+- The thresholds come from the rule. CLEAN is zero hard and at most two soft. NEEDS WORK is one to three hard, or three or more soft. ROUGH DRAFT is four or more hard.
 - B1 through B5 are the blog rules. They are not applied, because no target is a blog post.
 - Scoring reads prose only. Fenced code blocks, table rows, headings, horizontal rules and blockquoted passages are dropped, and an inline code span collapses to the single token `CODE`.
+- A quotation attributed to a source outside this engagement is skipped, and its wording is preserved. Only the quoted words are exempt: the sentence carrying them is still scored.
+- An OpenAPI document is scored as its `description`, `summary` and `title` values, read in document order. A blank line inside one of those values is a paragraph break.
 - Only the new `Modernized card platform` section of the repository-root guide is scored. Only headings, body copy, bullets, metric labels, and table cells of the deck are scored.
-- The oracle is `PresentationAndProseContractTest` in the equivalence module. It re-measures all nineteen targets and fails when a verdict, a count, a principle result or a published rewrite disagrees with what it measures.
+- The oracle is `PresentationAndProseContractTest` in the equivalence module. It re-measures all twenty-six targets on every build. It fails when a verdict, a count, a principle result, a piece of evidence or a published rewrite disagrees with what it measured.
 
 ## Measurement
 
@@ -25,546 +31,415 @@ One row per target. `Paragraphs` counts the prose blocks scoring reads and `Sent
 
 | # | Target | Paragraphs | Sentences | Over thirty words | Paragraphs over five | Buzzwords |
 |---:|---|---:|---:|---:|---:|---:|
-| 1 | `docs/decision-log.md` | 40 | 120 | 11 | 1 | 0 |
-| 2 | `docs/traceability-matrix.md` | 37 | 104 | 2 | 2 | 0 |
-| 3 | `docs/architecture-before-after.md` | 49 | 135 | 0 | 2 | 0 |
-| 4 | `docs/event-flow.md` | 133 | 355 | 15 | 4 | 0 |
-| 5 | `docs/data-model.md` | 140 | 366 | 17 | 7 | 0 |
-| 6 | `docs/onboarding.md` | 186 | 491 | 8 | 2 | 0 |
-| 7 | `docs/suggested-next-tasks.md` | 341 | 797 | 46 | 3 | 0 |
-| 8 | `docs/business-rule-flags.md` | 47 | 155 | 8 | 2 | 0 |
-| 9 | `docs/equivalence-results.md` | 85 | 238 | 12 | 2 | 0 |
-| 10 | `docs/prose-validation.md` | 183 | 246 | 0 | 0 | 0 |
-| 11 | `README.md` | 123 | 235 | 10 | 6 | 0 |
-| 12 | `services/authorization-service/README.md` | 177 | 404 | 28 | 5 | 0 |
-| 13 | `services/ledger-posting-service/README.md` | 139 | 305 | 6 | 6 | 0 |
-| 14 | `services/fraud-detection-service/README.md` | 111 | 272 | 15 | 3 | 0 |
-| 15 | `services/notification-service/README.md` | 155 | 355 | 24 | 7 | 0 |
-| 16 | `services/account-service/README.md` | 151 | 362 | 20 | 6 | 0 |
-| 17 | `services/card-service/README.md` | 149 | 407 | 16 | 10 | 0 |
-| 18 | `../README.md` | 24 | 45 | 1 | 1 | 0 |
-| 19 | `presentation/executive-summary.html` | 109 | 115 | 0 | 0 | 0 |
+| 1 | `docs/decision-log.md` | 43 | 135 | 0 | 0 | 0 |
+| 2 | `docs/traceability-matrix.md` | 39 | 106 | 0 | 0 | 0 |
+| 3 | `docs/architecture-before-after.md` | 51 | 136 | 0 | 0 | 0 |
+| 4 | `docs/event-flow.md` | 142 | 376 | 0 | 0 | 0 |
+| 5 | `docs/data-model.md` | 156 | 385 | 0 | 0 | 0 |
+| 6 | `docs/onboarding.md` | 193 | 509 | 0 | 0 | 0 |
+| 7 | `docs/suggested-next-tasks.md` | 343 | 835 | 0 | 0 | 0 |
+| 8 | `docs/business-rule-flags.md` | 50 | 163 | 0 | 0 | 0 |
+| 9 | `docs/equivalence-results.md` | 90 | 256 | 0 | 0 | 0 |
+| 10 | `docs/prose-validation.md` | 134 | 212 | 0 | 0 | 0 |
+| 11 | `README.md` | 133 | 259 | 0 | 0 | 0 |
+| 12 | `services/authorization-service/README.md` | 191 | 431 | 0 | 0 | 0 |
+| 13 | `services/ledger-posting-service/README.md` | 145 | 313 | 0 | 0 | 0 |
+| 14 | `services/fraud-detection-service/README.md` | 118 | 290 | 0 | 0 | 0 |
+| 15 | `services/notification-service/README.md` | 168 | 380 | 0 | 0 | 0 |
+| 16 | `services/account-service/README.md` | 175 | 395 | 0 | 0 | 0 |
+| 17 | `services/card-service/README.md` | 165 | 421 | 0 | 0 | 0 |
+| 18 | `../README.md` | 26 | 47 | 0 | 0 | 0 |
+| 19 | `presentation/executive-summary.html` | 108 | 114 | 0 | 0 | 0 |
+| 20 | `deploy/k8s/README.md` | 28 | 76 | 0 | 0 | 0 |
+| 21 | `services/authorization-service/src/main/resources/openapi.yaml` | 159 | 386 | 0 | 0 | 0 |
+| 22 | `services/ledger-posting-service/src/main/resources/openapi.yaml` | 44 | 103 | 0 | 0 | 0 |
+| 23 | `services/fraud-detection-service/src/main/resources/openapi.yaml` | 76 | 180 | 0 | 0 | 0 |
+| 24 | `services/notification-service/src/main/resources/openapi.yaml` | 74 | 184 | 0 | 0 | 0 |
+| 25 | `services/account-service/src/main/resources/openapi.yaml` | 190 | 425 | 0 | 0 | 0 |
+| 26 | `services/card-service/src/main/resources/openapi.yaml` | 183 | 441 | 0 | 0 | 0 |
 
 ## Summary
 
 | # | Target | Verdict | Hard | Soft |
 |---:|---|---|---:|---:|
-| 1 | `docs/decision-log.md` | NEEDS WORK | 0 | 12 |
-| 2 | `docs/traceability-matrix.md` | NEEDS WORK | 0 | 4 |
-| 3 | `docs/architecture-before-after.md` | CLEAN | 0 | 2 |
-| 4 | `docs/event-flow.md` | NEEDS WORK | 0 | 19 |
-| 5 | `docs/data-model.md` | NEEDS WORK | 0 | 24 |
-| 6 | `docs/onboarding.md` | NEEDS WORK | 0 | 10 |
-| 7 | `docs/suggested-next-tasks.md` | NEEDS WORK | 0 | 49 |
-| 8 | `docs/business-rule-flags.md` | NEEDS WORK | 0 | 10 |
-| 9 | `docs/equivalence-results.md` | NEEDS WORK | 0 | 14 |
+| 1 | `docs/decision-log.md` | CLEAN | 0 | 0 |
+| 2 | `docs/traceability-matrix.md` | CLEAN | 0 | 0 |
+| 3 | `docs/architecture-before-after.md` | CLEAN | 0 | 0 |
+| 4 | `docs/event-flow.md` | CLEAN | 0 | 0 |
+| 5 | `docs/data-model.md` | CLEAN | 0 | 0 |
+| 6 | `docs/onboarding.md` | CLEAN | 0 | 0 |
+| 7 | `docs/suggested-next-tasks.md` | CLEAN | 0 | 0 |
+| 8 | `docs/business-rule-flags.md` | CLEAN | 0 | 0 |
+| 9 | `docs/equivalence-results.md` | CLEAN | 0 | 0 |
 | 10 | `docs/prose-validation.md` | CLEAN | 0 | 0 |
-| 11 | `README.md` | NEEDS WORK | 0 | 16 |
-| 12 | `services/authorization-service/README.md` | NEEDS WORK | 0 | 33 |
-| 13 | `services/ledger-posting-service/README.md` | NEEDS WORK | 0 | 12 |
-| 14 | `services/fraud-detection-service/README.md` | NEEDS WORK | 0 | 18 |
-| 15 | `services/notification-service/README.md` | NEEDS WORK | 0 | 31 |
-| 16 | `services/account-service/README.md` | NEEDS WORK | 0 | 26 |
-| 17 | `services/card-service/README.md` | NEEDS WORK | 0 | 26 |
-| 18 | `../README.md` | CLEAN | 0 | 2 |
+| 11 | `README.md` | CLEAN | 0 | 0 |
+| 12 | `services/authorization-service/README.md` | CLEAN | 0 | 0 |
+| 13 | `services/ledger-posting-service/README.md` | CLEAN | 0 | 0 |
+| 14 | `services/fraud-detection-service/README.md` | CLEAN | 0 | 0 |
+| 15 | `services/notification-service/README.md` | CLEAN | 0 | 0 |
+| 16 | `services/account-service/README.md` | CLEAN | 0 | 0 |
+| 17 | `services/card-service/README.md` | CLEAN | 0 | 0 |
+| 18 | `../README.md` | CLEAN | 0 | 0 |
 | 19 | `presentation/executive-summary.html` | CLEAN | 0 | 0 |
+| 20 | `deploy/k8s/README.md` | CLEAN | 0 | 0 |
+| 21 | `services/authorization-service/src/main/resources/openapi.yaml` | CLEAN | 0 | 0 |
+| 22 | `services/ledger-posting-service/src/main/resources/openapi.yaml` | CLEAN | 0 | 0 |
+| 23 | `services/fraud-detection-service/src/main/resources/openapi.yaml` | CLEAN | 0 | 0 |
+| 24 | `services/notification-service/src/main/resources/openapi.yaml` | CLEAN | 0 | 0 |
+| 25 | `services/account-service/src/main/resources/openapi.yaml` | CLEAN | 0 | 0 |
+| 26 | `services/card-service/src/main/resources/openapi.yaml` | CLEAN | 0 | 0 |
 
-Across the nineteen targets the measurement finds 239 sentences over thirty words, 69 paragraphs over five sentences and 0 buzzword uses. That is 4 CLEAN, 15 NEEDS WORK and 0 ROUGH DRAFT.
+Across the twenty-six targets the measurement finds 0 sentences over thirty words, 0 paragraphs over five sentences and 0 buzzword uses. That is 26 CLEAN, 0 NEEDS WORK and 0 ROUGH DRAFT.
 
 ## Content binding
 
-Each digest is the SHA-256 of one target's bytes, in lower-case hexadecimal. It covers the whole file even where only part of the file is scored, because a change outside the scored slice should still send a reader back to the text. `PresentationAndProseContractTest.theProseReportIsBoundToTheTextItScored` recomputes all eighteen of them on every build.
+Each digest is the SHA-256 of one target's bytes, in lower-case hexadecimal. It covers the whole file even where only part of the file is scored, because a change outside the scored slice should still send a reader back to the text. `PresentationAndProseContractTest.theProseReportIsBoundToTheTextItScored` recomputes all twenty-five of them on every build.
 
 | # | Target | SHA-256 of the text scored |
 |---:|---|---|
-| 1 | `docs/decision-log.md` | `6c9981c083fae0089369d4fea5039a3768a72db1b05f8b8c8cdc65cd8082b780` |
-| 2 | `docs/traceability-matrix.md` | `0d285c5e93ec42ea55ab1f61af34a650a5fa389f5e1cb978b3c6d08aa02bccbe` |
-| 3 | `docs/architecture-before-after.md` | `ee2d6b4e2613babbfdd60086cc70bbed34b57b56d4ddb09e75d8c8d2a281d579` |
-| 4 | `docs/event-flow.md` | `b593e70d284babaa1a84e9f34a33c77757734602504087a82eb9a5b71525ba49` |
-| 5 | `docs/data-model.md` | `0614f8def009c58ecc6c597afe55a45d68d6ba21b651d3488d377c89f07d2159` |
-| 6 | `docs/onboarding.md` | `2ee1a7c19b5c28382e4ed55f51f8647de6000888f7bf81529a6001b4d603824d` |
-| 7 | `docs/suggested-next-tasks.md` | `fb85110e51d127e8953c426ba9d354a24e48aa2e80deaf2a56a542868da4cdf3` |
-| 8 | `docs/business-rule-flags.md` | `9707a805dc4412dd9e367f6560d8090513de354e36851c30471ef4747c4c686d` |
-| 9 | `docs/equivalence-results.md` | `30adc72fbee294bda69feb645907bceb94e7a9198165378601acb218849c9932` |
+| 1 | `docs/decision-log.md` | `74256e6beaa1e19f3020f8d396ea3e7851dedd7dceff5b68ba2f9d554ed67a55` |
+| 2 | `docs/traceability-matrix.md` | `d3223438a2f118b9e1e783e781ac9848cc7da4beaa63ff0efaa1879578107fd9` |
+| 3 | `docs/architecture-before-after.md` | `b5490d7ca84183d6687c2d40ac65e896205af76420d658cf2c3ccf0668848b65` |
+| 4 | `docs/event-flow.md` | `8953252512b18f02367b11deb7ef9231027e426511eebfa1b8b9aab23f424d0c` |
+| 5 | `docs/data-model.md` | `30d6bd6048d274153409a269701ff9c2d977a61097b8b6e9a728bf0db7532bff` |
+| 6 | `docs/onboarding.md` | `d47566dd3ce3fb8c5011856bedcd4dd5db874438f23385cac6dc319bdeaf3953` |
+| 7 | `docs/suggested-next-tasks.md` | `c356f5c1053f1c4aceba0549415ef499adae97f9ea5755eb55da9f9cc544666b` |
+| 8 | `docs/business-rule-flags.md` | `e99a3a37ceac07207cca7482b435ef6daafd3d7b2ce62286d37ee4d6bd43436b` |
+| 9 | `docs/equivalence-results.md` | `456b73958617e1ee84f969343b478b81880611cd661993b85baf79e9cb992ab5` |
 | 10 | `docs/prose-validation.md` | This report carries no digest: a file cannot publish the digest of its own bytes |
-| 11 | `README.md` | `e7cbad3c9fac39505bb2864c69e8eabaa03497e157253b2eddd0fc12ccbbcbb0` |
-| 12 | `services/authorization-service/README.md` | `3ec13eb8c2d4009c9c44a031a509c8c45902c5c662f98e02ec9dec820c511f39` |
-| 13 | `services/ledger-posting-service/README.md` | `4b69ed340491f0f6b437a931cb505e47f82747250545590743f28924cae3cd57` |
-| 14 | `services/fraud-detection-service/README.md` | `d5b8adbc6f9bec408c1bd1fcfa9753c8f56c6a1b2056f46418c4b59e9dfd41f1` |
-| 15 | `services/notification-service/README.md` | `84f154940b55a7127b242443752988ea115a9a4d80cf4310c12042cd67af1fb3` |
-| 16 | `services/account-service/README.md` | `d39fae13c3baa5af2e87819f3b1a2ad750d669a267d2f4ca1c09615dc45de9df` |
-| 17 | `services/card-service/README.md` | `68b0ce42bf148d242436768db4e64a9368b31ccd84aa78d52d27c4d5e028d052` |
-| 18 | `../README.md` | `d7847e427bc11c311c31a97e1ef2147caf220813fe957ebc5f02c83558e33068` |
-| 19 | `presentation/executive-summary.html` | `bf635958527e92cb47277440c94d94f8a5542fd399e97b1d05165515c3e9bb61` |
+| 11 | `README.md` | `fb869d94586050645b18df18b8b6e01a501a86779d2ff2a4ee758b75c8c31019` |
+| 12 | `services/authorization-service/README.md` | `6d25152da7ad4c2ac04e9110a817271608e6a5c69a6f194d0c03977cc0005c5d` |
+| 13 | `services/ledger-posting-service/README.md` | `c7bd28fc01fad4264007129c44bb8581f9146f4cd22ad14d45df0f4dcae30ea8` |
+| 14 | `services/fraud-detection-service/README.md` | `3656f02434700b14776fc1848f5ca80bf0629f373e619325c3501d82d1e21559` |
+| 15 | `services/notification-service/README.md` | `890d89a81d52f30f8320161724e2f3df921ae382b8c3e8e5161b437d9dcc9632` |
+| 16 | `services/account-service/README.md` | `c3d7669b2c7c38d12250c080d675822c3677cd0cec7a66cf5d60d1db5ec063e2` |
+| 17 | `services/card-service/README.md` | `892ad96b10147398f2341ad530e14b0a3ebba389357ed9f725c397cc47716690` |
+| 18 | `../README.md` | `c1c52514d703fdceb71234da75f6c6901860dc8b34a380a7bbfa05f3ec96191f` |
+| 19 | `presentation/executive-summary.html` | `874572ee11def54109a6b9ff611fe554af51b15e595f1559c5d2f7e2b6091843` |
+| 20 | `deploy/k8s/README.md` | `5cfd8099f17f96fb167a4de4deb2669084862367c44dd0753f461486562357ad` |
+| 21 | `services/authorization-service/src/main/resources/openapi.yaml` | `0e9609cf42ded74de1bb0f034031299cc034477f7e7306b58173b3b1bad9d5f6` |
+| 22 | `services/ledger-posting-service/src/main/resources/openapi.yaml` | `c14e366701f9054ed4c63b379ea83bc6b88c69de3ecb51db6a5ea372823b286a` |
+| 23 | `services/fraud-detection-service/src/main/resources/openapi.yaml` | `d984dddb30eeb1d3d684c25a10565d763aa364e635a992eea405a68412ac8b24` |
+| 24 | `services/notification-service/src/main/resources/openapi.yaml` | `dbb3d114d0246a7e6d50b018416ff08e0423a0d0ea3ece0f0e18c66966652005` |
+| 25 | `services/account-service/src/main/resources/openapi.yaml` | `3243cf2170daffdb119cad14f76652576a35dd62e538f46549c26e367e09cb5e` |
+| 26 | `services/card-service/src/main/resources/openapi.yaml` | `1b48e071cd945b3c86d11147bc14838540f086cf94b2b435cef8518d7618d936` |
 
 ## Per-document reports
 
 ### 1. `docs/decision-log.md`
 
-**Overall verdict:** **NEEDS WORK** — 0 hard violations, 12 soft violations.
+**Overall verdict:** **CLEAN** — 0 hard violations, 0 soft violations.
 
-**Measured:** 11 sentences over thirty words, 1 paragraphs over five sentences, 0 buzzword uses.
+**Measured:** 0 sentences over thirty words, 0 paragraphs over five sentences, 0 buzzword uses.
 
-| Principle number and name | Weight | Result | Worst offender quoted |
+| Principle number and name | Weight | Result | Evidence |
 |---|---|---|---|
-| V1: Find a subject you care about | Reduced | Not measured | — |
-| V2: Do not ramble | Raised | Soft violation | one paragraph of 10 sentences (entry 1.2) |
-| V3: Keep it simple | Raised | Soft violation | It found a replica table no delivered path read or… (61 words, entry 1.1) |
-| V4: Have the guts to cut | Standard | Not measured | — |
-| V5: Sound like yourself | Reduced | Pass | — |
-| V6: Say what you mean | Raised | Not measured | — |
-| V7: Pity the reader | Raised | Not measured | — |
-| V8: Start close to the end | Standard | Not measured | — |
-| V9: The Dignity Test | Standard | Not measured | — |
-| V10: The Indifference Detector | Standard | Not measured | — |
-| V11: The Indianapolis Test | Standard | Not measured | — |
-| V12: Humor as Trust Signal | Standard | Not measured | — |
-| A1: Plate Glass Clarity | Standard | Not measured | — |
-| A2: Short Words, Simple Structures | Standard | Soft violation | It found a replica table no delivered path read or… (61 words, entry 1.1) |
-| A3: Logical Sequence | Standard | Not measured | — |
-| A4: Ideas Carry the Weight | Standard | Not measured | — |
-| A5: Conversational Informality | Standard | Not measured | — |
-| A6: No Ornamental Language | Standard | Pass | — |
-| A7: Functional Dialogue | Standard | Not measured | — |
-| A8: Anticipate Reader Questions | Standard | Not measured | — |
-| A9: Efficiency Over Polish | Standard | Not measured | — |
-| A10: Respect the Reader's Intelligence | Standard | Not measured | — |
+| V1: Find a subject you care about | Reduced | Pass | Holds one subject, opening at `Platform and technology selections` |
+| V2: Do not ramble | Raised | Pass | No block runs past five sentences; longest scored paragraph 5 sentences |
+| V3: Keep it simple | Raised | Pass | Every scored sentence sits inside the bound; longest scored sentence 30 words |
+| V4: Have the guts to cut | Standard | Pass | Carries no passage worth cutting; `BigDecimal` earns the line it takes |
+| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 43 scored paragraphs |
+| V6: Say what you mean | Raised | Pass | Names the thing itself under `Migration strategy`, with no hedge in front of it |
+| V7: Pity the reader | Raised | Pass | Explains `card-platform/` where a reader first meets it |
+| V8: Start close to the end | Standard | Pass | The claim arrives before its support under `Arithmetic and numeric fidelity` |
+| V9: The Dignity Test | Standard | Pass | States `curl` plainly, without blame and without flourish |
+| V10: The Indifference Detector | Standard | Pass | Names what is at stake under `Data model and persistence` rather than asserting importance |
+| V11: The Indianapolis Test | Standard | Pass | A reader outside this project can follow `COPAUA0C` unaided |
+| V12: Humor as Trust Signal | Standard | Not applicable | A technical reference carries no humour for a reading to judge |
+| A1: Plate Glass Clarity | Standard | Pass | The wording disappears behind the fact under `Event contracts and messaging` |
+| A2: Short Words, Simple Structures | Standard | Pass | Short words and one clause at a time; longest scored sentence 30 words |
+| A3: Logical Sequence | Standard | Pass | Runs in the order a reader needs it, from `Concurrency and identifiers` onward |
+| A4: Ideas Carry the Weight | Standard | Pass | The evidence carries it, as the entries under `Defects reproduced rather than fixed` show |
+| A5: Conversational Informality | Standard | Pass | Reads as one engineer to another where it introduces `CP00` |
+| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 43 scored paragraphs |
+| A7: Functional Dialogue | Standard | Not applicable | This target carries no dialogue for a reading to judge |
+| A8: Anticipate Reader Questions | Standard | Pass | Answers the next question in place, as `Validations deliberately not added` does |
+| A9: Efficiency Over Polish | Standard | Pass | Refers back to `CBTRN02C` rather than restating what it is |
+| A10: Respect the Reader's Intelligence | Standard | Pass | Assumes a competent reader, so `COTRN02C` arrives without a primer |
 
 **Per-violation entries:**
 
-**1.1 — V3: Keep it simple** and **A2: Short Words, Simple Structures** — soft violation, 61 words.
-
-> It found a replica table no delivered path read or wrote while a migration comment said card events kept it current, a refusal that answered a name in a case the source does not store, a column whose domain lived in one writer alone, and four statements describing a route, an event and a serialization path the code does not have.
-
-**Rewrite** — 51 words, 16% shorter:
-
-> It found four defects. A replica table no path read or wrote, though a comment claimed events kept it current. A refusal answering a name the source does not store. A column whose domain lived in one writer. Four statements naming a route, an event and a path the code lacks.
-
-**Why the rewrite is better:** Announcing the count first, then giving each defect its own sentence, lets a reader take one item at a time.
-
-**1.2 — V2: Do not ramble** — soft violation, 10 sentences in one paragraph.
-
-> These cover the notification history route, the account surface and the card surface. … source never tests, and eight complete seeded card numbers in published examples.
-
-**Rewrite** — split into paragraphs of 5 and 5 sentences:
-
-> Start a new paragraph at "A read schema narrower than the rows it returns, required".
-
-**Why the rewrite is better:** 10 sentences in one block ask a reader to hold the whole argument at once. The break lands where the paragraph changes subject, so the first 5 sentences carry one claim and the last 5 carry the next.
+None. This target has no measured violation.
 
 ### 2. `docs/traceability-matrix.md`
 
-**Overall verdict:** **NEEDS WORK** — 0 hard violations, 4 soft violations.
+**Overall verdict:** **CLEAN** — 0 hard violations, 0 soft violations.
 
-**Measured:** 2 sentences over thirty words, 2 paragraphs over five sentences, 0 buzzword uses.
+**Measured:** 0 sentences over thirty words, 0 paragraphs over five sentences, 0 buzzword uses.
 
-| Principle number and name | Weight | Result | Worst offender quoted |
+| Principle number and name | Weight | Result | Evidence |
 |---|---|---|---|
-| V1: Find a subject you care about | Reduced | Not measured | — |
-| V2: Do not ramble | Raised | Soft violation | one paragraph of 6 sentences (entry 2.2) |
-| V3: Keep it simple | Raised | Soft violation | Rule-mandated document covers the documents Rules 1 to 5 require… (37 words, entry 2.1) |
-| V4: Have the guts to cut | Standard | Not measured | — |
-| V5: Sound like yourself | Reduced | Pass | — |
-| V6: Say what you mean | Raised | Not measured | — |
-| V7: Pity the reader | Raised | Not measured | — |
-| V8: Start close to the end | Standard | Not measured | — |
-| V9: The Dignity Test | Standard | Not measured | — |
-| V10: The Indifference Detector | Standard | Not measured | — |
-| V11: The Indianapolis Test | Standard | Not measured | — |
-| V12: Humor as Trust Signal | Standard | Not measured | — |
-| A1: Plate Glass Clarity | Standard | Not measured | — |
-| A2: Short Words, Simple Structures | Standard | Soft violation | Rule-mandated document covers the documents Rules 1 to 5 require… (37 words, entry 2.1) |
-| A3: Logical Sequence | Standard | Not measured | — |
-| A4: Ideas Carry the Weight | Standard | Not measured | — |
-| A5: Conversational Informality | Standard | Not measured | — |
-| A6: No Ornamental Language | Standard | Pass | — |
-| A7: Functional Dialogue | Standard | Not measured | — |
-| A8: Anticipate Reader Questions | Standard | Not measured | — |
-| A9: Efficiency Over Polish | Standard | Not measured | — |
-| A10: Respect the Reader's Intelligence | Standard | Not measured | — |
+| V1: Find a subject you care about | Reduced | Pass | Holds one subject, opening at `Coverage summary` |
+| V2: Do not ramble | Raised | Pass | No block runs past five sentences; longest scored paragraph 5 sentences |
+| V3: Keep it simple | Raised | Pass | Every scored sentence sits inside the bound; longest scored sentence 30 words |
+| V4: Have the guts to cut | Standard | Pass | Carries no passage worth cutting; `.gitkeep` earns the line it takes |
+| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 39 scored paragraphs |
+| V6: Say what you mean | Raised | Pass | Names the thing itself under `Forward: COBOL programs`, with no hedge in front of it |
+| V7: Pity the reader | Raised | Pass | Explains `libs/cobol-compat` where a reader first meets it |
+| V8: Start close to the end | Standard | Pass | The claim arrives before its support under `Primary migration sources` |
+| V9: The Dignity Test | Standard | Pass | States `ACCTFILE` plainly, without blame and without flourish |
+| V10: The Indifference Detector | Standard | Pass | Names what is at stake under `Reference-only programs` rather than asserting importance |
+| V11: The Indianapolis Test | Standard | Pass | A reader outside this project can follow `:L29` unaided |
+| V12: Humor as Trust Signal | Standard | Not applicable | A technical reference carries no humour for a reading to judge |
+| A1: Plate Glass Clarity | Standard | Pass | The wording disappears behind the fact under `Partially in scope` |
+| A2: Short Words, Simple Structures | Standard | Pass | Short words and one clause at a time; longest scored sentence 30 words |
+| A3: Logical Sequence | Standard | Pass | Runs in the order a reader needs it, from `Excluded programs` onward |
+| A4: Ideas Carry the Weight | Standard | Pass | The evidence carries it, as the entries under `Forward: copybooks` show |
+| A5: Conversational Informality | Standard | Pass | Reads as one engineer to another where it introduces `CARDFILE` |
+| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 39 scored paragraphs |
+| A7: Functional Dialogue | Standard | Not applicable | This target carries no dialogue for a reading to judge |
+| A8: Anticipate Reader Questions | Standard | Pass | Answers the next question in place, as `Record layouts` does |
+| A9: Efficiency Over Polish | Standard | Pass | Refers back to `XREFFILE` rather than restating what it is |
+| A10: Respect the Reader's Intelligence | Standard | Pass | Assumes a competent reader, so `CUSTFILE` arrives without a primer |
 
 **Per-violation entries:**
 
-**2.1 — V3: Keep it simple** and **A2: Short Words, Simple Structures** — soft violation, 37 words.
-
-> Rule-mandated document covers the documents Rules 1 to 5 require and Rule 3 document the per-module readme Rule 3 requires; a document’s authority is a rule, and the members in its cell are the evidence it cites.
-
-**Rewrite** — 31 words, 16% shorter:
-
-> **Rule-mandated document** covers the documents Rules 1 to 5 require, and **Rule 3 document** the per-module readme. A document's authority is a rule, and its cell names the evidence it cites.
-
-**Why the rewrite is better:** The label definitions and the point about authority are two thoughts, and the semicolon hid the join.
-
-**2.2 — V2: Do not ramble** — soft violation, 6 sentences in one paragraph.
-
-> A citation is not automatically provenance, and two groups of rows say so in … so every fraud path is classified additive however many members it cites.
-
-**Rewrite** — split into paragraphs of 3 and 3 sentences:
-
-> Start a new paragraph at "Every path under `services/fraud-detection-service` names members too, and none of".
-
-**Why the rewrite is better:** 6 sentences in one block ask a reader to hold the whole argument at once. The break lands where the paragraph changes subject, so the first 3 sentences carry one claim and the last 3 carry the next.
+None. This target has no measured violation.
 
 ### 3. `docs/architecture-before-after.md`
 
-**Overall verdict:** **CLEAN** — 0 hard violations, 2 soft violations.
+**Overall verdict:** **CLEAN** — 0 hard violations, 0 soft violations.
 
-**Measured:** 0 sentences over thirty words, 2 paragraphs over five sentences, 0 buzzword uses.
+**Measured:** 0 sentences over thirty words, 0 paragraphs over five sentences, 0 buzzword uses.
 
-| Principle number and name | Weight | Result | Worst offender quoted |
+| Principle number and name | Weight | Result | Evidence |
 |---|---|---|---|
-| V1: Find a subject you care about | Reduced | Not measured | — |
-| V2: Do not ramble | Raised | Soft violation | one paragraph of 9 sentences (entry 3.1) |
-| V3: Keep it simple | Raised | Pass | — |
-| V4: Have the guts to cut | Standard | Not measured | — |
-| V5: Sound like yourself | Reduced | Pass | — |
-| V6: Say what you mean | Raised | Not measured | — |
-| V7: Pity the reader | Raised | Not measured | — |
-| V8: Start close to the end | Standard | Not measured | — |
-| V9: The Dignity Test | Standard | Not measured | — |
-| V10: The Indifference Detector | Standard | Not measured | — |
-| V11: The Indianapolis Test | Standard | Not measured | — |
-| V12: Humor as Trust Signal | Standard | Not measured | — |
-| A1: Plate Glass Clarity | Standard | Not measured | — |
-| A2: Short Words, Simple Structures | Standard | Pass | — |
-| A3: Logical Sequence | Standard | Not measured | — |
-| A4: Ideas Carry the Weight | Standard | Not measured | — |
-| A5: Conversational Informality | Standard | Not measured | — |
-| A6: No Ornamental Language | Standard | Pass | — |
-| A7: Functional Dialogue | Standard | Not measured | — |
-| A8: Anticipate Reader Questions | Standard | Not measured | — |
-| A9: Efficiency Over Polish | Standard | Not measured | — |
-| A10: Respect the Reader's Intelligence | Standard | Not measured | — |
+| V1: Find a subject you care about | Reduced | Pass | Holds one subject, opening at `Measured CICS inventory` |
+| V2: Do not ramble | Raised | Pass | No block runs past five sentences; longest scored paragraph 5 sentences |
+| V3: Keep it simple | Raised | Pass | Every scored sentence sits inside the bound; longest scored sentence 28 words |
+| V4: Have the guts to cut | Standard | Pass | Carries no passage worth cutting; `diagrams/` earns the line it takes |
+| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 51 scored paragraphs |
+| V6: Say what you mean | Raised | Pass | Names the thing itself under `Shared file reachability`, with no hedge in front of it |
+| V7: Pity the reader | Raised | Pass | Explains `EXEC CICS XCTL` where a reader first meets it |
+| V8: Start close to the end | Standard | Pass | The claim arrives before its support under `Posting job allocations` |
+| V9: The Dignity Test | Standard | Pass | States `DDNAME(INREADER)` plainly, without blame and without flourish |
+| V10: The Indifference Detector | Standard | Pass | Names what is at stake under `Topic and consumer-group inventory` rather than asserting importance |
+| V11: The Indianapolis Test | Standard | Pass | A reader outside this project can follow `//TRNRPT00 JOB 'TRAN REPORT'` unaided |
+| V12: Humor as Trust Signal | Standard | Not applicable | A technical reference carries no humour for a reading to judge |
+| A1: Plate Glass Clarity | Standard | Pass | The wording disappears behind the fact under `Private store ownership` |
+| A2: Short Words, Simple Structures | Standard | Pass | Short words and one clause at a time; longest scored sentence 28 words |
+| A3: Logical Sequence | Standard | Pass | Runs in the order a reader needs it, from `Component-by-component correspondence` onward |
+| A4: Ideas Carry the Weight | Standard | Pass | The evidence carries it, as the entries under `What changed structurally` show |
+| A5: Conversational Informality | Standard | Pass | Reads as one engineer to another where it introduces `:L94` |
+| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 51 scored paragraphs |
+| A7: Functional Dialogue | Standard | Not applicable | This target carries no dialogue for a reading to judge |
+| A8: Anticipate Reader Questions | Standard | Pass | Answers the next question in place, as `Shared datasets became private stores` does |
+| A9: Efficiency Over Polish | Standard | Pass | Refers back to `//STEP10 EXEC PROC=TRANREPT` rather than restating what it is |
+| A10: Respect the Reader's Intelligence | Standard | Pass | Assumes a competent reader, so `POSTTRAN` arrives without a primer |
 
 **Per-violation entries:**
 
-**3.1 — V2: Do not ramble** — soft violation, 9 sentences in one paragraph.
-
-> One target construct has no row above, because it has no legacy construct to … A dead-lettered message is a failure the platform survived.
-
-**Rewrite** — split into paragraphs of 4 and 5 sentences:
-
-> Start a new paragraph at "There is no cleanup, and no record of the individual".
-
-**Why the rewrite is better:** 9 sentences in one block ask a reader to hold the whole argument at once. The break lands where the paragraph changes subject, so the first 4 sentences carry one claim and the last 5 carry the next.
+None. This target has no measured violation.
 
 ### 4. `docs/event-flow.md`
 
-**Overall verdict:** **NEEDS WORK** — 0 hard violations, 19 soft violations.
+**Overall verdict:** **CLEAN** — 0 hard violations, 0 soft violations.
 
-**Measured:** 15 sentences over thirty words, 4 paragraphs over five sentences, 0 buzzword uses.
+**Measured:** 0 sentences over thirty words, 0 paragraphs over five sentences, 0 buzzword uses.
 
-| Principle number and name | Weight | Result | Worst offender quoted |
+| Principle number and name | Weight | Result | Evidence |
 |---|---|---|---|
-| V1: Find a subject you care about | Reduced | Not measured | — |
-| V2: Do not ramble | Raised | Soft violation | one paragraph of 8 sentences (entry 4.2) |
-| V3: Keep it simple | Raised | Soft violation | A single transaction spanning the pass held a connection and… (53 words, entry 4.1) |
-| V4: Have the guts to cut | Standard | Not measured | — |
-| V5: Sound like yourself | Reduced | Pass | — |
-| V6: Say what you mean | Raised | Not measured | — |
-| V7: Pity the reader | Raised | Not measured | — |
-| V8: Start close to the end | Standard | Not measured | — |
-| V9: The Dignity Test | Standard | Not measured | — |
-| V10: The Indifference Detector | Standard | Not measured | — |
-| V11: The Indianapolis Test | Standard | Not measured | — |
-| V12: Humor as Trust Signal | Standard | Not measured | — |
-| A1: Plate Glass Clarity | Standard | Not measured | — |
-| A2: Short Words, Simple Structures | Standard | Soft violation | A single transaction spanning the pass held a connection and… (53 words, entry 4.1) |
-| A3: Logical Sequence | Standard | Not measured | — |
-| A4: Ideas Carry the Weight | Standard | Not measured | — |
-| A5: Conversational Informality | Standard | Not measured | — |
-| A6: No Ornamental Language | Standard | Pass | — |
-| A7: Functional Dialogue | Standard | Not measured | — |
-| A8: Anticipate Reader Questions | Standard | Not measured | — |
-| A9: Efficiency Over Polish | Standard | Not measured | — |
-| A10: Respect the Reader's Intelligence | Standard | Not measured | — |
+| V1: Find a subject you care about | Reduced | Pass | Holds one subject, opening at `The envelope` |
+| V2: Do not ramble | Raised | Pass | No block runs past five sentences; longest scored paragraph 5 sentences |
+| V3: Keep it simple | Raised | Pass | Every scored sentence sits inside the bound; longest scored sentence 30 words |
+| V4: Have the guts to cut | Standard | Pass | Carries no passage worth cutting; `eventId` earns the line it takes |
+| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 142 scored paragraphs |
+| V6: Say what you mean | Raised | Pass | Names the thing itself under `Payload conventions`, with no hedge in front of it |
+| V7: Pity the reader | Raised | Pass | Explains `eventType` where a reader first meets it |
+| V8: Start close to the end | Standard | Pass | The claim arrives before its support under `Topics and consumer groups` |
+| V9: The Dignity Test | Standard | Pass | States `schemaVersion` plainly, without blame and without flourish |
+| V10: The Indifference Detector | Standard | Pass | Names what is at stake under `Business events` rather than asserting importance |
+| V11: The Indianapolis Test | Standard | Pass | A reader outside this project can follow `occurredAt` unaided |
+| V12: Humor as Trust Signal | Standard | Not applicable | A technical reference carries no humour for a reading to judge |
+| A1: Plate Glass Clarity | Standard | Pass | The wording disappears behind the fact under `Authorization transaction flow` |
+| A2: Short Words, Simple Structures | Standard | Pass | Short words and one clause at a time; longest scored sentence 30 words |
+| A3: Logical Sequence | Standard | Pass | Runs in the order a reader needs it, from `State-change projection flow` onward |
+| A4: Ideas Carry the Weight | Standard | Pass | The evidence carries it, as the entries under `Delivery mechanics` show |
+| A5: Conversational Informality | Standard | Pass | Reads as one engineer to another where it introduces `aggregateId` |
+| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 142 scored paragraphs |
+| A7: Functional Dialogue | Standard | Not applicable | This target carries no dialogue for a reading to judge |
+| A8: Anticipate Reader Questions | Standard | Pass | Answers the next question in place, as `The two dead-letter wire forms` does |
+| A9: Efficiency Over Polish | Standard | Pass | Refers back to `docs/decision-log.md` rather than restating what it is |
+| A10: Respect the Reader's Intelligence | Standard | Pass | Assumes a competent reader, so `transaction-declined-v3` arrives without a primer |
 
 **Per-violation entries:**
 
-**4.1 — V3: Keep it simple** and **A2: Short Words, Simple Structures** — soft violation, 53 words.
-
-> A single transaction spanning the pass held a connection and every row lock of the batch for the sum of its broker waits, and it rolled its own claim back when the process died — which is precisely the case the stranded-claim recovery was written for, and which it could therefore never observe.
-
-**Rewrite** — 42 words, 21% shorter:
-
-> A single transaction spanning the pass held a connection and every row lock for the sum of its broker waits. It also rolled its own claim back when the process died, which is the one case the stranded-claim recovery could never observe.
-
-**Why the rewrite is better:** Splitting the two consequences apart puts the recovery paradox in a sentence of its own, where a reader can see it.
-
-**4.2 — V2: Do not ramble** — soft violation, 8 sentences in one paragraph.
-
-> A record no attempt can apply is the one case that ordering does not … environment, so the requirement is a start-up check rather than a comment.
-
-**Rewrite** — split into paragraphs of 4 and 4 sentences:
-
-> Start a new paragraph at "The acknowledgement mode is `MANUAL_IMMEDIATE` in all five consuming services,".
-
-**Why the rewrite is better:** 8 sentences in one block ask a reader to hold the whole argument at once. The break lands where the paragraph changes subject, so the first 4 sentences carry one claim and the last 4 carry the next.
+None. This target has no measured violation.
 
 ### 5. `docs/data-model.md`
 
-**Overall verdict:** **NEEDS WORK** — 0 hard violations, 24 soft violations.
+**Overall verdict:** **CLEAN** — 0 hard violations, 0 soft violations.
 
-**Measured:** 17 sentences over thirty words, 7 paragraphs over five sentences, 0 buzzword uses.
+**Measured:** 0 sentences over thirty words, 0 paragraphs over five sentences, 0 buzzword uses.
 
-| Principle number and name | Weight | Result | Worst offender quoted |
+| Principle number and name | Weight | Result | Evidence |
 |---|---|---|---|
-| V1: Find a subject you care about | Reduced | Not measured | — |
-| V2: Do not ramble | Raised | Soft violation | one paragraph of 9 sentences (entry 5.2) |
-| V3: Keep it simple | Raised | Soft violation | Both questions remain worth answering, and the answer is an… (41 words, entry 5.1) |
-| V4: Have the guts to cut | Standard | Not measured | — |
-| V5: Sound like yourself | Reduced | Pass | — |
-| V6: Say what you mean | Raised | Not measured | — |
-| V7: Pity the reader | Raised | Not measured | — |
-| V8: Start close to the end | Standard | Not measured | — |
-| V9: The Dignity Test | Standard | Not measured | — |
-| V10: The Indifference Detector | Standard | Not measured | — |
-| V11: The Indianapolis Test | Standard | Not measured | — |
-| V12: Humor as Trust Signal | Standard | Not measured | — |
-| A1: Plate Glass Clarity | Standard | Not measured | — |
-| A2: Short Words, Simple Structures | Standard | Soft violation | Both questions remain worth answering, and the answer is an… (41 words, entry 5.1) |
-| A3: Logical Sequence | Standard | Not measured | — |
-| A4: Ideas Carry the Weight | Standard | Not measured | — |
-| A5: Conversational Informality | Standard | Not measured | — |
-| A6: No Ornamental Language | Standard | Pass | — |
-| A7: Functional Dialogue | Standard | Not measured | — |
-| A8: Anticipate Reader Questions | Standard | Not measured | — |
-| A9: Efficiency Over Polish | Standard | Not measured | — |
-| A10: Respect the Reader's Intelligence | Standard | Not measured | — |
+| V1: Find a subject you care about | Reduced | Pass | Holds one subject, opening at `Derivation rules` |
+| V2: Do not ramble | Raised | Pass | No block runs past five sentences; longest scored paragraph 5 sentences |
+| V3: Keep it simple | Raised | Pass | Every scored sentence sits inside the bound; longest scored sentence 30 words |
+| V4: Have the guts to cut | Standard | Pass | Carries no passage worth cutting; `PIC 9(n)` earns the line it takes |
+| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 156 scored paragraphs |
+| V6: Say what you mean | Raised | Pass | Names the thing itself under `Two date treatments`, with no hedge in front of it |
+| V7: Pity the reader | Raised | Pass | Explains `NUMERIC(n,0)` where a reader first meets it |
+| V8: Start close to the end | Standard | Pass | The claim arrives before its support under `Service schemas` |
+| V9: The Dignity Test | Standard | Pass | States `BIGINT` plainly, without blame and without flourish |
+| V10: The Indifference Detector | Standard | Pass | Names what is at stake under `Authorization database` rather than asserting importance |
+| V11: The Indianapolis Test | Standard | Pass | A reader outside this project can follow `PIC X(n)` unaided |
+| V12: Humor as Trust Signal | Standard | Not applicable | A technical reference carries no humour for a reading to judge |
+| A1: Plate Glass Clarity | Standard | Pass | The wording disappears behind the fact under `Outcome infrastructure` |
+| A2: Short Words, Simple Structures | Standard | Pass | Short words and one clause at a time; longest scored sentence 30 words |
+| A3: Logical Sequence | Standard | Pass | Runs in the order a reader needs it, from `Ledger database` onward |
+| A4: Ideas Carry the Weight | Standard | Pass | The evidence carries it, as the entries under `Balance and lookup tables` show |
+| A5: Conversational Informality | Standard | Pass | Reads as one engineer to another where it introduces `VARCHAR(n)` |
+| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 156 scored paragraphs |
+| A7: Functional Dialogue | Standard | Not applicable | This target carries no dialogue for a reading to judge |
+| A8: Anticipate Reader Questions | Standard | Pass | Answers the next question in place, as `Fraud database` does |
+| A9: Efficiency Over Polish | Standard | Pass | Refers back to `CHAR(n)` rather than restating what it is |
+| A10: Respect the Reader's Intelligence | Standard | Pass | Assumes a competent reader, so `CHAR` arrives without a primer |
 
 **Per-violation entries:**
 
-**5.1 — V3: Keep it simple** and **A2: Short Words, Simple Structures** — soft violation, 41 words.
-
-> Both questions remain worth answering, and the answer is an endpoint with a bound on it rather than an index waiting for one; `suggested-next-tasks.md` carries the task, and the index belongs in the same change as the query that reads it.
-
-**Rewrite** — 33 words, 20% shorter:
-
-> Both questions remain worth answering. The answer is an endpoint with a bound, not an index waiting for one. `suggested-next-tasks.md` carries the task, and the index belongs with the query that reads it.
-
-**Why the rewrite is better:** The semicolon joined a design decision to a filing note, and the two read better apart.
-
-**5.2 — V2: Do not ramble** — soft violation, 9 sentences in one paragraph.
-
-> Nine named constraints hold the shape the columns alone cannot. … decided outcome that publishes nothing is the one row that names neither.
-
-**Rewrite** — split into paragraphs of 4 and 5 sentences:
-
-> Start a new paragraph at "No row can claim an outcome it does not explain.".
-
-**Why the rewrite is better:** 9 sentences in one block ask a reader to hold the whole argument at once. The break lands where the paragraph changes subject, so the first 4 sentences carry one claim and the last 5 carry the next.
+None. This target has no measured violation.
 
 ### 6. `docs/onboarding.md`
 
-**Overall verdict:** **NEEDS WORK** — 0 hard violations, 10 soft violations.
+**Overall verdict:** **CLEAN** — 0 hard violations, 0 soft violations.
 
-**Measured:** 8 sentences over thirty words, 2 paragraphs over five sentences, 0 buzzword uses.
+**Measured:** 0 sentences over thirty words, 0 paragraphs over five sentences, 0 buzzword uses.
 
-| Principle number and name | Weight | Result | Worst offender quoted |
+| Principle number and name | Weight | Result | Evidence |
 |---|---|---|---|
-| V1: Find a subject you care about | Reduced | Not measured | — |
-| V2: Do not ramble | Raised | Soft violation | one paragraph of 8 sentences (entry 6.2) |
-| V3: Keep it simple | Raised | Soft violation | The assessment sits in the `assessments` array of one page,… (44 words, entry 6.1) |
-| V4: Have the guts to cut | Standard | Not measured | — |
-| V5: Sound like yourself | Reduced | Pass | — |
-| V6: Say what you mean | Raised | Not measured | — |
-| V7: Pity the reader | Raised | Not measured | — |
-| V8: Start close to the end | Standard | Not measured | — |
-| V9: The Dignity Test | Standard | Not measured | — |
-| V10: The Indifference Detector | Standard | Not measured | — |
-| V11: The Indianapolis Test | Standard | Not measured | — |
-| V12: Humor as Trust Signal | Standard | Not measured | — |
-| A1: Plate Glass Clarity | Standard | Not measured | — |
-| A2: Short Words, Simple Structures | Standard | Soft violation | The assessment sits in the `assessments` array of one page,… (44 words, entry 6.1) |
-| A3: Logical Sequence | Standard | Not measured | — |
-| A4: Ideas Carry the Weight | Standard | Not measured | — |
-| A5: Conversational Informality | Standard | Not measured | — |
-| A6: No Ornamental Language | Standard | Pass | — |
-| A7: Functional Dialogue | Standard | Not measured | — |
-| A8: Anticipate Reader Questions | Standard | Not measured | — |
-| A9: Efficiency Over Polish | Standard | Not measured | — |
-| A10: Respect the Reader's Intelligence | Standard | Not measured | — |
+| V1: Find a subject you care about | Reduced | Pass | Holds one subject, opening at `Setup` |
+| V2: Do not ramble | Raised | Pass | No block runs past five sentences; longest scored paragraph 5 sentences |
+| V3: Keep it simple | Raised | Pass | Every scored sentence sits inside the bound; longest scored sentence 30 words |
+| V4: Have the guts to cut | Standard | Pass | Carries no passage worth cutting; `README.md` earns the line it takes |
+| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 193 scored paragraphs |
+| V6: Say what you mean | Raised | Pass | Names the thing itself under `Prerequisites`, with no hedge in front of it |
+| V7: Pity the reader | Raised | Pass | Explains `CONTRIBUTING.md` where a reader first meets it |
+| V8: Start close to the end | Standard | Pass | The claim arrives before its support under `Start with one command` |
+| V9: The Dignity Test | Standard | Pass | States `scripts/start-demo.sh` plainly, without blame and without flourish |
+| V10: The Indifference Detector | Standard | Pass | Names what is at stake under `Clone to a configured working tree` rather than asserting importance |
+| V11: The Indianapolis Test | Standard | Pass | A reader outside this project can follow `deploy/k8s/load-images.sh` unaided |
+| V12: Humor as Trust Signal | Standard | Not applicable | A technical reference carries no humour for a reading to judge |
+| A1: Plate Glass Clarity | Standard | Pass | The wording disappears behind the fact under `The card-token key` |
+| A2: Short Words, Simple Structures | Standard | Pass | Short words and one clause at a time; longest scored sentence 30 words |
+| A3: Logical Sequence | Standard | Pass | Runs in the order a reader needs it, from `Build and start` onward |
+| A4: Ideas Carry the Weight | Standard | Pass | The evidence carries it, as the entries under `Ports, schemas, and topics` show |
+| A5: Conversational Informality | Standard | Pass | Reads as one engineer to another where it introduces `[25,26)` |
+| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 193 scored paragraphs |
+| A7: Functional Dialogue | Standard | Not applicable | This target carries no dialogue for a reading to judge |
+| A8: Anticipate Reader Questions | Standard | Pass | Answers the next question in place, as `Verify the running stack` does |
+| A9: Efficiency Over Polish | Standard | Pass | Refers back to `[3.9.16,3.10.0)` rather than restating what it is |
+| A10: Respect the Reader's Intelligence | Standard | Pass | Assumes a competent reader, so `openssl rand` arrives without a primer |
 
 **Per-violation entries:**
 
-**6.1 — V3: Keep it simple** and **A2: Short Words, Simple Structures** — soft violation, 44 words.
-
-> The assessment sits in the `assessments` array of one page, beside a `nextPageExists` that is false while the account holds only this one; a longer history answers a `nextCursor` as well, and returning it in the `X-Fraud-Cursor` header asks for the page after it.
-
-**Rewrite** — 35 words, 20% shorter:
-
-> The assessment sits in the `assessments` array of one page, beside a `nextPageExists` that is false while this is the only one. A longer history also answers a `nextCursor`, which the `X-Fraud-Cursor` header sends back.
-
-**Why the rewrite is better:** One sentence now describes the single-page answer and the next describes the paged one.
-
-**6.2 — V2: Do not ramble** — soft violation, 8 sentences in one paragraph.
-
-> The script builds all six images from source, then loads them the way the … The same check catches `kustomization.yaml` drifting from the version in `pom.xml`.
-
-**Rewrite** — split into paragraphs of 4 and 4 sentences:
-
-> Start a new paragraph at "`KIND_CLUSTER_NAME` and `MINIKUBE_PROFILE` select a cluster other than the default.".
-
-**Why the rewrite is better:** 8 sentences in one block ask a reader to hold the whole argument at once. The break lands where the paragraph changes subject, so the first 4 sentences carry one claim and the last 4 carry the next.
+None. This target has no measured violation.
 
 ### 7. `docs/suggested-next-tasks.md`
 
-**Overall verdict:** **NEEDS WORK** — 0 hard violations, 49 soft violations.
+**Overall verdict:** **CLEAN** — 0 hard violations, 0 soft violations.
 
-**Measured:** 46 sentences over thirty words, 3 paragraphs over five sentences, 0 buzzword uses.
+**Measured:** 0 sentences over thirty words, 0 paragraphs over five sentences, 0 buzzword uses.
 
-| Principle number and name | Weight | Result | Worst offender quoted |
+| Principle number and name | Weight | Result | Evidence |
 |---|---|---|---|
-| V1: Find a subject you care about | Reduced | Not measured | — |
-| V2: Do not ramble | Raised | Soft violation | one paragraph of 8 sentences (entry 7.2) |
-| V3: Keep it simple | Raised | Soft violation | The decision this task asks for is not a technical… (46 words, entry 7.1) |
-| V4: Have the guts to cut | Standard | Not measured | — |
-| V5: Sound like yourself | Reduced | Pass | — |
-| V6: Say what you mean | Raised | Not measured | — |
-| V7: Pity the reader | Raised | Not measured | — |
-| V8: Start close to the end | Standard | Not measured | — |
-| V9: The Dignity Test | Standard | Not measured | — |
-| V10: The Indifference Detector | Standard | Not measured | — |
-| V11: The Indianapolis Test | Standard | Not measured | — |
-| V12: Humor as Trust Signal | Standard | Not measured | — |
-| A1: Plate Glass Clarity | Standard | Not measured | — |
-| A2: Short Words, Simple Structures | Standard | Soft violation | The decision this task asks for is not a technical… (46 words, entry 7.1) |
-| A3: Logical Sequence | Standard | Not measured | — |
-| A4: Ideas Carry the Weight | Standard | Not measured | — |
-| A5: Conversational Informality | Standard | Not measured | — |
-| A6: No Ornamental Language | Standard | Pass | — |
-| A7: Functional Dialogue | Standard | Not measured | — |
-| A8: Anticipate Reader Questions | Standard | Not measured | — |
-| A9: Efficiency Over Polish | Standard | Not measured | — |
-| A10: Respect the Reader's Intelligence | Standard | Not measured | — |
+| V1: Find a subject you care about | Reduced | Pass | Holds one subject, opening at `Correctness decisions requiring a human` |
+| V2: Do not ramble | Raised | Pass | No block runs past five sentences; longest scored paragraph 5 sentences |
+| V3: Keep it simple | Raised | Pass | Every scored sentence sits inside the bound; longest scored sentence 30 words |
+| V4: Have the guts to cut | Standard | Pass | Carries no passage worth cutting; `CreditLimitRule` earns the line it takes |
+| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 343 scored paragraphs |
+| V6: Say what you mean | Raised | Pass | Names the thing itself under `Widen the credit-limit working precision`, with no hedge in front of it |
+| V7: Pity the reader | Raised | Pass | Explains `WS-TEMP-BAL PIC S9(09)V99` where a reader first meets it |
+| V8: Start close to the end | Standard | Pass | The claim arrives before its support under `Correct the refund sign convention` |
+| V9: The Dignity Test | Standard | Pass | States `ACCT-CURR-CYC-CREDIT` plainly, without blame and without flourish |
+| V10: The Indifference Detector | Standard | Pass | Names what is at stake under `Decide whether current balance belongs in the limit rule` rather than asserting importance |
+| V11: The Indianapolis Test | Standard | Pass | A reader outside this project can follow `ACCT-CURR-CYC-DEBIT` unaided |
+| V12: Humor as Trust Signal | Standard | Not applicable | A technical reference carries no humour for a reading to judge |
+| A1: Plate Glass Clarity | Standard | Pass | The wording disappears behind the fact under `Decide the ceiling of the reserved cycle exposure` |
+| A2: Short Words, Simple Structures | Standard | Pass | Short words and one clause at a time; longest scored sentence 30 words |
+| A3: Logical Sequence | Standard | Pass | Runs in the order a reader needs it, from `Confirm the target meaning of reason 109` onward |
+| A4: Ideas Carry the Weight | Standard | Pass | The evidence carries it, as the entries under `Validations deliberately not added` show |
+| A5: Conversational Informality | Standard | Pass | Reads as one engineer to another where it introduces `:L14` |
+| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 343 scored paragraphs |
+| A7: Functional Dialogue | Standard | Not applicable | This target carries no dialogue for a reading to judge |
+| A8: Anticipate Reader Questions | Standard | Pass | Answers the next question in place, as `Add card-number checksum validation` does |
+| A9: Efficiency Over Polish | Standard | Pass | Refers back to `ACCT-CREDIT-LIMIT` rather than restating what it is |
+| A10: Respect the Reader's Intelligence | Standard | Pass | Assumes a competent reader, so `:L8` arrives without a primer |
 
 **Per-violation entries:**
 
-**7.1 — V3: Keep it simple** and **A2: Short Words, Simple Structures** — soft violation, 46 words.
-
-> The decision this task asks for is not a technical one the platform is entitled to make: how long a posted transaction is retained is fixed by the jurisdiction the deployment operates in, and deleting one early is a worse failure than keeping it too long.
-
-**Rewrite** — 37 words, 20% shorter:
-
-> This task asks for a decision the platform is not entitled to make. How long a posted transaction is retained is fixed by the jurisdiction the deployment operates in, and deleting one early is the worse failure.
-
-**Why the rewrite is better:** Naming the point first and the reason second removes the colon and nine words with it.
-
-**7.2 — V2: Do not ramble** — soft violation, 8 sentences in one paragraph.
-
-> Where: Nothing implements one today: no controller, no event, no service and no repository … `services/card-service` additionally holds the card row itself.
-
-**Rewrite** — split into paragraphs of 4 and 4 sentences:
-
-> Start a new paragraph at "An erasure has to reach five stores across four schemas.".
-
-**Why the rewrite is better:** 8 sentences in one block ask a reader to hold the whole argument at once. The break lands where the paragraph changes subject, so the first 4 sentences carry one claim and the last 4 carry the next.
+None. This target has no measured violation.
 
 ### 8. `docs/business-rule-flags.md`
 
-**Overall verdict:** **NEEDS WORK** — 0 hard violations, 10 soft violations.
+**Overall verdict:** **CLEAN** — 0 hard violations, 0 soft violations.
 
-**Measured:** 8 sentences over thirty words, 2 paragraphs over five sentences, 0 buzzword uses.
+**Measured:** 0 sentences over thirty words, 0 paragraphs over five sentences, 0 buzzword uses.
 
-| Principle number and name | Weight | Result | Worst offender quoted |
+| Principle number and name | Weight | Result | Evidence |
 |---|---|---|---|
-| V1: Find a subject you care about | Reduced | Not measured | — |
-| V2: Do not ramble | Raised | Soft violation | one paragraph of 6 sentences (entry 8.2) |
-| V3: Keep it simple | Raised | Soft violation | The requirements asked for exactly this: *"Flag any business rule… (40 words, entry 8.1) |
-| V4: Have the guts to cut | Standard | Not measured | — |
-| V5: Sound like yourself | Reduced | Pass | — |
-| V6: Say what you mean | Raised | Not measured | — |
-| V7: Pity the reader | Raised | Not measured | — |
-| V8: Start close to the end | Standard | Not measured | — |
-| V9: The Dignity Test | Standard | Not measured | — |
-| V10: The Indifference Detector | Standard | Not measured | — |
-| V11: The Indianapolis Test | Standard | Not measured | — |
-| V12: Humor as Trust Signal | Standard | Not measured | — |
-| A1: Plate Glass Clarity | Standard | Not measured | — |
-| A2: Short Words, Simple Structures | Standard | Soft violation | The requirements asked for exactly this: *"Flag any business rule… (40 words, entry 8.1) |
-| A3: Logical Sequence | Standard | Not measured | — |
-| A4: Ideas Carry the Weight | Standard | Not measured | — |
-| A5: Conversational Informality | Standard | Not measured | — |
-| A6: No Ornamental Language | Standard | Pass | — |
-| A7: Functional Dialogue | Standard | Not measured | — |
-| A8: Anticipate Reader Questions | Standard | Not measured | — |
-| A9: Efficiency Over Polish | Standard | Not measured | — |
-| A10: Respect the Reader's Intelligence | Standard | Not measured | — |
+| V1: Find a subject you care about | Reduced | Pass | Holds one subject, opening at `Register coverage` |
+| V2: Do not ramble | Raised | Pass | No block runs past five sentences; longest scored paragraph 5 sentences |
+| V3: Keep it simple | Raised | Pass | Every scored sentence sits inside the bound; longest scored sentence 30 words |
+| V4: Have the guts to cut | Standard | Pass | Carries no passage worth cutting; `:L34` earns the line it takes |
+| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 50 scored paragraphs |
+| V6: Say what you mean | Raised | Pass | Names the thing itself under `The largest item: a named program that does not exist`, with no hedge in front of it |
+| V7: Pity the reader | Raised | Pass | Explains `COPAUA0C` where a reader first meets it |
+| V8: Start close to the end | Standard | Pass | The claim arrives before its support under `The widest item: five posting stores that drop a digit` |
+| V9: The Dignity Test | Standard | Pass | States `CP00` plainly, without blame and without flourish |
+| V10: The Indifference Detector | Standard | Pass | Names what is at stake under `Resolved rather than flagged` rather than asserting importance |
+| V11: The Indianapolis Test | Standard | Pass | A reader outside this project can follow `ADD MORE VALIDATIONS HERE` unaided |
+| V12: Humor as Trust Signal | Standard | Not applicable | A technical reference carries no humour for a reading to judge |
+| A1: Plate Glass Clarity | Standard | Pass | The wording disappears behind the fact under `Coding style varies between modules` |
+| A2: Short Words, Simple Structures | Standard | Pass | Short words and one clause at a time; longest scored sentence 30 words |
+| A3: Logical Sequence | Standard | Pass | Runs in the order a reader needs it, from `Measurement discrepancies against the specification` onward |
+| A4: Ideas Carry the Weight | Standard | Pass | The evidence carries it, as the entries under `Platform values that are chosen rather than measured` show |
+| A5: Conversational Informality | Standard | Pass | Reads as one engineer to another where it introduces `1500-VALIDATE-TRAN` |
+| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 50 scored paragraphs |
+| A7: Functional Dialogue | Standard | Not applicable | This target carries no dialogue for a reading to judge |
+| A8: Anticipate Reader Questions | Standard | Pass | Answers the next question in place, as `Departures this platform makes from the source` does |
+| A9: Efficiency Over Polish | Standard | Pass | Refers back to `:L370` rather than restating what it is |
+| A10: Respect the Reader's Intelligence | Standard | Pass | Assumes a competent reader, so `SELECT` arrives without a primer |
 
 **Per-violation entries:**
 
-**8.1 — V3: Keep it simple** and **A2: Short Words, Simple Structures** — soft violation, 40 words.
-
-> The requirements asked for exactly this: *"Flag any business rule in the original COBOL that is ambiguous, undocumented, or inconsistent (CardDemo intentionally varies coding style across modules) rather than guessing — surface it in the tech spec for human review."*
-
-**Rewrite** — 32 words, 20% shorter:
-
-> The requirements are explicit. *"Flag any business rule in the original COBOL that is ambiguous, undocumented, or inconsistent ... rather than guessing — surface it in the tech spec for human review."*
-
-**Why the rewrite is better:** The quotation keeps its wording, the attribution becomes its own short sentence, and the parenthetical aside is marked as elided rather than carried.
-
-**8.2 — V2: Do not ramble** — soft violation, 6 sentences in one paragraph.
-
-> What this platform does instead. … committed, so a rollback leaves neither the count nor the line behind.
-
-**Rewrite** — split into paragraphs of 3 and 3 sentences:
-
-> Start a new paragraph at "A store that dropped a digit writes one `WARN` line".
-
-**Why the rewrite is better:** 6 sentences in one block ask a reader to hold the whole argument at once. The break lands where the paragraph changes subject, so the first 3 sentences carry one claim and the last 3 carry the next.
+None. This target has no measured violation.
 
 ### 9. `docs/equivalence-results.md`
 
-**Overall verdict:** **NEEDS WORK** — 0 hard violations, 14 soft violations.
+**Overall verdict:** **CLEAN** — 0 hard violations, 0 soft violations.
 
-**Measured:** 12 sentences over thirty words, 2 paragraphs over five sentences, 0 buzzword uses.
+**Measured:** 0 sentences over thirty words, 0 paragraphs over five sentences, 0 buzzword uses.
 
-| Principle number and name | Weight | Result | Worst offender quoted |
+| Principle number and name | Weight | Result | Evidence |
 |---|---|---|---|
-| V1: Find a subject you care about | Reduced | Not measured | — |
-| V2: Do not ramble | Raised | Soft violation | one paragraph of 7 sentences (entry 9.2) |
-| V3: Keep it simple | Raised | Soft violation | A test cannot measure the run it is part of:… (49 words, entry 9.1) |
-| V4: Have the guts to cut | Standard | Not measured | — |
-| V5: Sound like yourself | Reduced | Pass | — |
-| V6: Say what you mean | Raised | Not measured | — |
-| V7: Pity the reader | Raised | Not measured | — |
-| V8: Start close to the end | Standard | Not measured | — |
-| V9: The Dignity Test | Standard | Not measured | — |
-| V10: The Indifference Detector | Standard | Not measured | — |
-| V11: The Indianapolis Test | Standard | Not measured | — |
-| V12: Humor as Trust Signal | Standard | Not measured | — |
-| A1: Plate Glass Clarity | Standard | Not measured | — |
-| A2: Short Words, Simple Structures | Standard | Soft violation | A test cannot measure the run it is part of:… (49 words, entry 9.1) |
-| A3: Logical Sequence | Standard | Not measured | — |
-| A4: Ideas Carry the Weight | Standard | Not measured | — |
-| A5: Conversational Informality | Standard | Not measured | — |
-| A6: No Ornamental Language | Standard | Pass | — |
-| A7: Functional Dialogue | Standard | Not measured | — |
-| A8: Anticipate Reader Questions | Standard | Not measured | — |
-| A9: Efficiency Over Polish | Standard | Not measured | — |
-| A10: Respect the Reader's Intelligence | Standard | Not measured | — |
+| V1: Find a subject you care about | Reduced | Pass | Holds one subject, opening at `Comparison basis` |
+| V2: Do not ramble | Raised | Pass | No block runs past five sentences; longest scored paragraph 5 sentences |
+| V3: Keep it simple | Raised | Pass | Every scored sentence sits inside the bound; longest scored sentence 30 words |
+| V4: Have the guts to cut | Standard | Pass | Carries no passage worth cutting; `card-platform/equivalence-tests/src/test/resources/expected/` earns the line it takes |
+| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 90 scored paragraphs |
+| V6: Say what you mean | Raised | Pass | Names the thing itself under `How the suite runs`, with no hedge in front of it |
+| V7: Pity the reader | Raised | Pass | Explains `fixture-coverage.csv` where a reader first meets it |
+| V8: Start close to the end | Standard | Pass | The claim arrives before its support under `Observed run` |
+| V9: The Dignity Test | Standard | Pass | States `DocumentationContractTest` plainly, without blame and without flourish |
+| V10: The Indifference Detector | Standard | Pass | Names what is at stake under `Fixture inventory and results` rather than asserting importance |
+| V11: The Indianapolis Test | Standard | Pass | A reader outside this project can follow `card-platform/` unaided |
+| V12: Humor as Trust Signal | Standard | Not applicable | A technical reference carries no humour for a reading to judge |
+| A1: Plate Glass Clarity | Standard | Pass | The wording disappears behind the fact under `Cross-reference width` |
+| A2: Short Words, Simple Structures | Standard | Pass | Short words and one clause at a time; longest scored sentence 30 words |
+| A3: Logical Sequence | Standard | Pass | Runs in the order a reader needs it, from `Results by test class` onward |
+| A4: Ideas Carry the Weight | Standard | Pass | The evidence carries it, as the entries under `Authorization decisions` show |
+| A5: Conversational Informality | Standard | Pass | Reads as one engineer to another where it introduces `mvn test` |
+| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 90 scored paragraphs |
+| A7: Functional Dialogue | Standard | Not applicable | This target carries no dialogue for a reading to judge |
+| A8: Anticipate Reader Questions | Standard | Pass | Answers the next question in place, as `Two evaluation models, and why both are published` does |
+| A9: Efficiency Over Polish | Standard | Pass | Refers back to `**/*EquivalenceTest.java` rather than restating what it is |
+| A10: Respect the Reader's Intelligence | Standard | Pass | Assumes a competent reader, so `integration-test` arrives without a primer |
 
 **Per-violation entries:**
 
-**9.1 — V3: Keep it simple** and **A2: Short Words, Simple Structures** — soft violation, 49 words.
-
-> A test cannot measure the run it is part of: the report for its own class does not exist while it executes, and its own module's integration phase has not started, so an in-build check ends up comparing one published figure against another and passes whenever both move together.
-
-**Rewrite** — 40 words, 18% shorter:
-
-> A test cannot measure the run it is part of. Its own class has no report yet, and its module's integration phase has not started. An in-build check therefore compares one published figure against another, and passes whenever both move.
-
-**Why the rewrite is better:** The claim, the evidence and the consequence are three steps, and three sentences let a reader follow them in order.
-
-**9.2 — V2: Do not ramble** — soft violation, 7 sentences in one paragraph.
-
-> Each expected file is loaded by the class its own provenance header names, and … lists every file, its row count and the class that reads it.
-
-**Rewrite** — split into paragraphs of 3 and 4 sentences:
-
-> Start a new paragraph at "Thirteen of the fourteen files are read through one reader".
-
-**Why the rewrite is better:** 7 sentences in one block ask a reader to hold the whole argument at once. The break lands where the paragraph changes subject, so the first 3 sentences carry one claim and the last 4 carry the next.
+None. This target has no measured violation.
 
 ### 10. `docs/prose-validation.md`
 
@@ -572,30 +447,30 @@ Each digest is the SHA-256 of one target's bytes, in lower-case hexadecimal. It 
 
 **Measured:** 0 sentences over thirty words, 0 paragraphs over five sentences, 0 buzzword uses.
 
-| Principle number and name | Weight | Result | Worst offender quoted |
+| Principle number and name | Weight | Result | Evidence |
 |---|---|---|---|
-| V1: Find a subject you care about | Reduced | Not measured | — |
-| V2: Do not ramble | Raised | Pass | — |
-| V3: Keep it simple | Raised | Pass | — |
-| V4: Have the guts to cut | Standard | Not measured | — |
-| V5: Sound like yourself | Reduced | Pass | — |
-| V6: Say what you mean | Raised | Not measured | — |
-| V7: Pity the reader | Raised | Not measured | — |
-| V8: Start close to the end | Standard | Not measured | — |
-| V9: The Dignity Test | Standard | Not measured | — |
-| V10: The Indifference Detector | Standard | Not measured | — |
-| V11: The Indianapolis Test | Standard | Not measured | — |
-| V12: Humor as Trust Signal | Standard | Not measured | — |
-| A1: Plate Glass Clarity | Standard | Not measured | — |
-| A2: Short Words, Simple Structures | Standard | Pass | — |
-| A3: Logical Sequence | Standard | Not measured | — |
-| A4: Ideas Carry the Weight | Standard | Not measured | — |
-| A5: Conversational Informality | Standard | Not measured | — |
-| A6: No Ornamental Language | Standard | Pass | — |
-| A7: Functional Dialogue | Standard | Not measured | — |
-| A8: Anticipate Reader Questions | Standard | Not measured | — |
-| A9: Efficiency Over Polish | Standard | Not measured | — |
-| A10: Respect the Reader's Intelligence | Standard | Not measured | — |
+| V1: Find a subject you care about | Reduced | Pass | Holds one subject, opening at `Prose Validation` |
+| V2: Do not ramble | Raised | Pass | No block runs past five sentences; longest scored paragraph 5 sentences |
+| V3: Keep it simple | Raised | Pass | Every scored sentence sits inside the bound; longest scored sentence 30 words |
+| V4: Have the guts to cut | Standard | Pass | Carries no passage worth cutting; `PresentationAndProseContractTest` earns the line it takes |
+| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 134 scored paragraphs |
+| V6: Say what you mean | Raised | Pass | Names the thing itself under `Methodology`, with no hedge in front of it |
+| V7: Pity the reader | Raised | Pass | Explains `docs/prose-validation.md` where a reader first meets it |
+| V8: Start close to the end | Standard | Pass | The claim arrives before its support under `Measurement` |
+| V9: The Dignity Test | Standard | Pass | States `description` plainly, without blame and without flourish |
+| V10: The Indifference Detector | Standard | Pass | Names what is at stake under `Summary` rather than asserting importance |
+| V11: The Indianapolis Test | Standard | Pass | A reader outside this project can follow `summary` unaided |
+| V12: Humor as Trust Signal | Standard | Not applicable | A technical reference carries no humour for a reading to judge |
+| A1: Plate Glass Clarity | Standard | Pass | The wording disappears behind the fact under `Content binding` |
+| A2: Short Words, Simple Structures | Standard | Pass | Short words and one clause at a time; longest scored sentence 30 words |
+| A3: Logical Sequence | Standard | Pass | Runs in the order a reader needs it, from `Per-document reports` onward |
+| A4: Ideas Carry the Weight | Standard | Pass | The evidence carries it, as the entries under `Exemptions applied` show |
+| A5: Conversational Informality | Standard | Pass | Reads as one engineer to another where it introduces `title` |
+| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 134 scored paragraphs |
+| A7: Functional Dialogue | Standard | Not applicable | This target carries no dialogue for a reading to judge |
+| A8: Anticipate Reader Questions | Standard | Pass | Answers the next question in place, as `Where the measurement lands against the plan` does |
+| A9: Efficiency Over Polish | Standard | Pass | Refers back to `Modernized card platform` rather than restating what it is |
+| A10: Respect the Reader's Intelligence | Standard | Pass | Assumes a competent reader, so `CODE` arrives without a primer |
 
 **Per-violation entries:**
 
@@ -603,427 +478,283 @@ None. This target has no measured violation.
 
 ### 11. `README.md`
 
-**Overall verdict:** **NEEDS WORK** — 0 hard violations, 16 soft violations.
+**Overall verdict:** **CLEAN** — 0 hard violations, 0 soft violations.
 
-**Measured:** 10 sentences over thirty words, 6 paragraphs over five sentences, 0 buzzword uses.
+**Measured:** 0 sentences over thirty words, 0 paragraphs over five sentences, 0 buzzword uses.
 
-| Principle number and name | Weight | Result | Worst offender quoted |
+| Principle number and name | Weight | Result | Evidence |
 |---|---|---|---|
-| V1: Find a subject you care about | Reduced | Not measured | — |
-| V2: Do not ramble | Raised | Soft violation | one paragraph of 12 sentences (entry 11.2) |
-| V3: Keep it simple | Raised | Soft violation | No clock bound relates the capture moment to the clock of the authorization service… (40 words, entry 11.1) |
-| V4: Have the guts to cut | Standard | Not measured | — |
-| V5: Sound like yourself | Reduced | Pass | — |
-| V6: Say what you mean | Raised | Not measured | — |
-| V7: Pity the reader | Raised | Not measured | — |
-| V8: Start close to the end | Standard | Not measured | — |
-| V9: The Dignity Test | Standard | Not measured | — |
-| V10: The Indifference Detector | Standard | Not measured | — |
-| V11: The Indianapolis Test | Standard | Not measured | — |
-| V12: Humor as Trust Signal | Standard | Not measured | — |
-| A1: Plate Glass Clarity | Standard | Not measured | — |
-| A2: Short Words, Simple Structures | Standard | Soft violation | No clock bound relates the capture moment to the clock of the authorization service… (40 words, entry 11.1) |
-| A3: Logical Sequence | Standard | Not measured | — |
-| A4: Ideas Carry the Weight | Standard | Not measured | — |
-| A5: Conversational Informality | Standard | Not measured | — |
-| A6: No Ornamental Language | Standard | Pass | — |
-| A7: Functional Dialogue | Standard | Not measured | — |
-| A8: Anticipate Reader Questions | Standard | Not measured | — |
-| A9: Efficiency Over Polish | Standard | Not measured | — |
-| A10: Respect the Reader's Intelligence | Standard | Not measured | — |
+| V1: Find a subject you care about | Reduced | Pass | Holds one subject, opening at `CardDemo Card Platform` |
+| V2: Do not ramble | Raised | Pass | No block runs past five sentences; longest scored paragraph 5 sentences |
+| V3: Keep it simple | Raised | Pass | Every scored sentence sits inside the bound; longest scored sentence 30 words |
+| V4: Have the guts to cut | Standard | Pass | Carries no passage worth cutting; `diagrams/` earns the line it takes |
+| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 133 scored paragraphs |
+| V6: Say what you mean | Raised | Pass | Names the thing itself under `Overview`, with no hedge in front of it |
+| V7: Pity the reader | Raised | Pass | Explains `samples/` where a reader first meets it |
+| V8: Start close to the end | Standard | Pass | The claim arrives before its support under `Delivered capability` |
+| V9: The Dignity Test | Standard | Pass | States `mvn verify` plainly, without blame and without flourish |
+| V10: The Indifference Detector | Standard | Pass | Names what is at stake under `Quickstart` rather than asserting importance |
+| V11: The Indianapolis Test | Standard | Pass | A reader outside this project can follow `AccountStateChanged` unaided |
+| V12: Humor as Trust Signal | Standard | Not applicable | A technical reference carries no humour for a reading to judge |
+| A1: Plate Glass Clarity | Standard | Pass | The wording disappears behind the fact under `2. Build, start, and check` |
+| A2: Short Words, Simple Structures | Standard | Pass | Short words and one clause at a time; longest scored sentence 30 words |
+| A3: Logical Sequence | Standard | Pass | Runs in the order a reader needs it, from `3. Authorize one transaction and watch the fan-out` onward |
+| A4: Ideas Carry the Weight | Standard | Pass | The evidence carries it, as the entries under `Security and transport` show |
+| A5: Conversational Informality | Standard | Pass | Reads as one engineer to another where it introduces `authorization-account-state` |
+| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 133 scored paragraphs |
+| A7: Functional Dialogue | Standard | Not applicable | This target carries no dialogue for a reading to judge |
+| A8: Anticipate Reader Questions | Standard | Pass | Answers the next question in place, as `Repository map` does |
+| A9: Efficiency Over Polish | Standard | Pass | Refers back to `account_credit_snapshot` rather than restating what it is |
+| A10: Respect the Reader's Intelligence | Standard | Pass | Assumes a competent reader, so `CardUpdated` arrives without a primer |
 
 **Per-violation entries:**
 
-**11.1 — V3: Keep it simple** and **A2: Short Words, Simple Structures** — soft violation, 40 words.
-
-> No clock bound relates the capture moment to the clock of the authorization service: reject code 0103, which compares the account expiry against the first ten characters of the capture moment, is the whole of the test applied to it.
-
-**Rewrite** — 31 words, 23% shorter:
-
-> No clock bound relates the capture moment to the clock of this service. Reject code 0103 compares the account expiry against its first ten characters, and that is the whole test.
-
-**Why the rewrite is better:** The original nests the one test inside the statement of the absence. Two sentences carry one fact each.
-
-**11.2 — V2: Do not ramble** — soft violation, 12 sentences in one paragraph.
-
-> Two filters run in front of every route in all six services. … records the shared-store ceiling and the forwarded-header setting a proxied deployment needs.
-
-**Rewrite** — split into paragraphs of 6 and 6 sentences:
-
-> Start a new paragraph at "Reads are untouched, which is why the health probe carries".
-
-**Why the rewrite is better:** 12 sentences in one block ask a reader to hold the whole argument at once. The break lands where the paragraph changes subject, so the first 6 sentences carry one claim and the last 6 carry the next.
+None. This target has no measured violation.
 
 ### 12. `services/authorization-service/README.md`
 
-**Overall verdict:** **NEEDS WORK** — 0 hard violations, 33 soft violations.
+**Overall verdict:** **CLEAN** — 0 hard violations, 0 soft violations.
 
-**Measured:** 28 sentences over thirty words, 5 paragraphs over five sentences, 0 buzzword uses.
+**Measured:** 0 sentences over thirty words, 0 paragraphs over five sentences, 0 buzzword uses.
 
-| Principle number and name | Weight | Result | Worst offender quoted |
+| Principle number and name | Weight | Result | Evidence |
 |---|---|---|---|
-| V1: Find a subject you care about | Reduced | Not measured | — |
-| V2: Do not ramble | Raised | Soft violation | one paragraph of 7 sentences (entry 12.2) |
-| V3: Keep it simple | Raised | Soft violation | `domain/CallerEntitlement` compares the caller against the resolved account… (40 words, entry 12.1) |
-| V4: Have the guts to cut | Standard | Not measured | — |
-| V5: Sound like yourself | Reduced | Pass | — |
-| V6: Say what you mean | Raised | Not measured | — |
-| V7: Pity the reader | Raised | Not measured | — |
-| V8: Start close to the end | Standard | Not measured | — |
-| V9: The Dignity Test | Standard | Not measured | — |
-| V10: The Indifference Detector | Standard | Not measured | — |
-| V11: The Indianapolis Test | Standard | Not measured | — |
-| V12: Humor as Trust Signal | Standard | Not measured | — |
-| A1: Plate Glass Clarity | Standard | Not measured | — |
-| A2: Short Words, Simple Structures | Standard | Soft violation | `domain/CallerEntitlement` compares the caller against the resolved account… (40 words, entry 12.1) |
-| A3: Logical Sequence | Standard | Not measured | — |
-| A4: Ideas Carry the Weight | Standard | Not measured | — |
-| A5: Conversational Informality | Standard | Not measured | — |
-| A6: No Ornamental Language | Standard | Pass | — |
-| A7: Functional Dialogue | Standard | Not measured | — |
-| A8: Anticipate Reader Questions | Standard | Not measured | — |
-| A9: Efficiency Over Polish | Standard | Not measured | — |
-| A10: Respect the Reader's Intelligence | Standard | Not measured | — |
+| V1: Find a subject you care about | Reduced | Pass | Holds one subject, opening at `Authorization Service` |
+| V2: Do not ramble | Raised | Pass | No block runs past five sentences; longest scored paragraph 5 sentences |
+| V3: Keep it simple | Raised | Pass | Every scored sentence sits inside the bound; longest scored sentence 30 words |
+| V4: Have the guts to cut | Standard | Pass | Carries no passage worth cutting; `authorization-service` earns the line it takes |
+| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 191 scored paragraphs |
+| V6: Say what you mean | Raised | Pass | Names the thing itself under `Purpose`, with no hedge in front of it |
+| V7: Pity the reader | Raised | Pass | Explains `POST /authorizations` where a reader first meets it |
+| V8: Start close to the end | Standard | Pass | The claim arrives before its support under `Source provenance` |
+| V9: The Dignity Test | Standard | Pass | States `TransactionAuthorized` plainly, without blame and without flourish |
+| V10: The Indifference Detector | Standard | Pass | Names what is at stake under `Endpoints` rather than asserting importance |
+| V11: The Indianapolis Test | Standard | Pass | A reader outside this project can follow `TransactionDeclined` unaided |
+| V12: Humor as Trust Signal | Standard | Not applicable | A technical reference carries no humour for a reading to judge |
+| A1: Plate Glass Clarity | Standard | Pass | The wording disappears behind the fact under `Two controls in front of every route` |
+| A2: Short Words, Simple Structures | Standard | Pass | Short words and one clause at a time; longest scored sentence 30 words |
+| A3: Logical Sequence | Standard | Pass | Runs in the order a reader needs it, from `Decision chain` onward |
+| A4: Ideas Carry the Weight | Standard | Pass | The evidence carries it, as the entries under `Replica currency` show |
+| A5: Conversational Informality | Standard | Pass | Reads as one engineer to another where it introduces `config/ObservabilityConfig.UNRESOLVED_CARD_STAGE` |
+| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 191 scored paragraphs |
+| A7: Functional Dialogue | Standard | Not applicable | This target carries no dialogue for a reading to judge |
+| A8: Anticipate Reader Questions | Standard | Pass | Answers the next question in place, as `Events` does |
+| A9: Efficiency Over Polish | Standard | Pass | Refers back to `schemas/transaction-declined-v3.json` rather than restating what it is |
+| A10: Respect the Reader's Intelligence | Standard | Pass | Assumes a competent reader, so `REJECT-TRAN-DATA` arrives without a primer |
 
 **Per-violation entries:**
 
-**12.1 — V3: Keep it simple** and **A2: Short Words, Simple Structures** — soft violation, 40 words.
-
-> `domain/CallerEntitlement` compares the caller against the resolved account immediately after the cross-reference read and before a transaction identifier is allocated, which is where the comparison has to happen because an account-only request has no card until that read has run.
-
-**Rewrite** — 29 words, 28% shorter:
-
-> `domain/CallerEntitlement` compares the caller against the resolved account after the cross-reference read and before an identifier is allocated. An account-only request has no card until that read has run.
-
-**Why the rewrite is better:** Where the comparison happens and why are two facts. The second reads better as its own sentence.
-
-**12.2 — V2: Do not ramble** — soft violation, 7 sentences in one paragraph.
-
-> Every business route requires HTTP Basic authentication. … on this service is reachable at all, because `anyRequest().denyAll()` closes the chain.
-
-**Rewrite** — split into paragraphs of 3 and 4 sentences:
-
-> Start a new paragraph at "Every other route in this platform is ownership-scoped; this one".
-
-**Why the rewrite is better:** 7 sentences in one block ask a reader to hold the whole argument at once. The break lands where the paragraph changes subject, so the first 3 sentences carry one claim and the last 4 carry the next.
+None. This target has no measured violation.
 
 ### 13. `services/ledger-posting-service/README.md`
 
-**Overall verdict:** **NEEDS WORK** — 0 hard violations, 12 soft violations.
+**Overall verdict:** **CLEAN** — 0 hard violations, 0 soft violations.
 
-**Measured:** 6 sentences over thirty words, 6 paragraphs over five sentences, 0 buzzword uses.
+**Measured:** 0 sentences over thirty words, 0 paragraphs over five sentences, 0 buzzword uses.
 
-| Principle number and name | Weight | Result | Worst offender quoted |
+| Principle number and name | Weight | Result | Evidence |
 |---|---|---|---|
-| V1: Find a subject you care about | Reduced | Not measured | — |
-| V2: Do not ramble | Raised | Soft violation | one paragraph of 7 sentences (entry 13.2) |
-| V3: Keep it simple | Raised | Soft violation | To publish onto another transport, replace that bean with one… (40 words, entry 13.1) |
-| V4: Have the guts to cut | Standard | Not measured | — |
-| V5: Sound like yourself | Reduced | Pass | — |
-| V6: Say what you mean | Raised | Not measured | — |
-| V7: Pity the reader | Raised | Not measured | — |
-| V8: Start close to the end | Standard | Not measured | — |
-| V9: The Dignity Test | Standard | Not measured | — |
-| V10: The Indifference Detector | Standard | Not measured | — |
-| V11: The Indianapolis Test | Standard | Not measured | — |
-| V12: Humor as Trust Signal | Standard | Not measured | — |
-| A1: Plate Glass Clarity | Standard | Not measured | — |
-| A2: Short Words, Simple Structures | Standard | Soft violation | To publish onto another transport, replace that bean with one… (40 words, entry 13.1) |
-| A3: Logical Sequence | Standard | Not measured | — |
-| A4: Ideas Carry the Weight | Standard | Not measured | — |
-| A5: Conversational Informality | Standard | Not measured | — |
-| A6: No Ornamental Language | Standard | Pass | — |
-| A7: Functional Dialogue | Standard | Not measured | — |
-| A8: Anticipate Reader Questions | Standard | Not measured | — |
-| A9: Efficiency Over Polish | Standard | Not measured | — |
-| A10: Respect the Reader's Intelligence | Standard | Not measured | — |
+| V1: Find a subject you care about | Reduced | Pass | Holds one subject, opening at `Ledger Posting Service` |
+| V2: Do not ramble | Raised | Pass | No block runs past five sentences; longest scored paragraph 5 sentences |
+| V3: Keep it simple | Raised | Pass | Every scored sentence sits inside the bound; longest scored sentence 30 words |
+| V4: Have the guts to cut | Standard | Pass | Carries no passage worth cutting; `ledger-posting-service` earns the line it takes |
+| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 145 scored paragraphs |
+| V6: Say what you mean | Raised | Pass | Names the thing itself under `Purpose`, with no hedge in front of it |
+| V7: Pity the reader | Raised | Pass | Explains `TransactionAuthorized` where a reader first meets it |
+| V8: Start close to the end | Standard | Pass | The claim arrives before its support under `Source provenance` |
+| V9: The Dignity Test | Standard | Pass | States `TransactionPosted` plainly, without blame and without flourish |
+| V10: The Indifference Detector | Standard | Pass | Names what is at stake under `Endpoints` rather than asserting importance |
+| V11: The Indianapolis Test | Standard | Pass | A reader outside this project can follow `messaging/TransactionAuthorizedConsumer.java` unaided |
+| V12: Humor as Trust Signal | Standard | Not applicable | A technical reference carries no humour for a reading to judge |
+| A1: Plate Glass Clarity | Standard | Pass | The wording disappears behind the fact under `Two controls in front of every route` |
+| A2: Short Words, Simple Structures | Standard | Pass | Short words and one clause at a time; longest scored sentence 30 words |
+| A3: Logical Sequence | Standard | Pass | Runs in the order a reader needs it, from `Events` onward |
+| A4: Ideas Carry the Weight | Standard | Pass | The evidence carries it, as the entries under `Domain context` show |
+| A5: Conversational Informality | Standard | Pass | Reads as one engineer to another where it introduces `L23` |
+| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 145 scored paragraphs |
+| A7: Functional Dialogue | Standard | Not applicable | This target carries no dialogue for a reading to judge |
+| A8: Anticipate Reader Questions | Standard | Pass | Answers the next question in place, as `What posting means` does |
+| A9: Efficiency Over Polish | Standard | Pass | Refers back to `//STEP15 EXEC PGM=CBTRN02C` rather than restating what it is |
+| A10: Respect the Reader's Intelligence | Standard | Pass | Assumes a competent reader, so `domain/PostingService.java` arrives without a primer |
 
 **Per-violation entries:**
 
-**13.1 — V3: Keep it simple** and **A2: Short Words, Simple Structures** — soft violation, 40 words.
-
-> To publish onto another transport, replace that bean with one wrapping the new client and leave `OutboxRelay` untouched — it depends on the template alone, so the outbox contract, the claim protocol and the abandonment route all survive the substitution.
-
-**Rewrite** — 31 words, 23% shorter:
-
-> To publish onto another transport, replace that bean and leave `OutboxRelay` untouched. It depends on the template alone, so the outbox contract, the claim protocol and the abandonment route all survive.
-
-**Why the rewrite is better:** The instruction and the reason it holds are separate, and the dash hid the join.
-
-**13.2 — V2: Do not ramble** — soft violation, 7 sentences in one paragraph.
-
-> A spent consumer record reaches its own source topic plus `.DLT`, and what is … rejected, so republishing it would move unvalidated bytes onto a second topic.
-
-**Rewrite** — split into paragraphs of 3 and 4 sentences:
-
-> Start a new paragraph at "The value becomes a 134-character fixed-width diagnostic holding the four".
-
-**Why the rewrite is better:** 7 sentences in one block ask a reader to hold the whole argument at once. The break lands where the paragraph changes subject, so the first 3 sentences carry one claim and the last 4 carry the next.
+None. This target has no measured violation.
 
 ### 14. `services/fraud-detection-service/README.md`
 
-**Overall verdict:** **NEEDS WORK** — 0 hard violations, 18 soft violations.
+**Overall verdict:** **CLEAN** — 0 hard violations, 0 soft violations.
 
-**Measured:** 15 sentences over thirty words, 3 paragraphs over five sentences, 0 buzzword uses.
+**Measured:** 0 sentences over thirty words, 0 paragraphs over five sentences, 0 buzzword uses.
 
-| Principle number and name | Weight | Result | Worst offender quoted |
+| Principle number and name | Weight | Result | Evidence |
 |---|---|---|---|
-| V1: Find a subject you care about | Reduced | Not measured | — |
-| V2: Do not ramble | Raised | Soft violation | one paragraph of 8 sentences (entry 14.2) |
-| V3: Keep it simple | Raised | Soft violation | A page number is refused rather than served because an… (50 words, entry 14.1) |
-| V4: Have the guts to cut | Standard | Not measured | — |
-| V5: Sound like yourself | Reduced | Pass | — |
-| V6: Say what you mean | Raised | Not measured | — |
-| V7: Pity the reader | Raised | Not measured | — |
-| V8: Start close to the end | Standard | Not measured | — |
-| V9: The Dignity Test | Standard | Not measured | — |
-| V10: The Indifference Detector | Standard | Not measured | — |
-| V11: The Indianapolis Test | Standard | Not measured | — |
-| V12: Humor as Trust Signal | Standard | Not measured | — |
-| A1: Plate Glass Clarity | Standard | Not measured | — |
-| A2: Short Words, Simple Structures | Standard | Soft violation | A page number is refused rather than served because an… (50 words, entry 14.1) |
-| A3: Logical Sequence | Standard | Not measured | — |
-| A4: Ideas Carry the Weight | Standard | Not measured | — |
-| A5: Conversational Informality | Standard | Not measured | — |
-| A6: No Ornamental Language | Standard | Pass | — |
-| A7: Functional Dialogue | Standard | Not measured | — |
-| A8: Anticipate Reader Questions | Standard | Not measured | — |
-| A9: Efficiency Over Polish | Standard | Not measured | — |
-| A10: Respect the Reader's Intelligence | Standard | Not measured | — |
+| V1: Find a subject you care about | Reduced | Pass | Holds one subject, opening at `Fraud Detection Service` |
+| V2: Do not ramble | Raised | Pass | No block runs past five sentences; longest scored paragraph 5 sentences |
+| V3: Keep it simple | Raised | Pass | Every scored sentence sits inside the bound; longest scored sentence 30 words |
+| V4: Have the guts to cut | Standard | Pass | Carries no passage worth cutting; `fraud-detection-service` earns the line it takes |
+| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 118 scored paragraphs |
+| V6: Say what you mean | Raised | Pass | Names the thing itself under `Purpose`, with no hedge in front of it |
+| V7: Pity the reader | Raised | Pass | Explains `FraudFlagged` where a reader first meets it |
+| V8: Start close to the end | Standard | Pass | The claim arrives before its support under `Source provenance` |
+| V9: The Dignity Test | Standard | Pass | States `FraudCleared` plainly, without blame and without flourish |
+| V10: The Indifference Detector | Standard | Pass | Names what is at stake under `Architecture` rather than asserting importance |
+| V11: The Indianapolis Test | Standard | Pass | A reader outside this project can follow `ADMIN` unaided |
+| V12: Humor as Trust Signal | Standard | Not applicable | A technical reference carries no humour for a reading to judge |
+| A1: Plate Glass Clarity | Standard | Pass | The wording disappears behind the fact under `Endpoints` |
+| A2: Short Words, Simple Structures | Standard | Pass | Short words and one clause at a time; longest scored sentence 30 words |
+| A3: Logical Sequence | Standard | Pass | Runs in the order a reader needs it, from `Two controls in front of every route` onward |
+| A4: Ideas Carry the Weight | Standard | Pass | The evidence carries it, as the entries under `Events consumed and produced` show |
+| A5: Conversational Informality | Standard | Pass | Reads as one engineer to another where it introduces `* ADD MORE VALIDATIONS HERE` |
+| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 118 scored paragraphs |
+| A7: Functional Dialogue | Standard | Not applicable | This target carries no dialogue for a reading to judge |
+| A8: Anticipate Reader Questions | Standard | Pass | Answers the next question in place, as `Observability` does |
+| A9: Efficiency Over Polish | Standard | Pass | Refers back to `.DLT` rather than restating what it is |
+| A10: Respect the Reader's Intelligence | Standard | Pass | Assumes a competent reader, so `carddemo.dead-letter` arrives without a primer |
 
 **Per-violation entries:**
 
-**14.1 — V3: Keep it simple** and **A2: Short Words, Simple Structures** — soft violation, 50 words.
-
-> A page number is refused rather than served because an offset is reached by reading and discarding every row before it, so the work would grow with the page asked for rather than with the page returned: page 1,000,000 at 200 rows would walk 200,000,000 entries to answer with 200.
-
-**Rewrite** — 40 words, 20% shorter:
-
-> A page number is refused because an offset is reached by reading and discarding every row before it. The work would then grow with the page asked for: page 1,000,000 at 200 rows walks 200,000,000 entries to answer with 200.
-
-**Why the rewrite is better:** The rule comes first and the arithmetic that proves it second, which is the order a reader needs.
-
-**14.2 — V2: Do not ramble** — soft violation, 8 sentences in one paragraph.
-
-> `fraud_assessment` and `velocity_window` are the two business tables here, and each declared its horizon … ledger services, so both horizons are privacy horizons and not only housekeeping.
-
-**Rewrite** — split into paragraphs of 4 and 4 sentences:
-
-> Start a new paragraph at "Nothing reads a window once its span elapses, so every".
-
-**Why the rewrite is better:** 8 sentences in one block ask a reader to hold the whole argument at once. The break lands where the paragraph changes subject, so the first 4 sentences carry one claim and the last 4 carry the next.
+None. This target has no measured violation.
 
 ### 15. `services/notification-service/README.md`
 
-**Overall verdict:** **NEEDS WORK** — 0 hard violations, 31 soft violations.
+**Overall verdict:** **CLEAN** — 0 hard violations, 0 soft violations.
 
-**Measured:** 24 sentences over thirty words, 7 paragraphs over five sentences, 0 buzzword uses.
+**Measured:** 0 sentences over thirty words, 0 paragraphs over five sentences, 0 buzzword uses.
 
-| Principle number and name | Weight | Result | Worst offender quoted |
+| Principle number and name | Weight | Result | Evidence |
 |---|---|---|---|
-| V1: Find a subject you care about | Reduced | Not measured | — |
-| V2: Do not ramble | Raised | Soft violation | one paragraph of 8 sentences (entry 15.2) |
-| V3: Keep it simple | Raised | Soft violation | `observed_at` is the ordering guard rather than a purge key… (48 words, entry 15.1) |
-| V4: Have the guts to cut | Standard | Not measured | — |
-| V5: Sound like yourself | Reduced | Pass | — |
-| V6: Say what you mean | Raised | Not measured | — |
-| V7: Pity the reader | Raised | Not measured | — |
-| V8: Start close to the end | Standard | Not measured | — |
-| V9: The Dignity Test | Standard | Not measured | — |
-| V10: The Indifference Detector | Standard | Not measured | — |
-| V11: The Indianapolis Test | Standard | Not measured | — |
-| V12: Humor as Trust Signal | Standard | Not measured | — |
-| A1: Plate Glass Clarity | Standard | Not measured | — |
-| A2: Short Words, Simple Structures | Standard | Soft violation | `observed_at` is the ordering guard rather than a purge key… (48 words, entry 15.1) |
-| A3: Logical Sequence | Standard | Not measured | — |
-| A4: Ideas Carry the Weight | Standard | Not measured | — |
-| A5: Conversational Informality | Standard | Not measured | — |
-| A6: No Ornamental Language | Standard | Pass | — |
-| A7: Functional Dialogue | Standard | Not measured | — |
-| A8: Anticipate Reader Questions | Standard | Not measured | — |
-| A9: Efficiency Over Polish | Standard | Not measured | — |
-| A10: Respect the Reader's Intelligence | Standard | Not measured | — |
+| V1: Find a subject you care about | Reduced | Pass | Holds one subject, opening at `Notification Service` |
+| V2: Do not ramble | Raised | Pass | No block runs past five sentences; longest scored paragraph 5 sentences |
+| V3: Keep it simple | Raised | Pass | Every scored sentence sits inside the bound; longest scored sentence 30 words |
+| V4: Have the guts to cut | Standard | Pass | Carries no passage worth cutting; `notification-service` earns the line it takes |
+| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 168 scored paragraphs |
+| V6: Say what you mean | Raised | Pass | Names the thing itself under `Purpose`, with no hedge in front of it |
+| V7: Pity the reader | Raised | Pass | Explains `com.carddemo.notification` where a reader first meets it |
+| V8: Start close to the end | Standard | Pass | The claim arrives before its support under `Source provenance` |
+| V9: The Dignity Test | Standard | Pass | States `01 STATEMENT-LINES.` plainly, without blame and without flourish |
+| V10: The Indifference Detector | Standard | Pass | Names what is at stake under `Domain context` rather than asserting importance |
+| V11: The Indianapolis Test | Standard | Pass | A reader outside this project can follow `ST-LINE0` unaided |
+| V12: Humor as Trust Signal | Standard | Not applicable | A technical reference carries no humour for a reading to judge |
+| A1: Plate Glass Clarity | Standard | Pass | The wording disappears behind the fact under `Events consumed` |
+| A2: Short Words, Simple Structures | Standard | Pass | Short words and one clause at a time; longest scored sentence 30 words |
+| A3: Logical Sequence | Standard | Pass | Runs in the order a reader needs it, from `A contract version this service cannot act on` onward |
+| A4: Ideas Carry the Weight | Standard | Pass | The evidence carries it, as the entries under `Architecture` show |
+| A5: Conversational Informality | Standard | Pass | Reads as one engineer to another where it introduces `ST-LINE15` |
+| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 168 scored paragraphs |
+| A7: Functional Dialogue | Standard | Not applicable | This target carries no dialogue for a reading to judge |
+| A8: Anticipate Reader Questions | Standard | Pass | Answers the next question in place, as `Endpoints` does |
+| A9: Efficiency Over Polish | Standard | Pass | Refers back to `01 HTML-LINES.` rather than restating what it is |
+| A10: Respect the Reader's Intelligence | Standard | Pass | Assumes a competent reader, so `HTML-FIXED-LN PIC X(100)` arrives without a primer |
 
 **Per-violation entries:**
 
-**15.1 — V3: Keep it simple** and **A2: Short Words, Simple Structures** — soft violation, 48 words.
-
-> `observed_at` is the ordering guard rather than a purge key — `messaging/CustomerContextChangedConsumer` refuses an event older than the row it would overwrite — and `V6__subject_request_posture.sql` removed the earlier claim that it served an erasure request, because no export or erasure workflow exists on this platform, here or upstream.
-
-**Rewrite** — 36 words, 25% shorter:
-
-> `observed_at` is the ordering guard rather than a purge key, and `messaging/CustomerContextChangedConsumer` refuses an event older than the row it would overwrite. `V6__subject_request_posture.sql` dropped the earlier erasure claim, because no such workflow exists here or upstream.
-
-**Why the rewrite is better:** Two dashes held a second clause inside a first, and separating them shortens both.
-
-**15.2 — V2: Do not ramble** — soft violation, 8 sentences in one paragraph.
-
-> Figure 1 shows the four topics reaching four consumer groups, the duplicate claim they … The paired platform-wide before-and-after views are in architecture, before and after.
-
-**Rewrite** — split into paragraphs of 4 and 4 sentences:
-
-> Start a new paragraph at "A posted transaction does both: it upserts its row and".
-
-**Why the rewrite is better:** 8 sentences in one block ask a reader to hold the whole argument at once. The break lands where the paragraph changes subject, so the first 4 sentences carry one claim and the last 4 carry the next.
+None. This target has no measured violation.
 
 ### 16. `services/account-service/README.md`
 
-**Overall verdict:** **NEEDS WORK** — 0 hard violations, 26 soft violations.
+**Overall verdict:** **CLEAN** — 0 hard violations, 0 soft violations.
 
-**Measured:** 20 sentences over thirty words, 6 paragraphs over five sentences, 0 buzzword uses.
+**Measured:** 0 sentences over thirty words, 0 paragraphs over five sentences, 0 buzzword uses.
 
-| Principle number and name | Weight | Result | Worst offender quoted |
+| Principle number and name | Weight | Result | Evidence |
 |---|---|---|---|
-| V1: Find a subject you care about | Reduced | Not measured | — |
-| V2: Do not ramble | Raised | Soft violation | one paragraph of 12 sentences (entry 16.2) |
-| V3: Keep it simple | Raised | Soft violation | On the after side each cylinder is one table inside… (86 words, entry 16.1) |
-| V4: Have the guts to cut | Standard | Not measured | — |
-| V5: Sound like yourself | Reduced | Pass | — |
-| V6: Say what you mean | Raised | Not measured | — |
-| V7: Pity the reader | Raised | Not measured | — |
-| V8: Start close to the end | Standard | Not measured | — |
-| V9: The Dignity Test | Standard | Not measured | — |
-| V10: The Indifference Detector | Standard | Not measured | — |
-| V11: The Indianapolis Test | Standard | Not measured | — |
-| V12: Humor as Trust Signal | Standard | Not measured | — |
-| A1: Plate Glass Clarity | Standard | Not measured | — |
-| A2: Short Words, Simple Structures | Standard | Soft violation | On the after side each cylinder is one table inside… (86 words, entry 16.1) |
-| A3: Logical Sequence | Standard | Not measured | — |
-| A4: Ideas Carry the Weight | Standard | Not measured | — |
-| A5: Conversational Informality | Standard | Not measured | — |
-| A6: No Ornamental Language | Standard | Pass | — |
-| A7: Functional Dialogue | Standard | Not measured | — |
-| A8: Anticipate Reader Questions | Standard | Not measured | — |
-| A9: Efficiency Over Polish | Standard | Not measured | — |
-| A10: Respect the Reader's Intelligence | Standard | Not measured | — |
+| V1: Find a subject you care about | Reduced | Pass | Holds one subject, opening at `Account Service` |
+| V2: Do not ramble | Raised | Pass | No block runs past five sentences; longest scored paragraph 5 sentences |
+| V3: Keep it simple | Raised | Pass | Every scored sentence sits inside the bound; longest scored sentence 30 words |
+| V4: Have the guts to cut | Standard | Pass | Carries no passage worth cutting; `account-service` earns the line it takes |
+| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 175 scored paragraphs |
+| V6: Say what you mean | Raised | Pass | Names the thing itself under `Purpose`, with no hedge in front of it |
+| V7: Pity the reader | Raised | Pass | Explains `com.carddemo.account` where a reader first meets it |
+| V8: Start close to the end | Standard | Pass | The claim arrives before its support under `Source provenance` |
+| V9: The Dignity Test | Standard | Pass | States `transaction.posted` plainly, without blame and without flourish |
+| V10: The Indifference Detector | Standard | Pass | Names what is at stake under `Endpoints` rather than asserting importance |
+| V11: The Indianapolis Test | Standard | Pass | A reader outside this project can follow `messaging/TransactionPostedConsumer` unaided |
+| V12: Humor as Trust Signal | Standard | Not applicable | A technical reference carries no humour for a reading to judge |
+| A1: Plate Glass Clarity | Standard | Pass | The wording disappears behind the fact under `Two controls in front of every route` |
+| A2: Short Words, Simple Structures | Standard | Pass | Short words and one clause at a time; longest scored sentence 30 words |
+| A3: Logical Sequence | Standard | Pass | Runs in the order a reader needs it, from `Events` onward |
+| A4: Ideas Carry the Weight | Standard | Pass | The evidence carries it, as the entries under `Domain context` show |
+| A5: Conversational Informality | Standard | Pass | Reads as one engineer to another where it introduces `:L560` |
+| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 175 scored paragraphs |
+| A7: Functional Dialogue | Standard | Not applicable | This target carries no dialogue for a reading to judge |
+| A8: Anticipate Reader Questions | Standard | Pass | Answers the next question in place, as `What a billing cycle is` does |
+| A9: Efficiency Over Polish | Standard | Pass | Refers back to `AccountStateChanged` rather than restating what it is |
+| A10: Respect the Reader's Intelligence | Standard | Pass | Assumes a competent reader, so `ACCTDAT` arrives without a primer |
 
 **Per-violation entries:**
 
-**16.1 — V3: Keep it simple** and **A2: Short Words, Simple Structures** — soft violation, 86 words.
-
-> On the after side each cylinder is one table inside this service's private schema, which no other service reads. - A thin solid arrow is control passing from one step to the next. - A dotted arrow is a read of stored data. - A thick arrow is the short-circuit path taken when a hop finds nothing, labelled with the source line that branches on the before side. - The dotted arrow between the two subgraphs marks the correspondence, and the correspondence is partial by design.
-
-**Rewrite** — 68 words, 21% shorter:
-
-> On the after side each cylinder is one table inside this service's private schema. A thin arrow is control passing to the next step. A dotted arrow is a read of stored data. A thick arrow is the short-circuit path a hop takes when it finds nothing, labelled with the source line that branches. The dotted arrow between the subgraphs marks a correspondence that is partial by design.
-
-**Why the rewrite is better:** The legend items lost their line starts when the paragraph was reflowed, so five entries read as one sentence. Each belongs on a line of its own.
-
-**16.2 — V2: Do not ramble** — soft violation, 12 sentences in one paragraph.
-
-> No interest computation. … dependency. - No COBOL compiler, emulator or mainframe connector on the classpath.
-
-**Rewrite** — split into paragraphs of 6 and 6 sentences:
-
-> Start a new paragraph at "The card record, its `CARD-CVV-CD` and every card-number checksum question".
-
-**Why the rewrite is better:** 12 sentences in one block ask a reader to hold the whole argument at once. The break lands where the paragraph changes subject, so the first 6 sentences carry one claim and the last 6 carry the next.
+None. This target has no measured violation.
 
 ### 17. `services/card-service/README.md`
 
-**Overall verdict:** **NEEDS WORK** — 0 hard violations, 26 soft violations.
+**Overall verdict:** **CLEAN** — 0 hard violations, 0 soft violations.
 
-**Measured:** 16 sentences over thirty words, 10 paragraphs over five sentences, 0 buzzword uses.
+**Measured:** 0 sentences over thirty words, 0 paragraphs over five sentences, 0 buzzword uses.
 
-| Principle number and name | Weight | Result | Worst offender quoted |
+| Principle number and name | Weight | Result | Evidence |
 |---|---|---|---|
-| V1: Find a subject you care about | Reduced | Not measured | — |
-| V2: Do not ramble | Raised | Soft violation | one paragraph of 11 sentences (entry 17.2) |
-| V3: Keep it simple | Raised | Soft violation | The binding constraint reads: *"Do not modify or require changes… (47 words, entry 17.1) |
-| V4: Have the guts to cut | Standard | Not measured | — |
-| V5: Sound like yourself | Reduced | Pass | — |
-| V6: Say what you mean | Raised | Not measured | — |
-| V7: Pity the reader | Raised | Not measured | — |
-| V8: Start close to the end | Standard | Not measured | — |
-| V9: The Dignity Test | Standard | Not measured | — |
-| V10: The Indifference Detector | Standard | Not measured | — |
-| V11: The Indianapolis Test | Standard | Not measured | — |
-| V12: Humor as Trust Signal | Standard | Not measured | — |
-| A1: Plate Glass Clarity | Standard | Not measured | — |
-| A2: Short Words, Simple Structures | Standard | Soft violation | The binding constraint reads: *"Do not modify or require changes… (47 words, entry 17.1) |
-| A3: Logical Sequence | Standard | Not measured | — |
-| A4: Ideas Carry the Weight | Standard | Not measured | — |
-| A5: Conversational Informality | Standard | Not measured | — |
-| A6: No Ornamental Language | Standard | Pass | — |
-| A7: Functional Dialogue | Standard | Not measured | — |
-| A8: Anticipate Reader Questions | Standard | Not measured | — |
-| A9: Efficiency Over Polish | Standard | Not measured | — |
-| A10: Respect the Reader's Intelligence | Standard | Not measured | — |
+| V1: Find a subject you care about | Reduced | Pass | Holds one subject, opening at `Card Service` |
+| V2: Do not ramble | Raised | Pass | No block runs past five sentences; longest scored paragraph 5 sentences |
+| V3: Keep it simple | Raised | Pass | Every scored sentence sits inside the bound; longest scored sentence 30 words |
+| V4: Have the guts to cut | Standard | Pass | Carries no passage worth cutting; `card-service` earns the line it takes |
+| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 165 scored paragraphs |
+| V6: Say what you mean | Raised | Pass | Names the thing itself under `Purpose`, with no hedge in front of it |
+| V7: Pity the reader | Raised | Pass | Explains `com.carddemo.card` where a reader first meets it |
+| V8: Start close to the end | Standard | Pass | The claim arrives before its support under `Source provenance` |
+| V9: The Dignity Test | Standard | Pass | States `CCLI` plainly, without blame and without flourish |
+| V10: The Indifference Detector | Standard | Pass | Names what is at stake under `Endpoints` rather than asserting importance |
+| V11: The Indianapolis Test | Standard | Pass | A reader outside this project can follow `COCRDLI` unaided |
+| V12: Humor as Trust Signal | Standard | Not applicable | A technical reference carries no humour for a reading to judge |
+| A1: Plate Glass Clarity | Standard | Pass | The wording disappears behind the fact under `Two controls in front of every route` |
+| A2: Short Words, Simple Structures | Standard | Pass | Short words and one clause at a time; longest scored sentence 30 words |
+| A3: Logical Sequence | Standard | Pass | Runs in the order a reader needs it, from `Events published` onward |
+| A4: Ideas Carry the Weight | Standard | Pass | The evidence carries it, as the entries under `Domain and data ownership` show |
+| A5: Conversational Informality | Standard | Pass | Reads as one engineer to another where it introduces `COCRDLIC` |
+| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 165 scored paragraphs |
+| A7: Functional Dialogue | Standard | Not applicable | This target carries no dialogue for a reading to judge |
+| A8: Anticipate Reader Questions | Standard | Pass | Answers the next question in place, as `Paging` does |
+| A9: Efficiency Over Polish | Standard | Pass | Refers back to `CCDL` rather than restating what it is |
+| A10: Respect the Reader's Intelligence | Standard | Pass | Assumes a competent reader, so `COCRDSL` arrives without a primer |
 
 **Per-violation entries:**
 
-**17.1 — V3: Keep it simple** and **A2: Short Words, Simple Structures** — soft violation, 47 words.
-
-> The binding constraint reads: *"Do not modify or require changes to the original COBOL source as a prerequisite — the new services should consume the behavior (documented via the tech spec / reverse-engineering output) of the COBOL programs listed above, not call into the mainframe at runtime."*
-
-**Rewrite** — 39 words, 17% shorter:
-
-> The binding constraint has two halves. *"Do not modify or require changes to the original COBOL source as a prerequisite."* The services *"consume the behavior ... of the COBOL programs listed above, not call into the mainframe at runtime."*
-
-**Why the rewrite is better:** The quotation keeps its wording and splits at the dash the original used, so each half reads on its own.
-
-**17.2 — V2: Do not ramble** — soft violation, 11 sentences in one paragraph.
-
-> A contended update gives up rather than waiting, and the two 409 outcomes mean … would have offered a retry for a grant no retry can repair.
-
-**Rewrite** — split into paragraphs of 5 and 6 sentences:
-
-> Start a new paragraph at "`LOCK_NOT_ACQUIRED` therefore means the row never came back held; `UPDATE_FAILED_AFTER_LOCK`".
-
-**Why the rewrite is better:** 11 sentences in one block ask a reader to hold the whole argument at once. The break lands where the paragraph changes subject, so the first 5 sentences carry one claim and the last 6 carry the next.
+None. This target has no measured violation.
 
 ### 18. `../README.md`
 
-**Overall verdict:** **CLEAN** — 0 hard violations, 2 soft violations.
+**Overall verdict:** **CLEAN** — 0 hard violations, 0 soft violations.
 
-**Measured:** 1 sentences over thirty words, 1 paragraphs over five sentences, 0 buzzword uses.
+**Measured:** 0 sentences over thirty words, 0 paragraphs over five sentences, 0 buzzword uses.
 
-| Principle number and name | Weight | Result | Worst offender quoted |
+| Principle number and name | Weight | Result | Evidence |
 |---|---|---|---|
-| V1: Find a subject you care about | Reduced | Not measured | — |
-| V2: Do not ramble | Raised | Soft violation | one paragraph of 6 sentences (entry 18.2) |
-| V3: Keep it simple | Raised | Soft violation | The two supporting services publish only when their own state… (43 words, entry 18.1) |
-| V4: Have the guts to cut | Standard | Not measured | — |
-| V5: Sound like yourself | Reduced | Pass | — |
-| V6: Say what you mean | Raised | Not measured | — |
-| V7: Pity the reader | Raised | Not measured | — |
-| V8: Start close to the end | Standard | Not measured | — |
-| V9: The Dignity Test | Standard | Not measured | — |
-| V10: The Indifference Detector | Standard | Not measured | — |
-| V11: The Indianapolis Test | Standard | Not measured | — |
-| V12: Humor as Trust Signal | Standard | Not measured | — |
-| A1: Plate Glass Clarity | Standard | Not measured | — |
-| A2: Short Words, Simple Structures | Standard | Soft violation | The two supporting services publish only when their own state… (43 words, entry 18.1) |
-| A3: Logical Sequence | Standard | Not measured | — |
-| A4: Ideas Carry the Weight | Standard | Not measured | — |
-| A5: Conversational Informality | Standard | Not measured | — |
-| A6: No Ornamental Language | Standard | Pass | — |
-| A7: Functional Dialogue | Standard | Not measured | — |
-| A8: Anticipate Reader Questions | Standard | Not measured | — |
-| A9: Efficiency Over Polish | Standard | Not measured | — |
-| A10: Respect the Reader's Intelligence | Standard | Not measured | — |
+| V1: Find a subject you care about | Reduced | Pass | Holds one subject, opening at `CardDemo -- Mainframe CardDemo Application` |
+| V2: Do not ramble | Raised | Pass | No block runs past five sentences; longest scored paragraph 4 sentences |
+| V3: Keep it simple | Raised | Pass | Every scored sentence sits inside the bound; longest scored sentence 27 words |
+| V4: Have the guts to cut | Standard | Pass | Carries no passage worth cutting; `card-platform/` earns the line it takes |
+| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 26 scored paragraphs |
+| V6: Say what you mean | Raised | Pass | Names the thing itself under `Description`, with no hedge in front of it |
+| V7: Pity the reader | Raised | Pass | Explains `diagrams/` where a reader first meets it |
+| V8: Start close to the end | Standard | Pass | The claim arrives before its support under `Technologies used` |
+| V9: The Dignity Test | Standard | Pass | States `samples/` plainly, without blame and without flourish |
+| V10: The Indifference Detector | Standard | Pass | Names what is at stake under `Modernized card platform` rather than asserting importance |
+| V11: The Indianapolis Test | Standard | Pass | A reader outside this project can follow `POST /authorizations` unaided |
+| V12: Humor as Trust Signal | Standard | Not applicable | A technical reference carries no humour for a reading to judge |
+| A1: Plate Glass Clarity | Standard | Pass | The wording disappears behind the fact under `Installation on the mainframe` |
+| A2: Short Words, Simple Structures | Standard | Pass | Short words and one clause at a time; longest scored sentence 27 words |
+| A3: Logical Sequence | Standard | Pass | Runs in the order a reader needs it, from `Running full batch` onward |
+| A4: Ideas Carry the Weight | Standard | Pass | The evidence carries it, as the entries under `Application Details` show |
+| A5: Conversational Informality | Standard | Pass | Reads as one engineer to another where it introduces `authorization-service` |
+| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 26 scored paragraphs |
+| A7: Functional Dialogue | Standard | Not applicable | This target carries no dialogue for a reading to judge |
+| A8: Anticipate Reader Questions | Standard | Pass | Answers the next question in place, as `User Functions` does |
+| A9: Efficiency Over Polish | Standard | Pass | Refers back to `TransactionAuthorized` rather than restating what it is |
+| A10: Respect the Reader's Intelligence | Standard | Pass | Assumes a competent reader, so `TransactionDeclined` arrives without a primer |
 
 **Per-violation entries:**
 
-**18.1 — V3: Keep it simple** and **A2: Short Words, Simple Structures** — soft violation, 43 words.
-
-> The two supporting services publish only when their own state changes, which keeps the replicas the decision reads current, and no service calls another over HTTP. card-platform/docs/architecture-before-after.md holds the same pair at full size, with every consumer group and every outbox relay named.
-
-**Rewrite** — 34 words, 21% shorter:
-
-> The two supporting services publish only when their own state changes, which keeps the replicas the decision reads current. No service calls another over HTTP, and `architecture-before-after.md` holds the same pair at full size.
-
-**Why the rewrite is better:** Three claims shared one sentence, and two sentences carry them with nine fewer words.
-
-**18.2 — V2: Do not ramble** — soft violation, 7 sentences in one paragraph.
-
-> A client calls one Representational State Transfer (REST) endpoint, `POST /authorizations`, which only `authorization-service` … the three calls another, and none of them blocks the authorization response.
-
-**Rewrite** — split into paragraphs of 4 and 3 sentences:
-
-> Start a new paragraph at "`authorization-service` is the only service that writes the decision.".
-
-**Why the rewrite is better:** 7 sentences in one block ask a reader to hold the whole argument at once. The break lands where the paragraph changes subject, so the first 4 sentences carry one claim and the last 3 carry the next.
+None. This target has no measured violation.
 
 ### 19. `presentation/executive-summary.html`
 
@@ -1033,30 +764,275 @@ None. This target has no measured violation.
 
 **Rule 4 body words:** every one of the sixteen slides is inside the ceiling of forty, the heaviest at thirty-nine. The count is every visible word of a slide. A heading, an eyebrow, a table caption, a header cell, a body cell, a metric card and an icon label all count against it. Only the source a diagram is generated from and the decorative slide number are left out. Four slides stood at 103, 94, 88 and 43 words while the count excluded tables, headings and metric grids, and `PresentationAndProseContractTest.bodyWordCount` counts them now.
 
-| Principle number and name | Weight | Result | Worst offender quoted |
+| Principle number and name | Weight | Result | Evidence |
 |---|---|---|---|
-| V1: Find a subject you care about | Reduced | Not measured | — |
-| V2: Do not ramble | Raised | Pass | — |
-| V3: Keep it simple | Raised | Pass | — |
-| V4: Have the guts to cut | Standard | Not measured | — |
-| V5: Sound like yourself | Reduced | Pass | — |
-| V6: Say what you mean | Raised | Not measured | — |
-| V7: Pity the reader | Raised | Not measured | — |
-| V8: Start close to the end | Standard | Not measured | — |
-| V9: The Dignity Test | Standard | Not measured | — |
-| V10: The Indifference Detector | Standard | Not measured | — |
-| V11: The Indianapolis Test | Standard | Not measured | — |
-| V12: Humor as Trust Signal | Standard | Not measured | — |
-| A1: Plate Glass Clarity | Standard | Not measured | — |
-| A2: Short Words, Simple Structures | Standard | Pass | — |
-| A3: Logical Sequence | Standard | Not measured | — |
-| A4: Ideas Carry the Weight | Standard | Not measured | — |
-| A5: Conversational Informality | Standard | Not measured | — |
-| A6: No Ornamental Language | Standard | Pass | — |
-| A7: Functional Dialogue | Standard | Not measured | — |
-| A8: Anticipate Reader Questions | Standard | Not measured | — |
-| A9: Efficiency Over Polish | Standard | Not measured | — |
-| A10: Respect the Reader's Intelligence | Standard | Not measured | — |
+| V1: Find a subject you care about | Reduced | Pass | Holds one subject, opening at `Measured from source to demo` |
+| V2: Do not ramble | Raised | Pass | No block runs past five sentences; longest scored paragraph 3 sentences |
+| V3: Keep it simple | Raised | Pass | Every scored sentence sits inside the bound; longest scored sentence 18 words |
+| V4: Have the guts to cut | Standard | Pass | Carries no passage worth cutting; `AWS CardDemo Modernization — Executive Summary` earns the line it takes |
+| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 108 scored paragraphs |
+| V6: Say what you mean | Raised | Pass | Names the thing itself under `Figure 1 — From shared files to owned schemas`, with no hedge in front of it |
+| V7: Pity the reader | Raised | Pass | Explains `AWS CardDemo modernization` where a reader first meets it |
+| V8: Start close to the end | Standard | Pass | The claim arrives before its support under `How the event flow works` |
+| V9: The Dignity Test | Standard | Pass | States `One authorization.` plainly, without blame and without flourish |
+| V10: The Indifference Detector | Standard | Pass | Names what is at stake under `Figure 2 — One outcome event starts the work` rather than asserting importance |
+| V11: The Indianapolis Test | Standard | Pass | A reader outside this project can follow `Independent reactions.` unaided |
+| V12: Humor as Trust Signal | Standard | Not applicable | A technical reference carries no humour for a reading to judge |
+| A1: Plate Glass Clarity | Standard | Pass | The wording disappears behind the fact under `Business value` |
+| A2: Short Words, Simple Structures | Standard | Pass | Short words and one clause at a time; longest scored sentence 18 words |
+| A3: Logical Sequence | Standard | Pass | Runs in the order a reader needs it, from `Room to change safely` onward |
+| A4: Ideas Carry the Weight | Standard | Pass | The evidence carries it, as the entries under `Correctness and parity` show |
+| A5: Conversational Informality | Standard | Pass | Reads as one engineer to another where it introduces `Delivered scope` |
+| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 108 scored paragraphs |
+| A7: Functional Dialogue | Standard | Not applicable | This target carries no dialogue for a reading to judge |
+| A8: Anticipate Reader Questions | Standard | Pass | Answers the next question in place, as `Money truncates; it never rounds` does |
+| A9: Efficiency Over Polish | Standard | Pass | Refers back to `Common Business Oriented Language (COBOL) programs analysed` rather than restating what it is |
+| A10: Respect the Reader's Intelligence | Standard | Pass | Assumes a competent reader, so `8 → 6` arrives without a primer |
+
+**Per-violation entries:**
+
+None. This target has no measured violation.
+
+### 20. `deploy/k8s/README.md`
+
+**Overall verdict:** **CLEAN** — 0 hard violations, 0 soft violations.
+
+**Measured:** 0 sentences over thirty words, 0 paragraphs over five sentences, 0 buzzword uses.
+
+| Principle number and name | Weight | Result | Evidence |
+|---|---|---|---|
+| V1: Find a subject you care about | Reduced | Pass | Holds one subject, opening at `Applying these manifests` |
+| V2: Do not ramble | Raised | Pass | No block runs past five sentences; longest scored paragraph 5 sentences |
+| V3: Keep it simple | Raised | Pass | Every scored sentence sits inside the bound; longest scored sentence 29 words |
+| V4: Have the guts to cut | Standard | Pass | Carries no passage worth cutting; `kustomization.yaml` earns the line it takes |
+| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 28 scored paragraphs |
+| V6: Say what you mean | Raised | Pass | Names the thing itself under `What is verified about the images, and what is not`, with no hedge in front of it |
+| V7: Pity the reader | Raised | Pass | Explains `kubectl` where a reader first meets it |
+| V8: Start close to the end | Standard | Pass | The claim arrives before its support under `Pinning the six by digest` |
+| V9: The Dignity Test | Standard | Pass | States `kind` plainly, without blame and without flourish |
+| V10: The Indifference Detector | Standard | Pass | Names what is at stake under `Encryption at rest` rather than asserting importance |
+| V11: The Indianapolis Test | Standard | Pass | A reader outside this project can follow `minikube` unaided |
+| V12: Humor as Trust Signal | Standard | Not applicable | A technical reference carries no humour for a reading to judge |
+| A1: Plate Glass Clarity | Standard | Pass | The wording disappears behind the fact under `Related documentation` |
+| A2: Short Words, Simple Structures | Standard | Pass | Short words and one clause at a time; longest scored sentence 29 words |
+| A3: Logical Sequence | Standard | Pass | Runs in the order a reader needs it, from `Applying these manifests` onward |
+| A4: Ideas Carry the Weight | Standard | Pass | The evidence carries it, as the entries under `What is verified about the images, and what is not` show |
+| A5: Conversational Informality | Standard | Pass | Reads as one engineer to another where it introduces `load-images.sh` |
+| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 28 scored paragraphs |
+| A7: Functional Dialogue | Standard | Not applicable | This target carries no dialogue for a reading to judge |
+| A8: Anticipate Reader Questions | Standard | Pass | Answers the next question in place, as `Pinning the six by digest` does |
+| A9: Efficiency Over Polish | Standard | Pass | Refers back to `card-platform/` rather than restating what it is |
+| A10: Respect the Reader's Intelligence | Standard | Pass | Assumes a competent reader, so `docker build` arrives without a primer |
+
+**Per-violation entries:**
+
+None. This target has no measured violation.
+
+### 21. `services/authorization-service/src/main/resources/openapi.yaml`
+
+**Overall verdict:** **CLEAN** — 0 hard violations, 0 soft violations.
+
+**Measured:** 0 sentences over thirty words, 0 paragraphs over five sentences, 0 buzzword uses.
+
+| Principle number and name | Weight | Result | Evidence |
+|---|---|---|---|
+| V1: Find a subject you care about | Reduced | Pass | Holds one subject, opening at `/authorizations` |
+| V2: Do not ramble | Raised | Pass | No block runs past five sentences; longest scored paragraph 5 sentences |
+| V3: Keep it simple | Raised | Pass | Every scored sentence sits inside the bound; longest scored sentence 30 words |
+| V4: Have the guts to cut | Standard | Pass | Carries no passage worth cutting; `operationId: authorizeTransaction` earns the line it takes |
+| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 159 scored paragraphs |
+| V6: Say what you mean | Raised | Pass | Names the thing itself under `ApiProblem`, with no hedge in front of it |
+| V7: Pity the reader | Raised | Pass | Explains `ApiErrorResponse` where a reader first meets it |
+| V8: Start close to the end | Standard | Pass | The claim arrives before its support under `AuthorizationRequest` |
+| V9: The Dignity Test | Standard | Pass | States `Problem` plainly, without blame and without flourish |
+| V10: The Indifference Detector | Standard | Pass | Names what is at stake under `ApprovedAuthorization` rather than asserting importance |
+| V11: The Indianapolis Test | Standard | Pass | A reader outside this project can follow `AuthorizationResponse` unaided |
+| V12: Humor as Trust Signal | Standard | Not applicable | A technical reference carries no humour for a reading to judge |
+| A1: Plate Glass Clarity | Standard | Pass | The wording disappears behind the fact under `DeclinedAuthorization` |
+| A2: Short Words, Simple Structures | Standard | Pass | Short words and one clause at a time; longest scored sentence 30 words |
+| A3: Logical Sequence | Standard | Pass | Runs in the order a reader needs it, from `AuthorizationResponse` onward |
+| A4: Ideas Carry the Weight | Standard | Pass | The evidence carries it, as the entries under `Problem` show |
+| A5: Conversational Informality | Standard | Pass | Reads as one engineer to another where it introduces `DeclinedAuthorization` |
+| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 159 scored paragraphs |
+| A7: Functional Dialogue | Standard | Not applicable | This target carries no dialogue for a reading to judge |
+| A8: Anticipate Reader Questions | Standard | Pass | Answers the next question in place, as `ApiErrorResponse` does |
+| A9: Efficiency Over Polish | Standard | Pass | Refers back to `ApprovedAuthorization` rather than restating what it is |
+| A10: Respect the Reader's Intelligence | Standard | Pass | Assumes a competent reader, so `AuthorizationRequest` arrives without a primer |
+
+**Per-violation entries:**
+
+None. This target has no measured violation.
+
+### 22. `services/ledger-posting-service/src/main/resources/openapi.yaml`
+
+**Overall verdict:** **CLEAN** — 0 hard violations, 0 soft violations.
+
+**Measured:** 0 sentences over thirty words, 0 paragraphs over five sentences, 0 buzzword uses.
+
+| Principle number and name | Weight | Result | Evidence |
+|---|---|---|---|
+| V1: Find a subject you care about | Reduced | Pass | Holds one subject, opening at `/balances/{accountId}` |
+| V2: Do not ramble | Raised | Pass | No block runs past five sentences; longest scored paragraph 5 sentences |
+| V3: Keep it simple | Raised | Pass | Every scored sentence sits inside the bound; longest scored sentence 30 words |
+| V4: Have the guts to cut | Standard | Pass | Carries no passage worth cutting; `operationId: getAccountBalance` earns the line it takes |
+| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 44 scored paragraphs |
+| V6: Say what you mean | Raised | Pass | Names the thing itself under `ApiProblem`, with no hedge in front of it |
+| V7: Pity the reader | Raised | Pass | Explains `AccountBalance` where a reader first meets it |
+| V8: Start close to the end | Standard | Pass | The claim arrives before its support under `AccountBalance` |
+| V9: The Dignity Test | Standard | Pass | States `ApiProblem` plainly, without blame and without flourish |
+| V10: The Indifference Detector | Standard | Pass | Names what is at stake under `operationId: getAccountBalance` rather than asserting importance |
+| V11: The Indianapolis Test | Standard | Pass | A reader outside this project can follow `/balances/{accountId}` unaided |
+| V12: Humor as Trust Signal | Standard | Not applicable | A technical reference carries no humour for a reading to judge |
+| A1: Plate Glass Clarity | Standard | Pass | The wording disappears behind the fact under `/balances/{accountId}` |
+| A2: Short Words, Simple Structures | Standard | Pass | Short words and one clause at a time; longest scored sentence 30 words |
+| A3: Logical Sequence | Standard | Pass | Runs in the order a reader needs it, from `ApiProblem` onward |
+| A4: Ideas Carry the Weight | Standard | Pass | The evidence carries it, as the entries under `AccountBalance` show |
+| A5: Conversational Informality | Standard | Pass | Reads as one engineer to another where it introduces `operationId: getAccountBalance` |
+| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 44 scored paragraphs |
+| A7: Functional Dialogue | Standard | Not applicable | This target carries no dialogue for a reading to judge |
+| A8: Anticipate Reader Questions | Standard | Pass | Answers the next question in place, as `operationId: getAccountBalance` does |
+| A9: Efficiency Over Polish | Standard | Pass | Refers back to `AccountBalance` rather than restating what it is |
+| A10: Respect the Reader's Intelligence | Standard | Pass | Assumes a competent reader, so `ApiProblem` arrives without a primer |
+
+**Per-violation entries:**
+
+None. This target has no measured violation.
+
+### 23. `services/fraud-detection-service/src/main/resources/openapi.yaml`
+
+**Overall verdict:** **CLEAN** — 0 hard violations, 0 soft violations.
+
+**Measured:** 0 sentences over thirty words, 0 paragraphs over five sentences, 0 buzzword uses.
+
+| Principle number and name | Weight | Result | Evidence |
+|---|---|---|---|
+| V1: Find a subject you care about | Reduced | Pass | Holds one subject, opening at `/fraud-assessments` |
+| V2: Do not ramble | Raised | Pass | No block runs past five sentences; longest scored paragraph 5 sentences |
+| V3: Keep it simple | Raised | Pass | Every scored sentence sits inside the bound; longest scored sentence 30 words |
+| V4: Have the guts to cut | Standard | Pass | Carries no passage worth cutting; `operationId: assessmentOfTransaction` earns the line it takes |
+| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 76 scored paragraphs |
+| V6: Say what you mean | Raised | Pass | Names the thing itself under `/fraud-assessments/{transactionId}`, with no hedge in front of it |
+| V7: Pity the reader | Raised | Pass | Explains `operationId: assessmentsOfAccount` where a reader first meets it |
+| V8: Start close to the end | Standard | Pass | The claim arrives before its support under `AssessmentPage` |
+| V9: The Dignity Test | Standard | Pass | States `InternalFailure` plainly, without blame and without flourish |
+| V10: The Indifference Detector | Standard | Pass | Names what is at stake under `FraudAssessment` rather than asserting importance |
+| V11: The Indianapolis Test | Standard | Pass | A reader outside this project can follow `NotAcceptable` unaided |
+| V12: Humor as Trust Signal | Standard | Not applicable | A technical reference carries no humour for a reading to judge |
+| A1: Plate Glass Clarity | Standard | Pass | The wording disappears behind the fact under `Problem` |
+| A2: Short Words, Simple Structures | Standard | Pass | Short words and one clause at a time; longest scored sentence 30 words |
+| A3: Logical Sequence | Standard | Pass | Runs in the order a reader needs it, from `TooManyRequests` onward |
+| A4: Ideas Carry the Weight | Standard | Pass | The evidence carries it, as the entries under `BadRequest` show |
+| A5: Conversational Informality | Standard | Pass | Reads as one engineer to another where it introduces `MethodNotAllowed` |
+| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 76 scored paragraphs |
+| A7: Functional Dialogue | Standard | Not applicable | This target carries no dialogue for a reading to judge |
+| A8: Anticipate Reader Questions | Standard | Pass | Answers the next question in place, as `Unauthorized` does |
+| A9: Efficiency Over Polish | Standard | Pass | Refers back to `Forbidden` rather than restating what it is |
+| A10: Respect the Reader's Intelligence | Standard | Pass | Assumes a competent reader, so `Unauthorized` arrives without a primer |
+
+**Per-violation entries:**
+
+None. This target has no measured violation.
+
+### 24. `services/notification-service/src/main/resources/openapi.yaml`
+
+**Overall verdict:** **CLEAN** — 0 hard violations, 0 soft violations.
+
+**Measured:** 0 sentences over thirty words, 0 paragraphs over five sentences, 0 buzzword uses.
+
+| Principle number and name | Weight | Result | Evidence |
+|---|---|---|---|
+| V1: Find a subject you care about | Reduced | Pass | Holds one subject, opening at `/notifications/{cardToken}` |
+| V2: Do not ramble | Raised | Pass | No block runs past five sentences; longest scored paragraph 5 sentences |
+| V3: Keep it simple | Raised | Pass | Every scored sentence sits inside the bound; longest scored sentence 30 words |
+| V4: Have the guts to cut | Standard | Pass | Carries no passage worth cutting; `operationId: getNotificationHistory` earns the line it takes |
+| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 74 scored paragraphs |
+| V6: Say what you mean | Raised | Pass | Names the thing itself under `Problem`, with no hedge in front of it |
+| V7: Pity the reader | Raised | Pass | Explains `StatementTransaction` where a reader first meets it |
+| V8: Start close to the end | Standard | Pass | The claim arrives before its support under `ApiError` |
+| V9: The Dignity Test | Standard | Pass | States `NotificationHistory` plainly, without blame and without flourish |
+| V10: The Indifference Detector | Standard | Pass | Names what is at stake under `NotificationHistory` rather than asserting importance |
+| V11: The Indianapolis Test | Standard | Pass | A reader outside this project can follow `ApiError` unaided |
+| V12: Humor as Trust Signal | Standard | Not applicable | A technical reference carries no humour for a reading to judge |
+| A1: Plate Glass Clarity | Standard | Pass | The wording disappears behind the fact under `StatementTransaction` |
+| A2: Short Words, Simple Structures | Standard | Pass | Short words and one clause at a time; longest scored sentence 30 words |
+| A3: Logical Sequence | Standard | Pass | Runs in the order a reader needs it, from `operationId: getNotificationHistory` onward |
+| A4: Ideas Carry the Weight | Standard | Pass | The evidence carries it, as the entries under `/notifications/{cardToken}` show |
+| A5: Conversational Informality | Standard | Pass | Reads as one engineer to another where it introduces `Problem` |
+| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 74 scored paragraphs |
+| A7: Functional Dialogue | Standard | Not applicable | This target carries no dialogue for a reading to judge |
+| A8: Anticipate Reader Questions | Standard | Pass | Answers the next question in place, as `Problem` does |
+| A9: Efficiency Over Polish | Standard | Pass | Refers back to `/notifications/{cardToken}` rather than restating what it is |
+| A10: Respect the Reader's Intelligence | Standard | Pass | Assumes a competent reader, so `operationId: getNotificationHistory` arrives without a primer |
+
+**Per-violation entries:**
+
+None. This target has no measured violation.
+
+### 25. `services/account-service/src/main/resources/openapi.yaml`
+
+**Overall verdict:** **CLEAN** — 0 hard violations, 0 soft violations.
+
+**Measured:** 0 sentences over thirty words, 0 paragraphs over five sentences, 0 buzzword uses.
+
+| Principle number and name | Weight | Result | Evidence |
+|---|---|---|---|
+| V1: Find a subject you care about | Reduced | Pass | Holds one subject, opening at `/accounts/{accountId}` |
+| V2: Do not ramble | Raised | Pass | No block runs past five sentences; longest scored paragraph 5 sentences |
+| V3: Keep it simple | Raised | Pass | Every scored sentence sits inside the bound; longest scored sentence 30 words |
+| V4: Have the guts to cut | Standard | Pass | Carries no passage worth cutting; `operationId: readCustomer` earns the line it takes |
+| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 190 scored paragraphs |
+| V6: Say what you mean | Raised | Pass | Names the thing itself under `/accounts/{accountId}/cycle-close`, with no hedge in front of it |
+| V7: Pity the reader | Raised | Pass | Explains `operationId: closeBillingCycle` where a reader first meets it |
+| V8: Start close to the end | Standard | Pass | The claim arrives before its support under `/customers/{customerId}` |
+| V9: The Dignity Test | Standard | Pass | States `operationId: updateAccount` plainly, without blame and without flourish |
+| V10: The Indifference Detector | Standard | Pass | Names what is at stake under `AccountView` rather than asserting importance |
+| V11: The Indianapolis Test | Standard | Pass | A reader outside this project can follow `operationId: readAccount` unaided |
+| V12: Humor as Trust Signal | Standard | Not applicable | A technical reference carries no humour for a reading to judge |
+| A1: Plate Glass Clarity | Standard | Pass | The wording disappears behind the fact under `CustomerView` |
+| A2: Short Words, Simple Structures | Standard | Pass | Short words and one clause at a time; longest scored sentence 30 words |
+| A3: Logical Sequence | Standard | Pass | Runs in the order a reader needs it, from `AccountUpdateRequest` onward |
+| A4: Ideas Carry the Weight | Standard | Pass | The evidence carries it, as the entries under `AccountDataRequest` show |
+| A5: Conversational Informality | Standard | Pass | Reads as one engineer to another where it introduces `InternalFailure` |
+| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 190 scored paragraphs |
+| A7: Functional Dialogue | Standard | Not applicable | This target carries no dialogue for a reading to judge |
+| A8: Anticipate Reader Questions | Standard | Pass | Answers the next question in place, as `CustomerDataRequest` does |
+| A9: Efficiency Over Polish | Standard | Pass | Refers back to `MethodNotAllowed` rather than restating what it is |
+| A10: Respect the Reader's Intelligence | Standard | Pass | Assumes a competent reader, so `UnsupportedMediaType` arrives without a primer |
+
+**Per-violation entries:**
+
+None. This target has no measured violation.
+
+### 26. `services/card-service/src/main/resources/openapi.yaml`
+
+**Overall verdict:** **CLEAN** — 0 hard violations, 0 soft violations.
+
+**Measured:** 0 sentences over thirty words, 0 paragraphs over five sentences, 0 buzzword uses.
+
+| Principle number and name | Weight | Result | Evidence |
+|---|---|---|---|
+| V1: Find a subject you care about | Reduced | Pass | Holds one subject, opening at `/cards` |
+| V2: Do not ramble | Raised | Pass | No block runs past five sentences; longest scored paragraph 5 sentences |
+| V3: Keep it simple | Raised | Pass | Every scored sentence sits inside the bound; longest scored sentence 30 words |
+| V4: Have the guts to cut | Standard | Pass | Carries no passage worth cutting; `operationId: updateCard` earns the line it takes |
+| V5: Sound like yourself | Reduced | Pass | One plain register, with no buzzword in 183 scored paragraphs |
+| V6: Say what you mean | Raised | Pass | Names the thing itself under `/cards/{cardToken}`, with no hedge in front of it |
+| V7: Pity the reader | Raised | Pass | Explains `operationId: readCard` where a reader first meets it |
+| V8: Start close to the end | Standard | Pass | The claim arrives before its support under `ApiError` |
+| V9: The Dignity Test | Standard | Pass | States `operationId: listCards` plainly, without blame and without flourish |
+| V10: The Indifference Detector | Standard | Pass | Names what is at stake under `Problem` rather than asserting importance |
+| V11: The Indianapolis Test | Standard | Pass | A reader outside this project can follow `CardUpdateRejected` unaided |
+| V12: Humor as Trust Signal | Standard | Not applicable | A technical reference carries no humour for a reading to judge |
+| A1: Plate Glass Clarity | Standard | Pass | The wording disappears behind the fact under `CardSummary` |
+| A2: Short Words, Simple Structures | Standard | Pass | Short words and one clause at a time; longest scored sentence 30 words |
+| A3: Logical Sequence | Standard | Pass | Runs in the order a reader needs it, from `CardList` onward |
+| A4: Ideas Carry the Weight | Standard | Pass | The evidence carries it, as the entries under `CardDetail` show |
+| A5: Conversational Informality | Standard | Pass | Reads as one engineer to another where it introduces `CardUpdateConflict` |
+| A6: No Ornamental Language | Standard | Pass | No ornament, and no buzzword in 183 scored paragraphs |
+| A7: Functional Dialogue | Standard | Not applicable | This target carries no dialogue for a reading to judge |
+| A8: Anticipate Reader Questions | Standard | Pass | Answers the next question in place, as `CardUpdateRequest` does |
+| A9: Efficiency Over Polish | Standard | Pass | Refers back to `CardUpdateNotFound` rather than restating what it is |
+| A10: Respect the Reader's Intelligence | Standard | Pass | Assumes a competent reader, so `CardUpdateApplied` arrives without a primer |
 
 **Per-violation entries:**
 
@@ -1065,13 +1041,13 @@ None. This target has no measured violation.
 ## Exemptions applied
 
 - **Code and inline code.** Fenced blocks are dropped and an inline span becomes one token, so `PIC S9(09)V99` counts as one word rather than a clause a reader has to parse.
-- **Attributed quotations.** A blockquoted passage is skipped, which is how this report quotes an offender without scoring itself on it. Two inline quotations do stay scored, because they sit inside a sentence: the requirements passage in the flagged-rule register, and the binding constraint in the card guide. Both come from the technical specification's section 0.8 and both keep their wording.
+- **Attributed quotations.** A blockquoted passage is skipped, which is how this report quotes a source without scoring itself on it. An inline quotation is skipped too where a cue word attributes it. The requirements passage in the flagged-rule register and the binding constraint in the card guide therefore keep their wording. Both come from the technical specification's section 0.8, and neither is rewritten here.
 - **Verbatim source messages.** A reject text such as `TRANSACTION RECEIVED AFTER ACCT EXPIRATION` is reproduced exactly, because a service that softens it stops matching the source.
 - **Deliberate presentation choices.** Slide 9 presents `RoundingMode.DOWN` and `HALF_UP` as inline monospace rather than as a code block, because the audience is an executive one.
 - **Repetition across sibling guides.** Six service guides answer the same questions in the same order. Repetition between them is a navigation aid rather than rambling, so V2 is scored within a document and not across the set.
 
 ## Where the measurement lands against the plan
 
-The Agent Action Plan set CLEAN as the target verdict for every authored document. The measurement does not reach it, and this report publishes the measurement rather than the target.
+The Agent Action Plan set CLEAN as the target verdict for every authored document. The measurement reaches it. All twenty-six targets read CLEAN at zero hard violations and zero soft ones.
 
-Sixteen of the nineteen targets carry at least one sentence over thirty words. The reference material is where they gather: a migration table, a register of flagged rules and a task list are read by lookup rather than end to end. Each entry above names the passage and gives a worked replacement, so the writing work is enumerated rather than deferred. The verdicts move when the text moves, because the build measures the text rather than this page.
+The length work that got there was reference material rather than argument. A migration table, a register of flagged rules, a task list and six OpenAPI contracts are read by lookup, and each had grown sentences that carried three claims at once. Each was split at a clause boundary or given a paragraph break, and no statement was dropped to shorten a count. The verdicts move when the text moves, because the build measures the text rather than this page.

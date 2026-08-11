@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 import com.carddemo.cobol.PanMasker;
 import com.networknt.schema.InputFormat;
@@ -68,20 +69,20 @@ class OpenApiExampleValidationTest {
             Pattern.compile("(?<![0-9])[0-9]{16}(?![0-9])");
 
     /**
-     * The sixteen-digit value a published body may carry.
+     * A sixteen-digit value used to build the one body this document declares invalid.
      *
-     * <p>{@code CARD-NUM PIC X(16)} at {@code app/cpy/CVACT02Y.cpy:L5} is sixteen digits wide. This
-     * value carries none of the fifty card numbers of {@code app/data/ASCII/carddata.txt}, so a
-     * reader cannot mistake it for one, and it passes the shape
-     * {@code app/cbl/COCRDUPC.cbl:L784} tests so the document's own example is a valid request.
+     * <p>{@code CARD-NUM PIC X(16)} at {@code app/cpy/CVACT02Y.cpy:L5} is sixteen digits wide, so a
+     * body naming a card has to carry sixteen digits to reach the rule that refuses it. It holds none
+     * of the fifty numbers of {@code app/data/ASCII/carddata.txt}.
      *
-     * <p>It is the value the authorization contract publishes as well, and
-     * {@code com.carddemo.equivalence.CardholderExampleContractTest} requires every guide and every
-     * contract of the platform to carry one of the two synthetic numbers it declares. One synthetic
-     * value across the documents is what makes a reader who has seen it once recognise it again
-     * rather than take it for a card of the demonstration data.
+     * <p>Nothing publishes it. It is assembled here, asserted invalid at
+     * {@link #theUpdateRequestEncodesTheExpiryRangeTheEditsAdmit()}, and never written into the
+     * document:
+     * {@code com.carddemo.equivalence.CardholderExampleContractTest} refuses a sixteen-digit literal
+     * under a card-number label anywhere on the delivered surface, and this class refuses one in any
+     * published body of this document.
      */
-    private static final String PLACEHOLDER_CARD_NUMBER = "4000000000000000";
+    private static final String CARD_NUMBER_NO_BODY_MAY_NAME = "4000000000000000";
 
     /**
      * The card token a published path example carries.
@@ -161,27 +162,33 @@ class OpenApiExampleValidationTest {
     }
 
     /**
-     * Asserts no published example carries a card number of a seeded row.
+     * Asserts no published example carries a card number, seeded or otherwise.
      *
      * <p>Every one of the fifty rows in {@code app/data/ASCII/carddata.txt} holds a full sixteen-digit
      * card number, and {@code src/main/resources/db/migration/V2__seed.sql} loads all fifty. A
      * published example carrying one of them puts a Primary Account Number in a document a reader
      * copies into a terminal history, an issue tracker and a client fixture.
      *
+     * <p>The rule admits no sixteen-digit run at all, rather than admitting a synthetic one. Every
+     * route of this document is keyed by card token and no request member carries a number, so a run
+     * of that width in a published body of this document would be a card number whatever it resolved
+     * to. A body of this document also carries no transaction identifier, which is the one other
+     * sixteen-digit field the platform has, so the width is unambiguous here.
+     *
      * <p>A masked value is a different matter. {@code api/dto/CardSummary} and
      * {@code api/dto/CardDetailResponse} refuse an unmasked value in their own constructors, so the
      * masked form is what this service publishes and what an example of a response has to show.
      */
     @Test
-    @DisplayName("no published example carries a card number of a seeded row")
-    void noPublishedExampleCarriesASeededCardNumber() {
+    @DisplayName("no published example carries a card number, seeded or otherwise")
+    void noPublishedExampleCarriesACardNumber() {
         for (Map.Entry<String, String> body : everyPublishedBody().entrySet()) {
             Matcher found = SIXTEEN_DIGIT_RUN.matcher(body.getValue());
             while (found.find()) {
-                assertEquals(PLACEHOLDER_CARD_NUMBER, found.group(),
-                        "every sixteen-digit run a published body carries is the placeholder, never "
-                                + "a card number of a seeded row, and " + found.group() + " in "
-                                + body.getKey() + " is neither");
+                fail("a published body carries a sixteen-digit run, which this document has no field "
+                        + "for: " + body.getKey() + " publishes "
+                        + "*".repeat(found.group().length() - 4)
+                        + found.group().substring(found.group().length() - 4));
             }
         }
 
@@ -311,7 +318,7 @@ class OpenApiExampleValidationTest {
         }
 
         Map<String, Object> named = updateRequest();
-        named.put("cardNumber", PLACEHOLDER_CARD_NUMBER);
+        named.put("cardNumber", CARD_NUMBER_NO_BODY_MAY_NAME);
         assertInvalid(request, named,
                 "a body naming the card, which the path names and config/RequestJsonStrictnessConfig"
                         + " refuses in the body");

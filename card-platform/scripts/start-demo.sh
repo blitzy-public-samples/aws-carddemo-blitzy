@@ -33,7 +33,8 @@
 #   CLONE_INDEX=2 POSTGRES_PORT=5442 KAFKA_PORT=9102 scripts/start-demo.sh
 #
 # Tested toolchain: Eclipse Temurin OpenJDK 25.0.4+7, Apache Maven 3.9.16, Docker Engine
-# 29.7.0, Docker Compose 5.3.1. The build refuses an older Java or Maven itself.
+# 29.7.0, Docker Compose 5.3.1, OpenSSL 3.5.3, curl 8.14.1, git 2.51.0. The build refuses an
+# older Java or Maven itself, and the loop below refuses a missing tool by name.
 #
 # Rationale for the choices here: card-platform/docs/decision-log.md
 # Setup guide, ports, demo requests and pitfalls: card-platform/docs/onboarding.md
@@ -59,12 +60,15 @@ fail() {
     exit 1
 }
 
-for tool in java mvn docker openssl jshell; do
+# curl is in this list because the health check at the end of this script uses it. It was absent
+# once, so a machine without curl reached the last step and failed there instead of here.
+for tool in java mvn docker openssl jshell curl; do
     command -v "${tool}" >/dev/null 2>&1 || fail \
         "${tool} is not on the path. card-platform/docs/onboarding.md lists the tested versions."
 done
 docker compose version >/dev/null 2>&1 \
-    || fail "docker compose is unavailable. Install the Compose plugin, version 2 or later."
+    || fail "docker compose is unavailable. Install the Compose plugin. card-platform/docs/onboarding.md
+  names the version this stack was exercised on, 5.3.1, and --wait below needs 2.1.1 or newer."
 docker info >/dev/null 2>&1 \
     || fail "the Docker daemon is not reachable. Start Docker and run this again."
 

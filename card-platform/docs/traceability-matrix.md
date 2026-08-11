@@ -16,7 +16,7 @@ Every count in this document was measured in the repository. Where a measurement
 | `app/cpy-bms/` | 17 source copybooks | All excluded for the same reason; `.gitkeep` is not a source member | 17 |
 | `app/data/ASCII/` | 9 | All reused as fixtures or seed sources | 9 |
 | `app/data/EBCDIC/` | 12 data artifacts | All retained as binary or width references; `.gitkeep` is excluded from the count | 12 |
-| Delivered target tree | 907 tracked files | 306 source-derived, 247 verification source-derived, 156 verification additive, 133 additive, 45 net new platform, 11 Rule-mandated documents, 8 Rule 3 documents, 1 Rule 3 update | 907 |
+| Delivered target tree | 907 tracked files | 304 source-derived, 247 verification source-derived, 156 verification additive, 135 additive, 45 net new platform, 11 Rule-mandated documents, 8 Rule 3 documents, 1 Rule 3 update | 907 |
 
 The backward direction closes on its own count. The delivered tree holds 907 tracked target paths. The two module-level tables below resolve them in 53 rows, each naming a module or a uniform group rather than a file. Every one of the 907 then appears once in [backward: every target path](#backward-every-target-path), so the target side is enumerated rather than summarised.
 
@@ -255,7 +255,7 @@ Each of the 18 program definitions is classified by whether a source member stan
 
 ### Mapset definitions
 
-All 17 mapset definitions are excluded for one reason: a 3270 screen definition has no counterpart in a JavaScript Object Notation (JSON) interface, and no application user interface is in scope.
+All 17 mapset definitions are excluded for one reason. A 3270 screen definition has no counterpart in a JavaScript Object Notation (JSON) interface, and no application user interface is in scope.
 
 | Mapset definitions | Locators | Handling |
 | --- | --- | --- |
@@ -384,9 +384,13 @@ The Source provenance column names what the file itself records. Every delivered
 
 A cell that names no member says so in one of five wordings rather than one. The plain wording `None cited in the file` accounts for 188 rows, the fraud wording for 44, and the build wording for 25. Two further wordings cover the remaining 3. All 260 mean the same measured thing — the file carries no reference to any member under `app/` — and the wording records only why. `DocumentationContractTest` recomputes all 907 sets from disk and fails on any cell that disagrees, so this column cannot drift from the files again.
 
-**A citation is not automatically provenance, and two groups of rows say so in the cell itself**. Build, container and deployment artifacts name the members whose behaviour the artifact runs. The repository carries no build manifest of any kind, so those citations are context. Every path under `services/fraud-detection-service` names members too, and none of them is an ancestor. The source scores no risk, checks no velocity and runs no rules engine, so what those files take is field widths and the rule-object shape the authorization decline chain uses. The plan records both borrowings as borrowings, so every fraud path is classified additive however many members it cites.
+**A citation is not automatically provenance, and two groups of rows say so in the cell itself**. Build, container and deployment artifacts name the members whose behaviour the artifact runs. The repository carries no build manifest of any kind, so those citations are context.
 
-Eight labels are used. **Source-derived** is main code, a schema, a migration or a resource that names at least one source member. **Additive** is a file with no ancestor, whether or not it cites one. **Verification, source-derived** and **Verification, additive** are the two test cases, split the same way. **Rule-mandated document** covers the documents Rules 1 to 5 require and **Rule 3 document** the per-module readme Rule 3 requires; a document’s authority is a rule, and the members in its cell are the evidence it cites. **Net new platform** covers build, container, pipeline, deployment and repository-hygiene artifacts.
+Every path under `services/fraud-detection-service` names members too, and none of them is an ancestor. The source scores no risk, checks no velocity and runs no rules engine, so what those files take is field widths and the rule-object shape the authorization decline chain uses. The plan records both borrowings as borrowings, so every fraud path is classified additive however many members it cites.
+
+Eight labels are used. **Source-derived** is main code, a schema, a migration or a resource that names at least one source member. **Additive** is a file with no ancestor, whether or not it cites one. 
+
+**Verification, source-derived** and **Verification, additive** are the two test cases, split the same way. **Rule-mandated document** covers the documents Rules 1 to 5 require, and **Rule 3 document** the per-module readme Rule 3 requires. A document’s authority is a rule, and the members in its cell are the evidence it cites. **Net new platform** covers build, container, pipeline, deployment and repository-hygiene artifacts.
 
 **Rule 3 update** is the eighth label, and one path carries it. The root `README.md` existed before this engagement, which added one section and changed nothing else in it. Recording that as an update keeps the single modified pre-existing file visible where the inventory closes.
 
@@ -417,7 +421,7 @@ Eight labels are used. **Source-derived** is main code, a schema, a migration or
 | `card-platform/libs/event-contracts/src/main/resources/contracts/released-contracts.json` | `app/cbl/CBTRN02C.cbl`, `app/cpy/CSMSG02Y.cpy`, `app/cpy/CVTRA05Y.cpy` | Additive |
 | `card-platform/libs/event-contracts/src/main/resources/schemas/account-state-changed-v1.json` | `app/cbl/CBACT04C.cbl`, `app/cbl/CBSTM03A.CBL`, `app/cbl/CBTRN02C.cbl`, `app/cbl/COACTUPC.cbl` and 3 more | Source-derived |
 | `card-platform/libs/event-contracts/src/main/resources/schemas/card-updated-v1.json` | `app/bms/COCRDSL.bms`, `app/cbl/COCRDUPC.cbl`, `app/cpy/CVACT02Y.cpy`, `app/jcl/XREFFILE.jcl` | Source-derived |
-| `card-platform/libs/event-contracts/src/main/resources/schemas/card-updated-v2.json` | None cited in the file | Source-derived |
+| `card-platform/libs/event-contracts/src/main/resources/schemas/card-updated-v2.json` | None cited in the file | Additive |
 | `card-platform/libs/event-contracts/src/main/resources/schemas/customer-context-changed-v1.json` | `app/cbl/CBSTM03A.CBL`, `app/cbl/COACTUPC.cbl`, `app/cpy/CSLKPCDY.cpy`, `app/cpy/CVACT01Y.cpy` and 2 more | Source-derived |
 | `card-platform/libs/event-contracts/src/main/resources/schemas/dead-letter-v1.json` | `app/cbl/CBTRN02C.cbl`, `app/cbl/COACTVWC.cbl`, `app/cpy/CSMSG02Y.cpy`, `app/cpy/CVACT03Y.cpy` | Source-derived |
 | `card-platform/libs/event-contracts/src/main/resources/schemas/fraud-cleared-v1.json` | `app/cpy/CVACT03Y.cpy`, `app/cpy/CVTRA05Y.cpy` | Source-derived |
@@ -996,7 +1000,7 @@ Eight labels are used. **Source-derived** is main code, a schema, a migration or
 | `card-platform/services/account-service/src/main/resources/db/migration/V3__reference_data.sql` | `app/cbl/COACTUPC.cbl`, `app/cpy/CSLKPCDY.cpy` | Source-derived |
 | `card-platform/services/account-service/src/main/resources/db/migration/V4__card_cross_reference_replica.sql` | `app/cpy/CVACT03Y.cpy`, `app/data/ASCII/cardxref.txt` | Source-derived |
 | `card-platform/services/account-service/src/main/resources/db/migration/V5__outbox_dead_letter_state.sql` | `app/cbl/CBTRN02C.cbl` | Source-derived |
-| `card-platform/services/account-service/src/main/resources/db/migration/V6__processed_event_topic_key.sql` | None cited in the file | Source-derived |
+| `card-platform/services/account-service/src/main/resources/db/migration/V6__processed_event_topic_key.sql` | None cited in the file | Additive |
 | `card-platform/services/account-service/src/main/resources/db/migration/V7__account_customer_link.sql` | `app/cbl/COACTUPC.cbl`, `app/cpy/CVACT01Y.cpy`, `app/cpy/CVACT03Y.cpy`, `app/data/ASCII/cardxref.txt` and 1 more | Source-derived |
 | `card-platform/services/account-service/src/main/resources/db/migration/V8__subject_request_posture.sql` | `app/cbl/COACTUPC.cbl`, `app/cpy/CVCUS01Y.cpy` | Source-derived |
 | `card-platform/services/account-service/src/main/resources/db/migration/V9__outbox_correlation.sql` | None cited in the file | Additive |
@@ -1343,7 +1347,7 @@ Eight labels are used. **Source-derived** is main code, a schema, a migration or
 | Target path | Source provenance | Classification |
 | --- | --- | --- |
 | `.github/actions/setup-build-toolchain/action.yml` | None cited; no source build, container or deployment manifest exists | Net new platform |
-| `.github/workflows/ci.yml` | Context only, because no source build, container or deployment manifest exists: `app/data/ASCII/cardxref.txt` | Net new platform |
+| `.github/workflows/ci.yml` | Context only, because no source build, container or deployment manifest exists: `app/cpy/CVACT03Y.cpy`, `app/data/ASCII/cardxref.txt` | Net new platform |
 | `card-platform/.gitleaks.toml` | None cited; no source build, container or deployment manifest exists | Net new platform |
 
 ### Repository root outside the platform tree — 2 paths

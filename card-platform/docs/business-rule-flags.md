@@ -103,7 +103,9 @@ Item 66 is the only register finding runtime testing added, and its row is short
 
 **Why the boundary is reachable.** Two amounts inside `DALYTRAN-AMT PIC S9(09)V99` at `app/cpy/CVTRA06Y.cpy:L10` can each be authorized and still sum past nine integer digits. The category balance is therefore reachable from authorized traffic, not only from constructed input.
 
-**What this platform does instead.** `repository/TransactionCategoryBalanceRepository` issues its stores through `MOD` by ten raised to the field's integer digits. `ledger-posting-service` and `account-service` store the three account figures through `CobolDecimal.truncateToPictureField`. A store that dropped a digit writes one `WARN` line naming the integer-digit capacity and withholding the figure itself. The category-balance store is a statement rather than Java, so it reports the wrap through `RETURNING`, comparing the row as it stood against the row as it stands inside that one statement. `TransactionAuthorizedConsumer` counts the wrap on `carddemo.ledger.category.balance.wrapped` and writes the line once its transaction has committed, so a rollback leaves neither the count nor the line behind.
+**What this platform does instead.** `repository/TransactionCategoryBalanceRepository` issues its stores through `MOD` by ten raised to the field's integer digits. `ledger-posting-service` and `account-service` store the three account figures through `CobolDecimal.truncateToPictureField`. A store that dropped a digit writes one `WARN` line naming the integer-digit capacity and withholding the figure itself.
+
+The category-balance store is a statement rather than Java, so it reports the wrap through `RETURNING`. That clause compares the row as it stood against the row as it stands inside that one statement. `TransactionAuthorizedConsumer` counts the wrap on `carddemo.ledger.category.balance.wrapped` and writes the line once its transaction has committed, so a rollback leaves neither the count nor the line behind.
 
 **How the truncation is proved.** A statement cannot write a log line, so the repository test cannot assert on one. `TransactionCategoryBalanceRepositoryTest` reads the truncated value back out of a real database instead, which is the only place the stored value can be observed.
 
@@ -111,7 +113,7 @@ Item 66 is the only register finding runtime testing added, and its row is short
 
 **Why the columns are not widened.** Widening the four columns would let them hold figures the COBOL fields behind them cannot. `V7__category_balance_ceiling.sql` therefore records the ceiling on the columns rather than raising it. The [decision log](decision-log.md) carries the alternatives that were weighed.
 
-**What the project owner should confirm:** that a cardholder past the ceiling seeing a balance smaller than the postings sum to is the parity this project wants, rather than a correction.
+**What the project owner should confirm:** that this wrap is the parity the project wants, rather than a correction. Past the ceiling, a cardholder sees a balance smaller than the postings sum to.
 
 
 ## Resolved rather than flagged
@@ -140,7 +142,7 @@ Every value in the register above was measured in the source. The fraud service 
 
 ## Departures this platform makes from the source
 
-The register records source behaviour. The five entries below record the opposite case: places where the platform answers differently from the source on purpose, and one place where it deliberately answers the same and a reviewer will want to know why. None is a defect in the source, so none belongs in the register, and all five are here because a reviewer checking parity will look for them here.
+The register records source behaviour. The five entries below record the opposite case. Four are places where the platform answers differently from the source on purpose. In the fifth it deliberately answers the same, and a reviewer will want to know why. None is a defect in the source, so none belongs in the register, and all five are here because a reviewer checking parity will look for them here.
 
 ### D1. Card detail refuses a row that belongs to another account
 
@@ -160,21 +162,25 @@ The platform refuses one. A single pattern constrains every text component of th
 
 ### D3. A card expiry that names no day of the calendar is refused
 
-The source stores one. `app/cbl/COCRDUPC.cbl:L1467-L1474` joins the submitted year, month and day with hyphens into `CARD-UPDATE-EXPIRAION-DATE`, which redefines `CARD-EXPIRAION-DATE PIC X(10)` at `app/cpy/CVACT02Y.cpy:L9`. Ten characters of text hold `2028-02-30` as readily as `2028-02-28`, and no paragraph checks which it is: the edit chain closes at `1260-EDIT-EXPIRY-YEAR-EXIT` at `app/cbl/COCRDUPC.cbl:L945` and `2000-DECIDE-ACTION` opens at `:L948`, with no paragraph between them reaching the day.
+The source stores one. `app/cbl/COCRDUPC.cbl:L1467-L1474` joins the submitted year, month and day with hyphens into `CARD-UPDATE-EXPIRAION-DATE`, which redefines `CARD-EXPIRAION-DATE PIC X(10)` at `app/cpy/CVACT02Y.cpy:L9`. Ten characters of text hold `2028-02-30` as readily as `2028-02-28`, and no paragraph checks which it is. The edit chain closes at `1260-EDIT-EXPIRY-YEAR-EXIT` at `app/cbl/COCRDUPC.cbl:L945` and `2000-DECIDE-ACTION` opens at `:L948`, with no paragraph between them reaching the day.
 
-Column `expiration_date` is a `DATE`, which cannot hold a day that does not exist. Section 0.3.1 of the plan requires that type for this one field, because the field is positionally a calendar date and the source itself decomposes it into a year, a month and a day at `app/cbl/COCRDUPC.cbl:L117-L121`. So the platform refuses what the source would have stored, and it says so: `Card expiry year, month and day must name a day of the calendar`. The divergence is the column type's rather than a rule this platform added.
+Column `expiration_date` is a `DATE`, which cannot hold a day that does not exist. Section 0.3.1 of the plan requires that type for this one field. The field is positionally a calendar date, and the source itself decomposes it into a year, a month and a day at `app/cbl/COCRDUPC.cbl:L117-L121`. So the platform refuses what the source would have stored, and it says so: `Card expiry year, month and day must name a day of the calendar`. The divergence is the column type's rather than a rule this platform added.
 
-The rule reads the three values a caller submitted, which are the three the source writes. `app/cbl/COCRDUPC.cbl:L621` moves the day the screen sent into `CCUP-NEW-EXPDAY` and `:L1471` writes that same item into the record. The day never changed on a 3270. `app/bms/COCRDUP.bms:L142` declares `EXPDAY` as `DRK`, `FSET` and `PROT` where the four other editable fields declare `UNPROT`, so an operator could not type into it. `app/cbl/COCRDUPC.cbl:L1110`, `:L1123` and `:L1127` sent the stored day back on every path. A request body has no protected field, so a caller can change the day and the column takes what it sends.
+The rule reads the three values a caller submitted, which are the three the source writes. `app/cbl/COCRDUPC.cbl:L621` moves the day the screen sent into `CCUP-NEW-EXPDAY` and `:L1471` writes that same item into the record.
+
+The day never changed on a 3270. `app/bms/COCRDUP.bms:L142` declares `EXPDAY` as `DRK`, `FSET` and `PROT` where the four other editable fields declare `UNPROT`, so an operator could not type into it. `app/cbl/COCRDUPC.cbl:L1110`, `:L1123` and `:L1127` sent the stored day back on every path. A request body has no protected field, so a caller can change the day and the column takes what it sends.
 
 **What the project owner should decide:** whether refusing the impossible day is right, or whether the platform should store what the source stored. Storing it is not available at this column type, so the alternative is a `VARCHAR(10)` column and no rule, which would let `2028-02-30` reach a cardholder statement. No shipped fixture reaches the question: every one of the 50 rows in `app/data/ASCII/carddata.txt` carries a real date.
 
 ### D4. The card verification value is stored, and a security review asked for its removal
 
-`CARD-CVV-CD PIC 9(03)` at `app/cpy/CVACT02Y.cpy:L7` is part of the card record, and `app/data/ASCII/carddata.txt` carries a value for all 50 rows. Column `card_verification_value CHAR(3) NOT NULL` in the card service holds it, and `V2__seed.sql` loads the fixture values into it. No application path reads the column: `CardEntity` exposes no accessor for the field, carries `@JsonIgnore` on it, prints the withheld marker in `toString`, and `applyUpdate` never changes it, matching `app/bms/COCRDUP.bms`, whose card update map declares no field for it. `card-updated-v1.json` and `card-updated-v1.json` declare no property for it and close their property sets, and the second carries an explicit `$comment` recording the absence. `CardholderDataExposureTest` asserts the field is unreachable through every one of those paths.
+`CARD-CVV-CD PIC 9(03)` at `app/cpy/CVACT02Y.cpy:L7` is part of the card record, and `app/data/ASCII/carddata.txt` carries a value for all 50 rows. Column `card_verification_value CHAR(3) NOT NULL` in the card service holds it, and `V2__seed.sql` loads the fixture values into it.
+
+No application path reads the column. `CardEntity` exposes no accessor for the field, carries `@JsonIgnore` on it, prints the withheld marker in `toString`, and `applyUpdate` never changes it. That matches `app/bms/COCRDUP.bms`, whose card update map declares no field for it. `card-updated-v1.json` and `card-updated-v2.json` declare no property for it and close their property sets, and the second carries an explicit `$comment` recording the absence. `CardholderDataExposureTest` asserts the field is unreachable through every one of those paths.
 
 Sections 0.4.1 and 0.6.4 of the plan require exactly this arrangement. Section 0.6.4 states that the value "is persisted because the card record defines it and is never emitted". Section 0.4.1 states that it "is stored but never serialized into any event or log". Section 0.2.2 places "payment-card industry controls beyond the single documented masking deviation" outside the engagement. Neither dropping the column nor encrypting it is therefore work this plan authorises.
 
-A security review of this platform recorded the storage as a critical finding and asked for the column, the mapping, the seed values and the preservation test to be removed through a forward migration. That change was not made, because the plan mandates the column and the plan is the agreed contract. The same review offered a second route: keep the column under a formal exception carrying encryption, minimal access, audit and destruction controls. That is the route taken, and the exception is now on the record rather than implied.
+A security review of this platform recorded the storage as a critical finding. It asked for the column, the mapping, the seed values and the preservation test to be removed through a forward migration. That change was not made, because the plan mandates the column and the plan is the agreed contract. The same review offered a second route: keep the column under a formal exception carrying encryption, minimal access, audit and destruction controls. That is the route taken, and the exception is now on the record rather than implied.
 
 **The exception, and where it lives.** `V11__card_verification_value_exception.sql` in the card service records it. It states what the review found, why removal is unavailable to this engagement, the four compensating controls, and the answer that closes it. Three catalogue comments carry the same statement, because an operator reads the catalogue rather than a migration header.
 

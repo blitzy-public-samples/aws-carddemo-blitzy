@@ -27,6 +27,7 @@ import java.util.stream.Stream;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.yaml.snakeyaml.Yaml;
 
 /**
  * Protects the Rule 4 presentation and Rule 5 prose-validation deliverables.
@@ -95,16 +96,18 @@ class PresentationAndProseContractTest {
     /**
      * The Mermaid bundle this deck runs, and the digest its bytes answer to.
      *
-     * <p>A review found the previous 11.4.0 line carrying nine advisories, loaded by an import
-     * expression that can hold no integrity attribute. Both halves moved: the version is the fixed
-     * line, and the single-file bundle replaces the module graph so one digest covers every byte
-     * rather than the 30 KB entry of a graph whose chunks were fetched unverified.
+     * <p>Rule 4 fixes the version at 11.4.0, and this is the value the deck loads. An earlier
+     * revision ran the 11.16.1 line over advisories found in 11.4.0, and a review held that the
+     * pin is the Rule's to set. What did survive that revision is the loading form: the single-file
+     * bundle replaces the module graph, so one digest covers every byte where digesting a module
+     * entry covered 30 KB of a graph whose chunks were fetched unverified. Rationale, alternatives
+     * considered and accepted risks: {@code card-platform/docs/decision-log.md}.
      */
-    private static final String MERMAID_BUNDLE = "mermaid@11.16.1/dist/mermaid.min.js";
+    private static final String MERMAID_BUNDLE = "mermaid@11.4.0/dist/mermaid.min.js";
 
-    /** The digest of that bundle, as jsDelivr serves it. */
+    /** The digest of that bundle, as jsDelivr serves it, over 2,571,838 bytes. */
     private static final String MERMAID_DIGEST =
-            "sha384-aBQXj4hK6Jm05i7aQAsUV3bLdSUrHX1BGYfMB0166TtWt/RRaw+h0Eelme9OCOvy";
+            "sha384-Wm9qzEgq4j1jEnuFK2FxKTlwuhbV2QqtGhcchvjDoKxeJ7WWAW7fysBq+1s6myfX";
 
     /**
      * Directives the deck's Content Security Policy has to state, each with the value it takes.
@@ -147,10 +150,16 @@ class PresentationAndProseContractTest {
     private static final int SELF_TARGET = 10;
 
     /**
-     * The nineteen Rule 5 targets, in the order {@code docs/prose-validation.md} numbers them.
+     * The twenty-six Rule 5 targets, in the order {@code docs/prose-validation.md} numbers them.
      *
      * <p>Every path is resolved against the platform root, so {@code ../README.md} reaches the
      * repository-root guide that the report scores one section of.
+     *
+     * <p>A review found the inventory at nineteen while the report claimed every authored document.
+     * Seven were missing: the deployment guide, and the description prose of all six OpenAPI
+     * documents. An OpenAPI document is written for a reader as much as any guide is, so its
+     * descriptions are governed prose. They are appended rather than interleaved, which keeps every
+     * number the report already published attached to the target it was measured against.
      */
     private static final List<String> PROSE_TARGETS =
             List.of(
@@ -172,7 +181,56 @@ class PresentationAndProseContractTest {
                     "services/account-service/README.md",
                     "services/card-service/README.md",
                     "../README.md",
-                    "presentation/executive-summary.html");
+                    "presentation/executive-summary.html",
+                    "deploy/k8s/README.md",
+                    "services/authorization-service/src/main/resources/openapi.yaml",
+                    "services/ledger-posting-service/src/main/resources/openapi.yaml",
+                    "services/fraud-detection-service/src/main/resources/openapi.yaml",
+                    "services/notification-service/src/main/resources/openapi.yaml",
+                    "services/account-service/src/main/resources/openapi.yaml",
+                    "services/card-service/src/main/resources/openapi.yaml");
+
+    /**
+     * The keys of an OpenAPI document whose values are prose a reader reads.
+     *
+     * <p>{@code description} carries the body copy, {@code summary} the one-line lead of an operation
+     * or an example, and {@code title} the document's own name. Every other value is a path, a type,
+     * a pattern or an identifier, which is a contract rather than prose.
+     */
+    private static final Set<String> OPENAPI_PROSE_KEYS =
+            Set.of("description", "summary", "title");
+
+    /**
+     * A quotation attributed to a source outside this engagement, which Rule 5 exempts.
+     *
+     * <p>The rule's special handling skips direct quotes and preserves their wording. The earlier
+     * scorer dropped a Markdown blockquote line and nothing else, so an inline quotation was scored
+     * as though this engagement had written it: a 47-word quotation of the user's own binding
+     * constraint was counted a violation, and the report published a rewrite of the user's words.
+     *
+     * <p>An attributed quotation is recognized by the cue that introduces it, within forty characters
+     * of the opening quotation mark, over a quoted span of at least twenty characters. Only the
+     * quoted words are exempt: the sentence carrying them is still scored, so a long lead-in to a
+     * short quotation still counts.
+     *
+     * <p>The cue is bounded by letters on both sides. Without that bound the alternative {@code ask}
+     * matched inside {@code masking}, which paired the closing quotation mark of one line with the
+     * opening mark of the next and exempted every word between them. Two neighbouring paragraphs of
+     * {@code docs/suggested-next-tasks.md} were read as one sentence of forty-one words for exactly
+     * that reason. A quoted span may still cross a line ending, because a wrapped file breaks one
+     * quotation over several lines, but it may not cross a blank line: a paragraph break ends a
+     * quotation whatever the marks around it do.
+     */
+    private static final Pattern ATTRIBUTED_QUOTATION =
+            Pattern.compile(
+                    "(?i)(?<![A-Za-z])(?:reads?|states?|stated|says?|said|wrote|writes|quoted"
+                            + "|quotes|asks?|asked|requires?|required|verbatim|according to"
+                            + "|in the user's own words|in the user's words|puts it)(?![A-Za-z])"
+                            + "[^\"\u201c\n]{0,40}"
+                            + "[\"\u201c]((?:(?!\n\s*\n)[^\"\u201d]){20,})[\"\u201d]");
+
+    /** What an attributed quotation reads as once its words are exempt. */
+    private static final String QUOTATION_TOKEN = "QUOTE";
 
     /**
      * The twenty-two principle rows every report section must carry, spelled as the rule spells them.
@@ -218,6 +276,16 @@ class PresentationAndProseContractTest {
     private static final int LONG_PARAGRAPH_SENTENCES = 5;
     private static final int MINIMUM_REWRITE_REDUCTION_PERCENT = 15;
 
+    /** The results a judged principle may carry. {@code Not measured} is not one of them. */
+    private static final Set<String> JUDGED_RESULTS =
+            Set.of("Pass", "Soft violation", "Hard violation", "Not applicable");
+
+    /** Shortest evidence cell a principle row may carry. A dash is not evidence. */
+    private static final int MINIMUM_EVIDENCE_CHARACTERS = 20;
+
+    /** Evidence cells of one scorecard that have to differ from one another. */
+    private static final int MINIMUM_DISTINCT_EVIDENCE = 15;
+
     private static final Pattern PROSE_BUZZWORD =
             Pattern.compile(
                     "(?i)\\b(?:leverage|utilize|facilitate|synergy|holistic|paradigm|robust|seamless"
@@ -238,28 +306,88 @@ class PresentationAndProseContractTest {
     private static final String GUARD = "\u0000";
     private static final String SCORED_README_SECTION = "## Modernized card platform";
 
-    /** What a fresh measurement of one target found. */
+    /** One sentence the measurement found too long, with the length that made it one. */
+    private record Offender(int words, String text) {}
+
+    /**
+     * What a fresh measurement of one target found.
+     *
+     * <p>Every violation is carried, not only the worst of each kind, because Rule 5 asks for a
+     * quote, a principle, a rewrite and a reason for each one. The two {@code longest} figures are
+     * carried for the opposite reason: a principle that passes owes evidence too, and the longest
+     * sentence and paragraph a target does hold is what a pass on length rests on.
+     *
+     * @param blocks                    scored paragraphs
+     * @param sentences                 sentences inside them
+     * @param longSentenceList          every sentence over thirty words
+     * @param longParagraphList         every paragraph over five sentences, as its sentences
+     * @param buzzwordUses              every buzzword occurrence, in the form it was written
+     * @param longestSentenceWords      the longest scored sentence, in words
+     * @param longestParagraphSentences the longest scored paragraph, in sentences
+     */
     private record ProseMeasurement(
-            int longSentences,
-            int longParagraphs,
-            int buzzwords,
-            String worstSentence,
-            int worstSentenceWords,
-            List<String> worstParagraph) {
+            int blocks,
+            int sentences,
+            List<Offender> longSentenceList,
+            List<List<String>> longParagraphList,
+            List<String> buzzwordUses,
+            int longestSentenceWords,
+            int longestParagraphSentences) {
+
+        int longSentences() {
+            return longSentenceList.size();
+        }
+
+        int longParagraphs() {
+            return longParagraphList.size();
+        }
+
+        int buzzwords() {
+            return buzzwordUses.size();
+        }
+
+        String worstSentence() {
+            return worstOffender() == null ? "" : worstOffender().text();
+        }
+
+        int worstSentenceWords() {
+            return worstOffender() == null ? 0 : worstOffender().words();
+        }
+
+        Offender worstOffender() {
+            return longSentenceList.stream()
+                    .max(java.util.Comparator.comparingInt(Offender::words))
+                    .orElse(null);
+        }
+
+        List<String> worstParagraph() {
+            return longParagraphList.stream()
+                    .max(java.util.Comparator.comparingInt(List::size))
+                    .orElse(List.of());
+        }
 
         int hard() {
-            return buzzwords;
+            return buzzwords();
         }
 
         int soft() {
-            return longSentences + longParagraphs;
+            return longSentences() + longParagraphs();
         }
 
+        /**
+         * Returns the verdict the rule's own severity scale gives these counts.
+         *
+         * <p>CLEAN is zero hard violations and at most two soft ones. An earlier revision admitted
+         * three soft, which published CLEAN for a target the rule calls NEEDS WORK. ROUGH DRAFT is
+         * four or more hard violations, and everything between the two is NEEDS WORK.
+         *
+         * @return CLEAN, NEEDS WORK or ROUGH DRAFT
+         */
         String verdict() {
             if (hard() >= 4) {
                 return "ROUGH DRAFT";
             }
-            return hard() >= 1 || soft() >= 4 ? "NEEDS WORK" : "CLEAN";
+            return hard() >= 1 || soft() >= 3 ? "NEEDS WORK" : "CLEAN";
         }
     }
 
@@ -948,7 +1076,7 @@ class PresentationAndProseContractTest {
         // integrity attribute where an import expression cannot, and an inserted element is
         // asynchronous, so the first slide is still drawn without waiting for the library. Both
         // properties are read here because losing either one is a silent regression: the first
-        // would leave 3.5 MB unverified, and the second would delay every talk by a download.
+        // would leave 2.6 MB unverified, and the second would delay every talk by a download.
         assertTrue(deckScript.contains("document.createElement(\"script\")"),
                 "Mermaid has to load through an element the module inserts, which is what lets its"
                         + " bytes be digested");
@@ -1046,7 +1174,7 @@ class PresentationAndProseContractTest {
                     "A10: Respect the Reader's Intelligence");
 
     @Test
-    @DisplayName("the prose report declares the required method, boundaries and nineteen targets")
+    @DisplayName("the prose report declares the required method, boundaries and twenty-six targets")
     void theProseReportDeclaresTheRequiredMethodBoundariesAndTargets() {
         assertTrue(prose.startsWith("# Prose Validation\n"));
         assertTrue(prose.contains("Every target is Technical, so the Asimov agent governs"));
@@ -1056,6 +1184,27 @@ class PresentationAndProseContractTest {
         assertTrue(prose.contains("B1 through B5"));
         assertTrue(prose.contains("Only the new `Modernized card platform` section"));
         assertTrue(prose.contains("Only headings, body copy, bullets, metric labels, and table cells"));
+
+        assertTrue(prose.contains("CLEAN is zero hard and at most two soft."),
+                "the threshold the rule sets has to be the threshold the report states");
+        assertTrue(prose.contains("twenty-six targets"),
+                "the inventory the report claims has to be the inventory it scores");
+        assertTrue(
+                prose.contains("`description`, `summary` and `title`"),
+                "an OpenAPI document is scored as its prose values, and the report has to say which");
+        assertTrue(
+                prose.contains("attributed to a source outside this engagement is skipped"),
+                "Rule 5 skips a direct quotation, and the report has to state that boundary");
+        assertTrue(
+                prose.contains("Every principle carries a judged result and the evidence behind it."),
+                "a principle with no result is a review that did not happen");
+        assertTrue(
+                prose.contains("Every counted violation carries its own entry."),
+                "a count with no entry beside it is a count a reader cannot check");
+        assertFalse(
+                prose.contains("Not measured"),
+                "a principle reading Not measured is the self-attestation a review rejected: judge it"
+                        + " and publish the evidence, or record it Not applicable with a reason");
 
         Matcher reports = REPORT.matcher(prose);
         int count = 0;
@@ -1153,6 +1302,23 @@ class PresentationAndProseContractTest {
                             + ". Measured row: "
                             + summaryRow);
 
+            String measurementRow =
+                    "| %d | `%s` | %d | %d | %d | %d | %d |"
+                            .formatted(
+                                    number,
+                                    target,
+                                    measured.blocks(),
+                                    measured.sentences(),
+                                    measured.longSentences(),
+                                    measured.longParagraphs(),
+                                    measured.buzzwords());
+            assertTrue(
+                    prose.contains(measurementRow),
+                    "The measurement table does not publish what was read and found in "
+                            + target
+                            + ". Measured row: "
+                            + measurementRow);
+
             String verdictLine =
                     "**Overall verdict:** **%s** — %d hard violations, %d soft violations."
                             .formatted(measured.verdict(), measured.hard(), measured.soft());
@@ -1186,42 +1352,150 @@ class PresentationAndProseContractTest {
     }
 
     /**
-     * Holds each principle row to the result the measurement implies.
+     * Holds every principle row to a judged result and to evidence a reader can check.
      *
-     * <p>Five principles are measured. The other seventeen must read {@code Not measured}, because a
-     * pass this report cannot demonstrate is the self-attestation a review already rejected once.
+     * <p>A review found seventeen of the twenty-two principles reading {@code Not measured} with no
+     * evidence beside them, which is a review that was not performed. Four results are admitted now
+     * and {@code Not measured} is not among them: {@code Pass}, {@code Soft violation},
+     * {@code Hard violation} and {@code Not applicable}. The last one is for a principle a technical
+     * reference cannot offend, and it owes a reason like any other.
+     *
+     * <p>Five principles carry a mechanical result, and the four length and buzzword figures decide
+     * it. Their evidence is mechanical too: a pass on sentence length has to publish the longest
+     * sentence the target does hold, a pass on paragraph length the longest paragraph, and a pass on
+     * buzzwords the number of paragraphs read. A pass with nothing beside it is what this test exists
+     * to refuse.
+     *
+     * <p>The other seventeen are judged, and the judgement is bound to the text two ways. Every
+     * evidence cell has to name something from the target: a backticked span or a quoted span that
+     * occurs in the file. A cell whose result is {@code Not applicable} is exempt from that, because
+     * an absence cannot be quoted. And one section may not fill its rows with one sentence: at least
+     * fifteen of its twenty-two evidence cells have to differ from each other.
      */
     private static void assertPrincipleResults(
-            String section, int number, ProseMeasurement measured) {
+            String section, int number, ProseMeasurement measured) throws IOException {
+        String target = PROSE_TARGETS.get(number - 1);
+        String targetText = Files.readString(platformRoot.resolve(target).normalize());
+        Set<String> distinctEvidence = new LinkedHashSet<>();
         for (String row : PRINCIPLE_ROWS) {
             String key = row.substring(0, row.indexOf(':'));
-            String expected;
+            Matcher matcher =
+                    Pattern.compile(
+                                    "(?m)^\\| "
+                                            + Pattern.quote(row)
+                                            + " \\| [^|]+ \\| ([^|]+) \\| ([^|]*)\\|")
+                            .matcher(section);
+            assertTrue(
+                    matcher.find(),
+                    "Section " + number + " has no row for principle " + row);
+            String result = matcher.group(1).strip();
+            String evidence = matcher.group(2).strip();
+
+            String expected = null;
             if (SENTENCE_PRINCIPLES.contains(key)) {
                 expected = measured.longSentences() > 0 ? "Soft violation" : "Pass";
             } else if (PARAGRAPH_PRINCIPLES.contains(key)) {
                 expected = measured.longParagraphs() > 0 ? "Soft violation" : "Pass";
             } else if (BUZZWORD_PRINCIPLES.contains(key)) {
                 expected = measured.buzzwords() > 0 ? "Hard violation" : "Pass";
-            } else {
-                expected = "Not measured";
             }
-            Matcher matcher =
-                    Pattern.compile(
-                                    "(?m)^\\| "
-                                            + Pattern.quote(row)
-                                            + " \\| [^|]+ \\| ([^|]+) \\|")
-                            .matcher(section);
+            if (expected != null) {
+                assertEquals(
+                        expected,
+                        result,
+                        "Section " + number + " publishes the wrong result for " + row);
+            } else {
+                assertTrue(
+                        JUDGED_RESULTS.contains(result),
+                        "Section " + number + " publishes \"" + result + "\" for " + row
+                                + ", and the rule admits only " + JUDGED_RESULTS
+                                + ". A principle nobody judged is a review nobody performed");
+            }
+
             assertTrue(
-                    matcher.find(),
-                    "Section " + number + " has no row for principle " + row);
-            assertEquals(
-                    expected,
-                    matcher.group(1).strip(),
-                    "Section " + number + " publishes the wrong result for " + row);
+                    evidence.length() >= MINIMUM_EVIDENCE_CHARACTERS && !"—".equals(evidence),
+                    "Section " + number + " gives no evidence for " + row + ": \"" + evidence + "\"");
+            distinctEvidence.add(evidence);
+
+            if ("Pass".equals(expected) && SENTENCE_PRINCIPLES.contains(key)) {
+                assertTrue(
+                        evidence.contains(
+                                "longest scored sentence " + measured.longestSentenceWords()
+                                        + " words"),
+                        "Section " + number + " passes " + key + " and owes the longest sentence it"
+                                + " does hold, which is " + measured.longestSentenceWords()
+                                + " words: \"" + evidence + "\"");
+            }
+            if ("Pass".equals(expected) && PARAGRAPH_PRINCIPLES.contains(key)) {
+                assertTrue(
+                        evidence.contains(
+                                "longest scored paragraph " + measured.longestParagraphSentences()
+                                        + " sentences"),
+                        "Section " + number + " passes " + key + " and owes the longest paragraph it"
+                                + " does hold, which is " + measured.longestParagraphSentences()
+                                + " sentences: \"" + evidence + "\"");
+            }
+            if ("Pass".equals(expected) && BUZZWORD_PRINCIPLES.contains(key)) {
+                assertTrue(
+                        evidence.contains("no buzzword in " + measured.blocks()
+                                + " scored paragraphs"),
+                        "Section " + number + " passes " + key + " and owes the number of paragraphs"
+                                + " read, which is " + measured.blocks() + ": \"" + evidence + "\"");
+            }
+            if (expected == null && !"Not applicable".equals(result)) {
+                assertTrue(
+                        namesSomethingIn(evidence, targetText),
+                        "Section " + number + " judges " + key + " without naming anything from "
+                                + target + ". Quote a passage or name an identifier the file carries:"
+                                + " \"" + evidence + "\"");
+            }
         }
+        assertTrue(
+                distinctEvidence.size() >= MINIMUM_DISTINCT_EVIDENCE,
+                "Section " + number + " repeats itself across its scorecard: only "
+                        + distinctEvidence.size() + " of " + PRINCIPLE_ROWS.size()
+                        + " evidence cells differ, and " + MINIMUM_DISTINCT_EVIDENCE
+                        + " is the floor");
     }
 
-    /** Requires an entry for every kind of violation measured, and none where none was measured. */
+    /**
+     * Reports whether one evidence cell names something the target really carries.
+     *
+     * <p>A backticked span or a double-quoted span inside the cell is read as the thing named, and one
+     * of them has to occur in the file. The comparison is a substring test on the raw file, so naming
+     * a heading, an identifier, a path or a phrase all work, and inventing one does not.
+     *
+     * @param evidence   the evidence cell
+     * @param targetText the whole target
+     * @return true where at least one named span occurs in the target
+     */
+    private static boolean namesSomethingIn(String evidence, String targetText) {
+        Matcher named =
+                Pattern.compile("`([^`]+)`|\"([^\"]+)\"|\u201c([^\u201d]+)\u201d").matcher(evidence);
+        while (named.find()) {
+            for (int group = 1; group <= named.groupCount(); group++) {
+                String span = named.group(group);
+                if (span != null && span.length() >= 3 && targetText.contains(span)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Requires one complete entry for every violation counted, not one for the worst of each kind.
+     *
+     * <p>A review found a target publishing 28 soft violations under two entries. Rule 5 asks for a
+     * quote, a named principle, a rewrite and a reason for each violation, so a count of 28 with two
+     * entries beside it is 26 counts a reader cannot check. Three rules follow. Every over-length
+     * sentence measured is quoted by some V3 entry, and no V3 entry quotes a sentence the measurement
+     * did not find. Every over-long paragraph measured is named by a split point that begins one of
+     * its own sentences. Every buzzword counted is named by an A6 entry.
+     *
+     * <p>A target with nothing measured says so, in one sentence, so silence is never mistaken for an
+     * omission.
+     */
     private static void assertEntriesCoverEveryViolation(
             String section, int number, ProseMeasurement measured) {
         String entries = section.substring(section.indexOf("**Per-violation entries:**"));
@@ -1231,29 +1505,62 @@ class PresentationAndProseContractTest {
                     "Section " + number + " measures clean and must say so under its entries");
             return;
         }
-        if (measured.longSentences() > 0) {
-            assertTrue(
-                    entries.contains("**" + number + ".1 — V3: Keep it simple**"),
-                    "Section " + number + " measures an over-length sentence and owes entry " + number + ".1");
+
+        Set<String> quoted = new LinkedHashSet<>();
+        Matcher sentenceEntry =
+                Pattern.compile(
+                                "(?ms)^\\*\\*" + number + "\\.\\d+ — V3: Keep it simple\\*\\*.*?"
+                                        + "^> (.+?)$")
+                        .matcher(entries);
+        while (sentenceEntry.find()) {
+            quoted.add(asScored(sentenceEntry.group(1)));
         }
+        Set<String> measuredSentences = new LinkedHashSet<>();
+        measured.longSentenceList().forEach(offender -> measuredSentences.add(offender.text()));
+        assertEquals(
+                measuredSentences,
+                quoted,
+                "Section " + number + " owes one V3 entry per over-length sentence it counts. It"
+                        + " counts " + measuredSentences.size() + " and quotes " + quoted.size());
+
         if (measured.longParagraphs() > 0) {
             assertTrue(
                     entries.contains("— V2: Do not ramble**"),
                     "Section " + number + " measures an over-long paragraph and owes a V2 entry");
+            List<String> splits = new ArrayList<>();
             Matcher split = Pattern.compile("Start a new paragraph at \"([^\"]+)\"").matcher(entries);
-            int named = 0;
             while (split.find()) {
-                String prefix = asScored(split.group(1));
+                splits.add(asScored(split.group(1)));
+            }
+            assertEquals(
+                    measured.longParagraphs(),
+                    splits.size(),
+                    "Section " + number + " counts " + measured.longParagraphs() + " over-long"
+                            + " paragraphs and names " + splits.size() + " split points");
+            for (String prefix : splits) {
                 assertTrue(
-                        measured.worstParagraph().stream()
-                                .anyMatch(sentence -> sentence.startsWith(prefix)),
+                        measured.longParagraphList().stream()
+                                .anyMatch(
+                                        paragraph ->
+                                                paragraph.stream()
+                                                        .anyMatch(
+                                                                sentence ->
+                                                                        sentence.startsWith(
+                                                                                prefix))),
                         "Section "
                                 + number
-                                + " names a split point that begins no sentence of the measured paragraph: "
+                                + " names a split point that begins no sentence of any measured"
+                                + " paragraph: "
                                 + prefix);
-                named++;
             }
-            assertTrue(named > 0, "Section " + number + " gives no split point");
+        }
+
+        for (String buzzword : measured.buzzwordUses()) {
+            assertTrue(
+                    entries.contains("— A6: No Ornamental Language**")
+                            && entries.contains(buzzword),
+                    "Section " + number + " counts the buzzword \"" + buzzword + "\" and owes an A6"
+                            + " entry naming it");
         }
     }
 
@@ -1262,32 +1569,38 @@ class PresentationAndProseContractTest {
     void thePublishedRewritesAreShorterThanTheirOffenders() throws IOException {
         Pattern entry =
                 Pattern.compile(
-                        "(?ms)^\\*\\*(\\d+)\\.1 — V3: Keep it simple\\*\\*.*?soft violation, (\\d+) words\\.\\n"
+                        "(?ms)^\\*\\*(\\d+)\\.(\\d+) — V3: Keep it simple\\*\\*.*?soft violation, (\\d+) words\\.\\n"
                                 + "\\n> (.+?)\\n\\n\\*\\*Rewrite\\*\\* — (\\d+) words, (\\d+)% shorter:\\n"
                                 + "\\n> (.+?)\\n");
         Matcher matcher = entry.matcher(prose);
         int checked = 0;
         while (matcher.find()) {
             int number = Integer.parseInt(matcher.group(1));
-            int declaredOffenderWords = Integer.parseInt(matcher.group(2));
-            String offender = matcher.group(3).strip();
-            int declaredRewriteWords = Integer.parseInt(matcher.group(4));
-            int declaredReduction = Integer.parseInt(matcher.group(5));
-            String rewrite = matcher.group(6).strip();
+            String label = number + "." + matcher.group(2);
+            int declaredOffenderWords = Integer.parseInt(matcher.group(3));
+            String offender = matcher.group(4).strip();
+            int declaredRewriteWords = Integer.parseInt(matcher.group(5));
+            int declaredReduction = Integer.parseInt(matcher.group(6));
+            String rewrite = matcher.group(7).strip();
 
             ProseMeasurement measured = measure(PROSE_TARGETS.get(number - 1));
+            Offender quoted =
+                    measured.longSentenceList().stream()
+                            .filter(found -> found.text().equals(asScored(offender)))
+                            .findFirst()
+                            .orElse(null);
+            assertNotNull(
+                    quoted,
+                    "Entry " + label + " quotes a passage the measurement did not find over thirty"
+                            + " words in " + PROSE_TARGETS.get(number - 1));
             assertEquals(
-                    measured.worstSentenceWords(),
+                    quoted.words(),
                     declaredOffenderWords,
-                    "Entry " + number + ".1 declares a length the measurement does not give");
-            assertEquals(
-                    measured.worstSentence(),
-                    asScored(offender),
-                    "Entry " + number + ".1 quotes a passage that is not the measured worst sentence");
+                    "Entry " + label + " declares a length the measurement does not give");
             assertEquals(
                     declaredRewriteWords,
                     wordCount(asScored(rewrite)),
-                    "Entry " + number + ".1 declares a rewrite length that does not match its rewrite");
+                    "Entry " + label + " declares a rewrite length that does not match its rewrite");
             int reduction =
                     Math.round(
                             100f
@@ -1296,16 +1609,16 @@ class PresentationAndProseContractTest {
             assertEquals(
                     reduction,
                     declaredReduction,
-                    "Entry " + number + ".1 declares a reduction its two lengths do not give");
+                    "Entry " + label + " declares a reduction its two lengths do not give");
             assertTrue(
                     reduction >= MINIMUM_REWRITE_REDUCTION_PERCENT,
-                    "Entry " + number + ".1 cuts only " + reduction + "%, and the rule asks for fifteen");
+                    "Entry " + label + " cuts only " + reduction + "%, and the rule asks for fifteen");
             for (String sentence : sentences(asScored(rewrite))) {
                 assertTrue(
                         wordCount(sentence) <= LONG_SENTENCE_WORDS,
                         "Entry "
-                                + number
-                                + ".1 proposes a replacement sentence of "
+                                + label
+                                + " proposes a replacement sentence of "
                                 + wordCount(sentence)
                                 + " words");
             }
@@ -1313,9 +1626,12 @@ class PresentationAndProseContractTest {
         }
         int owed = 0;
         for (String target : PROSE_TARGETS) {
-            owed += measure(target).longSentences() > 0 ? 1 : 0;
+            owed += measure(target).longSentences();
         }
-        assertEquals(owed, checked, "The report owes one worked rewrite for every target with a long sentence");
+        assertEquals(
+                owed,
+                checked,
+                "The report owes one worked rewrite per over-length sentence, not one per target");
     }
 
     @Test
@@ -1705,42 +2021,41 @@ class PresentationAndProseContractTest {
      */
     private static ProseMeasurement measure(String target) throws IOException {
         String text = Files.readString(platformRoot.resolve(target).normalize());
-        int longSentences = 0;
-        int buzzwords = 0;
-        String worstSentence = "";
-        int worstSentenceWords = 0;
-        List<String> worstParagraph = List.of();
-        List<String> longParagraphs = new ArrayList<>();
+        List<Offender> longSentences = new ArrayList<>();
+        List<List<String>> longParagraphs = new ArrayList<>();
+        List<String> buzzwordUses = new ArrayList<>();
+        int blocks = 0;
+        int sentenceCount = 0;
+        int longestSentenceWords = 0;
+        int longestParagraphSentences = 0;
         for (String block : scoredBlocks(target, text)) {
+            blocks++;
             List<String> sentences = sentences(block);
+            sentenceCount += sentences.size();
+            longestParagraphSentences = Math.max(longestParagraphSentences, sentences.size());
             if (sentences.size() > LONG_PARAGRAPH_SENTENCES) {
-                longParagraphs.add(block);
-                if (sentences.size() > worstParagraph.size()) {
-                    worstParagraph = sentences;
-                }
+                longParagraphs.add(sentences);
             }
             for (String sentence : sentences) {
                 int words = wordCount(sentence);
+                longestSentenceWords = Math.max(longestSentenceWords, words);
                 if (words > LONG_SENTENCE_WORDS) {
-                    longSentences++;
-                    if (words > worstSentenceWords) {
-                        worstSentenceWords = words;
-                        worstSentence = sentence;
-                    }
+                    longSentences.add(new Offender(words, sentence));
                 }
             }
             Matcher buzzword = PROSE_BUZZWORD.matcher(block);
             while (buzzword.find()) {
-                buzzwords++;
+                buzzwordUses.add(buzzword.group());
             }
         }
         return new ProseMeasurement(
-                longSentences,
-                longParagraphs.size(),
-                buzzwords,
-                worstSentence,
-                worstSentenceWords,
-                worstParagraph);
+                blocks,
+                sentenceCount,
+                List.copyOf(longSentences),
+                List.copyOf(longParagraphs),
+                List.copyOf(buzzwordUses),
+                longestSentenceWords,
+                longestParagraphSentences);
     }
 
     private static List<String> scoredBlocks(String target, String text) {
@@ -1752,6 +2067,8 @@ class PresentationAndProseContractTest {
                             .replaceAll("(?is)<pre\\b.*?</pre>", " ")
                             .replaceAll("(?s)<!--.*?-->", " ")
                             .replaceAll("(?s)<[^>]+>", "\n");
+        } else if (target.endsWith(".yaml")) {
+            body = openApiProse(text);
         } else {
             body = FENCED_BLOCK.matcher(text).replaceAll("");
         }
@@ -1762,6 +2079,16 @@ class PresentationAndProseContractTest {
             body = end > at ? body.substring(at, end) : body.substring(at);
         }
         body = INLINE_CODE.matcher(body).replaceAll("CODE");
+        body =
+                ATTRIBUTED_QUOTATION
+                        .matcher(body)
+                        .replaceAll(
+                                match ->
+                                        Matcher.quoteReplacement(
+                                                match.group()
+                                                        .replace(
+                                                                match.group(1),
+                                                                QUOTATION_TOKEN)));
         List<String> blocks = new ArrayList<>();
         boolean fresh = true;
         for (String rawLine : body.split("\n", -1)) {
@@ -1786,6 +2113,60 @@ class PresentationAndProseContractTest {
             fresh = false;
         }
         return blocks;
+    }
+
+    /**
+     * Returns the prose of an OpenAPI document, as blank-line separated paragraphs.
+     *
+     * <p>The document is parsed rather than read line by line, so a key inside a description body
+     * cannot be mistaken for a key of the document. Every value under
+     * {@link #OPENAPI_PROSE_KEYS} is collected in document order, and every newline left inside a
+     * collected value becomes a paragraph break. That last step is what makes the paragraph counts
+     * mean anything: these documents write their descriptions as folded scalars, where a line wrap is
+     * already a space and only a blank line survives as a newline.
+     *
+     * @param text the whole document
+     * @return its prose, ready for the same block reader Markdown body copy goes through
+     */
+    private static String openApiProse(String text) {
+        List<String> values = new ArrayList<>();
+        collectProse(new Yaml().load(text), values);
+        StringBuilder prose = new StringBuilder();
+        for (String value : values) {
+            String stripped = value.strip();
+            if (stripped.isEmpty()) {
+                continue;
+            }
+            if (!prose.isEmpty()) {
+                prose.append("\n\n");
+            }
+            prose.append(stripped.replace("\n", "\n\n"));
+        }
+        return prose.toString();
+    }
+
+    /**
+     * Collects every prose value of one parsed node, in document order.
+     *
+     * @param node   a map, a list or a scalar of the parsed document
+     * @param values the collected values, appended to
+     */
+    private static void collectProse(Object node, List<String> values) {
+        if (node instanceof Map<?, ?> map) {
+            map.forEach(
+                    (key, value) -> {
+                        if (OPENAPI_PROSE_KEYS.contains(String.valueOf(key))
+                                && value instanceof String prose) {
+                            values.add(prose);
+                        } else {
+                            collectProse(value, values);
+                        }
+                    });
+        } else if (node instanceof Iterable<?> items) {
+            for (Object item : items) {
+                collectProse(item, values);
+            }
+        }
     }
 
     private static List<String> sentences(String block) {

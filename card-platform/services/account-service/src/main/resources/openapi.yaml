@@ -16,29 +16,30 @@ info:
     CAVW, and the update path from app/cbl/COACTUPC.cbl, transaction CAUP. That program carries
     twenty-four field edits at app/cbl/COACTUPC.cbl:L1470-L1676 and a field-by-field concurrency
     check at app/cbl/COACTUPC.cbl:L4109-L4193. The cycle-close endpoint reproduces two statements
-    and
-    no more, app/cbl/CBACT04C.cbl:L353-L354. The credit-limit rule of the authorization service
-    reads
-    the two accumulators those statements return to zero.
+    and no more, app/cbl/CBACT04C.cbl:L353-L354. The credit-limit rule of the authorization service
+    reads the two accumulators those statements return to zero.
 
 
-    This service is queried and it does not query. It calls no other service and holds no web client.
-    It publishes one AccountStateChanged event per mutation, which keeps the authorization service's
-    copy of the credit limit, both cycle accumulators and the expiry date current, and one
-    CustomerContextChanged event, which keeps the notification service's cardholder context current.
-    It also consumes: one listener reads transaction.posted under the consumer group account-posted
-    and carries the posted amount back onto the account record, reproducing
+    This service is queried and it does not query. It calls no other service and holds no web
+    client. It publishes one AccountStateChanged event per mutation, which keeps the authorization
+    service's copy of the credit limit, both cycle accumulators and the expiry date current. It also
+    publishes one CustomerContextChanged event, which keeps the notification service's cardholder
+    context current. It also consumes: one listener reads transaction.posted under the consumer
+    group account-posted and carries the posted amount back onto the account record, reproducing
     app/cbl/CBTRN02C.cbl:L549-L551.
 
 
     SYNTHETIC DATA ONLY. Every name, address, telephone number, Social Security part, government
-    identifier, date of birth, electronic funds transfer account and credit score in this document is
-    a value from the public repository fixtures app/data/ASCII/acctdata.txt and
-    app/data/ASCII/custdata.txt, or a deliberately marked specimen. None describes a real person.
+    identifier, date of birth, electronic funds transfer account and credit score in this document
+    comes from one of two places. It is a value from the public repository fixtures
+    app/data/ASCII/acctdata.txt and app/data/ASCII/custdata.txt, or a deliberately marked specimen.
+    None describes a real person.
+
+
     They are shaped like real personally identifiable information because the source edits require
     that shape — a Social Security number is refused unless it passes the three-part edit at
-    app/cbl/COACTUPC.cbl:L1265. A conspicuously impossible value could not be used as an example
-    of an accepted one. Never send real personal data to this service: the demonstration binds its
+    app/cbl/COACTUPC.cbl:L1265. A conspicuously impossible value could not be used as an example of
+    an accepted one. Never send real personal data to this service: the demonstration binds its
     published port to the loopback address and carries none of the controls personal data requires.
   license:
     name: Apache-2.0
@@ -157,24 +158,20 @@ paths:
         A block that is present has to be complete. Ten components of customerData and nine of
         accountData carry a mandatory-field edit, each reproducing one edit of
         app/cbl/COACTUPC.cbl:L1470-L1676. Those edits refuse an absent value exactly as they refuse
-        a
-        blank one. That is the 3270 screen's own contract: the screen was filled from the fetched
+        a blank one. That is the 3270 screen's own contract: the screen was filled from the fetched
         record and submitted every field, so a field the operator did not touch still arrived.
 
 
         A component the required list of its block names is refused when it is absent and refused
-        when
-        it is blank, and the two answer the same text. Omitting creditLimit is refused with
+        when it is blank, and the two answer the same text. Omitting creditLimit is refused with
         'Credit Limit must be supplied.' exactly as sending '' for it is. No omitted component is
-        filled
-        from the stored row, so a caller that drops a field is told which field it dropped.
+        filled from the stored row, so a caller that drops a field is told which field it dropped.
 
 
         What a caller may omit is a whole block. A body carrying customerData alone leaves every
         account column as stored, and one carrying both replaces both records. Within a block, a
         component the required list does not name may be omitted and keeps its stored value. Those
-        are
-        the middle name, the second address line, both telephone numbers, the government-issued
+        are the middle name, the second address line, both telephone numbers, the government-issued
         identifier, the date of birth and the disclosure group.
 
 
@@ -184,8 +181,8 @@ paths:
 
         customerData is required and carries a required customerId, because an account record names
         no customer: app/cpy/CVACT01Y.cpy declares no customer identifier among its twelve fields.
-        The private account_customer_link table this schema holds is not consulted to resolve one —
-        it is read after the fact, to confirm the pair the caller named — so the caller supplies the
+        The private account_customer_link table this schema holds is not consulted to resolve one.
+        It is read after the fact, to confirm the pair the caller named, so the caller supplies the
         customer identifier. The account identifier comes from the path alone, and the body carries
         none.
 
@@ -193,33 +190,32 @@ paths:
         A seeded customer cannot be resubmitted unchanged. Every one of the fifty rows
         db/migration/V2__seed.sql loads fails at least one edit of app/cbl/COACTUPC.cbl:L1470-L1676.
         That reproduces the source: those edits ran on 3270 screen input and never on stored
-        records.
-        The example below names the two values it had to change and why each one failed.
+        records. The example below names the two values it had to change and why each one failed.
 
 
         A write produces one event per record it changed, and no event for a record it left as it
-        stood.
-        A changed account row produces one AccountStateChanged carrying changeKind ACCOUNT_UPDATED,
-        against the contract in src/main/resources/schemas/account-state-changed-v1.json. A changed
-        customer row produces one CustomerContextChanged, against
-        src/main/resources/schemas/customer-context-changed-v1.json. Raising creditLimit while
-        resubmitting the customer values the caller was shown produces the account event alone, and
-        changing an address while omitting accountData produces the customer event alone. Changing
-        both
-        produces both. The comparison is the one app/cbl/COACTUPC.cbl:L1684-L1768 draws, applied per
-        record, and a body that changes nothing answers 200 with the no-change text and produces
-        none.
+        stood. A changed account row produces one AccountStateChanged carrying changeKind
+        ACCOUNT_UPDATED, against the contract in
+        src/main/resources/schemas/account-state-changed-v1.json. A changed customer row produces
+        one CustomerContextChanged, against
+        src/main/resources/schemas/customer-context-changed-v1.json.
 
 
-        Request handling publishes nothing. outbox/OutboxWriter writes each outbox_event row in the
-        same transaction as the two record writes, and outbox/OutboxRelay publishes them afterwards
-        on
-        a fixed delay. card-platform/docs/event-flow.md carries the path an event takes from here.
+        Raising creditLimit while resubmitting the customer values the caller was shown produces the
+        account event alone, and changing an address while omitting accountData produces the
+        customer event alone. Changing both produces both. The comparison is the one
+        app/cbl/COACTUPC.cbl:L1684-L1768 draws, applied per record, and a body that changes nothing
+        answers 200 with the no-change text and produces none.
+
+
+        Request handling publishes nothing. The writer outbox/OutboxWriter writes each outbox_event
+        row in the same transaction as the two record writes, and outbox/OutboxRelay publishes them
+        afterwards on a fixed delay. Document card-platform/docs/event-flow.md carries the path an
+        event takes from here.
 
 
         Restricted to the administrator role. One call writes two records and produces one event
-        that
-        changes what the authorization service authorizes against.
+        that changes what the authorization service authorizes against.
       parameters:
         - $ref: '#/components/parameters/AccountId'
         - name: X-CardDemo-Request
@@ -251,23 +247,22 @@ paths:
             examples:
               customerOnly:
                 summary: >-
-                  SYNTHETIC FIXTURE DATA, NOT A REAL PERSON. Update the customer alone, leaving every account column as stored. The account
-                  block
-                  is omitted; the customer block carries all fourteen of its required components, as
-                  a
-                  present block has to. Both telephone numbers are supplied even though neither is
-                  required, because omitting one hands the stored value to the edit and the stored
-                  phoneNumber2 for this customer carries area code 493, which the general-purpose
-                  band
-                  does not hold. That is the seeded-row point the description above makes, and it
-                  reaches an omitted component as readily as a submitted one.
+                  SYNTHETIC FIXTURE DATA, NOT A REAL PERSON. Update the customer alone, leaving
+                  every account column as stored. The account block is omitted; the customer block
+                  carries all fourteen of its required components, as a present block has to.
+
+
+                  Both telephone numbers are supplied even though neither is required. Omitting one
+                  hands the stored value to the edit, and the stored phoneNumber2 for this customer
+                  carries area code 493, which the general-purpose band does not hold. That is the
+                  seeded-row point the description above makes, and it reaches an omitted component
+                  as readily as a submitted one.
 
 
                   The three Social Security parts below carry a zero placeholder of the declared
-                  width and no customer's value. 1245-EDIT-NUM-REQD at
-                  app/cbl/COACTUPC.cbl:L2109 refuses a zero, so this body as printed answers 422
-                  with 'SSN: First 3 chars must not be zero.' A caller substitutes the three
-                  parts the customer's own row holds.
+                  width and no customer's value. 1245-EDIT-NUM-REQD at app/cbl/COACTUPC.cbl:L2109
+                  refuses a zero, so this body as printed answers 422 with 'SSN: First 3 chars must
+                  not be zero.' A caller substitutes the three parts the customer's own row holds.
                 value:
                   customerData:
                     customerId: '000000050'
@@ -289,12 +284,13 @@ paths:
               wholeScreenSubmit:
                 summary: >-
                   SYNTHETIC FIXTURE DATA, NOT A REAL PERSON. The whole pair, as the 3270 screen
-                  submitted it. Every value is the seeded row for
-                  account 00000000050 and customer 000000050, with the dates in the eight-character
-                  request form, except the four named below. Two values changed. addressZip 04257
-                  becomes 97201, since OR97 is
-                  the
-                  only Oregon prefix among the 240 combinations app/cpy/CSLKPCDY.cpy lists.
+                  submitted it. Every value is the seeded row for account 00000000050 and customer
+                  000000050, with the dates in the eight-character request form, except the four
+                  named below.
+
+
+                  Two values changed. Property addressZip 04257 becomes 97201, since OR97 is the
+                  only Oregon prefix among the 240 combinations app/cpy/CSLKPCDY.cpy lists. The
                   phoneNumber2 area code 493 becomes 503, which the general-purpose band holds.
 
 
@@ -307,11 +303,11 @@ paths:
 
 
                   expirationDate is the fixture value. A deployment that applies the
-                  classpath:db/demo overlay reads 2099-12-31 for this account instead, and submitting
-                  20230309 there replaces that extension with a past date, publishes it, and declines
-                  every later authorization on this account with reason code 103. Send back the value
-                  the read returned. card-platform/docs/onboarding.md carries the pitfall and a body
-                  that keeps both copies of the expiry in step.
+                  classpath:db/demo overlay reads 2099-12-31 for this account instead. Submitting
+                  20230309 there replaces that extension with a past date, publishes it, and
+                  declines every later authorization on this account with reason code 103. Send back
+                  the value the read returned. Document card-platform/docs/onboarding.md carries the
+                  pitfall and a body that keeps both copies of the expiry in step.
                 value:
                   accountData:
                     activeStatus: 'Y'
@@ -441,36 +437,32 @@ paths:
 
 
         The credit-limit rule at app/cbl/CBTRN02C.cbl:L403-L413 authorizes against cycle credit
-        minus
-        cycle debit. The only code in the repository that returns those two accumulators to zero
-        lives
-        inside the interest program, which stays batch. Without a substitute, every posted
-        transaction
-        raises the tested balance and nothing lowers it, so available credit shrinks until every
-        transaction declines with reject code 0102.
+        minus cycle debit. The only code in the repository that returns those two accumulators to
+        zero lives inside the interest program, which stays batch. Without a substitute, every
+        posted transaction raises the tested balance and nothing lowers it, so available credit
+        shrinks until every transaction declines with reject code 0102.
 
 
         The effect on the two accumulators is idempotent: they are zero after one call and after
-        ten.
-        The events are not, since each call produces one AccountStateChanged event carrying
-        changeKind
-        BILLING_CYCLE_CLOSED. A caller that means to close a cycle once calls this once. The event
-        leaves through the same outbox row and relay the update uses.
+        ten. The events are not, since each call produces one AccountStateChanged event carrying
+        changeKind BILLING_CYCLE_CLOSED. A caller that means to close a cycle once calls this once.
+        The event leaves through the same outbox row and relay the update uses.
 
 
         Restricted to the administrator role. Clearing the accumulators is a decision about the
-        whole
-        account, not about one cardholder's own data.
+        whole account, not about one cardholder's own data.
 
 
         This operation reads no body and still requires Content-Type: application/json. That is the
-        cross-site request forgery control, not a statement about a body. POST is one of the three
-        methods a browser sends cross-origin with no preflight, carrying whatever credential it has
-        cached for this origin, and the only content types available to such a request are
-        application/x-www-form-urlencoded, multipart/form-data and text/plain. Requiring
-        application/json forces a preflight, and this service answers none. A request naming any of
-        those three content types is refused with 403 before any route rule is consulted; a request
-        naming none at all reaches this route and reads 415.
+        cross-site request forgery control, not a statement about a body.
+
+
+        POST is one of the three methods a browser sends cross-origin with no preflight, carrying
+        whatever credential it has cached for this origin. The only content types available to such
+        a request are application/x-www-form-urlencoded, multipart/form-data and text/plain.
+        Requiring application/json forces a preflight, and this service answers none. A request
+        naming any of those three content types is refused with 403 before any route rule is
+        consulted. A request naming none at all reaches this route and reads 415.
       parameters:
         - $ref: '#/components/parameters/AccountId'
         - name: X-CardDemo-Request
@@ -633,15 +625,12 @@ components:
       type: http
       scheme: basic
       description: >-
-        HTTP Basic authentication over the identities carddemo.security.users configures.
-        app/csd/CARDDEMO.CSD defines one USRSEC dataset the whole Customer Information Control
-        System
-        (CICS) region reads, so a platform-wide identity store is the faithful shape.
-        app/cbl/COSGN00C.cbl:L223 compares a
-        stored password against a supplied one in the clear. This service stores an encoded
-        password,
-        and the register entry for that source comparison records the difference.
-
+        HTTP Basic authentication over the identities carddemo.security.users configures. The
+        resource file app/csd/CARDDEMO.CSD defines one USRSEC dataset the whole Customer Information
+        Control System (CICS) region reads, so a platform-wide identity store is the faithful shape.
+        The signon at app/cbl/COSGN00C.cbl:L223 compares a stored password against a supplied one in
+        the clear. This service stores an encoded password, and the register entry for that source
+        comparison records the difference.
   parameters:
     AccountId:
       name: accountId
@@ -672,16 +661,16 @@ components:
 
     TooManyRequests:
       description: >-
-        A rate ceiling refused this request. config/RequestRateCeilingFilter runs ahead of the
-        security chain and bounds requests from one source, requests presenting one identity,
+        A rate ceiling refused this request. The filter config/RequestRateCeilingFilter runs ahead
+        of the security chain. It bounds requests from one source, requests presenting one identity,
         state-changing requests from one source, failed authentications from one source, and
         requests in flight. Retry-After names whole seconds until the window rolls.
 
 
-        ADDITIVE: a CICS transaction arrived from a terminal an operator was sitting at and the
-        nightly feed of app/jcl/POSTTRAN.jcl arrived once a day as a dataset, so the source had no
-        request rate to bound and holds no matching condition. The detail is fixed and names no
-        address, no identity and no route.
+        ADDITIVE: a CICS transaction arrived from a terminal an operator was sitting at, and the
+        nightly feed of app/jcl/POSTTRAN.jcl arrived once a day as a dataset. The source therefore
+        had no request rate to bound and holds no matching condition. The detail is fixed and names
+        no address, no identity and no route.
       headers:
         Retry-After:
           description: Whole seconds until the window rolls, one or more.
@@ -704,21 +693,24 @@ components:
       description: >-
         The request body could not be read. Three conditions reach this status: the body is not
         JavaScript Object Notation (JSON) at all, it carries a property one of the three request
-        schemas does not declare. The third sends a property declared as text with a JSON number or a
-        boolean in its place. config/RequestJsonStrictnessConfig is what makes the second and third
-        conditions refusals rather than silent repairs, so additionalProperties: false and
-        type: string are enforced and not merely documented. The money rule rests on the third: every
+        schemas does not declare. The third sends a property declared as text with a JSON number or
+        a boolean in its place.
+
+
+        The reader config/RequestJsonStrictnessConfig is what makes the second and third conditions
+        refusals rather than silent repairs. Both additionalProperties: false and type: string are
+        therefore enforced and not merely documented. The money rule rests on the third: every
         amount is a decimal string and never a JSON number.
 
 
-        ADDITIVE: a 3270 terminal sends fixed-width map fields, which can neither arrive unparseable,
+        ADDITIVE: a 3270 terminal sends fixed-width map fields. They can neither arrive unparseable,
         nor name a field the mapset does not declare, nor carry a type other than the characters of
-        the field, so the source holds no matching condition.
+        the field. The source therefore holds no matching condition.
 
 
-        The body carries one fixed text and no value read from the request. A parser message names the
-        position it stopped at and quotes the characters around it, and those characters can be a
-        Social Security Number or a date of birth.
+        The body carries one fixed text and no value read from the request. A parser message names
+        the position it stopped at and quotes the characters around it, and those characters can be
+        a Social Security Number or a date of birth.
       content:
         application/problem+json:
           schema:
@@ -785,15 +777,14 @@ components:
 
 
         The two read routes do not use this response. Each declares its own 404 and each reproduces
-        the
-        miss text its source paragraph composes, which opens with the identifier the caller named:
-        app/cbl/COACTVWC.cbl:L796-L806 for the account read and :L846-L856 for the customer read.
-        Those
-        texts are the contract of those two routes, and this description does not govern them. A
-        caller
-        probing for another subject's rows learns nothing from either one that the path it sent did
-        not
-        already tell it, since the identifier in the text is the identifier in the path.
+        the miss text its source paragraph composes, which opens with the identifier the caller
+        named. That is app/cbl/COACTVWC.cbl:L796-L806 for the account read and :L846-L856 for the
+        customer read. Those texts are the contract of those two routes, and this description does
+        not govern them.
+
+
+        A caller probing for another subject's rows learns nothing from either one that the path it
+        sent did not already tell it. The identifier in the text is the identifier in the path.
       content:
         application/problem+json:
           schema:
@@ -838,10 +829,10 @@ components:
 
     UnsupportedMediaType:
       description: >-
-        The Content-Type header of the request names a media type this route does not read. The route
-        reads application/json alone. The update answers this status because it reads a body. The
-        billing-cycle close answers it too, because requiring application/json is its cross-site
-        request forgery control: the three content types a browser driven from another origin can
+        The Content-Type header of the request names a media type this route does not read. The
+        route reads application/json alone. The update answers this status because it reads a body.
+        The billing-cycle close answers it too, because requiring application/json is its cross-site
+        request forgery control. The three content types a browser driven from another origin can
         send are application/x-www-form-urlencoded, multipart/form-data and text/plain, and none of
         them reaches the accumulators.
       content:
@@ -857,11 +848,11 @@ components:
     MethodNotAllowed:
       description: >-
         The route was called with a method it does not serve. The Allow header names the methods it
-        does. api/AccountApiExceptionHandler keeps the status and the headers the framework named, so
-        a caller's mistake is not recorded as a fault of this service.
-        config/SecurityConfig declares one rule per method and path, and a request whose method
-        carries no rule is refused with 403 before the dispatcher runs, so this answer is the one a
-        request the chain admits receives.
+        does. The handler api/AccountApiExceptionHandler keeps the status and the headers the
+        framework named, so a caller's mistake is not recorded as a fault of this service. The chain
+        in config/SecurityConfig declares one rule per method and path, so a request whose method
+        carries no rule is refused with 403 before the dispatcher runs. This answer is therefore the
+        one a request the chain admits receives.
       headers:
         Allow:
           description: The methods this route serves.
@@ -1000,9 +991,9 @@ components:
 
 
         Every property is required. All eighteen columns of table customer are declared NOT NULL by
-        src/main/resources/db/migration/V1__schema.sql, api/AccountRecordMapper.viewOf reads each one
-        of the sixteen it carries, and a record serializes every component, so a read answers all
-        sixteen on every row.
+        src/main/resources/db/migration/V1__schema.sql. The mapper api/AccountRecordMapper.viewOf
+        reads each one of the sixteen it carries, and a record serializes every component, so a read
+        answers all sixteen on every row.
       required:
         - customerId
         - ficoCreditScore
@@ -1135,11 +1126,10 @@ components:
       additionalProperties: false
       description: >-
         The submitted account values. The block itself is optional and, when present, has to be
-        complete: nine of its ten components carry a mandatory-field edit that refuses an absent
-        value
-        with the same text it refuses a blank one. groupId is the one component that may be omitted,
-        and
-        it then keeps its stored value, because no edit of app/cbl/COACTUPC.cbl reads it.
+        complete. Nine of its ten components carry a mandatory-field edit that refuses an absent
+        value with the same text it refuses a blank one. The groupId component is the one that may
+        be omitted, and it then keeps its stored value, because no edit of app/cbl/COACTUPC.cbl
+        reads it.
 
 
         Omitting the whole block is how a caller updates the customer alone.
@@ -1206,55 +1196,59 @@ components:
       additionalProperties: false
       description: >-
         The submitted customer values. The block is required, and the reason is the account record
-        rather than an absent table. app/cpy/CVACT01Y.cpy declares twelve fields and a 178-byte
-        filler, none of which is a customer identifier, so no account row can name the customer to
-        update. The caller supplies it.
+        rather than an absent table. Copybook app/cpy/CVACT01Y.cpy declares twelve fields and a
+        178-byte filler, none of which is a customer identifier. No account row can therefore name
+        the customer to update. The caller supplies it.
 
 
-        This schema does hold a private account-to-customer relationship table —
+        This schema does hold a private account-to-customer relationship table. Migration
         src/main/resources/db/migration/V7__account_customer_link.sql creates account_customer_link
         with 50 rows seeded from app/data/ASCII/cardxref.txt, and it drops the card-keyed card_xref
-        replica V4 had created — and it is not a substitute for this block. It is used the other way
-        round: after the caller names both identifiers, AccountUpdateService reads the one row keyed
-        on that account and checks that its customer_id equals both the proposed and the fetched value. That is how the pair the source screen bound together is confirmed. Resolving the
-        identifier from it instead would make a seeded replica the authority for a value the caller
-        has to state, and nothing on this platform refreshes those rows, so the table can confirm the
-        pair but cannot name it. A present block has to be complete: every component the required list names carries a mandatory-field edit that
-        refuses an
-        absent value with the same text it refuses a blank one. No absent component is filled
-        from
-        the stored row.
+        replica V4 had created. The table is not a substitute for this block.
+
+
+        It is used the other way round. After the caller names both identifiers,
+        AccountUpdateService reads the one row keyed on that account and checks that its customer_id
+        equals both the proposed and the fetched value. That is how the pair the source screen bound
+        together is confirmed. Resolving the identifier from it instead would make a seeded replica
+        the authority for a value the caller has to state. Nothing on this platform refreshes those
+        rows, so the table can confirm the pair but cannot name it.
+
+
+        A present block has to be complete. Every component the required list names carries a
+        mandatory-field edit that refuses an absent value with the same text it refuses a blank one.
+        No absent component is filled from the stored row.
 
 
         The three Social Security parts are one column, and a cross-field check on this block
-        requires
-        all three together. A body carrying one part alone leaves the column absent and is refused,
-        not
-        merged. Each part is numeric and non-zero; app/cbl/COACTUPC.cbl:L121-L123 also excludes 000,
-        666
-        and 900 through 999 from the first part.
+        requires all three together. A body carrying one part alone leaves the column absent and is
+        refused, not merged. Each part is numeric and non-zero; app/cbl/COACTUPC.cbl:L121-L123 also
+        excludes 000, 666 and 900 through 999 from the first part.
 
 
         Six components may be omitted, keeping their stored value. Those are the middle name, the
-        second
-        address line, both telephone numbers, the government-issued identifier and the date of birth.
-        Five of them carry no mandatory edit: the middle name reaches an optional alphabetic edit,
-        both
-        telephone numbers reach the edit at app/cbl/COACTUPC.cbl:L2225-L2244 whose own comment reads
-        'Not mandatory to enter a phone number'. The second address line and the
-        government-issued
-        identifier reach no edit at all. The date of birth does carry a calendar edit that refuses a
-        blank value, and omitting it hands the stored date to that edit rather than a blank.
+        second address line, both telephone numbers, the government-issued identifier and the date
+        of birth. Five of them carry no mandatory edit. The middle name reaches an optional
+        alphabetic edit, and both telephone numbers reach the edit at
+        app/cbl/COACTUPC.cbl:L2225-L2244 whose own comment reads 'Not mandatory to enter a phone
+        number'.
+
+
+        The second address line and the government-issued identifier reach no edit at all. The date
+        of birth does carry a calendar edit that refuses a blank value, and omitting it hands the
+        stored date to that edit rather than a blank.
 
 
         customerId carries no edit of the source. app/cbl/COACTUPC.cbl:L1222 calls it 'actually not
-        editable'. An absent or blank one is refused with
-        'Customer Id must be supplied. An account record carries none', one that is not nine digits is
-        refused with 'Customer Id must be a 9 digit Number, zero padded on the left'. One that
-        names a customer other than the row this account resolves to is refused as well. All three
-        answer 422, and the first two are answered before any row is read, so a malformed identifier
-        is never reported as a row this service does not hold. The second text is ADDITIVE, since the
-        source emits none for this field.
+        editable'. An absent or blank one is refused with 'Customer Id must be supplied. An account
+        record carries none', one that is not nine digits is refused with 'Customer Id must be a 9
+        digit Number, zero padded on the left'.
+
+
+        One that names a customer other than the row this account resolves to is refused as well.
+        All three answer 422, and the first two are answered before any row is read, so a malformed
+        identifier is never reported as a row this service does not hold. The second text is
+        ADDITIVE, since the source emits none for this field.
       required:
         - customerId
         - firstName
@@ -1311,17 +1305,20 @@ components:
           type: string
           maxLength: 10
           description: >-
-            CUST-ADDR-ZIP PIC X(10) at app/cpy/CVCUS01Y.cpy:L14 and
-            ACUP-NEW-CUST-ADDR-ZIP PIC X(10) at app/cbl/COACTUPC.cbl:L809, so ten characters are
-            accepted, stored in address_zip VARCHAR(10) and returned. The numeric edit inspects the
-            FIRST FIVE CHARACTERS ONLY: app/cbl/COACTUPC.cbl:L1606 moves the whole field into the
-            edit area and app/cbl/COACTUPC.cbl:L1607 then moves 5 into WS-EDIT-ALPHANUM-LENGTH, so
-            every test reads WS-EDIT-ALPHANUM-ONLY(1:5) and positions six to ten are carried
-            without being inspected. A ZIP+4 such as 19852-6716 therefore passes on 19852, which is
-            what lets a value read from GET be sent back to PUT unchanged. Content past the tenth
-            character is refused, a bound with no COBOL ancestor since no screen field could carry
-            it. Checked with the state code against the 240 combinations app/cpy/CSLKPCDY.cpy lists,
-            an edit that pairs the state with the first two characters.
+            CUST-ADDR-ZIP PIC X(10) at app/cpy/CVCUS01Y.cpy:L14 and ACUP-NEW-CUST-ADDR-ZIP PIC X(10)
+            at app/cbl/COACTUPC.cbl:L809, so ten characters are accepted, stored in address_zip
+            VARCHAR(10) and returned. The numeric edit inspects the FIRST FIVE CHARACTERS ONLY. Line
+            app/cbl/COACTUPC.cbl:L1606 moves the whole field into the edit area and
+            app/cbl/COACTUPC.cbl:L1607 then moves 5 into WS-EDIT-ALPHANUM-LENGTH. Every test
+            therefore reads WS-EDIT-ALPHANUM-ONLY(1:5), and positions six to ten are carried without
+            being inspected.
+
+
+            A ZIP+4 such as 19852-6716 therefore passes on 19852, which is what lets a value read
+            from GET be sent back to PUT unchanged. Content past the tenth character is refused, a
+            bound with no COBOL ancestor since no screen field could carry it. Checked with the
+            state code against the 240 combinations app/cpy/CSLKPCDY.cpy lists, an edit that pairs
+            the state with the first two characters.
         phoneNumber1:
           type: string
           maxLength: 15

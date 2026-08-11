@@ -59,7 +59,9 @@ Ledger, fraud, and notification are therefore three independent consumers of the
 
 Each listener claims an event identifier before applying effects. It acknowledges only after its local transaction commits. A listener never reverses a decision another service reached.
 
-Recovery after the delivery attempts of one record run out is uniform in one respect and per service in another. All five listening services set `DefaultErrorHandler.setCommitRecovered(true)`: the offset is committed once the diagnostic has reached a dead-letter topic, so one spent record produces exactly one dead letter rather than an endless redelivery. Where they differ is the destination. Ledger, fraud, and notification address the source topic plus the configured suffix, so one dead-letter stream carries one source wire shape. Authorization and account publish a governed `DeadLetterEnvelope` to the shared topic instead, so nothing a refused record carried travels with it. Every container acknowledges by hand in both cases, so nothing acknowledges a record its listener never accepted.
+Recovery after the delivery attempts of one record run out is uniform in one respect and per service in another. All five listening services set `DefaultErrorHandler.setCommitRecovered(true)`. The offset is committed once the diagnostic has reached a dead-letter topic, so one spent record produces exactly one dead letter rather than an endless redelivery.
+
+Where they differ is the destination. Ledger, fraud, and notification address the source topic plus the configured suffix, so one dead-letter stream carries one source wire shape. Authorization and account publish a governed `DeadLetterEnvelope` to the shared topic instead, so nothing a refused record carried travels with it. Every container acknowledges by hand in both cases, so nothing acknowledges a record its listener never accepted.
 
 <br/>
 
@@ -87,7 +89,9 @@ scripts/start-demo.sh
 
 [`scripts/start-demo.sh`](scripts/start-demo.sh) packages the reactor, creates `.env` from `.env.example`, fills all 19 credentials, builds the six images, starts eight containers, and reads every health endpoint. It asks nothing and is safe to re-run: a credential already set is left alone. The four demo passwords it generates are written to `card-platform/.demo-credentials`, which git ignores, because `.env` keeps only their `{bcrypt}` hashes. That file is created owner-only and is never narrowed afterwards.
 
-To prepare the environment file without starting anything, run [`scripts/generate-env.sh`](scripts/generate-env.sh). It reads the credential names out of `.env.example`, so it needs no second list of them. Run it again after a pull: an existing `.env` is reconciled against the example rather than replaced, keeping every value already chosen, and the run fails if any declared assignment is still absent. Two exceptions earn their keep after an upgrade. A key this repository publishes is regenerated, because every service that reads one refuses to start on it. A setting whose value differs from the example's is reported with both values, so a tightened default is visible before it stops a container.
+To prepare the environment file without starting anything, run [`scripts/generate-env.sh`](scripts/generate-env.sh). It reads the credential names out of `.env.example`, so it needs no second list of them. Run it again after a pull. An existing `.env` is reconciled against the example rather than replaced, keeping every value already chosen, and the run fails if any declared assignment is still absent.
+
+Two exceptions earn their keep after an upgrade. A key this repository publishes is regenerated, because every service that reads one refuses to start on it. A setting whose value differs from the example's is reported with both values, so a tightened default is visible before it stops a container.
 
 The same work by hand is four steps, and none is optional. The copied file carries **19** `REPLACE` markers: fourteen local passwords, one card-token key and four `{bcrypt}` identity hashes. Every one has to be generated before the stack starts, so the steps below generate all nineteen and then prove none is left.
 
@@ -112,9 +116,11 @@ done
 sed -i "s|^CARD_TOKEN_SECRET=.*|CARD_TOKEN_SECRET='$(openssl rand -base64 48 | tr -d '/+=')'|" .env
 
 # Step 2. The four request identities. Each password stays a shell variable of this shell
-# only: unexported, so no command this shell runs inherits it, and unset at the end. Only
-# the hash reaches .env. Write these four down now, because .env keeps no plaintext.
-admin_password="$(openssl rand -base64 18 | tr -d '/+=')"
+# only: unexported, so no command this shell runs inherits it, and unset when it is no longer
+# needed. Only the hash reaches .env. Write these four down now, because .env keeps no
+# plaintext. ADMIN_PASSWORD carries the same name the demo calls in section 3 use, so nothing
+# below has to be renamed by hand.
+ADMIN_PASSWORD="$(openssl rand -base64 18 | tr -d '/+=')"
 acquirer_password="$(openssl rand -base64 18 | tr -d '/+=')"
 user_password="$(openssl rand -base64 18 | tr -d '/+=')"
 monitoring_password="$(openssl rand -base64 18 | tr -d '/+=')"
@@ -144,7 +150,7 @@ System.out.println(org.springframework.security.crypto.factory.PasswordEncoderFa
 JSHELL
 }
 
-sed -i "s|^ADMIN_PASSWORD_HASH=.*|ADMIN_PASSWORD_HASH='$(hash_password "$admin_password")'|" .env
+sed -i "s|^ADMIN_PASSWORD_HASH=.*|ADMIN_PASSWORD_HASH='$(hash_password "$ADMIN_PASSWORD")'|" .env
 sed -i "s|^ACQUIRER_PASSWORD_HASH=.*|ACQUIRER_PASSWORD_HASH='$(hash_password "$acquirer_password")'|" .env
 sed -i "s|^USER_PASSWORD_HASH=.*|USER_PASSWORD_HASH='$(hash_password "$user_password")'|" .env
 sed -i "s|^MONITORING_PASSWORD_HASH=.*|MONITORING_PASSWORD_HASH='$(hash_password "$monitoring_password")'|" .env
@@ -158,7 +164,9 @@ else
   echo "every credential .env.example declares is set"
 fi
 
-unset admin_password acquirer_password user_password monitoring_password
+# ADMIN_PASSWORD stays set, because section 3 authenticates with it. Unset it when the
+# walkthrough is done.
+unset acquirer_password user_password monitoring_password
 ```
 
 `.env` is ignored by git and must stay that way. Verify with `git check-ignore -v .env`.
@@ -170,7 +178,7 @@ unset admin_password acquirer_password user_password monitoring_password
 ```bash
 mvn -B clean verify
 scripts/generate-env.sh
-docker compose up -d --build
+docker compose up -d --build --wait --wait-timeout 300
 docker compose ps
 ```
 
@@ -185,11 +193,22 @@ for port in 9081 9082 9083 9084 9085 9086; do
 done
 ```
 
-Without `--wait`, `up -d` returns as soon as the containers are created and those six requests race the start-up they are meant to confirm.
+`--wait` is what makes those six requests meaningful. Without it `up -d` returns as soon as the containers are created, and the health checks race the start-up they are meant to confirm. The timeout beside it bounds a container that stays in `starting` and is never declared unhealthy. `scripts/start-demo.sh` passes the same pair and then reads the same six endpoints.
 
 ### 3. Authorize one transaction and watch the fan-out
 
-Both timestamps are generated so that the call reads as one made now. No clock bound relates the capture moment to the clock of the authorization service: reject code 0103, which compares the account expiry against the first ten characters of the capture moment, is the whole of the test applied to it. The card number is the first record of the checked-in cross-reference fixture.
+Both timestamps are generated so that the call reads as one made now. No clock bound relates the capture moment to the clock of the authorization service. Reject code 0103 compares the account expiry against the first ten characters of the capture moment, and that is the whole of the test applied to it. The card number is the first record of the checked-in cross-reference fixture.
+
+The calls below authenticate as the administrator identity, and both start paths leave its password
+in reach. `scripts/start-demo.sh` and `scripts/generate-env.sh` write it to `card-platform/.demo-credentials`,
+which git ignores; the by-hand path above generated it into `ADMIN_PASSWORD` in that shell. Run the
+two lines below if you took the scripted path, and skip them if you did not. If you chose the password
+yourself through `CARDDEMO_ADMIN_PASSWORD`, that value is the one to use:
+
+```bash
+ADMIN_USERNAME="$(sed -n 's/^ADMIN_USERNAME=//p' .env | head -1)"
+ADMIN_PASSWORD="$(sed -n "s/^${ADMIN_USERNAME}=//p" .demo-credentials | head -1)"
+```
 
 ```bash
 CARD_NUMBER=$(sed -n '1s/^\(.\{16\}\).*/\1/p' ../app/data/ASCII/cardxref.txt)
@@ -241,7 +260,7 @@ curl -fsS -u "admin001:$ADMIN_PASSWORD" "http://localhost:8084/notifications/$CA
 curl -fsS -u "admin001:$ADMIN_PASSWORD" "http://localhost:8083/fraud-assessments?accountId=00000000050"
 ```
 
-That command takes the same keyed code `PanMasker.cardToken` takes — `HMAC-SHA-256` over a fixed label, the configured version and the card number — so it reproduces the token this stack stored for that card. It is derived rather than written down because a token belongs to one `CARD_TOKEN_SECRET`: a literal here would name a card under a key no other deployment holds. Every route that names one card names it by that card's token and never by its number, so this is the value the notification and card routes read. The one surface that still takes a number is the authorization request body above, and that route names no card in its path.
+That command takes the same keyed code `PanMasker.cardToken` takes: `HMAC-SHA-256` over a fixed label, the configured version and the card number. It therefore reproduces the token this stack stored for that card. It is derived rather than written down because a token belongs to one `CARD_TOKEN_SECRET`: a literal here would name a card under a key no other deployment holds. Every route that names one card names it by that card's token and never by its number, so this is the value the notification and card routes read. The one surface that still takes a number is the authorization request body above, and that route names no card in its path.
 
 Consumer progress is visible from inside the broker container, which is how a demonstration shows that three groups read one topic:
 
@@ -265,17 +284,27 @@ Every business route requires HTTP Basic authentication. The security chains den
 | `user0001` | `USER` | Resources named by `USER_SCOPES` |
 | `monitor01` | `MONITORING` | Metrics and Prometheus endpoints only |
 
-`acquirer1` is a machine identity a point-of-sale network presents, and only the authorization service reads it. `POST /authorizations` names its card in the request body, so no path variable carries an identifier an ownership scope can be compared against, and the route therefore reaches every card the platform holds. A cardholder identity is refused there with 403 for that reason: an entitlement over one account must not authorize against another. The chain admits `ACQUIRER` and `ADMIN` there and nothing else, and the decision itself then compares the identity against the account the cross-reference resolved, so a caller entitled to no account reaches no decision. The decline rules are the control that applies to the card: a card the cross-reference does not carry is refused with reason 0100 from `app/cbl/CBTRN02C.cbl:L385-L387`. Ownership managers govern the other five services, where a path variable names an account, a customer or a card token.
+`acquirer1` is a machine identity a point-of-sale network presents, and only the authorization service reads it. `POST /authorizations` names its card in the request body, so no path variable carries an identifier an ownership scope can be compared against. The route therefore reaches every card the platform holds.
+
+A cardholder identity is refused there with 403 for that reason: an entitlement over one account must not authorize against another. The chain admits `ACQUIRER` and `ADMIN` there and nothing else. The decision itself then compares the identity against the account the cross-reference resolved, so a caller entitled to no account reaches no decision. The decline rules are the control that applies to the card: a card the cross-reference does not carry is refused with reason 0100 from `app/cbl/CBTRN02C.cbl:L385-L387`. Ownership managers govern the other five services, where a path variable names an account, a customer or a card token.
 
 Anonymous access is limited to `/actuator/health` on each management port. Business identities do not receive monitoring access.
 
 Passwords are encoded before they enter configuration. Each service accepts `{bcrypt}` at a cost of at least ten or `{pbkdf2@SpringSecurity_v5_8}`, and refuses every other encoding at start-up, `{noop}` included.
 
-Two filters run in front of every route in all six services. `CrossSiteRequestFilter` refuses a `POST`, `PUT`, `PATCH` or `DELETE` with 403 on any one of three conditions, and the three are not symmetrical. `X-CardDemo-Request` is **mandatory**: a request that omits it or sends it blank is refused. `Sec-Fetch-Site` and `Origin` are checked **only when the request carries them** — a present `Sec-Fetch-Site` has to read `same-origin` or `same-site`, and a present `Origin` has to name this service's own origin, while an absent one refuses nothing. That asymmetry is deliberate: a browser sets both headers and page script cannot forge either, so their absence identifies a non-browser client, which is every legitimate caller here. HTTP Basic is a credential a browser attaches without being asked, and an HTML form cannot set a header, so one header separates a first-party client from a page replaying a cached credential. Reads are untouched, which is why the health probe carries nothing. `RequestRateCeilingFilter` bounds volume ahead of the security chain. The ceilings are 20 failed authentications and 600 requests a minute per source address, 600 a minute per identity, 120 state-changing requests, and 64 requests in flight. Past any of them it answers 429 with `Retry-After`, and counts `carddemo.<service>.requests.throttled` by the ceiling that refused. `API_CROSS_SITE_HEADER` and `API_RATE_*` configure both. Each counts inside one process, so a multi-replica deployment bounds each replica; [suggested next tasks](docs/suggested-next-tasks.md) records the shared-store ceiling and the forwarded-header setting a proxied deployment needs.
+Two filters run in front of every route in all six services. `CrossSiteRequestFilter` refuses a `POST`, `PUT`, `PATCH` or `DELETE` with 403 on any one of three conditions, and the three are not symmetrical. `X-CardDemo-Request` is **mandatory**: a request that omits it or sends it blank is refused. `Sec-Fetch-Site` and `Origin` are checked **only when the request carries them**. A present `Sec-Fetch-Site` has to read `same-origin` or `same-site`, and a present `Origin` has to name this service's own origin, while an absent one refuses nothing.
 
-Every route that names one card names it by that card's token, never by its number, and the one surface that still takes a number is the authorization request body described below. The token is a keyed hash: `HMAC-SHA-256` over the full number under `CARD_TOKEN_SECRET`, prefixed by `CARD_TOKEN_VERSION`, rendered as 64 lower-case hexadecimal characters. This repository ships no deployable runtime key. It does publish two keys, the build-scope key `pom.xml` gives the test suites and the bootstrap key `deploy/k8s/31-secret.example.yaml` carries, and both services refuse to start on either. Generate a real one with `openssl rand -base64 48 | tr -d '/+='` before the first run: only the authorization and card services read it, and both refuse to start without it. Two consequences matter operationally. The fifty `card_token` literals that `services/card-service/.../V2__seed.sql` loads are derived under a build-scope key, and `CardTokenReconciler` re-derives them under yours as the card service starts. A `SCOPE_CARD_` authority names a token rather than a number, so it belongs to one key and is derived rather than shipped. [Onboarding](docs/onboarding.md) gives both commands.
+That asymmetry is deliberate: a browser sets both headers and page script cannot forge either, so their absence identifies a non-browser client, which is every legitimate caller here. HTTP Basic is a credential a browser attaches without being asked, and an HTML form cannot set a header. One header therefore separates a first-party client from a page replaying a cached credential. Reads are untouched, which is why the health probe carries nothing.
 
-One surface is the exception, and it is a request body rather than a request line: `POST /authorizations` accepts a full sixteen-digit `cardNumber` in an authenticated JSON body over the loopback-bound port. That route names no card in its path at all, and the number is the cross-reference key `app/cbl/CBTRN02C.cbl:L383-L387` reads, so no token can stand in for it there. A caller may name an `accountId` instead, in which case no card number is sent. Nothing echoes the number back — every response carries the masked form — and `PanMasker` is applied before any log line or event payload is written. The two card routes and the notification history route each name their card by its token in the path, and accept no card number anywhere. The token resolves to the row inside the owning service, and the number never leaves it.
+`RequestRateCeilingFilter` bounds volume ahead of the security chain. The ceilings are 20 failed authentications and 600 requests a minute per source address, 600 a minute per identity, 120 state-changing requests, and 64 requests in flight. Past any of them it answers 429 with `Retry-After`, and counts `carddemo.<service>.requests.throttled` by the ceiling that refused. `API_CROSS_SITE_HEADER` and `API_RATE_*` configure both. Each counts inside one process, so a multi-replica deployment bounds each replica; [suggested next tasks](docs/suggested-next-tasks.md) records the shared-store ceiling and the forwarded-header setting a proxied deployment needs.
+
+Every route that names one card names it by that card's token, never by its number. The one surface that still takes a number is the authorization request body described below. The token is a keyed hash: `HMAC-SHA-256` over the full number under `CARD_TOKEN_SECRET`, prefixed by `CARD_TOKEN_VERSION`, rendered as 64 lower-case hexadecimal characters. This repository ships no deployable runtime key. It does publish two keys, the build-scope key `pom.xml` gives the test suites and the bootstrap key `deploy/k8s/31-secret.example.yaml` carries, and both services refuse to start on either.
+
+Generate a real one with `openssl rand -base64 48 | tr -d '/+='` before the first run: only the authorization and card services read it, and both refuse to start without it. Two consequences matter operationally. The fifty `card_token` literals that `services/card-service/.../V2__seed.sql` loads are derived under a build-scope key, and `CardTokenReconciler` re-derives them under yours as the card service starts. A `SCOPE_CARD_` authority names a token rather than a number, so it belongs to one key and is derived rather than shipped. [Onboarding](docs/onboarding.md) gives both commands.
+
+One surface is the exception, and it is a request body rather than a request line. `POST /authorizations` accepts a full sixteen-digit `cardNumber` in an authenticated JSON body over the loopback-bound port. That route names no card in its path at all, and the number is the cross-reference key `app/cbl/CBTRN02C.cbl:L383-L387` reads, so no token can stand in for it there. A caller may name an `accountId` instead, in which case no card number is sent. Nothing echoes the number back — every response carries the masked form — and `PanMasker` is applied before any log line or event payload is written.
+
+The two card routes and the notification history route each name their card by its token in the path, and accept no card number anywhere. The token resolves to the row inside the owning service, and the number never leaves it.
 
 The Compose stack binds every published port to `127.0.0.1`. It uses separate database and Kafka credentials for each service.
 
@@ -289,7 +318,11 @@ What bounds them is the binding rather than a promise. Every published port name
 | Kafka | `SASL_PLAINTEXT` on the private bridge | `SASL_SSL` |
 | Service ports | HTTP on loopback | HTTPS with mounted key material |
 
-The demonstration uses synthetic repository fixtures. Do not expose the Compose ports or load real cardholder data. A host shared with an untrusted account is outside what the posture covers, and so is a second person on the same bridge. Either case wants the Kubernetes path, which is encrypted throughout. An authenticated Transport Layer Security profile for Compose is designed and not delivered; [Suggested Next Tasks](docs/suggested-next-tasks.md) carries the procedure.
+The demonstration uses synthetic repository fixtures. Do not expose the Compose ports or load real cardholder data. A host shared with an untrusted account is outside what the posture covers, and so is a second person on the same bridge. Either case wants the Kubernetes path, whose three transports are all encrypted: `SASL_SSL` to the broker, `sslmode=verify-full` to the database, and Transport Layer Security on both ports of every service.
+
+Storage there is not. Neither `PersistentVolumeClaim` names a storage class, so encryption at rest needs the `deploy/k8s/overlays/encrypted-storage` overlay and a class whose provisioner encrypts. The key policy behind that class is the operator's to choose and rotate.
+
+A `pg_dump` backup is plaintext wherever it lands, and nothing here encrypts or verifies one. [deploy/k8s/README.md](deploy/k8s/README.md) states what the operator owns. An authenticated Transport Layer Security profile for Compose is designed and not delivered, and [Suggested Next Tasks](docs/suggested-next-tasks.md) carries both procedures.
 
 <br/>
 
@@ -393,7 +426,7 @@ Legend for Figure 1:
 
 - Plain arrows are synchronous request or private database work.
 - Thick arrows are Kafka publish or consume paths.
-- Dotted arrows are terminal dead-letter routes onto the shared topic. Two details are abstracted away here and stated exactly in [Event Flow](docs/event-flow.md). Ledger, fraud, and notification address a source-specific `.DLT` topic first. The authorization edge is its listener route, because its relay leaves a spent row unpublished.
+- Dotted arrows are terminal dead-letter routes. Every one of the six services reaches one, and two details are abstracted away here and stated exactly in [Event Flow](docs/event-flow.md). Ledger, fraud, and notification address a source-specific `.DLT` topic from their listeners, while authorization and account address the shared topic from theirs. Each dotted arrow also covers the outbox relay: all five producing services publish a governed `DeadLetterEnvelope` to the shared topic for a row they abandon.
 - The diamond is the source-derived decision chain.
 - Cylinders are schemas read by one service only.
 - No consumer calls another consumer.
@@ -497,7 +530,7 @@ The account identifier is the Kafka key and the ordering unit of every event a p
 
 Fourteen schema documents cover eight business event types, five released versions above version one, and the dead-letter envelope. Publish and consume paths validate against the registered document. `contracts/released-contracts.json` records every released version with a digest of its wire contract, so no document can be deleted or rewritten in place.
 
-`TransactionPosted` version 2 adds the statement provenance required by notification. Version 1 remains constructible and testable, but notification refuses it as insufficient.
+`TransactionPosted` version 2 adds the statement provenance required by notification. Version 1 remains constructible and testable, and both notification listeners answer it by applying nothing, counting it on `carddemo.notification.events.unapplied`, reporting it once and acknowledging it. That is neither a failure nor a dead letter. A version 1 record is governed and valid against its own schema document, it carries no card token, and both of this service's tables are keyed on one. Refusing it spent three delivery attempts and put a valid event on the dead-letter topic as though it were poison.
 
 <br/>
 
@@ -525,7 +558,7 @@ The delivered suite includes:
 - truncation toward zero;
 - fixture census, identifier fidelity, and card seed checks.
 
-The published run reports 229 Failsafe equivalence tests and 562 unit or contract tests, with zero failures. Both figures are measured rather than asserted: run `scripts/check-published-test-counts.sh` after `mvn verify` and it compares every published count against the reports that run wrote. See [Equivalence Results](docs/equivalence-results.md).
+The published run reports 229 Failsafe equivalence tests and 566 unit or contract tests, with zero failures. Both figures are measured rather than asserted: run `scripts/check-published-test-counts.sh` after `mvn verify` and it compares every published count against the reports that run wrote. See [Equivalence Results](docs/equivalence-results.md).
 
 Interest is verified but not migrated. `BillingCycleService` reproduces only the two accumulator resets at `app/cbl/CBACT04C.cbl:L353-L354`.
 

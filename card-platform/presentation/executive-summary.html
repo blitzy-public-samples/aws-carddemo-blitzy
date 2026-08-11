@@ -18,7 +18,7 @@
        every build, so the drift fails there and not in front of an audience. Rationale,
        alternatives considered and accepted risks: card-platform/docs/decision-log.md. -->
   <meta http-equiv="Content-Security-Policy" content="default-src 'none';
-    script-src https://cdn.jsdelivr.net 'sha384-BCsdzPfcs6sEGUnAYwSuA72wI3P/q4wdk8sgMThAnKKrDoYEaNzUAs6VH7hj9maX';
+    script-src https://cdn.jsdelivr.net 'sha384-bcovnOgyOUwhrcLHAoO5hbbGllt5gypHejY+gq81Zet/xuGgTklxsWZxFh5RPn+Y';
     style-src https://cdn.jsdelivr.net https://fonts.googleapis.com 'unsafe-inline';
     font-src https://fonts.gstatic.com;
     img-src data:;
@@ -30,7 +30,7 @@
   <!-- Subresource integrity covers every library this deck runs. This stylesheet and the two
        scripts below carry a digest on the element that loads them. Mermaid is a single bundle
        fetched by a script element the module creates, which carries the same digest attribute, so
-       all 3.5 MB of it are verified, where a module graph would have digested only its 30 KB entry. The Google Fonts
+       all 2.6 MB of it are verified, where a module graph would have digested only its 30 KB entry. The Google Fonts
        stylesheet above is the one exception: it is generated per user agent, so its bytes differ
        between readers and no one digest describes them. It is pinned by version and origin. -->
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.css"
@@ -698,7 +698,7 @@ graph LR
   V ~~~ R
           </pre>
         </div>
-        <div class="diagram-legend">Legend: solid = synchronous · double = event · dotted = datastore · cylinder = datastore</div>
+        <div class="diagram-legend">Legend: solid = synchronous · double = event · dotted = datastore access · cylinder = datastore</div>
       </section>
 
       <section class="slide-divider" aria-label="Slide 4 of 16, how the event flow works">
@@ -716,7 +716,7 @@ graph LR
           <pre class="mermaid">
 graph LR
   accTitle: Figure 2, one outcome event starts the work
-  accDescr: A REST client calls authorization-service, which publishes transaction.authorized and transaction.declined. Three consumers read transaction.authorized independently: ledger-posting-service, fraud-detection-service and notification-service. The ledger also reads transaction.declined and records one reject row for every one of the four reject reasons. Each decline is keyed on the account it applies to. The ledger publishes transaction.posted, which notification-service and account-service both read, and fraud-detection-service publishes fraud.assessed, which notification-service reads. A record the ledger, fraud or notification listener cannot complete travels to its own source topic plus the .DLT suffix, and account-service routes one to the shared carddemo.dead-letter fallback. No consumer calls another consumer.
+  accDescr: A REST client calls authorization-service, which publishes transaction.authorized and transaction.declined. Three consumers read transaction.authorized independently: ledger-posting-service, fraud-detection-service and notification-service. The ledger also reads transaction.declined and records one reject row for each of the three reasons a decline carries, 0101, 0102 and 0103. Reason 0100 is refused before any decision is taken, so no event carries it. Each decline is keyed on the account it applies to. The ledger publishes transaction.posted, which notification-service and account-service both read, and fraud-detection-service publishes fraud.assessed, which notification-service reads. A record the ledger, fraud or notification listener cannot complete travels to its own source topic plus the .DLT suffix, and account-service routes one to the shared carddemo.dead-letter fallback. No consumer calls another consumer.
   C["REST client"] --> A["authorization-service"]
   A ==>|approved| TA{{"transaction.authorized account key"}}
   A ==>|declined| TD{{"transaction.declined"}}
@@ -939,8 +939,7 @@ graph LR
         <ul class="closing-links">
           <li>Run the platform from <code>docs/onboarding.md</code>.</li>
           <li>Review owner decisions in <code>docs/suggested-next-tasks.md</code>.</li>
-          <li>Audit every non-trivial choice in <code>docs/decision-log.md</code>.</li>
-          <li>Trace every source member in <code>docs/traceability-matrix.md</code>.</li>
+          <li>Audit each choice in <code>docs/decision-log.md</code> and each source member in <code>docs/traceability-matrix.md</code>.</li>
         </ul>
         <div class="brand-lockup">Blitzy · AWS CardDemo modernization</div>
         <div class="accent-bar" aria-hidden="true"></div>
@@ -984,15 +983,14 @@ graph LR
     /* Fetches Mermaid on its own, so a failed load leaves reveal, the icons and every other slide
        untouched. Resolves to the library, or to null once the failure is reported.
 
-       The element is created here instead of being written into the document head, for two reasons,
-       and both are measured. A script element inserted by a script is asynchronous, so the deck's first
-       slide is drawn without waiting for the library, exactly as an import expression behaved. And
-       an element carries an integrity attribute where an import expression cannot, so the whole
-       bundle is verified against a digest instead of the entry file of a module graph. The digest is
-       the SHA-384 of mermaid@11.16.1/dist/mermaid.min.js as jsDelivr serves it. */
-    const MERMAID_SOURCE = "https://cdn.jsdelivr.net/npm/mermaid@11.16.1/dist/mermaid.min.js";
+       The element is created here instead of being written into the document head. A script element
+       inserted by a script loads asynchronously, so the deck's first slide draws without waiting for
+       the library, and the element carries the integrity attribute that verifies the whole bundle.
+       The digest below is the SHA-384 of mermaid@11.4.0/dist/mermaid.min.js as jsDelivr serves it.
+       Rationale: card-platform/docs/decision-log.md */
+    const MERMAID_SOURCE = "https://cdn.jsdelivr.net/npm/mermaid@11.4.0/dist/mermaid.min.js";
     const MERMAID_DIGEST =
-      "sha384-aBQXj4hK6Jm05i7aQAsUV3bLdSUrHX1BGYfMB0166TtWt/RRaw+h0Eelme9OCOvy";
+      "sha384-Wm9qzEgq4j1jEnuFK2FxKTlwuhbV2QqtGhcchvjDoKxeJ7WWAW7fysBq+1s6myfX";
 
     const mermaidReady = new Promise((resolve, reject) => {
       const element = document.createElement("script");
@@ -1012,9 +1010,10 @@ graph LR
           startOnLoad: false,
           theme: "base",
           htmlLabels: false,
-          // Strict is the library's own default and is stated here because a diagram is text this
-          // deck holds. Under strict the library escapes the labels it draws and refuses a click
-          // binding, so the three diagrams below cannot become a script injection point.
+          // Strict is the library's own default, stated here and not assumed. Under strict the
+          // library escapes every label it draws and refuses a click binding, so the three diagrams
+          // below cannot become a script injection point. Rationale:
+          // card-platform/docs/decision-log.md
           securityLevel: "strict",
           flowchart: {
             htmlLabels: false,

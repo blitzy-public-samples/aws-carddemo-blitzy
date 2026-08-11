@@ -21,15 +21,17 @@
 
 `authorization-service` owns `POST /authorizations`, the one synchronous Representational State Transfer (REST) endpoint a client calls in this platform. It resolves a card to an account, applies four decline rules in source order, and writes the outcome event through a transactional outbox. No other service writes the authorization decision.
 
-**Exactly one event per decision, and never more than one.** A request refused before the decision service is entered writes nothing at all. An unauthenticated or unauthorized call, a body the JSON reader cannot bind, and a field the bean constraints reject are answered from the web layer, and the outbox stays untouched. A request that reaches the rule chain writes one `TransactionAuthorized` on an approval, and one `TransactionDeclined` on a decline — reasons 0101, 0102 and 0103, every one of them keyed on the eleven-digit account the decision applies to. A card that resolves no cross-reference row is refused rather than decided, so it writes nothing either.
+**Exactly one event per decision, and never more than one.** A request refused before the decision service is entered writes nothing at all. An unauthenticated or unauthorized call, a body the JSON reader cannot bind, and a field the bean constraints reject are answered from the web layer, and the outbox stays untouched.
+
+A request that reaches the rule chain writes one `TransactionAuthorized` on an approval, and one `TransactionDeclined` on a decline for reason 0101, 0102 or 0103. Every one of them is keyed on the eleven-digit account the decision applies to. A card that resolves no cross-reference row is refused rather than decided, so it writes nothing either.
 
 Reason 0100 fires where the cross-reference read missed, and that read is the only thing that resolves the subject of a decision. A card resolving no row therefore resolves no subject, so the call is refused instead of decided. Every caller receives the source text of `app/cbl/COTRN02C.cbl:L625-L626`, after the entitlement check and before an identifier is drawn.
 
-The refused call allocates no sequence value, writes no row and publishes no event. An account named in the request body selects a card on the account branch of `app/cbl/COTRN02C.cbl:L196-L209` and takes no further part, because a value a caller supplies is not a resolved subject. `config/ObservabilityConfig.UNRESOLVED_CARD_STAGE` counts each refusal, which is the whole of what this service records about it. A security review found the earlier behaviour, and the [decision log](../../docs/decision-log.md) carries what it found and the alternatives weighed.
+The refused call allocates no sequence value, writes no row and publishes no event. An account named in the request body selects a card on the account branch of `app/cbl/COTRN02C.cbl:L196-L209`, and takes no further part. A value a caller supplies is not a resolved subject. `config/ObservabilityConfig.UNRESOLVED_CARD_STAGE` counts each refusal, which is the whole of what this service records about it. A security review found the earlier behaviour, and the [decision log](../../docs/decision-log.md) carries what it found and the alternatives weighed.
 
 Reasons 0101, 0102 and 0103 travel under `schemas/transaction-declined-v3.json`, keyed on the eleven-digit account the cross-reference resolved. Each carries the nine descriptive values `app/cbl/CBTRN02C.cbl:L446-L465` copies into `REJECT-TRAN-DATA`, so the ledger writes the 430-byte reject record. Each is durable twice over in one transaction: a row in `authorization_decision` naming its event, and the outbox row itself. The source writes no reject record on its own synchronous path, returning the screen message at `app/cbl/COTRN02C.cbl:L620-L636`, so the row and the event are what this service adds.
 
-A decision also refuses when this instance cannot show that its two replica tables hold what their owners published. That is a property of the replica *streams* rather than of the age of a row, so a card nobody has updated stays authorizable indefinitely; the [replica currency](#replica-currency) section below is the whole rule.
+A decision also refuses when this instance cannot show that its two replica tables hold what their owners published. That is a property of the replica *streams* rather than of the age of a row, so a card nobody has updated stays authorizable indefinitely. The [replica currency](#replica-currency) section below is the whole rule.
 
 Ledger posting, fraud detection, and notification each consume the authorized event under their own consumer group. None of the three calls this service back, and none of them calls another. This service reads no other service during a decision.
 
@@ -65,13 +67,19 @@ Every rule the source leaves ambiguous, undocumented, or inconsistent is listed 
 | :--- | :--- | :--- |
 | `POST /authorizations` | `ACQUIRER` or `ADMIN` | Decide one transaction and publish the one event that outcome produces |
 
-Every business route requires HTTP Basic authentication. **Access to this route is decided by role alone.** `config/SecurityConfig.java` matches it with `hasAnyRole(ROLE_ACQUIRER, ROLE_ADMIN)` and installs no ownership manager, so exactly two roles reach it and every other identity is refused with 403 — a cardholder `USER` included. Every other route in this platform is ownership-scoped; this one is not, and the difference is deliberate. The card is named in the request body rather than in a path, so no path variable carries an identifier an ownership scope could be compared against, which makes the role the whole access decision. A route that reaches every card the platform holds must therefore not be reachable by an identity entitled to one card. Nothing else on this service is reachable at all, because `anyRequest().denyAll()` closes the chain.
+Every business route requires HTTP Basic authentication. **Access to this route is decided by role alone.** `config/SecurityConfig.java` matches it with `hasAnyRole(ROLE_ACQUIRER, ROLE_ADMIN)` and installs no ownership manager, so exactly two roles reach it and every other identity is refused with 403 — a cardholder `USER` included.
+
+Every other route in this platform is ownership-scoped; this one is not, and the difference is deliberate. The card is named in the request body rather than in a path, so no path variable carries an identifier an ownership scope could be compared against. That makes the role the whole access decision. A route that reaches every card the platform holds must therefore not be reachable by an identity entitled to one card. Nothing else on this service is reachable at all, because `anyRequest().denyAll()` closes the chain.
 
 A request may name the card number, the account identifier, or both. An account-only request resolves its card through the cross-reference, and a request naming neither is refused with the source's own message.
 
-A second gate runs inside the decision, and in this configuration it refuses nobody. `domain/CallerEntitlement` compares the caller against the resolved account immediately after the cross-reference read and before a transaction identifier is allocated, which is where the comparison has to happen because an account-only request has no card until that read has run. It admits a caller that `domain/RequestCaller.reachesEverySubject()` answers true for, which is `ROLE_ADMIN` — the fork at `app/cbl/COSGN00C.cbl:L232-L236` — or `ROLE_ACQUIRER`, and those are the only two roles the chain admits. The gate is therefore a structural guard rather than a live control: it is what keeps the ownership comparison in place for the day a scoped identity is admitted, and `CallerEntitlementTest` measures the refusal it would then produce. A refused caller would receive the same 403, with no decision row, no attempt row and no event written for it.
+A second gate runs inside the decision, and in this configuration it refuses nobody. `domain/CallerEntitlement` compares the caller against the resolved account immediately after the cross-reference read and before a transaction identifier is allocated. The comparison has to happen there, because an account-only request has no card until that read has run. It admits a caller that `domain/RequestCaller.reachesEverySubject()` answers true for, which is `ROLE_ADMIN` — the fork at `app/cbl/COSGN00C.cbl:L232-L236` — or `ROLE_ACQUIRER`, and those are the only two roles the chain admits.
 
-`ACQUIRER` is a machine identity a point-of-sale network presents. It owns no account, no customer and no card, and `ACQUIRER_USERNAME` in [`.env.example`](../../.env.example) configures it separately from every cardholder identity. The reason is the shape of the route: the card travels in the request body, so no identifier in the path can be compared against an ownership scope, and the role is therefore the whole authorization decision. A cardholder identity carrying `USER` is refused with 403 — it holds one account and this route reaches every card the platform holds. `ADMIN` keeps the route because `app/cbl/COSGN00C.cbl:L232-L236` forks an administrator onto every function the region offers.
+The gate is therefore a structural guard rather than a live control. It keeps the ownership comparison in place for the day a scoped identity is admitted, and `CallerEntitlementTest` measures the refusal it would then produce. A refused caller would receive the same 403, with no decision row, no attempt row and no event written for it.
+
+`ACQUIRER` is a machine identity a point-of-sale network presents. It owns no account, no customer and no card, and `ACQUIRER_USERNAME` in [`.env.example`](../../.env.example) configures it separately from every cardholder identity.
+
+The reason is the shape of the route. The card travels in the request body, so no identifier in the path can be compared against an ownership scope, and the role is therefore the whole authorization decision. A cardholder identity carrying `USER` is refused with 403 — it holds one account and this route reaches every card the platform holds. `ADMIN` keeps the route because `app/cbl/COSGN00C.cbl:L232-L236` forks an administrator onto every function the region offers.
 
 The status codes are the source's own outcome model, restated over HTTP. `app/cbl/CBTRN02C.cbl:L229-L230` counts rejects and ends the batch job with return code 4, so a rejection is expected traffic and not a failure.
 
@@ -93,18 +101,27 @@ A decline answers 422. No decline answers 500 and none answers 503.
 A 403 is not a decline. It carries the phrase the filter chain already writes for a route refusal, so the two read alike, and it names nothing about the subject. Nothing is decided: no transaction identifier is drawn, no decision row is written, and no event is produced. A card that resolved no account is refused as well, and the entitlement check runs first, so neither answer tells a caller whether a card exists.
 > **Synthetic data only.** `DEMO_SYNTHETIC_CARD_NUMBER` below is row one of the repository fixture `app/data/ASCII/carddata.txt`. It is a made-up number in a public sample dataset and it identifies no real card. Never substitute real cardholder data into this command, or into any other command in this repository: the Compose ports are bound to loopback for a demonstration and this platform carries none of the controls real card data requires.
 
-Read the password from a prompt rather than putting it in a shell variable, so it reaches neither the environment nor the shell history. `.env` holds only the bcrypt hash of each password, so supply the plaintext you chose when you generated that hash.
+`.env` holds only the bcrypt hash of each password, so the plaintext comes from
+`card-platform/.demo-credentials`, which `scripts/generate-env.sh` writes owner-only and git ignores.
+To keep the password out of this shell entirely, give `-u` the user name alone and let `curl` prompt
+for it.
 
 ```bash
+# Run from card-platform/. app/ sits beside it in the repository.
+# The administrator identity these calls authenticate as. scripts/generate-env.sh wrote its
+# password to .demo-credentials, which git ignores and creates owner-only. Run from card-platform/.
+ADMIN_USERNAME="$(sed -n 's/^ADMIN_USERNAME=//p' .env | head -1)"
+ADMIN_PASSWORD="$(sed -n "s/^${ADMIN_USERNAME}=//p" .demo-credentials | head -1)"
+
 # The card number is read from the fixture the seed migration loads rather than
 # written here. No guide in this repository carries a card number a reader could
 # replay: the value below exists for the length of the shell that reads it.
-CARD_NUMBER="$(cut -c1-16 app/data/ASCII/carddata.txt | sed -n '1p')"
+CARD_NUMBER="$(cut -c1-16 ../app/data/ASCII/carddata.txt | sed -n '1p')"
 CAPTURED_AT="$(date -u +'%Y-%m-%d %H:%M:%S').000000"
 PROCESSED_AT="$(date -u +'%Y-%m-%d-%H.%M.%S').000000"
 
 curl -sS -X POST http://localhost:8081/authorizations \
-  -u "admin001:${ADMIN_PASSWORD}" \
+  -u "${ADMIN_USERNAME}:${ADMIN_PASSWORD}" \
   -H 'X-CardDemo-Request: acquirer-cli' \
   -H 'Content-Type: application/json' \
   -d "{\"cardNumber\":\"${CARD_NUMBER}\",\"transactionTypeCode\":\"01\",
@@ -116,7 +133,9 @@ curl -sS -X POST http://localhost:8081/authorizations \
        \"processingTimestamp\":\"${PROCESSED_AT}\"}"
 ```
 
-`CARD_NUMBER` is read from `app/data/ASCII/carddata.txt`, the fixture `src/main/resources/db/migration/V2__seed.sql` loads, so the command runs from the repository root. Both timestamps accept the ten-character date `YYYY-MM-DD` the source screen field carries, and the twenty-six character record form as well. `app/cbl/COTRN02C.cbl:L389-L423` validates each as a ten-character date under the tolerance flagged in [business-rule-flags.md](../../docs/business-rule-flags.md), and a ten-character value is widened to the record width before it reaches the event, exactly as `app/cbl/COTRN02C.cbl:L469` widens it. No bound relates either value to the clock of this service: reject reason `0103` at `app/cbl/CBTRN02C.cbl:L414-L420` compares the first ten characters of the capture moment against the account expiry date, and that comparison is the whole of the test.
+`CARD_NUMBER` is read from `app/data/ASCII/carddata.txt`, the fixture `src/main/resources/db/migration/V2__seed.sql` loads, so the command runs from the repository root. Both timestamps accept the ten-character date `YYYY-MM-DD` the source screen field carries, and the twenty-six character record form as well.
+
+`app/cbl/COTRN02C.cbl:L389-L423` validates each as a ten-character date, under the tolerance flagged in [business-rule-flags.md](../../docs/business-rule-flags.md). A ten-character value is widened to the record width before it reaches the event, exactly as `app/cbl/COTRN02C.cbl:L469` widens it. No bound relates either value to the clock of this service. Reject reason `0103` at `app/cbl/CBTRN02C.cbl:L414-L420` compares the first ten characters of the capture moment against the account expiry date, and that comparison is the whole of the test.
 
 The full contract is the hand-written [OpenAPI description](src/main/resources/openapi.yaml). No documentation generator produces it.
 
@@ -141,9 +160,11 @@ The three replica series report the two streams that keep `card_xref` and `accou
 
 ### Two controls in front of every route
 
-`config/CrossSiteRequestFilter` guards state change. `POST /authorizations` must carry `X-CardDemo-Request` with any non-blank value, must not declare a `Sec-Fetch-Site` other than `same-origin` or `same-site`, and must not carry an `Origin` naming anything but this service. HTTP Basic is a credential a browser attaches by itself, so without this check a page on any other site could submit a form against a route above and the browser would authenticate it. An HTML form cannot set a request header at all, which is what makes one header the control. A refusal answers 403 with the same problem document every other refusal of this service answers and counts `carddemo.authorization.requests.cross.site.refused`. `GET`, `HEAD`, `OPTIONS` and `TRACE` pass untouched, so the container health check and every read need nothing.
+`config/CrossSiteRequestFilter` guards state change. `POST /authorizations` must carry `X-CardDemo-Request` with any non-blank value, must not declare a `Sec-Fetch-Site` other than `same-origin` or `same-site`, and must not carry an `Origin` naming anything but this service. HTTP Basic is a credential a browser attaches by itself. Without this check a page on any other site could submit a form against a route above, and the browser would authenticate it. An HTML form cannot set a request header at all, which is what makes one header the control.
 
-`config/RequestRateCeilingFilter` bounds volume. It runs one place ahead of the security chain, because a refusal has to cost less than the attempt it refuses and an attempt that reached the chain would already have paid for a bcrypt verification.
+A refusal answers 403 with the same problem document every other refusal of this service answers and counts `carddemo.authorization.requests.cross.site.refused`. `GET`, `HEAD`, `OPTIONS` and `TRACE` pass untouched, so the container health check and every read need nothing.
+
+`config/RequestRateCeilingFilter` bounds volume. It runs one place ahead of the security chain, because a refusal has to cost less than the attempt it refuses. An attempt that reached the chain would already have paid for a bcrypt verification.
 
 | Ceiling | Default | Counted by |
 | :--- | ---: | :--- |
@@ -155,7 +176,7 @@ The three replica series report the two streams that keep `card_xref` and `accou
 
 A refusal answers 429 with `Retry-After` and counts `carddemo.authorization.requests.throttled`, tagged with the stage that refused: `authentication`, `source`, `identity`, `write` or `concurrency`. The five ceilings read `API_RATE_WINDOW_SECONDS`, `API_RATE_REQUESTS_PER_WINDOW`, `API_RATE_WRITE_REQUESTS_PER_WINDOW`, `API_RATE_AUTHENTICATION_FAILURES_PER_WINDOW` and `API_RATE_CONCURRENT_REQUESTS` from [`.env.example`](../../.env.example). The management base path is exempt, because a throttled probe reads as a failed container.
 
-Both filters count in this process, so several replicas bound each replica rather than the service as a whole, and the source address is the one the container resolves rather than a forwarding header a caller could write. A deployment behind a proxy activates the `trusted-proxy` profile, which trusts those headers from the proxy's own addresses alone. Both residual limits are recorded in [suggested next tasks](../../docs/suggested-next-tasks.md), and the reasoning behind the two controls is in the [Decision Log](../../docs/decision-log.md).
+Both filters count in this process, so several replicas bound each replica rather than the service as a whole. The source address is the one the container resolves, rather than a forwarding header a caller could write. A deployment behind a proxy activates the `trusted-proxy` profile, which trusts those headers from the proxy's own addresses alone. Both residual limits are recorded in [suggested next tasks](../../docs/suggested-next-tasks.md), and the reasoning behind the two controls is in the [Decision Log](../../docs/decision-log.md).
 
 <br/>
 
@@ -211,7 +232,9 @@ Three findings live in those five lines, and this service reproduces all three:
 
 Each finding is entered in [business rule flags](../../docs/business-rule-flags.md).
 
-**The two accumulators the rule reads carry this service's own approvals as well**. `app/cbl/CBTRN02C.cbl` posts each record before it validates the next, because `2000-POST-TRANSACTION` at `:L424-L444` runs inside the read loop. `2700-UPDATE-ACCOUNT` at `:L545-L560` has already rewritten the account by the time line 403 reads it again. Two transactions of 60.00 against a limit of 100.00 therefore approve once and decline once. Here the account service owns those accumulators and reports them back four asynchronous hops later, so an approval reserves its own amount on the snapshot row in the same transaction as the decision, under a row lock bounded by `carddemo.decision.lock-wait-ms`. The rule adds the reserved figures to the authoritative ones before it computes, and `carddemo.decision.reservation-ttl` releases a reservation whose posting never arrives. The sign convention is the source's: `:L549` and `:L551` route a negative amount to the debit accumulator, so a refund still tightens the next authorization.
+**The two accumulators the rule reads carry this service's own approvals as well**. `app/cbl/CBTRN02C.cbl` posts each record before it validates the next, because `2000-POST-TRANSACTION` at `:L424-L444` runs inside the read loop. `2700-UPDATE-ACCOUNT` at `:L545-L560` has already rewritten the account by the time line 403 reads it again. Two transactions of 60.00 against a limit of 100.00 therefore approve once and decline once.
+
+Here the account service owns those accumulators and reports them back four asynchronous hops later. An approval therefore reserves its own amount on the snapshot row in the same transaction as the decision, under a row lock bounded by `carddemo.decision.lock-wait-ms`. The rule adds the reserved figures to the authoritative ones before it computes, and `carddemo.decision.reservation-ttl` releases a reservation whose posting never arrives. The sign convention is the source's: `:L549` and `:L551` route a negative amount to the debit accumulator, so a refund still tightens the next authorization.
 
 Reason 103 compares raw text. `app/cbl/CBTRN02C.cbl:L414` reads `IF ACCT-EXPIRAION-DATE >= DALYTRAN-ORIG-TS (1:10)`, so the column stays `VARCHAR(10)` and the comparison stays a string comparison over ten characters.
 
@@ -219,9 +242,11 @@ Reason 103 compares raw text. `app/cbl/CBTRN02C.cbl:L414` reads `IF ACCT-EXPIRAI
 
 ## Replica currency
 
-The source read the cross-reference and account datasets themselves, at `app/cbl/CBTRN02C.cbl:L382` and `:L395`. This service reads `card_xref` and `account_credit_snapshot`, which are replicas the account and card services own, so it has to answer a question the source never had: is what this copy holds what the owner published?
+The source read the cross-reference and account datasets themselves, at `app/cbl/CBTRN02C.cbl:L382` and `:L395`. This service reads `card_xref` and `account_credit_snapshot`, which are replicas the account and card services own. It therefore has to answer a question the source never had: is what this copy holds what the owner published?
 
-**The question is about the stream, and never about the age of a row**. Both owners publish on a state change and on nothing else. The observation stamp of a card nobody has touched therefore recedes for ever, while the copy stays exactly correct. An earlier version of this service measured row age against a one-day ceiling, and a day after seeding every ordinary authorization refused — the quiet case, not the failing one, and no amount of correct operation cleared it. Consumer lag says the opposite thing about the same situation: a caught-up consumer of an idle topic reports no backlog, so a card nobody has updated stays authorizable indefinitely.
+**The question is about the stream, and never about the age of a row**. Both owners publish on a state change and on nothing else. The observation stamp of a card nobody has touched therefore recedes for ever, while the copy stays exactly correct.
+
+An earlier version of this service measured row age against a one-day ceiling, and a day after seeding every ordinary authorization refused. That was the quiet case rather than the failing one, and no amount of correct operation cleared it. Consumer lag says the opposite thing about the same situation: a caught-up consumer of an idle topic reports no backlog, so a card nobody has updated stays authorizable indefinitely.
 
 Two things are read before every decision, and both have to be satisfied.
 
@@ -230,11 +255,15 @@ Two things are read before every decision, and both have to be satisfied.
 | The replica streams are caught up | `messaging/KafkaReplicaSynchronization`, from the two listener containers this process already runs | A topic no listener subscribes to; a container that is not running; a running container the group has assigned no partition; a measured `records-lag-max` over `carddemo.replica.lag-ceiling` |
 | No change was delivered to this account and lost | `domain/ReplicaGapLog` over the `replica_gap` table, created by `V12__replica_gap.sql` | One open row for the account this decision names |
 
-The second reading exists because the first cannot see everything. A record that was delivered and could not be applied has its offset advanced once its diagnostic is away, so the backlog returns to zero while one account's copy is missing a change. The listener writes a `replica_gap` row for that account in a transaction of its own, which survives the rollback of the failing delivery, and clears it inside the transaction that finally applies a change for that account. A record whose key names no account is logged and attributed to none, because attributing it to a sentinel would refuse every account for one malformed record.
+The second reading exists because the first cannot see everything. A record that was delivered and could not be applied has its offset advanced once its diagnostic is away. The backlog then returns to zero while one account's copy is missing a change.
 
-`carddemo.replica.lag-ceiling` is `REPLICA_LAG_CEILING` and defaults to `0`: no record may be waiting. Raise it only where a known steady backlog is acceptable, and understand what it admits — a ceiling of *n* says a decision may read a copy that is *n* records behind its owner.
+The listener writes a `replica_gap` row for that account in a transaction of its own, which survives the rollback of the failing delivery. It clears that row inside the transaction that finally applies a change for that account. A record whose key names no account is logged and attributed to none, because attributing it to a sentinel would refuse every account for one malformed record.
 
-A refusal answers 503 and counts a failure at the replica stage. It is deliberately not a decline: nothing is decided, no transaction identifier is drawn, and no row and no event is written. `/actuator/health/readiness` includes the same verdict under `replica`, reporting the reason, the observed lag and the number of open gaps, so an orchestrator removes the instance rather than letting it serve refusals. A consumer that has an assignment and has completed no fetch publishes no lag sample at all. That is read as a stream with nothing waiting on it rather than as an unknown. Refusing until a first sample arrived would reproduce the defect above in a form that never recovered, because an idle topic never produces one.
+`carddemo.replica.lag-ceiling` is `REPLICA_LAG_CEILING` and defaults to `0`: no record may be waiting. Raise it only where a known steady backlog is acceptable, and understand what it admits. A ceiling of *n* says a decision may read a copy that is *n* records behind its owner.
+
+A refusal answers 503 and counts a failure at the replica stage. It is deliberately not a decline: nothing is decided, no transaction identifier is drawn, and no row and no event is written. `/actuator/health/readiness` includes the same verdict under `replica`, reporting the reason, the observed lag and the number of open gaps. An orchestrator therefore removes the instance rather than letting it serve refusals.
+
+A consumer that has an assignment and has completed no fetch publishes no lag sample at all. That is read as a stream with nothing waiting on it rather than as an unknown. Refusing until a first sample arrived would reproduce the defect above in a form that never recovered, because an idle topic never produces one.
 
 <br/>
 
@@ -252,7 +281,7 @@ A decided authorization call publishes exactly one outcome event, keyed on the a
 
 Ledger posting, fraud detection, and notification read `transaction.authorized` under the groups `ledger-posting`, `fraud-detection`, and `notification-authorized`. Ledger posting also reads `transaction.declined` under `ledger-reject`, where it writes the 430-byte reject row of `app/cbl/CBTRN02C.cbl:L446`–`L465`. This service knows none of those consumers by name or address.
 
-A decline that resolved an account travels at contract version 3, which carries version 1's properties plus the nine descriptive values of the transaction the caller sent. It carries them because the consumer that owns the reject row has to reproduce `REJECT-TRAN-DATA PIC X(350)`, the whole daily record, and a refused transaction exists in no table it could read those values from. Every one of the nine comes off the request this call refused, never from a lookup. Version 1 remains governed so an event published under it stays readable, and version 2 is still what a decline resolving no account travels under.
+A decline that resolved an account travels at contract version 3, which carries version 1's properties plus the nine descriptive values of the transaction the caller sent. It carries them because the consumer that owns the reject row has to reproduce `REJECT-TRAN-DATA PIC X(350)`, the whole daily record. A refused transaction exists in no table it could read those values from. Every one of the nine comes off the request this call refused, never from a lookup. Version 1 remains governed so an event published under it stays readable, and version 2 is still what a decline resolving no account travels under.
 
 Every governed event carries the shared envelope from `com.carddemo.events.EventEnvelope`.
 
@@ -266,14 +295,18 @@ Every governed event carries the shared envelope from `com.carddemo.events.Event
 
 Two conventions carry correctness, and changing either breaks it:
 
-- **The account identifier is the message key** on every event this service writes, so every event for one account lands on one partition and stays ordered. Version 2 of `TransactionDeclined` keyed a reason-0100 decline on the sixteen-character transaction identifier; it is retained so a record already on the topic stays readable, and no producer writes it or any other reason-0100 decline.
+- **The account identifier is the message key** on every event this service writes, so every event for one account lands on one partition and stays ordered. Version 2 of `TransactionDeclined` keyed a reason-0100 decline on the sixteen-character transaction identifier. It is retained so a record already on the topic stays readable, and no producer writes it or any other reason-0100 decline.
 - **Money travels as a decimal string, never as a JavaScript Object Notation (JSON) number.** `TRAN-AMT` is `PIC S9(09)V99` at `app/cpy/CVTRA05Y.cpy:L10`, giving eleven digits at scale two and the column type `NUMERIC(11,2)`. `ACCT-CURR-BAL` is `PIC S9(10)V99` at `app/cpy/CVACT01Y.cpy:L7`, giving `NUMERIC(12,2)`.
 
-The decision row and the outbox row commit in one local transaction. The relay publishes afterwards, and one relay pass is three kinds of transaction rather than one: a claim transaction that commits before any send, no transaction at all while the sends are outstanding, and one short transaction per result. That division is why a claim survives the process death it was written for, and why a hundred rows waiting on a broker no longer hold a connection and a hundred row locks. Every send is awaited against one monotonic deadline shared by the pass, from `carddemo.outbox.relay.max-duration-ms`, and the producer window resolves one send well inside it.
+The decision row and the outbox row commit in one local transaction. The relay publishes afterwards, and one relay pass is three kinds of transaction rather than one. There is a claim transaction that commits before any send, no transaction at all while the sends are outstanding, and one short transaction per result.
 
-The claim query returns the due head row of each account, never two rows of one account. Recording each result separately would otherwise let an older row fail while a newer row of the same account succeeded, and the account identifier is the message key, so the retry would reach the topic out of order. The same restriction stops one unpublishable row blocking the table: a refusal pauses that account for the pass and leaves every other account eligible.
+That division is why a claim survives the process death it was written for. It is also why a hundred rows waiting on a broker no longer hold a connection and a hundred row locks. Every send is awaited against one monotonic deadline shared by the pass, from `carddemo.outbox.relay.max-duration-ms`, and the producer window resolves one send well inside it.
 
-A record this service can never apply reaches the dead-letter topic after bounded retries, and its offset is committed once the diagnostic is published, so the record is named once rather than on every later assignment. A row this service can never publish is abandoned and records a durable obligation to name itself, in the same transaction that abandons it. The obligation clears only against a broker acknowledgement, because an abandoned row is terminal and no later claim would ever return to it. Either diagnostic carries the four fields of `01 ABEND-DATA` at `app/cpy/CSMSG02Y.cpy:L21-L29`, and nothing read from the record itself. A diagnostic whose row is keyed by a transaction identifier travels under the aggregate identifier `00000000000`, since `schemas/dead-letter-v1.json` accepts eleven digits, and `failedEventId` still names the row exactly.
+The claim query returns the due head row of each account, never two rows of one account. Recording each result separately would otherwise let an older row fail while a newer row of the same account succeeded. The account identifier is the message key, so the retry would reach the topic out of order. The same restriction stops one unpublishable row blocking the table: a refusal pauses that account for the pass and leaves every other account eligible.
+
+A record this service can never apply reaches the dead-letter topic after bounded retries, and its offset is committed once the diagnostic is published. The record is therefore named once rather than on every later assignment. A row this service can never publish is abandoned and records a durable obligation to name itself, in the same transaction that abandons it. The obligation clears only against a broker acknowledgement, because an abandoned row is terminal and no later claim would ever return to it.
+
+Either diagnostic carries the four fields of `01 ABEND-DATA` at `app/cpy/CSMSG02Y.cpy:L21-L29`, and nothing read from the record itself. A diagnostic whose row is keyed by a transaction identifier travels under the aggregate identifier `00000000000`, since `schemas/dead-letter-v1.json` accepts eleven digits, and `failedEventId` still names the row exactly.
 
 Full publish-and-consume paths for every topic are in [event flow](../../docs/event-flow.md).
 
@@ -305,7 +338,9 @@ Column-by-column mapping for every table is in [data model](../../docs/data-mode
 
 Four terms explain most of the code in this module. A developer who reads a class called `CreditLimitRule` needs them first.
 
-**A card cross-reference** maps one card number to one customer and one account. The original ran on a Virtual Storage Access Method (VSAM) dataset keyed by the sixteen-character card number, with a second index on the account identifier. The card record does carry an account identifier of its own, `CARD-ACCT-ID PIC 9(11)` at `app/cpy/CVACT02Y.cpy:L6`, and the posting program still does not read it. `app/cbl/CBTRN02C.cbl:L29-L64` opens six files and the card file is not among them, and `app/jcl/POSTTRAN.jcl` allocates the same six datasets. With the card file unopened, the cross-reference is the only account the program can reach, so every authorization here starts by resolving the card through this table. That is why reason 100 exists: a card with no cross-reference row cannot name an account to authorize against.
+**A card cross-reference** maps one card number to one customer and one account. The original ran on a Virtual Storage Access Method (VSAM) dataset keyed by the sixteen-character card number, with a second index on the account identifier. The card record does carry an account identifier of its own, `CARD-ACCT-ID PIC 9(11)` at `app/cpy/CVACT02Y.cpy:L6`, and the posting program still does not read it.
+
+`app/cbl/CBTRN02C.cbl:L29-L64` opens six files and the card file is not among them, and `app/jcl/POSTTRAN.jcl` allocates the same six datasets. With the card file unopened, the cross-reference is the only account the program can reach, so every authorization here starts by resolving the card through this table. That is why reason 100 exists: a card with no cross-reference row cannot name an account to authorize against.
 
 **A decline reason code** is the source's four-digit answer to "why not". The original wrote it into a reject record and counted it, and this service returns it and publishes it. There are exactly four codes and there is no fifth.
 
@@ -363,7 +398,7 @@ Each of these was measured while building this module, and each bites here.
 10. **An unusable replica answers 503, not a decline.** The rule is about the replica streams and not about the age of a row, so an untouched card stays authorizable indefinitely. What refuses is a listener that is stopped or unassigned, a measured backlog over `carddemo.replica.lag-ceiling`, or an open `replica_gap` row for the account this call names. Start the broker and the two replica listeners before authorizing, and read `/actuator/health/readiness` under `replica` when a call answers 503. [Replica currency](#replica-currency) is the whole rule.
 11. **One account is decided one decision at a time.** Each decision reads its account row under a write lock so that the exposure it reserves cannot be lost, and `carddemo.decision.lock-wait-ms` bounds the wait. A second concurrent call against the same account answers 503 rather than waiting, which is the same refusal a contended row already answers elsewhere on the platform.
 12. **A reservation whose posting never lands releases itself.** `carddemo.decision.reservation-ttl` defaults to fifteen minutes. Longer than that, an approval sitting in the dead-letter topic stops holding credit, so a demo does not silently drift toward declining everything. Shorter than the time posting really takes, two calls inside one window could together exceed the limit.
-13. **A state-changing call needs one extra header.** A `curl` that worked before this control answers 403 until it adds `-H 'X-CardDemo-Request: 1'`. `config/CrossSiteRequestFilter` requires the header on every `POST`, `PUT`, `PATCH` and `DELETE`, because HTTP Basic is a credential a browser attaches without being asked and an HTML form cannot set a header. Reads need nothing. The name is configurable through `API_CROSS_SITE_HEADER` and it is not a secret: the value is never checked, only its presence.
+13. **A state-changing call needs one extra header.** A `curl` that worked before this control answers 403 until it adds `-H 'X-CardDemo-Request: 1'`. `config/CrossSiteRequestFilter` requires the header on every `POST`, `PUT`, `PATCH` and `DELETE`, because HTTP Basic is a credential a browser attaches unasked and a form cannot set a header. Reads need nothing. The name is configurable through `API_CROSS_SITE_HEADER` and it is not a secret: the value is never checked, only its presence.
 14. **A burst answers 429 rather than being served.** A load generator, a retry loop, or a test that hammers one address reaches `config/RequestRateCeilingFilter` and answers 429 with `Retry-After`. The blanket ceiling is 600 requests a minute per address and per identity, writes are 120, and 20 failed authentications from one address close the rest of that minute. Raise `API_RATE_*` for a load run rather than removing the filter, and read the `stage` tag on `carddemo.authorization.requests.throttled` to see which ceiling refused.
 
 <br/>
@@ -569,7 +604,9 @@ Flyway owns this schema. Twenty-three migrations run on every start, in this ord
 | `V22__authorization_decision_card_token_version.sql` | Records the card-token version `authorization_decision.card_token` was taken under, with a default of `1` because that is the only version this platform has published. This table holds no card number and cannot re-derive its own rows, so the version is what makes a token a rotation has not reached identifiable. The card service holds the previous-to-current mapping the column is re-keyed from; its README carries the statement. |
 | `V23__subject_request_procedure.sql` | Points the `card_xref` comment at the subject-request procedure `card-platform/docs/data-model.md` now carries, under "Subject data: purpose, retention, export and erasure". `V11` had replaced a comment promising an erasure route with one stating that none existed, which was true then and is no longer the whole truth: a documented operator procedure reaches every store a request touches, this replica among them. No endpoint, event or scheduled task erases or exports a subject, and the comment says so. Declares no table, column, index or row |
 
-A twenty-fourth file, `src/main/resources/db/demo/V900__demo_expiry_extension.sql`, is **not** applied by default. It lifts every seeded account expiry to `2099-12-31` so a live call carrying today's date is not declined with reason 0103 by a fixture whose latest expiry is in 2025. It runs only when `spring.flyway.locations` names `classpath:db/demo` alongside `classpath:db/migration`, which both deployment paths do and nothing else does: `card-platform/docker-compose.yml` through `AUTHORIZATION_FLYWAY_LOCATIONS`, and `card-platform/deploy/k8s/30-configmap.yaml` through the key of the same name, read by `40-authorization-service.yaml`. Both paths are demo profiles by design, and both expose the same opt-out — set that key to `classpath:db/migration`, together with `ACCOUNT_FLYWAY_LOCATIONS`, for a fixture-faithful run. This module's own `application.yml` ships `${SPRING_FLYWAY_LOCATIONS:classpath:db/migration}`, so `mvn verify` measures the untouched fixture and the demonstration gets the extension.
+A twenty-fourth file, `src/main/resources/db/demo/V900__demo_expiry_extension.sql`, is **not** applied by default. It lifts every seeded account expiry to `2099-12-31` so a live call carrying today's date is not declined with reason 0103 by a fixture whose latest expiry is in 2025. It runs only when `spring.flyway.locations` names `classpath:db/demo` alongside `classpath:db/migration`, which both deployment paths do and nothing else does. Those paths are `card-platform/docker-compose.yml` through `AUTHORIZATION_FLYWAY_LOCATIONS`, and `card-platform/deploy/k8s/30-configmap.yaml` through the key of the same name, read by `40-authorization-service.yaml`.
+
+Both paths are demo profiles by design, and both expose the same opt-out — set that key to `classpath:db/migration`, together with `ACCOUNT_FLYWAY_LOCATIONS`, for a fixture-faithful run. This module's own `application.yml` ships `${SPRING_FLYWAY_LOCATIONS:classpath:db/migration}`, so `mvn verify` measures the untouched fixture and the demonstration gets the extension.
 
 Run this module's tests alone, which builds both libraries first:
 
@@ -579,15 +616,20 @@ mvn -B -pl services/authorization-service -am verify
 
 `verify` rather than `test`, because Surefire and Failsafe each run a different half. Surefire runs the unit and contract classes; Failsafe runs `ReplicaRefreshToDecisionIT`, `NativeStatementIT`, `AuthorizationRouteSecurityIT` and `PoisonRecordRecoveryIT`, which its default `**/*IT.java` pattern matches and Surefire's does not. Those four start PostgreSQL and Kafka through Testcontainers, so Docker has to be reachable; `mvn ... test` finishes without them and reports nothing missing.
 
-Authorize one transaction. Both timestamps are generated so that the call reads as one made now, and nothing bounds the capture moment against the clock of this service — reject code 0103 at `app/cbl/CBTRN02C.cbl:L414-L420` is the whole of the test applied to it:
+Authorize one transaction. Both timestamps are generated so that the call reads as one made now. Nothing bounds the capture moment against the clock of this service, and reject code 0103 at `app/cbl/CBTRN02C.cbl:L414-L420` is the whole of the test applied to it:
 
 ```bash
 # From card-platform/, as this section's steps are. app/ sits beside it in the repository.
+# The administrator identity these calls authenticate as. scripts/generate-env.sh wrote its
+# password to .demo-credentials, which git ignores and creates owner-only. Run from card-platform/.
+ADMIN_USERNAME="$(sed -n 's/^ADMIN_USERNAME=//p' .env | head -1)"
+ADMIN_PASSWORD="$(sed -n "s/^${ADMIN_USERNAME}=//p" .demo-credentials | head -1)"
+
 CARD_NUMBER=$(sed -n '1s/^\(.\{16\}\).*/\1/p' ../app/data/ASCII/cardxref.txt)
 CAPTURED_AT="$(date -u +'%Y-%m-%d %H:%M:%S').000000"
 PROCESSED_AT="$(date -u +'%Y-%m-%d-%H.%M.%S').000000"
 
-curl -sS -u "admin001:$ADMIN_PASSWORD" -X POST \
+curl -sS -u "${ADMIN_USERNAME}:${ADMIN_PASSWORD}" -X POST \
   -H 'X-CardDemo-Request: authorization-cli' \
   -H 'Content-Type: application/json' \
   -d "{\"cardNumber\":\"${CARD_NUMBER}\",

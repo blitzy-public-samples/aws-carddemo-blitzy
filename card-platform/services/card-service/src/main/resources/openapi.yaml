@@ -94,10 +94,10 @@ paths:
         side runs a count query.
 
 
-        The account is required, because the rule that admits this route reads
-        the same parameter to decide ownership. The card filter of the source
-        screen is deliberately absent from this route: it would put a card number
-        in a query string.
+        The account is required, because the rule that admits this route reads the
+        same parameter to decide ownership. The card filter of the source screen
+        is deliberately absent from this route: it would put a card number in a
+        query string.
 
 
         One account may hold several cards, so this route pages. The alternate
@@ -107,41 +107,41 @@ paths:
 
 
         Paging is by cursor and never by page number, so an insert between two
-        requests renumbers nothing. The cursor is exclusive, so no row is
-        returned twice, and it continues the browse in the direction it was
-        walking. A forward page hands back the token of its last card number,
-        whose source value app/cbl/COCRDLIC.cbl:L1194-L1195 writes into
-        WS-CA-LAST-CARDKEY. A backward page hands back the token of its first
-        card number, whose source value app/cbl/COCRDLIC.cbl:L1350-L1353 writes
-        into WS-CA-FIRST-CARDKEY. A request with no cursor asks for the first page
-        going forward and the last page going back.
+        requests renumbers nothing. The cursor is exclusive, so no row is returned
+        twice, and it continues the browse in the direction it was walking. A
+        forward page hands back the token of its last card number, whose source
+        value app/cbl/COCRDLIC.cbl:L1194-L1195 writes into WS-CA-LAST-CARDKEY. A
+        backward page hands back the token of its first card number, whose source
+        value app/cbl/COCRDLIC.cbl:L1350-L1353 writes into WS-CA-FIRST-CARDKEY. A
+        request with no cursor asks for the first forward page, or the last page
+        when walking back.
 
 
         An account with no card returns 200 with an empty array. A browse that
-        reaches end of file is not an error: app/cbl/COCRDLIC.cbl:L1235 clears
-        the further-page flag and the screen shows no row.
+        reaches end of file is not an error: app/cbl/COCRDLIC.cbl:L1235 clears the
+        further-page flag and the screen shows no row.
       parameters:
 
         - name: accountId
           in: query
           required: true
           description: >-
-            The account whose cards to list. Eleven digits, from
-            CARD-ACCT-ID PIC 9(11) at app/cpy/CVACT02Y.cpy:L6. Column account_id
-            is CHAR(11) and matches on text, so all eleven digits are required
-            and a shorter value is refused rather than answered with an empty
-            page. The rule in config/SecurityConfig reads this parameter to
-            decide whether the caller owns the account.
+            The account whose cards to list. Eleven digits, from CARD-ACCT-ID PIC
+            9(11) at app/cpy/CVACT02Y.cpy:L6. Column account_id is CHAR(11) and
+            matches on text, so all eleven digits are required and a shorter value
+            is refused rather than answered with an empty page. The rule in
+            config/SecurityConfig reads this parameter to decide whether the
+            caller owns the account.
 
 
             Eleven zero digits are refused. CC-ACCT-ID-N EQUAL ZEROS at
             app/cbl/COCRDSLC.cbl:L653 is the third absence condition of the source
             edit, so eleven zeros name no account, and
-            app/cbl/COCRDLIC.cbl:L1385-L1394 then applies no filter and walks every
-            account. This route requires the account, so a value naming none is
-            refused rather than accepted and dropped: a caller that named a filter
-            reads "Account number not provided" and never a page of every card in
-            the table.
+            app/cbl/COCRDLIC.cbl:L1385-L1394 then applies no filter and walks
+            every account. This route requires the account, so a value naming none
+            is refused rather than accepted and dropped. A caller that named a
+            filter reads "Account number not provided" and never a page of every
+            card in the table.
           schema:
             type: string
             minLength: 11
@@ -159,9 +159,9 @@ paths:
           description: >-
             The paging position from a previous response: the 64-character keyed
             card token of one row, a stable pseudonym rather than an irreversible
-            digest. The read side resolves it to the
-            source browse key without publishing the full card number. Omit it
-            to ask for the first page going forward or the last page going back.
+            digest. The read side resolves it to the source browse key without
+            publishing the full card number. Omit it to ask for the first forward
+            page, or the last page when walking back.
           schema:
             type: string
             minLength: 64
@@ -242,40 +242,39 @@ paths:
 
 
             An absent account reads "Account number not provided" and one of
-            another width reads
-            "ACCOUNT FILTER,IF SUPPLIED MUST BE A 11 DIGIT NUMBER", both from
-            app/cbl/COCRDLIC.cbl. A malformed cursor reads
+            another width reads "ACCOUNT FILTER,IF SUPPLIED MUST BE A 11 DIGIT
+            NUMBER", both from app/cbl/COCRDLIC.cbl. A malformed cursor reads
             "Card cursor must be a 64-character lower-case hexadecimal token". A
-            direction naming neither way reads
-            "Direction must be forward or backward", which is additive because a
-            terminal cannot deliver a third function key.
+            direction naming neither way reads "Direction must be forward or
+            backward", which is additive because a terminal cannot deliver a third
+            function key.
 
 
-            A row count outside 1 through 100 reads
-            "Page size falls outside the range this list admits". One that is no
-            number at all, such as pageSize=abc, reads
-            "Page size must be a whole number": the row count is the one request
-            value of this service that is not text. It is converted before any
-            constraint on it can run and a conversion that fails reaches no
-            constraint. Both are additive, because the source screen held its row
-            count as the compile-time constant WS-MAX-SCREEN-LINES at
-            app/cbl/COCRDLIC.cbl:L177-L178 and no operator could supply one.
+            A row count outside 1 through 100 reads "Page size falls outside the
+            range this list admits". One that is no number at all, such as
+            pageSize=abc, reads "Page size must be a whole number": the row count
+            is the one request value of this service that is not text. It is
+            converted before any constraint on it can run and a conversion that
+            fails reaches no constraint. Both are additive, because the source
+            screen held its row count as the compile-time constant
+            WS-MAX-SCREEN-LINES at app/cbl/COCRDLIC.cbl:L177-L178 and no operator
+            could supply one.
 
 
             A parameter naming an empty value is refused rather than read as
             absent, for the direction and for the row count alike. An empty
-            direction reads the direction text and an empty row count reads
-            "Page size must be a whole number". A caller then learns that the value
-            it sent was not usable instead of reading a 200 that states nothing
-            about what it did.
+            direction reads the direction text and an empty row count reads "Page
+            size must be a whole number". A caller then learns that the value it
+            sent was not usable instead of reading a 200 that states nothing about
+            what it did.
 
 
-            A well-formed cursor that resolves to no row reads
-            "Card cursor names no card of this list". This is the one refusal of
-            this route that no constraint can produce, because discovering it takes
-            a read. The list refuses it rather than starting the browse over: a
-            caller asking to continue from page nine would otherwise read page one
-            and believe it had reached rows it already held.
+            A well-formed cursor that resolves to no row reads "Card cursor names
+            no card of this list". This is the one refusal of this route that no
+            constraint can produce, because discovering it takes a read. The list
+            refuses it rather than starting the browse over. A caller asking to
+            continue from page nine would otherwise read page one and believe it
+            had reached rows it already held.
 
 
             None of these answers 5xx. Every one names a request a caller can
@@ -297,9 +296,9 @@ paths:
                 pageSizeOutsideTheRange:
                   summary: >-
                     The answer to pageSize=0 and to pageSize=101. The submitted
-                    count reaches neither member, so a count of six figures cannot
-                    put a run of digits into a body whose route member exists to
-                    keep them out of it.
+                    count reaches neither member. A count of six figures therefore
+                    cannot put a run of digits into a body whose route member
+                    exists to keep them out of it.
                   value:
                     status: 400
                     message: 'Page size falls outside the range this list admits'
@@ -354,12 +353,13 @@ paths:
         '405':
           description: >-
             The route was called with a method it does not serve. The Allow header
-            names the methods it does. api/CardApiExceptionHandler keeps the status
-            and the headers the framework named, so a caller's mistake is not
-            recorded as a fault of this service.
-            config/SecurityConfig declares one rule per method and path, and a request whose method
-            carries no rule is refused with 403 before the dispatcher runs, so this answer is the
-            one a request the chain admits receives.
+            names the methods it does. The handler api/CardApiExceptionHandler
+            keeps the status and the headers the framework named, so a caller's
+            mistake is not recorded as a fault of this service. The chain in
+            config/SecurityConfig declares one rule per method and path, so a
+            request whose method carries no rule is refused with 403 before the
+            dispatcher runs. This answer is therefore the one a request the chain
+            admits receives.
           headers:
             Allow:
               description: The methods this route serves.
@@ -393,11 +393,12 @@ paths:
 
         '429':
           description: >-
-            A rate ceiling refused this request. config/RequestRateCeilingFilter
-            runs ahead of the security chain and bounds requests from one source,
-            requests presenting one identity, state-changing requests from one
-            source, failed authentications from one source, and requests in
-            flight. Retry-After names whole seconds until the window rolls.
+            A rate ceiling refused this request. The filter
+            config/RequestRateCeilingFilter runs ahead of the security chain. It
+            bounds requests from one source, requests presenting one identity,
+            state-changing requests from one source, failed authentications from
+            one source, and requests in flight. Retry-After names whole seconds
+            until the window rolls.
 
 
             ADDITIVE: a CICS transaction arrived from a terminal an operator was
@@ -426,9 +427,9 @@ paths:
           description: >-
             The card table could not be reached. The request was well formed and
             this service holds no defect, so the status names a condition a caller
-            may retry. api/CardApiExceptionHandler answers the connection it could
-            not open, the transaction it could not begin and the statement the
-            database gave up on.
+            may retry. The handler api/CardApiExceptionHandler answers the
+            connection it could not open, the transaction it could not begin and
+            the statement the database gave up on.
           content:
             application/json:
               schema:
@@ -448,28 +449,34 @@ paths:
         required: true
         description: >-
           The card this route names: sixty-four lower-case hexadecimal characters,
-          which PanMasker.cardToken in card-platform/libs/cobol-compat derives from
-          the whole card number under a deployment-supplied key. It is the value
-          column card_token CHAR(64) holds under a unique constraint, so it reaches
-          at most one row, exactly as KEYS(16 0) at app/jcl/CARDFILE.jcl:L54 makes
-          one card number reach at most one row.
+          which PanMasker.cardToken in card-platform/libs/cobol-compat derives
+          from the whole card number under a deployment-supplied key. It is the
+          value column card_token CHAR(64) holds under a unique constraint, so it
+          reaches at most one row. KEYS(16 0) at app/jcl/CARDFILE.jcl:L54 makes
+          one card number reach at most one row in the same way.
 
 
-          No card number appears in this path. A path is written to an access log by
-          the container, to a proxy log by whatever sits in front of it, into a
-          distributed trace as the span name, and into a browser history by the client. None of those is reachable by this application's redaction. Masking a number in a response body while putting it in the request line
-          would minimise nothing. api/CardController resolves the token to the row
-          and hands the number it holds to the update service, so the full number
-          never leaves this service. card-platform/docs/decision-log.md records the
-          choice; transaction CCDL at app/csd/CARDDEMO.CSD:L347-L348 and transaction
-          CCUP at app/csd/CARDDEMO.CSD:L367-L369 each address one card, so each is
-          still one addressable resource.
+          No card number appears in this path. A path is written to an access log
+          by the container and to a proxy log by whatever sits in front of it. It
+          also reaches a distributed trace as the span name and a browser history
+          held by the client. None of those is reachable by this application's
+          redaction. Masking a number in a response body while putting it in the
+          request line would minimise nothing.
+
+
+          The controller api/CardController resolves the token to the row and
+          hands the number it holds to the update service, so the full number
+          never leaves this service. The choice is recorded in
+          card-platform/docs/decision-log.md. Transaction CCDL at
+          app/csd/CARDDEMO.CSD:L347-L348 and transaction CCUP at
+          app/csd/CARDDEMO.CSD:L367-L369 each address one card, so each is still
+          one addressable resource.
 
 
           The source rule on a card number is not replaced by this shape. Card
           number if supplied must be a 16 digit number at
-          app/cbl/COCRDUPC.cbl:L193-L194 still runs in domain/CardUpdateService, on
-          the number resolved from the token.
+          app/cbl/COCRDUPC.cbl:L193-L194 still runs in domain/CardUpdateService,
+          on the number resolved from the token.
         schema:
           type: string
           minLength: 64
@@ -480,12 +487,13 @@ paths:
             summary: >-
               A placeholder rather than a value. A real token is derived under the
               deployment key, so this document publishes none that resolves, and a
-              reader who pastes it is answered 404 rather than reaching a row. Three
-              places carry one that does: the nextCursor member of a GET /cards page,
-              which is the token of that page's last card; a SCOPE_CARD_ authority the
-              deployment granted the caller. The third is the derivation
-              card-platform/docs/onboarding.md gives, which takes the code over the
-              number under the configured key.
+              reader who pastes it is answered 404 rather than reaching a row.
+              Three places carry one that does: the nextCursor member of a GET
+              /cards page, which is the token of that page's last card. A
+              SCOPE_CARD_ authority the deployment granted the caller is the
+              second. The third is the derivation card-platform/docs/onboarding.md
+              gives, which takes the code over the number under the configured
+              key.
             value: '0000000000000000000000000000000000000000000000000000000000000000'
 
     get:
@@ -503,10 +511,13 @@ paths:
         app/cbl/COCRDSLC.cbl:L740 and reads the card file by it at
         app/cbl/COCRDSLC.cbl:L742-L750. The account move above the key at
         app/cbl/COCRDSLC.cbl:L739 is commented out, so one card value is the whole
-        key and this route reads by one card value too. That value is the token, which carries a
-        unique constraint and selects the same single row. No account accompanies
-        the card and no relationship between the two is tested. The masked number in
-        the response is derived from the number the row holds, not from the path.
+        key and this route reads by one card value too.
+
+
+        That value is the token, which carries a unique constraint and selects the
+        same single row. No account accompanies the card and no relationship
+        between the two is tested. The masked number in the response is derived
+        from the number the row holds, not from the path.
 
 
         The not-found branch at app/cbl/COCRDSLC.cbl:L755-L761 sets
@@ -519,10 +530,10 @@ paths:
 
         Ownership is decided by the chain in config/SecurityConfig, which compares
         the path value against the caller's SCOPE_CARD_ authorities directly, both
-        being card tokens. One entitlement admits one card and not every card ending
-        in the same four digits. A caller holding no such authority reads 403 whether
-        or not the row exists, so a refusal discloses nothing about which cards this
-        service holds.
+        being card tokens. One entitlement admits one card and not every card
+        ending in the same four digits. A caller holding no such authority reads
+        403 whether or not the row exists, so a refusal discloses nothing about
+        which cards this service holds.
       responses:
 
         '200':
@@ -541,9 +552,9 @@ paths:
                   summary: >-
                     The card record 1 of app/data/ASCII/carddata.txt holds. The
                     path carries that card's token and the response carries the
-                    masked number read from the row, so the last four digits are
-                    all the response discloses and no digit of the number appears
-                    in the request line. Record 1 supplies the account, the name
+                    masked number read from the row. The last four digits are all
+                    the response discloses, and no digit of the number appears in
+                    the request line. Record 1 supplies the account, the name
                     padded to fifty characters, the expiry and the status.
                   value:
                     maskedCardNumber: '************5740'
@@ -596,13 +607,13 @@ paths:
 
         '403':
           description: >-
-            The identity holds no SCOPE_CARD_ authority equal to the card token the
-            path names, and is no administrator. The refusal is written by
-            config/SecurityConfig, so it carries the same four members and the same
-            media type as every other refusal of that chain, and it names neither the
-            card nor the route.
-            A method this route does not serve is refused here too, since config/SecurityConfig
-            declares one rule per method and path and admits no request a rule does not name.
+            The identity holds no SCOPE_CARD_ authority equal to the card token
+            the path names, and is no administrator. The refusal is written by
+            config/SecurityConfig, so it carries the same four members and the
+            same media type as every other refusal of that chain. It names neither
+            the card nor the route. A method this route does not serve is refused
+            here too, since config/SecurityConfig declares one rule per method and
+            path and admits no request a rule does not name.
           content:
             application/problem+json:
               schema:
@@ -633,12 +644,13 @@ paths:
         '405':
           description: >-
             The route was called with a method it does not serve. The Allow header
-            names the methods it does. api/CardApiExceptionHandler keeps the status
-            and the headers the framework named, so a caller's mistake is not
-            recorded as a fault of this service.
-            config/SecurityConfig declares one rule per method and path, and a request whose method
-            carries no rule is refused with 403 before the dispatcher runs, so this answer is the
-            one a request the chain admits receives.
+            names the methods it does. The handler api/CardApiExceptionHandler
+            keeps the status and the headers the framework named, so a caller's
+            mistake is not recorded as a fault of this service. The chain in
+            config/SecurityConfig declares one rule per method and path, so a
+            request whose method carries no rule is refused with 403 before the
+            dispatcher runs. This answer is therefore the one a request the chain
+            admits receives.
           headers:
             Allow:
               description: The methods this route serves.
@@ -672,11 +684,12 @@ paths:
 
         '429':
           description: >-
-            A rate ceiling refused this request. config/RequestRateCeilingFilter
-            runs ahead of the security chain and bounds requests from one source,
-            requests presenting one identity, state-changing requests from one
-            source, failed authentications from one source, and requests in
-            flight. Retry-After names whole seconds until the window rolls.
+            A rate ceiling refused this request. The filter
+            config/RequestRateCeilingFilter runs ahead of the security chain. It
+            bounds requests from one source, requests presenting one identity,
+            state-changing requests from one source, failed authentications from
+            one source, and requests in flight. Retry-After names whole seconds
+            until the window rolls.
 
 
             ADDITIVE: a CICS transaction arrived from a terminal an operator was
@@ -731,24 +744,28 @@ paths:
 
 
         Three values are written: the embossed name, the expiry date assembled
-        from its three parts, and the active status. app/bms/COCRDUP.bms declares
-        exactly five editable fields, CRDNAME at L107, CRDSTCD at L117, EXPMON at
-        L127, EXPYEAR at L135 and EXPDAY at L142. The account identifier and the
-        card verification value are never written. The cross-reference row is never
-        touched either: every column of app/cpy/CVACT03Y.cpy is a card number, a
-        customer identifier or an account identifier, and none of the three changes
-        here.
+        from its three parts, and the active status. Map app/bms/COCRDUP.bms
+        declares exactly five editable fields, CRDNAME at L107, CRDSTCD at L117,
+        EXPMON at L127, EXPYEAR at L135 and EXPDAY at L142. The account identifier
+        and the card verification value are never written. The cross-reference row
+        is never touched either: every column of app/cpy/CVACT03Y.cpy is a card
+        number, a customer identifier or an account identifier, and none of the
+        three changes here.
 
 
         The card the update names arrives in the path and is no property of the
         body. CCUP-NEW-CARDID PIC X(16) at app/cbl/COCRDUPC.cbl:L305 names it in
         the source, and CCUP-NEW-CARDDATA at app/cbl/COCRDUPC.cbl:L307-L313 holds
-        the five values the body carries. The path value is that card's token, not
-        its number: api/CardController reads the row the token names and hands the
-        number the row holds to domain/CardUpdateService in the same call. The number the source rule works on is a stored value and never a submitted
-        one. A token naming no row answers the same not-found outcome a number
-        naming no row answers, so a caller cannot tell which of the two lookups
-        missed and the seven outcomes stay seven.
+        the five values the body carries.
+
+
+        The path value is that card's token, not its number: api/CardController
+        reads the row the token names and hands the number the row holds to
+        domain/CardUpdateService in the same call. The number the source rule
+        works on is a stored value and never a submitted one. A token naming no
+        row answers the same not-found outcome a number naming no row answers. A
+        caller cannot tell which of the two lookups missed, and the seven outcomes
+        stay seven.
 
 
         The checks run in the order app/cbl/COCRDUPC.cbl performs them, because
@@ -756,26 +773,29 @@ paths:
         edited first, the row is read second, and the submitted values are
         compared against the stored ones third. The four field edits run fourth
         and the row is locked fifth. The locked row is then compared against what
-        the caller last saw, and the rewrite runs last. A caller that submits a
-        bad month for a card that names no row therefore reads the not-found text
-        and not the month text. The first of those steps is the edit at
-        app/cbl/COCRDUPC.cbl:L193-L194, which a resolved number always satisfies,
-        so a caller of this route never reads its text and
+        the caller last saw, and the rewrite runs last.
+
+
+        A caller that submits a bad month for a card that names no row therefore
+        reads the not-found text and not the month text. The first of those steps
+        is the edit at app/cbl/COCRDUPC.cbl:L193-L194, which a resolved number
+        always satisfies. A caller of this route never reads its text, and
         domain/CardUpdateServiceTest is where it is exercised.
 
 
-        No checksum rule, no card-status test and no account-status test.
-        app/cbl/COCRDUPC.cbl:L784 tests a card number for sixteen digits and
-        nothing else, and adding a rule the source lacks would refuse an update
-        the source applies.
+        No checksum rule, no card-status test and no account-status test. The edit
+        at app/cbl/COCRDUPC.cbl:L784 tests a card number for sixteen digits and
+        nothing else. Adding a rule the source lacks would refuse an update the
+        source applies.
 
 
         Every property of the body is required and no other property is admitted.
-        config/RequestJsonStrictnessConfig refuses a body naming a property this
-        contract does not declare, and refuses a property declared as text that
-        arrives as a JSON number or a JSON boolean. Both refusals answer 400. A
-        reader left at its defaults bound a misspelled property to nothing and then
-        refused it as absent, and read 7 for an expiryMonth of 07.
+        The reader config/RequestJsonStrictnessConfig refuses a body naming a
+        property this contract does not declare. It also refuses a property
+        declared as text that arrives as a JSON number or a JSON boolean. Both
+        refusals answer 400. A reader left at its defaults bound a misspelled
+        property to nothing and then refused it as absent, and read 7 for an
+        expiryMonth of 07.
       parameters:
         - name: X-CardDemo-Request
           in: header
@@ -813,23 +833,24 @@ paths:
               moveTheExpiryForward:
                 summary: >-
                   Move the expiry of the card the path names to 2031-07-13,
-                  keeping the embossed name and the status. The date it moves
-                  from is whatever that card holds: the token above is a
-                  placeholder, and every seeded expiry falls between 2023-01-06
-                  and 2025-12-28.
+                  keeping the embossed name and the status. The date it moves from
+                  is whatever that card holds: the token above is a placeholder,
+                  and every seeded expiry falls between 2023-01-06 and 2025-12-28.
 
 
                   A future year is used here only so the example does not read as
                   though it set a card live today. The service applies no
-                  future-date rule and neither does the source:
-                  app/cbl/COCRDUPC.cbl:L1260 onward tests the year against
-                  88 VALID-YEAR VALUES 1950 THRU 2099 and the month and day
-                  against the calendar, and nothing tests the result against the
-                  current date. A past expiry is therefore accepted and stored,
-                  which is deliberate parity. It also costs nothing at
-                  authorization time: reason 0103 at
-                  app/cbl/CBTRN02C.cbl:L414-L420 compares the ACCOUNT expiry, and
-                  the posting program never opens the card file.
+                  future-date rule and neither does the source. From
+                  app/cbl/COCRDUPC.cbl:L1260 onward the year is tested against 88
+                  VALID-YEAR VALUES 1950 THRU 2099 and the month and day against
+                  the calendar. Nothing tests the result against the current date.
+
+
+                  A past expiry is therefore accepted and stored, which is
+                  deliberate parity. It also costs nothing at authorization time:
+                  reason 0103 at app/cbl/CBTRN02C.cbl:L414-L420 compares the
+                  ACCOUNT expiry, and the posting program never opens the card
+                  file.
                 value:
                   embossedName: 'Ward Jones'
                   expiryYear: '2031'
@@ -863,11 +884,11 @@ paths:
           description: >-
             The path names a value that is not a card token, or the request body
             could not be read as one card update. A body naming a property this
-            contract does not declare, and a property declared as text that arrives
-            as a JSON number or a JSON boolean, are both bodies this route could
-            not read. Nothing of the unreadable body reaches the response: a parser
-            message names the position it failed at and quotes the characters around
-            it, and those characters can be a cardholder name.
+            contract does not declare is one such body. So is a property declared
+            as text that arrives as a JSON number or a JSON boolean. Nothing of
+            the unreadable body reaches the response. A parser message names the
+            position it failed at and quotes the characters around it, and those
+            characters can be a cardholder name.
           content:
             application/json:
               schema:
@@ -975,10 +996,10 @@ paths:
                       activeStatus: 'Y'
                 lockNotAcquired:
                   summary: >-
-                    The row did not come back held for the rewrite, whether because
-                    another writer had removed it, because the wait for the lock ran
-                    out, or because the datastore refused the locking statement.
-                    Nothing was written and no refreshed card is read.
+                    The row did not come back held for the rewrite. Another writer
+                    had removed it, the wait for the lock ran out, or the
+                    datastore refused the locking statement. Nothing was written
+                    and no refreshed card is read.
                   value:
                     outcome: 'LOCK_NOT_ACQUIRED'
                     message: 'Could not lock record for update'
@@ -988,46 +1009,51 @@ paths:
           description: >-
             Either one field edit refused its value, or the submitted values
             matched the stored ones. The second case is outcome
-            NO_CHANGE_DETECTED, carrying
-            "No change detected with respect to values fetched.", the text
-            app/cbl/COCRDUPC.cbl:L188 declares and the gate at
-            app/cbl/COCRDUPC.cbl:L680-L682 sets before it reaches the edit exit
-            at app/cbl/COCRDUPC.cbl:L693 having written nothing.
+            NO_CHANGE_DETECTED, carrying "No change detected with respect to
+            values fetched.", the text app/cbl/COCRDUPC.cbl:L188 declares. The
+            gate at app/cbl/COCRDUPC.cbl:L680-L682 sets it before reaching the
+            edit exit at app/cbl/COCRDUPC.cbl:L693 having written nothing.
 
 
             For a refused field the message is that edit's text, reproduced
             character for character from the source line
-            api/dto/CardValidationMessages cites for it. The five texts are
-            "Card name not provided" and
-            "Card name can only contain alphabets and spaces" for the name. The status reads "Card Active Status must be Y or N".
-            "Card expiry month must be between 1 and 12" for the month and
+            api/dto/CardValidationMessages cites for it. The five texts are "Card
+            name not provided" and "Card name can only contain alphabets and
+            spaces" for the name. The status reads "Card Active Status must be Y
+            or N". "Card expiry month must be between 1 and 12" for the month and
             "Invalid card expiry year" for the year.
 
 
-            Two texts are additive and both follow from the column type rather than
-            from a rule the source holds:
-            "Card expiry day must be two digits" and
-            "Card expiry year, month and day must name a day of the calendar".
+            Two texts are additive, and both follow from the column type rather
+            than from a rule the source holds. They are "Card expiry day must be
+            two digits" and "Card expiry year, month and day must name a day of
+            the calendar".
+
+
             Section 0.3.1 of the plan requires a DATE column for this one field,
             citing the year, month and day slices the source itself takes at
-            app/cbl/COCRDUPC.cbl:L117-L121, and column expiration_date in
-            db/migration/V1__schema.sql is that DATE. The source stored ten
-            characters of text and accepted 2028-02-30; a DATE cannot hold it, so
-            the value is refused here. card-platform/docs/business-rule-flags.md
-            carries this divergence as D3 with the decision it asks of the project
-            owner.
+            app/cbl/COCRDUPC.cbl:L117-L121. In db/migration/V1__schema.sql, column
+            expiration_date is a DATE. The source stored ten characters of text
+            and accepted 2028-02-30; a DATE cannot hold it, so the value is
+            refused here. The divergence is carried as D3 in
+            card-platform/docs/business-rule-flags.md, with the decision it asks
+            of the project owner.
 
 
-            Two further texts of this outcome are unreachable through this route, and
-            are named here so a caller reading domain/CardUpdateService does not
-            expect them: "Card number not provided", the text
-            app/cbl/COCRDUPC.cbl:L180 declares. The second is "CARD ID FILTER,IF SUPPLIED MUST BE A 16 DIGIT NUMBER", the text
+            Two further texts of this outcome are unreachable through this route.
+            They are named here so a caller reading domain/CardUpdateService does
+            not expect them. The first is "Card number not provided", the text
+            app/cbl/COCRDUPC.cbl:L180 declares. The second is "CARD ID FILTER,IF
+            SUPPLIED MUST BE A 16 DIGIT NUMBER", the text
             app/cbl/COCRDUPC.cbl:L789 declares under the test at
-            app/cbl/COCRDUPC.cbl:L784. Both edit the card number, which is step one
-            of the source edit chain. The number reaching that step is read from the
-            row the path token named rather than submitted, so it is always present
-            and always sixteen digits, and neither text can answer a request.
-            domain/CardUpdateServiceTest exercises both directly.
+            app/cbl/COCRDUPC.cbl:L784.
+
+
+            Both edit the card number, which is step one of the source edit chain.
+            The number reaching that step is read from the row the path token
+            named rather than submitted. It is always present and always sixteen
+            digits, so neither text can answer a request. Both are exercised
+            directly by domain/CardUpdateServiceTest.
           content:
             application/json:
               schema:
@@ -1054,12 +1080,13 @@ paths:
         '405':
           description: >-
             The route was called with a method it does not serve. The Allow header
-            names the methods it does. api/CardApiExceptionHandler keeps the status
-            and the headers the framework named, so a caller's mistake is not
-            recorded as a fault of this service.
-            config/SecurityConfig declares one rule per method and path, and a request whose method
-            carries no rule is refused with 403 before the dispatcher runs, so this answer is the
-            one a request the chain admits receives.
+            names the methods it does. The handler api/CardApiExceptionHandler
+            keeps the status and the headers the framework named, so a caller's
+            mistake is not recorded as a fault of this service. The chain in
+            config/SecurityConfig declares one rule per method and path, so a
+            request whose method carries no rule is refused with 403 before the
+            dispatcher runs. This answer is therefore the one a request the chain
+            admits receives.
           headers:
             Allow:
               description: The methods this route serves.
@@ -1111,11 +1138,12 @@ paths:
 
         '429':
           description: >-
-            A rate ceiling refused this request. config/RequestRateCeilingFilter
-            runs ahead of the security chain and bounds requests from one source,
-            requests presenting one identity, state-changing requests from one
-            source, failed authentications from one source, and requests in
-            flight. Retry-After names whole seconds until the window rolls.
+            A rate ceiling refused this request. The filter
+            config/RequestRateCeilingFilter runs ahead of the security chain. It
+            bounds requests from one source, requests presenting one identity,
+            state-changing requests from one source, failed authentications from
+            one source, and requests in flight. Retry-After names whole seconds
+            until the window rolls.
 
 
             ADDITIVE: a CICS transaction arrived from a terminal an operator was
@@ -1238,9 +1266,10 @@ components:
       type: object
       description: >-
         A refusal written by the filter chain rather than by an endpoint, as RFC
-        9457 describes it. config/SecurityConfig writes the four members by hand,
-        so the body of a security failure depends on no serializer configuration.
-        The detail names no account, no card and not the route.
+        9457 describes it. The chain in config/SecurityConfig writes the four
+        members by hand, so the body of a security failure depends on no
+        serializer configuration. The detail names no account, no card and not the
+        route.
       additionalProperties: false
       required:
         - type
@@ -1368,16 +1397,16 @@ components:
           description: >-
             The cursor to send back in the X-Card-Cursor header to continue in the
             same direction. It is the keyed card token of one row, a stable
-            pseudonym rather than an irreversible digest. A masked
-            value names no row and a full card number must not be published, so the
-            read side resolves this token to its internal browse position.
+            pseudonym rather than an irreversible digest. A masked value names no
+            row and a full card number must not be published, so the read side
+            resolves this token to its internal browse position.
 
 
             The member is always serialized and carries null on the last page,
             which is why it is required and admits the null type. A caller reading
             the absence of the member rather than its null value would treat a
-            missing key as a last page and a serializer configured to omit nulls as
-            a contract change.
+            missing key as a last page. It would also read a serializer configured
+            to omit nulls as a contract change.
           examples:
             - null
 
@@ -1462,16 +1491,16 @@ components:
         declares no field for it and entity/CardEntity never writes it.
 
 
-        The card number is no property of this schema and reaches no request at all.
-        The row the update rewrites is named by the path variable of the operation,
-        which carries that card's token, and the service reads the number from the
-        row the token resolves to.
+        The card number is no property of this schema and reaches no request at
+        all. The row the update rewrites is named by the path variable of the
+        operation, which carries that card's token. The service reads the number
+        from the row the token resolves to.
 
 
-        Every property is required and no other property is admitted.
-        config/RequestJsonStrictnessConfig holds the request reader to both
-        promises, so a body naming an undeclared property and a property arriving
-        as a JSON number or a JSON boolean are refused rather than absorbed.
+        Every property is required and no other property is admitted. The reader
+        config/RequestJsonStrictnessConfig holds both promises. A body naming an
+        undeclared property, and a property arriving as a JSON number or a JSON
+        boolean, are refused rather than absorbed.
       additionalProperties: false
       required:
         - embossedName
@@ -1531,15 +1560,22 @@ components:
           maxLength: 2
           pattern: '^[0-9]{2}$'
           description: >-
-            The two-digit expiry day, which is written. app/cbl/COCRDUPC.cbl:L621
-            moves the day the screen sent into CCUP-NEW-EXPDAY and
-            app/cbl/COCRDUPC.cbl:L1471 writes that same item into the record, so
-            the day the source stores is the day it read back. On a 3270 that was
-            always the stored day, and that is a property of the map rather than of the program. app/bms/COCRDUP.bms:L142 declares EXPDAY as DRK, FSET and
-            PROT where the four other editable fields declare UNPROT, so an
-            operator could not type into it. A request body has no protected field,
-            so the day this property carries is the day the column takes, and a
-            request changing the day alone is a change.
+            The two-digit expiry day, which is written. The MOVE at
+            app/cbl/COCRDUPC.cbl:L621 takes the day the screen sent into
+            CCUP-NEW-EXPDAY, and app/cbl/COCRDUPC.cbl:L1471 writes that same item
+            into the record. The day the source stores is therefore the day it
+            read back.
+
+
+            On a 3270 that was always the stored day, and that is a property of
+            the map rather than of the program. The map app/bms/COCRDUP.bms:L142
+            declares EXPDAY as DRK, FSET and PROT where the four other editable
+            fields declare UNPROT. An operator could not type into it.
+
+
+            A request body has no protected field, so the day this property
+            carries is the day the column takes, and a request changing the day
+            alone is a change.
 
 
             The source edits no day: 1260-EDIT-EXPIRY-YEAR-EXIT closes the edit
@@ -1548,8 +1584,9 @@ components:
             carries a width rule alone. One calendar rule does apply, over the
             three submitted parts together, and it is the one divergence of this
             route. Column expiration_date is a DATE, so a year, month and day
-            naming no day of the calendar are refused here and were stored there as ten characters of text. 2028-02-30 reads
-            "Card expiry year, month and day must name a day of the calendar".
+            naming no day of the calendar are refused here and were stored there
+            as ten characters of text. 2028-02-30 reads "Card expiry year, month
+            and day must name a day of the calendar".
           examples:
             - '13'
 
@@ -1593,16 +1630,17 @@ components:
           maxLength: 50
           description: >-
             The stored embossed name, UPPER CASE and padded to fifty characters.
-            9300-CHECK-CHANGE-IN-REC. runs
-            INSPECT CARD-EMBOSSED-NAME CONVERTING LIT-LOWER TO LIT-UPPER over the
-            record field IN PLACE at app/cbl/COCRDUPC.cbl:L1499-L1501, so the
-            MOVE CARD-EMBOSSED-NAME TO CCUP-OLD-CRDNAME at :L1513 refreshes the
-            operator's field from the already-folded value. Resubmitting this
-            value verbatim therefore stores the name in upper case, which is what
-            the source does too. GET /cards/{cardToken} returns the same column as
-            the row holds it, so the two routes differ deliberately: this member is
-            the value the source comparison refreshed, not a read of the column.
+            9300-CHECK-CHANGE-IN-REC. runs INSPECT CARD-EMBOSSED-NAME CONVERTING
+            LIT-LOWER TO LIT-UPPER over the record field IN PLACE at
+            app/cbl/COCRDUPC.cbl:L1499-L1501. The MOVE CARD-EMBOSSED-NAME TO
+            CCUP-OLD-CRDNAME at :L1513 then refreshes the operator's field from
+            the already-folded value. Resubmitting this value verbatim therefore
+            stores the name in upper case, which is what the source does too.
 
+
+            GET /cards/{cardToken} returns the same column as the row holds it, so
+            the two routes differ deliberately. This member is the value the
+            source comparison refreshed, not a read of the column.
         expiryYear:
           type: string
           minLength: 4
@@ -1705,7 +1743,7 @@ components:
       type: object
       description: >-
         The answer to an update that lost a race, which api/CardController answers
-        409. Two outcomes reach it, and they differ in one member: a row another
+        409. Two outcomes reach it, and they differ in one member. A row another
         writer changed carries the row as it now stands, and a row this service
         could not hold carries null.
       additionalProperties: false
@@ -1739,11 +1777,11 @@ components:
             - $ref: '#/components/schemas/RefreshedCard'
             - type: 'null'
           description: >-
-            The stored card as it now stands, carried for CHANGED_BEFORE_UPDATE and
-            null for LOCK_NOT_ACQUIRED. app/cbl/COCRDUPC.cbl:L1512-L1517 refreshes
-            the saved values once the comparison fails, and the read for update
-            that came back empty read nothing to refresh.
-
+            The stored card as it now stands, carried for CHANGED_BEFORE_UPDATE
+            and null for LOCK_NOT_ACQUIRED. The step at
+            app/cbl/COCRDUPC.cbl:L1512-L1517 refreshes the saved values once the
+            comparison fails. A read for update that came back empty read nothing
+            to refresh.
     CardUpdateRejected:
       type: object
       description: >-

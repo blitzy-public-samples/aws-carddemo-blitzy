@@ -42,17 +42,18 @@ metadata:
     # or to mount a host path. enforce refuses, audit records and warn reports to
     # whoever applied the manifest.
     #
-    # The version is pinned rather than left at `latest`. `latest` means whatever
-    # the running control plane currently defines restricted to be, so a cluster
-    # upgrade can tighten the policy under a manifest nobody edited, and the six
-    # Deployments then start failing admission for a reason that is not in this
-    # repository. v1.25 is the version named because it is where the restricted
-    # profile began keying its Linux-only controls on .spec.os.name and where Pod
-    # Security admission became generally available, so it is the oldest version
-    # that expresses the policy these manifests were written against. The six
-    # Deployments satisfy it explicitly: runAsNonRoot, allowPrivilegeEscalation
-    # false, all capabilities dropped, seccompProfile RuntimeDefault and a
-    # read-only root filesystem.
+    # The version is pinned. `latest` means whatever the running control plane
+    # currently defines restricted to be, so a cluster upgrade can tighten the
+    # policy under a manifest nobody edited, and the six Deployments then fail
+    # admission. v1.25 is where the restricted profile began keying its
+    # Linux-only controls on .spec.os.name and where Pod Security admission
+    # became generally available, so it is the oldest version that expresses the
+    # policy these manifests declare. The six Deployments satisfy it explicitly:
+    # runAsNonRoot, allowPrivilegeEscalation false, all capabilities dropped,
+    # seccompProfile RuntimeDefault and a read-only root filesystem.
+    #
+    # Why this version and not another, with the alternatives and the risk:
+    # card-platform/docs/decision-log.md
     pod-security.kubernetes.io/enforce: restricted
     pod-security.kubernetes.io/enforce-version: v1.25
     pod-security.kubernetes.io/audit: restricted

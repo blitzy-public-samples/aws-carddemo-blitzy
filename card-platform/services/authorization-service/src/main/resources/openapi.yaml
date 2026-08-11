@@ -11,31 +11,34 @@ info:
   version: 1.0.0
   description: >-
     The one synchronous surface of the modernized CardDemo platform. A call that reaches the decision
-    resolves a card to an account, applies four decline rules in the order app/cbl/CBTRN02C.cbl
-    applies them, and publishes exactly one event through a transactional outbox. The rules come from
-    paragraphs 1500-A-LOOKUP-XREF and 1500-B-LOOKUP-ACCT at app/cbl/CBTRN02C.cbl:L380-L420, and the
-    request field set from the online capture program app/cbl/COTRN02C.cbl:L442-L465.
+    resolves a card to an account and applies four decline rules in the order app/cbl/CBTRN02C.cbl
+    applies them. It then publishes exactly one event through a transactional outbox. The rules come
+    from paragraphs 1500-A-LOOKUP-XREF and 1500-B-LOOKUP-ACCT at app/cbl/CBTRN02C.cbl:L380-L420, and
+    the request field set from the online capture program app/cbl/COTRN02C.cbl:L442-L465.
 
     A decided request persists one decision and publishes exactly one outcome event, keyed on the
     11-digit account identifier the decision applies to. An approval writes its decision row and one
     TransactionAuthorized outbox row in a single local transaction. A decline writes its decision row
-    and one TransactionDeclined outbox row the same way, so the two commit together or neither does,
-    and every decided reject reason travels under one contract. Reject reason 0100 is not decided here:
-    it is assigned where the cross-reference read missed, and the account that read would have resolved
-    is the only subject a decision of this service has, so the call is refused with the source text of
-    app/cbl/COTRN02C.cbl:L625-L626 and records nothing. An account named in the request body never
-    becomes a subject. A call refused before the decision writes neither: 400,
-    401, 403, 406, 413, 415 and 503 are all answered before any rule runs, they leave no decision row
-    and they publish nothing. A 403 in particular is not a decline and carries no reject code, because
-    the service never decided the transaction at all.
+    and one TransactionDeclined outbox row the same way, so the two commit together or neither does.
+    Every decided reject reason travels under one contract.
 
 
-    SYNTHETIC DATA ONLY. Every card number, account identifier, merchant and amount in this
-    document is a value from the public repository fixtures under app/data/ASCII/. None
-    identifies a real card, account or cardholder. Never send real cardholder data to this
-    service: the demonstration binds its ports to loopback and carries none of the controls
-    real card data requires.
+    Reject reason 0100 is not decided here. It is assigned where the cross-reference read missed, and
+    the account that read would have resolved is the only subject a decision of this service has. The
+    call is therefore refused with the source text of app/cbl/COTRN02C.cbl:L625-L626 and records
+    nothing. An account named in the request body never becomes a subject.
 
+
+    A call refused before the decision writes neither. Statuses 400, 401, 403, 406, 413, 415 and 503
+    are all answered before any rule runs, they leave no decision row and they publish nothing. A 403
+    in particular is not a decline and carries no reject code, because the service never decided the
+    transaction at all.
+
+
+    SYNTHETIC DATA ONLY. Every card number, account identifier, merchant and amount in this document
+    is a value from the public repository fixtures under app/data/ASCII/. None identifies a real
+    card, account or cardholder. Never send real cardholder data to this service: the demonstration
+    binds its ports to loopback and carries none of the controls real card data requires.
 servers:
   - url: http://localhost:8081
     description: >-
@@ -69,23 +72,28 @@ paths:
         Exactly one event is published per decided request, and never more than one. An approval
         publishes TransactionAuthorized and a decline publishes TransactionDeclined. Every decline
         travels under schemas/transaction-declined-v3.json, keyed on the eleven-digit account
-        identifier the decision applies to, and carries the nine descriptive values
-        app/cbl/CBTRN02C.cbl:L446-L465 copies into REJECT-TRAN-DATA so a consumer can persist the
-        reject record. Reason 0100 fires where the cross-reference read missed, and this service then
-        has no account it can vouch for: the call is answered 422 carrying "Card Number NOT found...",
-        the text app/cbl/COTRN02C.cbl:L625-L626 writes, and it records nothing and publishes nothing.
-        A request refused before the rule chain is entered records
-        nothing at all: 401, 403 and a body the reader or the bean constraints reject all leave every
-        table untouched.
+        identifier the decision applies to. It carries the nine descriptive values
+        app/cbl/CBTRN02C.cbl:L446-L465 copies into REJECT-TRAN-DATA, so a consumer can persist the
+        reject record.
+
+
+        Reason 0100 fires where the cross-reference read missed, and this service then has no account
+        it can vouch for. The call is answered 422 carrying "Card Number NOT found...", the text
+        app/cbl/COTRN02C.cbl:L625-L626 writes, and it records nothing and publishes nothing. A
+        request refused before the rule chain is entered records nothing at all: 401, 403 and a body
+        the reader or the bean constraints reject all leave every table untouched.
 
 
         Access is decided by role alone. ACQUIRER and ADMIN are the two roles this operation admits,
         and every other identity is refused with 403, a cardholder USER included. No ownership scope
-        applies, because the card is named in the request body rather than in a path a caller could be
-        said to own, which leaves the role as the whole access decision. An operation reaching every
-        card the platform holds must not be reachable by an identity entitled to one card. ACQUIRER is
-        the machine identity a point-of-sale network presents and it owns no account, no customer and
-        no card. Every other service in this platform does apply ownership scopes.
+        applies, because the card is named in the request body rather than in a path a caller could
+        be said to own. That leaves the role as the whole access decision.
+
+
+        An operation reaching every card the platform holds must not be reachable by an identity
+        entitled to one card. ACQUIRER is the machine identity a point-of-sale network presents and
+        it owns no account, no customer and no card. Every other service in this platform does apply
+        ownership scopes.
 
 
         A card number travels in the request body alone. No path parameter and no query parameter
@@ -164,9 +172,10 @@ paths:
               approvedAuthorization:
                 summary: >-
                   Record 1 of app/data/ASCII/dailytran.txt, transaction 0000000000683580, naming its
-                  subject by account identifier alone. This is the branch app/cbl/COTRN02C.cbl:L196-L209
-                  takes where no card number arrives: the cross-reference is read by account through
-                  its alternate index, and the decision then runs on the card that row carries.
+                  subject by account identifier alone. This is the branch
+                  app/cbl/COTRN02C.cbl:L196-L209 takes where no card number arrives. The
+                  cross-reference is read by account through its alternate index, and the decision
+                  then runs on the card that row carries.
 
 
                   This body is approved on the untouched fixture as well as on the demo settings. The
@@ -182,37 +191,6 @@ paths:
                   merchantName: Abshire-Lowe
                   merchantCity: North Enoshaven
                   merchantZip: '72112'
-                  accountId: '00000000007'
-                  originTimestamp: '2022-06-10 19:27:53.000000'
-                  processingTimestamp: '2022-06-10-19.27.53.000000'
-              byCardNumberUnresolved:
-                summary: >-
-                  The same purchase naming its card, which is the field app/cbl/CBTRN02C.cbl:L382-L383
-                  keys the cross-reference on. The card number below is synthetic and no seeded row
-                  carries it, so the keyed read takes its INVALID KEY limb and resolves no account.
-                  This body is therefore refused with "Card Number NOT found..." from
-                  app/cbl/COTRN02C.cbl:L625-L626, writing no row and publishing nothing.
-
-
-                  The accountId member below makes no difference to that answer, and it is here to say
-                  so. An account named in a request body is not a subject this platform resolved, so
-                  it cannot be the account a refusal or a decision is recorded against.
-
-
-                  Substitute a real number, read from record 1 of app/data/ASCII/carddata.txt with
-                  `cut -c1-16 app/data/ASCII/carddata.txt | sed -n '1p'`, to reach the approval above
-                  through this branch instead.
-                value:
-                  transactionTypeCode: '01'
-                  transactionCategoryCode: '0001'
-                  source: POS TERM
-                  description: Purchase at Abshire-Lowe
-                  amount: '504.77'
-                  merchantId: '800000000'
-                  merchantName: Abshire-Lowe
-                  merchantCity: North Enoshaven
-                  merchantZip: '72112'
-                  cardNumber: '4000000000000000'
                   accountId: '00000000007'
                   originTimestamp: '2022-06-10 19:27:53.000000'
                   processingTimestamp: '2022-06-10-19.27.53.000000'
@@ -275,7 +253,8 @@ paths:
                   cannot validate, and a valid body could not illustrate the refusal the 422 answer
                   below is documented against. Two tests hold it that way, asserting it stays
                   invalid, so it cannot quietly become a sendable body while still being described as
-                  a refusal. invalidOriginDate above is the refusal whose body does validate.
+                  a refusal. The invalidOriginDate example above is the refusal whose body does
+                  validate.
                 value:
                   transactionTypeCode: '01'
                   transactionCategoryCode: '0001'
@@ -292,8 +271,8 @@ paths:
         '200':
           description: >-
             An approved decision. Each rule accepted, and the body names the account the card
-            resolved to. app/cbl/CBTRN02C.cbl:L208 clears the reject-code field for one record and
-            app/cbl/CBTRN02C.cbl:L211 posts a record whose field still holds zero.
+            resolved to. Line app/cbl/CBTRN02C.cbl:L208 clears the reject-code field for one record,
+            and app/cbl/CBTRN02C.cbl:L211 posts a record whose field still holds zero.
           content:
             application/json:
               schema:
@@ -313,17 +292,17 @@ paths:
           description: >-
             The request body does not read as this schema. Three conditions reach this status: the
             body is not JavaScript Object Notation (JSON) at all, it carries a property the schema
-            does not declare. The third sends a property declared as text with a JSON number or a boolean
-            in its place. The last of those is how the money rule is enforced rather than merely
-            documented, since amount is a decimal string and never a JSON number.
+            does not declare. The third sends a property declared as text with a JSON number or a
+            boolean in its place. The last of those is how the money rule is enforced rather than
+            merely documented, since amount is a decimal string and never a JSON number.
 
 
-            ADDITIVE: a 3270 terminal sends fixed-width map fields, which can neither arrive
+            ADDITIVE: a 3270 terminal sends fixed-width map fields. They can neither arrive
             unparseable, nor name a field the mapset does not declare, nor carry a type other than
-            the characters of the field, so the source holds no matching condition. The body carries
-            one fixed text and no value read from the request: a parser message names the position it
-            stopped at and quotes the characters around it, and those characters can be a card
-            number.
+            the characters of the field. The source therefore holds no matching condition. The body
+            carries one fixed text and no value read from the request. A parser message names the
+            position it stopped at and quotes the characters around it, and those characters can be a
+            card number.
           content:
             application/json:
               schema:
@@ -339,9 +318,9 @@ paths:
                     timestamp: '2022-06-10T19:27:53.412Z'
         '401':
           description: >-
-            The request carried no credential, or one this service could not use.
+            The request carried no credential, or one this service could not use. The chain in
             config/SecurityConfig writes this answer from the filter chain rather than from a
-            handler, so the body is a problem document as RFC 9457 describes it and not the
+            handler. The body is therefore a problem document as RFC 9457 describes it, and not the
             ApiErrorResponse body every handler writes.
 
 
@@ -377,15 +356,18 @@ paths:
                     detail: This request carried no usable credential.
         '403':
           description: >-
-            The credential was usable and the identity it names may not use this operation. Only
-            the acquirer role and the administrator role authorize a transaction: the request names a
+            The credential was usable and the identity it names may not use this operation. Only the
+            acquirer role and the administrator role authorize a transaction. The request names a
             card in its body rather than an identifier in its path, so no SCOPE_ authority can be
-            compared against it. A cardholder identity carrying USER is refused here rather than
-            allowed to authorize against a card it does not hold. config/SecurityConfig writes this
-            answer too, so it carries the same problem document and no challenge header: repeating
-            the challenge would invite a caller to retry a credential that was already accepted.
-            A method this route does not serve is refused here too, since config/SecurityConfig
-            declares one rule per method and path and admits no request a rule does not name.
+            compared against it.
+
+
+            A cardholder identity carrying USER is refused here rather than allowed to authorize
+            against a card it does not hold. The chain in config/SecurityConfig writes this answer
+            too, so it carries the same problem document and no challenge header. Repeating the
+            challenge would invite a caller to retry a credential that was already accepted. A method
+            this route does not serve is refused here too, since config/SecurityConfig declares one
+            rule per method and path and admits no request a rule does not name.
 
 
             This status also answers a request config/CrossSiteRequestFilter refused: one declaring a
@@ -403,18 +385,21 @@ paths:
             caller to entitle, and app/cbl/COTRN02C.cbl captures whatever card number the operator
             keyed. An administrator reaches every subject, which is the fork at
             app/cbl/COSGN00C.cbl:L232-L236 and the identity an acquirer client is configured as. Any
-            other identity reaches only the accounts and cards its own SCOPE_ authorities name, and
-            the comparison is against the account the cross-reference resolved rather than the one
-            the request supplied.
+            other identity reaches only the accounts and cards its own SCOPE_ authorities name. The
+            comparison is against the account the cross-reference resolved rather than the one the
+            request supplied.
 
 
             Neither refusal is a decline. No decision was taken, no decision row was written and no
             event was published, so the body carries no approved member and no reject code. The
-            detail is fixed: naming the account, the card or which comparison failed would confirm
-            to an unentitled caller that the subject exists. A card that resolved no account answers
-            the same way, and the entitlement check runs before any of it, so the "Card Number NOT
-            found..." refusal cannot be used to discover which cards this platform holds. The chain writes the problem document and the decision writes the service
-            error body, so both shapes are declared below.
+            detail is fixed: naming the account, the card or which comparison failed would confirm to
+            an unentitled caller that the subject exists.
+
+
+            A card that resolved no account answers the same way, and the entitlement check runs
+            before any of it. The "Card Number NOT found..." refusal cannot be used to discover which
+            cards this platform holds. The chain writes the problem document and the decision writes
+            the service error body, so both shapes are declared below.
           headers:
             Cache-Control:
               description: Keeps the refusal out of every cache.
@@ -449,12 +434,15 @@ paths:
         '405':
           description: >-
             The route was called with a method it does not serve. This route serves POST alone, and
-            the Allow header names it. api/GlobalExceptionHandler keeps the status and the headers the
-            framework named, so a caller's mistake is not recorded as a fault of this service.
-            config/SecurityConfig declares one rule per method and path, and a request whose method
-            carries no rule is refused with 403 before the dispatcher runs, so this answer is the
-            one a request the chain admits receives.
-            ADDITIVE: a 3270 map field carries no method, so the source holds no matching condition.
+            the Allow header names it. The handler api/GlobalExceptionHandler keeps the status and
+            the headers the framework named, so a caller's mistake is not recorded as a fault of this
+            service.
+
+
+            The chain in config/SecurityConfig declares one rule per method and path, so a request
+            whose method carries no rule is refused with 403 before the dispatcher runs. This answer
+            is therefore the one a request the chain admits receives. ADDITIVE: a 3270 map field
+            carries no method, so the source holds no matching condition.
           headers:
             Allow:
               description: The methods this route serves.
@@ -475,12 +463,11 @@ paths:
         '406':
           description: >-
             The request accepts no media type this endpoint writes. The status travels alone and this
-            response has no content at all: the refusal exists because no response media type could be
-            selected, so there is no type an error body could be written as.
+            response has no content at all. The refusal exists because no response media type could
+            be selected, so there is no type an error body could be written as. The handler
             api/GlobalExceptionHandler answers this status with no body for that reason, and the same
-            handler answers 415 with one.
-            ADDITIVE: a 3270 map field carries no media type, so the source holds no matching
-            condition.
+            handler answers 415 with one. ADDITIVE: a 3270 map field carries no media type, so the
+            source holds no matching condition.
         '413':
           description: >-
             The request declares a body wider than this service reads.
@@ -549,12 +536,12 @@ paths:
                 refusedUnresolvedCard:
                   summary: >-
                     Refused where no cross-reference row carries the card number. Reject code 0100 at
-                    app/cbl/CBTRN02C.cbl:L383-L387 is assigned in the INVALID KEY branch of that read,
-                    which resolves no account, so this service has no subject to decide against and
-                    answers the way app/cbl/COTRN02C.cbl:L625-L626 does. No approved member, no reject
-                    code and no accountId appear, because nothing was decided. SYNTHETIC: all 50 cards
-                    in app/data/ASCII/cardxref.txt resolve, so seeded data reaches this answer only
-                    with a card number held by no row.
+                    app/cbl/CBTRN02C.cbl:L383-L387 is assigned in the INVALID KEY branch of that
+                    read, which resolves no account. This service therefore has no subject to decide
+                    against, and answers the way app/cbl/COTRN02C.cbl:L625-L626 does. No approved
+                    member, no reject code and no accountId appear, because nothing was decided.
+                    SYNTHETIC: all 50 cards in app/data/ASCII/cardxref.txt resolve, so seeded data
+                    reaches this answer only with a card number held by no row.
                   value:
                     status: 422
                     error: Validation failed
@@ -630,16 +617,16 @@ paths:
                     timestamp: '2022-06-10T19:27:53.412Z'
         '429':
           description: >-
-            A rate ceiling refused this request. config/RequestRateCeilingFilter runs ahead of the
-            security chain and bounds requests from one source, requests presenting one identity,
-            state-changing requests from one source, failed authentications from one source, and
-            requests in flight. Retry-After names whole seconds until the window rolls.
+            A rate ceiling refused this request. The filter config/RequestRateCeilingFilter runs
+            ahead of the security chain. It bounds requests from one source, requests presenting one
+            identity, state-changing requests from one source, failed authentications from one
+            source, and requests in flight. Retry-After names whole seconds until the window rolls.
 
 
-            ADDITIVE: a CICS transaction arrived from a terminal an operator was sitting at and the
-            nightly feed of app/jcl/POSTTRAN.jcl arrived once a day as a dataset, so the source had
-            no request rate to bound and holds no matching condition. The detail is fixed and names
-            no address, no identity and no route.
+            ADDITIVE: a CICS transaction arrived from a terminal an operator was sitting at, and the
+            nightly feed of app/jcl/POSTTRAN.jcl arrived once a day as a dataset. The source
+            therefore had no request rate to bound and holds no matching condition. The detail is
+            fixed and names no address, no identity and no route.
           headers:
             Retry-After:
               description: Whole seconds until the window rolls, one or more.
@@ -667,37 +654,36 @@ components:
       scheme: basic
       description: >-
         HTTP Basic authentication over the realm carddemo, across the identities
-        carddemo.security.users configures. config/SecurityConfig installs it, answers a missing or
-        unusable credential with 401 and the challenge Basic realm="carddemo", charset="UTF-8", and
-        answers a usable credential holding no role this route admits with 403.
+        carddemo.security.users configures. The chain in config/SecurityConfig installs it and
+        answers a missing or unusable credential with 401 and the challenge Basic realm="carddemo",
+        charset="UTF-8". It answers a usable credential holding no role this route admits with 403.
 
 
         POST /authorizations admits ACQUIRER and ADMIN alone. ACQUIRER is the machine identity a
-        point-of-sale network presents: it owns no account, no customer and no card, and it is
-        configured separately from every cardholder identity because this route reaches every card
+        point-of-sale network presents, and it owns no account, no customer and no card. It is
+        configured separately from every cardholder identity, because this route reaches every card
         the platform holds. USER is a cardholder identity and is refused here, so a credential
         entitled to one account cannot authorize against another. MONITORING reaches the metrics
         endpoints on the management port and no business route.
 
 
         The password is compared against an already-encoded value, so no plaintext password is
-        compared: app/cbl/COSGN00C.cbl:L223 compares a stored password against a supplied one
-        directly, and that plaintext comparison is flagged in
-        card-platform/docs/business-rule-flags.md. Basic sends a credential as base-64 text, which
-        is encoding and not encryption, so this scheme requires an encrypted transport.
+        compared. The signon at app/cbl/COSGN00C.cbl:L223 compares a stored password against a
+        supplied one directly, and that plaintext comparison is flagged in
+        card-platform/docs/business-rule-flags.md. Basic sends a credential as base-64 text, which is
+        encoding and not encryption, so this scheme requires an encrypted transport.
         card-platform/.env.example documents the variables each entry reads.
-
   schemas:
 
     ApiProblem:
       type: object
       description: >-
-        Body of a refusal the security chain answers, as the problem document of
-        RFC 9457 describes it. config/SecurityConfig writes these four members by
-        hand rather than through an object mapper, so the body of a security
-        failure depends on no serializer configuration and can carry no member a
-        mapper added. It is a different shape from ApiErrorResponse, which
-        api/GlobalExceptionHandler builds for a failure that reached the handler.
+        Body of a refusal the security chain answers, as the problem document of RFC 9457 describes
+        it. The chain in config/SecurityConfig writes these four members by hand rather than through
+        an object mapper. The body of a security failure therefore depends on no serializer
+        configuration and can carry no member a mapper added. It is a different shape from
+        ApiErrorResponse, which api/GlobalExceptionHandler builds for a failure that reached the
+        handler.
       required:
         - type
         - title
@@ -748,7 +734,7 @@ components:
         A caller names its subject by cardNumber or by accountId, and at least one of the two must
         arrive carrying a value. A cardNumber that arrives is the card the decision runs on, because
         app/cbl/CBTRN02C.cbl:L383 keys the cross-reference read on the card of the transaction being
-        authorized; an accountId resolves a card only where the request carried none, which is the
+        authorized. An accountId resolves a card only where the request carried none, which is the
         MOVE XREF-CARD-NUM of app/cbl/COTRN02C.cbl:L209. A request carrying both is decided on its
         card and against the account it declared.
 
@@ -758,13 +744,13 @@ components:
         Number must be entered...". The NOTFND limb at app/cbl/COTRN02C.cbl:L591-L592 answers an
         accountId resolving no card with "Account ID NOT found...". The NOTFND limb at
         app/cbl/COTRN02C.cbl:L625-L626 answers a cardNumber resolving no cross-reference row with
-        "Card Number NOT found...", whether or not the request declared an accountId as well: an
+        "Card Number NOT found...", whether or not the request declared an accountId as well. An
         account named in a body is not a subject this platform resolved, so nothing is decided
         against it.
 
 
-        A property sent as an explicit JSON null is refused wherever a value is required and
-        accepted wherever the binder accepts an absent value, which is transactionId, cardNumber and
+        A property sent as an explicit JSON null is refused wherever a value is required and accepted
+        wherever the binder accepts an absent value, which is transactionId, cardNumber and
         accountId. The two anyOf branches below each require a string, so a body whose only
         identifier is null is refused here exactly as the binder refuses it.
       additionalProperties: false
@@ -796,10 +782,10 @@ components:
           type: 'null'
           description: >-
             Identifier of the transaction, from DALYTRAN-ID PIC X(16) at app/cpy/CVTRA06Y.cpy:L5. No
-            value is accepted here: this service allocates one for each call, and a body carrying a
+            value is accepted here. This service allocates one for each call, and a body carrying a
             value is refused with "Transaction ID is allocated by this service and must not be
-            supplied...". app/cbl/COTRN02C.cbl:L444-L451 derives its own value by browsing the
-            transaction file backwards from high values and adding one.
+            supplied...". The source at app/cbl/COTRN02C.cbl:L444-L451 derives its own value by
+            browsing the transaction file backwards from high values and adding one.
 
 
             The property may be sent as an explicit JSON null, which the binder accepts as an absent
@@ -833,9 +819,9 @@ components:
             source applies no numeric test to this field.
 
 
-            One character has to be something other than a space. app/cbl/COTRN02C.cbl:L265 tests
-            this field for SPACES OR LOW-VALUES and app/cbl/COTRN02C.cbl:L266 writes
-            "Source can NOT be empty..." for a value that is all spaces, so the pattern refuses one
+            One character has to be something other than a space. Line app/cbl/COTRN02C.cbl:L265
+            tests this field for SPACES OR LOW-VALUES and app/cbl/COTRN02C.cbl:L266 writes "Source
+            can NOT be empty..." for a value that is all spaces. The pattern therefore refuses one
             here rather than leaving the schema wider than the binder.
           examples: ['POS TERM']
         description:
@@ -859,7 +845,7 @@ components:
           pattern: '^ *(?:[+-] *(?:\$ *(?:\.[0-9]+|[0-9]+(?:,[0-9]+)*(?:\.[0-9]*)?)|(?:\.[0-9]+|[0-9]+(?:,[0-9]+)*(?:\.[0-9]*)?) *\$|(?:\.[0-9]+|[0-9]+(?:,[0-9]+)*(?:\.[0-9]*)?)) *|(?:\$ *(?:\.[0-9]+|[0-9]+(?:,[0-9]+)*(?:\.[0-9]*)?)|(?:\.[0-9]+|[0-9]+(?:,[0-9]+)*(?:\.[0-9]*)?) *\$|(?:\.[0-9]+|[0-9]+(?:,[0-9]+)*(?:\.[0-9]*)?)) *(?:[+-]|CR|DB) *|(?:\$ *(?:\.[0-9]+|[0-9]+(?:,[0-9]+)*(?:\.[0-9]*)?)|(?:\.[0-9]+|[0-9]+(?:,[0-9]+)*(?:\.[0-9]*)?) *\$|(?:\.[0-9]+|[0-9]+(?:,[0-9]+)*(?:\.[0-9]*)?)) *)$'
           description: >-
             Amount, from DALYTRAN-AMT PIC S9(09)V99 at app/cpy/CVTRA06Y.cpy:L10. A decimal string,
-            and never a JSON number: a JSON number binds through a binary floating-point type, and
+            and never a JSON number. A JSON number binds through a binary floating-point type, and
             every arithmetic step of this platform is fixed point with truncation toward zero pinned.
             A body sending this property as a number is refused with 400. 50 of the 300 records in
             app/data/ASCII/dailytran.txt hold a negative amount, ranging from -998.33 to 999.77.
@@ -867,20 +853,25 @@ components:
 
             The pattern is the grammar FUNCTION NUMVAL-C reads, which app/cbl/COTRN02C.cbl:L383 and
             app/cbl/COTRN02C.cbl:L456 apply to this field. It is wider than the twelve-character
-            screen form app/cbl/COTRN02C.cbl:L339-L351 tests positionally. It accepts leading and trailing spaces, one sign before or after the digits, one currency sign before or after them,
-            grouping commas inside the integer part, and CR or DB in place of a trailing minus. So
-            504.77, 504.7, 504, $1,234.56, +00000504.77 and 125.00CR are each accepted and carry the
-            value their digits name. A sign appears before the digits or after them and never in both
-            places, and at most one currency sign appears; the pattern states both of those. A body carrying two signs or two currency signs is refused with 400. maxLength is the
+            screen form app/cbl/COTRN02C.cbl:L339-L351 tests positionally. It accepts leading and
+            trailing spaces, one sign before or after the digits, and one currency sign before or
+            after them. It also accepts grouping commas inside the integer part, and CR or DB in
+            place of a trailing minus.
+
+
+            So 504.77, 504.7, 504, $1,234.56, +00000504.77 and 125.00CR are each accepted and carry
+            the value their digits name. A sign appears before the digits or after them and never in
+            both places, and at most one currency sign appears; the pattern states both of those. A
+            body carrying two signs or two currency signs is refused with 400. maxLength is the
             argument ceiling libs/cobol-compat NumvalParser reads.
 
 
             Two further bounds are business constraints answered with 422, and the pattern above
             states neither of them. The value holds at most eighteen digits in total, counting both
-            sides of the decimal point, so 000000000000000504.77 is refused; and its magnitude is
-            below 1000000000, the width of the record field, so 1000000000.00 is refused while
-            999999999.99 is accepted. Either refusal writes
-            "Amount should be in format -99999999.99", the text app/cbl/COTRN02C.cbl:L345 writes.
+            sides of the decimal point, so 000000000000000504.77 is refused. Its magnitude is below
+            1000000000, the width of the record field, so 1000000000.00 is refused while 999999999.99
+            is accepted. Either refusal writes "Amount should be in format -99999999.99", the text
+            app/cbl/COTRN02C.cbl:L345 writes.
 
 
             The store fixes the scale at two digits and truncates toward zero, so 0.145 becomes 0.14.
@@ -939,9 +930,10 @@ components:
 
             A value here is the card the rules run on, whether or not accountId also arrives, because
             app/cbl/CBTRN02C.cbl:L383 keys that read on the card of the transaction being authorized.
-            A card with no cross-reference row is reject code 0100 at app/cbl/CBTRN02C.cbl:L385-L387
-            where accountId named a subject to decide against, and is refused with "Card Number NOT
-            found..." from app/cbl/COTRN02C.cbl:L625-L626 where it did not.
+            A card with no cross-reference row is refused with "Card Number NOT found..." from
+            app/cbl/COTRN02C.cbl:L625-L626, whether or not accountId arrived. Reject code 0100 at
+            app/cbl/CBTRN02C.cbl:L385-L387 is the batch outcome of that same read, and this route
+            publishes no decline under it.
 
 
             app/cbl/COTRN02C.cbl:L211 applies the COBOL numeric class test to the same field and
@@ -951,13 +943,21 @@ components:
 
             A value here is used only where accountId names none. Where both arrive,
             app/cbl/COTRN02C.cbl:L209 moves the card number of the cross-reference row over the field
-            this property fills, so the resolved card decides the call and the value sent here is not
+            this property fills. The resolved card decides the call, and the value sent here is not
             read again.
 
 
-            The property may be sent as an explicit JSON null or omitted, and either counts as absent.
-            The example below is a placeholder that no seeded row carries.
-          examples: ['0000000000000000']
+            The property may be sent as an explicit JSON null or omitted, and either counts as
+            absent.
+
+
+            No example is published for it, here or under the request body. A sixteen-digit literal
+            in a delivered document is a card number shape, whether or not a row carries it. Read a
+            value from record 1 of app/data/ASCII/carddata.txt with `cut -c1-16
+            app/data/ASCII/carddata.txt | sed -n '1p'` and send it in place of the accountId of the
+            approvedAuthorization example. That resolves the same account and returns the same
+            approval. Any sixteen digits no seeded row carries takes the INVALID KEY limb of the same
+            read and is refused, writing no row and publishing nothing.
         originTimestamp:
           type: string
           pattern: '^\d{4}-\d{2}-\d{2}( \d{2}:\d{2}:\d{2}\.\d{6})?$'
@@ -969,9 +969,9 @@ components:
             holding a space at position 11, which is what the nightly feed carries.
 
 
-            A ten-character value is widened to the record width by appending the start of that day
-            before it reaches the event and the rules, which is what app/cbl/COTRN02C.cbl:L469 does
-            when it moves the screen field into the record field. No decision changes: the only test
+            A ten-character value is widened to the record width by appending the start of that day,
+            before it reaches the event and the rules. That is what app/cbl/COTRN02C.cbl:L469 does
+            when it moves the screen field into the record field. No decision changes. The only test
             applied to this value is the comparison of its first ten characters against the account
             expiry date as text at app/cbl/CBTRN02C.cbl:L414-L420, which reject code 0103 reports.
 
@@ -989,11 +989,14 @@ components:
           description: >-
             Posting moment, in either of two shapes, matching originTimestamp. The ten-character date
             is TPROCDTI, validated at app/cbl/COTRN02C.cbl:L409-L423 with the shape
-            app/cbl/COTRN02C.cbl:L375 states. The twenty-six character form is
-            DALYTRAN-PROC-TS PIC X(26) at app/cpy/CVTRA06Y.cpy:L17, holding a dash at position 11 and
-            points at positions 14, 17 and 20, with two significant fractional digits then four zero characters. app/cbl/CBTRN02C.cbl:L173 declares DB2-MIL PIC 9(002),
-            app/cbl/CBTRN02C.cbl:L174 declares DB2-REST PIC X(04), and app/cbl/CBTRN02C.cbl:L701
-            fills that remainder with zeros.
+            app/cbl/COTRN02C.cbl:L375 states. The twenty-six character form is DALYTRAN-PROC-TS PIC
+            X(26) at app/cpy/CVTRA06Y.cpy:L17. It holds a dash at position 11 and points at positions
+            14, 17 and 20, with two significant fractional digits then four zero characters.
+
+
+            Line app/cbl/CBTRN02C.cbl:L173 declares DB2-MIL PIC 9(002) and app/cbl/CBTRN02C.cbl:L174
+            declares DB2-REST PIC X(04). Line app/cbl/CBTRN02C.cbl:L701 fills that remainder with
+            zeros.
 
 
             Required, because app/cbl/COTRN02C.cbl:L288 tests the same field for emptiness and
@@ -1013,12 +1016,14 @@ components:
             digits, zero-filled on the left, so account 7 reads as 00000000007.
 
 
-            A value here names the subject the decision applies to. Where cardNumber arrives too, that
-            card is the card the rules run on and this account stays the subject, which matters for one
-            outcome: reject code 0100 at app/cbl/CBTRN02C.cbl:L385-L387 is assigned when the
-            cross-reference read misses, and the decline is published against and keyed on this
-            account. Where cardNumber does not arrive, the cross-reference read at
-            app/cbl/COTRN02C.cbl:L208 takes the row for this account through its alternate index and
+            A value here names the subject the decision applies to, once the cross-reference read has
+            resolved it. Where cardNumber arrives too, that card is the card the rules run on and
+            this account stays the subject. A card that read misses is refused before any decision
+            runs, so no decline is ever published against the account named here.
+
+
+            Where cardNumber does not arrive, the cross-reference read at app/cbl/COTRN02C.cbl:L208
+            takes the row for this account through its alternate index. Then
             app/cbl/COTRN02C.cbl:L209 moves that row's card number into the card field. Where more
             than one card sits under one account, the row taken is the one carrying the lowest card
             number, so one account always resolves the same card.
@@ -1026,17 +1031,18 @@ components:
 
             An account with no cross-reference row is refused with "Account ID NOT found...", from
             the NOTFND limb at app/cbl/COTRN02C.cbl:L591-L592, on a request carrying no cardNumber of
-            its own. app/cbl/COTRN02C.cbl:L197 applies the COBOL numeric class test to the same field
-            and app/cbl/COTRN02C.cbl:L199 writes "Account ID must be Numeric..." when it fails.
+            its own. Line app/cbl/COTRN02C.cbl:L197 applies the COBOL numeric class test to the same
+            field and app/cbl/COTRN02C.cbl:L199 writes "Account ID must be Numeric..." when it fails.
 
 
-            The property may be sent as an explicit JSON null or omitted, and either counts as absent.
+            The property may be sent as an explicit JSON null or omitted, and either counts as
+            absent.
           examples: ['00000000007']
 
     ApprovedAuthorization:
       description: >-
         The body of a 200. Every rule accepted, so approved is true, both reject-code properties are
-        null and accountId names the account the cross-reference resolved.
+        null and accountId names the account the cross-reference resolved. Line
         app/cbl/CBTRN02C.cbl:L211 posts a record whose reject-code field still holds zero, and that
         field holding zero is the same outcome this shape states.
       allOf:
@@ -1065,14 +1071,14 @@ components:
 
         accountId names the account the keyed read at app/cbl/CBTRN02C.cbl:L383-L384 resolved, on
         every branch and with no exception. Reject code 0100 is assigned in the INVALID KEY branch of
-        that read, before app/cbl/CBTRN02C.cbl:L394 has an account to move, so it reaches no caller as
-        a decline: the request is refused before a decision, carrying the source text of
+        that read, before app/cbl/CBTRN02C.cbl:L394 has an account to move. It therefore reaches no
+        caller as a decline. The request is refused before a decision, carrying the source text of
         app/cbl/COTRN02C.cbl:L625-L626, whether or not it named an account of its own.
 
 
         Every branch publishes one event under schemas/transaction-declined-v3.json keyed on that
-        account. A decline a caller receives therefore always names an account this platform resolved,
-        never one the request declared.
+        account. A decline a caller receives therefore always names an account this platform
+        resolved, never one the request declared.
       allOf:
         - $ref: '#/components/schemas/AuthorizationResponse'
         - type: object
@@ -1126,7 +1132,7 @@ components:
         than absent.
 
 
-        One declined transaction carries one reject code, never a list, a set or a bit mask.
+        One declined transaction carries one reject code, never a list, a set or a bit mask. Line
         app/cbl/CBTRN02C.cbl:L372 gates the account read on that code still holding zero, so a card
         resolving nothing reports 0100 and never 0101.
 
@@ -1196,11 +1202,11 @@ components:
     Problem:
       type: object
       description: >-
-        A refusal written by a filter rather than by a handler, as RFC 9457 describes it.
-        config/SecurityConfig writes the four members of a 401 and a 403 by hand and
-        config/RequestRateCeilingFilter writes those of a 429, so the body of a security failure
-        depends on no serializer configuration and can carry no member a mapper added. The detail
-        names no identifier and no route.
+        A refusal written by a filter rather than by a handler, as RFC 9457 describes it. The chain
+        in config/SecurityConfig writes the four members of a 401 and a 403 by hand, and
+        config/RequestRateCeilingFilter writes those of a 429. The body of a security failure
+        therefore depends on no serializer configuration and can carry no member a mapper added. The
+        detail names no identifier and no route.
       additionalProperties: false
       required: [type, title, status, detail]
       properties:
@@ -1261,8 +1267,8 @@ components:
           maxItems: 1
           description: >-
             One text, and never more than one. Each edit of app/cbl/COTRN02C.cbl moves its text into
-            WS-MESSAGE and performs SEND-TRNADD-SCREEN, which returns control to the terminal, so the
-            edits after it never run and one rejected screen carries one text.
+            WS-MESSAGE and performs SEND-TRNADD-SCREEN, which returns control to the terminal. The
+            edits after it never run, and one rejected screen carries one text.
 
 
             A validator reports every failing component of one body at once, so
@@ -1275,11 +1281,14 @@ components:
             description: >-
               The one rejection text, bounded by WS-MESSAGE PIC X(80) at app/cbl/COTRN02C.cbl:L38.
               Twenty-three of the texts below are reproduced character for character from the
-              paragraph that writes each one; twenty of those close with an ellipsis and the three
-              shape texts do not. The ten marked ADDITIVE have no source ancestor, because a
-              fixed-width map field cannot raise the condition each answers. No text of either kind is
-              a reader default: a default names a bound and no field, which tells a caller nothing
-              about which property it refused, and api/OpenApiContractTest fails when one appears.
+              paragraph that writes each one. Twenty of those close with an ellipsis, and the three
+              shape texts do not.
+
+
+              The ten marked ADDITIVE have no source ancestor, because a fixed-width map field cannot
+              raise the condition each answers. No text of either kind is a reader default. A default
+              names a bound and no field, which tells a caller nothing about which property it
+              refused, and api/OpenApiContractTest fails when one appears.
             examples:
               # Evaluation order, app/cbl/COTRN02C.cbl: the eleven emptiness tests at L251-L320, the
               # two class tests at L322-L337, the amount shape at L339-L351, the origin date shape at
@@ -1316,10 +1325,10 @@ components:
               - 'Card Number must be Numeric...'                 # :L213
               - 'Account or Card Number must be entered...'      # :L226
               # Each branch reads the cross-reference by the value the caller supplied, and a value
-              # with no row there is refused at the capture stage. The card text is written only
-              # where the request declared no account either: an account it declared is the subject
-              # the decision applies to, so a card that resolves nothing is decided as reject code
-              # 0100 against that account rather than refused.
+              # with no row there is refused at the capture stage, whether the request declared an
+              # account of its own or not. The account text answers a request naming an account the
+              # read missed, and the card text answers one naming a card the read missed. Neither
+              # is a decline, and neither carries reject code 0100.
               - 'Account ID NOT found...'                        # :L591-L592
               - 'Card Number NOT found...'                       # :L625-L626
               # ADDITIVE. No source paragraph writes these ten.
